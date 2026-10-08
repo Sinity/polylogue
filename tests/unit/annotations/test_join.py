@@ -6,6 +6,7 @@ import hashlib
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -25,6 +26,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_annotations import persist_annotation_schema
 from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate, upsert_assertion
 from tests.infra.annotation_join import join_fixture_annotations
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 from tests.infra.user_tier import connect_user_db
 
@@ -194,8 +196,8 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
     checks changes the row/group/error counts below.
     """
     archive_root = workspace_env["archive_root"]
-    target_ref, evidence_ref = _seed_delegation(archive_root)
-    unresolved_ref, unresolved_evidence = _seed_unresolved_delegation(archive_root)
+    target_ref, evidence_ref = run_off_event_loop(lambda: _seed_delegation(archive_root))
+    unresolved_ref, unresolved_evidence = run_off_event_loop(lambda: _seed_unresolved_delegation(archive_root))
     registry = AnnotationSchemaRegistry()
     registry.register(DELEGATION_DISCOURSE_SCHEMA)
     with connect_user_db(archive_root / "user.db") as conn:
@@ -345,18 +347,23 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
 @pytest.mark.asyncio
 async def test_join_is_generic_for_session_targets(workspace_env: dict[str, Path]) -> None:
     archive_root = workspace_env["archive_root"]
-    with ArchiveStore(archive_root) as archive:
-        session_id = write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="generic-session",
-                title="Generic target",
-                created_at="2026-07-02T00:00:00Z",
-                git_repository_url="https://github.com/Sinity/sinex",
-                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
-            ),
-        )
+
+    def _seed_archive_1() -> Any:
+        with ArchiveStore(archive_root) as archive:
+            session_id = write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="generic-session",
+                    title="Generic target",
+                    created_at="2026-07-02T00:00:00Z",
+                    git_repository_url="https://github.com/Sinity/sinex",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                ),
+            )
+            return (session_id,)
+
+    (session_id,) = run_off_event_loop(_seed_archive_1)
     schema = AnnotationSchema(
         schema_id="test.session-quality",
         version=1,
@@ -473,16 +480,21 @@ async def test_terminal_lifecycle_join_retains_labeler_and_judgment_provenance(
     terminal_status: AssertionStatus,
 ) -> None:
     archive_root = workspace_env["archive_root"]
-    with ArchiveStore(archive_root) as archive:
-        session_id = write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id=f"lifecycle-{decision}",
-                title="Lifecycle target",
-                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
-            ),
-        )
+
+    def _seed_archive_2() -> Any:
+        with ArchiveStore(archive_root) as archive:
+            session_id = write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=f"lifecycle-{decision}",
+                    title="Lifecycle target",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                ),
+            )
+            return (session_id,)
+
+    (session_id,) = run_off_event_loop(_seed_archive_2)
     schema = AnnotationSchema(
         schema_id=f"test.lifecycle-{decision}",
         version=1,
@@ -562,7 +574,7 @@ async def test_registry_drift_reports_truncated_diagnostics_honestly(
     workspace_env: dict[str, Path],
 ) -> None:
     archive_root = workspace_env["archive_root"]
-    target_ref, evidence_ref = _seed_delegation(archive_root)
+    target_ref, evidence_ref = run_off_event_loop(lambda: _seed_delegation(archive_root))
     drifted_schema = replace(DELEGATION_DISCOURSE_SCHEMA, title="Drifted delegation discourse")
     definition = drifted_schema.canonical_definition_json()
     with connect_user_db(archive_root / "user.db") as conn:

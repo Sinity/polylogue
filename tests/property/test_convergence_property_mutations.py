@@ -2,24 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
-import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 import tests.infra.convergence_harness as convergence_harness
-from polylogue.core.enums import Provider
-from polylogue.pipeline.ids import session_content_hash
-from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.storage.derived.session.derivation import SessionProfileDerivation
 from polylogue.storage.fts.derivation import FtsDerivationAdapter
 from polylogue.storage.sqlite.archive_tiers import write as archive_write
 from polylogue.storage.sqlite.connection_profile import open_connection
 from tests.infra.convergence_harness import (
-    assert_archive_verification_green,
     build_converged_archive,
     converge_convergence_archive,
     ingest_composed_sources,
@@ -34,6 +29,8 @@ from tests.infra.convergence_laws import (
     read_semantic_projection,
     semantic_oracle,
 )
+from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
 def test_convergence_property_fts_publication_mutation_red_twin(
@@ -70,23 +67,22 @@ def test_convergence_property_insight_repair_mutation_red_twin(tmp_path: Path, m
         converge_convergence_archive(archive)
 
 
-def test_convergence_property_raw_replay_mutation_red_twin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Archive verification catches bypassed durable raw acquisition."""
+def test_retained_writer_refuses_session_when_raw_acquisition_is_bypassed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retained writer refuses a session when its source producer returns no acquired Raw."""
     composed = rich_convergence_sources()
     mutated_root = tmp_path / "mutated"
     initialize_active_archive(mutated_root)
 
     monkeypatch.setattr(convergence_harness, "write_source_raw_session", lambda *_args, **_kwargs: "bypassed-raw")
-    mutated = ingest_composed_sources(
-        mutated_root,
-        composed,
-        session_indexes=tuple(range(len(composed.sessions))),
-        converge_after_each=False,
-    )
-    converge_convergence_archive(mutated)
-
-    with pytest.raises(AssertionError, match="archive verification registry is not green"):
-        assert_archive_verification_green(mutated.root)
+    with pytest.raises(KeyError, match="unknown raw revision bypassed-raw"):
+        ingest_composed_sources(
+            mutated_root,
+            composed,
+            session_indexes=tuple(range(len(composed.sessions))),
+            converge_after_each=False,
+        )
 
 
 def test_convergence_harness_binds_raw_receipt_before_equal_attachment(
@@ -160,7 +156,6 @@ def test_order_sensitive_overwrite_has_permutation_control(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mutated: bool
 ) -> None:
     """The stale-write gate keeps a newer revision independent of ingest order."""
-    from polylogue.pipeline.services.ingest_batch import _core as ingest_core
     from tests.infra.source_composer import compose_append_revision_chain
 
     composed = compose_append_revision_chain(revision_count=2, messages_per_revision=1)
@@ -171,22 +166,13 @@ def test_order_sensitive_overwrite_has_permutation_control(
         parsed = convergence_harness._parsed_session(composed.sessions[index], corpus_index=index).model_copy(
             update={"attachments": []}
         )
-        payload = SessionWritePayload(
-            session_id=str(make_session_id(Provider.CODEX, parsed.provider_session_id)),
-            content_hash=str(session_content_hash(parsed)),
-            parsed_session=parsed,
-            message_count=len(parsed.messages),
-            attachment_count=len(parsed.attachments),
-            raw_id=None,
-        )
         with closing(open_connection(root / "index.db")) as conn:
             conn.row_factory = sqlite3.Row
-            with conn:
-                ingest_core._write_session(conn, payload)
+            write_fixture_index_session(conn, parsed)
 
     write_revision(1)
     if mutated:
-        monkeypatch.setattr(ingest_core, "should_skip_stale_replace", lambda **_kwargs: False)
+        monkeypatch.setattr(archive_write, "should_skip_stale_replace", lambda **_kwargs: False)
     write_revision(0)
     observed = read_semantic_projection(root, probe_terms=("revision",))
     expected = semantic_oracle(authoritative_sessions(composed), probe_terms=("revision",))
@@ -261,21 +247,49 @@ def test_late_parent_prefix_resolution_has_append_prefix_control(
 def test_unchanged_reingest_does_not_reach_the_production_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The content-hash gate bypasses the production writer for unchanged input."""
-    workload = generated_convergence_workload()
-    archive = build_converged_archive(tmp_path / "archive", workload.sources)
-    writer_calls: list[str] = []
-    write = archive_write.write_parsed_session_to_archive
+    """A settled Raw owner leaves the production writer untouched on repeat."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 
-    def observe_writer(*args: object, **kwargs: object) -> str:
-        writer_calls.append("write")
-        return write(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(ingest_batch_core, "write_parsed_session_to_archive", observe_writer)
-    ingest_composed_sources(
-        archive.root,
-        workload.sources,
-        session_indexes=tuple(range(len(workload.sources.sessions))),
-        converge_after_each=False,
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"unchanged-reingest"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m1",'
+        b'"role":"user","content":[{"type":"input_text","text":"keep this prompt"}]}}\n'
     )
+
+    def acquire() -> str:
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path="unchanged-reingest.jsonl",
+                canonical_source_path="unchanged-reingest.jsonl",
+                acquired_at_ms=1,
+            )
+
+    writer_calls: list[str] = []
+    import polylogue.storage.sqlite.archive_tiers.revision_governance as revision_governance
+
+    async def settle_then_repeat() -> None:
+        raw_id = await run_archive_fixture_write(archive_root, acquire)
+        async with prepared_live_convergence_owner(archive_root) as owner:
+            first = await owner.converge_raw_id(raw_id)
+            assert first.done == 1 and first.failed == first.pending == 0, first.outcomes
+
+            from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+            write = write_parsed_session_to_archive
+
+            def observe_writer(*args: object, **kwargs: object) -> str:
+                writer_calls.append("write")
+                return write(*args, **kwargs)  # type: ignore[arg-type]
+
+            monkeypatch.setattr(revision_governance, "write_parsed_session_to_archive", observe_writer)
+            repeated = await owner.converge_raw_id(raw_id)
+            assert repeated.failed == repeated.pending == 0, repeated.outcomes
+
+    asyncio.run(settle_then_repeat())
     assert not writer_calls

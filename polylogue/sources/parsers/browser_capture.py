@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, BinaryIO, cast
 
 from polylogue.archive.ingest_flags import (
-    COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
     TEMPORARY_CHAT_INGEST_FLAG,
@@ -19,16 +19,19 @@ from polylogue.browser_capture.models import (
     BrowserCaptureEnvelope,
     BrowserCaptureTurn,
     SpilledCarrier,
+    _CanonicalNativeTurnWitness,
     has_chatgpt_native_payload,
     has_claude_ai_native_payload,
+    has_grok_native_payload,
     looks_like_browser_capture,
     validate_capture_envelope,
 )
-from polylogue.core.enums import BlockType, Provider, Role, SessionKind, TitleSource
+from polylogue.core.enums import BlockType, Provider, Role, SessionKind, TitleSource, ToolOutcome
 from polylogue.core.hashing import hash_bytes
-from polylogue.core.message_owner import MessageOwnerAmbiguityError
+from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.pipeline.ids import _message_owner_coordinate
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.parsers.base import parser_admission
 from polylogue.sources.parsers.base_models import (
     ParsedAttachment,
@@ -39,6 +42,14 @@ from polylogue.sources.parsers.base_models import (
 )
 from polylogue.sources.parsers.base_support import decode_attachment_base64, derive_attachment_provenance
 from polylogue.sources.tool_result_reasons import unknown_reason
+
+if TYPE_CHECKING:
+    from typing import Protocol
+
+    from polylogue.sources.prepared_message_sink import ScratchSessionSpill
+
+    class _NativeReadInto(Protocol):
+        def readinto(self, buffer: bytearray, /) -> int | None: ...
 
 
 class NativeCaptureIdentityMismatchError(ValueError):
@@ -55,6 +66,47 @@ def _require_matching_native_identity(parsed: ParsedSession, provider_session_id
     if (observed or parsed.provider_session_id) != provider_session_id:
         raise NativeCaptureIdentityMismatchError(provider_session_id, parsed.provider_session_id)
     return parsed
+
+
+def parse_native_payload(
+    provider: Provider, payload: object, native_id: str, *, prepared_attachment_ownership: bool = False
+) -> ParsedSession:
+    """Validate original native content through its ordinary provider owner.
+
+    This model route retains the ordinary parser's allocation contract. File
+    preparation can use those same parsers' supported scratch-backed routes;
+    this function is not a scalar-independent tokenizer.
+    """
+    if provider is Provider.CODEX:
+        from polylogue.sources.parsers.codex import is_supported_session_stream
+        from polylogue.sources.parsers.codex import parse as parse_codex
+
+        if not isinstance(payload, list) or not is_supported_session_stream(payload):
+            raise ValueError("Codex native capture requires a supported record stream")
+        parsed = parse_codex(payload, native_id)
+    elif provider is Provider.CHATGPT and has_chatgpt_native_payload(payload):
+        from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
+
+        def occurrence(attachment: ParsedAttachment, position: int) -> None:
+            attachment.owner_coordinate = MessageOwnerCoordinate(position=position)
+
+        parsed = parse_chatgpt(
+            payload, native_id, attachment_occurrence=occurrence if prepared_attachment_ownership else None
+        )
+    elif provider is Provider.CLAUDE_AI and has_claude_ai_native_payload(payload):
+        from polylogue.sources.parsers.claude.ai_parser import parse_ai
+
+        parsed = parse_ai(payload, native_id)
+    elif provider is Provider.GROK and has_grok_native_payload(payload):
+        from polylogue.sources.parsers.grok import parse_native_bundle
+
+        sessions = parse_native_bundle(payload, native_id)
+        if len(sessions) != 1:
+            raise ValueError("Grok native capture requires one supported conversation")
+        parsed = sessions[0]
+    else:
+        raise ValueError("capture does not contain supported original native content")
+    return _require_matching_native_identity(parsed, native_id)
 
 
 def _parsed_blocks_for_turn(turn: BrowserCaptureTurn) -> list[ParsedContentBlock]:
@@ -87,13 +139,21 @@ def _parsed_blocks_for_turn(turn: BrowserCaptureTurn) -> list[ParsedContentBlock
             metadata=block.metadata,
             is_error=block.is_error,
             exit_code=block.exit_code,
+            signature=block.signature,
+            tool_outcome=block.tool_outcome,
+            file_edit=block.file_edit,
+            web_constructs=block.web_constructs,
             # The capture adapter's ``is_error``/``exit_code`` are already
             # typed, so a result that reaches here without one is a page the
             # extension read no outcome from.
             outcome_unknown_reason=(
-                unknown_reason(is_error=block.is_error, exit_code=block.exit_code)
-                if block.type is BlockType.TOOL_RESULT
-                else None
+                block.outcome_unknown_reason
+                if block.outcome_unknown_reason is not None
+                else (
+                    unknown_reason(is_error=block.is_error, exit_code=block.exit_code)
+                    if block.type is BlockType.TOOL_RESULT and block.tool_outcome in (None, ToolOutcome.UNKNOWN)
+                    else None
+                )
             ),
         )
         for block in turn.blocks
@@ -183,13 +243,6 @@ def _claude_raw_content_segments(turn: BrowserCaptureTurn) -> list[dict[str, obj
 def looks_like(payload: object) -> bool:
     """Return whether a payload is a browser-capture envelope."""
     return looks_like_browser_capture(payload)
-
-
-def _is_compact_native_capture(envelope: BrowserCaptureEnvelope) -> bool:
-    return (
-        envelope.provider_meta.get("capture_fidelity") == "native_compact"
-        or envelope.session.provider_meta.get("capture_fidelity") == "native_compact"
-    )
 
 
 def _ingest_flags_for_browser_capture(envelope: BrowserCaptureEnvelope, provider_session_id: str) -> list[str]:
@@ -385,6 +438,77 @@ def _claude_attachment_cross_route_match(
     )
 
 
+def _merge_prepared_native_attachments(parsed: ParsedSession, envelope: BrowserCaptureEnvelope) -> ParsedSession | None:
+    """Join the canonical plan by its exact original attachment occurrence."""
+    rows = envelope.session.attachments
+    if not any("native_attachment_ordinal" in row.provider_meta for row in rows):
+        return None
+    merged = list(parsed.attachments)
+    seen: set[int] = set()
+    for row in rows:
+        ordinal = row.provider_meta.get("native_attachment_ordinal")
+        if type(ordinal) is not int or not 0 <= ordinal < len(merged) or ordinal in seen:
+            raise MessageOwnerAmbiguityError("capture asset lacks an exact canonical occurrence")
+        seen.add(ordinal)
+        native = parsed.attachments[ordinal]
+        if (row.provider_attachment_id, row.message_provider_id) != (
+            native.provider_attachment_id,
+            native.message_provider_id,
+        ):
+            raise MessageOwnerAmbiguityError("capture asset occurrence disagrees with native content")
+        turn_ordinal = row.provider_meta.get("native_turn_ordinal")
+        coordinate = native.owner_coordinate
+        role = None
+        if turn_ordinal is not None:
+            if type(turn_ordinal) is not int or not 0 <= turn_ordinal < len(parsed.messages):
+                raise MessageOwnerAmbiguityError("capture asset lacks a canonical message occurrence")
+            message = parsed.messages[turn_ordinal]
+            if message.provider_message_id != native.message_provider_id:
+                raise MessageOwnerAmbiguityError("capture asset message disagrees with native content")
+            raw_position = row.provider_meta.get("native_raw_position")
+            if parsed.source_name is Provider.CHATGPT:
+                if (
+                    type(raw_position) is not int
+                    or native.owner_coordinate is None
+                    or raw_position != native.owner_coordinate.position
+                    or raw_position != message.position
+                ):
+                    raise MessageOwnerAmbiguityError("capture asset raw occurrence disagrees with native content")
+            elif native.owner_coordinate is not None and native.owner_coordinate != _message_owner_coordinate(
+                message, turn_ordinal
+            ):
+                raise MessageOwnerAmbiguityError("capture asset owner disagrees with native content")
+            coordinate = _message_owner_coordinate(message, turn_ordinal)
+            role = message.role
+        if turn_ordinal is None and parsed.source_name is Provider.CHATGPT:
+            raw_position = row.provider_meta.get("native_raw_position")
+            if native.owner_coordinate is None or raw_position != native.owner_coordinate.position:
+                raise MessageOwnerAmbiguityError("capture orphan asset raw occurrence disagrees with native content")
+            if any(message.position == raw_position for message in parsed.messages):
+                raise MessageOwnerAmbiguityError("capture asset omitted its canonical owner")
+            coordinate = None
+        if (row.name, row.mime_type, row.attachment_kind, row.url) != (
+            native.name,
+            native.mime_type,
+            native.attachment_kind,
+            native.source_url,
+        ):
+            raise MessageOwnerAmbiguityError("capture asset descriptor disagrees with native content")
+        candidate = _browser_capture_parsed_attachment(row, message_provider_id=native.message_provider_id, role=role)
+        merged[ordinal] = native.model_copy(
+            update={
+                "owner_coordinate": coordinate,
+                "inline_bytes": candidate.inline_bytes if candidate.inline_bytes is not None else native.inline_bytes,
+                "precomputed_blob": candidate.precomputed_blob
+                if candidate.precomputed_blob is not None
+                else native.precomputed_blob,
+            }
+        )
+    if len(seen) != len(parsed.attachments):
+        raise MessageOwnerAmbiguityError("capture asset plan does not cover canonical attachments")
+    return parsed.model_copy(update={"attachments": merged})
+
+
 def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureEnvelope) -> ParsedSession:
     """Fold envelope attachments into a native-payload-delegated session.
 
@@ -396,6 +520,9 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
     the native payload never does.
     """
 
+    prepared = _merge_prepared_native_attachments(parsed, envelope)
+    if prepared is not None:
+        return prepared
     envelope_attachments = []
     for turn in envelope.session.turns:
         for attachment in turn.attachments:
@@ -655,9 +782,7 @@ def _parse_claude_fallback_envelope(
         )
         for attachment in envelope.session.attachments
     )
-    fidelity_flag = (
-        COMPACT_BROWSER_CAPTURE_INGEST_FLAG if _is_compact_native_capture(envelope) else DOM_FALLBACK_INGEST_FLAG
-    )
+    fidelity_flag = DOM_FALLBACK_INGEST_FLAG
     trusted_title = _trusted_envelope_title(envelope)
     return ParsedSession(
         source_name=Provider.CLAUDE_AI,
@@ -828,27 +953,241 @@ def _merge_envelope_session_events(parsed: ParsedSession, envelope: BrowserCaptu
     return parsed.model_copy(update={"session_events": [*parsed.session_events, *events]})
 
 
+class _NativeWorkReader:
+    """Non-owning borrowed reader that reports completed physical reads."""
+
+    def __init__(self, handle: BinaryIO, progress: Callable[[], None]) -> None:
+        self._handle = handle
+        self._progress = progress
+
+    @property
+    def name(self) -> str:
+        return str(self._handle.name)
+
+    def fileno(self) -> int:
+        return self._handle.fileno()
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._handle.seek(offset, whence)
+
+    def read(self, size: int = -1) -> bytes:
+        result = self._handle.read(size)
+        if result:
+            self._progress()
+        return result
+
+    def readinto(self, buffer: bytearray) -> int | None:
+        count = cast("_NativeReadInto", self._handle).readinto(buffer)
+        if count:
+            self._progress()
+        return count
+
+
+def parse_native_member_streams(
+    provider: Provider,
+    members: Mapping[str, BinaryIO],
+    native_id: str,
+    spill: ScratchSessionSpill,
+    *,
+    progress: Callable[[], None] | None = None,
+) -> ParsedSession:
+    """Use ordinary native normalization with the existing scratch collections.
+
+    Callers borrow verified immutable raw members for this entire operation.
+    Individual records, scalar values and native root metadata still
+    materialize; this does not establish scalar-independent preparation.
+    """
+    import json
+    import os
+
+    import ijson
+
+    from polylogue.sources.decoder_json import (
+        _root_envelope_without,
+        iter_root_array_items,
+        normalize_ijson_stdlib_numbers,
+    )
+    from polylogue.sources.parsers import chatgpt, grok
+    from polylogue.sources.parsers.claude.ai_parser import (
+        looks_like_claude_memories,
+        looks_like_claude_project,
+        parse_ai,
+        parse_ai_stream,
+    )
+    from polylogue.sources.prepared_message_sink import (
+        ClaudeAttachmentScratch,
+        ClaudeChatEvidence,
+        ScratchSessionSpill,
+        read_chatgpt_mapping_object,
+    )
+
+    if not isinstance(spill, ScratchSessionSpill):
+        raise TypeError("native preparation requires its existing scratch owner")
+    store = spill.store
+    if progress is not None:
+        members = {name: cast(BinaryIO, _NativeWorkReader(handle, progress)) for name, handle in members.items()}
+    conversation = members["conversation"]
+    conversation.seek(0)
+    if provider is Provider.CHATGPT:
+        extracted = read_chatgpt_mapping_object(
+            conversation, store.conn, require_source_header=False, progress=progress
+        )
+        if extracted is None:
+            raise ValueError("native ChatGPT raw lacks a mapping")
+        envelope, mapping = extracted
+        parsed = chatgpt.parse({**envelope, "mapping": mapping.shallow_view()}, native_id, spill=spill)
+        for ordinal, message in enumerate(parsed.messages):
+            if progress is not None:
+                progress()
+            if message.position is None:
+                raise ValueError("canonical ChatGPT message lacks original mapping position")
+            spill.set_record_origin(ordinal, str(message.position))
+    elif provider is Provider.CLAUDE_AI:
+        claude_extracted = _root_envelope_without(
+            conversation,
+            frozenset({"chat_messages", "attachments", "files"}),
+            frozenset(),
+            optional=frozenset({"attachments", "files"}),
+        )
+        if claude_extracted is None or claude_extracted[1]["chat_messages"] != 1:
+            raise ValueError("native Claude raw lacks its message array")
+        claude_envelope, arrays = claude_extracted
+        # Keep the ordinary parser's internal route precedence even when
+        # unrelated root metadata accompanies the declared message array.
+        routing_header = {**claude_envelope, "chat_messages": []}
+        if looks_like_claude_memories(routing_header) or looks_like_claude_project(routing_header):
+            parsed = parse_ai(routing_header, native_id)
+        else:
+            evidence = ClaudeChatEvidence(store.conn)
+            attachment_rows = ClaudeAttachmentScratch(store.conn)
+
+            def attachments() -> Iterator[object]:
+                for key in ("attachments", "files"):
+                    if arrays[key]:
+                        conversation.seek(0)
+                        for item in iter_root_array_items(conversation, key):
+                            if progress is not None:
+                                progress()
+                            yield item
+
+            # Conversation attachments and chat messages use independent
+            # cursors over the same immutable inode, never another revision.
+            with open(conversation.name, "rb") as message_reader:
+                original_stat = os.fstat(conversation.fileno())
+                opened_stat = os.fstat(message_reader.fileno())
+                if (original_stat.st_dev, original_stat.st_ino) != (opened_stat.st_dev, opened_stat.st_ino):
+                    raise ValueError("native raw inode changed during preparation")
+                try:
+                    observed_messages = (
+                        cast(BinaryIO, _NativeWorkReader(message_reader, progress))
+                        if progress is not None
+                        else message_reader
+                    )
+
+                    def message_rows() -> Iterator[object]:
+                        for item in ijson.items(observed_messages, "chat_messages.item"):
+                            if progress is not None:
+                                progress()
+                            yield normalize_ijson_stdlib_numbers(item)
+
+                    parsed = parse_ai_stream(
+                        claude_envelope,
+                        message_rows(),
+                        native_id,
+                        conversation_attachments=attachments(),
+                        evidence_store=evidence,
+                        graph_connection=store.conn,
+                        messages=store.new_sink(),
+                        session_events=store.new_event_sink(),
+                        attachment_rows=attachment_rows,
+                        attachments=store.new_attachment_sink(),
+                    )
+                finally:
+                    evidence.close()
+                    attachment_rows.close()
+    elif provider is Provider.GROK:
+        original_conversation = json.load(conversation)
+        responses = members["responses"]
+        responses.seek(0)
+        first = next(ijson.parse(responses), None)
+        responses.seek(0)
+        prefix = "item" if first is not None and first[1] == "start_array" else "responses.item"
+        response_nodes = None
+        if "response_nodes" in members:
+            members["response_nodes"].seek(0)
+            response_nodes = json.load(members["response_nodes"])
+
+        def response_rows() -> Iterator[object]:
+            for item in ijson.items(responses, prefix):
+                if progress is not None:
+                    progress()
+                yield normalize_ijson_stdlib_numbers(item)
+
+        parsed = grok.parse_native_response_stream(
+            grok._native_conversation({"conversation": original_conversation}),
+            response_rows(),
+            native_id,
+            response_nodes=response_nodes,
+            spill=spill,
+        )
+    else:
+        raise ValueError("unsupported native member preparation provider")
+    return _require_matching_native_identity(parsed, native_id)
+
+
+def _turn_needs_native_content_witness(turn: object) -> bool:
+    if not isinstance(turn, Mapping):
+        return False
+    text = turn.get("text")
+    return (
+        (text is None or isinstance(text, str) and not text.strip())
+        and not turn.get("attachments")
+        and not turn.get("blocks")
+    )
+
+
 @parser_admission("browser_capture")
 def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
-    envelope = validate_capture_envelope(payload)
+    witnessed_native = None
+    if isinstance(payload, Mapping) and isinstance(raw_session := payload.get("session"), Mapping):
+        raw_turns = raw_session.get("turns")
+        if isinstance(raw_turns, list) and any(_turn_needs_native_content_witness(turn) for turn in raw_turns):
+            native_provider = Provider.from_string(str(raw_session.get("provider") or ""))
+            declared_id = raw_session.get("provider_session_id")
+            if not isinstance(declared_id, str):
+                raise ValueError("native state-only turns require a declared conversation")
+            native_id = legacy_browser_capture_native_id(native_provider, declared_id) or fallback_id
+            witnessed_native = parse_native_payload(native_provider, payload.get("raw_provider_payload"), native_id)
+    envelope = validate_capture_envelope(
+        payload,
+        native_witness=_CanonicalNativeTurnWitness(witnessed_native.messages) if witnessed_native is not None else None,
+    )
     provider = envelope.session.provider if envelope.session.provider is not Provider.UNKNOWN else Provider.UNKNOWN
     provider_session_id = (
         legacy_browser_capture_native_id(provider, envelope.session.provider_session_id) or fallback_id
     )
     raw_provider_payload = envelope.raw_provider_payload
-    if provider is Provider.CODEX and raw_provider_payload is not None:
-        from polylogue.sources.parsers.codex import is_supported_session_stream
-        from polylogue.sources.parsers.codex import parse as parse_codex
 
-        if not isinstance(raw_provider_payload, list) or not is_supported_session_stream(raw_provider_payload):
-            raise ValueError("Codex native capture requires a supported record stream")
+    def native_session() -> ParsedSession:
+        prepared_attachment_ownership = provider is Provider.CHATGPT and any(
+            "native_attachment_ordinal" in row.provider_meta for row in envelope.session.attachments
+        )
+        if prepared_attachment_ownership:
+            return parse_native_payload(
+                provider, raw_provider_payload, provider_session_id, prepared_attachment_ownership=True
+            )
+        return (
+            witnessed_native
+            if witnessed_native is not None
+            else parse_native_payload(provider, raw_provider_payload, provider_session_id)
+        )
+
+    if provider is Provider.CODEX and raw_provider_payload is not None:
         return _merge_envelope_session_events(
             _apply_browser_capture_session_kind(
                 _merge_envelope_attachments(
-                    _require_matching_native_identity(
-                        parse_codex(raw_provider_payload, provider_session_id), provider_session_id
-                    ),
+                    native_session(),
                     envelope,
                 ),
                 envelope,
@@ -858,15 +1197,11 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
             envelope,
         )
     if envelope.session.provider is Provider.CHATGPT and has_chatgpt_native_payload(raw_provider_payload):
-        from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
-
         return _merge_envelope_session_events(
             _apply_browser_capture_session_kind(
                 _merge_envelope_attachments(
                     _merge_envelope_title(
-                        _require_matching_native_identity(
-                            parse_chatgpt(raw_provider_payload, provider_session_id), provider_session_id
-                        ),
+                        native_session(),
                         envelope,
                     ),
                     envelope,
@@ -878,19 +1213,26 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
             envelope,
         )
     if envelope.session.provider is Provider.CLAUDE_AI and has_claude_ai_native_payload(raw_provider_payload):
-        from polylogue.sources.parsers.claude.ai_parser import parse_ai as parse_claude_ai
-
         return _merge_envelope_session_events(
             _apply_browser_capture_session_kind(
                 _merge_envelope_attachments(
                     _merge_envelope_native_metadata(
-                        _require_matching_native_identity(
-                            parse_claude_ai(raw_provider_payload, provider_session_id), provider_session_id
-                        ),
+                        native_session(),
                         envelope,
                     ),
                     envelope,
                 ),
+                envelope,
+                provider_session_id,
+                has_native_payload=True,
+            ),
+            envelope,
+        )
+
+    if provider is Provider.GROK and has_grok_native_payload(raw_provider_payload):
+        return _merge_envelope_session_events(
+            _apply_browser_capture_session_kind(
+                _merge_envelope_attachments(native_session(), envelope),
                 envelope,
                 provider_session_id,
                 has_native_payload=True,
@@ -975,9 +1317,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
             *dict.fromkeys(
                 [
                     *_ingest_flags_for_browser_capture(envelope, provider_session_id),
-                    COMPACT_BROWSER_CAPTURE_INGEST_FLAG
-                    if _is_compact_native_capture(envelope)
-                    else DOM_FALLBACK_INGEST_FLAG,
+                    DOM_FALLBACK_INGEST_FLAG,
                 ]
             )
         ],
@@ -986,10 +1326,21 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
 
 __all__ = [
     "NativeCaptureIdentityMismatchError",
-    "COMPACT_BROWSER_CAPTURE_INGEST_FLAG",
     "DOM_FALLBACK_INGEST_FLAG",
     "NATIVE_BROWSER_CAPTURE_INGEST_FLAG",
     "TEMPORARY_CHAT_INGEST_FLAG",
     "looks_like",
     "parse",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Preserve the capture discriminator and declared provider, consuming all payload bytes."""
+    return DetectorProjection(
+        fields={
+            "polylogue_capture_kind": DetectorProjection(),
+            "schema_version": DetectorProjection(),
+            "session": DetectorProjection(fields={"provider": DetectorProjection()}),
+            "provenance": DetectorProjection(),
+        }
+    )

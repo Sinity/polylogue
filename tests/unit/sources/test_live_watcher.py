@@ -5,16 +5,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
+import os
 import sqlite3
 import time
 import zipfile
-from collections.abc import Callable, Iterable
-from datetime import datetime, timedelta
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
+from contextlib import closing
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import IO, Any, cast
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,41 +26,59 @@ from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
+from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
 from polylogue.daemon.intake import AdmissionOutcome, IntakeItem
 from polylogue.daemon.status import _archive_live_ingest_attempt_summary_info
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+from polylogue.logging import WARNING
 from polylogue.operations.intake_adapters import (
     DaemonIntakeContext,
     FileIntakeAdapter,
     _bounded_source_paths,
 )
-from polylogue.readiness.capability import raw_frontier_integrity_projection
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
     _FULL_PARSE_PROGRESS_MAX_BYTES,
     _FULL_PARSE_PROGRESS_MAX_FILES,
-    _STREAMING_FULL_INGEST_BYTES,
     CursorAuthorityBlockedError,
     LiveBatchProcessor,
-    _full_ingest_worker_count,
     _full_parse_progress_groups,
     _FullIngestResult,
     last_complete_newline_from_tail,
 )
 from polylogue.sources.live.batch_support import (
+    LiveRetainedRunner,
     encode_cursor_hash_authority,
     tail_hash_from_path,
 )
-from polylogue.sources.live.cursor import CursorRecord, CursorStore
+from polylogue.sources.live.cursor import CursorPathAuthority, CursorRecord, CursorStore
 from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, LiveBatchMetrics
-from polylogue.sources.live.watcher import WriteCoordinator
+from polylogue.sources.live.watcher import WriteCoordinator, default_sources
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.revision_backfill import (
+    RetainedRawRetryableFailure,
+    RetainedReplayOutcome,
+)
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
-from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
-from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.live_ingest import write_index_session
+from tests.infra.prepared_membership import publish_prepared_membership_classification
+from tests.infra.raw_owner_routes import (
+    ingest_files_with_owners,
+    replay_retained_raws_async,
+    seed_membership_census,
+    supplied_live_owners,
+)
+
+# Well above any small-file assumption: input size is a parameter of the one
+# retained route, never a branch or refusal.
+_LARGE_INPUT_BYTES = 8 * 1024 * 1024
 
 
 class _FullIngestMock:
@@ -123,15 +142,16 @@ def _sqlite_snapshot(path: Path) -> tuple[tuple[str, tuple[tuple[object, ...], .
         return tuple((table, tuple(conn.execute(f'SELECT * FROM "{table}"').fetchall())) for table in tables)
 
 
-def _seed_live_cursor_authority_case(
+async def _seed_live_cursor_authority_case(
     root: Path,
     *,
     force_full_fallback: bool = False,
     exact_frontier: bool = False,
 ) -> tuple[LiveBatchProcessor, LiveWatcher, CursorStore, Path]:
     source_root = root / "sessions"
-    source_root.mkdir(parents=True)
-    source_path = source_root / "session.jsonl"
+    # The declared Codex position: YYYY/MM/DD/rollout-*.jsonl.
+    source_path = source_root / "2026" / "05" / "01" / "rollout-session-1.jsonl"
+    source_path.parent.mkdir(parents=True)
     prefix = (
         json.dumps(_codex_session_meta("session-1")).encode()
         + b"\n"
@@ -147,36 +167,37 @@ def _seed_live_cursor_authority_case(
         + b"\n"
     )
     source_path.write_bytes(prefix + tail)
-    initialize_active_archive_root(root)
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=prefix,
-            source_path=str(source_path),
-            acquired_at_ms=1,
-            native_id="session-1",
-        )
-        archive.bind_raw_revision(
-            raw_id,
-            RawRevisionEnvelope(
-                "codex-session:session-1",
-                RawRevisionKind.FULL,
-                "revision-0",
-                0,
-                authority=RawRevisionAuthority.BYTE_PROVEN,
-            ),
-        )
-        archive.apply_raw_revision_replay(
-            archive.raw_revision_replay_plan("codex-session:session-1"),
-            {
-                raw_id: ParsedSession(
-                    source_name=Provider.CODEX,
-                    provider_session_id="session-1",
-                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
-                )
-            },
-            acquired_at_ms=1,
-        )
+    await asyncio.to_thread(initialize_active_archive_root, root)
+
+    def acquire_prefix() -> str:
+        # A writable open takes a synchronous lease, which may not block the loop.
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=prefix,
+                source_path=str(source_path),
+                # Acquisition records the canonical coordinate; the live
+                # frontier gate refuses an archive holding a raw without one.
+                canonical_source_path=str(source_path.resolve()),
+                acquired_at_ms=1,
+                native_id="session-1",
+            )
+            archive.bind_raw_revision(
+                raw_id,
+                RawRevisionEnvelope(
+                    "codex-session:session-1",
+                    RawRevisionKind.FULL,
+                    "revision-0",
+                    0,
+                    authority=RawRevisionAuthority.BYTE_PROVEN,
+                ),
+            )
+            return raw_id
+
+    raw_id = await asyncio.to_thread(acquire_prefix)
+    # The accepted head is published from the acquired prefix through the
+    # canonical retained replay route.
+    await replay_retained_raws_async(root, [raw_id])
 
     cursor = CursorStore(root / "ops.db")
     stat = source_path.stat()
@@ -194,6 +215,7 @@ def _seed_live_cursor_authority_case(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(source_path),
     )
     polylogue = SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db"))
     processor = LiveBatchProcessor(
@@ -206,7 +228,6 @@ def _seed_live_cursor_authority_case(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=source_root),),
         cursor=cursor,
-        parse_stage=None,
     )
     watcher._batch_processor = processor
     return processor, watcher, cursor, source_path
@@ -231,7 +252,7 @@ async def test_live_watcher_refuses_ahead_cursor_before_append_or_full_write(
     force_full_fallback: bool,
 ) -> None:
     """An ahead cursor with a locally matching prefix cannot select either live route."""
-    processor, watcher, cursor, source_path = _seed_live_cursor_authority_case(
+    processor, watcher, cursor, source_path = await _seed_live_cursor_authority_case(
         tmp_path,
         force_full_fallback=force_full_fallback,
     )
@@ -263,7 +284,7 @@ async def test_page_admission_refuses_an_ahead_cursor_before_touching_cursor_sta
     after the selection) in ``FileIntakeAdapter.admit_page`` and the call
     counters below go non-zero.
     """
-    _processor, watcher, cursor, source_path = _seed_live_cursor_authority_case(
+    _processor, watcher, cursor, source_path = await _seed_live_cursor_authority_case(
         tmp_path,
         force_full_fallback=force_full_fallback,
     )
@@ -308,12 +329,12 @@ async def test_page_admission_refuses_an_ahead_cursor_before_touching_cursor_sta
 @pytest.mark.asyncio
 async def test_live_watcher_allows_append_at_authoritative_frontier(tmp_path: Path) -> None:
     """An exact accepted frontier retains the real append success path."""
-    processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(
+    processor, watcher, _cursor, source_path = await _seed_live_cursor_authority_case(
         tmp_path,
         exact_frontier=True,
     )
 
-    metrics = await processor.ingest_files([source_path], emit_event=False)
+    metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
     assert metrics.succeeded_file_count == 1
     assert metrics.append_file_count == 1
@@ -325,44 +346,50 @@ async def test_live_watcher_allows_append_at_authoritative_frontier(tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path) -> None:
-    from polylogue.sources.live.batch import cursor_authority_path_digest, scoped_cursor_authority_authorization
+    """Live writes and cursor reconciliation follow the active index pointer.
 
-    processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
+    The cursor sits at an authoritative frontier but carries a stale parser
+    fingerprint, so the ordinary live route (no repair authorization exists
+    in production) re-reads the file in full: the replacement is published
+    into the active generation and the root shadow index stays untouched.
+    """
+    processor, watcher, _cursor, source_path = await _seed_live_cursor_authority_case(
+        tmp_path, exact_frontier=True, force_full_fallback=True
+    )
     shadow_index = tmp_path / "index.db"
     active_index = tmp_path / "generations" / "active" / "index.db"
     active_index.parent.mkdir(parents=True)
-    shutil.copy2(shadow_index, active_index)
+    # A WAL-mode tier's committed pages may still live in its -wal file; copy
+    # through SQLite so the generation holds every committed row.
+    with closing(sqlite3.connect(shadow_index)) as source, closing(sqlite3.connect(active_index)) as target:
+        source.backup(target)
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
-    projection = raw_frontier_integrity_projection(
-        tmp_path,
-        raw_materialization_readiness_snapshot(tmp_path),
-    )
-    sample = projection.cursor_ahead_samples[0]
-    shadow_before = shadow_index.read_bytes()
-    active_before = active_index.read_bytes()
-    with scoped_cursor_authority_authorization(
-        source_path_digest=cursor_authority_path_digest(source_path),
-        cursor_byte_offset=sample.cursor_byte_offset,
-        accepted_frontier=sample.accepted_frontier,
-        plan_digest="active-index-test",
-        force_full_ingest=True,
-    ):
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+    # Compare committed rows, not file bytes: a WAL tier's writes land in its
+    # -wal file first.
+    shadow_before = _sqlite_snapshot(shadow_index)
+    active_before = _sqlite_snapshot(active_index)
 
-    assert metrics.full_file_count == 1
-    assert shadow_index.read_bytes() == shadow_before
-    assert active_index.read_bytes() != active_before
+    metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
+
+    assert metrics.succeeded_file_count == metrics.full_file_count == 1
+    assert _sqlite_snapshot(shadow_index) == shadow_before
+    assert _sqlite_snapshot(active_index) != active_before
     with sqlite3.connect(shadow_index) as conn:
         conn.execute("DELETE FROM sessions")
         conn.commit()
-    assert watcher._reconcile_archived_cursor(source_path, stat=source_path.stat()) is True
+    assert (
+        watcher._reconcile_archived_cursor(
+            source_path, stat=source_path.stat(), expected=watcher._cursor.get_record(source_path)
+        )
+        is True
+    )
     watcher.stop()
 
 
 @pytest.mark.asyncio
 async def test_cursor_authority_seam_blocks_normal_live_route_before_writes(tmp_path: Path) -> None:
     """The exact selector exercises the production live authority seam."""
-    _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
+    _processor, watcher, _cursor, source_path = await _seed_live_cursor_authority_case(tmp_path)
     before = _live_archive_snapshot(tmp_path)
 
     with pytest.raises(CursorAuthorityBlockedError, match="source-selection gate blocked"):
@@ -380,7 +407,7 @@ async def test_cursor_authority_refuses_only_the_named_path(tmp_path: Path) -> N
     reason is non-None) makes this batch raise instead of ingesting the
     sibling, and the sibling's raw never lands in source.db.
     """
-    _processor, watcher, _cursor, blocked_path = _seed_live_cursor_authority_case(tmp_path)
+    _processor, watcher, _cursor, blocked_path = await _seed_live_cursor_authority_case(tmp_path)
     sibling = blocked_path.parent / "sibling.jsonl"
     sibling.write_bytes(
         json.dumps(_codex_session_meta("session-2")).encode()
@@ -392,7 +419,8 @@ async def test_cursor_authority_refuses_only_the_named_path(tmp_path: Path) -> N
     )
     before = _live_archive_snapshot(tmp_path)
 
-    metrics = await watcher._ingest_files([blocked_path, sibling])
+    async with supplied_live_owners(watcher._batch_processor):
+        metrics = await watcher._ingest_files([blocked_path, sibling])
 
     assert metrics.skipped_file_count == 1
     assert metrics.succeeded_file_count == 1
@@ -492,7 +520,7 @@ def test_cursor_default_is_zero(tmp_path: Path) -> None:
 def test_cursor_round_trip(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "session.jsonl"
-    store.set(p, 42, record_count=3)
+    store.set(p, 42, record_count=3, authority=fixture_cursor_authority(p))
     assert store.get(p) == 42
     record = store.get_record(p)
     assert isinstance(record, CursorRecord)
@@ -505,8 +533,8 @@ def test_cursor_round_trip(tmp_path: Path) -> None:
 def test_cursor_upsert_overwrites(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "session.jsonl"
-    store.set(p, 100)
-    store.set(p, 250, record_count=99)
+    store.set(p, 100, authority=fixture_cursor_authority(p))
+    store.set(p, 250, record_count=99, authority=fixture_cursor_authority(p))
     assert store.get(p) == 250
 
 
@@ -514,8 +542,8 @@ def test_cursor_isolated_per_path(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     a = tmp_path / "a.jsonl"
     b = tmp_path / "b.jsonl"
-    store.set(a, 10)
-    store.set(b, 20)
+    store.set(a, 10, authority=fixture_cursor_authority(a))
+    store.set(b, 20, authority=fixture_cursor_authority(b))
     assert store.get(a) == 10
     assert store.get(b) == 20
 
@@ -526,8 +554,21 @@ def test_cursor_fetches_records_in_bulk(tmp_path: Path) -> None:
     second = tmp_path / "second.jsonl"
     missing = tmp_path / "missing.jsonl"
 
-    store.set(first, 11, parser_fingerprint="parser", content_fingerprint="first-hash")
-    store.set(second, 22, parser_fingerprint="parser", content_fingerprint="second-hash", excluded=True)
+    store.set(
+        first,
+        11,
+        parser_fingerprint="parser",
+        content_fingerprint="first-hash",
+        authority=fixture_cursor_authority(first),
+    )
+    store.set(
+        second,
+        22,
+        parser_fingerprint="parser",
+        content_fingerprint="second-hash",
+        excluded=True,
+        authority=fixture_cursor_authority(second),
+    )
 
     records = store.get_records([first, second, missing, first])
 
@@ -540,7 +581,7 @@ def test_cursor_persists_across_instances(tmp_path: Path) -> None:
     db = tmp_path / "live.sqlite"
     store_a = CursorStore(db)
     p = tmp_path / "session.jsonl"
-    store_a.set(p, 555)
+    store_a.set(p, 555, authority=fixture_cursor_authority(p))
     store_b = CursorStore(db)
     assert store_b.get(p) == 555
 
@@ -556,7 +597,7 @@ def test_cursor_creates_table_if_missing(tmp_path: Path) -> None:
 def test_cursor_writes_updated_at(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "s.jsonl"
-    store.set(p, 1)
+    store.set(p, 1, authority=fixture_cursor_authority(p))
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         row = conn.execute("SELECT updated_at_ms FROM ingest_cursor WHERE source_path=?", (str(p),)).fetchone()
     assert row[0]
@@ -747,6 +788,7 @@ def test_cursor_syncs_positions_to_archive_ops_db(tmp_path: Path) -> None:
         failure_count=2,
         next_retry_at="2026-05-24T00:01:00+00:00",
         excluded=True,
+        authority=fixture_cursor_authority(source),
     )
 
     with sqlite3.connect(tmp_path / "ops.db") as conn:
@@ -911,7 +953,7 @@ def test_cursor_mark_failed_creates_record_for_new_path(tmp_path: Path) -> None:
     p = tmp_path / "new.jsonl"
     p.write_text('{"a":1}\n')
 
-    store.mark_failed(p)
+    store.mark_failed(p, authority=fixture_cursor_authority(p))
 
     record = store.get_record(p)
     assert record is not None
@@ -926,7 +968,7 @@ def test_cursor_mark_failed_quarantines_repeated_failures(tmp_path: Path) -> Non
     p.write_text('{"a":1}\n')
 
     for _ in range(5):
-        store.mark_failed(p)
+        store.mark_failed(p, authority=fixture_cursor_authority(p))
 
     record = store.get_record(p)
     assert record is not None
@@ -949,6 +991,7 @@ def test_cursor_quarantine_binds_to_failed_replacement_observation(tmp_path: Pat
         st_dev=accepted.st_dev,
         st_ino=accepted.st_ino,
         mtime_ns=accepted.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
 
     replacement = tmp_path / "replacement.json"
@@ -956,7 +999,7 @@ def test_cursor_quarantine_binds_to_failed_replacement_observation(tmp_path: Pat
     replacement.replace(path)
     failed = path.stat()
     for _ in range(5):
-        store.mark_failed(path, failed_stat=failed)
+        store.mark_failed(path, failed_stat=failed, authority=fixture_cursor_authority(path))
 
     record = store.get_record(path)
     assert record is not None
@@ -981,6 +1024,7 @@ def test_cursor_round_trips_freshness_metadata(tmp_path: Path) -> None:
         parser_fingerprint="parser-v1",
         content_fingerprint="abc123",
         source_name="codex",
+        authority=fixture_cursor_authority(p),
     )
 
     record = store.get_record(p)
@@ -1027,48 +1071,6 @@ def test_cursor_does_not_import_legacy_live_cursor_rows(tmp_path: Path) -> None:
     assert row_count == 0
 
 
-def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 16)
-    monkeypatch.delenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", raising=False)
-    records = [
-        RawSessionRecord(
-            raw_id=f"raw-{index}",
-            source_name="claude-code",
-            source_path=f"/tmp/session-{index}.jsonl",
-            blob_size=2 * 1024 * 1024,
-            acquired_at="2026-05-01T00:00:00+00:00",
-        )
-        for index in range(300)
-    ]
-    giant = RawSessionRecord(
-        raw_id="raw-giant",
-        source_name="codex",
-        source_path="/tmp/giant.jsonl",
-        blob_size=600 * 1024 * 1024,
-        acquired_at="2026-05-01T00:00:00+00:00",
-    )
-
-    assert _full_ingest_worker_count(records) == 1
-    assert _full_ingest_worker_count([giant]) == 1
-
-
-def test_live_full_ingest_worker_cap_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 16)
-    monkeypatch.setenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", "4")
-    records = [
-        RawSessionRecord(
-            raw_id=f"raw-{index}",
-            source_name="claude-code",
-            source_path=f"/tmp/session-{index}.jsonl",
-            blob_size=2 * 1024 * 1024,
-            acquired_at="2026-05-01T00:00:00+00:00",
-        )
-        for index in range(300)
-    ]
-
-    assert _full_ingest_worker_count(records) == 4
-
-
 @pytest.mark.asyncio
 async def test_live_full_ingest_streams_large_paths_before_processing(
     tmp_path: Path,
@@ -1090,10 +1092,12 @@ async def test_live_full_ingest_streams_large_paths_before_processing(
     ]
     _write_jsonl(source_path, records)
     with source_path.open("r+b") as handle:
-        handle.seek(_STREAMING_FULL_INGEST_BYTES + 128)
+        handle.seek(_LARGE_INPUT_BYTES + 128)
         handle.write(b"\n")
 
     db_path = tmp_path / "archive.sqlite"
+    # The live route acquires into an existing archive (#3952).
+    bootstrap_archive_root(tmp_path)
     polylogue = MagicMock()
     polylogue.archive_root = tmp_path
     polylogue.backend.db_path = db_path
@@ -1106,22 +1110,22 @@ async def test_live_full_ingest_streams_large_paths_before_processing(
     )
 
     calls: list[str] = []
-    original_prepare_from_fileobj = BlobStore.prepare_from_fileobj
+    from polylogue.sources.acquisition_boundary import capture_bound_path as original_capture
 
-    def spy_prepare_from_fileobj(
-        store: BlobStore, source: IO[bytes], *, heartbeat: Callable[[], None] | None = None
-    ) -> PreparedBlob:
-        # The capture streams the file through the acquisition boundary.
-        calls.append(f"path:{Path(source.raw.name).name}")  # type: ignore[attr-defined]
-        return original_prepare_from_fileobj(store, source, heartbeat=heartbeat)
+    def spy_capture(blob_store: BlobStore, path: Path | str, *args: Any, **kwargs: Any) -> Any:
+        # The capture streams the bound file through the acquisition boundary.
+        calls.append(f"path:{Path(path).name}")
+        return original_capture(blob_store, path, *args, **kwargs)
 
-    def fail_prepare_from_bytes(_store: object, _payload: bytes) -> PreparedBlob:
+    def fail_from_bytes(_store: object, _payload: bytes, **_kwargs: object) -> PreparedBlob:
         raise AssertionError("large live full ingest should stream from path")
 
-    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_fileobj", spy_prepare_from_fileobj)
-    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_bytes", fail_prepare_from_bytes)
+    monkeypatch.setattr("polylogue.sources.live.batch.capture_bound_path", spy_capture)
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_bytes", fail_from_bytes)
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.write_from_bytes", fail_from_bytes)
 
-    result = await processor._ingest_full_paths([source_path], source_name="projects")
+    async with supplied_live_owners(processor):
+        result = await processor._ingest_full_paths([source_path], source_name="projects")
 
     assert result.succeeded == [source_path]
     assert result.failed == []
@@ -1215,7 +1219,16 @@ def test_page_classification_names_scheduled_retries_as_pending(tmp_path: Path) 
     for path in (owed, settled):
         path.write_text('{"role":"user","content":"a"}\n')
     watcher, _parse_sources = _make_watcher(tmp_path, root)
-    watcher._cursor.set(owed, 0, failure_count=1, next_retry_at="2999-01-01T00:00:00+00:00")
+    # Retry state belongs to the parser that recorded it; a cursor from
+    # another parser is reattempted at once rather than waiting.
+    watcher._cursor.set(
+        owed,
+        0,
+        failure_count=1,
+        next_retry_at="2999-01-01T00:00:00+00:00",
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        authority=fixture_cursor_authority(owed),
+    )
     observed = settled.stat()
     watcher._cursor.set(
         settled,
@@ -1225,6 +1238,7 @@ def test_page_classification_names_scheduled_retries_as_pending(tmp_path: Path) 
         st_ino=observed.st_ino,
         mtime_ns=observed.st_mtime_ns,
         excluded=True,
+        authority=fixture_cursor_authority(settled),
     )
 
     assert watcher.classify_ingest_candidates([owed, settled]) == ((), (owed,))
@@ -1233,7 +1247,19 @@ def test_page_classification_names_scheduled_retries_as_pending(tmp_path: Path) 
 async def _ingest_one(watcher: LiveWatcher, path: Path) -> None:
     """Helper: check and ingest a single file (mimics old _ingest_if_grown)."""
     if watcher._needs_work(path):
-        await watcher._ingest_files([path])
+        # Source bodies (raw compaction) run only on the daemon writer.
+        async with supplied_live_owners(watcher._batch_processor):
+            await watcher._ingest_files([path])
+
+
+def _run_watcher_ingest(watcher: LiveWatcher, paths: list[Path], **kwargs: Any) -> None:
+    """Run one watcher pass with the daemon's owners, as ``polylogued`` supplies them."""
+
+    async def run() -> None:
+        async with supplied_live_owners(watcher._batch_processor):
+            await watcher._ingest_files(paths, **kwargs)
+
+    asyncio.run(run())
 
 
 def test_skip_when_file_not_grown(tmp_path: Path) -> None:
@@ -1272,7 +1298,7 @@ def test_size_only_cursor_reingests_to_populate_fingerprint(tmp_path: Path) -> N
     f = root / "session.jsonl"
     f.write_text('{"a":1}\n')
     watcher, parse_sources = _make_watcher(tmp_path, root)
-    watcher._cursor.set(f, f.stat().st_size)
+    watcher._cursor.set(f, f.stat().st_size, authority=fixture_cursor_authority(f))
 
     asyncio.run(_ingest_one(watcher, f))
     asyncio.run(_ingest_one(watcher, f))
@@ -1306,6 +1332,7 @@ def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
 
     def fail_fingerprint(path: Path) -> tuple[str, int]:
@@ -1333,6 +1360,7 @@ def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
         st_dev=stat.st_dev + 1,
         st_ino=stat.st_ino + 1,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
     assert watcher._needs_work(f) is False
 
@@ -1369,6 +1397,7 @@ def test_parser_version_change_needs_work_without_prefingerprint_read(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
 
     def fail_fingerprint(path: Path) -> tuple[str, int]:
@@ -1396,6 +1425,7 @@ def test_replaced_excluded_file_is_revived_without_retrying_unchanged_poison(tmp
         mtime_ns=stat.st_mtime_ns,
         failure_count=5,
         excluded=True,
+        authority=fixture_cursor_authority(path),
     )
 
     assert watcher._needs_work(path) is False
@@ -1423,8 +1453,7 @@ def test_excluded_file_revives_on_parser_fingerprint_change_without_identity_cha
     that fails to parse stays permanently dark even after the parser bug that
     poisoned it is fixed -- the file on disk never changes, only the code
     that reads it. A ``_PARSER_FINGERPRINT`` bump (this module's existing,
-    deliberately-versioned marker for a parser-semantics change, the same
-    pattern ``RAW_AUTHORITY_PARSER_FINGERPRINT`` uses) must be enough to
+    deliberately-versioned marker for a parser-semantics change) must be enough to
     trigger a fresh attempt through the real ``LiveWatcher._needs_work`` path,
     not merely through ``CursorStore.revive_replaced_exclusion`` directly.
     """
@@ -1444,6 +1473,7 @@ def test_excluded_file_revives_on_parser_fingerprint_change_without_identity_cha
         mtime_ns=stat.st_mtime_ns,
         failure_count=5,
         excluded=True,
+        authority=fixture_cursor_authority(path),
     )
 
     # Identity-only revival check: unchanged bytes, unchanged parser -> stays
@@ -1570,6 +1600,165 @@ def test_full_cursor_reused_digest_still_rejects_a_mutated_source(
     assert record is None or record.byte_offset == 0
 
 
+@pytest.mark.parametrize("sqlite_input", [False, True], ids=["jsonl", "sqlite"])
+@pytest.mark.parametrize("cursor_state", ["settled", "excluded", "deferred", "failed"])
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.watcher")
+def test_hermes_profile_retarget_reopens_same_inode_cursor(
+    tmp_path: Path, sqlite_input: bool, cursor_state: str, frozen_clock: FrozenClock
+) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.sources.acquisition_boundary import capture_bound_path
+    from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+
+    first = tmp_path / "profile-a"
+    second = tmp_path / "profile-b"
+    external = tmp_path / "external"
+    for root in (first, second, external):
+        root.mkdir()
+    # Both profiles hold the one physical input at its declared Hermes
+    # position: the database at the home root (a hard link, so the inode is
+    # shared), the ATOF stream below a shared observability tree.
+    if sqlite_input:
+        relative = Path("state.db")
+        actual = external / "state.db"
+        with sqlite3.connect(actual) as connection:
+            connection.execute("CREATE TABLE state (value TEXT)")
+            connection.execute("INSERT INTO state VALUES ('same accepted input')")
+        for root in (first, second):
+            os.link(actual, root / relative)
+    else:
+        relative = Path("observability") / "nemo-relay" / "atof" / "events.jsonl"
+        actual = external / relative
+        actual.parent.mkdir(parents=True)
+        # A genuine Hermes ATOF event stream: a session-shaped record from
+        # another harness at a Hermes location is refused as foreign origin.
+        actual.write_bytes(
+            (Path(__file__).parents[2] / "fixtures" / "origin-capability" / "hermes-session.jsonl").read_bytes()
+        )
+        for root in (first, second):
+            (root / "observability").symlink_to(external / "observability", target_is_directory=True)
+    alias = tmp_path / "profile"
+    alias.symlink_to(first, target_is_directory=True)
+    path = alias / relative
+    # The production Hermes source admits its SQLite ledgers as well as JSONL.
+    hermes = next(source for source in default_sources(hermes_root=alias) if source.name == "hermes")
+    watcher, _ = _make_watcher(tmp_path, alias, sources=(hermes,))
+    store = BlobStore(tmp_path / "blobs")
+
+    def acquire() -> tuple[str, str]:
+        if sqlite_input:
+            snapshot = snapshot_sqlite_to_blob(path, store)
+            assert snapshot.captured_profile_key is not None
+            return snapshot.blob_hash, snapshot.captured_profile_key
+        capture = capture_bound_path(store, path, Provider.HERMES)
+        assert capture.captured_profile_key is not None
+        return capture.blob_hash, capture.captured_profile_key
+
+    original_stat = path.stat()
+    blob_hash, original_profile = acquire()
+    if sqlite_input:
+        accepted_tail = sqlite_source_revision(path)
+    else:
+        # A settled JSONL cursor carries the prefix/tail hash authority of
+        # the exact observation it accepted, including its ctime.
+        accepted_prefix = sha256(path.read_bytes()).hexdigest()
+        accepted_tail = encode_cursor_hash_authority(
+            accepted_prefix, accepted_prefix, ctime_ns=original_stat.st_ctime_ns
+        )
+
+    def stamp(profile: str) -> None:
+        watcher._cursor.set(
+            path,
+            original_stat.st_size,
+            source_name="hermes",
+            authority=CursorPathAuthority(str(path.resolve()), profile),
+            parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+            content_fingerprint=None if cursor_state == "deferred" else blob_hash,
+            tail_hash=accepted_tail,
+            st_dev=original_stat.st_dev,
+            st_ino=original_stat.st_ino,
+            mtime_ns=original_stat.st_mtime_ns,
+            excluded=cursor_state == "excluded",
+            failure_count=int(cursor_state == "failed"),
+            next_retry_at=(frozen_clock.now(UTC) + timedelta(days=1)).isoformat(),
+        )
+
+    stamp(original_profile)
+    assert not watcher._needs_work(path)
+    alias.unlink()
+    alias.symlink_to(second, target_is_directory=True)
+    assert (path.stat().st_dev, path.stat().st_ino, path.stat().st_size, path.stat().st_mtime_ns) == (
+        original_stat.st_dev,
+        original_stat.st_ino,
+        original_stat.st_size,
+        original_stat.st_mtime_ns,
+    )
+    assert watcher._needs_work(path)
+    new_blob, new_profile = acquire()
+    assert new_blob == blob_hash
+    assert new_profile != original_profile
+    stamp(new_profile)
+    assert not watcher._needs_work(path)
+    alias.unlink()
+    alias.symlink_to(first, target_is_directory=True)
+    assert watcher._needs_work(path)
+    assert acquire() == (blob_hash, original_profile)
+
+
+def test_hermes_sqlite_profile_retarget_between_probe_and_bound_gate_requires_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import contextmanager
+
+    from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+
+    external = tmp_path / "external"
+    external.mkdir()
+    actual = external / "state.db"
+    with sqlite3.connect(actual) as connection:
+        connection.execute("CREATE TABLE sessions(id TEXT PRIMARY KEY)")
+        connection.execute("INSERT INTO sessions VALUES ('same inode and logical bytes')")
+    profiles = (tmp_path / "profile-a", tmp_path / "profile-b")
+    for profile in profiles:
+        profile.mkdir()
+        # The declared home-root position, sharing one inode across profiles.
+        os.link(actual, profile / "state.db")
+    alias = tmp_path / "profile"
+    alias.symlink_to(profiles[0], target_is_directory=True)
+    declared = alias / "state.db"
+    hermes = next(source for source in default_sources(hermes_root=alias) if source.name == "hermes")
+    watcher, _ = _make_watcher(tmp_path, alias, sources=(hermes,))
+    store = BlobStore(tmp_path / "blobs")
+    accepted = snapshot_sqlite_to_blob(declared, store)
+    before = declared.stat()
+    watcher._cursor.set(
+        declared,
+        before.st_size,
+        source_name="hermes",
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint=accepted.source_revision,
+        tail_hash=accepted.source_fingerprint,
+        authority=CursorPathAuthority(str(declared.resolve()), accepted.captured_profile_key),
+        st_dev=before.st_dev,
+        st_ino=before.st_ino,
+        mtime_ns=before.st_mtime_ns,
+    )
+    from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
+
+    @contextmanager
+    def retarget_then_bind(path: Path) -> Iterator[SourceInputBinding]:
+        alias.unlink()
+        alias.symlink_to(profiles[1], target_is_directory=True)
+        with bind_source_input(path) as binding:
+            yield binding
+
+    monkeypatch.setattr("polylogue.sources.live.watcher.bind_source_input", retarget_then_bind)
+    assert watcher._needs_work(declared)
+    captured = snapshot_sqlite_to_blob(declared, store)
+    assert captured.blob_hash == accepted.blob_hash
+    assert captured.captured_profile_key != accepted.captured_profile_key
+
+
 def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path: Path) -> None:
     root = tmp_path / "hermes"
     root.mkdir()
@@ -1585,9 +1774,12 @@ def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path
         watcher, _full_ingest = _make_watcher(
             tmp_path,
             root,
-            sources=(WatchSource(name="hermes", root=root, suffixes=(".db",)),),
+            sources=(WatchSource(name="hermes", root=root, layout=export_drop_layout((".db",))),),
         )
         initial_revision = sqlite_source_revision(state_db)
+        from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+
+        accepted = snapshot_sqlite_to_blob(state_db, BlobStore(tmp_path / "blobs"))
         stat = state_db.stat()
         watcher._cursor.set(
             state_db,
@@ -1595,6 +1787,7 @@ def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path
             parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
             content_fingerprint="snapshot-hash",
             tail_hash=initial_revision,
+            authority=CursorPathAuthority(str(state_db.resolve()), accepted.captured_profile_key),
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
             mtime_ns=stat.st_mtime_ns,
@@ -1613,6 +1806,55 @@ def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path
         writer.close()
 
 
+def test_hermes_file_alias_wal_commit_reopens_actual_acquired_cursor(tmp_path: Path) -> None:
+    """Using state.db-wal instead of the opened bundle.data-wal hides this commit."""
+    from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    actual = tmp_path / "bundle.data"
+    declared = root / "state.db"
+    declared.symlink_to(actual)
+    writer = sqlite3.connect(actual)
+    try:
+        writer.execute("CREATE TABLE sessions(id TEXT PRIMARY KEY)")
+        writer.commit()
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        hermes = next(source for source in default_sources(hermes_root=root) if source.name == "hermes")
+        watcher, _ = _make_watcher(tmp_path, root, sources=(hermes,))
+        accepted = snapshot_sqlite_to_blob(declared, BlobStore(tmp_path / "blobs"))
+        before = declared.stat()
+        watcher._cursor.set(
+            declared,
+            before.st_size,
+            source_name="hermes",
+            parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+            content_fingerprint=accepted.source_revision,
+            tail_hash=accepted.source_fingerprint,
+            authority=CursorPathAuthority(str(declared.resolve()), accepted.captured_profile_key),
+            st_dev=before.st_dev,
+            st_ino=before.st_ino,
+            mtime_ns=before.st_mtime_ns,
+        )
+        assert not watcher._needs_work(declared)
+        writer.execute("INSERT INTO sessions VALUES ('committed-only-in-physical-wal')")
+        writer.commit()
+        after = declared.stat()
+        assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        )
+        assert not declared.with_name("state.db-wal").exists()
+        assert actual.with_name("bundle.data-wal").stat().st_size > 0
+        assert watcher._needs_work(declared)
+    finally:
+        writer.close()
+
+
 def test_watch_filter_accepts_directories_but_not_unmatched_files_under_broad_roots(tmp_path: Path) -> None:
     """The watch backend wakes only for source suffixes or real directories."""
 
@@ -1625,7 +1867,7 @@ def test_watch_filter_accepts_directories_but_not_unmatched_files_under_broad_ro
     watcher, _full_ingest = _make_watcher(
         tmp_path,
         root,
-        sources=(WatchSource(name="codex-state", root=root, suffixes=(".jsonl",)),),
+        sources=(WatchSource(name="codex-state", root=root, layout=export_drop_layout((".jsonl",))),),
     )
 
     assert watcher._watch_filter(object(), str(unmatched)) is False
@@ -1650,7 +1892,7 @@ def test_added_directory_scan_rejects_file_symlinks_escaping_source_root(
     watcher, _full_ingest = _make_watcher(
         tmp_path,
         root,
-        sources=(WatchSource(name="codex", root=root, suffixes=(".jsonl",)),),
+        sources=(WatchSource(name="codex", root=root, layout=export_drop_layout((".jsonl",))),),
     )
     assert watcher._canonical_watch_path(escaping) is None
     watcher._enqueue_added_directory(added)
@@ -1675,13 +1917,9 @@ def test_added_directory_scan_retains_a_deeper_root_under_outer_ignore(
         tmp_path,
         outer,
         sources=(
-            WatchSource(
-                name="codex-state",
-                root=outer,
-                suffixes=(".sqlite",),
-                ignored_dir_names=frozenset({"runtime"}),
-            ),
-            WatchSource(name="codex", root=inner, suffixes=(".jsonl",)),
+            # The declared codex-state layout never reaches ``runtime/``.
+            WatchSource(name="codex-state", root=outer),
+            WatchSource(name="codex", root=inner, layout=export_drop_layout((".jsonl",))),
         ),
     )
     assert watcher._watch_filter(object(), str(ignored)) is True
@@ -1701,7 +1939,7 @@ def test_hermes_cursor_records_acquisition_revision_not_live_tail(tmp_path: Path
     watcher, _full_ingest = _make_watcher(
         tmp_path,
         root,
-        sources=(WatchSource(name="hermes", root=root, suffixes=(".db",)),),
+        sources=(WatchSource(name="hermes", root=root, layout=export_drop_layout((".db",))),),
     )
 
     bytes_read = watcher._batch_processor._record_full_cursor(
@@ -1728,7 +1966,7 @@ def test_hermes_cursor_keeps_snapshot_time_fingerprint(tmp_path: Path) -> None:
     watcher, _full_ingest = _make_watcher(
         tmp_path,
         root,
-        sources=(WatchSource(name="hermes", root=root, suffixes=(".db",)),),
+        sources=(WatchSource(name="hermes", root=root, layout=export_drop_layout((".db",))),),
     )
 
     watcher._batch_processor._record_full_cursor(
@@ -1744,14 +1982,42 @@ def test_hermes_cursor_keeps_snapshot_time_fingerprint(tmp_path: Path) -> None:
     assert record.tail_hash == "snapshot-time-fingerprint"
 
 
+def _archive_codex_session(archive_root: Path, native_id: str) -> None:
+    """Archive the Codex session an append delta binds to.
+
+    The planner emits an append plan only for a delta whose session identity
+    is already bound (c07c4f44b1); without one the full route re-reads.
+    """
+    bootstrap_archive_root(archive_root)
+
+    def seed() -> None:
+        with ArchiveStore(archive_root) as store:
+            write_index_session(
+                store,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=native_id,
+                    title=native_id,
+                    messages=[ParsedMessage(provider_message_id=f"{native_id}-0", role=Role.USER, text="seed")],
+                ),
+            )
+
+    run_off_event_loop(seed)
+
+
 def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
     f = root / "session.jsonl"
-    original = b'{"a":1}\n'
-    appended = b'{"b":2}\n{"c":'
+    original = b'{"type":"session_meta","payload":{"id":"completed-tail"}}\n'
+    completed = (
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"b"}]}}\n'
+    )
+    appended = completed + b'{"type":'
     f.write_bytes(original + appended)
-    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    _archive_codex_session(tmp_path, "completed-tail")
+    watcher, _parse_sources = _make_watcher(tmp_path, root, sources=(WatchSource(name="codex", root=root),))
     stat = f.stat()
     watcher._cursor.set(
         f,
@@ -1768,6 +2034,7 @@ def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
 
     plan = watcher._batch_processor._append_plan(f)
@@ -1775,9 +2042,9 @@ def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
     assert plan is not None
     append_plan = cast(Any, plan)
     assert append_plan.start_offset == len(original)
-    assert append_plan.payload == b'{"b":2}\n'
+    assert append_plan.payload == completed
     assert append_plan.bytes_read == len(appended)
-    assert append_plan.last_complete_newline == len(original) + len(b'{"b":2}\n')
+    assert append_plan.last_complete_newline == len(original) + len(completed)
 
 
 def test_large_incomplete_jsonl_append_defers_until_the_file_changes(tmp_path: Path) -> None:
@@ -1803,6 +2070,7 @@ def test_large_incomplete_jsonl_append_defers_until_the_file_changes(tmp_path: P
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
     f.write_bytes(original + (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)))
 
@@ -1855,6 +2123,7 @@ def test_a_failed_tail_probe_records_the_deferral_instead_of_retrying_forever(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
     f.write_bytes(original + (b"x" * 4096))
 
@@ -1924,6 +2193,7 @@ def test_incomplete_probe_does_not_escalate_for_a_recent_in_progress_writer(tmp_
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
     tail = (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)) + b'{"b":2}\n'
     f.write_bytes(original + tail)
@@ -1971,6 +2241,7 @@ def test_incomplete_probe_escalates_to_full_scan_once_stat_stops_changing(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
     # A trailing tail whose first PROBE_BYTES contain no newline, but a
     # complete record follows just past the bounded probe window.
@@ -2021,6 +2292,7 @@ def test_incomplete_probe_marks_failed_when_no_newline_exists_anywhere(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
     f.write_bytes(original + (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)))
 
@@ -2102,6 +2374,7 @@ async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> N
     db_path = tmp_path / "live.sqlite"
     cursor = CursorStore(db_path)
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -2109,7 +2382,7 @@ async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> N
         parser_fingerprint="test-parser",
     )
 
-    metrics = await processor.ingest_files([source_path], emit_event=False)
+    metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
     summary = _archive_live_ingest_attempt_summary_info(db_path.parent / "ops.db")
     assert summary is not None and summary.available
     attempts = summary.recent
@@ -2164,6 +2437,7 @@ async def test_live_batch_processor_records_cursor_after_each_converged_group(
     db_path = tmp_path / "live.sqlite"
     cursor = CursorStore(db_path)
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -2176,7 +2450,7 @@ async def test_live_batch_processor_records_cursor_after_each_converged_group(
         lambda paths: ([path] for path in paths),
     )
 
-    metrics = await processor.ingest_files([first_path, second_path], emit_event=False)
+    metrics = await ingest_files_with_owners(processor, [first_path, second_path], emit_event=False)
 
     first_cursor = cursor.get_record(first_path)
     second_cursor = cursor.get_record(second_path)
@@ -2189,8 +2463,10 @@ async def test_live_batch_processor_records_cursor_after_each_converged_group(
     debt = cursor.list_convergence_debt()
     assert len(debt) == 1
     assert debt[0].stage == "convergence"
-    assert debt[0].subject_type == "session_id"
-    assert "second-session" in debt[0].subject_id
+    # Debt is keyed by the unit the converger failed on: on the retained
+    # route that is the source observation, before any session exists.
+    assert debt[0].subject_type == "source_path"
+    assert debt[0].subject_id == str(second_path)
 
 
 def test_full_parse_progress_groups_bounds_files_by_count(
@@ -2240,6 +2516,7 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
     source_path.write_text('{"type":"session_meta","payload":{"id":"responsive"}}\n', encoding="utf-8")
     cursor = CursorStore(tmp_path / "live.sqlite")
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -2255,9 +2532,9 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
         attempt_id: str | None = None,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
-        prepared_json_paths: frozenset[str] = frozenset(),
+        pre_writer_admissions: object = None,
     ) -> _FullIngestResult:
-        del source_name, heartbeat, attempt_id, max_pass_seconds, pass_started, prepared_json_paths
+        del source_name, heartbeat, attempt_id, max_pass_seconds, pass_started, pre_writer_admissions
         time.sleep(0.2)
         return _FullIngestResult(
             succeeded=list(paths),
@@ -2268,7 +2545,7 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
 
     monkeypatch.setattr(processor, "_ingest_full_paths_sync", slow_full_ingest)
 
-    ingest_task = asyncio.create_task(processor.ingest_files([source_path], emit_event=False))
+    ingest_task = asyncio.create_task(ingest_files_with_owners(processor, [source_path], emit_event=False))
     await asyncio.sleep(0.02)
 
     assert not ingest_task.done()
@@ -2298,18 +2575,22 @@ async def test_live_full_ingest_admits_claude_originspec_fact_artifact(
     db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="claude-code", root=root, suffixes=(".json", ".jsonl", ".ndjson")),),
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".json", ".jsonl", ".ndjson"))),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
 
     try:
-        metrics = await processor.ingest_files([run_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [run_path], emit_event=False)
 
-        assert metrics.succeeded_file_count == 1
+        # The snapshot is retained raw authority. It carries no session, so the
+        # batch reports it as a settled no-session exclusion (xf8qp), never a
+        # failure.
         assert metrics.failed_file_count == 0
+        assert metrics.excluded_reasons == {REFUSED_NO_SESSIONS: 1}
         with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
             assert (
                 conn.execute(
@@ -2357,15 +2638,16 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
     db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="claude-code", root=root, suffixes=(".json", ".jsonl", ".ndjson")),),
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".json", ".jsonl", ".ndjson"))),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
 
     try:
-        first = await processor.ingest_files([run_path, journal_path], emit_event=False)
+        first = await ingest_files_with_owners(processor, [run_path, journal_path], emit_event=False)
         with journal_path.open("a", encoding="utf-8") as handle:
             handle.write(
                 json.dumps(
@@ -2380,10 +2662,14 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
                 )
                 + "\n"
             )
-        second = await processor.ingest_files([journal_path], emit_event=False)
+        second = await ingest_files_with_owners(processor, [journal_path], emit_event=False)
 
-        assert first.succeeded_file_count == 2
-        assert second.succeeded_file_count == 1
+        # Workflow artifacts are retained raw evidence without sessions, so each
+        # pass reports them as settled no-session exclusions (xf8qp), not
+        # failures; the full revisions below are what they retain.
+        assert first.failed_file_count == second.failed_file_count == 0
+        assert first.excluded_reasons == {REFUSED_NO_SESSIONS: 2}
+        assert second.excluded_reasons == {REFUSED_NO_SESSIONS: 1}
         with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
             assert (
                 conn.execute(
@@ -2404,7 +2690,9 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
         }
         assert summary.call_count == 1
         assert summary.journal_result_count == 1
-        assert processor.require_cursor_authority() is None
+        # Source selection reads the completed frontier inspection.
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
+        processor.require_cursor_authority()
     finally:
         await archive.close()
 
@@ -2476,7 +2764,8 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
     root = workspace_env["data_root"] / "hermes-observability"
     root.mkdir(parents=True)
     source_path = root / "events.jsonl"
-    db_path = workspace_env["data_root"] / "append-atof-boundary.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -2493,7 +2782,8 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
                 _atof_record(session_id="atof-session-a", uuid="a-turn-1", timestamp="2026-07-18T00:00:00Z"),
             ],
         )
-        await processor.ingest_files([source_path], emit_event=False)
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         # Growth batch spans a session boundary -- the real shared-file shape.
         with source_path.open("a", encoding="utf-8") as handle:
@@ -2502,7 +2792,8 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
                 _atof_record(session_id="atof-session-b", uuid="b-turn-1", timestamp="2026-07-18T00:00:02Z"),
             ):
                 handle.write(json.dumps(record) + "\n")
-        await processor.ingest_files([source_path], emit_event=False)
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         # fs1.14: a resolvable profile root (the watched directory) now
         # artifact- AND profile-qualifies the observer session identity --
@@ -2520,12 +2811,32 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
         # Idempotent replay: re-ingesting the SAME growth batch bytes again
         # (e.g. a poll cycle firing before the cursor advanced, or a daemon
         # restart replaying its tail) must not duplicate or lose anything.
-        await processor.ingest_files([source_path], emit_event=False)
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
         replayed = _atof_event_uuids_by_session(workspace_env["archive_root"])
         assert replayed == event_uuids_by_session
-        assert processor.require_cursor_authority() is None
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
+        processor.require_cursor_authority()
     finally:
         await archive.close()
+
+
+async def _inspect_accepted_frontier(archive_root: Path) -> None:
+    """Run the daemon's accepted-frontier inspection convergence stage.
+
+    Source selection refuses until the frontier is inspected, and the daemon
+    runs that inspection between live passes, never inside one.
+    """
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        await owner.run_convergence_sync(
+            "test.live-watcher.frontier",
+            inspect_prepared_raw_authority_frontier,
+            archive_root,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+        )
 
 
 def _browser_capture_payload(*, provider_session_id: str, assistant_turn_id: str, updated_at: str) -> dict[str, object]:
@@ -2617,12 +2928,13 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
     chatgpt_dir = root / "chatgpt"
     chatgpt_dir.mkdir(parents=True)
     source_path = chatgpt_dir / "conv-emx2.json"
-    db_path = workspace_env["data_root"] / "membership-defer.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
+        (WatchSource(name="browser-capture", root=root, layout=export_drop_layout((".json",))),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -2638,7 +2950,7 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
             ),
             encoding="utf-8",
         )
-        first = await processor.ingest_files([source_path], emit_event=False)
+        first = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert first.succeeded_file_count == 1
         assert first.failed_file_count == 0
 
@@ -2660,10 +2972,12 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
             ),
             encoding="utf-8",
         )
-        second = await processor.ingest_files([source_path], emit_event=False)
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
+        second = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert second.succeeded_file_count == 1, "ambiguous membership debt is not retried as a file failure (#3282)"
         assert second.failed_file_count == 0
-        assert processor.require_cursor_authority() is None
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
+        processor.require_cursor_authority()
 
         record = cursor.get_record(source_path)
         assert record is not None
@@ -2675,6 +2989,8 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
                 "ORDER BY raw_id"
             ).fetchall()
             assert decisions == [("ambiguous",), ("ambiguous",)]
+            # Acquisition's placeholder converges to the origin the census parsed.
+            assert conn.execute("SELECT DISTINCT origin FROM raw_sessions").fetchall() == [("chatgpt-export",)]
 
         # The first accepted snapshot's content remains queryable; the
         # ambiguous second observation has no deletion authority over it.
@@ -2699,7 +3015,8 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
     project = root / "project"
     project.mkdir(parents=True)
     source_path = project / "session.jsonl"
-    db_path = workspace_env["data_root"] / "append-public-read.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -2738,7 +3055,7 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
                 ),
             ],
         )
-        initial_metrics = await processor.ingest_files([source_path], emit_event=False)
+        initial_metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         with source_path.open("a", encoding="utf-8") as handle:
             for record in (
@@ -2760,7 +3077,7 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
                 ),
             ):
                 handle.write(json.dumps(record) + "\n")
-        append_metrics = await processor.ingest_files([source_path], emit_event=False)
+        append_metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         session = await archive.get_session("claude-code-session:session-public-read")
         assert initial_metrics.full_file_count == 1
@@ -2793,7 +3110,8 @@ async def test_live_ingest_metrics_carry_real_session_identity(workspace_env: di
     project = root / "project"
     project.mkdir(parents=True)
     source_path = project / "session.jsonl"
-    db_path = workspace_env["data_root"] / "session-identity.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -2816,7 +3134,7 @@ async def test_live_ingest_metrics_carry_real_session_identity(workspace_env: di
                 ),
             ],
         )
-        full_metrics = await processor.ingest_files([source_path], emit_event=False)
+        full_metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert full_metrics.new_sessions == (("claude-code", "claude-code-session:session-identity"),)
         assert full_metrics.updated_sessions == ()
 
@@ -2834,7 +3152,7 @@ async def test_live_ingest_metrics_carry_real_session_identity(workspace_env: di
                 )
                 + "\n"
             )
-        append_metrics = await processor.ingest_files([source_path], emit_event=False)
+        append_metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         # The append route only ever grows an already-tracked file: this is
         # an EXISTING session growing, never a fresh one -- exactly the
         # session.updated semantics this bead introduces.
@@ -2886,7 +3204,8 @@ async def test_live_full_ingest_expands_inbox_zip_members(
         zf.writestr("session-a.jsonl", member_a + "\n")
         zf.writestr("session-b.jsonl", member_b + "\n")
 
-    db_path = workspace_env["data_root"] / "inbox-zip-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -2897,7 +3216,7 @@ async def test_live_full_ingest_expands_inbox_zip_members(
     )
 
     try:
-        metrics = await processor.ingest_files([zip_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [zip_path], emit_event=False)
         record = cursor.get_record(zip_path)
 
         session_a = await archive.get_session("claude-code-session:zip-session-a")
@@ -2976,7 +3295,8 @@ async def test_live_full_ingest_sniffs_zip_provider_for_non_session_siblings(
         zf.writestr("conversations.json", json.dumps([conversation]))
         zf.writestr("message_feedback.json", json.dumps([{"conversation_id": "chatgpt-zip-sniff-1", "rating": 1}]))
 
-    db_path = workspace_env["data_root"] / "inbox-zip-sniff-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -2987,7 +3307,7 @@ async def test_live_full_ingest_sniffs_zip_provider_for_non_session_siblings(
     )
 
     try:
-        metrics = await processor.ingest_files([zip_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [zip_path], emit_event=False)
 
         assert ("inbox", "chatgpt-export:chatgpt-zip-sniff-1") in metrics.new_sessions
 
@@ -3017,7 +3337,8 @@ async def test_live_full_ingest_detects_provider_when_source_name_is_not_provide
     project = root / "project"
     project.mkdir(parents=True)
     source_path = project / "session.jsonl"
-    db_path = workspace_env["data_root"] / "detect-provider-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3040,7 +3361,7 @@ async def test_live_full_ingest_detects_provider_when_source_name_is_not_provide
                 ),
             ],
         )
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         session = await archive.get_session("claude-code-session:session-detected-provider")
         assert metrics.succeeded_file_count == 1
@@ -3060,7 +3381,8 @@ async def test_live_full_ingest_excludes_non_session_sidecars_before_raw_storage
     project.mkdir(parents=True)
     source_path = project / "sessions-index.json"
     source_path.write_text(json.dumps({"sessions": [{"id": "metadata-only"}]}), encoding="utf-8")
-    db_path = workspace_env["data_root"] / "exclude-sidecar-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3071,7 +3393,7 @@ async def test_live_full_ingest_excludes_non_session_sidecars_before_raw_storage
     )
 
     try:
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         record = cursor.get_record(source_path)
 
         with sqlite3.connect(db_path) as conn:
@@ -3101,7 +3423,8 @@ async def test_live_full_ingest_excludes_known_provider_invalid_jsonl_sidecars_b
     project.mkdir(parents=True)
     source_path = project / "architecture_discussions.jsonl"
     source_path.write_text("not json\nstill not json\n", encoding="utf-8")
-    db_path = workspace_env["data_root"] / "exclude-invalid-jsonl-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3112,14 +3435,12 @@ async def test_live_full_ingest_excludes_known_provider_invalid_jsonl_sidecars_b
     )
 
     try:
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         record = cursor.get_record(source_path)
 
-        with sqlite3.connect(db_path) as conn:
-            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            raw_count = (
-                conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] if "raw_sessions" in tables else 0
-            )
+        # Raw rows live in the Source tier; reading Index here could never fail.
+        with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+            raw_count = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
 
         assert metrics.succeeded_file_count == 0
         assert metrics.failed_file_count == 0
@@ -3139,7 +3460,8 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
     project = root / "project"
     project.mkdir(parents=True)
     source_path = project / "codex-session.jsonl"
-    db_path = workspace_env["data_root"] / "append-codex.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3162,7 +3484,7 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
                 ),
             ],
         )
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         with source_path.open("a", encoding="utf-8") as handle:
             handle.write(
@@ -3176,29 +3498,66 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
                 )
                 + "\n"
             )
-        append_metrics = await processor.ingest_files([source_path], emit_event=False)
+        append_metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         existing = await archive.get_session("codex-session:codex-real-session")
         fallback = await archive.get_session("codex-session:codex-session")
         assert append_metrics.append_file_count == 1
         assert append_metrics.full_file_count == 0
-        assert {
-            "append.archive_open",
-            "append.index.blocks",
-            "append.index_parsed_write",
-            "append.index.messages",
-            "append.index.session_events",
-            "append.index.session_upsert",
-            "append.json_stream",
-            "append.provider_parse",
-            "append.raw_and_index_write",
-            "append.source_raw_write",
-        }.issubset(append_metrics.stage_timings_s)
+        # The append route acquires the delta, then publishes it through the
+        # canonical raw owner (561dbe2ff0); those are its two timed stages.
+        assert {"append.source_raw_write", "append.canonical_raw"}.issubset(append_metrics.stage_timings_s)
         assert existing is not None
         assert [message.text for message in existing.messages] == ["codex first", "codex appended"]
         assert fallback is None
     finally:
         await archive.close()
+
+
+@pytest.mark.parametrize("cursor_state", ["settled", "excluded", "failed", "deferred"])
+def test_v5_cursor_reprocesses_unchanged_bytes_through_live_batch(tmp_path: Path, cursor_state: str) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    path = root / "session.jsonl"
+    path.write_text('{"a":1}\n')
+    watcher, full_ingest = _make_watcher(tmp_path, root)
+    stat = path.stat()
+    watcher._cursor.set(
+        path,
+        stat.st_size,
+        parser_fingerprint="live-batched-v5",
+        content_fingerprint=None if cursor_state == "deferred" else "old-revision",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        failure_count=1 if cursor_state in {"excluded", "failed"} else 0,
+        excluded=cursor_state == "excluded",
+        next_retry_at="2999-01-01T00:00:00+00:00" if cursor_state in {"failed", "deferred"} else None,
+        authority=fixture_cursor_authority(path),
+    )
+
+    # Use the dispatcher's bulk selection, then the actual batch cursor
+    # publication path. Only provider work is substituted by this harness.
+    selected, deferred = watcher.classify_ingest_candidates([path])
+    assert selected == (path,)
+    assert deferred == ()
+    _run_watcher_ingest(watcher, list(selected))
+
+    after = path.stat()
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+    )
+    assert full_ingest.await_count == 1
+    record = watcher._cursor.get_record(path)
+    assert record is not None
+    assert record.parser_fingerprint == live_watcher._PARSER_FINGERPRINT
+    assert record.parser_fingerprint != "live-batched-v5"
+    assert not record.excluded
+    assert record.failure_count == 0
+    assert watcher.classify_ingest_candidates([path]) == ((), ())
 
 
 def test_parser_fingerprint_change_triggers_reingest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3291,6 +3650,7 @@ def test_incomplete_append_event_defers_without_ingest_until_newline(tmp_path: P
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
 
     f.write_bytes(complete + partial)
@@ -3381,7 +3741,7 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     emit = MagicMock()
     watcher, _parse_sources = _make_watcher(tmp_path, root, event_emitter=emit)
 
-    asyncio.run(watcher._ingest_files([f], queued_file_count=3, skipped_file_count=2))
+    _run_watcher_ingest(watcher, [f], queued_file_count=3, skipped_file_count=2)
 
     emit.assert_called_once()
     kind = emit.call_args.args[0]
@@ -3472,22 +3832,24 @@ def test_page_admission_acquires_source_without_reading_unavailable_index(
     )
     pointer = tmp_path / ".index-active-pointer"
     pointer.write_bytes(b"\xff")
+    # Retained preparation is the batch's off-writer route after acquisition.
+    # Derived-only mode must not reach it; the guard records any call.
+    prepared: list[tuple[str, ...]] = []
+
+    async def recording_retained(
+        raw_ids: Sequence[str],
+        *,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
+    ) -> RetainedReplayOutcome:
+        prepared.append(tuple(raw_ids))
+        return RetainedReplayOutcome()
+
     watcher = LiveWatcher(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="codex", root=root),),
         cursor=CursorStore(tmp_path / "cursor.sqlite", ops_db_path=tmp_path / "ops.db"),
+        retained_runner=recording_retained,
     )
-    parse_stage = watcher._parse_stage
-    assert parse_stage is not None
-    # ``warm_paths`` is the batch's prewarm (``_ingest_full_paths``). The batch
-    # swallows a prewarm exception, so the guard records the call instead.
-    prewarmed: list[object] = []
-
-    def recording_warm_paths(*args: object, **_kwargs: object) -> frozenset[str]:
-        prewarmed.append(args)
-        return frozenset()
-
-    monkeypatch.setattr(parse_stage, "warm_paths", recording_warm_paths)
     set_degraded(
         DegradedReason(
             code="schema_version_mismatch",
@@ -3496,12 +3858,11 @@ def test_page_admission_acquires_source_without_reading_unavailable_index(
         )
     )
     try:
-        asyncio.run(watcher._ingest_files([path], queued_file_count=1))
+        _run_watcher_ingest(watcher, [path], queued_file_count=1)
     finally:
         clear_degraded()
-        parse_stage.shutdown()
 
-    assert prewarmed == []
+    assert prepared == []
     assert pointer.read_bytes() == b"\xff"
     with sqlite3.connect(tmp_path / "source.db") as conn:
         row = conn.execute(
@@ -3510,6 +3871,70 @@ def test_page_admission_acquires_source_without_reading_unavailable_index(
             (str(path),),
         ).fetchone()
     assert row == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_retryable_retained_preparation_event_keeps_error_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry event preserves the stale-seal comparison for diagnosis."""
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    source_path = tmp_path / "session.jsonl"
+    source_path.write_bytes(b"{}\n")
+    result = _FullIngestResult(
+        succeeded=[source_path],
+        failed=[],
+        source_payload_read_bytes=source_path.stat().st_size,
+        acquired_raw_ids=("raw-1",),
+        raw_fingerprints={source_path: "raw-1"},
+    )
+    stale_error = ReferenceSealStaleError("the index.db file incarnation changed after preparation")
+    failure = RetainedRawRetryableFailure(raw_id="raw-1", error=stale_error)
+
+    async def source_writer(*_args: object, **_kwargs: object) -> _FullIngestResult:
+        return result
+
+    async def retained_runner(
+        _raw_ids: Sequence[str],
+        *,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
+    ) -> RetainedReplayOutcome:
+        del on_terminal_refusal
+        return RetainedReplayOutcome(failures=(failure,))
+
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path)),
+        (),
+        cursor=cast(CursorStore, SimpleNamespace(_db_path=tmp_path / "cursor.sqlite")),
+        parser_fingerprint="test",
+        retained_runner=cast(LiveRetainedRunner, retained_runner),
+    )
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
+    monkeypatch.setattr(processor, "_run_source_writer", source_writer)
+    monkeypatch.setattr(live_batch, "_source_tier_acquisition_required", lambda: False)
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(live_batch, "emit", lambda event, **fields: events.append((event, fields)))
+
+    await processor._ingest_full_paths_prepared(
+        [source_path],
+        source_name="codex",
+        pre_writer_admissions={},
+    )
+
+    assert events == [
+        (
+            "live.ingest.retained_preparation_failed",
+            {
+                "level": WARNING,
+                "outcome": "error",
+                "reason": "retryable_preparation",
+                "raw_id": "raw-1",
+                "error_type": "ReferenceSealStaleError",
+                "error_detail": "the index.db file incarnation changed after preparation",
+            },
+        )
+    ]
 
 
 def test_a_cursored_file_is_rediscovered_without_being_ingested_again(tmp_path: Path) -> None:
@@ -3530,9 +3955,16 @@ def test_a_cursored_file_is_rediscovered_without_being_ingested_again(tmp_path: 
     )
 
     async def _admit() -> dict[str, Any]:
-        page = await adapter.discover(limit=8)
-        assert [Path(cast(Any, item.payload)) for item in page] == [f]
-        return dict(await adapter.admit_page(page))
+        # Page admission initializes the cursor on the daemon writer.
+        coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+        watcher._write_coordinator = coordinator
+        try:
+            page = await adapter.discover(limit=8)
+            assert [Path(cast(Any, item.payload)) for item in page] == [f]
+            return dict(await adapter.admit_page(page))
+        finally:
+            watcher._write_coordinator = None
+            assert await coordinator.shutdown(timeout=float("inf"))
 
     outcomes = asyncio.run(_admit())
     assert [result.outcome for result in outcomes.values()] == [AdmissionOutcome.DUPLICATE]
@@ -3568,6 +4000,7 @@ def test_page_selection_rebases_device_drift_after_one_prefix_proof(
         st_dev=stat.st_dev + 1,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
 
     calls = 0
@@ -3630,7 +4063,7 @@ def test_watch_source_exists_false(tmp_path: Path) -> None:
 
 
 def test_watch_source_accepts_configured_suffixes(tmp_path: Path) -> None:
-    src = WatchSource(name="x", root=tmp_path, suffixes=(".json", ".jsonl"))
+    src = WatchSource(name="x", root=tmp_path, layout=export_drop_layout((".json", ".jsonl")))
     assert src.accepts(tmp_path / "session.json") is True
     assert src.accepts(tmp_path / "session.jsonl") is True
     assert src.accepts(tmp_path / "README.md") is False
@@ -3639,15 +4072,16 @@ def test_watch_source_accepts_configured_suffixes(tmp_path: Path) -> None:
 def test_claude_watch_source_accepts_declared_tool_result_extensions_and_extensionless_files(
     tmp_path: Path,
 ) -> None:
-    """Watcher admission follows the Claude OriginSpec path declaration."""
-    source = WatchSource(name="claude-code", root=tmp_path, suffixes=(".jsonl",))
-    tool_results = tmp_path / "session" / "tool-results"
+    """Watcher admission follows the declared Claude Code layout."""
+    source = WatchSource(name="claude-code", root=tmp_path)
+    session = tmp_path / "-home-user-repo" / "00000000-0000-4000-8000-000000000001"
+    tool_results = session / "tool-results"
 
     assert source.accepts(tool_results / "toolu.json") is True
     assert source.accepts(tool_results / "toolu.txt") is True
     assert source.accepts(tool_results / "toolu.html") is True
     assert source.accepts(tool_results / "toolu") is True
-    assert source.accepts(tmp_path / "session" / "notes.txt") is False
+    assert source.accepts(session / "notes.txt") is False
 
 
 def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> None:
@@ -3660,27 +4094,21 @@ def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> Non
     watcher = LiveWatcher(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (
-            WatchSource(name="codex-state", root=root, suffixes=(".sqlite",)),
-            WatchSource(name="codex", root=sessions, suffixes=(".jsonl",)),
+            WatchSource(name="codex-state", root=root, layout=export_drop_layout((".sqlite",))),
+            WatchSource(name="codex", root=sessions, layout=export_drop_layout((".jsonl",))),
         ),
         cursor=CursorStore(tmp_path / "cursor.db"),
     )
-    parse_stage = watcher._parse_stage
-    assert parse_stage is not None
-
-    try:
-        assert watcher._source_accepts(path) is True
-        assert watcher._source_name_for(path) == "codex"
-        assert watcher._batch_processor._source_name_for(path) == "codex"
-        directory_source = watcher._source_for_directory(sessions)
-        assert directory_source is not None
-        assert directory_source.name == "codex"
-        discovered = _bounded_source_paths(
-            watcher._sources[1], watcher._sources, limit=8, after=None
-        ) + _bounded_source_paths(watcher._sources[0], watcher._sources, limit=8, after=None)
-        assert discovered == [path]
-    finally:
-        parse_stage.shutdown()
+    assert watcher._source_accepts(path) is True
+    assert watcher._source_name_for(path) == "codex"
+    assert watcher._batch_processor._source_name_for(path) == "codex"
+    directory_source = watcher._source_for_directory(sessions)
+    assert directory_source is not None
+    assert directory_source.name == "codex"
+    discovered = _bounded_source_paths(
+        watcher._sources[1], watcher._sources, limit=8, after=None
+    ) + _bounded_source_paths(watcher._sources[0], watcher._sources, limit=8, after=None)
+    assert discovered == [path]
 
 
 def test_inbox_source_accepts_zip_and_archive_formats() -> None:
@@ -3688,20 +4116,25 @@ def test_inbox_source_accepts_zip_and_archive_formats() -> None:
     from polylogue.sources.live.watcher import default_sources
 
     inbox = next(s for s in default_sources() if s.name == "inbox")
-    assert ".zip" in inbox.suffixes
-    assert ".json" in inbox.suffixes
-    assert ".jsonl" in inbox.suffixes
-    assert ".ndjson" in inbox.suffixes
+    for name in ("export.zip", "conversations.json", "session.jsonl", "events.ndjson"):
+        assert inbox.accepts(inbox.root / name)
+        assert inbox.accepts(inbox.root / "export" / name)
+    assert not inbox.accepts(inbox.root / "readme.txt")
 
 
-def test_claude_default_source_projects_originspec_suffixes() -> None:
-    """Claude live admission must follow the OriginSpec artifact contract."""
+def test_claude_default_source_admits_only_its_declared_layout() -> None:
+    """Claude live admission follows the declared layout the OriginSpec rules anchor to."""
     from polylogue.sources.live.watcher import default_sources
 
     claude = next(source for source in default_sources() if source.name == "claude-code")
-    assert set(claude.suffixes) == {".json", ".jsonl", ".ndjson"}
-    assert claude.accepts(claude.root / "workflows" / "wf.json")
-    assert claude.accepts(claude.root / "project" / "session.jsonl")
+    session = "138e259e-435f-4259-8c68-dbd5aa9f9837"
+    assert claude.accepts(claude.root / "-home-user-repo" / f"{session}.jsonl")
+    assert claude.accepts(claude.root / "-home-user-repo" / session / "workflows" / "wf.json")
+    # Unanchored, the workflow rule used to admit this at any depth.
+    assert not claude.accepts(claude.root / "workflows" / "wf.json")
+    assert not claude.accepts(
+        claude.root / ".claude" / "worktrees" / "agent-1" / "-home-user-repo" / f"{session}.jsonl"
+    )
 
 
 def test_claude_todos_default_source_watches_its_own_sibling_root() -> None:
@@ -3713,8 +4146,8 @@ def test_claude_todos_default_source_watches_its_own_sibling_root() -> None:
 
     assert todos.root != claude.root
     assert todos.root.name == "todos"
-    assert todos.suffixes == (".json",)
     assert todos.accepts(todos.root / "138e259e-435f-4259-8c68-dbd5aa9f9837.json")
+    assert not todos.accepts(todos.root / "nested" / "138e259e-435f-4259-8c68-dbd5aa9f9837.json")
 
 
 def test_claude_history_source_only_walks_direct_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3730,7 +4163,7 @@ def test_claude_history_source_only_walks_direct_files(tmp_path: Path, monkeypat
     monkeypatch.setattr(polylogue_paths, "claude_code_path", lambda: claude_root / "projects")
     source = next(source for source in live_watcher.default_sources() if source.name == "claude-code-history")
 
-    assert source.recursive is False
+    assert not source.admits_directory(claude_root / "other")
     assert _bounded_source_paths(source, (source,), limit=8, after=None) == [history]
 
 
@@ -3753,6 +4186,7 @@ def test_browser_capture_spool_is_default_json_source(
     assert browser_capture.root == spool
     assert browser_capture.accepts(spool / "chatgpt" / "capture.json") is True
     assert browser_capture.accepts(spool / "chatgpt" / "capture.jsonl") is False
+    assert browser_capture.accepts(spool / "browser-actions" / "a1" / "action.json") is False
 
 
 # --- end-to-end via watchfiles -------------------------------------------------
@@ -3796,6 +4230,7 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
     db_path = tmp_path / "live.sqlite"
     cursor = CursorStore(db_path)
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -3805,7 +4240,7 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
 
     # The zero-budget law admits the first item, then leaves its siblings
     # retryable. Keep asyncio and worker settlement on the real host clock.
-    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=0.0)
+    bounded = await ingest_files_with_owners(processor, paths, emit_event=False, max_pass_seconds=0.0)
 
     assert bounded.succeeded_file_count == 1
     assert bounded.failed_file_count == 0
@@ -3815,7 +4250,7 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
     unrecorded = [path for path in paths if path not in recorded]
     assert len(unrecorded) == 2
 
-    remainder = await processor.ingest_files(unrecorded, emit_event=False)
+    remainder = await ingest_files_with_owners(processor, unrecorded, emit_event=False)
 
     assert remainder.succeeded_file_count == 2
     assert remainder.failed_file_count == 0
@@ -3849,6 +4284,7 @@ async def test_archive_write_budget_leaves_unwritten_page_tail_retryable(
             ],
         )
     cursor = CursorStore(tmp_path / "live.sqlite")
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="codex", root=root),),
@@ -3861,7 +4297,7 @@ async def test_archive_write_budget_leaves_unwritten_page_tail_retryable(
         "_ingest_pass_exhausted",
         lambda *, max_pass_seconds, pass_started, checkpoint: checkpoint == "archive_write_record",
     )
-    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=30.0)
+    bounded = await ingest_files_with_owners(processor, paths, emit_event=False, max_pass_seconds=30.0)
 
     assert bounded.succeeded_file_count == 1
     assert bounded.time_budget_exceeded is True
@@ -3909,6 +4345,7 @@ async def test_acquisition_is_checkpointed_per_file_not_once_per_batch(
 
     cursor = CursorStore(tmp_path / "live.sqlite")
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -3920,7 +4357,7 @@ async def test_acquisition_is_checkpointed_per_file_not_once_per_batch(
     # guarantee), then refuses the next item at the per-file checkpoint. This
     # avoids replacing the process-wide clock used by asyncio's executor
     # shutdown.
-    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=0.0)
+    bounded = await ingest_files_with_owners(processor, paths, emit_event=False, max_pass_seconds=0.0)
 
     assert bounded.succeeded_file_count == 1
     assert bounded.failed_file_count == 0
@@ -3937,16 +4374,9 @@ async def test_acquisition_is_checkpointed_per_file_not_once_per_batch(
 async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock, file_count: int
 ) -> None:
-    """slc55: an acquired file is finished, not discarded, when its own capture spends the hold.
-
-    The unit stops taking new files, the files it never reached stay
-    backlog, and the acquired one publishes its cursor. Anti-vacuity: raise
-    at the next admission or after the acquisition loop (the predecessor)
-    and the pass ends with no cursor, so a file that always outlasts the
-    bound is re-acquired and refused forever.
-    """
+    """Admitted work finishes and publishes its cursor past diagnostic thresholds."""
     from polylogue.core.write_hold import enter_write_hold, exit_write_hold
-    from polylogue.sources.live.batch_support import classify_pre_acquisition
+    from polylogue.sources.live.batch import _file_observation
 
     root = tmp_path / "sessions"
     root.mkdir()
@@ -3965,12 +4395,14 @@ async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
             ],
         )
 
-    def slow_classify(*args: Any, **kwargs: Any) -> Any:
+    def slow_observation(stat: Any) -> tuple[int, int, int, int, int]:
+        # Each file's acquisition under the writer outlasts the 30 s hold.
         frozen_clock.advance(31)
-        return classify_pre_acquisition(*args, **kwargs)
+        return _file_observation(stat)
 
-    monkeypatch.setattr("polylogue.sources.live.batch.classify_pre_acquisition", slow_classify)
+    monkeypatch.setattr("polylogue.sources.live.batch._file_observation", slow_observation)
     cursor = CursorStore(tmp_path / "live.sqlite")
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="codex", root=root),),
@@ -3980,32 +4412,21 @@ async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
 
     token = enter_write_hold("watcher.live_ingest.full", 30.0)
     try:
-        result = await processor.ingest_files(paths, emit_event=False)
+        result = await ingest_files_with_owners(processor, paths, emit_event=False)
     finally:
         exit_write_hold(token)
 
     assert result.failed_file_count == 0
-    assert result.succeeded_file_count == 1
-    assert [path for path in paths if cursor.get_record(path) is not None] == [paths[0]]
+    assert result.succeeded_file_count == file_count
+    assert [path for path in paths if cursor.get_record(path) is not None] == paths
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (file_count,)
 
 
 @pytest.mark.asyncio
-async def test_a_hold_past_its_declared_bound_ends_the_pass(tmp_path: Path) -> None:
-    """polylogue-ipyvj: past the bound the unit of work ends, typed.
-
-    The writer gate declares how long an admitted unit may hold the sole
-    archive writer. A unit that reaches a checkpoint already past it stops
-    there instead of finishing and being warned about afterwards, and the
-    files it never reached stay ordinary backlog -- no cursor, no failure
-    count, no retry backoff.
-
-    Anti-vacuity: drop ``check_write_hold_budget`` from
-    ``_ingest_pass_exhausted`` and this pass runs all three files to
-    completion with no bound in force, since ``max_pass_seconds`` is None.
-    """
-    from polylogue.core.write_hold import WriteHoldBudgetError, enter_write_hold, exit_write_hold
+async def test_zero_hold_threshold_does_not_refuse_acquired_files(tmp_path: Path) -> None:
+    """Admitted work finishes and publishes its cursor past diagnostic thresholds."""
+    from polylogue.core.write_hold import enter_write_hold, exit_write_hold
 
     root = tmp_path / "sessions"
     root.mkdir()
@@ -4026,6 +4447,7 @@ async def test_a_hold_past_its_declared_bound_ends_the_pass(tmp_path: Path) -> N
 
     cursor = CursorStore(tmp_path / "live.sqlite")
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -4035,21 +4457,13 @@ async def test_a_hold_past_its_declared_bound_ends_the_pass(tmp_path: Path) -> N
 
     token = enter_write_hold("watcher.catch_up.chunk", 0.0)
     try:
-        with pytest.raises(WriteHoldBudgetError) as raised:
-            await processor.ingest_files(paths, emit_event=False)
+        result = await ingest_files_with_owners(processor, paths, emit_event=False)
     finally:
         exit_write_hold(token)
 
-    assert raised.value.actor == "watcher.catch_up.chunk"
-    assert raised.value.checkpoint == "full_acquisition_file"
-    assert raised.value.budget_s == 0.0
-    for path in paths:
-        assert cursor.get_record(path) is None
-
-    recovered = await processor.ingest_files(paths, emit_event=False)
-
-    assert recovered.succeeded_file_count == 3
-    assert recovered.failed_file_count == 0
+    assert result.succeeded_file_count == 3
+    assert result.failed_file_count == 0
+    assert all(cursor.get_record(path) is not None for path in paths)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
 
@@ -4097,20 +4511,18 @@ def test_decided_unresolved_membership_reconciles_the_cursor_instead_of_re_readi
             provider=Provider.CODEX,
             payload=payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=1,
         )
-        archive.replace_raw_membership_census(
-            raw_id,
-            [session],
-            parser_fingerprint="test-parser",
-            censused_at_ms=1,
-        )
-        archive.apply_raw_membership_classification(
+    seed_membership_census(tmp_path, [(raw_id, [session])], parser_fingerprint="test-parser")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        publish_prepared_membership_classification(
+            archive,
             "codex-session:decided-unresolved",
             MembershipClassification((), (), (raw_id,)),
             {raw_id: session},
             {raw_id: session_revision_projection(session)},
-            acquired_at_ms=2,
+            decided_at_ms=2,
         )
 
     watcher, _full_ingest = _make_watcher(
@@ -4180,25 +4592,30 @@ def test_cursor_reconciliation_restores_the_newest_archived_outcome(
             provider=Provider.CODEX,
             payload=materialized_payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=materialized_at_ms,
         )
         decided = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=decided_payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=decided_at_ms,
         )
         parsed = {materialized: session("m0"), decided: session("m0", "m1")}
-        for raw_id, parsed_session in parsed.items():
-            archive.replace_raw_membership_census(
-                raw_id, [parsed_session], parser_fingerprint="test-parser", censused_at_ms=1
-            )
-        archive.apply_raw_membership_classification(
+    seed_membership_census(
+        tmp_path,
+        [(raw_id, [parsed_session]) for raw_id, parsed_session in parsed.items()],
+        parser_fingerprint="test-parser",
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        publish_prepared_membership_classification(
+            archive,
             "codex-session:newest-outcome",
             MembershipClassification((materialized,), (), (decided,)),
             parsed,
             {raw_id: session_revision_projection(parsed_session) for raw_id, parsed_session in parsed.items()},
-            acquired_at_ms=4,
+            decided_at_ms=4,
         )
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert [
@@ -4234,40 +4651,40 @@ def test_cursor_reconciliation_restores_the_newest_archived_outcome(
 def test_discovery_claims_nested_sessions_and_declared_suffixes_only(tmp_path: Path) -> None:
     """The one production walk: which files the dispatcher's discovery claims.
 
-    Covers what the deleted catch-up scan used to prove -- nested project
-    directories, subagent transcripts, an orphan at the root, a declared
-    non-``.jsonl`` suffix, and the runtime-dependency prune -- against the
-    walk that actually runs now.
+    A Claude Code projects root claims the session in its project directory
+    and the subagent transcript below its session directory, and nothing
+    else: not a stray file at the root, not undeclared files beside the
+    session, not a runtime dependency tree.
 
     Anti-vacuity: accept every suffix and the ``.toml``/``.md`` files appear;
-    drop the ignored-directory check and the ``site-packages`` file appears;
-    stop descending and the subagent transcript disappears.
+    walk outside the layout and the root orphan and ``site-packages`` file
+    appear; stop descending and the subagent transcript disappears.
     """
 
     root = tmp_path / "src"
-    subagents = root / "my-project" / "some-uuid" / "subagents"
+    subagents = root / "-my-project" / "some-uuid" / "subagents"
     subagents.mkdir(parents=True)
-    session = root / "my-project" / "session.jsonl"
+    session = root / "-my-project" / "session.jsonl"
     session.write_text('{"a":1}\n')
     orphan = root / "orphan.jsonl"
     orphan.write_text('{"a":1}\n')
     agent = subagents / "agent-abc123.jsonl"
     agent.write_text('{"a":1}\n')
-    (root / "my-project" / "config.toml").write_text("x=1")
-    (root / "my-project" / "README.md").write_text("# hi")
+    (root / "-my-project" / "config.toml").write_text("x=1")
+    (root / "-my-project" / "README.md").write_text("# hi")
     dependency = root / "venv" / "lib" / "site-packages" / "generated.jsonl"
     dependency.parent.mkdir(parents=True)
     dependency.write_text('{"not":"a session"}\n')
 
-    source = WatchSource(name="test", root=root)
-    assert set(_bounded_source_paths(source, (source,), limit=32, after=None)) == {session, orphan, agent}
+    source = WatchSource(name="claude-code", root=root)
+    assert set(_bounded_source_paths(source, (source,), limit=32, after=None)) == {session, agent}
 
     gemini_root = tmp_path / "gemini"
     gemini_root.mkdir()
     gemini_session = gemini_root / "session.json"
     gemini_session.write_text('{"sessionId":"s1","messages":[]}\n')
     (gemini_root / "notes.md").write_text("# no")
-    gemini = WatchSource(name="gemini-cli", root=gemini_root, suffixes=(".json", ".jsonl"))
+    gemini = WatchSource(name="gemini-cli", root=gemini_root, layout=export_drop_layout((".json", ".jsonl")))
     assert _bounded_source_paths(gemini, (gemini,), limit=32, after=None) == [gemini_session]
 
 
@@ -4281,7 +4698,10 @@ def test_a_watch_event_wakes_the_dispatcher_which_ingests_the_new_file(tmp_path:
 
     root = tmp_path / "src"
     root.mkdir()
-    watcher, parse_sources = _make_watcher(tmp_path, root)
+    # Page admission and the batch's Source bodies run on the daemon writer.
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    watcher, parse_sources = _make_watcher(tmp_path, root, write_coordinator=coordinator)
     wakeup = asyncio.Event()
     watcher._intake_wakeup = wakeup
     source = watcher._sources[0]
@@ -4300,9 +4720,12 @@ def test_a_watch_event_wakes_the_dispatcher_which_ingests_the_new_file(tmp_path:
     )
 
     async def _admit() -> dict[str, Any]:
-        page = await adapter.discover(limit=8)
-        assert [Path(cast(Any, item.payload)) for item in page] == [created]
-        return dict(await adapter.admit_page(page))
+        try:
+            page = await adapter.discover(limit=8)
+            assert [Path(cast(Any, item.payload)) for item in page] == [created]
+            return dict(await adapter.admit_page(page))
+        finally:
+            assert await coordinator.shutdown(timeout=float("inf"))
 
     outcomes = asyncio.run(_admit())
     assert [result.outcome for result in outcomes.values()] == [AdmissionOutcome.ADMITTED]
@@ -4350,6 +4773,7 @@ def test_stale_deferral_escalates_when_recorded_byte_size_lags_the_file(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
 
     # Fresh observation: still plausibly an in-progress writer.
@@ -4401,13 +4825,14 @@ async def test_a_budgeted_pass_with_a_no_session_file_stays_a_retryable_attempt(
             encoding="utf-8",
         )
     cursor = CursorStore(tmp_path / "live.sqlite")
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="claude-code", root=root),),
         cursor=cursor,
         parser_fingerprint="test-parser",
     )
-    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=0.0)
+    bounded = await ingest_files_with_owners(processor, paths, emit_event=False, max_pass_seconds=0.0)
 
     assert bounded.time_budget_exceeded is True
     assert set(bounded.settled_exclusion_paths.values()) == {REFUSED_NO_SESSIONS}
@@ -4435,3 +4860,112 @@ def test_cold_build_cursor_corroboration_reads_the_candidate_index(
     monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root=None: None)
     monkeypatch.setattr(live_watcher, "resolve_active_index_path", lambda root: root / "index.db")
     assert live_watcher._published_index_path(tmp_path) == tmp_path / "index.db"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("moved_after_hash", [False, True], ids=["unchanged", "appended-before-admission"])
+async def test_cursor_reconciliation_hashes_off_the_writer_and_rechecks_under_it(
+    tmp_path: Path, moved_after_hash: bool
+) -> None:
+    """Intake selection hashes source bytes without the writer.
+
+    Only the cursor restore is admitted, and under the writer it re-checks the
+    file it hashed: a file appended while the restore awaits the writer (after
+    every read the decision made) refuses the restore and is selected for
+    ingest instead. Anti-vacuity: running selection through the
+    writer (the old ``watcher.intake.select`` admission) holds the lease
+    around the hash and fails the first assertion in ``observed_hash``; a
+    restore without the re-check records a cursor for bytes it never proved.
+    """
+    from polylogue.archive.session_revision_membership import MembershipClassification
+    from polylogue.core.write_lease import current_write_lease
+    from polylogue.pipeline.ids import session_revision_projection
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    source_path = source_root / "off-writer.jsonl"
+    payload = b'{"native_id":"off-writer"}\n'
+    source_path.write_bytes(payload)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="off-writer",
+        messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text="settled content")],
+    )
+
+    def settle_decided_raw() -> None:
+        # Archive setup takes synchronous leases, so it runs off the loop.
+        initialize_active_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=str(source_path),
+                canonical_source_path=str(source_path),
+                acquired_at_ms=1,
+            )
+        seed_membership_census(tmp_path, [(raw_id, [session])], parser_fingerprint="test-parser")
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            publish_prepared_membership_classification(
+                archive,
+                "codex-session:off-writer",
+                MembershipClassification((), (), (raw_id,)),
+                {raw_id: session},
+                {raw_id: session_revision_projection(session)},
+                decided_at_ms=2,
+            )
+
+    await asyncio.to_thread(settle_decided_raw)
+
+    admitted: list[str] = []
+
+    class RecordingCoordinator:
+        async def run(self, actor: str, operation: Callable[[], Awaitable[Any]], /) -> Any:
+            raise AssertionError(f"selection must not take a whole-operation writer: {actor}")
+
+        async def run_sync(self, actor: str, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+            admitted.append(actor)
+            if moved_after_hash:
+                # The source's writer appends while the restore waits for
+                # admission: after every read the decision made.
+                with source_path.open("ab") as handle:
+                    handle.write(b'{"native_id":"off-writer","turn":2}\n')
+
+            def leased() -> Any:
+                with write_lease(actor, archive_root=tmp_path):
+                    return function(*args, **kwargs)
+
+            return await asyncio.to_thread(leased)
+
+    watcher, _full_ingest = _make_watcher(
+        tmp_path,
+        source_root,
+        sources=(WatchSource(name="codex", root=source_root),),
+        write_coordinator=RecordingCoordinator(),
+    )
+    from polylogue.sources.live.batch_support import sha256_range_from_path as real_hash
+
+    hashed: list[Path] = []
+
+    def observed_hash(path: Path, **kwargs: Any) -> Any:
+        assert current_write_lease() is None, "the reconciliation hash ran under the writer"
+        hashed.append(path)
+        return real_hash(path, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(live_watcher, "sha256_range_from_path", observed_hash)
+        selected, pending = await watcher.classify_ingest_candidates_off_writer([source_path])
+
+    assert hashed == [source_path]
+    assert pending == ()
+    assert "watcher.intake.select" not in admitted
+    assert admitted == ["watcher.intake.cursor_reconcile"]
+    record = watcher._cursor.get_record(source_path)
+    if moved_after_hash:
+        assert selected == (source_path,)
+        assert record is None
+    else:
+        assert selected == ()
+        assert record is not None
+        assert record.byte_offset == len(payload)
+    watcher.stop()

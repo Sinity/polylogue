@@ -13,6 +13,7 @@ from polylogue.core.write_lease import write_lease
 from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.events import emit_daemon_event, query_events_since
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.stale_ops import (
     custody_file_inventory,
     durable_sql_inventory,
@@ -53,8 +54,13 @@ def test_production_startup_reconverges_stale_ops_then_restart_keeps_event_ident
     def reached_preflight() -> None:
         if current_ops_digest is not None:
             assert hashlib.sha256((root / "ops.db").read_bytes()).digest() == current_ops_digest
-        with write_lease("daemon.startup.test_event", archive_root=root):
-            emit_daemon_event("synthetic_startup", archive_root_path=root, idempotency_key="same-startup")
+
+        def emit() -> None:
+            with write_lease("daemon.startup.test_event", archive_root=root):
+                emit_daemon_event("synthetic_startup", archive_root_path=root, idempotency_key="same-startup")
+
+        # The preflight hook runs on the daemon's event loop; the synchronous lease may not block it.
+        run_off_event_loop(emit)
         raise StartupCheckpointError
 
     monkeypatch.setattr(daemon_cli, "_check_schema_version_fast", reached_preflight)

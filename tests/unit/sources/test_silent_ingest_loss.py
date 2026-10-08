@@ -188,17 +188,19 @@ def test_mid_stream_corruption_raises_partial_decode_error() -> None:
     assert "sessions.json" in str(err)
 
 
-def test_mid_stream_non_json_failure_raises_the_same_partial_decode_error() -> None:
+def test_mid_stream_non_json_failure_propagates_instead_of_returning_a_partial_set() -> None:
     """polylogue-fkqxx: the generic handler had the opposite policy.
 
     ``_stream_prefixed_items`` raised ``PartialJsonStreamError`` for a
     mid-stream ``JSONError`` after reasoning that returning the partial set
     "silently truncates the session set", then twenty lines later returned the
-    partial set at DEBUG level for every other exception type. The loss is
-    identical; only the exception class differs.
+    partial set at DEBUG level for every other exception type. Only decode
+    failures are decode evidence now; an I/O fault is not a property of the
+    bytes, so it propagates as itself (retryable) rather than being settled as
+    a partial decode, and the records read before it are never returned.
 
-    Anti-vacuity: drop the ``if found_any`` guard from the generic ``except
-    Exception`` branch and this returns two records instead of raising.
+    Anti-vacuity: catch the ``OSError`` beside the decode failures and this
+    either returns two records or settles an I/O fault as a partial decode.
     """
     import ijson
 
@@ -218,8 +220,9 @@ def test_mid_stream_non_json_failure_raises_the_same_partial_decode_error() -> N
 
     import logging
 
-    with pytest.raises(PartialJsonStreamError) as excinfo:
-        list(
+    delivered: list[object] = []
+    with pytest.raises(OSError, match="backing store vanished") as excinfo:
+        delivered.extend(
             iter_json_stream_with(
                 logging.getLogger(__name__),
                 cast(object, FailingIjson),  # type: ignore[arg-type]
@@ -228,7 +231,8 @@ def test_mid_stream_non_json_failure_raises_the_same_partial_decode_error() -> N
             )
         )
 
-    assert excinfo.value.recovered == 2
+    assert not isinstance(excinfo.value, PartialJsonStreamError)
+    assert delivered == []
 
 
 def test_clean_array_does_not_raise() -> None:

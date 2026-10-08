@@ -6,12 +6,13 @@ rather than hard-deleted, preserving user metadata across reset cycles.
 
 from __future__ import annotations
 
+import json
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
-
-from polylogue.api.archive import attach_readonly_database, open_readonly_connection
 
 if TYPE_CHECKING:
     from polylogue.surfaces.payloads import MutationStatus
@@ -140,117 +141,100 @@ def _embeddings_db_present() -> bool:
     return (_archive_root() / _EMBEDDINGS_ARCHIVE_DATABASE[1]).exists()
 
 
-def _resolve_archive_session_ids(tokens: list[str]) -> list[str]:
-    """Resolve exact or prefix archive session tokens.
-
-    If the archive tier is absent, exact tokens are still valid tombstone
-    targets because suppressions live in the user tier and survive re-ingest.
-    """
-
-    unique_tokens = list(dict.fromkeys(tokens))
-    archive_db = _index_db_path()
-    if not archive_db.exists():
-        return unique_tokens
-
-    conn = open_readonly_connection(archive_db, validate_schema=False)
-    try:
-        resolved: list[str] = []
-        for token in unique_tokens:
-            exact = conn.execute("SELECT session_id FROM sessions WHERE session_id = ?", (token,)).fetchone()
-            if exact is not None:
-                resolved.append(str(exact[0]))
-                continue
-            rows = conn.execute(
-                """
-                SELECT session_id
-                FROM sessions
-                WHERE session_id LIKE ?
-                ORDER BY session_id
-                LIMIT 2
-                """,
-                (f"{token}%",),
-            ).fetchall()
-            if not rows:
-                # No match: the archive tier exists but this token does not
-                # name a real session (typo/nonexistent ref, #jnj.5). Drop it
-                # rather than passing the raw token through as a valid
-                # target -- a typo must resolve to zero targets, not
-                # silently tombstone a bogus id.
-                continue
-            if len(rows) > 1:
-                raise click.ClickException(f"session id prefix {token!r} is ambiguous")
-            resolved.append(str(rows[0][0]))
-        return list(dict.fromkeys(resolved))
-    finally:
-        conn.close()
+def _identity_reset_targets(env: AppEnv, *, conv_id: str | None, source_path: Path | None) -> tuple[str, int, str]:
+    """Retain one server-owned audited preview, returning no target collection."""
+    payload: dict[str, object] = {"session": conv_id} if conv_id else {"source_path": str(source_path)}
+    payload["reason"] = "reset --session" if conv_id else f"reset --source {source_path}"
+    response = _submit(env, "mutation.identity-reset.preview", payload)
+    reference = response.get("reference")
+    request_id = reference.get("request_id") if isinstance(reference, dict) else None
+    count = response.get("session_count")
+    if not isinstance(request_id, str) or type(count) is not int or count < 0:
+        raise click.ClickException("identity reset preview returned an invalid result")
+    label = f"session {conv_id!r}" if conv_id else f"source {source_path}"
+    return request_id, count, label
 
 
-def _identity_reset_targets(*, conv_id: str | None, source_path: Path | None) -> tuple[list[str], str]:
-    """Resolve the exact archive session ids targeted by an identity reset.
+def _identity_reset_target_pages(env: AppEnv, preview_request_id: str, count: int) -> Iterator[list[str]]:
+    from polylogue.cli.operation_kernel import OperationKernelError, configured_read_operation
 
-    Resolution happens once, up front, so the dry-run preview and the real
-    mutation act on the identical id set (mirrors the ``delete`` verb's
-    preview/mutate consistency fix, #1873). A ref that matches nothing
-    (typo/nonexistent) resolves to an empty list -- see
-    ``_resolve_archive_session_ids`` -- rather than being treated as a
-    literal target.
-    """
-    if conv_id:
-        return _resolve_archive_session_ids([conv_id]), f"session {conv_id!r}"
-    assert source_path is not None
-    return _archive_session_ids_from_source(source_path), f"source {source_path}"
+    offset = 0
+    while True:
+        try:
+            result = configured_read_operation(
+                env.config,
+                "session.identity-reset.targets",
+                {"preview_request_id": preview_request_id, "offset": offset, "page_size": 256},
+            ).value
+        except OperationKernelError as exc:
+            from polylogue.cli.render.outcome import exit_for_read_failure
+
+            exit_for_read_failure(exc)
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("session_ids"), list)
+            or result.get("total") != count
+            or result.get("offset") != offset
+        ):
+            raise click.ClickException("identity reset targets returned an invalid page")
+        ids = result["session_ids"]
+        if len(ids) > 256 or not all(isinstance(value, str) for value in ids):
+            raise click.ClickException("identity reset targets returned invalid IDs")
+        next_offset = result.get("next_offset")
+        end = offset + len(ids)
+        if (
+            end > count
+            or (next_offset is None and end != count)
+            or (next_offset is not None and (next_offset != end or end <= offset or end >= count))
+        ):
+            raise click.ClickException("identity reset targets returned an invalid continuation")
+        yield ids
+        if next_offset is None:
+            break
+        offset = end
 
 
 def _emit_identity_reset_result(
     env: AppEnv,
     *,
     status: MutationStatus,
-    session_ids: list[str],
+    preview_request_id: str,
+    session_count: int,
     affected_count: int,
     output_format: str | None,
     plain_message: str,
+    include_plain_targets: bool = False,
 ) -> None:
-    if output_format == "json":
+    if output_format == "json" or include_plain_targets:
         from polylogue.surfaces.payloads import MutationResultPayload
 
-        click.echo(
-            MutationResultPayload(
-                status=status,
-                operation="reset",
-                session_count=len(session_ids),
-                affected_count=affected_count,
-                session_ids=tuple(session_ids),
-            ).to_json(exclude_none=True)
-        )
+        # The immutable ordinal walk is staged, never collected into a client
+        # target list. A malformed page or cancellation exposes no prefix.
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as staged:
+            if output_format == "json":
+                payload = MutationResultPayload(
+                    status=status, operation="reset", session_count=session_count, affected_count=affected_count
+                ).model_dump(mode="json", exclude_none=True)
+                payload.pop("session_ids", None)
+                staged.write(json.dumps(payload)[:-1] + ', "session_ids": [')
+            else:
+                staged.write(plain_message + ": ")
+            written = 0
+            for ids in _identity_reset_target_pages(env, preview_request_id, session_count):
+                for session_id in ids:
+                    if written:
+                        staged.write(", " if output_format != "json" else ",")
+                    staged.write(json.dumps(session_id) if output_format == "json" else session_id)
+                    written += 1
+            if output_format == "json":
+                staged.write("]}\n")
+            else:
+                staged.write("\n" if written else "(no matching sessions)\n")
+            staged.seek(0)
+            while chunk := staged.read(64 * 1024):
+                click.echo(chunk, nl=False)
         return
     env.ui.console.print(plain_message)
-
-
-def _archive_session_ids_from_source(source_path: Path) -> list[str]:
-    index_db = _index_db_path()
-    source_db = _source_db_path()
-    if not index_db.exists() or not source_db.exists():
-        return []
-    from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
-
-    exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(source_path)
-    conn = open_readonly_connection(index_db, validate_schema=False)
-    try:
-        attach_readonly_database(conn, source_db, alias="source")
-        rows = conn.execute(
-            """
-            SELECT s.session_id
-            FROM sessions s
-            JOIN source.raw_sessions r ON r.raw_id = s.raw_id
-            WHERE REPLACE(r.source_path, char(92), '/') = ?
-               OR REPLACE(r.source_path, char(92), '/') LIKE ? ESCAPE '\\'
-            ORDER BY s.session_id
-            """,
-            (exact_prefix, child_prefix),
-        ).fetchall()
-        return [str(row[0]) for row in rows]
-    finally:
-        conn.close()
 
 
 @click.command("reset")
@@ -282,7 +266,7 @@ def _archive_session_ids_from_source(source_path: Path) -> list[str]:
 @click.option(
     "--dry-run",
     is_flag=True,
-    help="Preview --session/--source identity-reset targets without mutating anything",
+    help="Retain an audited preview of --session/--source targets without changing sessions",
 )
 @click.option(
     "--json",
@@ -338,21 +322,18 @@ def reset_command(
     # up front so the dry-run preview and the real mutation act on the
     # identical id set (#jnj.5).
     if conv_id or source_path:
-        session_ids, label = _identity_reset_targets(conv_id=conv_id, source_path=source_path)
-        reason = "reset --session" if conv_id else f"reset --source {source_path}"
-        count = len(session_ids)
+        preview_request_id, count, label = _identity_reset_targets(env, conv_id=conv_id, source_path=source_path)
 
         if dry_run:
             _emit_identity_reset_result(
                 env,
                 status="preview",
-                session_ids=session_ids,
+                preview_request_id=preview_request_id,
+                session_count=count,
                 affected_count=0,
                 output_format=output_format,
-                plain_message=(
-                    f"Would tombstone {count} session(s) for {label}: "
-                    + (", ".join(session_ids) if session_ids else "(no matching sessions)")
-                ),
+                plain_message=f"Would tombstone {count} session(s) for {label}",
+                include_plain_targets=True,
             )
             return
 
@@ -360,7 +341,8 @@ def reset_command(
             _emit_identity_reset_result(
                 env,
                 status="ok",
-                session_ids=[],
+                preview_request_id=preview_request_id,
+                session_count=0,
                 affected_count=0,
                 output_format=output_format,
                 plain_message=f"No sessions found for {label}.",
@@ -372,7 +354,8 @@ def reset_command(
                 _emit_identity_reset_result(
                     env,
                     status="aborted",
-                    session_ids=session_ids,
+                    preview_request_id=preview_request_id,
+                    session_count=count,
                     affected_count=0,
                     output_format=output_format,
                     plain_message="Use --yes to confirm deletion.",
@@ -386,10 +369,18 @@ def reset_command(
                 env.ui.console.print("Aborted.")
                 return
 
+        authorized = _submit(
+            env,
+            "mutation.identity-reset.authorize",
+            {"preview_request_id": preview_request_id, "confirm": True},
+        )
+        reference = authorized.get("reference")
+        if not isinstance(reference, dict) or not isinstance(reference.get("request_id"), str):
+            raise click.ClickException("identity reset authorization returned an invalid reference")
         result = _submit(
             env,
             "mutation.identity-reset",
-            {"session_ids": session_ids, "reason": reason, "confirm": True},
+            {"authorization_request_id": reference["request_id"]},
         )
         result_payload = result.get("result")
         result_payload = result_payload if isinstance(result_payload, dict) else {}
@@ -409,7 +400,8 @@ def reset_command(
         _emit_identity_reset_result(
             env,
             status="ok",
-            session_ids=session_ids,
+            preview_request_id=preview_request_id,
+            session_count=count,
             affected_count=suppressed,
             output_format=output_format,
             plain_message=plain_message,

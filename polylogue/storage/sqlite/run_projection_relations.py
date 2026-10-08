@@ -117,7 +117,7 @@ def observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list
                 return True
             if field == "status":
                 # Same mapping as the projected ``status`` column below.
-                status_expr = "CASE r.tool_outcome WHEN 'ok' THEN 'ok' WHEN 'error' THEN 'failed' ELSE 'unknown' END"
+                status_expr = "CASE pair.verdict WHEN 'ok' THEN 'ok' WHEN 'error' THEN 'failed' ELSE 'unknown' END"
                 clause, clause_params = _in_or_equals_clause(status_expr, current.values, lower=True)
                 add_clause(clause, clause_params, is_selective=True)
                 return True
@@ -229,7 +229,7 @@ def observed_event_relation_sql(
         session_index_hint=" INDEXED BY idx_blocks_session_position" if session_scoped else "",
     )
     return f"""
-WITH session_started_base AS (
+WITH RECURSIVE session_started_base AS (
     SELECT
         'source' AS row_source,
         'observed-event:' || s0.session_id || ':session_started' AS event_ref,
@@ -261,6 +261,16 @@ WITH session_started_base AS (
     FROM sessions s0
 ),
 {pairing},
+-- Materialized once: the per-use evidence and search subqueries below are
+-- correlated, and an inlined association_results would be re-derived for
+-- every paired use, which is quadratic in the archive's tool results. Only
+-- keys are materialized; result text is read per row by primary key, so the
+-- temporary relation does not hold every tool output in memory.
+tool_finished_results AS MATERIALIZED (
+    SELECT ar.session_key,ar.assigned_use_key,ar.message_position,ar.variant_index,ar.block_position,
+           ar.block_key
+    FROM association_results ar
+),
 tool_finished_base AS (
     SELECT
         'source' AS row_source,
@@ -284,7 +294,7 @@ tool_finished_base AS (
             WHEN COALESCE(u.tool_command, '') <> '' THEN 'shell'
             ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use')
         END AS handler_kind,
-        CASE r.tool_outcome
+        CASE pair.verdict
             WHEN 'ok' THEN 'ok'
             WHEN 'error' THEN 'failed'
             ELSE 'unknown'
@@ -294,18 +304,31 @@ tool_finished_base AS (
                 THEN json_array('tool-call:' || u.session_id || ':' || u.tool_id)
             ELSE '[]'
         END AS object_refs_json,
-        json_array(
-            u.session_id || '::' || u.message_id || '::' || u.position,
-            r.session_id || '::' || r.message_id || '::' || r.position
-        ) AS evidence_refs_json,
-        trim(COALESCE(u.search_text, '') || ' ' || COALESCE(r.search_text, '')) AS search_text
+        (SELECT json_group_array(ref) FROM (
+            SELECT u.session_id || '::' || u.message_id || '::' || u.position AS ref,
+                   -1 AS message_position,-1 AS variant_index,-1 AS block_position
+            UNION ALL
+            SELECT rb.session_id || '::' || rb.message_id || '::' || rb.position,
+                   tr.message_position,tr.variant_index,tr.block_position
+            FROM tool_finished_results tr JOIN blocks rb ON rb.block_id=tr.block_key
+            WHERE tr.session_key=pair.session_id AND tr.assigned_use_key=pair.tool_use_block_id
+            ORDER BY message_position,variant_index,block_position
+        )) AS evidence_refs_json,
+        trim(COALESCE(u.search_text, '') || ' ' || COALESCE((
+            SELECT group_concat(search_text,' ') FROM (
+                SELECT rb.search_text FROM tool_finished_results tr JOIN blocks rb ON rb.block_id=tr.block_key
+                WHERE tr.session_key=pair.session_id AND tr.assigned_use_key=pair.tool_use_block_id
+                ORDER BY tr.message_position,tr.variant_index,tr.block_position
+            )
+        ),'')) AS search_text
     -- Derive associations from the shared owner, not from a potentially
     -- unrefreshed action_pairs table. Unresolved uses cannot certify a
-    -- tool_finished event. Preserve u/r aliases for source pushdown.
+    -- tool_finished event. Fanout carries every result reference; no result
+    -- is chosen to stand for the scalar location. Pushdown uses the same verdict.
     FROM paired_uses pair
     JOIN blocks u ON u.block_id = pair.tool_use_block_id
-    JOIN blocks r ON r.block_id = pair.candidate_result_id AND pair.ambiguous = 0
-    WHERE ({source_where})
+    LEFT JOIN blocks r ON r.block_id = pair.candidate_result_id
+    WHERE pair.ambiguous=0 AND pair.result_count>0 AND ({source_where})
 ),
 source_observed_events AS (
     SELECT * FROM session_started_base

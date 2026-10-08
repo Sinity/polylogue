@@ -737,6 +737,8 @@ def _owner_stable_key(
         value = _first_identity_field(item, field)
         if value is not None:
             evidence[field] = value
+    if (summary := _compaction_summary_material(item)) is not None:
+        evidence["compaction_summary"] = summary[0]
     block_ids = sorted(block.tool_id for block in blocks if block.tool_id)
     if block_ids:
         evidence["tool_ids"] = block_ids
@@ -867,23 +869,10 @@ def _occurrence_base(evidence_key: str) -> str:
     return evidence_key.split(":occurrence:", 1)[0]
 
 
-def _compaction_summary_event(evidence: _ClaudeMessageEvidence) -> ParsedSessionEvent | None:
-    """The ``claude_ai_compaction_summary`` event of one message, when it carries one.
-
-    When claude.ai compacts a conversation it stores the summary it carries
-    forward on the message where compaction took effect (``compaction_summary``:
-    text blocks with start/stop timestamps). The text is kept, keyed to that
-    message. It is deliberately not a ``compaction`` event: those carry
-    boundaries and a materialized summary message that effective-context reads
-    apply, and placing a summary message into claude.ai's branched message tree
-    (variant and attachment-owner coordinates) is not done here.
-
-    One event per emitted message, in the normalizer's canonical message
-    order: a repeated native id is one message per occurrence and keeps its
-    own summary, and an export listing the same messages in another array
-    order yields the same events in the same order.
-    """
-    summary_blocks = evidence.raw.get("compaction_summary")
+def _compaction_summary_material(
+    item: Mapping[str, object],
+) -> tuple[dict[str, object], str | None, str | None] | None:
+    summary_blocks = item.get("compaction_summary")
     if not isinstance(summary_blocks, list):
         return None
     texts: list[str] = []
@@ -908,6 +897,29 @@ def _compaction_summary_event(evidence: _ClaudeMessageEvidence) -> ParsedSession
         payload["start_timestamp"] = start_timestamp
     if stop_timestamp is not None:
         payload["stop_timestamp"] = stop_timestamp
+    return payload, start_timestamp, stop_timestamp
+
+
+def _compaction_summary_event(evidence: _ClaudeMessageEvidence) -> ParsedSessionEvent | None:
+    """The ``claude_ai_compaction_summary`` event of one message, when it carries one.
+
+    When claude.ai compacts a conversation it stores the summary it carries
+    forward on the message where compaction took effect (``compaction_summary``:
+    text blocks with start/stop timestamps). The text is kept, keyed to that
+    message. It is deliberately not a ``compaction`` event: those carry
+    boundaries and a materialized summary message that effective-context reads
+    apply, and placing a summary message into claude.ai's branched message tree
+    (variant and attachment-owner coordinates) is not done here.
+
+    One event per emitted message, in the normalizer's canonical message
+    order: a repeated native id is one message per occurrence and keeps its
+    own summary, and an export listing the same messages in another array
+    order yields the same events in the same order.
+    """
+    material = _compaction_summary_material(evidence.raw)
+    if material is None:
+        return None
+    payload, start_timestamp, stop_timestamp = material
     return ParsedSessionEvent(
         event_type="claude_ai_compaction_summary",
         timestamp=stop_timestamp or start_timestamp or evidence.timestamp or evidence.updated_at,
@@ -1260,7 +1272,14 @@ def _normalize_through_graph(
         if evidence.duration_ms is not None:
             duration_total = (duration_total or 0) + evidence.duration_ms
 
-        event_rows.extend(_web_tool_evidence_events(evidence))
+        event_owner = MessageOwnerCoordinate(
+            stable_key=evidence.owner_stable_key,
+            position=node.position,
+            variant_index=node.variant_index,
+        )
+        event_rows.extend(
+            event.model_copy(update={"owner_coordinate": event_owner}) for event in _web_tool_evidence_events(evidence)
+        )
         if (compaction_summary := _compaction_summary_event(evidence)) is not None:
             _add_summary(graph, node.evidence_key, node.original_index, node.position, compaction_summary)
         if evidence.thinking_configuration:
@@ -1274,11 +1293,12 @@ def _normalize_through_graph(
                     event_type="model_configuration",
                     timestamp=evidence.updated_at or evidence.timestamp,
                     source_message_provider_id=evidence.native_provider_message_id,
+                    owner_coordinate=event_owner,
                     payload=payload,
                 )
             )
         if (update_event := _message_update_event(evidence)) is not None:
-            event_rows.append(update_event)
+            event_rows.append(update_event.model_copy(update={"owner_coordinate": event_owner}))
     # Compaction summaries follow the messages. The occurrences of one
     # repeated identity (a native id, or an ID-less record's synthetic key)
     # get their suffixes, and so their positions and variants, in array
@@ -1289,8 +1309,20 @@ def _normalize_through_graph(
         if (event := _compaction_summary_event(load(original_index, evidence_key))) is not None:
             _add_summary(graph, evidence_key, original_index, 2**31, event)
     for evidence_key, original_index in graph.ordered_summaries():
-        summary = _compaction_summary_event(load(original_index, evidence_key))
+        evidence = load(original_index, evidence_key)
+        summary = _compaction_summary_event(evidence)
         assert summary is not None
+        coordinate = graph.emitted_coordinate(evidence_key)
+        if coordinate is not None:
+            summary = summary.model_copy(
+                update={
+                    "owner_coordinate": MessageOwnerCoordinate(
+                        stable_key=evidence.owner_stable_key,
+                        position=coordinate[0],
+                        variant_index=coordinate[1],
+                    )
+                }
+            )
         event_rows.append(summary)
 
     if duplicate_ids:

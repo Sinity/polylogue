@@ -31,30 +31,16 @@ def require_write_lease(purpose: str, *, archive_root: str | Path | None = None)
     return _implementation().require_write_lease(purpose, archive_root=archive_root)
 
 
+def current_sql_custody() -> Any:
+    return _implementation().current_sql_custody()
+
+
 def grant_write_lease_thread() -> Any:
     return _implementation().grant_write_lease_thread()
 
 
 def bind_write_lease_thread(grant: Any) -> None:
     _implementation().bind_write_lease_thread(grant)
-
-
-@contextmanager
-def install_archive_write_guard() -> Iterator[None]:
-    """Intercept writable archive-tier opens for the duration of the block.
-
-    The guard itself lives with SQLite storage; this adapter keeps the daemon's
-    arming site ring-neutral, exactly as the lease functions above do.
-    """
-    with importlib.import_module("polylogue.storage.sqlite.write_guard").install_archive_write_guard():
-        yield
-
-
-@contextmanager
-def declared_unguarded_write(reason: str) -> Iterator[None]:
-    """Run a declared non-daemon archive authority outside the guard."""
-    with importlib.import_module("polylogue.storage.sqlite.write_guard").declared_unguarded_write(reason):
-        yield
 
 
 @contextmanager
@@ -80,6 +66,25 @@ def write_lease(
         yield lease
 
 
+def async_write_lease(
+    actor: str,
+    *,
+    max_hold_seconds: float | None = None,
+    archive_root: str | Path,
+    coordinator: object | None = None,
+) -> Any:
+    return _implementation().async_write_lease(
+        actor,
+        max_hold_seconds=max_hold_seconds,
+        archive_root=archive_root,
+        coordinator=coordinator,
+    )
+
+
+def archive_write_custody(archive_root: str | Path) -> Any:
+    return _implementation().archive_write_custody(archive_root)
+
+
 def delegate_write_lease() -> Any:
     return _implementation().delegate_write_lease()
 
@@ -93,11 +98,21 @@ def adopt_write_lease(delegation: Any) -> Iterator[Any]:
 def __getattr__(name: str) -> Any:
     """Expose the implementation's lease types without a ring-crossing import."""
     if name in {
+        "ArchiveWriteCustody",
         "WriteLease",
         "WriteLeaseDelegation",
         "WriteLeaseThreadGrant",
         "UnleasedWriteError",
-        "WriteHoldExceededError",
     }:
         return getattr(_implementation(), name)
     raise AttributeError(name)
+
+
+@contextmanager
+def authorized_session_removal(
+    *, archive_root: Path, plan_hash: str, session_ids: tuple[str, ...], excise_assertions: bool = False
+) -> Iterator[None]:
+    with _implementation().authorized_session_removal(
+        archive_root=archive_root, plan_hash=plan_hash, session_ids=session_ids, excise_assertions=excise_assertions
+    ):
+        yield

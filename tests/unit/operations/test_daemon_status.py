@@ -11,7 +11,7 @@ import pytest
 from polylogue.operations.daemon_status import _sqlite_maintenance, produce_direct_status
 from polylogue.operations.operation_context import open_operation_read, prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_schema_drift_sample
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, bootstrap_ready_archive_root
 
 
 class _ArchiveStats(TypedDict):
@@ -384,29 +384,39 @@ def test_direct_status_certifies_a_healthy_archive_without_the_exact_probe(tmp_p
     per-component assertions say which one moved.
     """
 
-    import json
+    import asyncio
 
-    from polylogue.sources.parsers.codex import parse
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.core.enums import Provider
     from tests.infra.convergence_harness import converge_session_profiles
+    from tests.infra.retained_replay import publish_retained_payload
 
     bootstrap_archive_root(tmp_path)
     # The subject is a populated archive with retained acquisition evidence,
     # parsed index rows, and derived profiles rather than an index-only seed.
     source = Path(__file__).parents[2] / "fixtures" / "origin-capability" / "codex-session.jsonl"
     payload_bytes = source.read_bytes()
-    session = parse([json.loads(line) for line in payload_bytes.splitlines()], fallback_id="status-subject")
-    with ArchiveStore(tmp_path) as archive:
-        archive.write_raw_and_parsed_result(
-            session,
+    _raw_id, written = asyncio.run(
+        publish_retained_payload(
+            tmp_path,
+            provider=Provider.CODEX,
             payload=payload_bytes,
             source_path="relative/status-subject.jsonl",
             acquired_at_ms=1_700_000_000_000,
         )
+    )
+    assert written, "the retained subject must publish its parsed session"
     converge_session_profiles(tmp_path / "index.db", tmp_path, None, now=lambda: 0.0)
     prepare_operation_journals(tmp_path)
+    # Healthy includes an inspected accepted frontier: the daemon's frontier
+    # stage records that mark over the populated archive; without it the
+    # frontier is reported as uninspected rather than healthy.
+    bootstrap_ready_archive_root(tmp_path)
     with open_operation_read(tmp_path) as pinned:
-        payload = produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000)
+        from polylogue.config import Config
+
+        payload = produce_direct_status(
+            archive=pinned.archive, now_ms=1_700_000_000_000, config=Config(tmp_path, tmp_path / "render", sources=[])
+        )
 
     components = cast(dict[str, dict[str, object]], payload["component_readiness"])
     assert components["transforms"]["state"] != "unknown"
@@ -443,3 +453,83 @@ def test_pinned_workload_counts_partial_batch_raw_files_and_sessions(tmp_path: P
         "materialized": 3,
         "files_per_second": 0.0,
     }
+
+
+def test_executing_status_requires_configured_drive_witness_even_with_embeddings_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.config import Config, PolylogueConfig, resolve_runtime_config
+    from polylogue.operations.daemon_reads import DaemonReadDependencies, execute_read_operation
+    from polylogue.operations.drive_readiness import drive_readiness_observation, reset_drive_readiness_observation
+    from polylogue.sources.drive.witness import DriveListingWitness
+
+    bootstrap_ready_archive_root(tmp_path)
+    for variable, directory in (
+        ("HOME", "home"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_DATA_HOME", "data"),
+    ):
+        monkeypatch.setenv(variable, str(tmp_path / directory))
+    for relative in ("config/polylogue/polylogue-credentials.json", "state/polylogue/token.json"):
+        credential = tmp_path / relative
+        credential.parent.mkdir(parents=True, exist_ok=True)
+        credential.write_text("{}")
+    settings = PolylogueConfig(_data={"archive_root": str(tmp_path), "embedding_enabled": False})
+    effective = resolve_runtime_config(cli_overrides=settings.raw)
+    drive_sources = [source for source in effective.sources if source.is_drive]
+    assert len(drive_sources) == 1
+    assert drive_sources[0].name == "aistudio"
+    assert drive_sources[0].path is not None and not drive_sources[0].path.exists()
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=list(effective.sources))
+    reset_drive_readiness_observation(tmp_path)
+
+    def status() -> dict[str, Any]:
+        with open_operation_read(tmp_path) as pinned:
+            return execute_read_operation(
+                "status",
+                {},
+                archive=pinned.archive,
+                serving_identity="daemon",
+                dependencies=DaemonReadDependencies(status_now_ms=1_700_000_000_000, status_config=settings),
+                read_view=pinned.read_view,
+            )
+
+    missing = status()
+    assert missing["component_readiness"]["configured_sources"]["state"] == "unknown"
+    assert missing["claim_guard"]["converged"]["value"] is not True
+    assert missing["component_readiness"]["configured_sources"]["counts"]["enumerated"] is None
+
+    class EmptyFolder:
+        def resolve_folder_id(self, folder: str) -> str:
+            return "resolved-folder"
+
+        def iter_json_files(self, folder: str) -> tuple[()]:
+            return ()
+
+    assert drive_sources[0].folder is not None
+    witness = DriveListingWitness("aistudio", drive_sources[0].folder)
+    witness.enumerate(EmptyFolder(), "resolved-folder")  # type: ignore[arg-type]
+    witness.reobserve(EmptyFolder())  # type: ignore[arg-type]
+    drive_readiness_observation(tmp_path).witnesses["aistudio"] = witness
+    from polylogue.daemon import status as resident_status
+
+    monkeypatch.setattr("polylogue.config.get_config", lambda: config)
+    monkeypatch.setattr(resident_status, "_active_status_db_path", lambda: tmp_path / "index.db")
+    fingerprint = resident_status._configured_source_status_fingerprint()
+    resident = resident_status._configured_source_readiness_info()
+    resident_component = resident["configured_sources"]
+    assert isinstance(resident_component, dict)
+    assert resident_component["state"] == "ready"
+    complete = status()
+    component = complete["component_readiness"]["configured_sources"]
+    assert component["state"] == "ready"
+    assert component["counts"] == {"enumerated": 0, "acquired": 0, "materialization_pending": 0}
+    reset_drive_readiness_observation(tmp_path)
+    assert resident_status._configured_source_status_fingerprint() != fingerprint
+    restarted_component = resident_status._configured_source_readiness_info()["configured_sources"]
+    assert isinstance(restarted_component, dict)
+    assert restarted_component["state"] == "unknown"
+    restarted = status()
+    assert restarted["component_readiness"]["configured_sources"]["state"] == "unknown"
+    assert restarted["claim_guard"]["converged"]["value"] is not True

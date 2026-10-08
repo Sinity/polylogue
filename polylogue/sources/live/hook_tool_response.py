@@ -26,20 +26,16 @@ retains in full for all but a handful of calls.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import BlockType
-from polylogue.logging import get_logger
 from polylogue.sources.parsers.base_models import ParsedSession, ParsedSessionEvent
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-logger = get_logger(__name__)
 
 #: The event family this module appends to a recovered session's timeline.
 HOOK_TOOL_RESPONSE_EVENT_TYPE = "hook_tool_response_recovery"
@@ -136,42 +132,16 @@ def hook_response_text(tool_response: object) -> tuple[str, int | None] | None:
     return None
 
 
-def read_hook_tool_responses(
-    conn: sqlite3.Connection,
-    *,
-    origin: str,
-    session_native_ids: Sequence[str],
-    tool_use_ids: Iterable[str],
+def hook_tool_responses_from_rows(
+    rows: Iterable[tuple[object, object]], *, tool_use_ids: Iterable[str]
 ) -> dict[str, HookToolResponse]:
-    """Read ``PostToolUse`` responses for ``tool_use_ids`` out of ``source.db``.
-
-    A subagent's tool calls are journalled under the parent session's id, so
-    callers pass every native id the call could have been recorded against.
-    """
+    """Decode selected durable hook rows without owning their storage read."""
     wanted = {tool_use_id for tool_use_id in tool_use_ids if tool_use_id}
-    natives = [native_id for native_id in dict.fromkeys(session_native_ids) if native_id]
-    if not wanted or not natives:
-        return {}
-    has_hook_spool = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_hook_events'"
-    ).fetchone()
-    if has_hook_spool is None:
-        # An index-only harness, or a source tier predating the hook spool.
-        return {}
-    placeholders = ", ".join("?" for _ in natives)
-    rows = conn.execute(
-        f"""
-        SELECT hook_event_id, payload_json
-        FROM raw_hook_events
-        WHERE origin = ?
-          AND session_native_id IN ({placeholders})
-          AND event_type = 'PostToolUse'
-        ORDER BY observed_at_ms
-        """,
-        (origin, *natives),
-    ).fetchall()
     recovered: dict[str, HookToolResponse] = {}
     for hook_event_id, payload_json in rows:
+        check_compute_cancelled()
+        if not isinstance(payload_json, (str, bytes, bytearray)):
+            continue
         try:
             payload = json.loads(payload_json).get("payload")
         except (TypeError, ValueError, AttributeError):
@@ -194,40 +164,84 @@ def read_hook_tool_responses(
     return recovered
 
 
-def resolve_hook_tool_responses(
-    archive_root: Path,
+def hook_tool_response_evidence_digest(rows: Iterable[tuple[object, object]]) -> str | None:
+    """Digest all selected durable hook rows without retaining their payloads."""
+    digest = hashlib.sha256()
+    found = False
+    for hook_event_id, payload_json in rows:
+        check_compute_cancelled()
+        found = True
+        for value in (str(hook_event_id).encode("utf-8"), str(payload_json).encode("utf-8")):
+            digest.update(len(value).to_bytes(8, "big"))
+            digest.update(value)
+    return digest.hexdigest() if found else None
+
+
+def read_hook_tool_responses(
+    conn: sqlite3.Connection,
     *,
     origin: str,
     session_native_ids: Sequence[str],
     tool_use_ids: Iterable[str],
 ) -> dict[str, HookToolResponse]:
-    """``read_hook_tool_responses`` against the archive's own ``source.db``.
+    """Read hook responses using an already-owned Source connection.
 
-    Read-only so it is safe beside the daemon's single writer; an absent or
-    unreadable source tier degrades to no evidence.
+    Retained preparation uses ``PreparedSessionSourceRead`` so its selected
+    rows remain inside the original publication fence. This adapter is only
+    for callers that already own a connection; it never opens an archive.
     """
-    source_db = archive_root / "source.db"
-    if not source_db.exists():
+    wanted = tuple(dict.fromkeys(tool_id for tool_id in tool_use_ids if tool_id))
+    natives = tuple(dict.fromkeys(native_id for native_id in session_native_ids if native_id))
+    if not wanted or not natives:
         return {}
-    try:
-        conn = open_readonly_connection(
-            source_db, tier=ArchiveTier.SOURCE, validate_schema=False, timeout=5.0, timeout_class="background-read"
+    placeholders = ", ".join("?" for _ in natives)
+    recovered: dict[str, HookToolResponse] = {}
+    for start in range(0, len(wanted), 128):
+        batch = wanted[start : start + 128]
+        wanted_placeholders = ", ".join("?" for _ in batch)
+        cursor = conn.execute(
+            f"""SELECT hook_event_id, payload_json
+            FROM raw_hook_events
+            WHERE origin=? AND session_native_id IN ({placeholders}) AND event_type='PostToolUse'
+              AND json_valid(payload_json)
+              AND json_extract(payload_json, '$.payload.tool_use_id') IN ({wanted_placeholders})
+            ORDER BY observed_at_ms, hook_event_id""",
+            (origin, *natives, *batch),
         )
-    except sqlite3.Error as exc:
-        logger.debug("Failed to open source.db for hook tool responses: %s", exc)
-        return {}
+        try:
+            while page := cursor.fetchmany(256):
+                recovered.update(hook_tool_responses_from_rows(page, tool_use_ids=batch))
+        finally:
+            cursor.close()
+    return recovered
+
+
+def read_hook_tool_response_evidence_digest(
+    conn: sqlite3.Connection,
+    *,
+    origin: str,
+    session_native_ids: Sequence[str],
+) -> str | None:
+    """Digest a session's complete PostToolUse evidence through an owned read."""
+    natives = tuple(dict.fromkeys(native_id for native_id in session_native_ids if native_id))
+    if not natives:
+        return None
+    placeholders = ", ".join("?" for _ in natives)
+    cursor = conn.execute(
+        f"""SELECT hook_event_id, payload_json FROM raw_hook_events
+        WHERE origin=? AND session_native_id IN ({placeholders}) AND event_type='PostToolUse'
+        ORDER BY hook_event_id""",
+        (origin, *natives),
+    )
+
+    def selected_rows() -> Iterable[tuple[object, object]]:
+        while page := cursor.fetchmany(256):
+            yield from page
+
     try:
-        return read_hook_tool_responses(
-            conn,
-            origin=origin,
-            session_native_ids=session_native_ids,
-            tool_use_ids=tool_use_ids,
-        )
-    except sqlite3.Error as exc:
-        logger.debug("Failed to read hook tool responses: %s", exc)
-        return {}
+        return hook_tool_response_evidence_digest(selected_rows())
     finally:
-        conn.close()
+        cursor.close()
 
 
 def apply_hook_tool_responses(
@@ -301,28 +315,13 @@ def apply_hook_tool_responses(
     return session.model_copy(update={"messages": messages, "session_events": [*session.session_events, *events]})
 
 
-def recover_persisted_tool_results(session: ParsedSession, *, archive_root: Path) -> ParsedSession:
-    """Apply hook recovery to whatever the sidecar join left truncated.
-
-    A no-op -- with no source-tier read at all -- for a session that carries no
-    unresolved overflow pointer, which is every session but a handful.
-    """
+def recover_persisted_tool_results(
+    session: ParsedSession, *, responses: Mapping[str, HookToolResponse]
+) -> ParsedSession:
+    """Apply responses already read through the caller's owned Source window."""
     truncations = unresolved_persisted_truncations(session)
     if not truncations:
         return session
-    from polylogue.core.sources import origin_from_provider
-
-    native_id = str(session.provider_session_id or "")
-    if not native_id:
-        return session
-    responses = resolve_hook_tool_responses(
-        archive_root,
-        origin=origin_from_provider(session.source_name).value,
-        # A subagent transcript's native id is ``<parent uuid>:<agent id>``,
-        # while its hook envelopes are journalled under the parent uuid alone.
-        session_native_ids=(native_id, native_id.split(":", 1)[0]),
-        tool_use_ids=(truncation.tool_use_id for truncation in truncations),
-    )
     return apply_hook_tool_responses(session, truncations, responses)
 
 
@@ -333,8 +332,8 @@ __all__ = [
     "PersistedTruncation",
     "apply_hook_tool_responses",
     "hook_response_text",
+    "hook_tool_responses_from_rows",
     "read_hook_tool_responses",
     "recover_persisted_tool_results",
-    "resolve_hook_tool_responses",
     "unresolved_persisted_truncations",
 ]

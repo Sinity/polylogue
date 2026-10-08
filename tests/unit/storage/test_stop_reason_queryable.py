@@ -27,12 +27,15 @@ from polylogue.archive.filter.filters import SessionFilter
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.core.enums import BlockType, Provider, Role
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.io_phase_metrics import connect_measured
+from tests.infra.archive_templates import seeds_off_event_loop
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import db_setup
 
 
+@seeds_off_event_loop
 def _write_session_with_stop_reason(db_path: Path, *, native_id: str, stop_reason: str | None) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     try:
         session = ParsedSession(
@@ -57,7 +60,7 @@ def _write_session_with_stop_reason(db_path: Path, *, native_id: str, stop_reaso
                 ),
             ],
         )
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.commit()
     finally:
         conn.close()

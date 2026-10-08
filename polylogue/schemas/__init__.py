@@ -15,14 +15,18 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from polylogue.schemas.validator import (
+        RetainedValidationVerdict,
         SchemaValidator,
         ValidationResult,
         validate_provider_export,
+        validate_retained_document,
     )
 
 __all__ = [
+    "RetainedValidationVerdict",
     "SchemaValidator",
     "ValidationResult",
+    "validate_retained_document",
     "validate_provider_export",
 ]
 

@@ -13,13 +13,15 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.claude import parse_code
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -27,11 +29,11 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 
 def _write(conn: sqlite3.Connection, session: ParsedSession) -> str:
-    return write_parsed_session_to_archive(
+    return write_fixture_index_session(
         conn,
         session,
         content_hash=str(session_content_hash(session)),
-        prepared=prepare_session_rows(session),
+        prepared_rows=prepare_session_rows(session),
     )
 
 
@@ -434,7 +436,7 @@ def test_unmappable_provider_usage_stays_unpriced_through_append_and_rebuild(
                 ],
             }
         )
-        write_parsed_session_to_archive(conn, appended, merge_append=True)
+        write_fixture_index_session(conn, appended, merge_append=True)
         assert cost() is None
         reconcile_session_usage_rollup(conn, session_id)
         assert cost() is None
@@ -517,7 +519,7 @@ def test_session_summary_refuses_incomplete_catalog_total_and_preserves_provider
             ),
         ],
     )
-    conn = sqlite3.connect(tmp_path / "index.db")
+    conn = connect_measured(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     try:
         session_id = _write(conn, session)

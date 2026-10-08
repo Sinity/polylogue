@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -16,6 +17,7 @@ from polylogue.config import Source
 from polylogue.core.errors import SchemaSkewError
 from polylogue.operations.canonical_archive_ingest import (
     ingest_sources_archive,
+    one_shot_compute_owner,
     scoped_one_shot_archive_owner,
 )
 from polylogue.scenarios import (
@@ -35,6 +37,7 @@ from polylogue.scenarios import (
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.parsers.browser_capture import parse as parse_browser_capture
+from polylogue.sources.source_layout import canonical_session_position
 from polylogue.storage.archive_identity import (
     DEMO_OWNERSHIP_MANIFEST_FILENAME,
     read_demo_ownership_manifest,
@@ -62,6 +65,8 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     record_source_outage_events,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection import connection_context
+from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 from .constructs import evaluate_demo_constructs
@@ -133,21 +138,6 @@ def _sqlite_table_row_count(db_path: Path, table: str) -> int | object:
             return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
     except sqlite3.Error:
         return _TIER_UNREADABLE
-
-
-def _archive_tier_session_count(root: Path) -> int:
-    """Return the number of sessions already present in *root*'s index tier.
-
-    Returns ``0`` when the tier database does not exist, does not yet have
-    a ``sessions`` table, or can't otherwise be read -- this is a *display*
-    helper only (used to report a session count in the safety-guard error
-    message), never the sole authorization signal. See
-    :func:`_archive_root_has_real_content` for the tier-aware predicate that
-    actually gates self-heal and the default-root guard.
-    """
-
-    result = _sqlite_table_row_count(root / "index.db", "sessions")
-    return result if isinstance(result, int) else 0
 
 
 #: The row ids a completed demo-only seed records per tier, and that
@@ -225,41 +215,22 @@ def _archive_root_has_real_content(root: Path) -> bool:
     return False
 
 
-def _guard_demo_seed_target(root: Path, *, explicit_root: bool, force: bool) -> None:
+def _guard_demo_seed_target(root: Path) -> None:
     """Refuse to seed synthetic demo content into what looks like a real archive.
 
-    ``demo seed``'s default archive-root resolution shares
-    ``polylogue.paths.archive_root()`` (``POLYLOGUE_ARCHIVE_ROOT``, then
-    ``polylogue.toml``, then the XDG default) with the live daemon: an
-    operator or agent who runs ``polylogue demo seed`` with no ``--root``
-    can have it silently resolve to their live production archive
-    (polylogue-o3a1t). ``demo seed`` *adds* demo sessions rather than
-    refusing to run against existing content, so that collision seeds
-    synthetic fixture rows directly into a real archive.
-
     A new or demo-owned root is eligible. Real content in an unowned root
-    always refuses; an explicit path or ``--force`` does not authorize
-    mixing synthetic material with an existing archive.
+    always refuses; ``--force`` does not authorize mixing synthetic material
+    with an existing archive. The CLI additionally refuses the configured
+    archive before reaching here (``polylogue.cli.commands.demo``), because
+    an empty configured archive passes this content check.
     """
 
     if _archive_root_is_demo_owned(root):
         return
     if not _archive_root_has_real_content(root):
         return
-    if explicit_root or force:
-        raise DemoSeedTargetUnsafeError(
-            f"{root} contains real archive content; an explicit root or --force cannot seed an unowned archive"
-        )
-    session_count = _archive_tier_session_count(root)
-    detail = f"{session_count} real ingested session(s)" if session_count > 0 else "real ingested durable content"
     raise DemoSeedTargetUnsafeError(
-        f"'polylogue demo seed' resolved its archive root to {root} through the default "
-        "archive_root()/polylogue.toml resolution chain (no --root and no "
-        "POLYLOGUE_ARCHIVE_ROOT override), and that root already holds "
-        f"{detail} without valid demo ownership. "
-        "Refusing to write synthetic demo fixture content into what looks like a live "
-        "archive. Re-run with an explicit '--root <path>' pointed at a scratch/demo "
-        "location. --force cannot seed an unowned archive."
+        f"{root} contains real archive content; demo seeding cannot write into an unowned archive"
     )
 
 
@@ -477,7 +448,7 @@ def _write_demo_browser_capture_gap_sources(source_root: Path) -> None:
 
     native_id = DEMO_CHATGPT_SESSION_ID.split(":", maxsplit=1)[1]
     _write_json(
-        source_root / "browser-capture" / "chatgpt-raw-provider.json",
+        source_root / "browser-capture" / "chatgpt" / "chatgpt-raw-provider.json",
         {
             "polylogue_capture_kind": "browser_llm_session",
             "schema_version": 1,
@@ -555,7 +526,7 @@ def _write_demo_browser_capture_gap_sources(source_root: Path) -> None:
         },
     )
     _write_json(
-        source_root / "browser-capture" / "chatgpt-dom-fallback.json",
+        source_root / "browser-capture" / "chatgpt" / "chatgpt-dom-fallback.json",
         {
             "polylogue_capture_kind": "browser_llm_session",
             "schema_version": 1,
@@ -649,7 +620,7 @@ def _write_demo_cross_material_duplicate_sources(source_root: Path) -> None:
         ),
     )
     _write_json(
-        source_root / "browser-capture" / "duplicate-capture.json",
+        source_root / "browser-capture" / "chatgpt" / "duplicate-capture.json",
         {
             "polylogue_capture_kind": "browser_llm_session",
             "schema_version": 1,
@@ -833,7 +804,7 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         )
 
     _write_jsonl(
-        source_root / "codex" / "lineage-parent.jsonl",
+        source_root / "codex" / canonical_session_position("codex", "lineage-parent", ".jsonl"),
         (
             _codex_session_meta(parent_id, timestamp="2026-07-04T10:00:00Z"),
             _codex_message("parent-u0", "user", "2026-07-04T10:00:01Z", [_input_text(base_user)]),
@@ -857,11 +828,11 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
-        source_root / "claude-code" / "lineage-compaction-parent.jsonl",
+        source_root / "claude-code" / canonical_session_position("claude-code", "lineage-compaction-parent", ".jsonl"),
         _compaction_narrative_records(uuid_prefix="compaction-parent"),
     )
     _write_jsonl(
-        source_root / "claude-code" / "agent-acompact-demo.jsonl",
+        source_root / "claude-code" / canonical_session_position("claude-code", "agent-acompact-demo", ".jsonl"),
         (
             # Literal replay of the parent's own messages, matching real Claude
             # Code auto-compact behavior (the compactor re-reads and re-emits
@@ -880,7 +851,7 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
-        source_root / "claude-code" / "lineage-sidechain.jsonl",
+        source_root / "claude-code" / canonical_session_position("claude-code", "lineage-sidechain", ".jsonl"),
         (
             _claude_code_record(
                 record_type="user",
@@ -903,7 +874,7 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
-        source_root / "codex" / "lineage-fork.jsonl",
+        source_root / "codex" / canonical_session_position("codex", "lineage-fork", ".jsonl"),
         (
             _codex_session_meta(fork_id, timestamp="2026-07-04T10:01:00Z", forked_from_id=parent_id),
             _codex_message("fork-u0", "user", "2026-07-04T10:01:01Z", [_input_text(base_user)]),
@@ -923,7 +894,7 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
-        source_root / "codex" / "lineage-subagent.jsonl",
+        source_root / "codex" / canonical_session_position("codex", "lineage-subagent", ".jsonl"),
         (
             _codex_session_meta(
                 subagent_id,
@@ -940,7 +911,7 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
-        source_root / "codex" / "terminal-error.jsonl",
+        source_root / "codex" / canonical_session_position("codex", "terminal-error", ".jsonl"),
         (
             _codex_session_meta(terminal_error_id, timestamp="2026-07-04T10:05:00Z"),
             _codex_message(
@@ -1027,7 +998,7 @@ def _write_demo_receipts_sources(source_root: Path) -> None:
     receipts_id = DEMO_CODEX_RECEIPTS_SESSION_ID.removeprefix("codex-session:")
     anti_grep_id = DEMO_CODEX_ANTI_GREP_SESSION_ID.removeprefix("codex-session:")
     _write_jsonl(
-        source_root / "codex" / "receipts.jsonl",
+        source_root / "codex" / canonical_session_position("codex", "receipts", ".jsonl"),
         (
             _codex_session_meta(receipts_id, timestamp="2026-07-04T14:32:00Z"),
             _codex_message(
@@ -1092,7 +1063,7 @@ def _write_demo_receipts_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
-        source_root / "codex" / "anti-grep-control.jsonl",
+        source_root / "codex" / canonical_session_position("codex", "anti-grep-control", ".jsonl"),
         (
             _codex_session_meta(anti_grep_id, timestamp="2026-07-04T14:31:00Z"),
             _codex_message(
@@ -1126,7 +1097,7 @@ def _write_demo_gemini_cli_sources(source_root: Path) -> None:
 
     native_id, kind, start_time = DEMO_GEMINI_CLI_WIRE
     _write_json(
-        source_root / "gemini-cli" / "demo-00.json",
+        source_root / "gemini-cli" / canonical_session_position("gemini-cli", "demo-00", ".json"),
         {
             "sessionId": native_id,
             "kind": kind,
@@ -1226,7 +1197,7 @@ def _write_demo_hermes_sources(source_root: Path) -> None:
 
     native_id = DEMO_HERMES_SESSION_ID.removeprefix("hermes-session:")
     _write_json(
-        source_root / "hermes" / "demo-00.json",
+        source_root / "hermes" / canonical_session_position("hermes", "demo-00", ".json"),
         {
             "session_id": native_id,
             "platform": "hermes",
@@ -1267,7 +1238,7 @@ def _write_demo_hermes_sources(source_root: Path) -> None:
     )
 
 
-def _materialize_session_insights(archive_root: Path, session_ids: list[str]) -> None:
+def _materialize_session_insights(conn: sqlite3.Connection, session_ids: list[str]) -> None:
     """Build the session-profile insight read models for *session_ids*.
 
     ``ingest_one_shot_archive`` writes the ``sessions``/``messages`` tree but does
@@ -1282,12 +1253,8 @@ def _materialize_session_insights(archive_root: Path, session_ids: list[str]) ->
 
     if not session_ids:
         return
-    conn = sqlite3.connect(archive_root / "index.db")
-    try:
-        conn.row_factory = sqlite3.Row
-        rebuild_session_insights_sync(conn, session_ids=session_ids)
-    finally:
-        conn.close()
+    conn.row_factory = sqlite3.Row
+    rebuild_session_insights_sync(conn, session_ids=session_ids)
 
 
 # Deterministic per-assistant-message Opus usage injected into the demo
@@ -1305,7 +1272,7 @@ _DEMO_USAGE = {
 }
 
 
-def _inject_demo_session_usage(archive_root: Path) -> None:
+def _inject_demo_session_usage(conn: sqlite3.Connection) -> None:
     """Set deterministic Opus token usage on the demo claude-code assistant turns.
 
     Cost is computed in the canonical ``session_model_usage`` projection from
@@ -1314,24 +1281,20 @@ def _inject_demo_session_usage(archive_root: Path) -> None:
     generator change, no test-snapshot ripple.
     """
 
-    conn = sqlite3.connect(archive_root / "index.db")
-    try:
-        conn.execute(
-            "UPDATE messages SET model_name = ?, input_tokens = ?, output_tokens = ?, "
-            "cache_read_tokens = ?, cache_write_tokens = ? "
-            "WHERE session_id = ? AND role = 'assistant'",
-            (
-                _DEMO_USAGE_MODEL,
-                _DEMO_USAGE["input_tokens"],
-                _DEMO_USAGE["output_tokens"],
-                _DEMO_USAGE["cache_read_tokens"],
-                _DEMO_USAGE["cache_write_tokens"],
-                DEMO_CLAUDE_CODE_SESSION_ID,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    conn.execute(
+        "UPDATE messages SET model_name = ?, input_tokens = ?, output_tokens = ?, "
+        "cache_read_tokens = ?, cache_write_tokens = ? "
+        "WHERE session_id = ? AND role = 'assistant'",
+        (
+            _DEMO_USAGE_MODEL,
+            _DEMO_USAGE["input_tokens"],
+            _DEMO_USAGE["output_tokens"],
+            _DEMO_USAGE["cache_read_tokens"],
+            _DEMO_USAGE["cache_write_tokens"],
+            DEMO_CLAUDE_CODE_SESSION_ID,
+        ),
+    )
+    conn.commit()
 
 
 # Canonical repo identity for the demo claude-code session so the postmortem
@@ -1343,18 +1306,14 @@ def _inject_demo_session_usage(archive_root: Path) -> None:
 _DEMO_REPO_NAMES = '["polylogue"]'
 
 
-def _inject_demo_session_repos(archive_root: Path) -> None:
+def _inject_demo_session_repos(conn: sqlite3.Connection) -> None:
     """Set a canonical repo name on the demo claude-code session profile."""
 
-    conn = sqlite3.connect(archive_root / "index.db")
-    try:
-        conn.execute(
-            "UPDATE session_profiles SET repo_names_json = ? WHERE session_id = ?",
-            (_DEMO_REPO_NAMES, DEMO_CLAUDE_CODE_SESSION_ID),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    conn.execute(
+        "UPDATE session_profiles SET repo_names_json = ? WHERE session_id = ?",
+        (_DEMO_REPO_NAMES, DEMO_CLAUDE_CODE_SESSION_ID),
+    )
+    conn.commit()
 
 
 _DEMO_EMBEDDING_MODEL = "demo-synthetic-embedding"
@@ -1368,7 +1327,7 @@ def _demo_embedding_vector(text: str) -> list[float]:
     return [((digest[index % len(digest)] / 255.0) * 2.0) - 1.0 for index in range(EMBEDDING_DIMENSION)]
 
 
-def _seed_demo_embeddings(archive_root: Path) -> None:
+def _seed_demo_embeddings(archive_root: Path, index_conn: sqlite3.Connection) -> None:
     """Seed deterministic embeddings for one authored-prose demo session.
 
     This deliberately does not call an embedding provider. It proves the
@@ -1391,8 +1350,9 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
 
     embeddings_db = archive_root / "embeddings.db"
     initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
-    index_conn = sqlite3.connect(archive_root / "index.db")
-    embeddings_conn = sqlite3.connect(embeddings_db)
+    embeddings_conn = open_isolated_write_connection(
+        embeddings_db, purpose="demo synthetic embeddings", archive_root=archive_root
+    )
     try:
         loaded, error = try_load_sqlite_vec(embeddings_conn)
         if not loaded:
@@ -1504,7 +1464,6 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
         )
         embeddings_conn.commit()
     finally:
-        index_conn.close()
         embeddings_conn.close()
 
 
@@ -1518,58 +1477,23 @@ def demo_source_specs(source_root: Path) -> list[Source]:
         Source(name="codex", path=Path("codex")),
         Source(name="gemini", path=Path("gemini")),
         Source(name="gemini-cli", path=Path("gemini-cli")),
-        Source(name="antigravity", path=Path("antigravity")),
+        # The language-server export document has no provider-written
+        # position; it is an explicitly declared input file.
+        Source(name="antigravity", path=Path("antigravity") / "demo-00.json"),
         Source(name="hermes", path=Path("hermes")),
         Source(name="browser-capture", path=Path("browser-capture")),
     ]
 
 
-def _all_demo_session_ids(archive_root: Path) -> list[str]:
+def _all_demo_session_ids(conn: sqlite3.Connection) -> list[str]:
     """Return every session id currently present in the demo archive's index tier."""
 
-    conn = sqlite3.connect(archive_root / "index.db")
-    try:
-        rows = conn.execute("SELECT session_id FROM sessions").fetchall()
-    finally:
-        conn.close()
+    rows = conn.execute("SELECT session_id FROM sessions").fetchall()
+
     return sorted(str(row[0]) for row in rows)
 
 
-# A live daemon keeps materializing session_profiles in the background
-# (its own insights-convergence stage) concurrently with a one-shot CLI
-# augmentation call. If that stage recomputes session_profiles from a
-# pre-injection snapshot *after* this function's own
-# ``_materialize_session_insights`` call, the injected usage/cost is
-# silently overwritten with zeros even though the injection itself
-# succeeded. Bounded self-heal: re-run the whole idempotent sequence a few
-# times, a short beat apart, until the read-back proves the injected cost
-# survived (polylogue-z1c6 review follow-up). A no-daemon caller (the
-# direct seeder) always settles on the first attempt.
-_AUGMENTATION_SETTLE_ATTEMPTS = 4
-_AUGMENTATION_SETTLE_INTERVAL_S = 0.5
-
-
-def _demo_usage_has_settled(archive_root: Path) -> bool:
-    """Return whether the injected Claude Code usage survived materialization."""
-
-    conn = sqlite3.connect(archive_root / "index.db")
-    try:
-        row = conn.execute(
-            """
-            SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) AS total_cost_usd
-            FROM sessions AS s
-            LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
-            WHERE s.session_id = ?
-            GROUP BY s.session_id, s.reported_cost_usd
-            """,
-            (DEMO_CLAUDE_CODE_SESSION_ID,),
-        ).fetchone()
-    finally:
-        conn.close()
-    return row is not None and bool(row[0])
-
-
-def _restore_demo_capture_telemetry(archive_root: Path) -> None:
+def _restore_demo_capture_telemetry(archive_root: Path, conn: sqlite3.Connection) -> None:
     """Retain demo capture evidence rejected before the indexed write seam.
 
     Canonical intake records every material in source.db, but its membership
@@ -1577,64 +1501,62 @@ def _restore_demo_capture_telemetry(archive_root: Path) -> None:
     skip path has a chance to retain its gap and outage events.
     """
 
-    with sqlite3.connect(archive_root / "index.db") as conn:
-        conn.execute("ATTACH DATABASE ? AS source", (str(archive_root / "source.db"),))
-        session = conn.execute(
-            "SELECT raw_id, message_count FROM sessions WHERE session_id = ?",
+    session = conn.execute(
+        "SELECT raw_id, message_count FROM sessions WHERE session_id = ?",
+        (DEMO_CHATGPT_SESSION_ID,),
+    ).fetchone()
+    if session is None:
+        return
+    existing_raw_id, stored_message_count = str(session[0]), int(session[1])
+    captures = conn.execute(
+        """
+        SELECT r.raw_id, r.source_path, m.provider_session_id,
+               m.message_count, m.decision
+        FROM source_tier.raw_session_memberships AS m
+        JOIN source_tier.raw_sessions AS r ON r.raw_id = m.raw_id
+        WHERE m.logical_source_key = ?
+          AND r.source_path LIKE '%/browser-capture/%'
+        """,
+        (DEMO_CHATGPT_SESSION_ID,),
+    ).fetchall()
+    by_name = {Path(str(row[1])).name: row for row in captures}
+    fallback = by_name.get("chatgpt-dom-fallback.json")
+    if (
+        fallback is not None
+        and fallback[4] == "superseded_equivalent"
+        and int(fallback[3]) < stored_message_count
+        and not conn.execute(
+            "SELECT 1 FROM session_events WHERE session_id = ? AND event_type = 'capture_gap'",
             (DEMO_CHATGPT_SESSION_ID,),
         ).fetchone()
-        if session is None:
-            return
-        existing_raw_id, stored_message_count = str(session[0]), int(session[1])
-        captures = conn.execute(
-            """
-            SELECT r.raw_id, r.source_path, m.provider_session_id,
-                   m.message_count, m.decision
-            FROM source.raw_session_memberships AS m
-            JOIN source.raw_sessions AS r ON r.raw_id = m.raw_id
-            WHERE m.logical_source_key = ?
-              AND r.source_path LIKE '%/browser-capture/%'
-            """,
+    ):
+        record_capture_gap_event(
+            conn,
+            session_id=DEMO_CHATGPT_SESSION_ID,
+            existing_raw_id=existing_raw_id,
+            incoming_raw_id=str(fallback[0]),
+            stored_message_count=stored_message_count,
+            incoming_message_count=int(fallback[3]),
+        )
+    native = by_name.get("chatgpt-raw-provider.json")
+    if (
+        native is not None
+        and not conn.execute(
+            "SELECT 1 FROM session_events WHERE session_id = ? AND event_type = 'source_outage'",
             (DEMO_CHATGPT_SESSION_ID,),
-        ).fetchall()
-        by_name = {Path(str(row[1])).name: row for row in captures}
-        fallback = by_name.get("chatgpt-dom-fallback.json")
-        if (
-            fallback is not None
-            and fallback[4] == "superseded_equivalent"
-            and int(fallback[3]) < stored_message_count
-            and not conn.execute(
-                "SELECT 1 FROM session_events WHERE session_id = ? AND event_type = 'capture_gap'",
-                (DEMO_CHATGPT_SESSION_ID,),
-            ).fetchone()
-        ):
-            record_capture_gap_event(
+        ).fetchone()
+    ):
+        native_path = Path(str(native[1]))
+        if not native_path.is_absolute():
+            native_path = archive_root / native_path
+        payload = json.loads(native_path.read_text(encoding="utf-8"))
+        parsed = parse_browser_capture(payload, str(native[2]))
+        if parsed.provider_session_id == native[2]:
+            record_source_outage_events(
                 conn,
                 session_id=DEMO_CHATGPT_SESSION_ID,
-                existing_raw_id=existing_raw_id,
-                incoming_raw_id=str(fallback[0]),
-                stored_message_count=stored_message_count,
-                incoming_message_count=int(fallback[3]),
+                events=parsed.session_events,
             )
-        native = by_name.get("chatgpt-raw-provider.json")
-        if (
-            native is not None
-            and not conn.execute(
-                "SELECT 1 FROM session_events WHERE session_id = ? AND event_type = 'source_outage'",
-                (DEMO_CHATGPT_SESSION_ID,),
-            ).fetchone()
-        ):
-            native_path = Path(str(native[1]))
-            if not native_path.is_absolute():
-                native_path = archive_root / native_path
-            payload = json.loads(native_path.read_text(encoding="utf-8"))
-            parsed = parse_browser_capture(payload, str(native[2]))
-            if parsed.provider_session_id == native[2]:
-                record_source_outage_events(
-                    conn,
-                    session_id=DEMO_CHATGPT_SESSION_ID,
-                    events=parsed.session_events,
-                )
 
 
 def apply_demo_post_ingest_augmentation(archive_root: Path) -> None:
@@ -1652,21 +1574,19 @@ def apply_demo_post_ingest_augmentation(archive_root: Path) -> None:
     semantic contract as a directly seeded one (polylogue-z1c6). Every step is
     idempotent (``UPDATE`` / ``INSERT ... ON CONFLICT``), so calling this more
     than once against the same archive (a repeated ``--wait``, a demo reseed)
-    is safe. Self-heals against the live daemon's own insight-convergence
-    stage racing this call (see ``_AUGMENTATION_SETTLE_ATTEMPTS`` above).
+    is safe. One archive connection owner holds writer custody across the
+    complete augmentation, so insight convergence cannot overwrite its
+    intermediate state.
     """
 
-    for attempt in range(_AUGMENTATION_SETTLE_ATTEMPTS):
-        session_ids = _all_demo_session_ids(archive_root)
-        _restore_demo_capture_telemetry(archive_root)
-        _inject_demo_session_usage(archive_root)
-        _materialize_session_insights(archive_root, session_ids)
-        _inject_demo_session_repos(archive_root)
-        _seed_demo_embeddings(archive_root)
-        if _demo_usage_has_settled(archive_root):
-            return
-        if attempt < _AUGMENTATION_SETTLE_ATTEMPTS - 1:
-            time.sleep(_AUGMENTATION_SETTLE_INTERVAL_S)
+    with connection_context(archive_root / "index.db", archive_root=archive_root) as conn:
+        session_ids = _all_demo_session_ids(conn)
+        _restore_demo_capture_telemetry(archive_root, conn)
+        _inject_demo_session_usage(conn)
+        _materialize_session_insights(conn, session_ids)
+        _inject_demo_session_repos(conn)
+        _seed_demo_embeddings(archive_root, conn)
+        conn.commit()
 
 
 async def _seed_demo_archive_owned(
@@ -1674,47 +1594,52 @@ async def _seed_demo_archive_owned(
     *,
     force: bool = False,
     with_overlays: bool = False,
-    explicit_root: bool = False,
 ) -> DemoSeedResult:
-    """Materialize, ingest, and optionally overlay the deterministic demo archive.
-
-    ``explicit_root`` records whether the caller supplied ``--root`` or
-    ``POLYLOGUE_ARCHIVE_ROOT``. It affects the refusal message but never
-    permits seeding real content into an unowned archive.
-    """
+    """Materialize, ingest, and optionally overlay the deterministic demo archive."""
 
     # A reseed must revalidate in-place version changes before generated-tier
     # reconvergence or a durable numbered train advances the owned archive.
-    _guard_demo_seed_target(archive_root, explicit_root=explicit_root, force=force)
+    _guard_demo_seed_target(archive_root)
     invalidate_active_archive_bootstrap(archive_root)
     _record_demo_ownership_if_undetermined(archive_root)
 
     healed_tiers: tuple[str, ...] = ()
     if _archive_root_is_demo_owned(archive_root):
-        healed_tiers = _reconverge_stale_demo_generated_tiers(archive_root)
+        # Bootstrap takes the synchronous archive lease, which refuses to block
+        # the event loop; run it on a worker thread like other sync writers.
+        healed_tiers = await asyncio.to_thread(_reconverge_stale_demo_generated_tiers, archive_root)
 
     source_root = materialize_demo_source(archive_root, force=force)
     with _pushd(source_root):
-        result = await ingest_sources_archive(archive_root, demo_source_specs(source_root), parse_workers=1)
+        async with one_shot_compute_owner(parse_workers=1) as adapter:
+            result = await ingest_sources_archive(
+                archive_root, demo_source_specs(source_root), compute_adapter=adapter, parse_workers=1
+            )
 
-    apply_demo_post_ingest_augmentation(archive_root)
-    overlay = seed_demo_user_overlays(archive_root) if with_overlays else None
-    # After every demo write, overlays included: the baseline names each
-    # durable row this seed is responsible for.
-    _refresh_demo_ownership_session_ids(archive_root)
+    def finish() -> DemoSeedResult:
+        # The post-ingest writes and their archive reads take synchronous
+        # archive custody, which refuses to block the event loop; they run on
+        # a worker thread like the bootstrap above.
+        apply_demo_post_ingest_augmentation(archive_root)
+        overlay = seed_demo_user_overlays(archive_root) if with_overlays else None
+        # After every demo write, overlays included: the baseline names each
+        # durable row this seed is responsible for.
+        _refresh_demo_ownership_session_ids(archive_root)
 
-    construct_coverage = evaluate_demo_constructs(archive_root)
-    return DemoSeedResult(
-        archive_root=archive_root,
-        source_root=source_root,
-        session_count=_demo_archive_count(archive_root, "sessions"),
-        message_count=_demo_archive_count(archive_root, "messages"),
-        session_ids=tuple(sorted(result.processed_ids)),
-        overlays_seeded=overlay is not None,
-        assertion_count=len(overlay.assertion_ids) if overlay else 0,
-        construct_coverage=construct_coverage,
-        healed_tiers=healed_tiers,
-    )
+        construct_coverage = evaluate_demo_constructs(archive_root)
+        return DemoSeedResult(
+            archive_root=archive_root,
+            source_root=source_root,
+            session_count=_demo_archive_count(archive_root, "sessions"),
+            message_count=_demo_archive_count(archive_root, "messages"),
+            session_ids=tuple(sorted(result.processed_ids)),
+            overlays_seeded=overlay is not None,
+            assertion_count=len(overlay.assertion_ids) if overlay else 0,
+            construct_coverage=construct_coverage,
+            healed_tiers=healed_tiers,
+        )
+
+    return await asyncio.to_thread(finish)
 
 
 async def seed_demo_archive(
@@ -1722,7 +1647,6 @@ async def seed_demo_archive(
     *,
     force: bool = False,
     with_overlays: bool = False,
-    explicit_root: bool = False,
 ) -> DemoSeedResult:
     """Seed an isolated demo root under one archive owner for the entire run."""
     root = archive_root.expanduser().resolve()
@@ -1731,7 +1655,6 @@ async def seed_demo_archive(
             root,
             force=force,
             with_overlays=with_overlays,
-            explicit_root=explicit_root,
         )
 
 

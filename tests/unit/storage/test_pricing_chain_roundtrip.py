@@ -21,15 +21,16 @@ import pytest
 from polylogue.archive.semantic.pricing import estimate_cost
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.usage import session_usage_costs_for_connection
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _make_archive(tmp_path: Path) -> sqlite3.Connection:
     """Initialize a fresh archive root and return an open connection to index.db."""
     initialize_active_archive_root(tmp_path)
-    conn = sqlite3.connect(tmp_path / "index.db")
+    conn = connect_measured(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -100,7 +101,7 @@ class TestTokenAggregation:
             ),
         ]
         with conn:
-            write_parsed_session_to_archive(conn, _session(messages=messages))
+            write_fixture_index_session(conn, _session(messages=messages))
 
         row = conn.execute("SELECT * FROM session_model_usage WHERE model_name = 'claude-sonnet-4-5'").fetchone()
         assert row is not None
@@ -124,7 +125,7 @@ class TestTokenAggregation:
             ),
         ]
         with conn:
-            write_parsed_session_to_archive(conn, _session(messages=messages))
+            write_fixture_index_session(conn, _session(messages=messages))
 
         # Only gpt-4o row should be in session_model_usage
         all_rows = conn.execute("SELECT model_name FROM session_model_usage").fetchall()
@@ -152,7 +153,7 @@ class TestTokenAggregation:
             ),
         ]
         with conn:
-            write_parsed_session_to_archive(conn, _session(messages=messages))
+            write_fixture_index_session(conn, _session(messages=messages))
 
         rows = conn.execute("SELECT model_name, input_tokens, output_tokens FROM session_model_usage").fetchall()
         by_model = {row["model_name"]: row for row in rows}
@@ -182,7 +183,7 @@ class TestCostUsdComputation:
             _msg(provider_message_id="m2", model_name="claude-sonnet-4-5", output_tokens=1_000_000),
         ]
         with conn:
-            session_id = write_parsed_session_to_archive(conn, _session(messages=messages))
+            session_id = write_fixture_index_session(conn, _session(messages=messages))
 
         costs = session_usage_costs_for_connection(conn, [session_id])
         cost = costs[session_id]
@@ -209,7 +210,7 @@ class TestCostUsdComputation:
     def test_provider_and_catalog_costs_remain_distinct_and_provider_wins(self, tmp_path: Path) -> None:
         conn = _make_archive(tmp_path)
         with conn:
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn,
                 _session(
                     messages=[_msg(provider_message_id="m1", model_name="claude-sonnet-4-5", input_tokens=1_000_000)],
@@ -235,7 +236,7 @@ class TestCostUsdComputation:
             ),
         ]
         with conn:
-            write_parsed_session_to_archive(conn, _session(messages=messages))
+            write_fixture_index_session(conn, _session(messages=messages))
 
         row = conn.execute(
             "SELECT catalog_cost_usd FROM session_model_usage WHERE model_name = 'claude-sonnet-4-5'"
@@ -256,7 +257,7 @@ class TestCostUsdComputation:
             ),
         ]
         with conn:
-            write_parsed_session_to_archive(conn, _session(messages=messages))
+            write_fixture_index_session(conn, _session(messages=messages))
 
         row = conn.execute(
             "SELECT catalog_cost_usd FROM session_model_usage WHERE model_name = 'some-future-model-xyz-not-in-catalog'"
@@ -278,7 +279,7 @@ class TestCostUsdComputation:
             ),
         ]
         with conn:
-            write_parsed_session_to_archive(conn, _session(messages=messages))
+            write_fixture_index_session(conn, _session(messages=messages))
 
         row = conn.execute(
             "SELECT catalog_cost_usd FROM session_model_usage WHERE model_name = 'claude-sonnet-4-5'"
@@ -300,7 +301,7 @@ class TestCostUsdComputation:
             models_used=["claude-sonnet-4-5"],
         )
         with conn:
-            write_parsed_session_to_archive(conn, session)
+            write_fixture_index_session(conn, session)
 
         row = conn.execute(
             "SELECT catalog_cost_usd FROM session_model_usage WHERE model_name = 'claude-sonnet-4-5'"
@@ -341,7 +342,7 @@ class TestDominantModelReadSurface:
         ]
         session = _session(messages=messages)
         with conn:
-            session_id = write_parsed_session_to_archive(conn, session)
+            session_id = write_fixture_index_session(conn, session)
 
         dominant = conn.execute(
             """

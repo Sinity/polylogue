@@ -36,6 +36,7 @@ from polylogue.storage.sqlite.write_lease import (
     arm_write_lease_enforcement,
     write_lease,
 )
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 
 @pytest.fixture
@@ -163,7 +164,7 @@ def test_scope_refuses_an_unleased_entrant(store: CursorStore) -> None:
                 pass
 
         # The scope is entered normally by the serialized writer that holds it.
-        with write_lease("test-writer"):
+        with write_lease("test-writer", archive_root=store._archive_root):
             with store.ops_write_scope():
                 pass
 
@@ -180,9 +181,9 @@ def test_ops_batch_commits_its_writes_once_at_the_end(store: CursorStore) -> Non
     first, second = Path("/tmp/a.jsonl"), Path("/tmp/b.jsonl")
     with store.ops_write_scope():
         with store.ops_batch():
-            store.set(first, 10)
+            store.set(first, 10, authority=fixture_cursor_authority(first))
             assert _cursor_size(store, first) is None
-            store.set(second, 20)
+            store.set(second, 20, authority=fixture_cursor_authority(second))
         assert (_cursor_size(store, first), _cursor_size(store, second)) == (10, 20)
 
 
@@ -191,7 +192,7 @@ def test_ops_batch_rolls_back_as_a_unit(store: CursorStore) -> None:
     path = Path("/tmp/a.jsonl")
     with pytest.raises(RuntimeError, match="cursor write failed"):
         with store.ops_write_scope(), store.ops_batch():
-            store.set(path, 10)
+            store.set(path, 10, authority=fixture_cursor_authority(path))
             raise RuntimeError("cursor write failed")
     assert _cursor_size(store, path) is None
 
@@ -207,8 +208,8 @@ def test_ops_batch_holds_read_modify_writes_after_an_upsert(store: CursorStore) 
     path = Path("/tmp/a.jsonl")
     with store.ops_write_scope():
         with store.ops_batch():
-            store.set(path, 10)
-            store.mark_failed(path)
+            store.set(path, 10, authority=fixture_cursor_authority(path))
+            store.mark_failed(path, authority=fixture_cursor_authority(path))
             assert _cursor_size(store, path) is None
         assert _cursor_size(store, path) == 10
     record = store.get_record(path)

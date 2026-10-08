@@ -35,8 +35,8 @@ from polylogue.sources.live.gemini_tool_output_sidecars import (
     tool_output_files_from_directory,
 )
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.parsers.local_agent import TOOL_RESULT_DISPLAY_MEDIA_TYPE
-from polylogue.sources.sidecar_evidence import RetainedSidecarScope
+from polylogue.sources.parsers.local_agent import TOOL_RESULT_DISPLAY_MEDIA_TYPE, apply_gemini_tool_output_sidecars
+from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope
 
 _MASK = (
     "<tool_output_masked>\n"
@@ -453,6 +453,53 @@ def test_sidecar_that_changes_during_the_read_is_read_error_debt(tmp_path: Path)
     assert debt.reason == "read_error:SidecarChangedDuringReadError"
 
 
+def test_sidecar_changed_after_join_becomes_typed_debt_without_replacing_inline_text() -> None:
+    tool_id = "run_shell_command_1773524726450_0"
+    filename = f"{tool_id}.txt"
+    masked = _MASK.format(path=f"/tmp/tool-outputs/{filename}")
+    payload = _session(
+        [
+            {
+                "id": "a1",
+                "type": "gemini",
+                "timestamp": "2026-03-14T21:41:02.000Z",
+                "content": "ran it",
+                "toolCalls": [_tool_call(tool_id, output=masked, result_display="short")],
+            }
+        ]
+    )
+    reads = 0
+
+    def read_once_then_disappear() -> str:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return "x" * 40_001
+        raise FileNotFoundError("sidecar disappeared after the join")
+
+    scope = RetainedSidecarScope(
+        scope_key="changed-after-join",
+        files=(
+            RetainedSidecarFile(
+                filename=filename,
+                byte_size=40_001,
+                file_mtime_ms=1_719_878_400_000,
+                read_text=read_once_then_disappear,
+            ),
+        ),
+        available=True,
+    )
+    joined = join_gemini_tool_output_sidecars(payload, scope)
+    assert len(joined.matched) == 1
+
+    parsed = parse_payload("gemini-cli", payload, "fallback")[0]
+    parsed = apply_gemini_tool_output_sidecars(parsed, joined)
+    assert _tool_result_texts(parsed) == [masked]
+    [event] = [event for event in parsed.session_events if event.event_type == "gemini_cli_tool_output_sidecar"]
+    assert event.payload["acquisition_status"] == "debt"
+    assert event.payload["reason"] == "read_error:FileNotFoundError"
+
+
 def test_complete_sidecar_replaces_an_envelope_longer_than_itself(tmp_path: Path) -> None:
     """Completeness is judged against the advertised excerpt, not envelope length.
 
@@ -474,7 +521,7 @@ def test_complete_sidecar_replaces_an_envelope_longer_than_itself(tmp_path: Path
     result = join_gemini_tool_output_sidecars(payload, _dir_scope(outputs))
 
     [match] = result.matched
-    assert match.was_truncated and len(match.full_text) == 40_001
+    assert match.was_truncated and len(match.read_text()) == 40_001
 
 
 def test_a_same_length_replacement_after_enumeration_is_read_error_debt(tmp_path: Path) -> None:

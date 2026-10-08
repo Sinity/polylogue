@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -148,44 +149,58 @@ class TestAllCommandsAcceptJson:
     valid JSON or exit cleanly without a traceback.
     """
 
+    @pytest.mark.uses_real_clock("serves daemon-owned reads from a real resident daemon over its UDS socket")
     def test_command_with_json_produces_clean_output(
         self,
         args: list[str],
         allow_nonzero_exit: bool,
         monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
         workspace_env: dict[str, Path],
     ) -> None:
-        """Run command with --json --plain; assert clean, pipeable output."""
-        del workspace_env  # used to isolate XDG paths
+        """Run command with --json --plain; assert clean, pipeable output.
+
+        Reads and analyses are daemon-owned, so a real resident daemon serves
+        the workspace archive, and the command runs through the shipped
+        ``run_machine_entry`` that maps refusals onto typed machine errors.
+        """
+        from polylogue.cli.machine_main import run_machine_entry
+        from tests.infra.daemon_operations import cli_daemon_archive
+
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-        # Route daemon requests to an unreachable port so status-like
+        # Route HTTP daemon probes to an unreachable port so status-like
         # commands don't hang trying to connect.
         monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:1")
 
         full_args = ["--json", "--plain", *args]
-        runner = CliRunner()
-        result = runner.invoke(cli, full_args, catch_exceptions=True)
-        if result.exception is not None and not isinstance(result.exception, SystemExit):
-            raise result.exception
+        monkeypatch.setattr(sys, "argv", ["polylogue", *full_args])
+        exit_code = 0
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            capsys.readouterr()
+            try:
+                run_machine_entry(cli, full_args)
+            except SystemExit as exit_info:
+                code = exit_info.code
+                exit_code = code if isinstance(code, int) else 1
+            captured = capsys.readouterr()
+        output = captured.out + captured.err
 
         # ── Exit code ────────────────────────────────────────────
         if not allow_nonzero_exit:
-            assert result.exit_code == 0, (
-                f"`polylogue {' '.join(full_args)}` exited {result.exit_code} (expected 0)\noutput: {result.output!r}"
+            assert exit_code == 0, (
+                f"`polylogue {' '.join(full_args)}` exited {exit_code} (expected 0)\noutput: {output!r}"
             )
 
         # ── No traceback ─────────────────────────────────────────
-        assert _TRACEBACK_SENTINEL not in result.output, (
-            f"`polylogue {' '.join(full_args)}` produced a traceback:\n{result.output}"
-        )
+        assert _TRACEBACK_SENTINEL not in output, f"`polylogue {' '.join(full_args)}` produced a traceback:\n{output}"
 
         # ── No ANSI escape codes ─────────────────────────────────
-        assert not _has_ansi(result.output), (
-            f"`polylogue {' '.join(full_args)}` produced ANSI escape codes (not pipeable):\n{result.output!r}"
+        assert not _has_ansi(output), (
+            f"`polylogue {' '.join(full_args)}` produced ANSI escape codes (not pipeable):\n{output!r}"
         )
 
         # ── Valid JSON if it looks like JSON ──────────────────────
-        stripped = result.output.strip()
+        stripped = captured.out.strip()
         if stripped:
             parsed = _try_parse_json(stripped)
             if parsed is None and _looks_like_json_output(stripped):

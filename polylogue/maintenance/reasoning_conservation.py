@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.sqlite_introspection import column_exists, table_exists
+from polylogue.core.sqlite_introspection import table_exists
 from polylogue.maintenance.source_conservation import ConservationTerm
 
 DEFAULT_SAMPLE_LIMIT = 10
@@ -66,7 +66,6 @@ TERM_MATERIAL_LOST = "reasoning_material_lost"
 TERM_CARRIER_ABSENT = "reasoning_carrier_absent"
 TERM_UNTRACEABLE = "reasoning_identity_untraceable"
 TERM_UNKNOWN_SHAPE = "reasoning_unknown_shape"
-TERM_SIGNATURE_UNSUPPORTED = "reasoning_signature_unsupported"
 TERM_EVIDENCE_UNREADABLE = "reasoning_evidence_unreadable"
 TERM_ORIGIN_EVIDENCE_ABSENT = "origin_evidence_absent"
 TERM_SCAN_TRUNCATED = "scan_truncated"
@@ -84,9 +83,6 @@ _RULES: dict[str, str] = {
     ),
     TERM_UNTRACEABLE: "the witness carries no provider identity to trace it by",
     TERM_UNKNOWN_SHAPE: "structurally a reasoning record, matching no declared variant of its origin",
-    TERM_SIGNATURE_UNSUPPORTED: (
-        "the index tier carries no blocks.signature column, so signature-only thinking has nowhere to land"
-    ),
     TERM_EVIDENCE_UNREADABLE: "the acquired payload of a materialized raw is unreadable, so its witnesses are unknown",
     TERM_ORIGIN_EVIDENCE_ABSENT: (
         "a declared reasoning origin contributed no readable source evidence, so nothing about it was measured"
@@ -101,7 +97,6 @@ _BLOCKING: frozenset[str] = frozenset(
         TERM_CARRIER_ABSENT,
         TERM_UNTRACEABLE,
         TERM_UNKNOWN_SHAPE,
-        TERM_SIGNATURE_UNSUPPORTED,
         TERM_ORIGIN_EVIDENCE_ABSENT,
         TERM_SCAN_TRUNCATED,
     }
@@ -116,7 +111,6 @@ _TERM_ORDER: tuple[str, ...] = (
     TERM_CARRIER_ABSENT,
     TERM_UNTRACEABLE,
     TERM_UNKNOWN_SHAPE,
-    TERM_SIGNATURE_UNSUPPORTED,
     TERM_EVIDENCE_UNREADABLE,
     TERM_ORIGIN_EVIDENCE_ABSENT,
     TERM_SCAN_TRUNCATED,
@@ -413,9 +407,7 @@ def _with_ancestors(index: sqlite3.Connection, session_ids: Sequence[str]) -> li
     return seen
 
 
-def _load_carriers(
-    index: sqlite3.Connection, session_ids: Sequence[str], *, has_signature: bool
-) -> tuple[dict[str, _Carrier], _Carrier]:
+def _load_carriers(index: sqlite3.Connection, session_ids: Sequence[str]) -> tuple[dict[str, _Carrier], _Carrier]:
     """Return per-message carriers keyed by native id, plus the pooled carrier.
 
     The pooled carrier holds every block of the selected sessions and serves
@@ -426,10 +418,9 @@ def _load_carriers(
     if not session_ids:
         return by_native, pooled
     placeholders = ",".join("?" for _ in session_ids)
-    signature_column = "b.signature" if has_signature else "NULL"
     rows = index.execute(
         f"""
-        SELECT m.native_id, m.session_id, b.block_type, b.text, {signature_column}
+        SELECT m.native_id, m.session_id, b.block_type, b.text, b.signature
         FROM messages AS m
         JOIN blocks AS b ON b.message_id = m.message_id
         WHERE m.session_id IN ({placeholders})
@@ -453,8 +444,6 @@ def _load_carriers(
 def _classify(
     witness: ReasoningWitness,
     carrier: _Carrier | None,
-    *,
-    has_signature: bool,
 ) -> str:
     if witness.variant == VARIANT_UNKNOWN:
         return TERM_UNKNOWN_SHAPE
@@ -476,8 +465,6 @@ def _classify(
             return TERM_MATERIAL_LOST
         return TERM_MATERIALIZED
     if witness.variant == VARIANT_SIGNATURE_ONLY:
-        if not has_signature:
-            return TERM_SIGNATURE_UNSUPPORTED
         signature = witness.signature
         if carrier.claim_thinking(lambda block: block.signature == signature):
             return TERM_MATERIALIZED
@@ -537,7 +524,6 @@ def audit_reasoning_conservation(
     actually truncates reports ``scan_truncated`` and blocks, so a partial
     scan can never be read as acceptance.
     """
-    has_signature = column_exists(index, "blocks", "signature")
     counts: dict[str, int] = {}
     samples: dict[str, list[str]] = {}
     breakdowns: dict[str, dict[str, int]] = {}
@@ -575,16 +561,16 @@ def audit_reasoning_conservation(
             scanned += 1
             bytes_scanned += len(payload)
             session_ids = _with_ancestors(index, _session_ids_for_raw(index, raw_id))
-            by_native, pooled = _load_carriers(index, session_ids, has_signature=has_signature)
+            by_native, pooled = _load_carriers(index, session_ids)
             for witness in enumerate_witnesses(payload):
                 witnesses += 1
                 by_variant[witness.variant] = by_variant.get(witness.variant, 0) + 1
                 if witness.origin == ORIGIN_CLAUDE_CODE and witness.carrier_native_id is None:
                     term = TERM_UNTRACEABLE
                 elif witness.carrier_native_id is not None:
-                    term = _classify(witness, by_native.get(witness.carrier_native_id), has_signature=has_signature)
+                    term = _classify(witness, by_native.get(witness.carrier_native_id))
                 else:
-                    term = _classify(witness, pooled if session_ids else None, has_signature=has_signature)
+                    term = _classify(witness, pooled if session_ids else None)
                 record(term, f"{origin}:{witness.variant}", witness.locator(raw_id))
                 by_term[term] = by_term.get(term, 0) + 1
         if truncated:

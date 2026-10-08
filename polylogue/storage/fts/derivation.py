@@ -132,6 +132,9 @@ class FtsPartitionReplacement:
     generation_binding: str
     empty: bool = False
 
+    def close(self) -> None:
+        """The partition input values own no physical resources."""
+
 
 @dataclass(frozen=True, slots=True)
 class FtsOrphanReplacement:
@@ -148,6 +151,9 @@ class FtsOrphanReplacement:
     payload: FtsOrphanBinding
     generation_binding: str
     empty: bool = False
+
+    def close(self) -> None:
+        """The residue binding values own no physical resources."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,11 @@
+{"id":"legacy-response-session","timestamp":"2025-08-01T10:00:00.000Z","instructions":"Synthetic project instructions.","git":{"commit_hash":"0000000000000000000000000000000000000001","branch":"main","repository_url":"https://example.invalid/sample.git"}}
+{"record_type":"state"}
+{"type":"message","role":"user","content":[{"type":"input_text","text":"List the sample directory."}]}
+{"record_type":"state"}
+{"type":"reasoning","id":"rs_sample_1","summary":[{"type":"summary_text","text":"Listing the directory first."}],"content":null,"encrypted_content":"c2FtcGxlLW9wYXF1ZQ=="}
+{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\",\"sample\"]}","call_id":"call_sample_ok"}
+{"type":"function_call_output","call_id":"call_sample_ok","output":"{\"output\":\"alpha.txt\\nbeta.txt\\n\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":0.1}}"}
+{"type":"function_call","name":"shell","arguments":"{\"command\":[\"cat\",\"sample/missing.txt\"]}","call_id":"call_sample_fail"}
+{"type":"function_call_output","call_id":"call_sample_fail","output":"{\"output\":\"cat: sample/missing.txt: No such file or directory\\n\",\"metadata\":{\"exit_code\":1,\"duration_seconds\":0.1}}"}
+{"record_type":"state"}
+{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The directory holds alpha.txt and beta.txt."}]}

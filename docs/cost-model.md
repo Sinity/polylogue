@@ -44,7 +44,7 @@ provider-reported zero.
 
 | Origin | Provider | Declared coverage | Event stream | Token semantics |
 | --- | --- | --- | --- | --- |
-| `claude-code-session` | `claude-code` | exact where `message.usage` exists | `message_usage` | per-message/request usage; cache read and cache creation are separate lanes |
+| `claude-code-session` | `claude-code` | exact where `message.usage` exists | `message_usage` | request snapshots may repeat across linked assistant fragments; each request contributes its latest present value per lane, while cache read and cache creation remain separate lanes |
 | `codex-session` | `codex` | exact where `token_count` exists | `token_count` | `last_token_usage` is current/request-window telemetry; `total_token_usage` is cumulative and session-global, so rollups take the latest total per session |
 | `chatgpt-export` | `chatgpt` | estimate-only | transcript text | exports do not carry reliable per-request provider token counters |
 | `claude-ai-export` | `claude-ai` | estimate-only | transcript text | exports preserve conversation text, not exact provider usage counters |
@@ -294,6 +294,8 @@ uv run python scripts/cost_accounting_demo.py \
 > Existing archives carry rollups computed before this fix; the corrected lanes
 > apply to new ingests. Re-materialize with the fresh-first rebuild path above
 > to update stored cost.
+
+The origin usage audit selects Claude Code request snapshots through the same storage selector as model usage derivation. `provider_request_usage` sums each request's latest present counter per lane; distinct requests and unkeyed events remain independent. `provider_event_count`, event-type counts, missing-model counts, and zero-token diagnostics describe physical stored events, including repeated fragments. Exact integer summation preserves this request grain even when totals exceed SQLite INTEGER. Codex request-window counters and its separate latest session cumulative counters retain their existing semantics.
 
 ## Basis Taxonomy
 

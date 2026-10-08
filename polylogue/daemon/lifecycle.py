@@ -7,12 +7,14 @@ that a daemon process was recently making progress.
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import contextlib
 import faulthandler
 import os
 import signal
 import sqlite3
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -151,9 +153,24 @@ class DaemonLifecycle:
         note_process_heartbeat()
 
     def record_signal_best_effort(self, signum: int) -> None:
-        """Persist a terminating signal from a synchronous signal handler."""
+        """Persist a terminating signal from a synchronous signal handler.
+
+        On the event-loop thread a synchronous write lease must not block the
+        loop, so the handler only records the name there and :meth:`stop`
+        writes it with the stop marker.
+        """
         signal_name = signal.Signals(signum).name
         self.received_signal_name = signal_name
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            self._persist_signal(signal_name)
+            return
+        threading.Thread(
+            target=self._persist_signal, args=(signal_name,), name="daemon-lifecycle-signal", daemon=True
+        ).start()
+
+    def _persist_signal(self, signal_name: str) -> None:
         try:
             _write_existing_lifecycle(
                 self.ops_db_path,
@@ -181,14 +198,21 @@ class DaemonLifecycle:
         if self.received_signal_name is not None:
             exit_kind = "signal"
         writer = _write_existing_lifecycle if bounded else _write_lifecycle
+        signal_name = self.received_signal_name
+        stopped_at_ms = _now_ms()
+
+        def write_stop(conn: sqlite3.Connection) -> None:
+            # A signal received while the event loop ran could not be written
+            # from its handler; the stop marker carries it so the row never
+            # reads ``exit_kind='signal'`` beside a NULL ``signal``.
+            if signal_name is not None:
+                record_daemon_lifecycle_signal(
+                    conn, run_id=self.run_id, signal_name=signal_name, observed_at_ms=stopped_at_ms
+                )
+            record_daemon_lifecycle_stop(conn, run_id=self.run_id, stopped_at_ms=stopped_at_ms, exit_kind=exit_kind)
+
         try:
-            writer(
-                self.ops_db_path,
-                record_daemon_lifecycle_stop,
-                run_id=self.run_id,
-                stopped_at_ms=_now_ms(),
-                exit_kind=exit_kind,
-            )
+            writer(self.ops_db_path, write_stop)
         except Exception:
             # A signal row may already be durable. Do not let a contended
             # best-effort stop marker re-enter through atexit and delay exit.

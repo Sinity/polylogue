@@ -17,6 +17,8 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli as click_cli
+from tests.infra.daemon_operations import running_daemon_operations
+from tests.infra.index_writer import write_fixture_index_session
 
 
 @pytest.fixture
@@ -79,37 +81,38 @@ def test_read_view_file_edits_surfaces_structured_patch(
                 ),
             ],
         )
-        archive_db.write_raw_and_parsed(
-            parsed,
-            payload=b'{"raw": "claude payload"}',
-            source_path="/tmp/raw.jsonl",
-            acquired_at_ms=1735689600000,
+        write_fixture_index_session(archive_db._conn, parsed, archive_root=archive_db.index_db_path.parent)
+
+    with running_daemon_operations(archive_root) as stack:
+        monkeypatch.setattr(
+            "polylogue.daemon.socket_path.daemon_socket_path", lambda *_args, **_kwargs: stack.socket_path
+        )
+        session_id = "claude-code-session:cli-file-edit-1"
+
+        result = cli_runner.invoke(
+            click_cli,
+            ["--plain", "--id", session_id, "read", "--view", "file-edits", "-f", "json"],
+            catch_exceptions=False,
         )
 
-    session_id = "claude-code-session:cli-file-edit-1"
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["total"] == 1
+        edit = payload["file_edits"][0]
+        assert edit["file_path"] == "/tmp/foo.py"
+        assert edit["original_file"] == "old contents\n"
+        assert edit["old_string"] == "old"
+        assert edit["new_string"] == "new"
+        assert edit["structured_patch"] == [
+            {"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["+x"]}
+        ]
 
-    result = cli_runner.invoke(
-        click_cli,
-        ["--plain", "--id", session_id, "read", "--view", "file-edits", "-f", "json"],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["total"] == 1
-    edit = payload["file_edits"][0]
-    assert edit["file_path"] == "/tmp/foo.py"
-    assert edit["original_file"] == "old contents\n"
-    assert edit["old_string"] == "old"
-    assert edit["new_string"] == "new"
-    assert edit["structured_patch"] == [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["+x"]}]
-
-    missing = cli_runner.invoke(
-        click_cli,
-        ["--plain", "--id", "claude-code-session:does-not-exist", "read", "--view", "file-edits"],
-        catch_exceptions=False,
-    )
-    assert "not found" in missing.output.lower()
+        missing = cli_runner.invoke(
+            click_cli,
+            ["--plain", "--id", "claude-code-session:does-not-exist", "read", "--view", "file-edits"],
+            catch_exceptions=False,
+        )
+        assert "not found" in missing.output.lower()
 
 
 def test_read_view_agent_policies_surfaces_sandbox_facts(
@@ -148,28 +151,27 @@ def test_read_view_agent_policies_surfaces_sandbox_facts(
                 ),
             ],
         )
-        archive_db.write_raw_and_parsed(
-            parsed,
-            payload=b'{"raw": "codex payload"}',
-            source_path="/tmp/raw.jsonl",
-            acquired_at_ms=1735689600000,
+        write_fixture_index_session(archive_db._conn, parsed, archive_root=archive_db.index_db_path.parent)
+
+    with running_daemon_operations(archive_root) as stack:
+        monkeypatch.setattr(
+            "polylogue.daemon.socket_path.daemon_socket_path", lambda *_args, **_kwargs: stack.socket_path
+        )
+        session_id = "codex-session:cli-agent-policy-1"
+
+        result = cli_runner.invoke(
+            click_cli,
+            ["--plain", "--id", session_id, "read", "--view", "agent-policies", "-f", "json"],
+            catch_exceptions=False,
         )
 
-    session_id = "codex-session:cli-agent-policy-1"
-
-    result = cli_runner.invoke(
-        click_cli,
-        ["--plain", "--id", session_id, "read", "--view", "agent-policies", "-f", "json"],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["total"] == 1
-    policy = payload["agent_policies"][0]
-    assert policy["approval_policy"] == "never"
-    assert policy["sandbox_policy"] == "danger-full-access"
-    assert policy["network_policy"] == "true"
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["total"] == 1
+        policy = payload["agent_policies"][0]
+        assert policy["approval_policy"] == "never"
+        assert policy["sandbox_policy"] == "danger-full-access"
+        assert policy["network_policy"] == "true"
 
 
 def test_read_view_web_content_surfaces_search_constructs(
@@ -218,33 +220,32 @@ def test_read_view_web_content_surfaces_search_constructs(
                 ),
             ],
         )
-        archive_db.write_raw_and_parsed(
-            parsed,
-            payload=b'{"raw": "chatgpt payload"}',
-            source_path="/tmp/raw.jsonl",
-            acquired_at_ms=1735689600000,
+        write_fixture_index_session(archive_db._conn, parsed, archive_root=archive_db.index_db_path.parent)
+
+    with running_daemon_operations(archive_root) as stack:
+        monkeypatch.setattr(
+            "polylogue.daemon.socket_path.daemon_socket_path", lambda *_args, **_kwargs: stack.socket_path
+        )
+        session_id = "chatgpt-export:cli-web-content-1"
+
+        result = cli_runner.invoke(
+            click_cli,
+            ["--plain", "--id", session_id, "read", "--view", "web-content", "-f", "json"],
+            catch_exceptions=False,
         )
 
-    session_id = "chatgpt-export:cli-web-content-1"
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["total"] == 1
+        construct = payload["web_content_constructs"][0]
+        assert construct["construct_type"] == "search_result"
+        assert construct["title"] == "Polylogue"
+        assert construct["url"] == "https://example.com/polylogue"
+        assert construct["rank"] == 1
 
-    result = cli_runner.invoke(
-        click_cli,
-        ["--plain", "--id", session_id, "read", "--view", "web-content", "-f", "json"],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["total"] == 1
-    construct = payload["web_content_constructs"][0]
-    assert construct["construct_type"] == "search_result"
-    assert construct["title"] == "Polylogue"
-    assert construct["url"] == "https://example.com/polylogue"
-    assert construct["rank"] == 1
-
-    missing = cli_runner.invoke(
-        click_cli,
-        ["--plain", "--id", "chatgpt-export:does-not-exist", "read", "--view", "web-content"],
-        catch_exceptions=False,
-    )
-    assert "not found" in missing.output.lower()
+        missing = cli_runner.invoke(
+            click_cli,
+            ["--plain", "--id", "chatgpt-export:does-not-exist", "read", "--view", "web-content"],
+            catch_exceptions=False,
+        )
+        assert "not found" in missing.output.lower()

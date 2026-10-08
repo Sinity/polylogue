@@ -1,41 +1,19 @@
-"""polylogue-syz2: per-session insight compute fan-out.
-
-``compute_session_insight_bundles`` (rebuild.py) fans independent per-session
-insight compute out across a bounded ``ThreadPoolExecutor`` when
-``parallel_threads_effective()`` reports a genuinely free-threaded
-interpreter, and stays fully sequential otherwise. These tests pin three
-things a naive fan-out could get wrong:
-
-1. Equivalence: parallel and sequential execution must write byte-identical
-   ``session_profiles`` / ``session_latency_profiles`` rows for the same
-   corpus (build/rebuild.py, refresh.py).
-2. Determinism: results come back in job order regardless of which job's
-   thread finishes first, so the single writer always applies them in a
-   fixed, reproducible order.
-3. Write boundary: worker threads only ever compute and return values; every
-   actual SQLite write happens on the thread that called
-   ``rebuild_session_insights_sync`` (the single-writer invariant), never on
-   a pool worker thread.
-
-``parallel_threads_effective`` is monkeypatched directly (the same pattern
-``tests/unit/sources/test_revision_backfill.py`` uses for the analogous
-census-parse fan-out) so these tests are deterministic on a standard GIL
-interpreter and do not require a real free-threaded (3.14t) build to exercise
-the thread-pool branch.
-"""
+"""Shared-compute session insights preserve order, rows, and writer custody."""
 
 from __future__ import annotations
 
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 import polylogue.storage.derived.session.rebuild as rebuild_mod
+from polylogue.core.compute import BoundedComputeAdapter, SubmittedOperation
 from polylogue.storage.derived.session.rebuild import (
     SessionInsightRecordBundle,
     compute_session_insight_bundles,
@@ -46,6 +24,22 @@ from polylogue.storage.sqlite.connection_profile import open_connection
 from tests.infra.storage_records import SessionBuilder
 
 _BASE_TS = "2026-01-01T00:00:00+00:00"
+
+
+@pytest.fixture
+def insight_adapter(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[int], BoundedComputeAdapter]]:
+    adapters: list[BoundedComputeAdapter] = []
+
+    def install(workers: int) -> BoundedComputeAdapter:
+        adapter = BoundedComputeAdapter(max_workers=workers, queue_units=8)
+        adapters.append(adapter)
+        monkeypatch.setattr(rebuild_mod, "compute_adapter", lambda: adapter)
+        return adapter
+
+    yield install
+    for adapter in adapters:
+        adapter.shutdown(wait=True)
+        assert adapter.snapshot().used_units == 0
 
 
 def _seed_corpus(archive_root: Path, *, session_count: int = 6) -> list[str]:
@@ -140,6 +134,7 @@ def test_rebuild_session_insights_parallel_vs_sequential_byte_identical(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     frozen_clock: object,
+    insight_adapter: Callable[[int], BoundedComputeAdapter],
 ) -> None:
     sequential_root = tmp_path / "sequential"
     parallel_root = tmp_path / "parallel"
@@ -147,10 +142,10 @@ def test_rebuild_session_insights_parallel_vs_sequential_byte_identical(
     parallel_ids = _seed_corpus(parallel_root, session_count=6)
     assert sequential_ids == parallel_ids  # sanity: identical seeded corpora
 
-    monkeypatch.setattr(rebuild_mod, "parallel_threads_effective", lambda: False)
+    insight_adapter(1)
     sequential_dump = _rebuild_and_dump(sequential_root)
 
-    monkeypatch.setattr(rebuild_mod, "parallel_threads_effective", lambda: True)
+    insight_adapter(4)
     parallel_dump = _rebuild_and_dump(parallel_root)
 
     assert len(sequential_dump["session_profiles"]) == 6
@@ -163,10 +158,10 @@ def test_rebuild_session_insights_parallel_vs_sequential_byte_identical(
 # ---------------------------------------------------------------------------
 
 
-def test_compute_session_insight_bundles_sequential_preserves_order(
-    monkeypatch: pytest.MonkeyPatch,
+def test_compute_session_insight_bundles_one_worker_preserves_order(
+    insight_adapter: Callable[[int], BoundedComputeAdapter],
 ) -> None:
-    monkeypatch.setattr(rebuild_mod, "parallel_threads_effective", lambda: False)
+    insight_adapter(1)
     calling_thread = threading.get_ident()
     seen_threads: list[int] = []
 
@@ -178,19 +173,20 @@ def test_compute_session_insight_bundles_sequential_preserves_order(
         return job
 
     jobs = [make_job(marker) for marker in range(5)]
-    results = compute_session_insight_bundles(jobs)
+    results = compute_session_insight_bundles([(job, 64) for job in jobs])
 
     assert results == [0, 1, 2, 3, 4]
-    assert seen_threads == [calling_thread] * 5
+    assert len(set(seen_threads)) == 1
+    assert seen_threads[0] != calling_thread
 
 
 def test_compute_session_insight_bundles_fans_out_and_preserves_order(
-    monkeypatch: pytest.MonkeyPatch,
+    insight_adapter: Callable[[int], BoundedComputeAdapter],
 ) -> None:
     """Jobs finish in reverse-of-submission order; results still come back
     in submission order, and at least one job actually ran off the calling
     thread (proving the pool engaged, not just an accidental pass-through)."""
-    monkeypatch.setattr(rebuild_mod, "parallel_threads_effective", lambda: True)
+    insight_adapter(4)
     calling_thread = threading.get_ident()
     job_threads: list[int] = [-1] * 5
 
@@ -206,7 +202,7 @@ def test_compute_session_insight_bundles_fans_out_and_preserves_order(
     # reverse of submission order, so an order bug (e.g. using
     # as_completed()'s own order) would be caught here.
     jobs = [make_job(marker, delay_s=(5 - marker) * 0.02) for marker in range(5)]
-    results = compute_session_insight_bundles(jobs)
+    results = compute_session_insight_bundles([(job, 64) for job in jobs])
 
     assert results == [0, 1, 2, 3, 4]
     assert any(thread_id != calling_thread for thread_id in job_threads), (
@@ -222,22 +218,24 @@ def test_compute_session_insight_bundles_fans_out_and_preserves_order(
 def test_rebuild_session_insights_writes_only_happen_on_calling_thread(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    insight_adapter: Callable[[int], BoundedComputeAdapter],
 ) -> None:
     """Anti-vacuity guard for the single-writer invariant.
 
-    Forces the thread-pool fan-out path (``parallel_threads_effective`` ->
-    True) over a multi-session corpus, and wraps both the per-session
-    compute entrypoint and every bulk SQLite writer the rebuild calls to
-    record which thread invoked them. If a future change ever moved a write
-    call into the compute job (e.g. inlining a write for "efficiency"), this
-    test fails: it asserts every write-thread id equals the thread that
-    called ``rebuild_session_insights_sync``, while also asserting the
-    compute path really did run off that thread (otherwise the test would
-    trivially pass with fan-out silently disabled).
+    The actual shared adapter runs hydrated compute on worker threads while
+    every bulk SQLite publication remains on the caller's writer thread.
     """
     archive_root = tmp_path / "write-boundary"
     _seed_corpus(archive_root, session_count=6)
-    monkeypatch.setattr(rebuild_mod, "parallel_threads_effective", lambda: True)
+    adapter = insight_adapter(4)
+    admitted_bytes: list[int] = []
+    original_submit = adapter.submit
+
+    def recording_submit(function: Callable[[], object], **kwargs: Any) -> SubmittedOperation[object]:
+        admitted_bytes.append(int(kwargs["estimated_bytes"]))
+        return original_submit(function, **kwargs)
+
+    monkeypatch.setattr(adapter, "submit", recording_submit)
 
     calling_thread = threading.get_ident()
     compute_threads: list[int] = []
@@ -272,6 +270,8 @@ def test_rebuild_session_insights_writes_only_happen_on_calling_thread(
         counts = rebuild_session_insights_sync(conn, session_ids=None)
 
     assert counts.profiles == 6
+    assert len(admitted_bytes) == 6
+    assert all(weight > 1024 for weight in admitted_bytes)
     assert compute_threads, "expected build_session_insight_records to run at least once"
     assert any(thread_id != calling_thread for thread_id in compute_threads), (
         "fan-out did not engage a pool worker thread -- test would pass vacuously"

@@ -26,7 +26,9 @@ import json
 import sqlite3
 import threading
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from contextvars import Context
 from pathlib import Path
 from typing import Any, cast
@@ -92,7 +94,6 @@ from polylogue.operations.mutation_actuators import (
     WorkspaceSaveActuator,
     WorkspaceSaveArgs,
 )
-from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.mutation_transaction import (
     ConfirmationRequiredError,
     MutationAuthorization,
@@ -113,6 +114,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_saved_view,
     assertion_id_for_workspace,
 )
+from tests.infra.operation_recovery import recover_on_admitted_owner
 
 
 def test_blob_abandon_refuses_blocked_liveness_before_deleting_any_receipt(
@@ -142,7 +144,7 @@ def _seed_archive_session(archive_root: Path, *, native_id: str) -> str:
     initialize_active_archive_root(archive_root)
     session_id = f"codex-session:{native_id}"
     raw_id = f"raw-{native_id}"
-    with sqlite3.connect(source_db) as conn:
+    with closing(sqlite3.connect(source_db)) as conn, conn:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute(
             """
@@ -153,7 +155,7 @@ def _seed_archive_session(archive_root: Path, *, native_id: str) -> str:
             """,
             (raw_id, native_id, str(archive_root / f"{native_id}.jsonl")),
         )
-    with sqlite3.connect(index_db) as conn:
+    with closing(sqlite3.connect(index_db)) as conn, conn:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute(
             """
@@ -170,7 +172,7 @@ def _seed_archive_session(archive_root: Path, *, native_id: str) -> str:
 def _seed_prefix_lineage(archive_root: Path) -> tuple[str, str]:
     parent_id = _seed_archive_session(archive_root, native_id="excision-parent")
     child_id = _seed_archive_session(archive_root, native_id="excision-child")
-    with sqlite3.connect(archive_root / "index.db") as conn:
+    with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
         conn.execute(
             "INSERT INTO messages (session_id, native_id, position, role, content_hash) "
             "VALUES (?, 'm1', 0, 'user', zeroblob(32))",
@@ -197,7 +199,7 @@ class TestSessionExcisionActuator:
         marker = prepare_accepted_marker_input(
             raw_id, [{"session_id": session_id, "candidates": [{"body": "marker secret"}]}]
         )
-        with sqlite3.connect(archive_root / "source.db") as conn:
+        with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             persist_pending_marker_input_sync(conn, marker, expected_incarnation_id=str(uuid.uuid4()))
 
@@ -214,8 +216,9 @@ class TestSessionExcisionActuator:
         assert plan.context["source_marker_inputs_accepted"] == 0
         assert plan.context["marker_input_digests"] == [marker.payload_sha256]
 
-        receipt = actuator.apply(plan, args)
-        domain_receipt = cast("dict[str, object]", receipt.domain_receipt)
+        from tests.infra.excision_execution import execute_excision
+
+        domain_receipt = execute_excision(archive_root, session_id, reason="r", actor="user:test")
         counts = cast("dict[str, int]", domain_receipt["counts"])
         assert counts["source_marker_inputs_pending"] == 1
         assert domain_receipt["marker_input_digests"] == [marker.payload_sha256]
@@ -269,6 +272,8 @@ class TestSessionDeleteActuator:
 
         assert receipt.affected_count == 1
         assert invalidated == [True]
+        # F614: the invalidation is part of the admitted writer transaction, so
+        # there is no independent deferred writer left to race the coordinator.
 
     def test_prepare_only_plans_currently_existing_sessions(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
@@ -281,7 +286,7 @@ class TestSessionDeleteActuator:
 
         assert plan.target_refs == (f"session:{session_id}",)
         # PREPARE performed zero mutation.
-        with sqlite3.connect(archive_root / "index.db") as conn:
+        with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 
     def test_full_lifecycle_deletes_the_session_row(self, tmp_path: Path) -> None:
@@ -302,9 +307,9 @@ class TestSessionDeleteActuator:
 
         assert receipt.status == "applied"
         assert receipt.affected_count == 1
-        with sqlite3.connect(archive_root / "index.db") as conn:
+        with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
-        with sqlite3.connect(archive_root / "audit.db") as conn:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
             assert conn.execute("SELECT state FROM operation_previews").fetchone()[0] == "consumed"
             assert conn.execute("SELECT status FROM operation_runs").fetchone()[0] == "completed"
 
@@ -329,15 +334,15 @@ class TestSessionDeleteActuator:
             authorization = executor.authorize_bound(binding, preview, principal)
             assert executor._audit is not None
             operation_id = executor._audit.consume_authorization_and_start(preview, authorization)
-        with sqlite3.connect(archive_root / "audit.db") as conn:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
             conn.execute(
                 "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
             )
             conn.commit()
 
-        recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
 
-        with sqlite3.connect(archive_root / "audit.db") as conn:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
             assert conn.execute(
                 "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
             ).fetchone() == ("completed", "recovered_complete")
@@ -345,7 +350,7 @@ class TestSessionDeleteActuator:
                 "SELECT event_type FROM operation_events WHERE operation_id = ? ORDER BY sequence DESC LIMIT 1",
                 (operation_id,),
             ).fetchone() == ("recovery_resolved",)
-        with sqlite3.connect(archive_root / "index.db") as conn:
+        with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
     def test_startup_recovery_never_steals_an_attempt_a_live_owner_still_holds(self, tmp_path: Path) -> None:
@@ -372,9 +377,9 @@ class TestSessionDeleteActuator:
 
         # The attempt owner is this live process, exactly as a concurrent
         # writer in another process would look to the recovering daemon.
-        recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
 
-        with sqlite3.connect(archive_root / "audit.db") as conn:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
             assert conn.execute(
                 "SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)
             ).fetchone() == ("running",)
@@ -382,7 +387,7 @@ class TestSessionDeleteActuator:
                 "SELECT COUNT(*) FROM operation_events WHERE operation_id = ? AND event_type = 'recovery_resolved'",
                 (operation_id,),
             ).fetchone() == (0,)
-        with sqlite3.connect(archive_root / "index.db") as conn:
+        with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
 
     def test_startup_recovery_is_a_noop_on_an_archive_with_no_interrupted_work(self, tmp_path: Path) -> None:
@@ -393,10 +398,10 @@ class TestSessionDeleteActuator:
         initialize_active_archive_root(archive_root)
         _seed_archive_session(archive_root, native_id="quiet")
 
-        recover_interrupted_operations(archive_root)
-        recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
+        recover_on_admitted_owner(archive_root)
 
-        with sqlite3.connect(archive_root / "audit.db") as conn:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
             assert conn.execute("SELECT COUNT(*) FROM operation_events").fetchone() == (0,)
 
     def test_delete_recovery_replays_the_recorded_plan_not_preview_target_rows(self, tmp_path: Path) -> None:
@@ -426,7 +431,7 @@ class TestSessionDeleteActuator:
             authorization = executor.authorize_bound(binding, preview, principal)
             assert executor._audit is not None
             operation_id = executor._audit.consume_authorization_and_start(preview, authorization)
-        with sqlite3.connect(archive_root / "audit.db") as conn:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
             conn.execute(
                 "DELETE FROM operation_preview_targets WHERE preview_id = ? AND ordinal = 1", (preview.preview_ref,)
             )
@@ -435,13 +440,13 @@ class TestSessionDeleteActuator:
             )
             conn.commit()
 
-        recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
 
-        with sqlite3.connect(archive_root / "audit.db") as conn:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
             assert conn.execute(
                 "SELECT status, unknown_count FROM operation_runs WHERE operation_id = ?", (operation_id,)
             ).fetchone() == ("completed", 0)
-        with sqlite3.connect(archive_root / "index.db") as conn:
+        with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
     def test_zero_target_interruption_completes_once_and_does_not_poison_later_noop(self, tmp_path: Path) -> None:
@@ -467,16 +472,16 @@ class TestSessionDeleteActuator:
             authorization = executor.authorize_bound(binding, preview, principal)
             assert executor._audit is not None
             operation_id = executor._audit.consume_authorization_and_start(preview, authorization)
-        with sqlite3.connect(archive_root / "audit.db") as conn:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
             conn.execute(
                 "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
             )
             conn.commit()
 
-        recover_interrupted_operations(archive_root)
-        recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
+        recover_on_admitted_owner(archive_root)
 
-        with sqlite3.connect(archive_root / "audit.db") as conn:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
             assert conn.execute(
                 "SELECT status, terminal_reason, target_count FROM operation_runs WHERE operation_id = ?",
                 (operation_id,),
@@ -516,17 +521,17 @@ class TestSessionDeleteActuator:
             authorization = executor.authorize_bound(binding, preview, principal)
             assert executor._audit is not None
             operation_id = executor._audit.consume_authorization_and_start(preview, authorization)
-        with sqlite3.connect(archive_root / "audit.db") as conn:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
             conn.execute("UPDATE operation_runs SET operation_version = 99 WHERE operation_id = ?", (operation_id,))
             conn.execute(
                 "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
             )
             conn.commit()
 
-        recover_interrupted_operations(archive_root)
-        recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
+        recover_on_admitted_owner(archive_root)
 
-        with sqlite3.connect(archive_root / "audit.db") as conn:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
             assert conn.execute(
                 "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
             ).fetchone() == ("failed", "recovery_not_replayable")
@@ -534,7 +539,7 @@ class TestSessionDeleteActuator:
                 "SELECT COUNT(*) FROM operation_events WHERE operation_id = ? AND event_type = 'recovery_resolved'",
                 (operation_id,),
             ).fetchone() == (1,)
-        with sqlite3.connect(archive_root / "index.db") as conn:
+        with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
 
     def test_execute_without_authorization_confirm_flag_refuses(self, tmp_path: Path) -> None:
@@ -553,7 +558,7 @@ class TestSessionDeleteActuator:
                 )
 
         # Refused before mutation: the session row is untouched.
-        with sqlite3.connect(archive_root / "index.db") as conn:
+        with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 
     def test_stale_plan_after_concurrent_delete_refuses(self, tmp_path: Path) -> None:
@@ -637,9 +642,9 @@ class TestIdentityResetActuator:
 
         assert receipt.status == "applied"
         assert receipt.affected_count == 1
-        with sqlite3.connect(archive_root / "user.db") as conn:
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
             assert conn.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'suppression'").fetchone()[0] == 1
-        with sqlite3.connect(archive_root / "index.db") as conn:
+        with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
     def test_a_session_absent_from_the_index_is_still_tombstoned(self, tmp_path: Path) -> None:
@@ -681,10 +686,14 @@ class TestIdentityResetActuator:
         assert receipt.affected_count == 1
         # The receipt names what had no rebuildable row, so a zero deleted-row
         # count can never be read as "nothing was tombstoned".
-        domain_receipt = receipt.domain_receipt or {}
-        assert domain_receipt["deleted_archive_rows"] == 0
-        assert domain_receipt["tombstoned_without_index_row"] == [vanished]
-        with sqlite3.connect(archive_root / "user.db") as conn:
+        from polylogue.operations.machine_receipts import IdentityResetHistoricalReceipt
+
+        history = receipt.historical_receipt
+        assert isinstance(history, IdentityResetHistoricalReceipt)
+        assert history.deleted_archive_rows == 0
+        assert history.tombstoned_without_index_row_count == 1
+        assert receipt.target_refs == (f"session:{vanished}",)
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
             assert (
                 conn.execute(
                     "SELECT COUNT(*) FROM assertions WHERE kind = 'suppression' AND target_ref = ?",
@@ -692,7 +701,7 @@ class TestIdentityResetActuator:
                 ).fetchone()[0]
                 == 1
             )
-        with sqlite3.connect(archive_root / "index.db") as conn:
+        with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 
 
@@ -764,9 +773,53 @@ class TestTagAddActuator:
 
         assert receipt.status == "applied"
         assert receipt.affected_count == 1
-        with sqlite3.connect(archive_root / "user.db") as conn:
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
             rows = conn.execute("SELECT key FROM assertions WHERE kind = 'tag' AND status != 'deleted'").fetchall()
         assert [r[0] for r in rows] == ["review"]
+
+    def test_qualified_origin_prefix_keeps_read_and_tag_target_in_its_namespace(self, tmp_path: Path) -> None:
+        from polylogue.operations.daemon_reads import execute_read_operation
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        codex_session_id = _seed_archive_session(archive_root, native_id="abcdef")
+        unknown_raw_id = "raw-unknown-collision"
+        with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
+            conn.execute(
+                "INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms) "
+                "VALUES (?, 'unknown-export', 'abc', ?, zeroblob(32), 0, 1000)",
+                (unknown_raw_id, str(archive_root / "unknown.json")),
+            )
+        with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
+            conn.execute(
+                "INSERT INTO sessions (native_id, origin, raw_id, title, content_hash, created_at_ms, updated_at_ms) "
+                "VALUES ('abc', 'unknown-export', ?, 'Unknown collision', zeroblob(32), 1000, 2000)",
+                (unknown_raw_id,),
+            )
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            read = execute_read_operation(
+                "session.read", {"ref": "session:codex-session:abc"}, archive=archive, serving_identity="test"
+            )
+            assert read["session_id"] == codex_session_id
+            assert archive.resolve_session_id("codex:abcdef") == codex_session_id
+            assert archive.resolve_session_id(codex_session_id) == codex_session_id
+            actuator = TagAddActuator()
+            args = TagAddArgs(archive=archive, session_id="codex-session:abc", tag="right-session")
+            plan = actuator.prepare(args)
+            assert plan.target_refs == (f"session:{codex_session_id}",)
+            actuator.apply(plan, args)
+            with pytest.raises(KeyError):
+                archive.resolve_session_id("nonsense:abc")
+
+        _seed_archive_session(archive_root, native_id="abc-other")
+        with ArchiveStore.open_existing(archive_root) as archive:
+            with pytest.raises(ValueError, match="ambiguous"):
+                archive.resolve_session_id("codex-session:abc")
+
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn:
+            targets = conn.execute("SELECT target_ref FROM assertions WHERE kind = 'tag'").fetchall()
+        assert targets == [(f"session:{codex_session_id}",)]
 
     def test_duplicate_add_is_already_satisfied(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
@@ -867,12 +920,12 @@ class TestTagAddActuator:
 
         assert [receipt.status for receipt in receipts] == ["applied", "applied"]
         assert all(receipt.operation_id is not None for receipt in receipts)
-        with sqlite3.connect(archive_root / "user.db") as connection:
+        with closing(sqlite3.connect(archive_root / "user.db")) as connection, connection:
             tags = connection.execute(
                 "SELECT key FROM assertions WHERE kind = 'tag' AND status != 'deleted' ORDER BY key"
             ).fetchall()
         assert tags == [("concurrent-0",), ("concurrent-1",)]
-        with sqlite3.connect(archive_root / "audit.db") as connection:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as connection, connection:
             audit_rows = connection.execute(
                 "SELECT status, unknown_count FROM operation_runs ORDER BY operation_id"
             ).fetchall()
@@ -926,7 +979,7 @@ class TestTagRemoveActuator:
             receipt = executor.execute(actuator, plan, authorization, args)
 
         assert receipt.status == "applied"
-        with sqlite3.connect(archive_root / "user.db") as conn:
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
             status = conn.execute("SELECT status FROM assertions WHERE kind = 'tag'").fetchone()[0]
         assert status == "deleted"
 
@@ -970,7 +1023,7 @@ class TestBulkTagActuator:
         assert receipt.domain_receipt["affected_count"] == 1
         assert receipt.domain_receipt["session_count"] == 2
         assert receipt.domain_receipt["skipped_count"] == 1
-        with sqlite3.connect(archive_root / "user.db") as conn:
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM assertions WHERE kind = 'tag' AND status != 'deleted'"
             ).fetchone()[0]
@@ -1051,7 +1104,7 @@ class TestMetadataSetActuator:
             receipt = executor.execute(actuator, plan, authorization, args)
 
         assert receipt.status == "applied"
-        with sqlite3.connect(archive_root / "user.db") as conn:
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
             row = conn.execute("SELECT key, value_json FROM assertions WHERE kind = 'metadata'").fetchone()
         assert row[0] == "priority"
         assert "high" in row[1]
@@ -1094,7 +1147,7 @@ class TestMetadataDeleteActuator:
             receipt = executor.execute(actuator, plan, authorization, args)
 
         assert receipt.status == "applied"
-        with sqlite3.connect(archive_root / "user.db") as conn:
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
             status = conn.execute("SELECT status FROM assertions WHERE kind = 'metadata'").fetchone()[0]
         assert status == "deleted"
 
@@ -1135,7 +1188,7 @@ class TestMarkActuators:
             add_receipt = executor.execute(add_actuator, add_plan, add_authorization, add_args)
             assert add_receipt.status == "applied"
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 status = conn.execute("SELECT status FROM assertions WHERE kind = 'mark'").fetchone()[0]
             assert status != "deleted"
 
@@ -1152,7 +1205,7 @@ class TestMarkActuators:
             remove_receipt = executor.execute(remove_actuator, remove_plan, remove_authorization, add_args)
             assert remove_receipt.status == "applied"
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 status = conn.execute("SELECT status FROM assertions WHERE kind = 'mark'").fetchone()[0]
             assert status == "deleted"
 
@@ -1254,7 +1307,7 @@ def _seed_raw_authority_blocker(
     real ``raw_sessions`` row a non-frontier resolution needs to replan it.
 
     ``frontier`` seeds a ``frontier_obligation``-kind blocker: the current
-    frontier plan shape ``_reconcile_frontier_obligations`` writes. Without
+    frontier plan shape the prepared inspector writes. Without
     it the row is a ``stale_plan`` -- a durable snapshot predating that shape,
     which the resolver re-derives from live evidence instead of trusting.
     """
@@ -1269,13 +1322,14 @@ def _seed_raw_authority_blocker(
             provider=Provider.CODEX,
             payload=payload,
             source_path=f"{blocker_id}.jsonl",
+            canonical_source_path=f"{blocker_id}.jsonl",
             acquired_at_ms=1000,
             raw_id=raw_id,
         )
     witness_schema = "polylogue.raw-authority-frontier-plan.v1" if frontier else "polylogue.raw-authority-plan.v1"
     input_digest = hashlib.sha256(plan_id.encode("utf-8")).hexdigest()
     observed_json = "{}"
-    with sqlite3.connect(archive_root / "source.db") as conn:
+    with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
         conn.execute("PRAGMA foreign_keys = ON")
         # The blocker is keyed on the plan's content address and carries the
         # plan snapshot itself: that snapshot, not a join into a plan ledger,
@@ -1339,7 +1393,7 @@ class TestAnnotationActuators:
             assert save_receipt.status == "applied"
             assert save_receipt.domain_receipt["created"] is True
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 row = conn.execute("SELECT status, body_text FROM assertions WHERE kind = 'annotation'").fetchone()
             assert row[0] != "deleted"
             assert row[1] == "first note"
@@ -1365,7 +1419,7 @@ class TestAnnotationActuators:
             update_receipt = executor.execute(save_actuator, update_plan, update_authorization, update_args)
             assert update_receipt.status == "applied"
             assert update_receipt.domain_receipt["created"] is False
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 body = conn.execute("SELECT body_text FROM assertions WHERE kind = 'annotation'").fetchone()[0]
             assert body == "updated note"
 
@@ -1383,7 +1437,7 @@ class TestAnnotationActuators:
             delete_receipt = executor.execute(delete_actuator, delete_plan, delete_authorization, delete_args)
             assert delete_receipt.status == "applied"
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 status = conn.execute("SELECT status FROM assertions WHERE kind = 'annotation'").fetchone()[0]
             assert status == "deleted"
 
@@ -1465,7 +1519,7 @@ class TestCaptureAssertionCandidateActuator:
 
         assert first.status == "applied"
         assert replay.status == "already_satisfied"
-        with sqlite3.connect(archive_root / "user.db") as conn:
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
             row = conn.execute(
                 "SELECT kind, status, body_text, author_ref, scope_ref FROM assertions WHERE key = 'terminal-note'"
             ).fetchone()
@@ -1540,7 +1594,7 @@ class TestBlackboardPostActuator:
             assert receipt.status == "applied"
             assert receipt.domain_receipt["note_id"] == "note-bb-1"
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 row = conn.execute(
                     "SELECT status, body_text, author_ref, author_kind FROM assertions WHERE kind = 'note'"
                 ).fetchone()
@@ -1604,182 +1658,164 @@ class TestBlackboardPostActuator:
                 )
                 executor.execute(actuator, plan, authorization, args)
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 count = conn.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'note'").fetchone()[0]
             assert count == 2
 
 
 class TestBlockerResolveActuator:
     def test_prepare_finds_a_real_unresolved_blocker(self, tmp_path: Path) -> None:
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
-        _seed_raw_authority_blocker(
-            archive_root,
-            blocker_id="blocker-prepare",
-            plan_id="raw-replay:prepare-plan",
-            observed_pass_id="raw-authority-frontier-pass:prepare",
+        root = tmp_path / "archive"
+
+        def check(args: BlockerResolveArgs) -> None:
+            plan = BlockerResolveActuator().prepare(args)
+            assert plan.target_refs == ("raw-authority-blocker:blocker-prepare",)
+            assert plan.context["kind"] == "stale_plan"
+            with closing(sqlite3.connect(root / "source.db")) as conn, conn:
+                assert (
+                    conn.execute(
+                        "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id=?", ("blocker-prepare",)
+                    ).fetchone()[0]
+                    is None
+                )
+
+        _run_prepared_blocker_case(
+            root,
+            {
+                "blocker_id": "blocker-prepare",
+                "plan_id": "raw-replay:prepare-plan",
+                "observed_pass_id": "raw-authority-frontier-pass:prepare",
+            },
+            lambda phase: phase("blocker-prepare", "ack", check),
         )
-
-        actuator = BlockerResolveActuator()
-        args = BlockerResolveArgs(archive_root=archive_root, blocker_id="blocker-prepare", resolution="ack")
-        plan = actuator.prepare(args)
-
-        assert plan.target_refs == ("raw-authority-blocker:blocker-prepare",)
-        assert plan.context["kind"] == "stale_plan"
-        # PREPARE performed zero mutation.
-        with sqlite3.connect(archive_root / "source.db") as conn:
-            resolved = conn.execute(
-                "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id = ?", ("blocker-prepare",)
-            ).fetchone()[0]
-        assert resolved is None
 
     def test_prepare_on_unknown_blocker_yields_empty_plan(self, tmp_path: Path) -> None:
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
+        def check(args: BlockerResolveArgs) -> None:
+            plan = BlockerResolveActuator().prepare(args)
+            assert plan.target_refs == ()
+            assert plan.context["found"] is False
 
-        actuator = BlockerResolveActuator()
-        args = BlockerResolveArgs(archive_root=archive_root, blocker_id="does-not-exist", resolution="ack")
-        plan = actuator.prepare(args)
-
-        assert plan.target_refs == ()
-        assert plan.context["found"] is False
+        _run_prepared_blocker_case(tmp_path / "archive", None, lambda phase: phase("does-not-exist", "ack", check))
 
     def test_execute_resolves_and_reopens_replanning(self, tmp_path: Path) -> None:
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
-        _seed_raw_authority_blocker(
-            archive_root,
-            blocker_id="blocker-execute",
-            plan_id="raw-replay:execute-plan",
-            observed_pass_id="raw-authority-frontier-pass:execute",
-        )
+        root = tmp_path / "archive"
 
-        actuator = BlockerResolveActuator()
-        executor = OperationExecutor()
-        args = BlockerResolveArgs(
-            archive_root=archive_root, blocker_id="blocker-execute", resolution="current path is authoritative"
-        )
-        plan = executor.prepare(actuator, args)
-        authorization = executor.authorize(
-            actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
-        )
-        receipt = executor.execute(actuator, plan, authorization, args)
+        def check(args: BlockerResolveArgs) -> None:
+            actuator = BlockerResolveActuator()
+            executor = OperationExecutor()
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+            assert receipt.status == "applied"
 
-        assert receipt.status == "applied"
-        with sqlite3.connect(archive_root / "source.db") as conn:
+        _run_prepared_blocker_case(
+            root,
+            {
+                "blocker_id": "blocker-execute",
+                "plan_id": "raw-replay:execute-plan",
+                "observed_pass_id": "raw-authority-frontier-pass:execute",
+            },
+            lambda phase: phase("blocker-execute", "current path is authoritative", check),
+        )
+        with closing(sqlite3.connect(root / "source.db")) as conn, conn:
             row = conn.execute(
-                "SELECT resolved_at_ms, resolution FROM raw_authority_blockers WHERE blocker_id = ?",
-                ("blocker-execute",),
+                "SELECT resolved_at_ms,resolution FROM raw_authority_blockers WHERE blocker_id=?", ("blocker-execute",)
             ).fetchone()
-        assert row[0] is not None
-        assert "current path is authoritative" in str(row[1])
+        assert row[0] is not None and "current path is authoritative" in str(row[1])
 
     def test_role_only_authorize_refuses(self, tmp_path: Path) -> None:
-        """Contrast with the reversible-class actuators: reset-class needs confirm_flag."""
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
-        _seed_raw_authority_blocker(
-            archive_root,
-            blocker_id="blocker-ac4-contrast",
-            plan_id="raw-replay:ac4-contrast-plan",
-            observed_pass_id="raw-authority-frontier-pass:ac4-contrast",
-        )
+        """The reset-class actuator still requires confirm_flag authorization."""
 
-        actuator = BlockerResolveActuator()
-        executor = OperationExecutor()
-        args = BlockerResolveArgs(archive_root=archive_root, blocker_id="blocker-ac4-contrast", resolution="ack")
-        plan = executor.prepare(actuator, args)
-        with pytest.raises(ConfirmationRequiredError):
-            executor.authorize(
-                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
-            )
+        def check(args: BlockerResolveArgs) -> None:
+            actuator = BlockerResolveActuator()
+            executor = OperationExecutor()
+            plan = executor.prepare(actuator, args)
+            with pytest.raises(ConfirmationRequiredError):
+                executor.authorize(
+                    actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+                )
+
+        _run_prepared_blocker_case(
+            tmp_path / "archive",
+            {
+                "blocker_id": "blocker-ac4-contrast",
+                "plan_id": "raw-replay:ac4-contrast-plan",
+                "observed_pass_id": "raw-authority-frontier-pass:ac4-contrast",
+            },
+            lambda phase: phase("blocker-ac4-contrast", "ack", check),
+        )
 
     def test_concurrent_resolution_between_prepare_and_execute_raises_plan_stale(self, tmp_path: Path) -> None:
-        """TOCTOU: another actor resolving the same blocker between PREPARE and
-        EXECUTE must be caught by the executor's fresh-PREPARE revalidation,
-        not silently double-applied."""
-        from polylogue.storage.raw_authority import resolve_raw_authority_blocker
-
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
-        _seed_raw_authority_blocker(
-            archive_root,
-            blocker_id="blocker-stale",
-            plan_id="raw-replay:stale-plan",
-            observed_pass_id="raw-authority-frontier-pass:stale",
-        )
-
+        """A real intervening acknowledgement invalidates the original prepared plan."""
         actuator = BlockerResolveActuator()
         executor = OperationExecutor()
-        args = BlockerResolveArgs(archive_root=archive_root, blocker_id="blocker-stale", resolution="ack")
-        plan = executor.prepare(actuator, args)
-        authorization = executor.authorize(
-            actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
+
+        def prepare(args: BlockerResolveArgs) -> tuple[Any, Any]:
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
+            )
+            return plan, authorization
+
+        def exercise(phase: _BlockerPhase) -> None:
+            plan, authorization = phase("blocker-stale", "ack", prepare)
+
+            def acknowledge(args: BlockerResolveArgs) -> None:
+                intervening, token = prepare(args)
+                assert executor.execute(actuator, intervening, token, args).status == "applied"
+
+            phase("blocker-stale", "resolved elsewhere first", acknowledge)
+
+            def stale(args: BlockerResolveArgs) -> None:
+                with pytest.raises(PlanStaleError):
+                    executor.execute(actuator, plan, authorization, args)
+
+            phase("blocker-stale", "ack", stale)
+
+        _run_prepared_blocker_case(
+            tmp_path / "archive",
+            {
+                "blocker_id": "blocker-stale",
+                "plan_id": "raw-replay:stale-plan",
+                "observed_pass_id": "raw-authority-frontier-pass:stale",
+            },
+            exercise,
         )
-
-        # A concurrent actor resolves the same blocker out-of-band.
-        resolve_raw_authority_blocker(archive_root, "blocker-stale", resolution="resolved elsewhere first")
-
-        with pytest.raises(PlanStaleError):
-            executor.execute(actuator, plan, authorization, args)
 
     def test_frontier_obligation_resolves_with_no_extra_operator_authority(self, tmp_path: Path) -> None:
-        """Every frontier blocker resolves through the one declared mutation.
+        """The original frontier obligation needs no second judgment or assertion contract."""
+        root = tmp_path / "archive"
 
-        polylogue-6kur deleted the ``frontier_judgment`` kind along with the
-        conflicting-authority state that was its only producer: an operator
-        judgment used to promote a blocked plan into an "executable successor"
-        that nothing executed. ``kind`` now only describes how the resolver
-        reads the stored snapshot, and no kind grants an extra effect.
+        def check(args: BlockerResolveArgs) -> None:
+            actuator = BlockerResolveActuator()
+            executor = OperationExecutor()
+            plan = actuator.prepare(args)
+            assert plan.context["kind"] == "frontier_obligation"
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
+            )
+            assert executor.execute(actuator, plan, authorization, args).status == "applied"
 
-        Anti-vacuity: restoring a second resolution contract (an accepted
-        assertion id plus a typed disposition, demanded for one blocker class)
-        makes the ``frontier_obligation`` assertion or the execute below red
-        for blockers that land in that class.
-        """
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
-        _seed_raw_authority_blocker(
-            archive_root,
-            blocker_id="blocker-obligation",
-            plan_id="raw-replay:obligation-plan",
-            observed_pass_id="raw-authority-frontier-pass:obligation",
-            frontier=True,
-            reason="missing bytes require reacquisition",
+        _run_prepared_blocker_case(
+            root,
+            {
+                "blocker_id": "blocker-obligation",
+                "plan_id": "raw-replay:obligation-plan",
+                "observed_pass_id": "raw-authority-frontier-pass:obligation",
+                "frontier": True,
+                "reason": "missing bytes require reacquisition",
+            },
+            lambda phase: phase("blocker-obligation", "ack", check),
         )
-
-        actuator = BlockerResolveActuator()
-        args = BlockerResolveArgs(archive_root=archive_root, blocker_id="blocker-obligation", resolution="ack")
-        plan = actuator.prepare(args)
-
-        assert plan.context["kind"] == "frontier_obligation"
-
-        # And it resolves without an assertion id, exactly like
-        # resolve_raw_authority_blocker allows for non-judgment frontier
-        # obligations.
-        executor = OperationExecutor()
-        authorization = executor.authorize(
-            actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
-        )
-        receipt = executor.execute(actuator, plan, authorization, args)
-        assert receipt.status == "applied"
-        with sqlite3.connect(archive_root / "source.db") as conn:
-            resolved = conn.execute(
-                "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id = ?", ("blocker-obligation",)
-            ).fetchone()[0]
-        assert resolved is not None
+        with closing(sqlite3.connect(root / "source.db")) as conn, conn:
+            assert (
+                conn.execute(
+                    "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id=?", ("blocker-obligation",)
+                ).fetchone()[0]
+                is not None
+            )
 
 
 class TestListUnresolvedRawAuthorityBlockersPagination:
@@ -1864,7 +1900,7 @@ class TestSavedViewActuators:
             assert save_receipt.status == "applied"
             assert save_receipt.domain_receipt["created"] is True
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 row = conn.execute("SELECT status, key FROM assertions WHERE kind = 'saved_query'").fetchone()
             assert row[0] != "deleted"
             assert row[1] == "my view"
@@ -1883,7 +1919,7 @@ class TestSavedViewActuators:
             delete_receipt = executor.execute(delete_actuator, delete_plan, delete_authorization, delete_args)
             assert delete_receipt.status == "applied"
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 status = conn.execute("SELECT status FROM assertions WHERE kind = 'saved_query'").fetchone()[0]
             assert status == "deleted"
 
@@ -1956,7 +1992,7 @@ class TestSavedViewActuators:
             assert receipt.affected_count == 2
             assert receipt.domain_receipt["collision_view_id"] == "view-old"
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 statuses = dict(
                     conn.execute("SELECT assertion_id, status FROM assertions WHERE kind = 'saved_query'").fetchall()
                 )
@@ -1992,7 +2028,7 @@ class TestRecallPackActuators:
             assert save_receipt.status == "applied"
             assert save_receipt.domain_receipt["created"] is True
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 row = conn.execute("SELECT status, key FROM assertions WHERE kind = 'recall_pack'").fetchone()
             assert row[0] != "deleted"
             assert row[1] == "my pack"
@@ -2011,7 +2047,7 @@ class TestRecallPackActuators:
             delete_receipt = executor.execute(delete_actuator, delete_plan, delete_authorization, delete_args)
             assert delete_receipt.status == "applied"
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 status = conn.execute("SELECT status FROM assertions WHERE kind = 'recall_pack'").fetchone()[0]
             assert status == "deleted"
 
@@ -2061,7 +2097,7 @@ class TestWorkspaceActuators:
             assert save_receipt.status == "applied"
             assert save_receipt.domain_receipt["created"] is True
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 row = conn.execute("SELECT status, key FROM assertions WHERE kind = 'workspace_note'").fetchone()
             assert row[0] != "deleted"
             assert row[1] == "my workspace"
@@ -2080,7 +2116,7 @@ class TestWorkspaceActuators:
             delete_receipt = executor.execute(delete_actuator, delete_plan, delete_authorization, delete_args)
             assert delete_receipt.status == "applied"
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 status = conn.execute("SELECT status FROM assertions WHERE kind = 'workspace_note'").fetchone()[0]
             assert status == "deleted"
 
@@ -2177,7 +2213,7 @@ class TestWorkspaceActuators:
             assert receipt.affected_count == 2
             assert receipt.domain_receipt["collision_workspace_id"] == "ws-old"
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 statuses = dict(
                     conn.execute("SELECT assertion_id, status FROM assertions WHERE kind = 'workspace_note'").fetchall()
                 )
@@ -2228,7 +2264,7 @@ class TestCorrectionActuators:
             assert correction.kind.value == "tag_reject"
             assert correction.payload == {"tag": "todo"}
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 row = conn.execute("SELECT status, key FROM assertions WHERE kind = 'correction'").fetchone()
             assert row[0] != "deleted"
             assert row[1] == "tag_reject"
@@ -2247,7 +2283,7 @@ class TestCorrectionActuators:
             delete_receipt = executor.execute(delete_actuator, delete_plan, delete_authorization, delete_args)
             assert delete_receipt.status == "applied"
 
-            with sqlite3.connect(archive_root / "user.db") as conn:
+            with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
                 status = conn.execute("SELECT status FROM assertions WHERE kind = 'correction'").fetchone()[0]
             assert status == "deleted"
 
@@ -2499,7 +2535,7 @@ class TestFilesystemResetActuator:
         assert receipt.affected_count == 2
         assert not (archive_root / "scratch.cache").exists()
         assert not (archive_root / "blob").exists()
-        with sqlite3.connect(archive_root / "audit.db") as conn:
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
             assert conn.execute("SELECT state FROM operation_previews").fetchone()[0] == "consumed"
             assert conn.execute("SELECT status FROM operation_runs").fetchone()[0] == "completed"
             kinds = {row[0] for row in conn.execute("SELECT target_kind FROM operation_targets").fetchall()}
@@ -2536,12 +2572,12 @@ class TestReplayActsOnTheRecordedIdsExactly:
 
     @staticmethod
     def _sibling_state(archive_root: Path, sibling: str) -> tuple[bool, int]:
-        with sqlite3.connect(archive_root / "index.db") as conn:
+        with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
             exists = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (sibling,)).fetchone() is not None
         # Every overlay the families write names its session inside
         # ``target_ref`` (``session:<id>``, ``insight:<id>``), and only the
         # sibling's own id contains ``-sibling``.
-        with sqlite3.connect(archive_root / "user.db") as conn:
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
             assertions = conn.execute(
                 "SELECT COUNT(*) FROM assertions WHERE instr(target_ref, ?) > 0 AND status != 'deleted'",
                 (sibling,),
@@ -2746,3 +2782,128 @@ def test_seam_keeps_a_recreated_tier_and_clears_sidecars_of_a_vanished_one(tmp_p
     assert not index_db.with_name("index.db-wal").exists()
     assert ops_db.read_bytes() == b"recreated after the preview"
     assert ops_db.with_name("ops.db-wal").exists()
+
+
+@pytest.mark.parametrize("user_reference", ["none", "deleted_target_assertion", "surviving_evidence"])
+def test_audited_excision_recovery_keeps_exact_removal_authority(
+    tmp_path: Path, user_reference: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recovery finishes the one recorded excision attempt and nothing more.
+
+    A surviving session's assertion whose evidence names the excised session
+    keeps that reference unchanged (2e9aae50de: User anchors to an authorized,
+    now-absent session survive excision); an assertion targeting the excised
+    session is excised content and goes with it.
+    """
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+    from polylogue.storage.sqlite.reference_seal import _PreparedExcisionEmbeddingsChild
+    from polylogue.storage.sqlite.write_lease import permitted_session_removals, write_lease
+    from tests.infra.excision_embeddings import seed_excision_session
+    from tests.infra.excision_execution import execute_excision, recover_excision
+
+    session_id = seed_excision_session(tmp_path, native_id="recorded-excision-recovery", with_embedding=True)
+    if user_reference != "none":
+        survivor = seed_excision_session(tmp_path, native_id="recovery-survivor")
+        with closing(sqlite3.connect(tmp_path / "user.db")) as user, user:
+            upsert_assertion(
+                user,
+                assertion_id="recovery-protection",
+                target_ref=f"session:{survivor if user_reference == 'surviving_evidence' else session_id}",
+                kind=AssertionKind.NOTE,
+                value={"body": "Retained content"},
+                author_ref="user:local",
+                author_kind="user",
+                evidence_refs=(f"session:{session_id}",),
+                now_ms=1,
+            )
+
+    class RecoveryBoundaryError(Exception):
+        pass
+
+    interruption = RecoveryBoundaryError("actual Source commit before paid commit")
+    original_apply = _PreparedExcisionEmbeddingsChild.apply
+    reached = False
+
+    def stop_before_paid(child: _PreparedExcisionEmbeddingsChild) -> None:
+        nonlocal reached
+        if not reached:
+            reached = True
+            with closing(sqlite3.connect(tmp_path / "source.db")) as source, source:
+                assert source.execute(
+                    "SELECT count(*) FROM raw_sessions WHERE source_path='/fake/recorded-excision-recovery.jsonl'"
+                ).fetchone() == (0,)
+            raise interruption
+        original_apply(child)
+
+    monkeypatch.setattr(_PreparedExcisionEmbeddingsChild, "apply", stop_before_paid)
+    retained = user_reference == "surviving_evidence"
+    with pytest.raises(RecoveryBoundaryError) as caught:
+        execute_excision(tmp_path, session_id, reason="recorded reason", actor="user:recorded")
+    assert caught.value is interruption
+    assert reached
+    with closing(sqlite3.connect(tmp_path / "audit.db")) as audit, audit:
+        original_attempts = audit.execute("SELECT operation_id,attempt_id FROM operation_attempts").fetchall()
+        assert len(original_attempts) == 1
+        assert audit.execute("SELECT status FROM operation_runs").fetchall() == [("interrupted",)]
+    recover_excision(tmp_path)
+    recover_excision(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "audit.db")) as audit, audit:
+        assert audit.execute("SELECT operation_id,attempt_id FROM operation_attempts").fetchall() == original_attempts
+        assert audit.execute("SELECT status FROM operation_runs").fetchall() == [("completed",)]
+    with write_lease("test.recovery-terminal-permission", archive_root=tmp_path):
+        assert permitted_session_removals(archive_root=tmp_path) == frozenset()
+    with closing(sqlite3.connect(tmp_path / "index.db")) as index, index:
+        exists = index.execute("SELECT 1 FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    assert exists is None
+    with closing(sqlite3.connect(tmp_path / "user.db")) as user, user:
+        assertion = user.execute(
+            "SELECT evidence_refs_json FROM assertions WHERE assertion_id='recovery-protection'"
+        ).fetchone()
+    if retained:
+        assert assertion is not None and json.loads(assertion[0]) == [f"session:{session_id}"]
+    else:
+        assert assertion is None
+    with closing(sqlite3.connect(tmp_path / "embeddings.db")) as paid, paid:
+        assert paid.execute("SELECT count(*) FROM message_embeddings_meta").fetchone() == (0,)
+        assert paid.execute("SELECT count(*) FROM excision_embedding_completions").fetchone() == (1,)
+
+
+_BlockerPhase = Callable[[str, str, Callable[[BlockerResolveArgs], Any]], Any]
+
+
+def _run_prepared_blocker_case(
+    archive_root: Path, seed: dict[str, Any] | None, work: Callable[[_BlockerPhase], object]
+) -> object:
+    """Run the original actuator law on a real supplied preparation/writer owner."""
+    import asyncio
+
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.storage.frontier_inspection import prepared_frontier_blocker_acknowledgement
+    from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async def run() -> object:
+        def initialize() -> None:
+            bootstrap_archive_root(archive_root)
+            if seed is not None:
+                _seed_raw_authority_blocker(archive_root, **seed)
+
+        await run_archive_fixture_write(archive_root, initialize)
+        async with prepared_live_convergence_owner(archive_root) as owner:
+
+            def exercise() -> object:
+                def phase(blocker_id: str, resolution: str, assertion: Callable[[BlockerResolveArgs], Any]) -> Any:
+                    with prepared_frontier_blocker_acknowledgement(
+                        archive_root,
+                        blocker_id,
+                        resolution=resolution,
+                        input_demand=owner._compute_adapter.amend_current_input_demand,
+                    ) as prepared:
+                        args = BlockerResolveArgs(archive_root, blocker_id, resolution, prepared)
+                        return admit_stage_write("fixture.blocker.actuator", lambda: assertion(args))
+
+                return work(phase)
+
+            return await owner.run_convergence_sync("fixture.blocker.law", exercise)
+
+    return asyncio.run(run())

@@ -3,7 +3,7 @@
 These tests verify that the ZIP extraction -> JSON/JSONL parse pipeline handles
 BOM markers, mixed line endings, partial corruption, and non-UTF-8 encodings
 correctly. They test through iter_source_sessions (parse path) and
-iter_source_raw_data (acquisition path).
+iter_source_acquisition_records (acquisition path).
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from polylogue.config import Source
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from tests.infra.encoding_fixtures import EncodingFixtureBuilder
+from tests.infra.source_builders import acquired_payloads
 
 
 def _make_source(path: Path, name: str = "codex") -> Source:
@@ -48,11 +49,11 @@ def _collect_raw_data(
     *,
     cursor_state: CursorStatePayload | None = None,
 ) -> list[RawSessionData]:
-    """Run iter_source_raw_data and collect results."""
-    from polylogue.sources.source_acquisition import iter_source_raw_data
+    """Run iter_source_acquisition_records and collect results."""
+    from polylogue.sources.source_acquisition import iter_source_acquisition_records
 
     source = _make_source(source_path, name=provider)
-    return list(iter_source_raw_data(source, cursor_state=cursor_state))
+    return list(acquired_payloads(iter_source_acquisition_records(source, cursor_state=cursor_state)))
 
 
 def _empty_cursor_state() -> CursorStatePayload:
@@ -77,8 +78,10 @@ class TestZipBomHandling:
 
     def test_bom_in_jsonl_lines_stripped(self, tmp_path: Path) -> None:
         """JSONL with BOM chars on individual lines inside ZIP."""
-        EncodingFixtureBuilder.bom_in_jsonl_zip(tmp_path)
-        results = _collect_sessions(tmp_path, provider="codex")
+        # A Codex ZIP is an export, not a ~/.codex/sessions position: it is
+        # declared as the one explicit input file.
+        archive = EncodingFixtureBuilder.bom_in_jsonl_zip(tmp_path)
+        results = _collect_sessions(archive, provider="codex")
         assert len(results) >= 1
         conv = results[0]
         assert conv.messages
@@ -104,8 +107,8 @@ class TestZipLineEndings:
 
     def test_mixed_line_endings_jsonl_in_zip(self, tmp_path: Path) -> None:
         """JSONL with mixed CRLF/LF/CR endings inside ZIP parses correctly."""
-        EncodingFixtureBuilder.mixed_line_endings_zip(tmp_path)
-        results = _collect_sessions(tmp_path, provider="codex")
+        archive = EncodingFixtureBuilder.mixed_line_endings_zip(tmp_path)
+        results = _collect_sessions(archive, provider="codex")
         assert len(results) >= 1
         conv = results[0]
         # Should have parsed messages from the JSONL despite mixed endings
@@ -141,7 +144,7 @@ class TestAcquisitionRawPreservation:
     """Raw acquisition path preserves bytes; parse path strips BOM."""
 
     def test_raw_acquisition_preserves_bytes_including_bom(self, tmp_path: Path) -> None:
-        """iter_source_raw_data stores raw bytes as-is (BOM not stripped at acquisition)."""
+        """iter_source_acquisition_records stores raw bytes as-is (BOM not stripped at acquisition)."""
         EncodingFixtureBuilder.bom_utf8_json_zip(tmp_path)
         results = _collect_raw_data(tmp_path, provider="chatgpt")
         assert len(results) >= 1

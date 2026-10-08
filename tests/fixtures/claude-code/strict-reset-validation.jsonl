@@ -1,0 +1,2 @@
+{"parentUuid":null,"type":"user","sessionId":"strict-replay","message":{"role":"user","content":"kept"},"uuid":"user-1","timestamp":"2025-01-01T00:00:00Z"}
+{"parentUuid":"user-1","type":"assistant","sessionId":"strict-replay","message":{"role":"assistant","content":[{"type":"text","text":"reply"}]},"uuid":"assistant-1","timestamp":"2025-01-01T00:00:01Z"}

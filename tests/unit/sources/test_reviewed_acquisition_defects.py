@@ -14,7 +14,9 @@ import pytest
 
 from polylogue.core.enums import Origin
 from polylogue.sources.live.source_selection import deepest_source_for_path
+from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.origin_specs import _source_signature, origin_specs
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.sqlite_snapshot import sqlite_logical_revision
 
 
@@ -102,6 +104,47 @@ def test_exact_file_source_outranks_an_equal_depth_directory_source(tmp_path: Pa
     assert deepest_source_for_path(file_path, (directory_source, exact_file_source)) is exact_file_source
 
 
+def test_declared_subtree_alias_retains_provider_namespace_and_explicit_file_priority(tmp_path: Path) -> None:
+    declared = tmp_path / "profile"
+    external = tmp_path / "external"
+    declared.mkdir()
+    external.mkdir()
+    (declared / "sessions").symlink_to(external, target_is_directory=True)
+    physical = external / "session_shared.json"
+    physical.write_text("{}")
+    offered = declared / "sessions" / physical.name
+    # The production Hermes source watches its JSON session snapshots.
+    hermes = WatchSource(name="hermes", root=declared, layout=export_drop_layout((".json",)))
+    external_source = WatchSource(name="inbox", root=external)
+    assert hermes.accepts(offered)
+    assert deepest_source_for_path(offered, (external_source, hermes)) is hermes
+    explicit = WatchSource(name="inbox", root=external, exact_paths=frozenset({physical.resolve()}))
+    assert deepest_source_for_path(offered, (hermes, explicit)) is explicit
+
+
+def test_resolved_root_alias_selects_paths_without_declared_containment(tmp_path: Path) -> None:
+    physical_root = tmp_path / "physical"
+    physical_root.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(physical_root, target_is_directory=True)
+    path = physical_root / "session.jsonl"
+    path.write_text("{}\n")
+    source = WatchSource(name="codex", root=alias)
+    assert deepest_source_for_path(path, (source,)) is source
+
+
+def test_lexical_containment_collapses_parent_components_before_selecting(tmp_path: Path) -> None:
+    root = tmp_path / "profile"
+    root.mkdir()
+    outside = tmp_path / "external"
+    outside.mkdir()
+    path = outside / "session.jsonl"
+    path.write_text("{}\n")
+    declared = WatchSource(name="hermes", root=root)
+    actual = WatchSource(name="codex", root=outside)
+    assert deepest_source_for_path(root / ".." / "external" / path.name, (declared, actual)) is actual
+
+
 def test_autoincrement_state_changes_the_logical_revision(tmp_path: Path) -> None:
     """An insert-then-delete on an AUTOINCREMENT table is a real content change.
 
@@ -158,27 +201,6 @@ def test_source_signature_is_keyed_by_contents(tmp_path: Path) -> None:
     assert _source_signature(module) != before
 
 
-def test_gemini_cli_parsing_is_not_path_independent() -> None:
-    """A path-dependent parser must not share one parse across source paths.
-
-    ``dispatch`` passes ``source_path`` into ``parse_gemini_cli``, which
-    resolves its ``tool-outputs/`` sidecar scope from it. Anti-vacuity: put
-    ``GEMINI_CLI`` back in the set and ``_parse_retained_raws`` fans one
-    representative's recovered output out to every byte-identical row,
-    regardless of which sidecar directory each row's path names.
-    """
-    from polylogue.core.enums import Provider
-    from polylogue.sources.revision_backfill import _PATH_INDEPENDENT_PARSE_PROVIDERS
-
-    assert Provider.GEMINI_CLI not in _PATH_INDEPENDENT_PARSE_PROVIDERS
-    # Claude Code resolves retained tool-result sidecars and subagent
-    # siblings from ``source_path`` the same way.
-    assert Provider.CLAUDE_CODE not in _PATH_INDEPENDENT_PARSE_PROVIDERS
-    # The opposite direction: emptying the set would also pass the assertion
-    # above, so pin a provider that is genuinely path-independent.
-    assert Provider.CHATGPT in _PATH_INDEPENDENT_PARSE_PROVIDERS
-
-
 def test_antigravity_trajectory_db_is_not_skipped_as_a_protobuf(tmp_path: Path) -> None:
     """The ``.pb`` prepass role must not swallow a schema-verified ``.db``.
 
@@ -216,7 +238,7 @@ def test_antigravity_trajectory_db_is_not_skipped_as_a_protobuf(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_drive_acquisition_refuses_a_foreign_archive_cache(tmp_path: Path) -> None:
-    """The Drive branch bypasses ``iter_source_raw_data``'s root refusal.
+    """The Drive branch bypasses ``iter_source_acquisition_records``'s root refusal.
 
     Anti-vacuity: drop the guard from ``iter_raw_record_stream`` and the Drive
     branch accepts a foreign archive's drive cache as a capture location, so
@@ -294,7 +316,14 @@ def test_blocked_source_paths_match_through_a_symlinked_watch_root(tmp_path: Pat
             (bytes(32),),
         )
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(linked_root / "session.jsonl"), updated_at_ms=1, byte_offset=2)
+        # Acquisition freezes the resolved canonical path beside the spelling.
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(linked_root / "session.jsonl"),
+            canonical_source_path=str(violating),
+            updated_at_ms=1,
+            byte_offset=2,
+        )
 
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),

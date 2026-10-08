@@ -50,9 +50,9 @@ def __getattr__(name: str) -> object:
 
         return getattr(configuration_evidence, name)
     if name in {"ContextImage", "ContextOmission", "ContextSegment", "ContextSnapshotRecord", "ContextSpec"}:
-        from polylogue.context import compiler as compiler_module
+        from polylogue.archive import context_models
 
-        return getattr(compiler_module, name)
+        return getattr(context_models, name)
     if name == "context_snapshot_record_from_image":
         from polylogue.context.compiler import context_snapshot_record_from_image
 

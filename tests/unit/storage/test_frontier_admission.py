@@ -163,7 +163,8 @@ def test_trigger_change_and_tier_disappearance_revoke_certificate(tmp_path: Path
     initialize_active_archive_root(tmp_path)
     assert frontier_existence.raw_existence_block_reason(tmp_path) is None
     with sqlite3.connect(tmp_path / "source.db") as external:
-        external.execute("DROP TRIGGER raw_existence_delete")
+        # Migration 006 replaced raw_existence_delete with the frontier journal trigger.
+        external.execute("DROP TRIGGER raw_existence_frontier_raw_sessions_delete")
     assert "trigger" in str(frontier_existence.raw_existence_block_reason(tmp_path))
     (tmp_path / "index.db").rename(tmp_path / "index-retired.db")
     assert "unavailable" in str(frontier_existence.raw_existence_block_reason(tmp_path))
@@ -310,7 +311,13 @@ def test_selected_chain_refuses_only_its_path_and_keeps_new_path_gap(tmp_path: P
             "UPDATE raw_sessions SET revision_kind = 'append', predecessor_raw_id = 'lost' WHERE raw_id = 'broken'"
         )
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(new_alias), updated_at_ms=1, byte_offset=1)
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(new_alias),
+            canonical_source_path=str(new_alias.resolve()),
+            updated_at_ms=1,
+            byte_offset=1,
+        )
     assert frontier_existence.raw_existence_block_reason(tmp_path) is None
     selected = raw_frontier_blocked_selected_paths(tmp_path, (broken, healthy, new))
     assert selected.unattributed_reason is None
@@ -504,7 +511,13 @@ def test_mixed_byte_and_membership_container_keeps_byte_cursor_refusal(tmp_path:
             (bytes(32),),
         )
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(container), updated_at_ms=1, byte_offset=2)
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(container),
+            canonical_source_path=str(container.resolve()),
+            updated_at_ms=1,
+            byte_offset=2,
+        )
     assert frontier_existence.raw_existence_block_reason(tmp_path) is None
     selected = raw_frontier_blocked_selected_paths(tmp_path, (container, sibling))
     assert selected.unattributed_reason is None
@@ -523,24 +536,42 @@ def test_selected_cursor_ahead_refuses_alias_and_safe_deferred_tail(tmp_path: Pa
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute("UPDATE raw_revision_heads SET accepted_frontier_kind = 'byte'")
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(alias), updated_at_ms=1, byte_offset=2)
+        upsert_ingest_cursor(
+            conn, source_path=str(alias), canonical_source_path=str(alias.resolve()), updated_at_ms=1, byte_offset=2
+        )
     assert frontier_existence.raw_existence_block_reason(tmp_path) is None
     refused = raw_frontier_blocked_selected_paths(tmp_path, (path,))
     assert refused.unattributed_reason is None
     assert str(alias) in refused.source_paths
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         conn.execute("DELETE FROM ingest_cursor WHERE source_path = ?", (str(alias),))
-        upsert_ingest_cursor(conn, source_path=str(path), updated_at_ms=1, byte_offset=2)
+        upsert_ingest_cursor(
+            conn, source_path=str(path), canonical_source_path=str(path.resolve()), updated_at_ms=1, byte_offset=2
+        )
     differently_spelled = raw_frontier_blocked_selected_paths(tmp_path, (path,))
     assert str(path) in differently_spelled.source_paths
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(path), updated_at_ms=2, byte_offset=2, deferred_end_offset=3)
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(path),
+            canonical_source_path=str(path.resolve()),
+            updated_at_ms=2,
+            byte_offset=2,
+            deferred_end_offset=3,
+        )
     # A deferred range does not accept its prefix: committed offset 2 is past
     # the accepted head (1), so the cursor is still ahead.
     ahead_deferred = raw_frontier_blocked_selected_paths(tmp_path, (path,))
     assert str(path) in ahead_deferred.source_paths
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(path), updated_at_ms=3, byte_offset=1, deferred_end_offset=3)
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(path),
+            canonical_source_path=str(path.resolve()),
+            updated_at_ms=3,
+            byte_offset=1,
+            deferred_end_offset=3,
+        )
     safe = raw_frontier_blocked_selected_paths(tmp_path, (path,))
     assert safe.unattributed_reason is None
     assert not safe.source_paths
@@ -554,14 +585,21 @@ def test_all_deferred_page_still_refuses_unrelated_missing_raw(tmp_path: Path) -
     _raw(tmp_path, "unrelated")
     _session(tmp_path, "unrelated", 1)
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(selected), updated_at_ms=1, byte_offset=1, deferred_end_offset=2)
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(selected),
+            canonical_source_path=str(selected.resolve()),
+            updated_at_ms=1,
+            byte_offset=1,
+            deferred_end_offset=2,
+        )
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="codex", root=tmp_path),),
         cursor=CursorStore(tmp_path / "ops.db"),
         parser_fingerprint="frontier-test",
     )
-    assert processor.require_cursor_authority([selected]) is None
+    processor.require_cursor_authority([selected])
     with sqlite3.connect(tmp_path / "source.db") as external:
         external.execute("DELETE FROM raw_sessions WHERE raw_id = 'unrelated'")
     with pytest.raises(CursorAuthorityBlockedError, match="missing"):
@@ -582,7 +620,7 @@ def test_external_delete_during_selected_read_refuses_before_admission_returns(
         cursor=CursorStore(tmp_path / "ops.db"),
         parser_fingerprint="frontier-test",
     )
-    assert processor.require_cursor_authority([selected]) is None
+    processor.require_cursor_authority([selected])
     original = processor._blocked_source_paths
 
     def interleave(paths: list[Path]) -> Any:
@@ -609,14 +647,20 @@ def test_selected_authority_change_during_read_refuses_same_page(
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute("UPDATE raw_revision_heads SET accepted_frontier_kind = 'byte'")
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(selected), updated_at_ms=1, byte_offset=1)
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(selected),
+            canonical_source_path=str(selected.resolve()),
+            updated_at_ms=1,
+            byte_offset=1,
+        )
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="codex", root=tmp_path),),
         cursor=CursorStore(tmp_path / "ops.db"),
         parser_fingerprint="frontier-test",
     )
-    assert processor.require_cursor_authority([selected]) is None
+    processor.require_cursor_authority([selected])
     original = processor._blocked_source_paths
 
     def interleave(paths: list[Path]) -> Any:
@@ -637,33 +681,49 @@ def test_selected_authority_change_during_read_refuses_same_page(
         processor.require_cursor_authority([selected])
 
 
-def test_prune_stage_deletes_only_consumed_journal_rows(tmp_path: Path) -> None:
-    """The daemon stage keeps both journals bounded by what admission consumed.
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_prune_stage_deletes_only_consumed_journal_rows(tmp_path: Path) -> None:
+    """Both consumers must prove a row consumed before the actual stage deletes it."""
+    from contextlib import closing
 
-    Anti-vacuity: drop the stage's ``sequence <= watermark`` bound and the
-    unconsumed row below is deleted too, so the next admission re-proves
-    from scratch and the final count assertion fails.
-    """
     from polylogue.operations.raw_existence_journal import make_raw_existence_journal_prune_stage
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    initialize_active_archive_root(tmp_path)
-    _raw(tmp_path, "present")
-    _session(tmp_path, "present", 1)
-    stage = make_raw_existence_journal_prune_stage(tmp_path / "index.db")
-    assert stage.check(tmp_path / "index.db") is False  # no certificate yet
-    assert frontier_existence.raw_existence_block_reason(tmp_path) is None
-    assert stage.check(tmp_path / "index.db") is True
-    assert stage.execute(tmp_path / "index.db") is True
-    assert stage.check(tmp_path / "index.db") is False
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_existence_changes").fetchone()[0] == 0
-    # A change the certificate has not consumed survives the prune.
-    _raw(tmp_path, "second")
-    _session(tmp_path, "second", 2)
-    assert stage.execute(tmp_path / "index.db") is True
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_existence_changes").fetchone()[0] == 1
-    assert frontier_existence.raw_existence_block_reason(tmp_path) is None
+    def seed() -> None:
+        initialize_active_archive_root(tmp_path)
+        _raw(tmp_path, "present")
+        _session(tmp_path, "present", 1)
+
+    await run_archive_fixture_write(tmp_path, seed)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        stage = make_raw_existence_journal_prune_stage(tmp_path / "index.db", compute_adapter=owner._compute_adapter)
+        assert stage.check(tmp_path / "index.db") is False
+        assert frontier_existence.raw_existence_block_reason(tmp_path) is None
+        assert stage.check(tmp_path / "index.db") is False  # frontier inspection has not consumed these rows
+        await owner.run_convergence_sync(
+            "fixture.frontier.inspect",
+            inspect_prepared_raw_authority_frontier,
+            tmp_path,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+        )
+        assert stage.check(tmp_path / "index.db") is True
+        assert await owner.run_convergence_sync("fixture.frontier.prune", stage.execute, tmp_path / "index.db") is True
+        assert stage.check(tmp_path / "index.db") is False
+        with closing(sqlite3.connect(tmp_path / "index.db")) as conn, conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_existence_changes").fetchone()[0] == 0
+
+        def second() -> None:
+            _raw(tmp_path, "second")
+            _session(tmp_path, "second", 2)
+
+        await run_archive_fixture_write(tmp_path, second)
+        assert await owner.run_convergence_sync("fixture.frontier.prune", stage.execute, tmp_path / "index.db") is True
+        with closing(sqlite3.connect(tmp_path / "index.db")) as conn, conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_existence_changes").fetchone()[0] == 1
+        assert frontier_existence.raw_existence_block_reason(tmp_path) is None
 
 
 def test_retired_symlink_alias_refuses_the_selected_real_path(tmp_path: Path) -> None:

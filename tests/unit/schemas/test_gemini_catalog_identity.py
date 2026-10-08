@@ -14,13 +14,13 @@ annotations), so ``SchemaRegistry.resolve_payload`` could never find a
 real-candidate match (``exact_structure``/``bundle_scope``/
 ``profile_family`` -- see ``runtime_registry._resolve_observation``) and
 always fell back to ``package_default``, which
-``polylogue.schemas.drift_sentinel.classify_schema_drift`` reports as
+retained validation reports as
 ``unseen_shape``.
 
 These tests exercise the DEFAULT (bundled, no storage_root override)
 ``SchemaRegistry`` -- i.e. the exact registry
-``polylogue.pipeline.services.ingest_worker._runtime_schema_registry()``
-uses in production -- against a gemini/AI-Studio payload shaped exactly
+``polylogue.schemas.operator.registry.runtime_schema_registry()``
+provides in production -- against a gemini/AI-Studio payload shaped exactly
 like real cached Drive exports (a bare ``{chunkedPrompt, runSettings,
 systemInstruction}`` document, no top-level ``id``/``title``/
 ``createTime``), to prove the committed catalog now resolves it as a real
@@ -29,9 +29,13 @@ candidate instead of ``package_default``.
 
 from __future__ import annotations
 
-from polylogue.schemas.drift_sentinel import UNSEEN_SHAPE, classify_schema_drift
+import json
+from pathlib import Path
+
+from polylogue.core.enums import ValidationMode
+from polylogue.schemas.drift_sentinel import UNSEEN_SHAPE
 from polylogue.schemas.registry import SchemaRegistry
-from polylogue.schemas.validator import validate_provider_export
+from polylogue.schemas.validator import validate_retained_document
 
 
 def _real_shaped_gemini_payload(*, message_text: str) -> dict[str, object]:
@@ -102,25 +106,22 @@ def test_real_shaped_gemini_payload_resolves_to_a_real_candidate_not_unseen_shap
     )
 
 
-def test_real_shaped_gemini_payload_does_not_classify_as_unseen_shape() -> None:
-    """End-to-end through the same classification helper the live drift
-    health check (``polylogue.daemon.health._check_schema_drift_medium``)
-    and ``schema_drift_samples`` writer consume."""
-    registry = SchemaRegistry()
+def test_real_shaped_gemini_payload_does_not_classify_as_unseen_shape(tmp_path: Path) -> None:
+    """The retained owner resolves the current catalog before producing drift."""
     payload = _real_shaped_gemini_payload(message_text="Another distinct, never-fixtured conversation turn.")
-
-    resolution = registry.resolve_payload("gemini", payload)
-    assert resolution is not None
-
-    validation = validate_provider_export(payload, "gemini", strict=False)
-
-    classification = classify_schema_drift(
-        resolution_reason=resolution.reason,
-        is_valid=validation.is_valid,
-        drift_warnings=validation.drift_warnings,
+    source = tmp_path / "gemini-export.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    verdict = validate_retained_document(
+        "gemini",
+        source,
+        mode=ValidationMode.ADVISORY,
+        raw_id="raw-gemini",
+        revision_sha256="e" * 64,
+        evidence_id="raw-gemini",
     )
-
-    assert classification != UNSEEN_SHAPE
+    assert verdict.schema_resolution is not None
+    assert verdict.schema_resolution.reason != "package_default"
+    assert verdict.drift_observation is None or verdict.drift_observation.classification != UNSEEN_SHAPE
 
 
 def test_payload_with_top_level_applets_and_citations_still_resolves() -> None:

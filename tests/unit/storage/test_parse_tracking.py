@@ -26,6 +26,7 @@ from polylogue.storage.sqlite.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
 )
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.storage_records import admit_raw_record
 
 # ─── Backend method tests ──────────────────────────────────────────────────
@@ -43,6 +44,7 @@ class TestMarkRawParsed:
             raw_id=raw_id,
             source_name="test",
             source_path="/test.json",
+            canonical_source_path="/test.json",
             blob_size=len(b'{"test": true}'),
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
@@ -81,16 +83,15 @@ class TestMarkRawParsed:
         assert rec.parsed_at is not None
         assert rec.parse_error is None
 
-    async def test_error_truncation(self, backend: SQLiteBackend) -> None:
-        """Long error messages are truncated to prevent DB bloat."""
+    async def test_long_parse_error_is_retained_whole(self, backend: SQLiteBackend) -> None:
+        """A long parse error is evidence; the write boundary keeps every character."""
         await self._save_raw(backend)
         long_error = "x" * 5000
         await backend.mark_raw_parsed("test-raw", error=long_error)
 
         rec = await backend.get_raw_session("test-raw")
         assert rec is not None
-        assert rec.parse_error is not None
-        assert len(rec.parse_error) == 2000
+        assert rec.parse_error == long_error
 
 
 class TestRawBlobAddress:
@@ -107,6 +108,7 @@ class TestRawBlobAddress:
                 blob_hash=blob_hash,
                 source_name="test",
                 source_path="/test.json",
+                canonical_source_path="/test.json",
                 blob_size=len(b'{"test": true}'),
                 acquired_at="2026-01-01T00:00:00Z",
             ),
@@ -133,6 +135,7 @@ class TestUpdateRawState:
                 raw_id=raw_id,
                 source_name="test",
                 source_path="/test.json",
+                canonical_source_path="/test.json",
                 blob_size=len(b'{"test": true}'),
                 acquired_at="2026-01-01T00:00:00Z",
                 file_mtime="2026-01-01T00:00:00Z",
@@ -179,7 +182,7 @@ class TestUpdateRawState:
         assert rec.validation_provider == "chatgpt"
         assert rec.validation_mode == "strict"
 
-    async def test_update_raw_state_truncates_error_fields(self, backend: SQLiteBackend) -> None:
+    async def test_update_raw_state_retains_whole_error_fields(self, backend: SQLiteBackend) -> None:
         await self._save_raw(backend, raw_id="error-trunc")
         long_error = "x" * 5000
         await backend.update_raw_state(
@@ -192,10 +195,8 @@ class TestUpdateRawState:
 
         rec = await backend.get_raw_session("error-trunc")
         assert rec is not None
-        assert rec.parse_error is not None
-        assert len(rec.parse_error) == 2000
-        assert rec.validation_error is not None
-        assert len(rec.validation_error) == 2000
+        assert rec.parse_error == long_error
+        assert rec.validation_error == long_error
 
     @pytest.mark.parametrize("wall_clock_ms", [1000, 999])
     async def test_failed_validation_after_parse_advances_past_identical_or_backward_clock(
@@ -285,6 +286,7 @@ class TestMarkRawValidated:
             raw_id=raw_id,
             source_name="test",
             source_path="/test.json",
+            canonical_source_path="/test.json",
             blob_size=len(b'{"test": true}'),
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
@@ -312,7 +314,7 @@ class TestMarkRawValidated:
         assert rec.validation_mode == "strict"
         assert rec.payload_provider == "chatgpt"
 
-    async def test_mark_failed_truncates_error(self, backend: SQLiteBackend) -> None:
+    async def test_mark_failed_retains_whole_error(self, backend: SQLiteBackend) -> None:
         await self._save_raw(backend)
         long_error = "x" * 5000
         await backend.mark_raw_validated(
@@ -326,8 +328,7 @@ class TestMarkRawValidated:
         rec = await backend.get_raw_session("test-raw")
         assert rec is not None
         assert rec.validation_status == "failed"
-        assert rec.validation_error is not None
-        assert len(rec.validation_error) == 2000
+        assert rec.validation_error == long_error
 
     async def test_invalid_status_raises(self, backend: SQLiteBackend) -> None:
         await self._save_raw(backend)
@@ -340,7 +341,9 @@ class TestGetKnownSourceMtimes:
 
     @pytest.fixture
     def backend(self, tmp_path: Path) -> SQLiteBackend:
-        return SQLiteBackend(db_path=tmp_path / "test.db")
+        # Reads refuse an uninitialized Index; construct the empty archive first.
+        run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
+        return SQLiteBackend(db_path=tmp_path / "index.db")
 
     async def test_returns_mtime_mapping(self, backend: SQLiteBackend) -> None:
         """Returns {source_path: file_mtime} for records with mtimes."""
@@ -351,6 +354,7 @@ class TestGetKnownSourceMtimes:
                     raw_id=f"raw-{i}",
                     source_name="test",
                     source_path=f"/path/file{i}.json",
+                    canonical_source_path=f"/path/file{i}.json",
                     blob_size=len(f'{{"i": {i}}}'.encode()),
                     acquired_at="2026-01-01T00:00:00Z",
                     file_mtime=f"2026-01-0{i + 1}T00:00:00Z",
@@ -370,6 +374,7 @@ class TestGetKnownSourceMtimes:
                 raw_id="with-mtime",
                 source_name="test",
                 source_path="/path/a.json",
+                canonical_source_path="/path/a.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-01-01T00:00:00Z",
                 file_mtime="2026-01-01T00:00:00Z",
@@ -381,6 +386,7 @@ class TestGetKnownSourceMtimes:
                 raw_id="no-mtime",
                 source_name="test",
                 source_path="/path/b.json",
+                canonical_source_path="/path/b.json",
                 blob_size=len(b'{"b": 1}'),
                 acquired_at="2026-01-01T00:00:00Z",
                 file_mtime=None,
@@ -420,6 +426,7 @@ class TestResetParseStatus:
                     source_name=source_name,
                     payload_provider=Provider.from_string(provider),
                     source_path=f"/path/{i}.json",
+                    canonical_source_path=f"/path/{i}.json",
                     blob_size=len(f'{{"i": {i}}}'.encode()),
                     acquired_at="2026-01-01T00:00:00Z",
                 ),
@@ -486,6 +493,7 @@ class TestResetParseStatus:
                 source_name="historical",
                 payload_provider=Provider.UNKNOWN,
                 source_path="/captures/historical.json",
+                canonical_source_path="/captures/historical.json",
                 blob_size=2,
                 acquired_at="2026-01-01T00:00:00Z",
             ),
@@ -511,6 +519,7 @@ class TestResetParseStatus:
                 raw_id="unparsed",
                 source_name="test",
                 source_path="/test.json",
+                canonical_source_path="/test.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-01-01T00:00:00Z",
             ),
@@ -540,6 +549,7 @@ class TestResetValidationStatus:
                     source_name=source_name,
                     payload_provider=Provider.from_string(provider),
                     source_path=f"/path/{i}.json",
+                    canonical_source_path=f"/path/{i}.json",
                     blob_size=len(f'{{"i": {i}}}'.encode()),
                     acquired_at="2026-01-01T00:00:00Z",
                 ),

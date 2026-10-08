@@ -5,13 +5,20 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
+from polylogue.maintenance.source_manifest_continuity import (
+    FrontierState,
+    SourceDeclaration,
+    SourceRole,
+    build_source_frontier,
+)
 from polylogue.sources import source_snapshot, sqlite_export
 from polylogue.sources.source_snapshot import (
     CandidateCohortError,
@@ -25,6 +32,122 @@ from polylogue.sources.source_snapshot import (
 )
 from polylogue.sources.sqlite_export import logical_export_bytes, looks_like_logical_export_path, read_export_header
 from polylogue.sources.sqlite_snapshot import sqlite_logical_revision, sqlite_member_revision
+
+
+@pytest.mark.parametrize("kind", ["file", "zip", "sqlite"])
+def test_source_observation_cancellation_stops_actual_byte_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    import threading
+    import zipfile
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    cancelled = threading.Event()
+    source = tmp_path / "source.jsonl"
+    source.write_bytes(b"synthetic\n" * 150000)
+    role = SourceRole.IMMUTABLE_EXPORT
+    if kind == "zip":
+        archive = tmp_path / "source.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.write(source, "session.jsonl")
+        source = archive
+        role = SourceRole.ARCHIVE_MEMBER
+        original_member_read = zipfile.ZipExtFile.read
+
+        def read_member(self: zipfile.ZipExtFile, *args: Any, **kwargs: Any) -> bytes:
+            result = original_member_read(self, *args, **kwargs)
+            if result:
+                cancelled.set()
+            return result
+
+        monkeypatch.setattr(zipfile.ZipExtFile, "read", read_member)
+    elif kind == "sqlite":
+        source = tmp_path / "source.sqlite"
+        with sqlite3.connect(source) as connection:
+            connection.execute("CREATE TABLE evidence (value TEXT)")
+            connection.execute("INSERT INTO evidence VALUES ('synthetic')")
+        role = SourceRole.MUTABLE_SQLITE
+        original_write = sqlite_export._HashingSink.write
+
+        def write_chunk(self: Any, chunk: bytes) -> int:
+            result = original_write(self, chunk)
+            if chunk:
+                cancelled.set()
+            return result
+
+        monkeypatch.setattr(sqlite_export._HashingSink, "write", write_chunk)
+    else:
+        original_file_read = os.read
+
+        def read_file(descriptor: int, size: int) -> bytes:
+            result = original_file_read(descriptor, size)
+            if result:
+                cancelled.set()
+            return result
+
+        monkeypatch.setattr(os, "read", read_file)
+    declaration = SourceDeclaration("source", role, source, mutable=kind == "sqlite")
+    token = compute_cancel.set(cancelled)
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            source_snapshot.observe_source_members(declaration)
+        assert cancelled.is_set()
+    finally:
+        compute_cancel.reset(token)
+    assert len(source_snapshot.observe_source_members(declaration)) == 1
+
+
+def test_source_cut_cancellation_during_copy_leaves_no_published_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    source = tmp_path / "source.jsonl"
+    source.write_bytes(b"synthetic\n" * 250000)
+    preflight = preflight_source_cut(
+        [SourceDeclaration("source", SourceRole.APPEND_JSONL, source, True)],
+        policies={"source": source_snapshot.SourceCutPolicy(SnapshotMode.COMPLETE_COPY, prefer_reflink=False)},
+    )
+    destination = tmp_path / "candidate"
+    cancelled = threading.Event()
+    original_copy = source_snapshot._copy_file
+    original_read = os.read
+    in_copy = False
+    armed = True
+
+    def copy_file(*args: Any, **kwargs: Any) -> None:
+        nonlocal in_copy
+        in_copy = True
+        try:
+            original_copy(*args, **kwargs)
+        finally:
+            in_copy = False
+
+    def read_chunk(descriptor: int, size: int) -> bytes:
+        nonlocal armed
+        result = original_read(descriptor, size)
+        if in_copy and armed and result:
+            armed = False
+            cancelled.set()
+        return result
+
+    monkeypatch.setattr(source_snapshot, "_copy_file", copy_file)
+    monkeypatch.setattr(os, "read", read_chunk)
+    token = compute_cancel.set(cancelled)
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            source_snapshot.execute_source_cut(preflight, destination)
+        assert not destination.exists()
+        assert not list(tmp_path.glob(".source-cut.*"))
+    finally:
+        compute_cancel.reset(token)
+    result = source_snapshot.execute_source_cut(preflight, destination)
+    assert len(result.candidate_manifest.items) == 1
 
 
 def test_cut_publishes_immutable_candidate_and_carry_forward(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,12 +229,13 @@ def test_member_hash_uses_one_descriptor_and_captured_append_length(
     original = b"first\n"
     member.write_bytes(original)
     real_fstat = os.fstat
+    member_inode = member.stat().st_ino
     captured = False
 
     def append_after_capture(fd: int) -> Any:
         nonlocal captured
         info = real_fstat(fd)
-        if not captured:
+        if not captured and info.st_ino == member_inode:
             captured = True
             with member.open("ab") as output:
                 output.write(b"later\n")
@@ -308,7 +432,7 @@ def test_sqlite_cut_refuses_a_commit_during_logical_export(tmp_path: Path, monke
         conn.execute("CREATE TABLE state (value TEXT)")
         conn.commit()
 
-    original_export = sqlite_export.write_logical_export
+    original_export = sqlite_export._write_logical_export_bound
 
     def export_then_commit(source: Path, handle: sqlite_export.BinaryWriteSink, **kwargs: Any) -> None:
         original_export(source, handle, **kwargs)
@@ -316,7 +440,7 @@ def test_sqlite_cut_refuses_a_commit_during_logical_export(tmp_path: Path, monke
             conn.execute("INSERT INTO state VALUES ('after-cut')")
             conn.commit()
 
-    monkeypatch.setattr("polylogue.sources.source_snapshot.write_logical_export", export_then_commit)
+    monkeypatch.setattr("polylogue.sources.source_snapshot._write_logical_export_bound", export_then_commit)
     with pytest.raises(SourceMutationError, match="SQLite source changed during logical export"):
         execute_source_cut(
             preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
@@ -341,10 +465,13 @@ def test_sqlite_cut_refuses_a_logical_export_with_a_different_logical_revision(
         conn.commit()
 
     def export_different_content(_source: Path, handle: sqlite_export.BinaryWriteSink, **kwargs: Any) -> None:
+        kwargs.pop("expected_identity", None)
+        kwargs.pop("parent_anchor", None)
+        kwargs.pop("source_binding", None)
         logical_export = logical_export_bytes(different, **kwargs)
         handle.write(logical_export)
 
-    monkeypatch.setattr("polylogue.sources.source_snapshot.write_logical_export", export_different_content)
+    monkeypatch.setattr("polylogue.sources.source_snapshot._write_logical_export_bound", export_different_content)
     with pytest.raises(SourceMutationError, match="logical export does not match source logical revision"):
         execute_source_cut(
             preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
@@ -485,6 +612,58 @@ def test_spool_handoff_leaves_a_new_empty_active_generation(tmp_path: Path, role
     assert spool.is_dir()
     assert list(spool.iterdir()) == []
     assert (result.candidate_root / "spool" / "event.json").read_text(encoding="utf-8") == "event"
+
+
+def test_spool_handoff_preserves_declared_coordinate_exclusions(tmp_path: Path) -> None:
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    (spool / "event.json").write_text("event", encoding="utf-8")
+    (spool / "excluded.json").write_text("excluded", encoding="utf-8")
+
+    declaration = SourceDeclaration(
+        "spool",
+        SourceRole.SPOOL,
+        spool,
+        mutable=True,
+        exclude_coordinates=("excluded.json",),
+    )
+    result = execute_source_cut(preflight_source_cut([declaration]), tmp_path / "cut")
+
+    assert {item.coordinate for item in result.candidate_manifest.items} == {"event.json"}
+    assert (result.candidate_root / "spool" / "event.json").read_text(encoding="utf-8") == "event"
+    assert not (result.candidate_root / "spool" / "excluded.json").exists()
+
+
+@pytest.mark.parametrize("role", [SourceRole.SPOOL, SourceRole.QUEUE])
+@pytest.mark.parametrize("replace_active", [False, True])
+def test_handoff_observes_only_the_producer_bound_active_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: SourceRole, replace_active: bool
+) -> None:
+    """A fresh-stat rebind would accept an unrelated active root after copying."""
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    (spool / "event.json").write_text("event", encoding="utf-8")
+    original_copy = source_snapshot._copy_candidates
+
+    def copy_with_arrival(
+        binding: source_snapshot.SourceCutBinding, baseline: tuple[source_snapshot.CutItem, ...], destination: Path
+    ) -> tuple[source_snapshot.CutItem, ...]:
+        copied = original_copy(binding, baseline, destination)
+        if replace_active:
+            spool.rename(tmp_path / "displaced-active")
+            spool.mkdir()
+        (spool / "arrival.json").write_text("arrival", encoding="utf-8")
+        return copied
+
+    monkeypatch.setattr(source_snapshot, "_copy_candidates", copy_with_arrival)
+    preflight = preflight_source_cut([SourceDeclaration("spool", role, spool, True)])
+    if replace_active:
+        with pytest.raises(source_snapshot.SourceMutationError):
+            execute_source_cut(preflight, tmp_path / "cut")
+    else:
+        result = execute_source_cut(preflight, tmp_path / "cut")
+        assert {item.coordinate for item in result.carry_forward_manifest.items} == {"arrival.json"}
+        assert (result.candidate_root / "spool" / "event.json").read_text(encoding="utf-8") == "event"
 
 
 def test_cut_reclaims_only_staging_it_owns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -660,3 +839,360 @@ def test_archive_cut_reacquires_member_bytes_and_detects_member_mutation(tmp_pat
         archive.writestr("nested/two.json", "two")
     with pytest.raises(SourceMutationError):
         reacquire_candidate(result)
+
+
+@pytest.mark.parametrize("container_name", ["export.zip", "export!copy.zip"])
+def test_archive_cut_preserves_distinct_duplicate_named_members(tmp_path: Path, container_name: str) -> None:
+    """Name-based reopening selects the last duplicate instead of the captured member."""
+    import zipfile
+
+    source = tmp_path / container_name
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("nested/item!part.json", "first")
+        with pytest.warns(UserWarning):
+            archive.writestr("nested/item!part.json", "second")
+    result = execute_source_cut(
+        preflight_source_cut([SourceDeclaration("export", SourceRole.ARCHIVE_MEMBER, source)]), tmp_path / "cut"
+    )
+    inputs = reacquire_candidate(result)
+    assert result.counts.conserved
+    assert result.candidate_manifest.item_count == 2
+    assert {item.content_sha256 for item in inputs} == {
+        hashlib.sha256(b"first").hexdigest(),
+        hashlib.sha256(b"second").hexdigest(),
+    }
+    assert len(inputs) == 2
+    assert reacquire_candidate(result, coordinates=[inputs[0].coordinate]) == inputs
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="Permission test requires an unprivileged reader")
+def test_frontier_refuses_whole_root_when_hidden_directory_is_unreadable(tmp_path: Path) -> None:
+    """Mutation: rglob silently skips denied directories and publishes partial PRESENT."""
+    root = tmp_path / "declared"
+    hidden = root / "hidden"
+    hidden.mkdir(parents=True)
+    (root / "public.json").write_bytes(b"{}")
+    (hidden / "session.jsonl").write_bytes(b"private\n")
+    hidden.chmod(0)
+    try:
+        frontier = build_source_frontier([SourceDeclaration("declared", SourceRole.DIRECTORY, root, True)])
+    finally:
+        hidden.chmod(0o700)
+    assert frontier.root_states["declared"] is FrontierState.UNAVAILABLE
+    assert frontier.members == ()
+    assert not frontier.complete
+    assert frontier.blockers
+    frontier.verify_integrity()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="requires an unprivileged directory reader")
+def test_candidate_sync_refuses_an_unreadable_nested_directory(tmp_path: Path) -> None:
+    """A walk that silently omits a directory cannot prove the candidate tree synced."""
+    root = tmp_path / "candidate"
+    hidden = root / "hidden"
+    hidden.mkdir(parents=True)
+    (hidden / "member.jsonl").write_bytes(b"{}\n")
+    hidden.chmod(0)
+    try:
+        with pytest.raises(SourceSnapshotError):
+            source_snapshot._fsync_tree(root)
+    finally:
+        hidden.chmod(0o700)
+
+
+@pytest.mark.parametrize("replacement", ["symlink", "regular", "parent-symlink"])
+def test_frontier_refuses_member_substitution_between_enumeration_and_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement: str
+) -> None:
+    """Mutation: path-open follows an external symlink or assigns a new inode to the old coordinate."""
+    root = tmp_path / "declared"
+    directory = root / "nested"
+    directory.mkdir(parents=True)
+    member = directory / "session.jsonl"
+    member.write_bytes(b"declared\n")
+    external = tmp_path / "external"
+    external.mkdir()
+    target = external / member.name
+    target.write_bytes(b"unrelated\n")
+    original = source_snapshot._snapshot_regular_file
+
+    def substitute(path: Path, expected: os.stat_result, *, anchor: int, coordinate: str) -> tuple[str, int, str]:
+        if replacement == "parent-symlink":
+            member.unlink()
+            directory.rmdir()
+            directory.symlink_to(external, target_is_directory=True)
+        else:
+            member.rename(directory / "previous")
+            if replacement == "symlink":
+                member.symlink_to(target)
+            else:
+                member.write_bytes(b"replacement\n")
+        return original(path, expected, anchor=anchor, coordinate=coordinate)
+
+    monkeypatch.setattr(source_snapshot, "_snapshot_regular_file", substitute)
+    frontier = build_source_frontier([SourceDeclaration("declared", SourceRole.APPEND_JSONL, root, True)])
+    assert frontier.root_states["declared"] is FrontierState.UNAVAILABLE
+    assert frontier.members == ()
+    assert not frontier.complete
+    frontier.verify_integrity()
+
+
+@pytest.mark.parametrize("replacement", ["symlink", "regular"])
+def test_cut_refuses_equal_byte_substitution_before_copy_even_if_restored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement: str
+) -> None:
+    """Mutation: reopening the source path copies external equal bytes with the original inode's identity."""
+    root = tmp_path / "declared"
+    root.mkdir()
+    member = root / "session.jsonl"
+    member.write_bytes(b"equal bytes\n")
+    external = tmp_path / "unrelated.jsonl"
+    external.write_bytes(member.read_bytes())
+    held = tmp_path / "original.jsonl"
+    original = source_snapshot._copy_file
+
+    def substituted_copy(
+        source: Path,
+        destination: Path,
+        policy: SourceCutPolicy,
+        *,
+        expected: tuple[int, int],
+        captured_size: int | None,
+        anchor: int,
+        coordinate: str,
+    ) -> None:
+        member.rename(held)
+        if replacement == "symlink":
+            member.symlink_to(external)
+        else:
+            member.write_bytes(external.read_bytes())
+        try:
+            return original(
+                source,
+                destination,
+                policy,
+                expected=expected,
+                captured_size=captured_size,
+                anchor=anchor,
+                coordinate=coordinate,
+            )
+        finally:
+            member.unlink()
+            held.rename(member)
+
+    monkeypatch.setattr(source_snapshot, "_copy_file", substituted_copy)
+    destination = tmp_path / "cut"
+    with pytest.raises(SourceSnapshotError):
+        execute_source_cut(
+            preflight_source_cut([SourceDeclaration("declared", SourceRole.APPEND_JSONL, root, True)]), destination
+        )
+    assert not destination.exists()
+    assert member.read_bytes() == b"equal bytes\n"
+
+
+def test_sqlite_frontier_refuses_persistent_symlink_substitution_during_logical_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: path-resolved SQLite revision publishes an external database under the declared coordinate."""
+    database = tmp_path / "declared.sqlite"
+    external = tmp_path / "external.sqlite"
+    for path, value in ((database, "declared"), (external, "unrelated")):
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE state (value TEXT)")
+            conn.execute("INSERT INTO state VALUES (?)", (value,))
+    original = sqlite_export._logical_export_digest_bound
+
+    def substitute(path: Path, **kwargs: Any) -> str:
+        database.rename(tmp_path / "original.sqlite")
+        database.symlink_to(external)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(source_snapshot, "_logical_export_digest_bound", substitute)
+    frontier = build_source_frontier([SourceDeclaration("database", SourceRole.MUTABLE_SQLITE, database, True)])
+    assert frontier.root_states["database"] is FrontierState.UNAVAILABLE
+    assert frontier.members == ()
+    assert not frontier.complete
+
+
+@pytest.mark.parametrize("file_root", [False, True])
+def test_stable_declared_parent_alias_preserves_observation_and_cut(tmp_path: Path, file_root: bool) -> None:
+    """Mutation: no-following every absolute ancestor rejects a stable Documents alias."""
+    actual = tmp_path / "actual-documents"
+    actual.mkdir()
+    (actual / "sessions").mkdir()
+    (actual / "sessions" / "session.jsonl").write_bytes(b"declared\n")
+    alias = tmp_path / "Documents"
+    alias.symlink_to(actual, target_is_directory=True)
+    root = alias / "sessions" / "session.jsonl" if file_root else alias / "sessions"
+    declaration = SourceDeclaration("declared", SourceRole.APPEND_JSONL, root, True)
+    frontier = build_source_frontier([declaration])
+    assert frontier.complete
+    assert frontier.root_states["declared"] is FrontierState.PRESENT
+    assert len(frontier.members) == 1
+    assert frontier.members[0].content_sha256 == hashlib.sha256(b"declared\n").hexdigest()
+    cut = execute_source_cut(preflight_source_cut([declaration]), tmp_path / "cut")
+    assert cut.counts.conserved
+    assert reacquire_candidate(cut)[0].path.read_bytes() == b"declared\n"
+
+
+def test_substituted_declared_parent_alias_cannot_publish_external_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: a root anchored for reads without rechecking its declaration publishes an old root under a new alias."""
+    actual = tmp_path / "actual-documents"
+    external = tmp_path / "external-documents"
+    for directory in (actual, external):
+        (directory / "sessions").mkdir(parents=True)
+        (directory / "sessions" / "session.jsonl").write_bytes(b"equal bytes\n")
+    alias = tmp_path / "Documents"
+    alias.symlink_to(actual, target_is_directory=True)
+    root = alias / "sessions"
+    original = source_snapshot._snapshot_regular_file
+
+    def substitute(path: Path, expected: os.stat_result, *, anchor: int, coordinate: str) -> tuple[str, int, str]:
+        alias.unlink()
+        alias.symlink_to(external, target_is_directory=True)
+        return original(path, expected, anchor=anchor, coordinate=coordinate)
+
+    monkeypatch.setattr(source_snapshot, "_snapshot_regular_file", substitute)
+    frontier = build_source_frontier([SourceDeclaration("declared", SourceRole.APPEND_JSONL, root, True)])
+    assert frontier.root_states["declared"] is FrontierState.UNAVAILABLE
+    assert frontier.members == ()
+
+
+@pytest.mark.uses_real_clock("SQLite process locks are verified by an external writer")
+@pytest.mark.parametrize("operation", ["frontier", "shape", "export"])
+def test_sqlite_observation_preserves_another_connections_process_locks(tmp_path: Path, operation: str) -> None:
+    """Mutation: closing an ordinary SQLite guard fd releases a concurrent reader's POSIX lock."""
+    database = tmp_path / "declared.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE state (value TEXT)")
+        conn.execute("INSERT INTO state VALUES ('declared')")
+    reader = sqlite3.connect(database)
+    try:
+        reader.execute("BEGIN")
+        assert reader.execute("SELECT value FROM state").fetchone() == ("declared",)
+        if operation == "frontier":
+            frontier = build_source_frontier([SourceDeclaration("database", SourceRole.MUTABLE_SQLITE, database, True)])
+            assert frontier.complete
+        elif operation == "shape":
+            assert sqlite_export.logical_source_shape(database) == {"state": ("value",)}
+        else:
+            assert b"declared" in sqlite_export.logical_export_bytes(database)
+        writer = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sqlite3\nimport sys\nconn = sqlite3.connect(sys.argv[1], timeout=0)\ntry:\n    conn.execute(\"UPDATE state SET value = 'foreign'\")\n    conn.commit()\nexcept sqlite3.OperationalError as exc:\n    if exc.sqlite_errorcode == sqlite3.SQLITE_BUSY:\n        sys.exit(42)\n    raise\n",
+                str(database),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert writer.returncode == 42
+        assert reader.execute("SELECT value FROM state").fetchone() == ("declared",)
+    finally:
+        reader.rollback()
+        reader.close()
+
+
+@pytest.mark.parametrize("target_name", ["a.jsonl", "z.jsonl"])
+@pytest.mark.parametrize("parent_alias", [False, True])
+def test_contained_file_alias_is_excluded_only_after_target_observation(
+    tmp_path: Path, target_name: str, parent_alias: bool
+) -> None:
+    """Rejecting every internal alias makes an otherwise complete provider root unavailable."""
+    physical = tmp_path / "physical" / "sessions"
+    project = physical / "-project"
+    project.mkdir(parents=True)
+    target = project / target_name
+    target.write_bytes(b"session\n")
+    (project / "m.jsonl").symlink_to(target if parent_alias else target.name)
+    root = tmp_path / "declared" / "sessions" if parent_alias else physical
+    if parent_alias:
+        root.parent.symlink_to(physical.parent, target_is_directory=True)
+    from polylogue.sources.live.discovery import _source_path_steps
+    from polylogue.sources.live.watcher import WatchSource
+    from polylogue.sources.source_layout import source_layout_for
+
+    source = WatchSource("claude-code", root, layout=source_layout_for("claude-code"))
+    ordinary_paths = [path for path in _source_path_steps(source, (source,), after=None) if path is not None]
+    assert ordinary_paths == [root / "-project" / target_name]
+    declaration = SourceDeclaration("declared", SourceRole.DIRECTORY, root, True, layout_name="claude-code")
+    frontier = build_source_frontier([declaration])
+    assert frontier.complete
+    assert [member.coordinate for member in frontier.members] == [f"-project/{target_name}"]
+    cut = execute_source_cut(preflight_source_cut([declaration]), tmp_path / "cut")
+    assert cut.counts.conserved
+    assert [item.coordinate for item in cut.candidate_manifest.items] == [f"-project/{target_name}"]
+    assert reacquire_candidate(cut)[0].path.read_bytes() == b"session\n"
+
+
+@pytest.mark.parametrize("target_kind", ["external", "dangling", "directory", "chain", "unselected", "excluded"])
+def test_selected_file_alias_requires_contained_independently_selected_regular_target(
+    tmp_path: Path, target_kind: str
+) -> None:
+    """A blanket symlink exclusion would hide missing or undeclared source material."""
+    root = tmp_path / "source"
+    project = root / "-project"
+    project.mkdir(parents=True)
+    target = project / "target.jsonl"
+    target.write_bytes(b"session\n")
+    if target_kind == "external":
+        target = tmp_path / "external.jsonl"
+        target.write_bytes(b"external\n")
+    elif target_kind == "dangling":
+        target = project / "missing.jsonl"
+    elif target_kind == "directory":
+        target = project / "directory"
+        target.mkdir()
+    elif target_kind == "chain":
+        chain = project / "chain.jsonl"
+        chain.symlink_to(target.name)
+        target = chain
+    elif target_kind == "unselected":
+        target = project / "other.txt"
+        target.write_bytes(b"unselected\n")
+    (project / "alias.jsonl").symlink_to(target)
+    declaration = SourceDeclaration(
+        "declared",
+        SourceRole.DIRECTORY,
+        root,
+        True,
+        layout_name="claude-code",
+        exclude_coordinates=("-project/target.jsonl",) if target_kind == "excluded" else (),
+    )
+    frontier = build_source_frontier([declaration])
+    assert frontier.root_states["declared"] is FrontierState.UNAVAILABLE
+    assert frontier.members == ()
+    assert not frontier.complete
+
+
+@pytest.mark.parametrize("mutation", ["alias", "target"])
+def test_contained_alias_mutation_after_target_read_refuses_whole_frontier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """Checking containment once would publish a changed alias or target as a complete cut."""
+    root = tmp_path / "source"
+    root.mkdir()
+    target = root / "z.jsonl"
+    target.write_bytes(b"session\n")
+    alias = root / "a.jsonl"
+    alias.symlink_to(target.name)
+    original = source_snapshot._snapshot_regular_file
+
+    def mutate(path: Path, expected: os.stat_result, *, anchor: int, coordinate: str) -> tuple[str, int, str]:
+        result = original(path, expected, anchor=anchor, coordinate=coordinate)
+        if mutation == "alias":
+            alias.unlink()
+            alias.symlink_to("missing.jsonl")
+        else:
+            target.unlink()
+            target.write_bytes(b"replacement\n")
+        return result
+
+    monkeypatch.setattr(source_snapshot, "_snapshot_regular_file", mutate)
+    frontier = build_source_frontier([SourceDeclaration("declared", SourceRole.APPEND_JSONL, root, True)])
+    assert frontier.root_states["declared"] is FrontierState.UNAVAILABLE
+    assert frontier.members == ()
+    assert not frontier.complete

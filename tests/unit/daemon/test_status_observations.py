@@ -100,6 +100,22 @@ def test_minimal_snapshot_does_not_invent_raw_failure_warning_count() -> None:
     assert payload["raw_failure_lifecycle_available"] is False
 
 
+def test_minimal_snapshot_names_the_archive_it_answers_for(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """While the rich snapshot refreshes, the envelope still names its archive.
+
+    Anti-vacuity: dropping ``archive_root`` from ``_minimal_status_payload``
+    leaves ``polylogue status --format json`` without the archive identity
+    during every refresh, so a reader cannot tell which archive answered.
+    """
+    from polylogue.daemon.status_snapshot import _minimal_status_payload
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    payload = _minimal_status_payload(refresh_in_progress=True)
+
+    assert payload["archive_root"] == str(tmp_path)
+    assert payload["active_archive_root_matches_configured"] is True
+
+
 def test_unreadable_archive_tier_count_is_explicitly_unavailable(tmp_path: Path) -> None:
     """A corrupt tier is present, but its table count is not a measured zero."""
     from polylogue.daemon.status import _archive_tier_status
@@ -337,11 +353,14 @@ def test_daemon_status_names_every_halted_unit_and_is_not_ok(tmp_path: Path, mon
     from polylogue.daemon import status as status_module
     from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
     from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_ready_archive_root
     from tests.unit.daemon.test_status_unmeasured import _patch_healthy_collectors
 
     archive_root = Path(polylogue_paths.archive_root())
-    initialize_active_archive_root(archive_root)
+    # A healthy archive has had its accepted frontier inspected (the daemon's
+    # frontier stage records that mark); a bare bootstrap reports the
+    # frontier as uninspected, which is a correct not-ok answer.
+    bootstrap_ready_archive_root(archive_root)
     # An initialized but empty archive is not ok on its own: its search, raw
     # materialization and frontier are unmeasured (#5491). Pin every collector
     # to a measured healthy value (keeping this archive's real, healthy

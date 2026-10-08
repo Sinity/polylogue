@@ -171,8 +171,8 @@ def test_batch_loaders_plan_each_cursor_once(tmp_path: Path, monkeypatch: pytest
     assert len(batch.blocks) == rows
     assert len(markers[session_id]) == rows
 
-    # load_sync_batch: one session, one message and one block SELECT, plus the
-    # marker-block SELECT it delegates; then the explicit marker load above.
-    assert per_cursor == {"sessions": 1, "messages": 1, "blocks": 3}
+    # load_sync_batch: one session, one message and one block SELECT; then the
+    # explicit marker load above (markers are no longer loaded by the batch).
+    assert per_cursor == {"sessions": 1, "messages": 1, "blocks": 2}
     # Nothing on this path re-plans a row: that is the whole point of binding.
     assert per_row == {}

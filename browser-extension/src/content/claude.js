@@ -1,6 +1,6 @@
 (function () {
-  if (window.__polylogueClaudeCaptureInstalled) return;
-  window.__polylogueClaudeCaptureInstalled = true;
+  if (window.__polylogueClaudeCaptureInstalled === 2) return;
+  window.__polylogueClaudeCaptureInstalled = 2;
 
   // In-page Layer 1 (polylogue-ys30): capture-status dot + save action mounted
   // next to each detected message. Reused across every capture trigger below
@@ -12,9 +12,9 @@
   const nativeAdapterName = "claude-ai-native-v1";
   const nativeFetchRequestMessage = "polylogue.claude.nativeFetchRequest";
   const nativeFetchResponseMessage = "polylogue.claude.nativeFetchResponse";
-  const nativeFetchTimeoutMs = 8000;
   const nativeFetchResponses = new Map();
   const nativeAttemptDiagnostics = [];
+  let nativeAttemptsDropped = 0;
 
   function rememberNativeAttempt(diagnostic) {
     nativeAttemptDiagnostics.push({
@@ -22,7 +22,9 @@
       ...diagnostic
     });
     if (nativeAttemptDiagnostics.length > 6) {
-      nativeAttemptDiagnostics.splice(0, nativeAttemptDiagnostics.length - 6);
+      const dropped = nativeAttemptDiagnostics.length - 6;
+      nativeAttemptDiagnostics.splice(0, dropped);
+      nativeAttemptsDropped += dropped;
     }
   }
 
@@ -34,310 +36,85 @@
 
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
-    const data = event.data || {};
+    const data = window.polylogueAssetStream.readPageMessage(event);
+    if (!data) return;
     if (data.type !== nativeFetchResponseMessage || !data.requestId) return;
     const pending = nativeFetchResponses.get(data.requestId);
     if (!pending) return;
     nativeFetchResponses.delete(data.requestId);
-    pending.resolve({ capture: data.capture || null, error: data.error || null });
+    pending.resolve({ capture: data.capture || null, error: data.error || null, requestId: data.requestId,
+      failure_stage: data.error && ["admission", "provider_fetch", "staging"].includes(data.failure_stage) ? data.failure_stage : "unknown" });
   });
 
-  function textFromMessage(message) {
-    if (!message || typeof message !== "object") return "";
-    if (typeof message.text === "string" && message.text) return message.text;
-    if (typeof message.content === "string" && message.content) return message.content;
-    if (Array.isArray(message.content)) {
-      return message.content
-        .map((part) => {
-          if (typeof part === "string") return part;
-          if (part && typeof part === "object" && typeof part.text === "string") return part.text;
-          return "";
-        })
-        .filter(Boolean)
-        .join("\n");
-    }
-    return "";
-  }
-
-  function roleFromNativeMessage(message) {
-    const raw = message && (message.sender || message.role || message.author);
-    if (raw === "human" || raw === "user") return "user";
-    if (raw === "assistant" || raw === "claude") return "assistant";
-    if (raw === "system" || raw === "tool") return raw;
-    return "unknown";
-  }
-
-  // Claude's chat_conversations API returns the same segment shape as the
-  // GDPR export, so the structure the archive-side parser understands is
-  // already in hand here -- flattening it to prose would discard tool_use /
-  // tool_result / thinking that the export path parses in full.
-  // BlockType names and the is_error contract mirror BrowserCaptureBlock
-  // (polylogue/browser_capture/models.py): outcome fields are read from the
-  // provider's own segment, never inferred from rendered text.
-  // tool_result.content per Anthropic's API is either a plain string or an
-  // array of content blocks (type: "text" | "image" | ...). Join the text of
-  // "text"-typed blocks, newline-separated; return null only when no text
-  // content is present at all (e.g. an image-only result).
-  function textFromToolResultContent(content) {
-    if (typeof content === "string") return content || null;
-    if (Array.isArray(content)) {
-      const texts = content
-        .filter((part) => part && typeof part === "object" && part.type === "text" && typeof part.text === "string")
-        .map((part) => part.text);
-      return texts.length ? texts.join("\n") : null;
-    }
-    return null;
-  }
-
-  function nativeTurnBlocks(message) {
-    const segments = Array.isArray(message && message.content) ? message.content : [];
-    const blocks = [];
-    for (const segment of segments) {
-      if (!segment || typeof segment !== "object") continue;
-      const type = segment.type;
-      if (type === "text" && typeof segment.text === "string" && segment.text) {
-        blocks.push({ type: "text", text: segment.text });
-      } else if (type === "thinking") {
-        const thinking = typeof segment.thinking === "string" ? segment.thinking : segment.text;
-        if (thinking) blocks.push({ type: "thinking", text: thinking, metadata: { content_type: type } });
-      } else if (type === "tool_use") {
-        blocks.push({
-          type: "tool_use",
-          tool_name: segment.name || null,
-          tool_id: segment.id || null,
-          tool_input: segment.input && typeof segment.input === "object" && !Array.isArray(segment.input)
-            ? segment.input
-            : null
-        });
-      } else if (type === "tool_result") {
-        blocks.push({
-          type: "tool_result",
-          tool_id: segment.tool_use_id || null,
-          // Anthropic's tool_result content can be a plain string OR an array
-          // of content blocks (text/image/...) -- join the text blocks'
-          // `text` fields when it's an array. Never invent text for
-          // non-text blocks (e.g. images); text stays null only when no
-          // text content exists at all.
-          text: textFromToolResultContent(segment.content),
-          // Provider-reported outcome. Absent stays null (unknown), never false.
-          is_error: typeof segment.is_error === "boolean" ? segment.is_error : null,
-          metadata: { tool_name: segment.name || null }
-        });
-      }
-    }
-    return blocks;
-  }
-
-  // Two distinct attachment channels, both present in the conversations API:
-  //   attachments[] carries extracted_content inline (text already extracted
-  //     by the provider) but NO id -- synthesise a stable one.
-  //   files[]       carries a real file_uuid but no bytes; recorded as a
-  //     reference so a later byte acquisition can join on the uuid.
-  function nativeTurnAttachments(message, index) {
-    const out = [];
-    const messageId = String(message.uuid || message.id || `claude-message-${index}`);
-    const messageAttachments = Array.isArray(message.attachments) ? message.attachments : [];
-    for (const [attachmentPosition, attachment] of messageAttachments.entries()) {
-      if (!attachment || typeof attachment !== "object") continue;
-      const name = attachment.file_name || attachment.name || null;
-      if (!name) continue;
-      const size = Number.parseInt(attachment.file_size, 10);
-      // Include the loop index in the hash input: two attachments with the
-      // same name and size in one message would otherwise collide on the
-      // same synthesised id (name/size alone are not unique within a message).
-      out.push({
-        provider_attachment_id: `claude-attachment:${window.polylogueCapture.fnv1a(`${messageId}:${attachmentPosition}:${name}:${attachment.file_size || ""}`)}`,
-        message_provider_id: messageId,
-        name,
-        mime_type: attachment.file_type || null,
-        size_bytes: Number.isFinite(size) ? size : null,
-        extracted_content: typeof attachment.extracted_content === "string" ? attachment.extracted_content : null,
-        provider_meta: { capture_source: "claude_chat_conversations_api", channel: "attachments" }
-      });
-    }
-    for (const file of Array.isArray(message.files) ? message.files : []) {
-      if (!file || typeof file !== "object") continue;
-      const name = file.file_name || file.name || null;
-      const uuid = file.file_uuid || file.uuid || null;
-      if (!name && !uuid) continue;
-      out.push({
-        provider_attachment_id: uuid ? `claude-file:${uuid}` : `claude-file:${window.polylogueCapture.fnv1a(`${messageId}:${name}`)}`,
-        message_provider_id: messageId,
-        name,
-        provider_meta: {
-          capture_source: "claude_chat_conversations_api",
-          channel: "files",
-          file_uuid: uuid || null
-        }
-      });
-    }
-    return out;
-  }
-
-  function collectNativeTurns(payload) {
-    const messages = payload && payload.chat_messages;
-    if (!Array.isArray(messages)) return [];
-    return messages
-      .map((message, index) => {
-        const text = textFromMessage(message);
-        const blocks = nativeTurnBlocks(message);
-        const attachments = nativeTurnAttachments(message, index);
-        // A turn with attachments or structured blocks but no prose is still a
-        // real turn -- requiring text would drop image-only and tool-only turns.
-        if (!text && !blocks.length && !attachments.length) return null;
-        return {
-          provider_turn_id: message.uuid || message.id ? String(message.uuid || message.id) : null,
-          role: roleFromNativeMessage(message),
-          text,
-          timestamp: message.created_at || message.updated_at || null,
-          parent_turn_id: message.parent_message_uuid || message.parent_uuid || null,
-          blocks,
-          attachments,
-          provider_meta: {
-            model: message.model || null,
-            sender: message.sender || message.role || null,
-            capture_source: "claude_chat_conversations_api"
-          },
-          identity_observation: window.polylogueCapture.identityObservation({
-            provider: "claude-ai",
-            conversationId: payload?.uuid || conversationIdFromUrl(),
-            messageId: message.uuid || message.id ? String(message.uuid || message.id) : null,
-            parentMessageId: message.parent_message_uuid || message.parent_uuid || null,
-            text,
-            adapterName: nativeAdapterName,
-            adapterVersion: chrome.runtime.getManifest().version,
-            fidelity: message.uuid || message.id ? "native" : "unknown",
-            degradedReason: message.uuid || message.id ? null : "missing_message_id",
-          })
-        };
-      })
-      .filter(Boolean);
-  }
-
-  function parseNativeCapture(capture) {
-    if (!capture || !capture.ok || typeof capture.body !== "string") return null;
-    const currentConversationId = conversationIdFromUrl();
-    if (!currentConversationId || !String(capture.url || "").includes(`/chat_conversations/${currentConversationId}`)) {
-      return null;
-    }
-    try {
-      const payload = JSON.parse(capture.body);
-      if (!payload || typeof payload !== "object" || !Array.isArray(payload.chat_messages)) return null;
-      if (payload.uuid && String(payload.uuid) !== currentConversationId) return null;
-      return payload;
-    } catch {
-      return null;
-    }
-  }
-
-  async function requestNativeCaptureFromPage(conversationId) {
+  async function requestNativeCaptureFromPage(conversationId, signal) {
     const requestId = `polylogue-claude-native-fetch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const responsePromise = new Promise((resolve) => {
-      const timeout = window.setTimeout(() => {
-        nativeFetchResponses.delete(requestId);
-        resolve({ capture: null, error: "timeout" });
-      }, nativeFetchTimeoutMs);
-      nativeFetchResponses.set(requestId, {
-        resolve(value) {
-          window.clearTimeout(timeout);
-          resolve(value);
-        }
-      });
+      nativeFetchResponses.set(requestId, { resolve });
     });
-    window.postMessage(
+    window.polylogueAssetStream.pageMessage(
       {
         type: nativeFetchRequestMessage,
         requestId,
         conversationId
       },
-      window.location.origin
+      chrome.runtime.id
     );
-    return responsePromise;
+    const onAbort = () => window.polylogueAssetStream.pageMessage({ type: "polylogue.claude.cancelRequest", requestId }, chrome.runtime.id);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    return responsePromise.finally(() => signal.removeEventListener("abort", onAbort));
   }
 
-  async function fetchNativePayloadOnDemand() {
-    const conversationId = conversationIdFromUrl();
-    if (!conversationId) return null;
-    const pageResult = await requestNativeCaptureFromPage(conversationId);
-      const pageCapture = pageResult && pageResult.capture;
-      const pagePayload = parseNativeCapture(pageCapture);
-    rememberNativeAttempt({
-      stage: "page_bridge_fetch",
-      ok: pageCapture?.ok ?? null,
-      status: pageCapture?.status ?? null,
-      content_type: pageCapture?.contentType || null,
-      body_bytes: typeof pageCapture?.body === "string" ? pageCapture.body.length : 0,
-      accepted: Boolean(pagePayload),
-      error: pageResult?.error || pageCapture?.error || null
-    });
-    return pagePayload;
-  }
-
-  function modelFromNativePayload(payload) {
-    const messages = payload && payload.chat_messages;
-    if (!Array.isArray(messages)) return null;
-    for (const message of messages) {
-      if (typeof message.model === "string" && message.model) return message.model;
+  async function performCapture(reason = null, signal) {
+    let throttle;
+    try { throttle = await chrome.runtime.sendMessage({ type: "polylogue.providerThrottle", provider: "claude-ai" }); }
+    catch { return { ok: false, error: "provider_throttle_authority_unavailable" }; }
+    if (throttle?.ok !== true) return { ok: false, error: throttle?.outcome || "provider_throttle_authority_unavailable", outcome: throttle?.outcome, retry_after_seconds: throttle?.retry_after_seconds ?? null };
+    const nativeId = conversationIdFromUrl();
+    if (!nativeId) return { ok: false, error: "native_capture_unavailable" };
+    const response = await requestNativeCaptureFromPage(nativeId, signal);
+    signal.throwIfAborted();
+    const acquired = response?.capture;
+    if (acquired?.status === 429 || response?.error === "rate_limited") {
+      await chrome.runtime.sendMessage({ type: "polylogue.providerRateLimited", provider: "claude-ai", retry_after: acquired?.retryAfter, request_id: response.requestId, provider_response: { status: acquired?.status, url: acquired?.url } });
+      return { ok: false, error: "rate_limited", outcome: "rate_limited" };
     }
-    return null;
-  }
-
-  function buildNativeEnvelope(payload) {
-    const turns = collectNativeTurns(payload);
-    if (!turns.length) return null;
-    return window.polylogueCapture.buildEnvelope({
-      provider: "claude-ai",
-      adapterName: nativeAdapterName,
-      turns,
-      providerSessionId: String(payload.uuid || conversationIdFromUrl()),
-      sessionKind: payload.is_temporary === true ? "temporary" : null,
-      title: typeof payload.name === "string" && payload.name ? payload.name : null,
-      createdAt: payload.created_at || null,
-      updatedAt: payload.updated_at || null,
-      model: modelFromNativePayload(payload),
-      providerMeta: {
-        capture_source: "claude_chat_conversations_api",
-        message_count: Array.isArray(payload.chat_messages) ? payload.chat_messages.length : 0,
-        is_temporary: payload.is_temporary === true,
-        session_kind: payload.is_temporary === true ? "temporary" : null
-      },
-      rawProviderPayload: payload
-    });
-  }
-
-  async function capture(reason = null) {
-    // A captured response predates any turns streamed since that response.
-    // Every explicit capture must acquire the current conversation revision.
-    const nativePayload = await fetchNativePayloadOnDemand();
-    const finalEnvelope = nativePayload ? buildNativeEnvelope(nativePayload) : null;
-    if (!finalEnvelope) {
-      return { ok: false, error: "native_capture_unavailable", native_attempts: nativeAttemptDiagnostics.slice(-6) };
-    }
-    const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason);
+    // Every explicit capture acquires the current provider revision.
+    const capture = acquired?.ok && acquired.bodyRef ? acquired : null;
+    rememberNativeAttempt({ stage: "page_bridge_fetch", ok: acquired?.ok ?? null,
+      status: acquired?.status ?? null, accepted: Boolean(capture), error: response?.error || acquired?.error || null, failure_stage: response.failure_stage });
+    if (!capture) return { ok: false, error: "native_capture_unavailable", native_attempts: nativeAttemptDiagnostics.slice(), native_attempts_dropped: nativeAttemptsDropped };
+    const finalEnvelope = await window.polylogueAssetStream.nativeEnvelope({ provider: "claude-ai", capture, nativeId, signal });
+    const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason, signal);
     if (!captureResult?.ok) {
       messageLayer?.reportOutcome({ ok: false });
-      return {
-        ok: false,
-        envelope: finalEnvelope,
-        captureResult,
-        error: captureResult?.error || "capture_rejected",
-        timelineRecorded: true,
-      };
+      return { ok: false, envelope: finalEnvelope, captureResult, error: captureResult?.error || "capture_rejected", timelineRecorded: true };
     }
-    const archiveState = await window.polylogueCapture.refreshArchiveState(
-      "claude-ai",
-      finalEnvelope.session.provider_session_id
-    );
+    const archiveState = await window.polylogueCapture.refreshArchiveState("claude-ai", finalEnvelope.session.provider_session_id);
     messageLayer?.reportOutcome({ ok: true, acceptedIdentities: captureResult.accepted_identities });
     return { ok: true, envelope: finalEnvelope, captureResult, archiveState };
   }
 
+  const captureOperations = new Set();
+  function capture(reason = null) {
+    const controller = new AbortController();
+    const operation = { controller, promise: null };
+    operation.promise = performCapture(reason, controller.signal).catch((error) => {
+      if (controller.signal.aborted) return { ok: false, error: "capture_cancelled", outcome: "cancelled" };
+      throw error;
+    }).finally(() => captureOperations.delete(operation));
+    captureOperations.add(operation);
+    return operation.promise;
+  }
+  async function cancelCapture() {
+    const owned = [...captureOperations];
+    for (const operation of owned) operation.controller.abort(new globalThis.DOMException("capture_cancelled", "AbortError"));
+    await Promise.allSettled(owned.map((operation) => operation.promise));
+    return { ok: true, outcome: "cancelled", drained: owned.length };
+  }
+  window.addEventListener("pagehide", () => { void cancelCapture(); });
+  window.polylogueCapture.cancelCapture = cancelCapture;
   window.polylogueCapture.capturePage = capture;
-  // Test-only exposure of the pure structured-block/attachment extractors so
-  // tests exercise the real implementation instead of a hand-copied one that
-  // can silently drift (polylogue-ah21's dropped-`blocks` regression was
-  // caused by exactly that drift). Not used by any runtime capture path.
-  window.polylogueCapture.__claudeNativeInternals = { nativeTurnBlocks, nativeTurnAttachments };
   if (window.polylogueMessageLayer) {
     messageLayer = window.polylogueMessageLayer.mount({
       containerSelector: MESSAGE_CONTAINER_SELECTOR,
@@ -356,6 +133,10 @@
     });
   }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === "polylogue.cancelCapture") {
+      cancelCapture().then(sendResponse);
+      return true;
+    }
     if (message.type !== "polylogue.capturePage") return false;
     capture(message.reason || null).then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;

@@ -118,18 +118,18 @@ class DriveSourceClient:
                     continue
                 file_obj = _build_drive_file(item_payload)
                 if file_obj.file_id:
-                    self._meta_cache[file_obj.file_id] = file_obj
                     yield file_obj
             page_token = _response_page_token(response)
             if not page_token:
                 break
 
-    def get_metadata(self, file_id: str) -> DriveFile:
-        if file_id in self._meta_cache:
+    def get_metadata(self, file_id: str, *, refresh: bool = False) -> DriveFile:
+        if not refresh and file_id in self._meta_cache:
             return self._meta_cache[file_id]
         meta = self._gateway.get_file(file_id, "id,name,mimeType,modifiedTime,size")
         file_obj = _build_drive_file(meta, file_id_fallback=file_id)
-        self._meta_cache[file_id] = file_obj
+        if not refresh:
+            self._meta_cache[file_id] = file_obj
         return file_obj
 
     def download_bytes(self, file_id: str) -> bytes:

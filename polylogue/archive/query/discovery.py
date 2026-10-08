@@ -206,6 +206,7 @@ ACTION_COLUMNS = (
     "is_error",
     "exit_code",
     "result_state",
+    "outcome_unknown_reason",
     "followup_class",
     "followup_message_ref",
 )
@@ -1416,7 +1417,7 @@ QUERY_DISCOVERY_NEGATIVE_EXAMPLES: tuple[QueryDiscoveryNegativeExample, ...] = (
         key="fts-column-query-at-strict-command-floor",
         expression="text:css {session_id example}: refactor",
         parser="session",
-        diagnostic_class="ExpressionCompileError",
+        diagnostic_class="UnknownQueryFieldError",
         diagnostic=(
             "unknown query field 'text'; recognized fields: action, action_sequence, action_text, assistant_messages, assistant_words, "
             "authored_user_messages, authored_user_words, contains, cwd, duration_ms, has, id, lane, lineage, "

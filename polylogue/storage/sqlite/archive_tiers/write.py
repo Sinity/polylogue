@@ -9,7 +9,6 @@ module's docstring for the current writer-module declaration.
 
 from __future__ import annotations
 
-import builtins
 import hashlib
 import json
 import pickle
@@ -18,11 +17,11 @@ import sqlite3
 import tempfile
 import threading
 import time
-import unicodedata
 import uuid
+from builtins import BaseExceptionGroup
 from collections import Counter, OrderedDict, defaultdict
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
-from contextlib import AbstractContextManager, closing, contextmanager, nullcontext, suppress
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence, Set
+from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
 from datetime import date, datetime
@@ -31,14 +30,14 @@ from decimal import Decimal
 from enum import Enum
 from itertools import chain, islice, zip_longest
 from pathlib import Path
-from typing import Any, Literal, cast, overload
-from urllib.parse import quote, urlparse
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal, Protocol, cast, overload
+from urllib.parse import urlparse
 
 import ijson
 
 from polylogue.archive.attachment.availability import AttachmentAvailability, resolve_attachment_availability
 from polylogue.archive.message.types import MessageType
-from polylogue.archive.revision_authority import is_work_event_raw_id
+from polylogue.archive.revision_authority import RawRevisionKind, is_work_event_raw_id
 from polylogue.archive.semantic.pricing import catalog_cost_for_tokens
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.repo_identity import normalize_repo_name, normalize_repo_path
@@ -54,6 +53,7 @@ from polylogue.archive.topology.edge import (
     topology_status_composes_sql,
 )
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import (
     BlockType,
     LinkType,
@@ -70,8 +70,9 @@ from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.json_envelope import top_level_envelopes
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.sources import origin_from_provider
-from polylogue.core.sqlite_scratch import connect_scratch_database
+from polylogue.core.sql_settlement import current_native_sql_lifetimes, retain_native_sql_lifetimes
 from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
 from polylogue.core.timestamps import parse_timestamp, to_epoch_ms
 from polylogue.core.types import AttachmentDirection, LineageInheritance, require_literal
@@ -85,10 +86,13 @@ from polylogue.pipeline.ids import (
     bound_session_content_hash,
     disk_message_content_identities,
     disk_message_owner_resolution,
+    event_message_owner_key,
     message_content_identities,
     message_content_identity,
     message_owner_resolution,
+    message_semantic_content_address,
 )
+from polylogue.sources.assembly import SidecarData
 from polylogue.sources.origin_specs import lowering_fingerprint, origin_specs, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import (
     ParseAccounting,
@@ -106,7 +110,8 @@ from polylogue.sources.parsers.claude.orchestration import (
     parse_claude_orchestration_artifact,
 )
 from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
-from polylogue.sources.prepared_message_sink import SqliteMessageSink, normalize_active_branch
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, _prepared_reader, normalize_active_branch
+from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
 from polylogue.storage.archive_identity import archive_root_for_index_path
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
@@ -121,7 +126,7 @@ from polylogue.storage.fts.sql import (
     insert_session_identity_rows_sql,
     insert_session_rows_sql,
 )
-from polylogue.storage.io_phase_metrics import close_connection_cursor
+from polylogue.storage.io_phase_metrics import connect_measured, connection_cursor
 from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_CYCLE,
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
@@ -141,19 +146,37 @@ from polylogue.storage.sqlite.archive_tiers.session_suppression import (
     record_suppression_refusal,
     session_write_is_suppressed,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import (
-    SessionShard,
-    SessionShardBuilder,
-    ShardSessionRows,
-    build_session_shard,
-    copy_shard_session_rows,
-    open_session_shard,
+from polylogue.storage.sqlite.connection_profile import (
+    NativeConnectionSettlementError,
+    NativeSQLCustodyOwner,
+    _close_failed_native_construction,
+    open_scratch_connection,
+    retained_native_sql_owners_for_lifetime,
 )
 from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_sessions
+from polylogue.storage.sqlite.reference_seal import (
+    IndexMutationScope,
+    PreparedIndexMutation,
+    ReferenceSealError,
+    current_index_mutation_scope,
+    index_path_for_connection,
+    note_current_deleted_message_ids,
+    note_current_deleted_session,
+    note_current_lineage_change,
+    note_current_session_namespace_change,
+)
+from polylogue.storage.sqlite.session_shard import (
+    SessionShard,
+    SessionShardBuilder,
+    build_session_shard,
+    open_session_shard,
+    shard_owner_reader_window,
+)
 from polylogue.storage.usage import (
     UsageProjectionModel,
     project_provider_usage_events,
     provider_usage_event_identity,
+    provider_usage_request_events,
 )
 
 
@@ -500,6 +523,17 @@ class PreparedSessionWriteRefusedError(RuntimeError):
     """A pinned prepared write no longer describes the admitted archive state."""
 
 
+class PreparedSessionSettlementError(RuntimeError):
+    """All carrier closes were attempted; their original owners can retry."""
+
+    code = "native_sql_unsettled"
+    retryable = True
+
+    def __init__(self, failures: Sequence[BaseException]) -> None:
+        super().__init__("prepared session artifact cleanup remains unsettled")
+        self.failures = tuple(failures)
+
+
 class LineageSignatureCache:
     """Bounded, batch-local cache for canonical lineage signatures.
 
@@ -662,7 +696,7 @@ class LineageSignatureCache:
 _SignatureCacheLike = dict[str, list[tuple[str, str]]] | LineageSignatureCache
 
 
-def _repair_stale_session_observations(
+def _retain_stale_session_observations(
     conn: sqlite3.Connection,
     session_id: str,
     session: ParsedSession,
@@ -674,9 +708,14 @@ def _repair_stale_session_observations(
     Freshness/content governance may reject the snapshot, but its earlier
     creation evidence and repository observations are still legitimate evidence.
     Keeping this at the low-level writer boundary prevents direct API and
-    revision-governance callers from silently losing the repair that batch ingest
-    performs.
+    revision-governance callers from silently losing observations retained by
+    batch ingest.
     """
+    scope = current_index_mutation_scope()
+    if scope is None:
+        raise RuntimeError("stale observations require the caller's Index mutation scope")
+    scope.require_new_work(conn)
+    scope.note_lineage_change(session_id)
     candidate_created_at_ms, _candidate_updated_at_ms = session_evidence_timestamps(
         session,
         fallback_timestamp=fallback_timestamp,
@@ -698,32 +737,12 @@ def _repair_stale_session_observations(
 
 @dataclass(frozen=True, slots=True)
 class PreparedSessionRows:
-    """Pure, off-writer-thread-computable row tuples for one session's
-    full-replace write (polylogue-623q).
+    """Sealed row and identity evidence produced before writer admission.
 
-    Row PREPARATION -- converting a ``ParsedSession`` tree into the SQL row
-    tuples ``_replace_full_session_messages_and_blocks`` inserts -- was
-    measured happening entirely inside the writer hold (34-40s per 2,000
-    normal raws, 165-287s on whale pages) while parse-side warm workers sat
-    idle. ``prepare_session_rows`` builds this dataclass from nothing but a
-    ``ParsedSession`` (no DB connection, no archive state), so it can run on
-    a parse-prefetch worker thread; the writer then only needs to run
-    ``executemany`` against already-built tuples.
-
-    ``session_content_hash`` is ``pipeline.ids.session_content_hash(session)``
-    hex-decoded -- computed from the ORIGINAL (pre-lineage-slice) session, the
-    same value ordinary callers already pass as ``write_parsed_session_to_
-    archive(content_hash=...)``. The writer compares this against its own
-    ``content_hash`` argument before ever using the prepared rows: a session
-    whose content changed (or whose caller didn't supply a content_hash --
-    identity-only hashes never match) always falls back to preparing inline,
-    which reproduces the exact unmodified write path. A session that turns
-    out to need lineage tail-slicing (prefix-sharing composition against an
-    already-archived parent -- resolved by ``_extract_prefix_tail``, which
-    requires a live DB read the prefetch worker never had) is a SEPARATE
-    rejection condition the writer checks independently, because slicing
-    changes which messages are written without changing the session's own
-    content hash.
+    The content hash covers the full normalized input. Canonical preparation
+    resolves lineage and append offsets against its own read snapshot, then
+    captures exact owner resolution alongside the published row range. The
+    writer validates the carrier and predecessor; it never lowers inline.
     """
 
     session_id: str
@@ -734,6 +753,7 @@ class PreparedSessionRows:
     #: The writer may consume these only after validating that they still
     #: match the carried row tuples and the input content hash.
     content_identities: Sequence[MessageContentIdentity]
+    owner_resolution: MessageOwnerResolution
     position_offset: int = 0
     #: Per-digest content-occurrence counts already stored for this session,
     #: the append-side analogue of ``position_offset``. Empty for a
@@ -745,7 +765,8 @@ class PreparedSessionRows:
 class _ShardRowSequence(Sequence[tuple[object, ...]]):
     """Read one prepared table range without retaining bound row tuples."""
 
-    def __init__(self, path: Path, table: str, lo: int, hi: int) -> None:
+    def __init__(self, path: Path, table: str, lo: int, hi: int, *, lifetime: object | None = None) -> None:
+        self._lifetime = lifetime
         self.path = path
         self.table = table
         self.lo = lo
@@ -766,21 +787,30 @@ class _ShardRowSequence(Sequence[tuple[object, ...]]):
         ordinal = index + len(self) if index < 0 else index
         if ordinal < 0 or ordinal >= len(self):
             raise IndexError(index)
-        uri = f"file:{quote(str(self.path))}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as conn:
+        with (
+            retain_native_sql_lifetimes(*(() if self._lifetime is None else (self._lifetime,))),
+            _prepared_reader(self.path) as conn,
+        ):
             row = conn.execute(f"SELECT * FROM {self.table} WHERE rowid = ?", (self.lo + ordinal,)).fetchone()
         if row is None:
             raise PreparedSessionWriteRefusedError("prepared row disappeared")
         return tuple(row)
 
     def __iter__(self) -> Iterator[tuple[object, ...]]:
-        uri = f"file:{quote(str(self.path))}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as conn:
-            for row in conn.execute(
-                f"SELECT * FROM {self.table} WHERE rowid BETWEEN ? AND ? ORDER BY rowid",
-                (self.lo, self.hi),
+        after = self.lo - 1
+        while after < self.hi:
+            with (
+                retain_native_sql_lifetimes(*(() if self._lifetime is None else (self._lifetime,))),
+                _prepared_reader(self.path) as conn,
             ):
-                yield tuple(row)
+                rows = conn.execute(
+                    f"SELECT rowid, * FROM {self.table} WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 512",
+                    (after, self.hi),
+                ).fetchall()
+            if not rows:
+                return
+            after = int(rows[-1][0])
+            yield from (tuple(row[1:]) for row in rows)
 
 
 @dataclass(frozen=True, slots=True)
@@ -912,16 +942,25 @@ def _identity_sequence_digest(identities: Iterable[str]) -> str:
     return digest.hexdigest()
 
 
-def _materialized_identity_scope(conn: sqlite3.Connection, session_id: str) -> _IdentityScope | None:
+def _materialized_identity_scope(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> _IdentityScope | None:
     """The identity scope this child's stored IDs follow, if its prefix was materialized.
 
     Kept per session, not on an edge: a later revision that no longer declares
     the parent deletes the edge, and the IDs must still not move.
     """
-    row = conn.execute(
-        "SELECT scope_json FROM session_identity_scopes WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
+    if before_input is not None:
+        before_input(
+            "session_identity_scopes",
+            ("scope_json",),
+            "SELECT rowid FROM session_identity_scopes WHERE session_id=?",
+            (session_id,),
+        )
+    with connection_cursor(
+        conn, "SELECT scope_json FROM session_identity_scopes WHERE session_id = ?", (session_id,)
+    ) as _input_cursor:
+        row = _input_cursor.fetchone()
     return _IdentityScope.from_json(str(row[0])) if row is not None else None
 
 
@@ -961,10 +1000,25 @@ class PreparedMessageContext:
     content_identities: tuple[MessageContentIdentity, ...] | None = None
 
     def close(self) -> None:
-        """Release duplicate-id indexes after the prepared write is consumed."""
+        """Attempt every owned carrier's cleanup before reporting unsettled SQL."""
+        artifacts: list[_DiskDuplicateNativeIds | _DiskSourceMessageIds | _DiskSignatureSequence] = []
         for duplicates in (self.event_duplicate_native_ids, self.duplicate_native_ids):
             if isinstance(duplicates, _DiskDuplicateNativeIds):
-                duplicates.close()
+                artifacts.append(duplicates)
+        if isinstance(self.inherited_source_message_ids, _DiskSourceMessageIds):
+            artifacts.append(self.inherited_source_message_ids)
+        if isinstance(self.inherited_prefix_message_ids, _PrefixMessageIds):
+            composed = self.inherited_prefix_message_ids._composed
+            if isinstance(composed, _DiskSignatureSequence):
+                artifacts.append(composed)
+        failures: list[BaseException] = []
+        for artifact in artifacts:
+            try:
+                artifact.close()
+            except BaseException as failure:
+                failures.append(failure)
+        if failures:
+            raise PreparedSessionSettlementError(failures)
 
 
 class _MessageTail(Sequence[ParsedMessage]):
@@ -1502,21 +1556,43 @@ class PreparedSessionWrite:
     session_id: str
     input_content_hash: bytes
     merge_append: bool
+    fallback_timestamp: str | None
     context: PreparedMessageContext
     rows: PreparedSessionRows
+    predecessor: tuple[object, ...] | None
+    reparse_receipt: RevisionApplicationReceipt | None
+    enrichment_binding: tuple[str | None, str | None] | None
     cross_acquisition_union: _PreparedCrossAcquisitionUnion | None = None
 
     def close(self) -> None:
-        """Release the private row and reconciliation spools after publication."""
-        try:
-            if self.cross_acquisition_union is not None:
-                scratch = self.cross_acquisition_union.carry_forward.scratch
-                if scratch is not None:
+        """Close every carrier before retiring its actual scratch directory."""
+        failures: list[BaseException] = []
+        if self.cross_acquisition_union is not None:
+            scratch = self.cross_acquisition_union.carry_forward.scratch
+            if scratch is not None:
+                try:
                     scratch.close()
-            if self.rows.scratch is not None:
-                self.rows.scratch.cleanup()
-        finally:
+                except BaseException as failure:
+                    failures.append(failure)
+        try:
             self.context.close()
+        except BaseException as failure:
+            failures.append(failure)
+        if failures:
+            raise PreparedSessionSettlementError(failures)
+        if self.rows.scratch is not None:
+            _cleanup_prepared_scratch(self.rows.scratch)
+
+
+def _cleanup_prepared_scratch(scratch: tempfile.TemporaryDirectory[str]) -> None:
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+
+    pending = retained_native_sql_owners_for_lifetime(scratch)
+    if pending:
+        raise NativeConnectionSettlementError(
+            pending[0], RuntimeError("prepared write scratch retains physical SQL custody")
+        )
+    scratch.cleanup()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1529,74 +1605,20 @@ class _PreparedCrossAcquisitionUnion:
     carry_forward: _ProjectionCarryForward
 
 
-@dataclass(frozen=True, slots=True)
-class PreparedSessionShardRows:
-    """One session's rows resident in a shard attached to the writer's connection.
-
-    Interchangeable with :class:`PreparedSessionRows` at the writer's
-    acceptance gate -- it answers the same two questions, which session and
-    which content -- and differs only in where the rows are. Where
-    ``PreparedSessionRows`` hands the writer tuples to bind one row at a
-    time, this hands it a rowid range to copy in one statement; see
-    ``polylogue.storage.sqlite.archive_tiers.write_shard``.
-
-    ``schema`` is the ATTACH alias the shard is currently mounted under, so
-    an instance is only meaningful inside the ``attached_session_shard``
-    block that produced it.
-    """
-
-    session_id: str
-    session_content_hash: bytes
-    schema: str
-    entry: ShardSessionRows
-    #: The identity carrier extracted from the sealed shard manifest/rows.
-    content_identities: Sequence[MessageContentIdentity]
-
-
-#: What a caller may hand the writer instead of letting it build rows inline.
-PreparedRows = PreparedSessionRows | PreparedSessionShardRows
-
-
-#: How each session write resolved the prepared-rows question, counted by
-#: reason (polylogue-i07pw AC1). A parse worker that builds rows and a shard
-#: only removes writer work on the writes that actually consume them; profiles
-#: of real ingest showed the writer rebuilding rows, but nothing recorded WHY,
-#: so "parallel preparation removes writer-side work" could be neither
-#: confirmed nor refuted from a run. These counters make it falsifiable:
-#: AC1 is proven by the declined reasons reading zero on a stratified run,
-#: and a non-zero reason names the gate to fix.
-#:
-#: Diagnostic only -- no code branches on it. Incremented once per session
-#: write under the single-writer contract; the lock is for a reader on
-#: another thread, not for concurrent writers.
+#: Publication counts accepted canonical preparations. Refused carriers fail
+#: before mutation; no writer-side lowering fallback exists. The counter is
+#: diagnostic and does not decide admission.
 _PREPARED_DISPOSITIONS: Counter[str] = Counter()
 _PREPARED_DISPOSITIONS_LOCK = threading.Lock()
 
 #: Reasons that mean the writer used the prepared work. Everything else is a
 #: decline, and the split is what a measurement reads.
-PREPARED_ACCEPTED_DISPOSITIONS = frozenset({"prepared_write", "prepared_rows", "append_prepared_rows"})
+PREPARED_ACCEPTED_DISPOSITIONS = frozenset({"prepared_write"})
 
 
 def _record_prepared_disposition(reason: str) -> None:
     with _PREPARED_DISPOSITIONS_LOCK:
         _PREPARED_DISPOSITIONS[reason] += 1
-
-
-def _declined_prepared_reason(
-    prepared: PreparedRows | None,
-    *,
-    merge_append: bool,
-    lineage_inheritance: str | None,
-    session_content_hash: bytes,
-) -> str:
-    """Name the gate that made the writer rebuild rows for one session."""
-    if prepared is None:
-        return "absent"
-    if prepared.session_content_hash != session_content_hash:
-        return "content_hash_mismatch"
-    if not merge_append and lineage_inheritance == "prefix-sharing":
-        return "prefix_sharing"
-    return "declined"
 
 
 def prepared_row_dispositions() -> dict[str, int]:
@@ -1612,7 +1634,7 @@ def reset_prepared_row_dispositions() -> None:
 
 
 def _validated_prepared_content_identities(
-    prepared: PreparedRows,
+    prepared: PreparedSessionRows,
     messages: Sequence[ParsedMessage],
 ) -> Sequence[MessageContentIdentity]:
     """Validate and return the parse-side identity carrier without hashing.
@@ -1659,15 +1681,14 @@ def _prepared_message_context(
     native_id: str,
     merge_append: bool,
     signature_cache: _SignatureCacheLike | None,
-    source_conn: sqlite3.Connection | None,
+    source_read: SessionSourceRead | None,
     child_source_path: str | None,
+    before_input: BeforeIndexInput | None = None,
 ) -> PreparedMessageContext:
     """Canonical normalization-before-lineage-slicing context for one write."""
-    if isinstance(session.messages, SqliteMessageSink) and session.messages._writer is None:
-        # The sealed parse artifact was normalized and outcome-derived before
-        # its row shard was built. Re-running either transform here would
-        # require mutating the immutable artifact inside the writer hold.
-        messages: Sequence[ParsedMessage] = session.messages
+    if isinstance(session.messages, SqliteMessageSink):
+        # Borrow the canonical operand sealed beside the original parser fields.
+        messages: Sequence[ParsedMessage] = session.messages.normalized_messages(session.session_events, origin=origin)
     else:
         messages = _derive_tool_outcomes(
             normalize_active_branch(session.messages), session.session_events, origin=origin
@@ -1676,13 +1697,14 @@ def _prepared_message_context(
     effective_session = session
     hook_parent_claim = _authoritative_parent_claim(
         conn,
-        source_conn,
+        source_read,
         origin=origin.value,
         child_session_id=session_id,
         child_native_id=native_id,
         child_provider_values=_child_provider_values(session),
         parent_candidate=session.parent_session_provider_id,
         child_source_path=child_source_path,
+        before_input=before_input,
     )
     hook_parent_provider_id = hook_parent_claim.parent_native_id if hook_parent_claim is not None else None
     effective_session_kind = session.session_kind
@@ -1699,23 +1721,29 @@ def _prepared_message_context(
     # IDs recorded for it; a replay keeps it spawned-fresh rather than slicing
     # it against whatever the parent holds now, which would move those IDs.
     # Only a full write re-applies it to IDs; an append keeps stored IDs.
-    identity_scope = _materialized_identity_scope(conn, session_id)
+    identity_scope = _materialized_identity_scope(conn, session_id, before_input)
+    parent_composed: Sequence[tuple[str, str]] | None = None
     if not merge_append:
         lineage_session = session
         if hook_parent_provider_id is not None:
             lineage_session = session.model_copy(update={"parent_session_provider_id": hook_parent_provider_id})
-        parent_session_id = _existing_parent_session_id(conn, lineage_session, origin.value)
+        parent_session_id = _existing_parent_session_id(conn, lineage_session, origin.value, before_input)
         acompact = _is_claude_code_acompact_session(session)
         force_spawned_fresh = False
         if parent_session_id is not None and messages:
-            parent_composed: Sequence[tuple[str, str]] | None = None
-            cycle_walk = _would_create_cycle(conn, child_id=session_id, proposed_parent_id=parent_session_id)
+            cycle_walk = _would_create_cycle(
+                conn, child_id=session_id, proposed_parent_id=parent_session_id, before_input=before_input
+            )
             force_spawned_fresh = cycle_walk.outcome != "acyclic"
             if acompact:
                 parent_composed = (
-                    _disk_composed_db_signatures(conn, parent_session_id, messages.path.parent)
+                    _disk_composed_db_signatures(
+                        conn, parent_session_id, messages.path.parent, before_input=before_input
+                    )
                     if isinstance(messages, SqliteMessageSink)
-                    else _composed_db_signatures(conn, parent_session_id, cache=signature_cache)
+                    else _composed_db_signatures(
+                        conn, parent_session_id, cache=signature_cache, before_input=before_input
+                    )
                 )
                 membership = _acompact_content_membership_ratio(
                     parent_composed,
@@ -1758,9 +1786,12 @@ def _prepared_message_context(
                     cache=signature_cache,
                     parent_composed=parent_composed,
                     attachments=session.attachments,
+                    before_input=before_input,
                 )
             if branch_point_message_id is not None:
-                branch_point_content_address = _message_content_address_for_id(conn, branch_point_message_id)
+                branch_point_content_address = _message_content_address_for_id(
+                    conn, branch_point_message_id, before_input
+                )
     scoped_identities: tuple[MessageContentIdentity, ...] | None = None
     if identity_scope is not None and not merge_append:
         scoped_view, scoped_identities = _scoped_identities(messages, identity_scope)
@@ -1768,6 +1799,11 @@ def _prepared_message_context(
         remapped_events = scoped_view.remap_events(list(effective_session.session_events))
         if remapped_events is not None:
             effective_session = effective_session.model_copy(update={"session_events": remapped_events})
+    if isinstance(parent_composed, _DiskSignatureSequence) and not (
+        isinstance(inherited_prefix_message_ids, _PrefixMessageIds)
+        and inherited_prefix_message_ids._composed is parent_composed
+    ):
+        parent_composed.close()
     return PreparedMessageContext(
         effective_session=effective_session,
         messages=messages if isinstance(messages, (SqliteMessageSink, _MessageTail)) else tuple(messages),
@@ -1792,7 +1828,7 @@ def prepared_lineage_bindings(
     conn: sqlite3.Connection,
     session: ParsedSession,
     *,
-    source_conn: sqlite3.Connection | None = None,
+    source_read: SessionSourceRead | None = None,
     child_source_path: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Return the hook and resolved-parent claims a prepared write depends on.
@@ -1805,7 +1841,7 @@ def prepared_lineage_bindings(
     session_id = archive_session_id(origin.value, native_id)
     claim = _authoritative_parent_claim(
         conn,
-        source_conn,
+        source_read,
         origin=origin.value,
         child_session_id=session_id,
         child_native_id=native_id,
@@ -1822,20 +1858,102 @@ def prepared_lineage_bindings(
     return hook_parent_native_id, _existing_parent_session_id(conn, lineage_session, origin.value)
 
 
+def validate_prepared_session_lineage(
+    conn: sqlite3.Connection,
+    input_session: ParsedSession,
+    prepared_write: PreparedSessionWrite,
+    *,
+    source_read: SessionSourceRead | None,
+) -> None:
+    """Revalidate the original prepared parent and inherited-byte witnesses."""
+    context = prepared_write.context
+    hook_parent, parent = prepared_lineage_bindings(
+        conn, input_session, source_read=source_read, child_source_path=context.child_source_path
+    )
+    if hook_parent != context.hook_parent_native_id or (
+        not prepared_write.merge_append and parent != context.parent_session_id
+    ):
+        raise PreparedSessionWriteRefusedError("prepared replay lineage evidence changed")
+    if context.lineage_prefix_digest is None:
+        return
+    if parent is None:
+        raise PreparedSessionWriteRefusedError("prepared replay lineage parent disappeared")
+    inherited_count = len(input_session.messages) - len(context.messages)
+    source = input_session.messages
+    signatures = (
+        _disk_composed_db_signatures(conn, parent, source.path.parent)
+        if isinstance(source, SqliteMessageSink)
+        else _composed_db_signatures(conn, parent)
+    )
+    primary: BaseException | None = None
+    try:
+        if (
+            len(signatures) < inherited_count
+            or _lineage_prefix_digest(islice(signatures, inherited_count)) != context.lineage_prefix_digest
+        ):
+            raise PreparedSessionWriteRefusedError("prepared replay lineage prefix changed")
+        if (
+            isinstance(context.messages, _MessageTail)
+            and _attachment_shared_prefix_limit(
+                conn, context.messages.messages, signatures, inherited_count, context.effective_session.attachments
+            )
+            < inherited_count
+        ):
+            raise PreparedSessionWriteRefusedError("prepared replay lineage prefix attachments changed")
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        if isinstance(signatures, _DiskSignatureSequence):
+            try:
+                signatures.close()
+            except BaseException as cleanup:
+                if primary is not None:
+                    raise BaseExceptionGroup(
+                        "prepared lineage and native settlement failed", [primary, cleanup]
+                    ) from None
+                raise
+
+
+def prepared_session_storage_lineage_matches(conn: sqlite3.Connection, prepared_write: PreparedSessionWrite) -> bool:
+    """Whether unchanged content already has this exact prefix representation."""
+    context = prepared_write.context
+    edge = _prefix_sharing_edge_row(conn, prepared_write.session_id)
+    if context.lineage_prefix_digest is None:
+        return edge is None
+    return (
+        context.lineage_inheritance == "prefix-sharing"
+        and edge is not None
+        and tuple(edge)
+        == (
+            context.parent_session_id,
+            context.branch_point_message_id,
+            context.branch_point_content_address,
+        )
+    )
+
+
 def prepare_session_write(
     conn: sqlite3.Connection,
     session: ParsedSession,
     *,
     merge_append: bool,
     fallback_timestamp: str | None = None,
-    source_conn: sqlite3.Connection | None = None,
+    source_read: SessionSourceRead | None = None,
     signature_cache: _SignatureCacheLike | None = None,
     raw_id: str | None = None,
     force_replace: bool = False,
     prepared_rows: PreparedSessionRows | None = None,
+    before_input: BeforeIndexInput | None = None,
 ) -> PreparedSessionWrite:
     """Prepare the canonical pending write while its lineage evidence is pinned."""
     from polylogue.core.timestamp_authority import normalize_session_timestamps
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import prepare_accepted_head_reparse_receipt
+
+    if raw_id is not None and source_read is None:
+        raise PreparedSessionWriteRefusedError(
+            "retained session preparation requires its original Source read capability"
+        )
 
     normalized = normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp)
     origin = origin_from_provider(normalized.source_name)
@@ -1849,117 +1967,210 @@ def prepare_session_write(
         native_id=native_id,
         merge_append=merge_append,
         signature_cache=signature_cache,
-        source_conn=source_conn,
-        child_source_path=raw_source_path(source_conn, raw_id),
+        source_read=source_read,
+        child_source_path=raw_source_path(source_read, raw_id),
+        before_input=before_input,
     )
-    position_offset = _next_message_position(conn, session_id) if merge_append else 0
-    content_occurrence_offsets = _stored_content_occurrences(conn, session_id) if merge_append else {}
-    if (
-        prepared_rows is not None
-        and not merge_append
-        and context.content_identities is None
-        and len(context.messages) == len(normalized.messages)
-        and prepared_rows.session_id == session_id
-        and prepared_rows.session_content_hash == _prepared_session_content_hash(normalized)
-    ):
-        _validated_prepared_content_identities(prepared_rows, context.messages)
-        rows = prepared_rows
-    elif isinstance(context.messages, SqliteMessageSink) or (
-        isinstance(context.messages, _MessageTail) and isinstance(context.messages.messages, SqliteMessageSink)
-    ):
-        source_path = cast(Path, context.messages.path)
-        scratch = tempfile.TemporaryDirectory(prefix="polylogue-prepared-write-", dir=source_path.parent)
-        builder = SessionShardBuilder(Path(scratch.name) / "rows.db")
-        try:
-            with (
-                nullcontext(context.content_identities)
+    scratch: tempfile.TemporaryDirectory[str] | None = None
+    prepared_union: _PreparedCrossAcquisitionUnion | None = None
+    try:
+        if before_input is not None:
+            before_input(
+                "sessions",
+                ("content_hash", "raw_id", "updated_at_ms"),
+                "SELECT rowid FROM sessions WHERE session_id=?",
+                (session_id,),
+            )
+        with connection_cursor(
+            conn, "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id=?", (session_id,)
+        ) as cursor:
+            predecessor_row = cursor.fetchone()
+        predecessor = tuple(predecessor_row) if predecessor_row is not None else None
+        position_offset = _next_message_position(conn, session_id) if merge_append else 0
+        content_occurrence_offsets = (
+            _stored_content_occurrences(conn, session_id, before_input) if merge_append and context.messages else {}
+        )
+        if (
+            prepared_rows is not None
+            and not merge_append
+            and context.content_identities is None
+            and len(context.messages) == len(normalized.messages)
+            and prepared_rows.session_id == session_id
+            and prepared_rows.session_content_hash == _prepared_session_content_hash(normalized)
+        ):
+            _validated_prepared_content_identities(prepared_rows, context.messages)
+            rows = prepared_rows
+        elif isinstance(context.messages, SqliteMessageSink) or (
+            isinstance(context.messages, _MessageTail) and isinstance(context.messages.messages, SqliteMessageSink)
+        ):
+            source_path = cast(Path, context.messages.path)
+            scratch = tempfile.TemporaryDirectory(prefix="polylogue-prepared-write-", dir=source_path.parent)
+            with ExitStack() as preparation_stack:
+                preparation_stack.enter_context(retain_native_sql_lifetimes(scratch))
+                for duplicates in (context.event_duplicate_native_ids, context.duplicate_native_ids):
+                    if isinstance(duplicates, _DiskDuplicateNativeIds):
+                        preparation_stack.enter_context(duplicates.reader())
+                builder = SessionShardBuilder(Path(scratch.name) / "rows.db")
+                try:
+                    with (
+                        (
+                            nullcontext(context.content_identities)
+                            if context.content_identities is not None
+                            else disk_message_content_identities(
+                                context.messages, occurrence_offsets=content_occurrence_offsets
+                            )
+                        ) as identities,
+                        disk_message_owner_resolution(
+                            context.messages.messages
+                            if isinstance(context.messages, _MessageTail)
+                            else context.messages
+                        ) as owners,
+                    ):
+                        builder.add_streamed(
+                            session_id=session_id,
+                            owner_resolution=owners,
+                            session_content_hash=_prepared_session_content_hash(normalized),
+                            message_rows=_iter_message_rows(
+                                session_id,
+                                context.messages,
+                                position_offset=position_offset,
+                                duplicate_native_ids=context.duplicate_native_ids,
+                                content_identities=identities,
+                            ),
+                            block_rows=_iter_block_rows(
+                                session_id,
+                                context.messages,
+                                position_offset=position_offset,
+                                duplicate_native_ids=context.duplicate_native_ids,
+                                content_identities=identities,
+                            ),
+                        )
+                    shard = open_session_shard(builder.seal().path)
+                except BaseException as primary:
+                    try:
+                        builder.abandon()
+                    except BaseException as cleanup:
+                        raise cleanup from primary
+                    raise
+            entry = shard.sessions[0]
+            rows = PreparedSessionRows(
+                session_id=session_id,
+                session_content_hash=entry.session_content_hash,
+                message_rows=_ShardRowSequence(
+                    shard.path, "messages", entry.message_lo, entry.message_hi, lifetime=scratch
+                ),
+                block_rows=_ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi, lifetime=scratch),
+                content_identities=entry.content_identities,
+                owner_resolution=entry.owner_resolution,
+                position_offset=position_offset,
+                content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
+                scratch=scratch,
+            )
+        else:
+            content_identities = (
+                context.content_identities
                 if context.content_identities is not None
-                else disk_message_content_identities(context.messages, occurrence_offsets=content_occurrence_offsets)
-            ) as identities:
-                builder.add_streamed(
+                else message_content_identities(context.messages, occurrence_offsets=content_occurrence_offsets)
+            )
+            rows = PreparedSessionRows(
+                session_id=session_id,
+                session_content_hash=_prepared_session_content_hash(normalized),
+                message_rows=tuple(
+                    _build_message_rows(
+                        session_id,
+                        context.messages,
+                        position_offset=position_offset,
+                        duplicate_native_ids=context.duplicate_native_ids,
+                        content_identities=content_identities,
+                    )
+                ),
+                block_rows=tuple(
+                    _build_block_rows(
+                        session_id,
+                        context.messages,
+                        position_offset=position_offset,
+                        duplicate_native_ids=context.duplicate_native_ids,
+                        content_identities=content_identities,
+                    )
+                ),
+                content_identities=tuple(content_identities),
+                owner_resolution=message_owner_resolution(
+                    list(context.messages.messages if isinstance(context.messages, _MessageTail) else context.messages)
+                ),
+                position_offset=position_offset,
+                content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
+            )
+        prepared_union = None
+        if raw_id is not None and not merge_append and not force_replace:
+            union_source_path = getattr(context.messages, "path", None)
+            directory = union_source_path.parent if isinstance(union_source_path, Path) else Path(tempfile.gettempdir())
+            prepared_union = _prepare_cross_acquisition_union(
+                conn,
+                session_id,
+                rows,
+                raw_id=raw_id,
+                directory=directory,
+                before_input=before_input,
+            )
+        return PreparedSessionWrite(
+            session_id=session_id,
+            input_content_hash=rows.session_content_hash,
+            merge_append=merge_append,
+            fallback_timestamp=fallback_timestamp,
+            context=context,
+            rows=rows,
+            cross_acquisition_union=prepared_union,
+            predecessor=predecessor,
+            reparse_receipt=(
+                prepare_accepted_head_reparse_receipt(
+                    conn,
+                    source_read,
+                    raw_id=raw_id,
                     session_id=session_id,
-                    session_content_hash=_prepared_session_content_hash(normalized),
-                    message_rows=_iter_message_rows(
-                        session_id,
-                        context.messages,
-                        position_offset=position_offset,
-                        duplicate_native_ids=context.duplicate_native_ids,
-                        content_identities=identities,
-                    ),
-                    block_rows=_iter_block_rows(
-                        session_id,
-                        context.messages,
-                        position_offset=position_offset,
-                        duplicate_native_ids=context.duplicate_native_ids,
-                        content_identities=identities,
-                    ),
+                    content_hash=rows.session_content_hash,
+                    before_input=before_input,
                 )
-            shard = open_session_shard(builder.seal().path)
-        except BaseException:
-            builder.abandon()
-            scratch.cleanup()
-            raise
-        entry = shard.sessions[0]
-        rows = PreparedSessionRows(
-            session_id=session_id,
-            session_content_hash=entry.session_content_hash,
-            message_rows=_ShardRowSequence(shard.path, "messages", entry.message_lo, entry.message_hi),
-            block_rows=_ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi),
-            content_identities=entry.content_identities,
-            position_offset=position_offset,
-            content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
-            scratch=scratch,
-        )
-    else:
-        content_identities = (
-            context.content_identities
-            if context.content_identities is not None
-            else message_content_identities(context.messages, occurrence_offsets=content_occurrence_offsets)
-        )
-        rows = PreparedSessionRows(
-            session_id=session_id,
-            session_content_hash=_prepared_session_content_hash(normalized),
-            message_rows=tuple(
-                _build_message_rows(
-                    session_id,
-                    context.messages,
-                    position_offset=position_offset,
-                    duplicate_native_ids=context.duplicate_native_ids,
-                    content_identities=content_identities,
-                )
+                if raw_id is not None and source_read is not None
+                else None
             ),
-            block_rows=tuple(
-                _build_block_rows(
-                    session_id,
-                    context.messages,
-                    position_offset=position_offset,
-                    duplicate_native_ids=context.duplicate_native_ids,
-                    content_identities=content_identities,
+            enrichment_binding=(
+                (
+                    normalized.enrichment_evidence_key,
+                    source_read.session_enrichment_key(
+                        conn,
+                        provider=normalized.source_name,
+                        source_path=context.child_source_path,
+                        native_id=native_id,
+                    ),
                 )
+                if raw_id is not None and source_read is not None
+                else None
             ),
-            content_identities=tuple(content_identities),
-            position_offset=position_offset,
-            content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
         )
-    prepared_union = None
-    if raw_id is not None and not merge_append and not force_replace:
-        union_source_path = getattr(context.messages, "path", None)
-        directory = union_source_path.parent if isinstance(union_source_path, Path) else Path(tempfile.gettempdir())
-        prepared_union = _prepare_cross_acquisition_union(
-            conn,
-            session_id,
-            rows,
-            raw_id=raw_id,
-            directory=directory,
-        )
-    return PreparedSessionWrite(
-        session_id=session_id,
-        input_content_hash=rows.session_content_hash,
-        merge_append=merge_append,
-        context=context,
-        rows=rows,
-        cross_acquisition_union=prepared_union,
-    )
+    except BaseException as primary:
+        failures: list[BaseException] = []
+        if prepared_union is not None and prepared_union.carry_forward.scratch is not None:
+            try:
+                prepared_union.carry_forward.scratch.close()
+            except BaseException as failure:
+                failures.append(failure)
+        if scratch is not None:
+            try:
+                pending = retained_native_sql_owners_for_lifetime(scratch)
+                if pending:
+                    raise NativeConnectionSettlementError(
+                        pending[0], RuntimeError("prepared row construction remains owned")
+                    )
+                scratch.cleanup()
+            except BaseException as failure:
+                failures.append(failure)
+        try:
+            context.close()
+        except BaseException as failure:
+            failures.append(failure)
+        if failures:
+            raise PreparedSessionSettlementError(failures) from primary
+        raise
 
 
 def prepared_session_rows_from_shard(shard_path: Path, session_id: str) -> PreparedSessionRows:
@@ -1975,6 +2186,7 @@ def prepared_session_rows_from_shard(shard_path: Path, session_id: str) -> Prepa
         message_rows=_ShardRowSequence(shard.path, "messages", entry.message_lo, entry.message_hi),
         block_rows=_ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi),
         content_identities=entry.content_identities,
+        owner_resolution=entry.owner_resolution,
     )
 
 
@@ -1986,46 +2198,56 @@ def prepare_session_rows(
 ) -> PreparedSessionRows:
     """Build ``PreparedSessionRows`` for ``session``'s full-replace write.
 
-    Pure function: normalizes messages exactly as ``write_parsed_session_to_
-    archive`` does for a non-merge-append, non-lineage-sliced write (see
+    Normalizes messages exactly as ``write_parsed_session_to_archive`` does for a non-merge-append, non-lineage-sliced write (see
     ``normalize_active_branch``), then reuses the same row-tuple builders the
     writer itself calls (``_build_message_rows``/``_build_block_rows``) at
     ``position_offset=0`` -- the offset every full-replace write uses. A
     byte-replay preparation can supply its pinned append offset, so the
     admitted writer need not rebuild per-message/block tuples for a composed
-    tail. No
-    SQLite connection, network call, or filesystem access; safe to call from
-    any thread, including a parse-prefetch worker running well before (and
-    concurrently with) any writer hold.
+    tail. List-backed input stays in memory; sealed message input uses
+    creator-owned indexed scratch during preparation. No native handle is
+    carried into publication.
     """
     origin = origin_from_provider(session.source_name)
     session_id = archive_session_id(origin.value, session.provider_session_id)
     messages = _derive_tool_outcomes(normalize_active_branch(session.messages), session.session_events, origin=origin)
     duplicate_native_ids = _duplicate_message_native_ids(messages)
-    content_identities = message_content_identities(messages, occurrence_offsets=content_occurrence_offsets)
-    message_rows = _build_message_rows(
-        session_id,
-        messages,
-        position_offset=position_offset,
-        duplicate_native_ids=duplicate_native_ids,
-        content_identities=content_identities,
-    )
-    block_rows = _build_block_rows(
-        session_id,
-        messages,
-        position_offset=position_offset,
-        duplicate_native_ids=duplicate_native_ids,
-        content_identities=content_identities,
-    )
-    return PreparedSessionRows(
-        session_id=session_id,
-        session_content_hash=_prepared_session_content_hash(session),
-        message_rows=tuple(message_rows),
-        block_rows=tuple(block_rows),
-        content_identities=tuple(content_identities),
-        position_offset=position_offset,
-        content_occurrence_offsets=tuple(sorted((content_occurrence_offsets or {}).items())),
-    )
+    try:
+        with (
+            duplicate_native_ids.reader()
+            if isinstance(duplicate_native_ids, _DiskDuplicateNativeIds)
+            else nullcontext()
+        ):
+            content_identities = message_content_identities(messages, occurrence_offsets=content_occurrence_offsets)
+            message_rows = _build_message_rows(
+                session_id,
+                messages,
+                position_offset=position_offset,
+                duplicate_native_ids=duplicate_native_ids,
+                content_identities=content_identities,
+            )
+            block_rows = _build_block_rows(
+                session_id,
+                messages,
+                position_offset=position_offset,
+                duplicate_native_ids=duplicate_native_ids,
+                content_identities=content_identities,
+            )
+            result = PreparedSessionRows(
+                session_id=session_id,
+                session_content_hash=_prepared_session_content_hash(session),
+                message_rows=tuple(message_rows),
+                block_rows=tuple(block_rows),
+                content_identities=tuple(content_identities),
+                owner_resolution=message_owner_resolution(list(messages)),
+                position_offset=position_offset,
+                content_occurrence_offsets=tuple(sorted((content_occurrence_offsets or {}).items())),
+            )
+
+    finally:
+        if isinstance(duplicate_native_ids, _DiskDuplicateNativeIds):
+            duplicate_native_ids.close()
+    return result
 
 
 def _prepared_session_content_hash(session: ParsedSession) -> bytes:
@@ -2052,10 +2274,13 @@ def prepare_session_shard(directory: Path, sessions: Sequence[ParsedSession]) ->
     try:
         for session in sessions:
             append_session_to_shard(builder, session)
-    except BaseException:
-        builder.abandon()
+        return open_session_shard(builder.seal().path)
+    except BaseException as primary:
+        try:
+            builder.abandon()
+        except BaseException as cleanup:
+            raise cleanup from primary
         raise
-    return open_session_shard(builder.seal().path)
 
 
 def append_session_to_shard(builder: SessionShardBuilder, session: ParsedSession) -> None:
@@ -2064,18 +2289,33 @@ def append_session_to_shard(builder: SessionShardBuilder, session: ParsedSession
         builder.add(prepare_session_rows(session))
         return
     sink_messages = session.messages
-    messages: Sequence[ParsedMessage] = sink_messages
     origin = origin_from_provider(session.source_name)
-    if sink_messages._writer is not None:
-        normalized_sink = sink_messages.normalize_active_path()
-        messages = _derive_tool_outcomes(normalized_sink, session.session_events, origin=origin)
+    with ExitStack() as held:
+        # The parsed session is complete: its walks below reuse one decode.
+        held.enter_context(sink_messages.held_walks())
+        messages: Sequence[ParsedMessage] = sink_messages.normalized_messages(session.session_events, origin=origin)
+        if isinstance(messages, SqliteMessageSink):
+            held.enter_context(messages.held_walks())
+        _append_held_session_to_shard(builder, session, messages, origin=origin)
+
+
+def _append_held_session_to_shard(
+    builder: SessionShardBuilder, session: ParsedSession, messages: Sequence[ParsedMessage], *, origin: Origin
+) -> None:
     session_id = archive_session_id(origin.value, session.provider_session_id)
     duplicates = _duplicate_message_native_ids(messages)
     try:
-        with disk_message_content_identities(messages) as identities:
+        with (
+            disk_message_content_identities(messages) as identities,
+            disk_message_owner_resolution(messages) as owners,
+            # Every message asks whether its native id is ambiguous; one
+            # reader serves the whole append instead of one per question.
+            duplicates.reader() if isinstance(duplicates, _DiskDuplicateNativeIds) else nullcontext(),
+        ):
             builder.add_streamed(
                 session_id=session_id,
                 session_content_hash=_prepared_session_content_hash(session),
+                owner_resolution=owners,
                 message_rows=_iter_message_rows(
                     session_id,
                     messages,
@@ -2094,35 +2334,30 @@ def append_session_to_shard(builder: SessionShardBuilder, session: ParsedSession
             duplicates.close()
 
 
-class _BoundSessionShardRows(Mapping[str, PreparedSessionShardRows]):
-    def __init__(self, schema: str, shard: SessionShard) -> None:
-        self.schema = schema
-        self.entries = shard.by_session_id()
-
-    def __len__(self) -> int:
-        return len(self.entries)
-
-    def __iter__(self) -> Iterator[str]:
-        yield from self.entries
-
-    def __getitem__(self, session_id: str) -> PreparedSessionShardRows:
-        entry = self.entries[session_id]
-        return PreparedSessionShardRows(
-            session_id=entry.session_id,
-            session_content_hash=entry.session_content_hash,
-            schema=self.schema,
-            entry=entry,
-            content_identities=entry.content_identities,
-        )
-
-
-def bind_session_shard(schema: str, shard: SessionShard) -> Mapping[str, PreparedSessionShardRows]:
-    """Address an attached shard's sessions the way the writer accepts them.
-
-    ``schema`` is the alias ``attached_session_shard`` mounted the shard
-    under; the returned bindings are valid only while that attachment lives.
-    """
-    return _BoundSessionShardRows(schema, shard)
+@contextmanager
+def _index_write_scope(
+    conn: sqlite3.Connection,
+    *,
+    archive_root: Path | None,
+    mutation_scope: IndexMutationScope | None,
+    manage_transaction: bool,
+) -> Iterator[IndexMutationScope]:
+    """Admit both stale-observation and content writes through one owner seam."""
+    if mutation_scope is not None:
+        mutation_scope.require_new_work(conn)
+        if not conn.in_transaction:
+            raise ReferenceSealError("a borrowed Index scope requires its active transaction")
+        yield mutation_scope
+        return
+    if archive_root is None:
+        raise ReferenceSealError("Index writes require their matching transaction scope or active archive root")
+    if not manage_transaction or conn.in_transaction:
+        raise ReferenceSealError("an outer Index transaction requires its explicit matching scope")
+    with (
+        PreparedIndexMutation(index_path_for_connection(conn), archive_root=archive_root) as seal,
+        seal.mutation_scope(conn) as scope,
+    ):
+        yield scope
 
 
 def write_parsed_session_to_archive(
@@ -2138,7 +2373,7 @@ def write_parsed_session_to_archive(
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
     signature_cache: _SignatureCacheLike | None = None,
-    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
     sidecar_blob_locators: Mapping[str, Mapping[str, str]] | None = None,
     manage_transaction: bool = True,
     bulk_fts: bool = False,
@@ -2146,17 +2381,17 @@ def write_parsed_session_to_archive(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     defer_fts_rebuild: bool = False,
-    prepared: PreparedRows | None = None,
-    prepared_required: bool = False,
-    prepared_write: PreparedSessionWrite | None = None,
-    source_conn: sqlite3.Connection | None = None,
+    prepared_write: PreparedSessionWrite,
+    source_read: SessionSourceRead | None = None,
     child_source_path: str | None = None,
     write_outcome: list[ArchiveWriteOutcome] | None = None,
     unit_accounting: ParseAccounting | None = None,
+    archive_root: Path | None = None,
+    mutation_scope: IndexMutationScope | None = None,
 ) -> str:
     """Write one parsed session into an initialized archive index DB.
 
-    ``source_conn`` (optional) is the durable ``source.db`` handle. It is used
+    ``source_read`` (optional) is the durable ``source.db`` handle. It is used
     only to consult acquired hook evidence when writing this session's
     topology edge; passing ``None`` leaves that evidence unconsulted.
 
@@ -2165,21 +2400,9 @@ def write_parsed_session_to_archive(
     whose projected spawn parent it reads; ``None`` leaves the root unknown.
     A ``prepared_write`` carries the path it was prepared with instead.
 
-    ``prepared`` (polylogue-623q, default ``None``) is an optional row set
-    computed off this thread (typically by the daemon parse-prefetch worker):
-    either a ``PreparedSessionRows`` of tuples from ``prepare_session_rows``,
-    or a ``PreparedSessionShardRows`` addressing rows in an attached shard
-    (polylogue-bp12n.6). It is used ONLY when ALL of the following hold,
-    checked right before the full-replace write:
-    not ``merge_append`` (prepared rows are built for a full replace's
-    ``position_offset=0``, never an append's positive offset); lineage
-    resolution did not slice ``messages`` (a prefix-sharing composition
-    against an already-archived parent changes which messages get written,
-    and the prefetch worker never had DB access to know about that parent);
-    and ``prepared.session_content_hash`` matches this call's own
-    ``content_hash``. Any other case silently falls back to preparing rows
-    inline -- identical to ``prepared=None`` -- so passing a stale/irrelevant
-    ``prepared`` is always safe, never incorrect.
+    ``prepared_write`` carries the canonical off-writer lowering. Publication
+    validates its captured predecessor, lineage and append frontier before
+    changing rows; changed evidence requires new preparation.
 
     ``pending_input_content_hash`` (polylogue-3hfl7, default ``None``) names
     the digest of the rows THIS CALL publishes, for the callers where that is
@@ -2235,274 +2458,219 @@ def write_parsed_session_to_archive(
     # head and later re-ingest compare against those, and an annotation does
     # not change which raw authored the session. The rule keys on the
     # retained raw identity, so every route replays an event the same way.
-    stored_header = (
-        _stored_session_header(
-            conn,
-            archive_session_id(
-                origin_from_provider(session.source_name).value,
-                _stored_session_native_id(session.provider_session_id),
-            ),
+    if mutation_scope is not None:
+        mutation_scope.require_new_work(conn)
+    elif archive_root is None:
+        raise ReferenceSealError("Index writes require their matching transaction scope or active archive root")
+    elif not manage_transaction or conn.in_transaction:
+        raise ReferenceSealError("an outer Index transaction requires its explicit matching scope")
+    from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+
+    dependencies = () if prepared_write.rows.scratch is None else (prepared_write.rows.scratch,)
+    with retain_native_sql_lifetimes(*dependencies):
+        stored_header = (
+            _stored_session_header(
+                conn,
+                archive_session_id(
+                    origin_from_provider(session.source_name).value,
+                    _stored_session_native_id(session.provider_session_id),
+                ),
+            )
+            if is_work_event_raw_id(raw_id) and not session.messages and not session.attachments
+            else None
         )
-        if is_work_event_raw_id(raw_id) and not session.messages and not session.attachments
-        else None
-    )
-    event_only = stored_header is not None
-    if event_only:
-        # The session already exists in this generation, so even a cold build
-        # appends to it rather than asserting a fresh, absent session.
-        merge_append = True
-        force_replace = False
-        fresh_build = False
-    if fresh_build and (merge_append or force_replace):
-        raise ValueError("fresh_build is only valid for an untouched full-replace session")
-    t0 = time.perf_counter()
+        event_only = stored_header is not None
+        if event_only:
+            # The session already exists in this generation, so even a cold build
+            # appends to it rather than asserting a fresh, absent session.
+            merge_append = True
+            force_replace = False
+            fresh_build = False
+        if fresh_build and (merge_append or force_replace):
+            raise ValueError("fresh_build is only valid for an untouched full-replace session")
+        t0 = time.perf_counter()
 
-    admission = unit_accounting or session.unit_accounting
-    if admission is not None:
-        try:
-            admission.assert_conserved()
-        except ValueError as exc:
-            raise ValueError(f"parse admission conservation refused: {exc}") from exc
+        admission = unit_accounting or session.unit_accounting
+        if admission is not None:
+            try:
+                admission.assert_conserved()
+            except ValueError as exc:
+                raise ValueError(f"parse admission conservation refused: {exc}") from exc
 
-    def add_timing(name: str, started_at: float) -> None:
-        _add_stage_timing(
-            stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            name=name,
-            started_at=started_at,
-        )
+        def add_timing(name: str, started_at: float) -> None:
+            _add_stage_timing(
+                stage_timings_s,
+                stage_timing_prefix=stage_timing_prefix,
+                name=name,
+                started_at=started_at,
+            )
 
-    conn.execute("PRAGMA foreign_keys = ON")
-    origin = origin_from_provider(session.source_name)
-    native_id = _stored_session_native_id(session.provider_session_id)
-    session_id = archive_session_id(origin.value, native_id)
-    # Durable non-resurrection, checked once for every write route.
-    # An identity-preserving reset keeps the raw evidence in source.db and
-    # records the operator's deletion as a suppression assertion in user.db,
-    # so a later replay/rebuild of that retained raw row would otherwise
-    # recreate the session the operator deleted. This is the shared choke
-    # point for live ingest and full replay/reindex, so the refusal lives
-    # here rather than in each replay caller. It is counted and logged --
-    # never a silent drop (see ``session_suppression``).
-    if session_write_is_suppressed(conn, session_id):
-        record_suppression_refusal(session_id, route="write_parsed_session_to_archive")
-        if write_outcome is not None:
-            write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, suppression_skipped=True))
-        return session_id
-    parser_semantic_fingerprint = parser_fingerprint_for_origin(origin)
-    lowering_semantic_fingerprint = lowering_fingerprint()
-    # This session's own rows are about to be rewritten; drop any stale memoized
-    # own-signatures so the batch cache never serves pre-write rows for it.
-    if signature_cache is not None:
-        signature_cache.pop(session_id, None)
-    # polylogue-m3p9: providers that carry no session-level created_at/updated_at
-    # (Codex, many Claude Code sessions, ...) previously left
-    # sessions.created_at_ms/updated_at_ms permanently NULL for 79% of the live
-    # archive, silently excluding those sessions from `since:` filters, recency
-    # ordering, and --by year/month histograms. Fall back to message evidence
-    # (min/max message ``occurred_at_ms``) computed over THIS write's full
-    # parsed message set, i.e. before any prefix-tail slicing below: a
-    # prefix-sharing child's derived created_at_ms should reflect the whole
-    # conversation's start, not just its divergent tail. The derived max is
-    # correct either way -- the newest message always survives slicing into
-    # the tail. Provider-supplied session timestamps always win; this is
-    # fallback only, applied identically on merge-append (where ``messages``
-    # is just the newly appended tail, so the derived max naturally advances
-    # updated_at_ms with each append and the ON CONFLICT COALESCE below keeps
-    # the already-set created_at_ms untouched).
-    # Keep the writer's effective freshness identical to ingest/replay
-    # normalization: producer fields, then authored messages, then semantic
-    # session events, then explicitly supplied acquisition evidence. Never use
-    # the ingest wall clock as a substitute for missing source evidence.
-    session_created_at_ms, session_updated_at_ms = session_evidence_timestamps(
-        session,
-        fallback_timestamp=fallback_timestamp,
-    )
-    producer_created, producer_updated = producer_timestamp_flags(session)
-    # incoming_freshness_ms now reflects the same fallback: previously a
-    # provider that omitted both session timestamps produced
-    # incoming_freshness_ms=None, which unconditionally bypassed the
-    # skip-stale-replace check below (freshness "unknown"). With derivation,
-    # these sessions get a real freshness signal from their own message
-    # evidence, so a genuinely older/stale replay of such a session is now
-    # correctly skipped instead of always winning.
-    incoming_freshness_ms = session_updated_at_ms or session_created_at_ms
-    if not fresh_build and not force_replace and not merge_append and incoming_freshness_ms is not None:
-        row = conn.execute(
-            "SELECT updated_at_ms FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        existing_updated_at_ms = int(row[0]) if row is not None and row[0] is not None else None
-        if should_skip_stale_replace(
-            incoming_freshness_ms=incoming_freshness_ms,
-            existing_updated_at_ms=existing_updated_at_ms,
-        ):
-            # The stale path returns before the normal write transaction below;
-            # own a short transaction here so direct callers cannot lose repairs.
-            with conn if manage_transaction else nullcontext():
-                _repair_stale_session_observations(conn, session_id, session)
-            add_timing("index.skip_stale_replace", t0)
+        conn.execute("PRAGMA foreign_keys = ON")
+        origin = origin_from_provider(session.source_name)
+        native_id = _stored_session_native_id(session.provider_session_id)
+        session_id = archive_session_id(origin.value, native_id)
+        # Durable non-resurrection, checked once for every write route.
+        # An identity-preserving reset keeps the raw evidence in source.db and
+        # records the operator's deletion as a suppression assertion in user.db,
+        # so a later replay/rebuild of that retained raw row would otherwise
+        # recreate the session the operator deleted. This is the shared choke
+        # point for live ingest and full replay/reindex, so the refusal lives
+        # here rather than in each replay caller. It is counted and logged --
+        # never a silent drop (see ``session_suppression``).
+        if session_write_is_suppressed(conn, session_id):
+            record_suppression_refusal(session_id, route="write_parsed_session_to_archive")
             if write_outcome is not None:
-                write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, stale_skipped=True))
+                write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, suppression_skipped=True))
             return session_id
-    bound_hash = bound_session_content_hash(session)
-    input_content_hash = (
-        bytes.fromhex(content_hash)
-        if content_hash is not None
-        else (bytes.fromhex(bound_hash) if bound_hash is not None else _hash_bytes("session", origin.value, native_id))
-    )
-    # polylogue-3hfl7: ``input_content_hash`` is the digest STORED on
-    # ``sessions.content_hash`` -- for an append that is the merged session,
-    # not the delta in ``session``. ``pending_content_hash`` is the digest of
-    # the rows this call actually publishes, and it is the only one a
-    # ``prepared`` carrier may be admitted against. They coincide for every
-    # caller that does not pass ``pending_input_content_hash``.
-    pending_content_hash = (
-        bytes.fromhex(pending_input_content_hash) if pending_input_content_hash is not None else input_content_hash
-    )
-    if prepared_write is not None:
+        parser_semantic_fingerprint = parser_fingerprint_for_origin(origin)
+        lowering_semantic_fingerprint = lowering_fingerprint()
+        # This session's own rows are about to be rewritten; drop any stale memoized
+        # own-signatures so the batch cache never serves pre-write rows for it.
+        if signature_cache is not None:
+            signature_cache.pop(session_id, None)
+        # polylogue-m3p9: providers that carry no session-level created_at/updated_at
+        # (Codex, many Claude Code sessions, ...) previously left
+        # sessions.created_at_ms/updated_at_ms permanently NULL for 79% of the live
+        # archive, silently excluding those sessions from `since:` filters, recency
+        # ordering, and --by year/month histograms. Fall back to message evidence
+        # (min/max message ``occurred_at_ms``) computed over THIS write's full
+        # parsed message set, i.e. before any prefix-tail slicing below: a
+        # prefix-sharing child's derived created_at_ms should reflect the whole
+        # conversation's start, not just its divergent tail. The derived max is
+        # correct either way -- the newest message always survives slicing into
+        # the tail. Provider-supplied session timestamps always win; this is
+        # fallback only, applied identically on merge-append (where ``messages``
+        # is just the newly appended tail, so the derived max naturally advances
+        # updated_at_ms with each append and the ON CONFLICT COALESCE below keeps
+        # the already-set created_at_ms untouched).
+        # Keep the writer's effective freshness identical to ingest/replay
+        # normalization: producer fields, then authored messages, then semantic
+        # session events, then explicitly supplied acquisition evidence. Never use
+        # the ingest wall clock as a substitute for missing source evidence.
+        session_created_at_ms, session_updated_at_ms = session_evidence_timestamps(
+            session,
+            fallback_timestamp=fallback_timestamp,
+        )
+        producer_created, producer_updated = producer_timestamp_flags(session)
+        # incoming_freshness_ms now reflects the same fallback: previously a
+        # provider that omitted both session timestamps produced
+        # incoming_freshness_ms=None, which unconditionally bypassed the
+        # skip-stale-replace check below (freshness "unknown"). With derivation,
+        # these sessions get a real freshness signal from their own message
+        # evidence, so a genuinely older/stale replay of such a session is now
+        # correctly skipped instead of always winning.
+        incoming_freshness_ms = session_updated_at_ms or session_created_at_ms
+        if not fresh_build and not force_replace and not merge_append and incoming_freshness_ms is not None:
+            row = conn.execute(
+                "SELECT updated_at_ms FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            existing_updated_at_ms = int(row[0]) if row is not None and row[0] is not None else None
+            if should_skip_stale_replace(
+                incoming_freshness_ms=incoming_freshness_ms,
+                existing_updated_at_ms=existing_updated_at_ms,
+            ):
+                # The stale path returns before the normal write transaction below;
+                # own a short transaction here so direct callers cannot lose repairs.
+                with _index_write_scope(
+                    conn,
+                    archive_root=archive_root,
+                    mutation_scope=mutation_scope,
+                    manage_transaction=manage_transaction,
+                ) as scope:
+                    scope.note_lineage_change(session_id)
+                    _retain_stale_session_observations(conn, session_id, session)
+                add_timing("index.skip_stale_replace", t0)
+                if write_outcome is not None:
+                    write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, stale_skipped=True))
+                return session_id
+        bound_hash = bound_session_content_hash(session)
+        input_content_hash = (
+            bytes.fromhex(content_hash)
+            if content_hash is not None
+            else (
+                bytes.fromhex(bound_hash) if bound_hash is not None else _hash_bytes("session", origin.value, native_id)
+            )
+        )
+        # polylogue-3hfl7: ``input_content_hash`` is the digest STORED on
+        # ``sessions.content_hash`` -- for an append that is the merged session,
+        # not the delta in ``session``. ``pending_content_hash`` is the digest of
+        # the rows this call actually publishes, and it is the only one a
+        # ``prepared`` carrier may be admitted against. They coincide for every
+        # caller that does not pass ``pending_input_content_hash``.
+        pending_content_hash = (
+            bytes.fromhex(pending_input_content_hash) if pending_input_content_hash is not None else input_content_hash
+        )
+        if prepared_write is None:
+            raise PreparedSessionWriteRefusedError("session publication requires its canonical off-writer preparation")
         if (
             prepared_write.session_id != session_id
             or prepared_write.input_content_hash != pending_content_hash
             or prepared_write.merge_append != merge_append
             or prepared_write.rows.session_content_hash != pending_content_hash
         ):
-            raise PreparedSessionWriteRefusedError("prepared replay write is stale or has a different pending input")
+            raise PreparedSessionWriteRefusedError("prepared write is stale or has a different pending input")
+        predecessor_row = conn.execute(
+            "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+        predecessor = tuple(predecessor_row) if predecessor_row is not None else None
+        if predecessor != prepared_write.predecessor:
+            raise PreparedSessionWriteRefusedError("session predecessor changed after off-writer preparation")
         context = prepared_write.context
-    else:
-        context = _prepared_message_context(
-            conn,
-            session,
-            origin=origin,
-            session_id=session_id,
-            native_id=native_id,
-            merge_append=merge_append,
-            signature_cache=signature_cache,
-            source_conn=source_conn,
-            child_source_path=child_source_path,
-        )
-    input_session = session
-    session = context.effective_session
-    messages = context.messages
-    event_duplicate_message_native_ids = context.event_duplicate_native_ids
-    duplicate_message_native_ids = context.duplicate_native_ids
-    effective_session_kind = context.effective_session_kind
-    branch_point_message_id = context.branch_point_message_id
-    branch_point_content_address = context.branch_point_content_address
-    lineage_inheritance = context.lineage_inheritance
-    inherited_source_message_ids = context.inherited_source_message_ids
-    # The value published to ``sessions.content_hash``. A later re-ingest
-    # compares its own FULL-session digest against this row, so an append
-    # must store the merged digest even though it writes only the delta
-    # (polylogue-3hfl7) -- carrier admission uses ``pending_content_hash``.
-    session_content_hash = input_content_hash
-    # polylogue-623q: only reuse rows prepared off this thread when NONE of
-    # the conditions that would make them wrong hold -- see ``prepared``'s
-    # docstring above. ``lineage_inheritance == "prefix-sharing"`` is the
-    # single signal that ``_extract_prefix_tail`` sliced ``messages`` away
-    # from what ``prepare_session_rows`` saw (it returns ``messages``
-    # unchanged in every other case, including "spawned-fresh" and no-parent).
-    prepared_rows_to_use: PreparedRows | None = None
-    prepared_identity_carrier: PreparedRows | None = None
-    if prepared_write is not None:
+        input_session = session
+        session = context.effective_session
+        messages = context.messages
+        event_duplicate_message_native_ids = context.event_duplicate_native_ids
+        duplicate_message_native_ids = context.duplicate_native_ids
+        effective_session_kind = context.effective_session_kind
+        branch_point_message_id = context.branch_point_message_id
+        branch_point_content_address = context.branch_point_content_address
+        lineage_inheritance = context.lineage_inheritance
+        inherited_source_message_ids = context.inherited_source_message_ids
+        # The value published to ``sessions.content_hash``. A later re-ingest
+        # compares its own FULL-session digest against this row, so an append
+        # must store the merged digest even though it writes only the delta
+        # (polylogue-3hfl7) -- carrier admission uses ``pending_content_hash``.
+        session_content_hash = input_content_hash
         prepared_rows_to_use = prepared_write.rows
-        prepared_identity_carrier = prepared_write.rows
         _record_prepared_disposition("prepared_write")
-    elif (
-        prepared is not None
-        and not merge_append
-        and lineage_inheritance != "prefix-sharing"
-        and context.content_identities is None
-        and prepared.session_content_hash == pending_content_hash
-    ):
-        prepared_rows_to_use = prepared
-        prepared_identity_carrier = prepared
-        _record_prepared_disposition("prepared_rows")
-    elif prepared is not None and merge_append:
-        if prepared.session_content_hash == pending_content_hash:
-            # Append-frontier validation happens inside the write transaction.
-            # Use the carrier provisionally so a valid append avoids hashing;
-            # if the pinned frontier is stale, the branch below replaces it
-            # with a fresh identity tuple before any rows are published.
-            prepared_identity_carrier = prepared
-            # No disposition here: this carrier is provisional, and the
-            # terminal answer for an append is decided against the live
-            # frontier inside the transaction below.
-        elif prepared.session_content_hash == input_content_hash:
-            # polylogue-3hfl7: the carrier describes the MERGED session while
-            # this call publishes the delta. Covering a different row set, it
-            # would reach ``_validated_prepared_content_identities`` and refuse
-            # there on a length mismatch -- a confusing failure whose cause is
-            # two digests that were never compared. Refuse here, naming it.
-            raise PreparedSessionWriteRefusedError(
-                "prepared rows describe the merged session, not the append delta this write publishes"
-            )
-        else:
-            _record_prepared_disposition(
-                _declined_prepared_reason(
-                    prepared,
-                    merge_append=merge_append,
-                    lineage_inheritance=lineage_inheritance,
-                    session_content_hash=pending_content_hash,
+        content_identities = _validated_prepared_content_identities(prepared_rows_to_use, messages)
+        active_leaf_message_id = _active_leaf_message_id(
+            session_id,
+            messages,
+            session.active_leaf_message_provider_id,
+            duplicate_native_ids=duplicate_message_native_ids,
+            content_identities=content_identities,
+        )
+        add_timing("index.prepare", t0)
+        # When the caller owns the transaction (bulk batching) we must not commit
+        # per session; nullcontext leaves BEGIN/COMMIT to the caller.
+        invalidated_identity_children: set[str] = set()
+        prefix_guard: _InheritedPrefixGuard | None = None
+        try:
+            with ExitStack() as mutation_stack:
+                for duplicates in (context.event_duplicate_native_ids, context.duplicate_native_ids):
+                    if isinstance(duplicates, _DiskDuplicateNativeIds):
+                        mutation_stack.enter_context(duplicates.reader())
+                if isinstance(context.inherited_source_message_ids, _DiskSourceMessageIds):
+                    mutation_stack.enter_context(context.inherited_source_message_ids.reader())
+                if isinstance(context.inherited_prefix_message_ids, _PrefixMessageIds):
+                    composed = context.inherited_prefix_message_ids._composed
+                    if isinstance(composed, _DiskSignatureSequence):
+                        mutation_stack.enter_context(composed.reader())
+                mutation_stack.enter_context(shard_owner_reader_window(prepared_write.rows.owner_resolution))
+                mutation_stack.enter_context(
+                    _index_write_scope(
+                        conn,
+                        archive_root=archive_root,
+                        mutation_scope=mutation_scope,
+                        manage_transaction=manage_transaction,
+                    )
                 )
-            )
-    else:
-        # polylogue-i07pw AC1: the writer rebuilt rows this session. Name the
-        # gate that declined rather than leaving a fallback that only a
-        # profile can see. "Parallel preparation removes writer-side work"
-        # is exactly the claim these counters make falsifiable, and the
-        # 2026-09-16 design note asks for it by name.
-        _record_prepared_disposition(
-            _declined_prepared_reason(
-                prepared,
-                merge_append=merge_append,
-                lineage_inheritance=lineage_inheritance,
-                session_content_hash=pending_content_hash,
-            )
-        )
-    identity_scope = None
-    content_identities: Sequence[MessageContentIdentity]
-    if context.content_identities is not None and prepared_write is None:
-        content_identities = context.content_identities
-    elif prepared_identity_carrier is not None:
-        content_identities = _validated_prepared_content_identities(prepared_identity_carrier, messages)
-    elif isinstance(messages, SqliteMessageSink) or (
-        isinstance(messages, _MessageTail) and isinstance(messages.messages, SqliteMessageSink)
-    ):
-        identity_scope = disk_message_content_identities(
-            messages,
-            occurrence_offsets=_stored_content_occurrences(conn, session_id) if merge_append else None,
-        )
-        content_identities = identity_scope.__enter__()
-    else:
-        content_identities = message_content_identities(
-            messages,
-            occurrence_offsets=_stored_content_occurrences(conn, session_id) if merge_append else None,
-        )
-    active_leaf_message_id = _active_leaf_message_id(
-        session_id,
-        messages,
-        session.active_leaf_message_provider_id,
-        duplicate_native_ids=duplicate_message_native_ids,
-        content_identities=content_identities,
-    )
-    if prepared_required and (
-        prepared_write is None and (prepared is None or (not merge_append and prepared_rows_to_use is None))
-    ):
-        if identity_scope is not None:
-            identity_scope.__exit__(None, None, None)
-        raise PreparedSessionWriteRefusedError("prepared replay lowering is stale or unavailable")
-    add_timing("index.prepare", t0)
-    # When the caller owns the transaction (bulk batching) we must not commit
-    # per session; nullcontext leaves BEGIN/COMMIT to the caller.
-    transaction = conn if manage_transaction else nullcontext()
-    invalidated_identity_children: set[str] = set()
-    prefix_guard: _InheritedPrefixGuard | None = None
-    try:
-        with transaction:
-            if prepared_write is not None:
                 prepared_union = prepared_write.cross_acquisition_union
                 if prepared_union is not None:
+                    if prepared_union.carry_forward.scratch is not None:
+                        mutation_stack.enter_context(prepared_union.carry_forward.scratch.access(write=True))
                     current_predecessor = conn.execute(
                         "SELECT raw_id, content_hash, parser_fingerprint, lowering_fingerprint, "
                         "parent_session_id, active_leaf_message_id FROM sessions WHERE session_id = ?",
@@ -2526,202 +2694,174 @@ def write_parsed_session_to_archive(
                     )
                     if current_parent_guard != prepared_union.prefix_sharing_parent:
                         raise PreparedSessionWriteRefusedError("prepared field union branch membership changed")
-                hook_parent, parent = prepared_lineage_bindings(
-                    conn, input_session, source_conn=source_conn, child_source_path=context.child_source_path
-                )
-                if hook_parent != context.hook_parent_native_id or (
-                    not merge_append and parent != context.parent_session_id
-                ):
-                    raise PreparedSessionWriteRefusedError("prepared replay lineage evidence changed")
-                if context.lineage_prefix_digest is not None:
-                    if parent is None:
-                        raise PreparedSessionWriteRefusedError("prepared replay lineage parent disappeared")
-                    inherited_count = len(input_session.messages) - len(context.messages)
-                    source = input_session.messages
-                    signatures = (
-                        _disk_composed_db_signatures(conn, parent, source.path.parent)
-                        if isinstance(source, SqliteMessageSink)
-                        else _composed_db_signatures(conn, parent)
+                validate_prepared_session_lineage(conn, input_session, prepared_write, source_read=source_read)
+                conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
+                if bulk_build:
+                    # polylogue-v6i3: gate the messages_fts trigger
+                    # BODIES for this session's *entire* write (block inserts in the
+                    # ordinary merge/full-replace paths, not just the prefix-tail
+                    # reextract cascade -- see _bulk_fts_session_guard, which detects
+                    # this outer guard and becomes a no-op rather than double-managing
+                    # the same row). Cleared alongside the 'session-write' guard below.
+                    conn.execute(
+                        "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
+                        (FTS_BULK_SESSION_WRITE_GUARD,),
                     )
+                # polylogue-geop: capture whichever raw acquisition is CURRENTLY
+                # stored before the upsert below overwrites sessions.raw_id with
+                # this write's own value -- _union_with_existing_rows needs the
+                # PRIOR raw_id to tell "same acquisition re-parsed" (replace)
+                # from "different acquisition" (union) apart. Reading it after
+                # the upsert would always see this write's own raw_id and could
+                # never observe a difference.
+                existing_session_raw_id: str | None = None
+                # A session row can exist with a NULL ``raw_id`` (ambiguous with
+                # "no row at all" for the union-precedence check), but existence
+                # of the row itself is unambiguous from ``fetchone()``.  A damaged
+                # derived index can instead have the inverse shape: its session
+                # row was lost while its message membership remains.  Capture both
+                # facts before the upsert, so the full replacement clears only this
+                # session's retained membership rather than colliding with it.
+                session_row_existed = False
+                session_membership_existed = False
+                if not merge_append and not fresh_build:
+                    existing_raw_id_row = conn.execute(
+                        "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
+                    ).fetchone()
+                    if existing_raw_id_row is not None:
+                        session_row_existed = True
+                        existing_session_raw_id = existing_raw_id_row[0]
+                    session_membership_existed = session_row_existed or (
+                        conn.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone()
+                        is not None
+                    )
+                elif fresh_build and not merge_append:
+                    # Fresh mode is a correctness contract, not a hint.  Keep the
+                    # absence check even when the caller batches transactions so a
+                    # duplicate session can never silently replace rows.
                     if (
-                        len(signatures) < inherited_count
-                        or _lineage_prefix_digest(islice(signatures, inherited_count)) != context.lineage_prefix_digest
+                        conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+                        is not None
                     ):
-                        raise PreparedSessionWriteRefusedError("prepared replay lineage prefix changed")
-                    # The prefix boundary also depended on which attachments the
-                    # parent rows referenced; a parent write since preparation
-                    # can drop one, and inheriting past it would leave that
-                    # attachment without an owner. Re-prepare instead.
-                    if (
-                        isinstance(context.messages, _MessageTail)
-                        and _attachment_shared_prefix_limit(
-                            conn,
-                            context.messages.messages,
-                            signatures,
-                            inherited_count,
-                            context.effective_session.attachments,
-                        )
-                        < inherited_count
-                    ):
-                        raise PreparedSessionWriteRefusedError("prepared replay lineage prefix attachments changed")
-            conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
-            if bulk_build:
-                # polylogue-v6i3: gate the messages_fts trigger
-                # BODIES for this session's *entire* write (block inserts in the
-                # ordinary merge/full-replace paths, not just the prefix-tail
-                # reextract cascade -- see _bulk_fts_session_guard, which detects
-                # this outer guard and becomes a no-op rather than double-managing
-                # the same row). Cleared alongside the 'session-write' guard below.
+                        raise AssertionError(f"fresh_build requires an absent session_id: {session_id}")
+                    if (fresh_build_batch is None or not fresh_build_batch) and conn.execute(
+                        "SELECT 1 FROM sessions LIMIT 1"
+                    ).fetchone() is not None:
+                        raise AssertionError("fresh_build requires an empty archive generation")
+                    if fresh_build_batch is not None:
+                        fresh_build_batch.add(session_id)
+                # Whether any row this save replaces can already exist. Every
+                # session-owned projection cascades from ``sessions`` or
+                # ``messages``, so a session with neither (every session of a
+                # from-empty build) has nothing for a replace prelude to delete.
+                prior_session_rows = merge_append or session_membership_existed
+                t0 = time.perf_counter()
+                session_row_values = {
+                    "native_id": native_id,
+                    "origin": origin.value,
+                    "raw_id": raw_id,
+                    "parser_fingerprint": parser_semantic_fingerprint,
+                    "lowering_fingerprint": lowering_semantic_fingerprint,
+                    "branch_type": _enum_value(session.branch_type),
+                    "active_leaf_message_id": active_leaf_message_id,
+                    "title": _sqlite_text(session.title),
+                    "session_kind": admitted_session_kind(
+                        effective_session_kind,
+                        branch_type=session.branch_type,
+                    ).value,
+                    "title_source": _enum_value(session.title_source),
+                    "title_ref": _sqlite_text(session.title_ref),
+                    "display_name": _sqlite_text(session.display_name),
+                    "pending_drafts_json": _json_dumps(session.pending_drafts) if session.pending_drafts else None,
+                    "git_branch": _sqlite_text(session.git_branch),
+                    "git_repository_url": _sqlite_text(session.git_repository_url),
+                    "commit_hash": _sqlite_text(session.git_commit_hash),
+                    "instructions_text": _sqlite_text(session.instructions_text),
+                    "reported_duration_ms": session.reported_duration_ms,
+                    "reported_cost_usd": session.reported_cost_usd,
+                    "provider_project_ref": _sqlite_text(session.provider_project_ref),
+                    "content_hash": session_content_hash,
+                    "created_at_ms": session_created_at_ms,
+                    "updated_at_ms": session_updated_at_ms,
+                    # Messages are inserted later in this transaction.  The one
+                    # authoritative replacement immediately after that insert
+                    # publishes the declared counter projection; fresh rows begin
+                    # at the schema's zero value rather than carrying a second
+                    # parser-side tally.
+                    **{measure.column: 0 for measure in SESSION_SUMMARY_MEASURES},
+                }
+                if stored_header is not None:
+                    session_row_values.update(stored_header)
+                sessions_spec = archive_tiers_specs.SESSIONS_SPEC
+                note_current_session_namespace_change(conn)
+                note_current_lineage_change(conn, session_id)
                 conn.execute(
-                    "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
-                    (FTS_BULK_SESSION_WRITE_GUARD,),
-                )
-            # polylogue-geop: capture whichever raw acquisition is CURRENTLY
-            # stored before the upsert below overwrites sessions.raw_id with
-            # this write's own value -- _union_with_existing_rows needs the
-            # PRIOR raw_id to tell "same acquisition re-parsed" (replace)
-            # from "different acquisition" (union) apart. Reading it after
-            # the upsert would always see this write's own raw_id and could
-            # never observe a difference.
-            existing_session_raw_id: str | None = None
-            # A session row can exist with a NULL ``raw_id`` (ambiguous with
-            # "no row at all" for the union-precedence check), but existence
-            # of the row itself is unambiguous from ``fetchone()``.  A damaged
-            # derived index can instead have the inverse shape: its session
-            # row was lost while its message membership remains.  Capture both
-            # facts before the upsert, so the full replacement clears only this
-            # session's retained membership rather than colliding with it.
-            session_row_existed = False
-            session_membership_existed = False
-            if not merge_append and not fresh_build:
-                existing_raw_id_row = conn.execute(
-                    "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
-                ).fetchone()
-                if existing_raw_id_row is not None:
-                    session_row_existed = True
-                    existing_session_raw_id = existing_raw_id_row[0]
-                session_membership_existed = session_row_existed or (
-                    conn.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone()
-                    is not None
-                )
-            elif fresh_build and not merge_append:
-                # Fresh mode is a correctness contract, not a hint.  Keep the
-                # absence check even when the caller batches transactions so a
-                # duplicate session can never silently replace rows.
-                if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is not None:
-                    raise AssertionError(f"fresh_build requires an absent session_id: {session_id}")
-                if (fresh_build_batch is None or not fresh_build_batch) and conn.execute(
-                    "SELECT 1 FROM sessions LIMIT 1"
-                ).fetchone() is not None:
-                    raise AssertionError("fresh_build requires an empty archive generation")
-                if fresh_build_batch is not None:
-                    fresh_build_batch.add(session_id)
-            # Whether any row this save replaces can already exist. Every
-            # session-owned projection cascades from ``sessions`` or
-            # ``messages``, so a session with neither (every session of a
-            # from-empty build) has nothing for a replace prelude to delete.
-            prior_session_rows = merge_append or session_membership_existed
-            t0 = time.perf_counter()
-            session_row_values = {
-                "native_id": native_id,
-                "origin": origin.value,
-                "raw_id": raw_id,
-                "parser_fingerprint": parser_semantic_fingerprint,
-                "lowering_fingerprint": lowering_semantic_fingerprint,
-                "branch_type": _enum_value(session.branch_type),
-                "active_leaf_message_id": active_leaf_message_id,
-                "title": _sqlite_text(session.title),
-                "session_kind": admitted_session_kind(
-                    effective_session_kind,
-                    branch_type=session.branch_type,
-                ).value,
-                "title_source": _enum_value(session.title_source),
-                "title_ref": _sqlite_text(session.title_ref),
-                "display_name": _sqlite_text(session.display_name),
-                "pending_drafts_json": _json_dumps(session.pending_drafts) if session.pending_drafts else None,
-                "git_branch": _sqlite_text(session.git_branch),
-                "git_repository_url": _sqlite_text(session.git_repository_url),
-                "commit_hash": _sqlite_text(session.git_commit_hash),
-                "instructions_text": _sqlite_text(session.instructions_text),
-                "reported_duration_ms": session.reported_duration_ms,
-                "reported_cost_usd": session.reported_cost_usd,
-                "provider_project_ref": _sqlite_text(session.provider_project_ref),
-                "content_hash": session_content_hash,
-                "created_at_ms": session_created_at_ms,
-                "updated_at_ms": session_updated_at_ms,
-                # Messages are inserted later in this transaction.  The one
-                # authoritative replacement immediately after that insert
-                # publishes the declared counter projection; fresh rows begin
-                # at the schema's zero value rather than carrying a second
-                # parser-side tally.
-                **{measure.column: 0 for measure in SESSION_SUMMARY_MEASURES},
-            }
-            if stored_header is not None:
-                session_row_values.update(stored_header)
-            sessions_spec = archive_tiers_specs.SESSIONS_SPEC
-            conn.execute(
-                f"""
-                INSERT INTO sessions (
-                    {sessions_spec.insert_column_names}
-                ) VALUES ({sessions_spec.insert_placeholder_string})
-                ON CONFLICT(origin, native_id) DO UPDATE SET
-                    {sessions_spec.conflict_update_sql(" " * 20)}
-                """,
-                (
-                    *sessions_spec.extract_tuple(session_row_values),
-                    *sessions_spec.conflict_update_tuple(
-                        {
-                            "producer_created": producer_created,
-                            "producer_updated": producer_updated,
-                            "force_replace": force_replace,
-                            "producer_updated_or_merge_append": producer_updated or merge_append,
-                        }
+                    f"""
+                    INSERT INTO sessions (
+                        {sessions_spec.insert_column_names}
+                    ) VALUES ({sessions_spec.insert_placeholder_string})
+                    ON CONFLICT(origin, native_id) DO UPDATE SET
+                        {sessions_spec.conflict_update_sql(" " * 20)}
+                    """,
+                    (
+                        *sessions_spec.extract_tuple(session_row_values),
+                        *sessions_spec.conflict_update_tuple(
+                            {
+                                "producer_created": producer_created,
+                                "producer_updated": producer_updated,
+                                "force_replace": force_replace,
+                                "producer_updated_or_merge_append": producer_updated or merge_append,
+                            }
+                        ),
                     ),
-                ),
-            )
-            add_timing("index.session_upsert", t0)
-            if not event_only:
-                invalidated_identity_children = _write_session_identity_claims(
-                    conn, session_id, origin.value, session, prior_claims=prior_session_rows
                 )
-            position_offset = 0
-            stale_attachment_ids: set[str] = set()
-            projection_carry_forward: _ProjectionCarryForward | None = None
-            t0 = time.perf_counter()
-            if merge_append:
-                position_offset = _next_message_position(conn, session_id)
-                _assert_unique_message_coordinates(session_id, messages, position_offset=position_offset)
+                add_timing("index.session_upsert", t0)
                 if not event_only:
-                    # An append without messages cannot move the active leaf.
-                    conn.execute(
-                        """
-                        UPDATE messages
-                        SET is_active_leaf = 0
-                        WHERE session_id = ?
-                          AND is_active_path = 1
-                          AND is_active_leaf = 1
-                        """,
-                        (session_id,),
+                    invalidated_identity_children = _write_session_identity_claims(
+                        conn, session_id, origin.value, session, prior_claims=prior_session_rows
                     )
-                    active_leaf_message_id = _active_leaf_message_id(
-                        session_id,
-                        messages,
-                        session.active_leaf_message_provider_id,
-                        content_identities=content_identities,
-                        duplicate_native_ids=duplicate_message_native_ids,
+                position_offset = 0
+                stale_attachment_ids: set[str] = set()
+                projection_carry_forward: _ProjectionCarryForward | None = None
+                append_has_new_messages = False
+                t0 = time.perf_counter()
+                if merge_append:
+                    position_offset = _next_message_position(conn, session_id)
+                    _assert_unique_message_coordinates(session_id, messages, position_offset=position_offset)
+                    append_has_new_messages = _append_has_new_native_messages(
+                        conn, session_id, prepared_rows_to_use.message_rows
                     )
-                    conn.execute(
-                        "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
-                        (active_leaf_message_id, session_id),
+                    if not event_only and append_has_new_messages:
+                        conn.execute(
+                            """
+                            UPDATE messages
+                            SET is_active_leaf = 0
+                            WHERE session_id = ?
+                              AND is_active_path = 1
+                              AND is_active_leaf = 1
+                            """,
+                            (session_id,),
+                        )
+                        active_leaf_message_id = _active_leaf_message_id(
+                            session_id,
+                            messages,
+                            session.active_leaf_message_provider_id,
+                            content_identities=content_identities,
+                            duplicate_native_ids=duplicate_message_native_ids,
+                        )
+                        conn.execute(
+                            "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
+                            (active_leaf_message_id, session_id),
+                        )
+                    add_timing("index.merge_prepare", t0)
+                    # The append frontier has two coordinates now: the next
+                    # position, and the per-digest occurrence counts the stored
+                    # rows already consumed. Prepared rows pinned against either
+                    # stale value would generate ids that collide with, or skip
+                    # past, what is stored (polylogue-eqsri).
+                    stored_content_occurrences = (
+                        tuple(sorted(_stored_content_occurrences(conn, session_id).items())) if messages else ()
                     )
-                add_timing("index.merge_prepare", t0)
-                # The append frontier has two coordinates now: the next
-                # position, and the per-digest occurrence counts the stored
-                # rows already consumed. Prepared rows pinned against either
-                # stale value would generate ids that collide with, or skip
-                # past, what is stored (polylogue-eqsri).
-                stored_content_occurrences = tuple(sorted(_stored_content_occurrences(conn, session_id).items()))
-                if prepared_write is not None:
                     if (
                         prepared_write.rows.position_offset != position_offset
                         or prepared_write.rows.content_occurrence_offsets != stored_content_occurrences
@@ -2729,375 +2869,326 @@ def write_parsed_session_to_archive(
                         raise PreparedSessionWriteRefusedError(
                             "prepared replay append lowering no longer matches its pinned frontier"
                         )
-                    prepared_rows_to_use = prepared_write.rows
-                elif (
-                    isinstance(prepared, PreparedSessionRows)
-                    and prepared.session_content_hash == pending_content_hash
-                    and prepared.position_offset == position_offset
-                    and prepared.content_occurrence_offsets == stored_content_occurrences
-                ):
-                    prepared_rows_to_use = prepared
-                    _record_prepared_disposition("append_prepared_rows")
-                elif prepared_required:
-                    raise PreparedSessionWriteRefusedError(
-                        "prepared replay append lowering no longer matches its pinned frontier"
+                else:
+                    # The preparer sealed a cross-acquisition union from its own
+                    # read, but this writer's precedence decision (force replace,
+                    # same acquisition, or no prior membership) is authoritative.
+                    # When it says the incoming rows replace wholesale, the union
+                    # is dropped here, before the attachment bookkeeping, so the
+                    # replaced messages' attachments are refreshed like any other
+                    # replacement. Refusing instead deferred the path and the next
+                    # pass re-prepared the same union: a livelock that left an
+                    # interrupted append's tail unmaterialized (b8of0).
+                    applicable_union = (
+                        prepared_write.cross_acquisition_union
+                        if _cross_acquisition_union_applies(
+                            session_membership_existed=session_membership_existed,
+                            force_replace=force_replace,
+                            raw_id=raw_id,
+                            existing_raw_id=existing_session_raw_id,
+                        )
+                        else None
                     )
-                elif prepared_identity_carrier is not None:
-                    # The provisional carrier was pinned to a different
-                    # append frontier. Recompute only this rejected path so
-                    # the fallback rows and active leaf use the live offsets.
-                    _record_prepared_disposition(
-                        "append_frontier_stale"
-                        if isinstance(prepared, PreparedSessionRows)
-                        else "append_carrier_not_row_tuples"
+                    stale_attachment_ids = (
+                        set() if applicable_union is not None else session_attachment_ids(conn, session_id)
                     )
-                    content_identities = message_content_identities(
+                    prefix_guard = _capture_inherited_prefixes(conn, session_id) if session_membership_existed else None
+                    projection_carry_forward = _replace_full_session_messages_and_blocks(
+                        conn,
+                        session,
                         messages,
-                        occurrence_offsets=dict(stored_content_occurrences),
-                    )
-                    active_leaf_message_id = _active_leaf_message_id(
-                        session_id,
-                        messages,
-                        session.active_leaf_message_provider_id,
-                        content_identities=content_identities,
                         duplicate_native_ids=duplicate_message_native_ids,
-                    )
-                    conn.execute(
-                        "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
-                        (active_leaf_message_id, session_id),
-                    )
-            else:
-                # The preparer sealed a cross-acquisition union from its own
-                # read, but this writer's precedence decision (force replace,
-                # same acquisition, or no prior membership) is authoritative.
-                # When it says the incoming rows replace wholesale, the union
-                # is dropped here, before the attachment bookkeeping, so the
-                # replaced messages' attachments are refreshed like any other
-                # replacement. Refusing instead deferred the path and the next
-                # pass re-prepared the same union: a livelock that left an
-                # interrupted append's tail unmaterialized (b8of0).
-                applicable_union = (
-                    prepared_write.cross_acquisition_union
-                    if prepared_write is not None
-                    and _cross_acquisition_union_applies(
-                        session_membership_existed=session_membership_existed,
-                        force_replace=force_replace,
                         raw_id=raw_id,
                         existing_raw_id=existing_session_raw_id,
+                        session_membership_existed=session_membership_existed,
+                        force_replace=force_replace,
+                        stage_timings_s=stage_timings_s,
+                        stage_timing_prefix=stage_timing_prefix,
+                        bulk_build=bulk_build,
+                        defer_fts_rebuild=defer_fts_rebuild,
+                        prepared=prepared_rows_to_use,
+                        prepared_union=applicable_union,
+                        content_identities=content_identities,
                     )
-                    else None
-                )
-                stale_attachment_ids = (
-                    set() if applicable_union is not None else session_attachment_ids(conn, session_id)
-                )
-                prefix_guard = _capture_inherited_prefixes(conn, session_id) if session_membership_existed else None
-                projection_carry_forward = _replace_full_session_messages_and_blocks(
-                    conn,
-                    session,
-                    messages,
-                    duplicate_native_ids=duplicate_message_native_ids,
-                    raw_id=raw_id,
-                    existing_raw_id=existing_session_raw_id,
-                    session_membership_existed=session_membership_existed,
-                    force_replace=force_replace,
-                    stage_timings_s=stage_timings_s,
-                    stage_timing_prefix=stage_timing_prefix,
-                    bulk_build=bulk_build,
-                    defer_fts_rebuild=defer_fts_rebuild,
-                    prepared=prepared_rows_to_use,
-                    prepared_union=applicable_union,
-                    content_identities=content_identities,
-                )
-                _refresh_stable_branch_point_witnesses(conn, session_id)
-                add_timing("index.full_replace", t0)
-            if merge_append:
+                    add_timing("index.full_replace", t0)
+                if merge_append:
+                    t0 = time.perf_counter()
+                    _write_append_messages_and_blocks(
+                        conn,
+                        session_id,
+                        messages,
+                        message_rows=prepared_rows_to_use.message_rows,
+                        block_rows=prepared_rows_to_use.block_rows,
+                    )
+                    add_timing("index.messages_and_blocks", t0)
+                    t0 = time.perf_counter()
+                    _write_file_edits(
+                        conn,
+                        session_id,
+                        messages,
+                        position_offset=position_offset,
+                        duplicate_native_ids=duplicate_message_native_ids,
+                        content_identities=content_identities,
+                    )
+                    add_timing("index.file_edits", t0)
+                    t0 = time.perf_counter()
+                    _write_web_constructs(
+                        conn,
+                        session,
+                        messages,
+                        position_offset=position_offset,
+                        duplicate_native_ids=duplicate_message_native_ids,
+                        replace_session=False,
+                        content_identities=content_identities,
+                    )
+                    add_timing("index.web_constructs", t0)
                 t0 = time.perf_counter()
-                _write_messages(
+                # polylogue-geop: an attachment_id that projection carry-forward
+                # is about to restore an attachment_refs row for must NOT be
+                # swept here just because it looks unreferenced right now --
+                # its old attachment_refs row was already cascade-deleted by the
+                # full-replace's message DELETE and the replacement hasn't been
+                # (re)inserted yet (_restore_captured_projection_rows runs after
+                # this call). Passing it through refresh_attachment_ids would
+                # zero its ref_count and delete the attachments row outright,
+                # so the later restore's FK to attachments(attachment_id) fails.
+                carried_forward_attachment_ids = (
+                    {
+                        cast(str, row[0])
+                        for row in projection_carry_forward.captured.attachment_refs
+                        if row[2] in projection_carry_forward.live_message_ids
+                    }
+                    if projection_carry_forward is not None and projection_carry_forward.scratch is None
+                    else set()
+                )
+                refresh_attachment_ids: Iterable[str] = stale_attachment_ids - carried_forward_attachment_ids
+                if projection_carry_forward is not None and projection_carry_forward.scratch is not None:
+                    refresh_attachment_ids = _UnionSet(
+                        projection_carry_forward.scratch, "refresh_attachment", "attachment_id"
+                    )
+                unresolved_attachment_owners = _write_attachments(
+                    conn,
+                    session_id,
+                    messages,
+                    session.attachments,
+                    supplying_raw_id=raw_id,
+                    position_offset=position_offset,
+                    duplicate_native_ids=duplicate_message_native_ids,
+                    refresh_attachment_ids=refresh_attachment_ids,
+                    preacquired_blobs=preacquired_attachment_blobs,
+                    content_identities=content_identities,
+                    inherited_prefix_message_ids=context.inherited_prefix_message_ids,
+                    owner_resolution=prepared_write.rows.owner_resolution,
+                    replace_owner_gaps=not merge_append,
+                )
+                add_timing("index.attachments", t0)
+                t0 = time.perf_counter()
+                _write_paste_spans(
                     conn,
                     session_id,
                     messages,
                     position_offset=position_offset,
                     duplicate_native_ids=duplicate_message_native_ids,
-                    rows=(
-                        prepared_rows_to_use.message_rows
-                        if isinstance(prepared_rows_to_use, PreparedSessionRows)
-                        else None
-                    ),
                     content_identities=content_identities,
                 )
-                add_timing("index.messages", t0)
+                add_timing("index.paste_spans", t0)
+                if projection_carry_forward is not None:
+                    # polylogue-geop: all four evidence-dependent projection
+                    # tables (attachment_refs/paste_spans just above, file_edits/
+                    # web_content_constructs inside _replace_full_session_
+                    # messages_and_blocks) have now been rebuilt from the
+                    # incoming ParsedSession alone -- restore any pre-delete row
+                    # a reinjected/reconciled message or block owned that the
+                    # rebuild didn't recreate.
+                    t0 = time.perf_counter()
+                    _restore_captured_projection_rows(conn, projection_carry_forward)
+                    # The exemption above assumed every carried-forward attachment
+                    # would get its attachment_refs row back. The restore is
+                    # slot-gated, and the two identities disagree about what a slot
+                    # is: _attachment_position derives it from provider_attachment_id
+                    # alone, while _attachment_id also folds path, name, MIME type
+                    # and size. A second acquisition that keeps the provider id but
+                    # changes the metadata therefore takes the slot under a new
+                    # attachment_id, and the old row is never restored -- and was
+                    # excluded from the sweep, so it kept ref_count=1 with no refs.
+                    # Blob GC treats an attachments row bearing the hash as a live
+                    # reference, so the old bytes were pinned forever. Now that the
+                    # restore has run, the exempted ids are settled: the ones that
+                    # really were restored recount to their live refs, and the ones
+                    # the slot moved away from recount to zero and are swept.
+                    post_restore_attachment_ids: Iterable[str] = carried_forward_attachment_ids
+                    if projection_carry_forward.scratch is not None:
+                        post_restore_attachment_ids = _UnionSet(
+                            projection_carry_forward.scratch, "carried_attachment", "attachment_id"
+                        )
+                    refresh_and_sweep_attachment_rows(conn, post_restore_attachment_ids)
+                    add_timing("index.restore_projections", t0)
                 t0 = time.perf_counter()
-                _write_blocks(
+                _write_parent_links(
                     conn,
                     session_id,
                     messages,
                     position_offset=position_offset,
                     duplicate_native_ids=duplicate_message_native_ids,
-                    rows=(
-                        prepared_rows_to_use.block_rows
-                        if isinstance(prepared_rows_to_use, PreparedSessionRows)
-                        else None
-                    ),
                     content_identities=content_identities,
+                    inherited_message_ids=inherited_source_message_ids,
+                    stored_parents=merge_append,
                 )
-                add_timing("index.blocks", t0)
+                add_timing("index.parent_links", t0)
                 t0 = time.perf_counter()
-                _reconcile_tool_use_outcomes(conn, session_id)
+                if _reconcile_tool_use_outcomes(conn, session_id):
+                    _rehash_session_messages(conn, session_id)
                 add_timing("index.tool_outcomes", t0)
                 t0 = time.perf_counter()
-                _write_file_edits(
-                    conn,
-                    session_id,
-                    messages,
-                    position_offset=position_offset,
-                    duplicate_native_ids=duplicate_message_native_ids,
-                    content_identities=content_identities,
-                )
-                add_timing("index.file_edits", t0)
-                t0 = time.perf_counter()
                 if not bulk_build:
-                    refresh_action_pairs(conn, session_id)
+                    # A first save holds no pairs: it issues no prelude delete
+                    # (polylogue-ctha5).
+                    refresh_action_pairs(conn, session_id, prior_rows=prior_session_rows)
                 add_timing("index.action_pairs", t0)
                 t0 = time.perf_counter()
-                _write_web_constructs(
-                    conn,
-                    session,
-                    messages,
-                    position_offset=position_offset,
-                    duplicate_native_ids=duplicate_message_native_ids,
-                    replace_session=False,
-                    content_identities=content_identities,
-                )
-                add_timing("index.web_constructs", t0)
-            t0 = time.perf_counter()
-            # polylogue-geop: an attachment_id that projection carry-forward
-            # is about to restore an attachment_refs row for must NOT be
-            # swept here just because it looks unreferenced right now --
-            # its old attachment_refs row was already cascade-deleted by the
-            # full-replace's message DELETE and the replacement hasn't been
-            # (re)inserted yet (_restore_captured_projection_rows runs after
-            # this call). Passing it through refresh_attachment_ids would
-            # zero its ref_count and delete the attachments row outright,
-            # so the later restore's FK to attachments(attachment_id) fails.
-            carried_forward_attachment_ids = (
-                {
-                    cast(str, row[0])
-                    for row in projection_carry_forward.captured.attachment_refs
-                    if row[2] in projection_carry_forward.live_message_ids
-                }
-                if projection_carry_forward is not None and projection_carry_forward.scratch is None
-                else set()
-            )
-            refresh_attachment_ids: Iterable[str] = stale_attachment_ids - carried_forward_attachment_ids
-            if projection_carry_forward is not None and projection_carry_forward.scratch is not None:
-                refresh_attachment_ids = _UnionSet(
-                    projection_carry_forward.scratch.conn, "refresh_attachment", "attachment_id"
-                )
-            unresolved_attachment_owners = _write_attachments(
-                conn,
-                session_id,
-                messages,
-                session.attachments,
-                supplying_raw_id=raw_id,
-                position_offset=position_offset,
-                duplicate_native_ids=duplicate_message_native_ids,
-                refresh_attachment_ids=refresh_attachment_ids,
-                preacquired_blobs=preacquired_attachment_blobs,
-                content_identities=content_identities,
-                inherited_prefix_message_ids=context.inherited_prefix_message_ids,
-                replace_owner_gaps=not merge_append,
-            )
-            add_timing("index.attachments", t0)
-            t0 = time.perf_counter()
-            _write_paste_spans(
-                conn,
-                session_id,
-                messages,
-                position_offset=position_offset,
-                duplicate_native_ids=duplicate_message_native_ids,
-                content_identities=content_identities,
-            )
-            add_timing("index.paste_spans", t0)
-            if projection_carry_forward is not None:
-                # polylogue-geop: all four evidence-dependent projection
-                # tables (attachment_refs/paste_spans just above, file_edits/
-                # web_content_constructs inside _replace_full_session_
-                # messages_and_blocks) have now been rebuilt from the
-                # incoming ParsedSession alone -- restore any pre-delete row
-                # a reinjected/reconciled message or block owned that the
-                # rebuild didn't recreate.
-                t0 = time.perf_counter()
-                _restore_captured_projection_rows(conn, projection_carry_forward)
-                # The exemption above assumed every carried-forward attachment
-                # would get its attachment_refs row back. The restore is
-                # slot-gated, and the two identities disagree about what a slot
-                # is: _attachment_position derives it from provider_attachment_id
-                # alone, while _attachment_id also folds path, name, MIME type
-                # and size. A second acquisition that keeps the provider id but
-                # changes the metadata therefore takes the slot under a new
-                # attachment_id, and the old row is never restored -- and was
-                # excluded from the sweep, so it kept ref_count=1 with no refs.
-                # Blob GC treats an attachments row bearing the hash as a live
-                # reference, so the old bytes were pinned forever. Now that the
-                # restore has run, the exempted ids are settled: the ones that
-                # really were restored recount to their live refs, and the ones
-                # the slot moved away from recount to zero and are swept.
-                post_restore_attachment_ids: Iterable[str] = carried_forward_attachment_ids
-                if projection_carry_forward.scratch is not None:
-                    post_restore_attachment_ids = _UnionSet(
-                        projection_carry_forward.scratch.conn, "carried_attachment", "attachment_id"
-                    )
-                refresh_and_sweep_attachment_rows(conn, post_restore_attachment_ids)
-                add_timing("index.restore_projections", t0)
-            t0 = time.perf_counter()
-            _write_parent_links(
-                conn,
-                session_id,
-                messages,
-                position_offset=position_offset,
-                duplicate_native_ids=duplicate_message_native_ids,
-                content_identities=content_identities,
-                inherited_message_ids=inherited_source_message_ids,
-            )
-            add_timing("index.parent_links", t0)
-            t0 = time.perf_counter()
-            _write_session_link(
-                conn,
-                session_id,
-                session,
-                branch_point_message_id=branch_point_message_id,
-                branch_point_content_address=branch_point_content_address,
-                inheritance=lineage_inheritance,
-                source_conn=source_conn,
-                prior_links=prior_session_rows,
-                child_source_path=context.child_source_path,
-            )
-            add_timing("index.session_link", t0)
-            t0 = time.perf_counter()
-            event_position_offset = _next_session_event_position(conn, session_id)
-            session_event_result = _write_session_events(
-                conn,
-                session_id,
-                messages,
-                session.session_events,
-                position_offset=position_offset,
-                event_position_offset=event_position_offset,
-                duplicate_native_ids=duplicate_message_native_ids,
-                inherited_source_message_ids=inherited_source_message_ids,
-                ambiguous_source_provider_ids=event_duplicate_message_native_ids,
-                content_identities=content_identities,
-                sidecar_blob_locators=sidecar_blob_locators,
-            )
-            add_timing("index.session_events", t0)
-            if projection_carry_forward is not None:
-                t0 = time.perf_counter()
-                _restore_captured_provider_usage_rows(conn, projection_carry_forward)
-                add_timing("index.restore_provider_usage", t0)
-            if not event_only:
-                t0 = time.perf_counter()
-                _write_working_dirs(conn, session_id, session.working_directories)
-                add_timing("index.working_dirs", t0)
-                t0 = time.perf_counter()
-                _write_session_refs(conn, session_id, session)
-                add_timing("index.session_refs", t0)
-                t0 = time.perf_counter()
-                _write_repo_edges(conn, session_id, session)
-                add_timing("index.repo_edges", t0)
-            t0 = time.perf_counter()
-            _seed_session_model_usage_rows(
-                conn,
-                session_id,
-                session,
-                replace_existing_model_rows=not merge_append,
-                aggregate_message_tokens=not merge_append or _messages_have_token_counts(messages),
-            )
-            add_timing("index.model_usage_seed", t0)
-            if merge_append and session_event_result.wrote_provider_usage_events:
-                t0 = time.perf_counter()
-                _aggregate_appended_provider_usage_into_model_usage(
+                _write_session_link(
                     conn,
                     session_id,
-                    start_position=event_position_offset,
+                    session,
+                    branch_point_message_id=branch_point_message_id,
+                    branch_point_content_address=branch_point_content_address,
+                    inheritance=lineage_inheritance,
+                    source_read=source_read,
+                    prior_links=prior_session_rows,
+                    child_source_path=context.child_source_path,
                 )
-                add_timing("index.provider_usage_rollup", t0)
-            elif not merge_append:
+                add_timing("index.session_link", t0)
                 t0 = time.perf_counter()
-                _aggregate_provider_usage_into_model_usage(conn, session_id)
-                add_timing("index.provider_usage_rollup", t0)
-            t0 = time.perf_counter()
-            # The summary is one authoritative projection of stored messages.
-            # Append has no typed disjoint-insert proof, so it takes the same
-            # replacement path as full writes and lineage re-extraction.
-            refresh_session_summary(conn, session_id)
-            add_timing("index.session_counts", t0)
-            t0 = time.perf_counter()
-            graph_kwargs: dict[str, Any] = {
-                "cache": signature_cache,
-                "add_timing": add_timing,
-                "bulk_fts": bulk_fts,
-                "bulk_build": bulk_build,
-            }
-            if invalidated_identity_children:
-                graph_kwargs["invalidated_session_ids"] = invalidated_identity_children
-            if source_conn is not None:
-                graph_kwargs["source_conn"] = source_conn
-            graph_changed_ids = _resolve_session_graph(conn, session_id, native_id, origin.value, **graph_kwargs)
-            add_timing("index.graph_resolve", t0)
-            materialized_ids: set[str] = set()
-            if prefix_guard is not None:
-                t0 = time.perf_counter()
-                materialized_ids = _settle_inherited_prefixes(
-                    conn, prefix_guard, cache=signature_cache, bulk_fts=bulk_fts, bulk_build=bulk_build
+                event_position_offset = _next_session_event_position(conn, session_id)
+                session_event_result = _write_session_events(
+                    conn,
+                    session_id,
+                    messages,
+                    session.session_events,
+                    position_offset=position_offset,
+                    event_position_offset=event_position_offset,
+                    duplicate_native_ids=duplicate_message_native_ids,
+                    inherited_source_message_ids=inherited_source_message_ids,
+                    ambiguous_source_provider_ids=event_duplicate_message_native_ids,
+                    content_identities=content_identities,
+                    sidecar_blob_locators=sidecar_blob_locators,
+                    owner_resolution=prepared_write.rows.owner_resolution,
                 )
-                add_timing("index.inherited_prefix_guard", t0)
-            t0 = time.perf_counter()
-            if not bulk_build:
-                # The session-write guard suppresses the block and link
-                # triggers that would refresh these cohorts, and graph
-                # resolution and prefix settlement change other sessions' rows
-                # and edges: a late parent deletes each child's inherited
-                # prefix, a replace copies one into a child.
-                refresh_delegation_facts_for_sessions(conn, {session_id, *graph_changed_ids, *materialized_ids})
-            add_timing("index.delegation_facts", t0)
-            conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
-            if bulk_build:
-                conn.execute(
-                    "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
-                    (FTS_BULK_SESSION_WRITE_GUARD,),
+                add_timing("index.session_events", t0)
+                if projection_carry_forward is not None:
+                    t0 = time.perf_counter()
+                    _restore_captured_provider_usage_rows(conn, projection_carry_forward)
+                    add_timing("index.restore_provider_usage", t0)
+                if not event_only:
+                    t0 = time.perf_counter()
+                    _write_working_dirs(conn, session_id, session.working_directories)
+                    add_timing("index.working_dirs", t0)
+                    t0 = time.perf_counter()
+                    _write_session_refs(conn, session_id, session)
+                    add_timing("index.session_refs", t0)
+                    t0 = time.perf_counter()
+                    _write_repo_edges(conn, session_id, session)
+                    add_timing("index.repo_edges", t0)
+                t0 = time.perf_counter()
+                _seed_session_model_usage_rows(
+                    conn,
+                    session_id,
+                    session,
+                    replace_existing_model_rows=not merge_append,
+                    aggregate_message_tokens=not merge_append or _messages_have_token_counts(messages),
                 )
-            if merge_append and session.ingest_flags:
+                add_timing("index.model_usage_seed", t0)
+                if merge_append and session_event_result.wrote_provider_usage_events:
+                    t0 = time.perf_counter()
+                    if origin is Origin.CLAUDE_CODE_SESSION and _has_appended_claude_message_usage(
+                        conn,
+                        session_id,
+                        start_position=event_position_offset,
+                    ):
+                        _reconcile_session_model_usage_from_persisted_evidence(conn, session_id)
+                    else:
+                        _aggregate_appended_provider_usage_into_model_usage(
+                            conn,
+                            session_id,
+                            start_position=event_position_offset,
+                        )
+                    add_timing("index.provider_usage_rollup", t0)
+                elif not merge_append:
+                    t0 = time.perf_counter()
+                    _aggregate_provider_usage_into_model_usage(conn, session_id)
+                    add_timing("index.provider_usage_rollup", t0)
                 t0 = time.perf_counter()
-                _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
-                add_timing("index.ingest_flags", t0)
-            elif not merge_append:
+                # The summary is one authoritative projection of stored messages.
+                # Append has no typed disjoint-insert proof, so it takes the same
+                # replacement path as full writes and lineage re-extraction.
+                refresh_session_summary(conn, session_id)
+                add_timing("index.session_counts", t0)
                 t0 = time.perf_counter()
-                if prior_session_rows:
-                    _replace_ingest_flag_tags(conn, session_id, session.ingest_flags)
-                else:
+                graph_kwargs: dict[str, Any] = {
+                    "cache": signature_cache,
+                    "add_timing": add_timing,
+                    "bulk_fts": bulk_fts,
+                    "bulk_build": bulk_build,
+                }
+                if invalidated_identity_children:
+                    graph_kwargs["invalidated_session_ids"] = invalidated_identity_children
+                if source_read is not None:
+                    graph_kwargs["source_read"] = source_read
+                _project_manual_continuations(conn, session_id)
+                graph_changed_ids = _resolve_session_graph(conn, session_id, native_id, origin.value, **graph_kwargs)
+                add_timing("index.graph_resolve", t0)
+                materialized_ids: set[str] = set()
+                if prefix_guard is not None:
+                    t0 = time.perf_counter()
+                    materialized_ids = _settle_inherited_prefixes(
+                        conn, prefix_guard, cache=signature_cache, bulk_fts=bulk_fts, bulk_build=bulk_build
+                    )
+                    add_timing("index.inherited_prefix_guard", t0)
+                t0 = time.perf_counter()
+                if not bulk_build:
+                    # The session-write guard suppresses the block and link
+                    # triggers that would refresh these cohorts, and graph
+                    # resolution and prefix settlement change other sessions' rows
+                    # and edges: a late parent deletes each child's inherited
+                    # prefix, a replace copies one into a child.
+                    refresh_delegation_facts_for_sessions(conn, {session_id, *graph_changed_ids, *materialized_ids})
+                add_timing("index.delegation_facts", t0)
+                conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
+                if bulk_build:
+                    conn.execute(
+                        "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
+                        (FTS_BULK_SESSION_WRITE_GUARD,),
+                    )
+                if merge_append and session.ingest_flags:
+                    t0 = time.perf_counter()
                     _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
-                add_timing("index.ingest_flags", t0)
-    except sqlite3.IntegrityError as exc:
-        raise sqlite3.IntegrityError(
-            f"FOREIGN KEY constraint failed writing session_id={session_id!r} "
-            f"origin={origin.value!r} native_id={native_id!r}: {exc}"
-        ) from exc
-    finally:
-        if identity_scope is not None:
-            identity_scope.__exit__(None, None, None)
-    # The lineage columns of every child invalidated above are now NULL, so the
-    # child reads as a complete root while its recomposed prefix is gone. The
-    # loss is named as ordinary retryable convergence debt (ops tier) rather
-    # than left silent until someone orders a full rebuild (polylogue-e0xan).
-    _record_identity_invalidation_debt(conn, invalidated_identity_children)
-    if write_outcome is not None:
-        write_outcome.append(
-            ArchiveWriteOutcome(
-                session_id=session_id,
-                wrote=True,
-                unresolved_attachment_owners=unresolved_attachment_owners,
+                    add_timing("index.ingest_flags", t0)
+                elif not merge_append:
+                    t0 = time.perf_counter()
+                    if prior_session_rows:
+                        _replace_ingest_flag_tags(conn, session_id, session.ingest_flags)
+                    else:
+                        _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
+                    add_timing("index.ingest_flags", t0)
+        except sqlite3.IntegrityError as exc:
+            raise sqlite3.IntegrityError(
+                f"FOREIGN KEY constraint failed writing session_id={session_id!r} "
+                f"origin={origin.value!r} native_id={native_id!r}: {exc}"
+            ) from exc
+        # The lineage columns of every child invalidated above are now NULL, so the
+        # child reads as a complete root while its recomposed prefix is gone. The
+        # loss is named as ordinary retryable convergence debt (ops tier) rather
+        # than left silent until someone orders a full rebuild (polylogue-e0xan).
+        _record_identity_invalidation_debt(conn, invalidated_identity_children)
+        if write_outcome is not None:
+            write_outcome.append(
+                ArchiveWriteOutcome(
+                    session_id=session_id,
+                    wrote=(not merge_append or append_has_new_messages or _append_has_auxiliary_input(session)),
+                    unresolved_attachment_owners=unresolved_attachment_owners,
+                )
             )
-        )
-    return session_id
+        return session_id
 
 
 def _add_stage_timing(
@@ -3169,6 +3260,12 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
         (session_id,),
     )
     _purge_session_message_fts_when_delete_trigger_missing(conn, session_id)
+    # Bulk rebuilds disable foreign keys, so mirror the refs' child cascade
+    # while their session membership can still identify the dependent rows.
+    conn.execute(
+        "DELETE FROM attachment_native_ids WHERE ref_id IN (SELECT ref_id FROM attachment_refs WHERE session_id = ?)",
+        (session_id,),
+    )
     for table in (
         "blocks",
         "attachment_refs",
@@ -3239,32 +3336,6 @@ def _purge_session_message_fts_when_delete_trigger_missing(conn: sqlite3.Connect
     conn.execute(delete_session_identity_rows_sql(1), (session_id,))
 
 
-def upsert_session_profile_costs(
-    conn: sqlite3.Connection,
-    session_id: str,
-    *,
-    cost_credits: float | None = None,
-    cost_usd: float | None = None,
-    cost_is_estimated: bool = False,
-    cost_provenance: str | None = None,
-    priced_with: str | None = None,
-    priced_at_ms: int | None = None,
-) -> None:
-    """Seed canonical session-scoped money for legacy test callers.
-
-    The historical helper name is retained as a narrow compatibility shim for
-    fixtures while the profile columns are removed.  It deliberately writes
-    ``sessions.reported_cost_usd`` (the canonical provider-money evidence),
-    never ``session_profiles``.
-    """
-    conn.execute("PRAGMA foreign_keys = ON")
-    with conn:
-        conn.execute(
-            "UPDATE sessions SET reported_cost_usd = ? WHERE session_id = ?",
-            (cost_usd, session_id),
-        )
-
-
 @dataclass(frozen=True, slots=True)
 class _TranscriptSegment:
     """One contiguous run of a single session's own rows in a composed transcript.
@@ -3320,14 +3391,19 @@ def _count_session_messages(
     if upto_position is not None and upto_variant_index is not None:
         upto_clause = " AND (position, variant_index) <= (?, ?)"
         upto_params = (upto_position, upto_variant_index)
-    row = conn.execute(
-        f"SELECT COUNT(*) FROM messages WHERE session_id = ?{upto_clause}",
-        (session_id, *upto_params),
-    ).fetchone()
+    with connection_cursor(
+        conn, f"SELECT COUNT(*) FROM messages WHERE session_id = ?{upto_clause}", (session_id, *upto_params)
+    ) as cursor:
+        row = cursor.fetchone()
     return int(row[0])
 
 
-def _message_coordinates(conn: sqlite3.Connection, message_id: str) -> tuple[str, int, int] | None:
+BeforeIndexInput = Callable[[str, tuple[str, ...], str, tuple[object, ...]], None]
+
+
+def _message_coordinates(
+    conn: sqlite3.Connection, message_id: str, before_input: BeforeIndexInput | None = None
+) -> tuple[str, int, int] | None:
     """Return ``(session_id, position, variant_index)`` for one stored message.
 
     The owning session is part of the answer because a composed transcript
@@ -3335,10 +3411,17 @@ def _message_coordinates(conn: sqlite3.Connection, message_id: str) -> tuple[str
     composed-index locate have to know which segment a message belongs to
     before they can place it.
     """
-    row = conn.execute(
-        "SELECT session_id, position, variant_index FROM messages WHERE message_id = ?",
-        (message_id,),
-    ).fetchone()
+    if before_input is not None:
+        before_input(
+            "messages",
+            ("session_id", "position", "variant_index"),
+            "SELECT rowid FROM messages WHERE message_id=?",
+            (message_id,),
+        )
+    with connection_cursor(
+        conn, "SELECT session_id, position, variant_index FROM messages WHERE message_id = ?", (message_id,)
+    ) as cursor:
+        row = cursor.fetchone()
     if row is None:
         return None
     return (str(row["session_id"]), int(row["position"]), int(row["variant_index"]))
@@ -3354,8 +3437,11 @@ class _SegmentList:
     walk's visited set), so each owns at most one segment.
     """
 
-    def __init__(self, conn: sqlite3.Connection, base: Sequence[_TranscriptSegment]) -> None:
+    def __init__(
+        self, conn: sqlite3.Connection, base: Sequence[_TranscriptSegment], before_input: BeforeIndexInput | None = None
+    ) -> None:
         self._conn = conn
+        self._before_input = before_input
         self.segments = list(base)
         self._index = {segment.session_id: position for position, segment in enumerate(self.segments)}
         self.total = sum(segment.message_count for segment in self.segments)
@@ -3366,7 +3452,7 @@ class _SegmentList:
         ``False`` is the dangling branch point: the parent message was
         hard-deleted, or it is not part of the parent's composed transcript.
         """
-        located = _message_coordinates(self._conn, branch_point_message_id)
+        located = _message_coordinates(self._conn, branch_point_message_id, self._before_input)
         if located is None:
             return False
         owner_session_id, position, variant_index = located
@@ -3405,7 +3491,9 @@ class _SegmentList:
         self.total += segment.message_count
 
 
-def _composed_transcript_plan(conn: sqlite3.Connection, session_id: str) -> _ComposedTranscriptPlan:
+def _composed_transcript_plan(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> _ComposedTranscriptPlan:
     """Plan a session's composed transcript: the parent's prefix, then its own tail.
 
     4ts.6: two paths yield an INCOMPLETE transcript -- a cycle, and a dangling
@@ -3430,7 +3518,7 @@ def _composed_transcript_plan(conn: sqlite3.Connection, session_id: str) -> _Com
     cursor_session_id = session_id
     plan: _ComposedTranscriptPlan
     while True:
-        edge = _prefix_sharing_edge_sync(conn, cursor_session_id)
+        edge = _prefix_sharing_edge_sync(conn, cursor_session_id, before_input)
         if edge is None:
             own = own_segment(cursor_session_id)
             plan = _ComposedTranscriptPlan(
@@ -3460,11 +3548,11 @@ def _composed_transcript_plan(conn: sqlite3.Connection, session_id: str) -> _Com
 
     if not chain:
         return plan
-    composed = _SegmentList(conn, plan.segments)
+    composed = _SegmentList(conn, plan.segments, before_input)
     complete, reason = plan.lineage_complete, plan.lineage_truncation_reason
     for child_session_id, parent_session_id, branch_point_message_id in reversed(chain):
         cut = _branch_point_content_address_matches(
-            conn, child_session_id, parent_session_id, branch_point_message_id
+            conn, child_session_id, parent_session_id, branch_point_message_id, before_input
         ) and composed.cut_at(branch_point_message_id)
         # The parent's own incompleteness is checked first: a branch point
         # missing from a truncated parent is a symptom of that truncation, not
@@ -3942,7 +4030,8 @@ def _count_session_messages_before(
     variant_index: int,
 ) -> int:
     """Count a session's own rows that precede ``(position, variant_index)``."""
-    row = conn.execute(
+    with connection_cursor(
+        conn,
         """
         SELECT COUNT(*)
         FROM messages
@@ -3950,11 +4039,14 @@ def _count_session_messages_before(
           AND (position, variant_index) < (?, ?)
         """,
         (session_id, position, variant_index),
-    ).fetchone()
+    ) as cursor:
+        row = cursor.fetchone()
     return int(row[0])
 
 
-def locate_composed_message(conn: sqlite3.Connection, session_id: str, message_id: str) -> int | None:
+def locate_composed_message(
+    conn: sqlite3.Connection, session_id: str, message_id: str, *, before_input: BeforeIndexInput | None = None
+) -> int | None:
     """Return a message's index in a session's COMPOSED transcript, or ``None``.
 
     ``None`` means this session's composed transcript does not contain that
@@ -3974,17 +4066,19 @@ def locate_composed_message(conn: sqlite3.Connection, session_id: str, message_i
     never disagree.
     """
     if not conn.in_transaction:
-        conn.execute("BEGIN DEFERRED")
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
         try:
-            return locate_composed_message(conn, session_id, message_id)
+            return locate_composed_message(conn, session_id, message_id, before_input=before_input)
         finally:
-            conn.execute("ROLLBACK")
+            with connection_cursor(conn, "ROLLBACK"):
+                pass
     conn.row_factory = sqlite3.Row
-    located = _message_coordinates(conn, message_id)
+    located = _message_coordinates(conn, message_id, before_input)
     if located is None:
         return None
     owner_session_id, position, variant_index = located
-    plan = _composed_transcript_plan(conn, session_id)
+    plan = _composed_transcript_plan(conn, session_id, before_input)
     preceding = 0
     for segment in plan.segments:
         if segment.session_id == owner_session_id and not (
@@ -4167,6 +4261,107 @@ def _messages_insert_sql() -> str:
         """
 
 
+def _write_append_messages_and_blocks(
+    conn: sqlite3.Connection,
+    session_id: str,
+    messages: Sequence[ParsedMessage],
+    *,
+    message_rows: Iterable[tuple[object, ...]],
+    block_rows: Iterable[tuple[object, ...]],
+) -> None:
+    """Append only new normalized native IDs while keeping each message's blocks aligned.
+
+    The existence check must happen before inserting the message row. Doing
+    the two writes together avoids retaining a potentially large set of IDs
+    between message and block insertion, and still allows session metadata,
+    events, and attachments to follow their ordinary append paths.
+    """
+    message_columns = [
+        column.name
+        for column in archive_tiers_specs.MESSAGES_SPEC.writable_columns
+        if column.extract_placeholder == "?"
+    ]
+    native_index = message_columns.index("native_id")
+    message_iter = iter(message_rows)
+    block_iter = iter(block_rows)
+    pending_messages: list[tuple[object, ...]] = []
+    pending_blocks: list[tuple[object, ...]] = []
+
+    def flush_messages() -> None:
+        if pending_messages:
+            conn.executemany(_messages_insert_sql(), pending_messages)
+            pending_messages.clear()
+
+    def flush_blocks() -> None:
+        if pending_blocks:
+            conn.executemany(_blocks_insert_sql(), pending_blocks)
+            pending_blocks.clear()
+
+    for message, message_row in zip(messages, message_iter, strict=True):
+        message_blocks = _message_blocks(message)
+        aligned_blocks = islice(block_iter, len(message_blocks))
+        if _stored_native_id_exists(conn, session_id, message_row[native_index]):
+            for _ in aligned_blocks:
+                pass
+            continue
+        pending_messages.append(message_row)
+        if len(pending_messages) >= 256:
+            flush_messages()
+        for block_row in aligned_blocks:
+            pending_blocks.append(block_row)
+            if len(pending_blocks) >= 4096:
+                # The owning message row must exist before its first block,
+                # while blocks can flush independently of message batches.
+                flush_messages()
+                flush_blocks()
+    if next(block_iter, None) is not None or next(message_iter, None) is not None:
+        raise RuntimeError("prepared append rows exceeded their parsed message owners")
+    flush_messages()
+    flush_blocks()
+
+
+def _append_has_new_native_messages(
+    conn: sqlite3.Connection, session_id: str, rows: Iterable[tuple[object, ...]]
+) -> bool:
+    columns = [
+        column.name
+        for column in archive_tiers_specs.MESSAGES_SPEC.writable_columns
+        if column.extract_placeholder == "?"
+    ]
+    native_index = columns.index("native_id")
+    return any(not _stored_native_id_exists(conn, session_id, row[native_index]) for row in rows)
+
+
+def _append_has_auxiliary_input(session: ParsedSession) -> bool:
+    """Whether an append carries product data beyond its message delta."""
+    return bool(
+        session.attachments
+        or session.session_events
+        or session.provider_session_aliases
+        or session.session_kind.value != "standard"
+        or session.parent_session_provider_id
+        or session.branch_point_provider_message_id
+        or session.branch_type
+        or session.title
+        or session.title_source
+        or session.title_ref
+        or session.instructions_text
+        or session.reported_duration_ms is not None
+        or session.reported_cost_usd is not None
+        or session.models_used
+        or session.working_directories
+        or session.git_branch
+        or session.git_repository_url
+        or session.provider_project_ref
+        or session.team_name
+        or session.git_commit_hash
+        or session.ingest_flags
+        or session.display_name
+        or session.pending_drafts
+        or session.session_refs
+    )
+
+
 def _write_messages(
     conn: sqlite3.Connection,
     session_id: str,
@@ -4238,21 +4433,31 @@ def _message_content_hash(
     )
 
 
+def _row_digest_text(value: str | None) -> str:
+    """Frame optional stored text: absent is empty, every present value starts with ``=``.
+
+    The tag makes NULL, an empty string and literal tag strings disjoint.
+    SQLite's surrogate replacement is shared by parsed and stored-row routes.
+    """
+    text = _sqlite_text(value)
+    return "" if text is None else "=" + text
+
+
 def _message_fields_digest(message: ParsedMessage) -> bytes:
     """The message's own content fields, apart from its identity and its blocks."""
     return _hash_bytes(
         "message-fields",
-        _enum_value(message.role) or "",
-        _enum_value(message.message_type) or "",
-        _enum_value(message.material_origin) or "",
-        _sqlite_text(message.text) or "",
-        _sqlite_text(message.user_context_text) or "",
-        _enum_value(message.stop_reason) or "",
-        _sqlite_text(message.model_name) or "",
-        _sqlite_text(message.model_effort) or "",
-        _sqlite_text(message.sender_name) or "",
-        _sqlite_text(message.recipient) or "",
-        _sqlite_text(message.delivery_status) or "",
+        _row_digest_text(_enum_value(message.role)),
+        _row_digest_text(_enum_value(message.message_type)),
+        _row_digest_text(_enum_value(message.material_origin)),
+        _row_digest_text(message.text),
+        _row_digest_text(message.user_context_text),
+        _row_digest_text(_enum_value(message.stop_reason)),
+        _row_digest_text(message.model_name),
+        _row_digest_text(message.model_effort),
+        _row_digest_text(message.sender_name),
+        _row_digest_text(message.recipient),
+        _row_digest_text(message.delivery_status),
         "" if message.end_turn is None else str(int(message.end_turn)),
         "" if message.occurred_at_ms is None else str(message.occurred_at_ms),
     )
@@ -4262,16 +4467,16 @@ def _parsed_block_hash_parts(message: ParsedMessage) -> Iterator[str]:
     for block in _message_blocks(message):
         yield from (
             _block_type(block).value,
-            _sqlite_text(block.text) or "",
-            _sqlite_text(block.tool_name) or "",
-            _sqlite_text(block.tool_id) or "",
-            _json_dumps(block.tool_input) if block.tool_input is not None else "",
-            _sqlite_text(_semantic_type(block)) or "",
-            _sqlite_text(block.media_type) or "",
-            _sqlite_text(_block_language(block)) or "",
+            _row_digest_text(block.text),
+            _row_digest_text(block.tool_name),
+            _row_digest_text(block.tool_id),
+            _row_digest_text(_json_dumps(block.tool_input) if block.tool_input is not None else None),
+            _row_digest_text(_semantic_type(block)),
+            _row_digest_text(block.media_type),
+            _row_digest_text(_block_language(block)),
             "" if block.is_error is None else str(int(block.is_error)),
             "" if block.exit_code is None else str(block.exit_code),
-            _enum_value(block.tool_outcome) or "",
+            _row_digest_text(_enum_value(block.tool_outcome)),
         )
 
 
@@ -4282,16 +4487,16 @@ def _stored_block_hash_parts(block_rows: Iterable[Sequence[object]], b_idx: Mapp
         exit_code = row[b_idx["tool_result_exit_code"]]
         yield from (
             cast(str, row[b_idx["block_type"]]),
-            cast("str | None", row[b_idx["text"]]) or "",
-            cast("str | None", row[b_idx["tool_name"]]) or "",
-            cast("str | None", row[b_idx["tool_id"]]) or "",
-            cast("str | None", row[b_idx["tool_input"]]) or "",
-            cast("str | None", row[b_idx["semantic_type"]]) or "",
-            cast("str | None", row[b_idx["media_type"]]) or "",
-            cast("str | None", row[b_idx["language"]]) or "",
+            _row_digest_text(cast("str | None", row[b_idx["text"]])),
+            _row_digest_text(cast("str | None", row[b_idx["tool_name"]])),
+            _row_digest_text(cast("str | None", row[b_idx["tool_id"]])),
+            _row_digest_text(cast("str | None", row[b_idx["tool_input"]])),
+            _row_digest_text(cast("str | None", row[b_idx["semantic_type"]])),
+            _row_digest_text(cast("str | None", row[b_idx["media_type"]])),
+            _row_digest_text(cast("str | None", row[b_idx["language"]])),
             "" if is_error is None else str(int(cast(int, is_error))),
             "" if exit_code is None else str(cast(int, exit_code)),
-            cast("str | None", row[b_idx["tool_outcome"]]) or "",
+            _row_digest_text(cast("str | None", row[b_idx["tool_outcome"]])),
         )
 
 
@@ -4328,12 +4533,12 @@ def _row_fields_digest(row: Sequence[object], m_idx: Mapping[str, int]) -> bytes
     return _hash_bytes(
         "message-fields",
         *(
-            "" if row[m_idx[name]] is None else str(row[m_idx[name]])
+            _row_digest_text(None if row[m_idx[name]] is None else str(row[m_idx[name]]))
             for name in ("role", "message_type", "material_origin")
         ),
         "",
         *(
-            "" if row[m_idx[name]] is None else str(row[m_idx[name]])
+            _row_digest_text(None if row[m_idx[name]] is None else str(row[m_idx[name]]))
             for name in (
                 "user_context_text",
                 "stop_reason",
@@ -4342,61 +4547,19 @@ def _row_fields_digest(row: Sequence[object], m_idx: Mapping[str, int]) -> bytes
                 "sender_name",
                 "recipient",
                 "delivery_status",
-                "end_turn",
-                "occurred_at_ms",
             )
         ),
+        *("" if row[m_idx[name]] is None else str(row[m_idx[name]]) for name in ("end_turn", "occurred_at_ms")),
     )
 
 
 def _message_content_address(message: ParsedMessage) -> bytes:
-    """Return an identity-free witness for one message's semantic content.
+    """Return the complete current semantic witness used at branch points.
 
-    It follows content identity's rules (``_NFC_TEXT_FIELDS`` in
-    ``pipeline/ids.py``): prose text is NFC-folded, identifiers and tool
-    arguments stay exact, and an absent field frames differently from an
-    empty one.
+    This delegates to the content-hash projection so newly hashed message or
+    block fields cannot be omitted from branch verification.
     """
-    parts: list[str] = [
-        _enum_value(message.role) or "",
-        _enum_value(message.message_type) or "",
-        _enum_value(message.material_origin) or "",
-        _content_address_prose(message.text),
-        _content_address_prose(message.user_context_text),
-        _enum_value(message.stop_reason) or "",
-    ]
-    for block in _message_blocks(message):
-        parts.extend(
-            (
-                _block_type(block).value,
-                _content_address_prose(block.text),
-                _content_address_text(block.tool_name),
-                _content_address_text(block.tool_id),
-                _content_address_text(None if block.tool_input is None else _json_dumps(block.tool_input)),
-                _content_address_text(_semantic_type(block)),
-                _content_address_text(block.media_type),
-                _content_address_text(_block_language(block)),
-                "" if block.is_error is None else str(int(block.is_error)),
-                "" if block.exit_code is None else str(block.exit_code),
-                _enum_value(block.tool_outcome) or "",
-            )
-        )
-    return _hash_bytes("message-content-address", *parts)
-
-
-def _content_address_text(value: str | None) -> str:
-    """An exact optional part: absence is the empty part, a present value is tagged.
-
-    Every present value, the empty string included, gains a leading ``=``, so
-    no value can frame like an absent one.
-    """
-    text = _sqlite_text(value)
-    return "" if text is None else "=" + text
-
-
-def _content_address_prose(value: str | None) -> str:
-    """:func:`_content_address_text` of a prose field, NFC-folded."""
-    return _content_address_text(None if value is None else unicodedata.normalize("NFC", value))
+    return message_semantic_content_address(message)
 
 
 def _block_content_hash(
@@ -4427,17 +4590,17 @@ def _block_content_hash(
     return _hash_bytes(
         "block",
         block_type,
-        _sqlite_text(text) or "",
-        _sqlite_text(tool_name) or "",
-        tool_input_json or "",
-        _sqlite_text(semantic_type) or "",
-        _sqlite_text(media_type) or "",
-        _sqlite_text(language) or "",
+        _row_digest_text(text),
+        _row_digest_text(tool_name),
+        _row_digest_text(tool_input_json),
+        _row_digest_text(semantic_type),
+        _row_digest_text(media_type),
+        _row_digest_text(language),
         "" if is_error is None else str(int(is_error)),
         "" if exit_code is None else str(exit_code),
-        _enum_value(tool_outcome) or "",
-        outcome_unknown_reason or "",
-        semantic_extra_json or "",
+        _row_digest_text(_enum_value(tool_outcome)),
+        _row_digest_text(outcome_unknown_reason),
+        _row_digest_text(semantic_extra_json),
     )
 
 
@@ -4600,61 +4763,45 @@ def _write_blocks(
     conn.executemany(_blocks_insert_sql(), rows)
 
 
-def _reconcile_tool_use_outcomes(conn: sqlite3.Connection, session_id: str) -> None:
-    """Re-pair every stored tool use when an append supplies its result.
+def _reconcile_tool_use_outcomes(conn: sqlite3.Connection, session_id: str) -> bool:
+    """Apply the shared association after original stored parent links settle."""
+    from polylogue.storage.sqlite.action_pairs import action_pairs_select_sql
 
-    Append batches can split a FIFO pair across writes. The incoming parser
-    derivation cannot see the earlier use, so reconcile from the complete
-    session projection while the append transaction is still open.
-    """
+    association = action_pairs_select_sql(use_bound=" AND u.session_id=?", result_bound=" AND r.session_id=?")
     rows = conn.execute(
-        """
-        SELECT b.block_id, b.block_type, b.tool_id, b.tool_outcome,
-               b.text, b.tool_name, b.tool_input, b.semantic_type,
-               b.media_type, b.language, b.tool_result_is_error,
-               b.tool_result_exit_code, b.tool_result_outcome_unknown_reason,
-               b.signature, b.semantic_extra_json, m.position, m.variant_index, b.position
-        FROM blocks AS b
-        JOIN messages AS m ON m.message_id = b.message_id
-        WHERE b.session_id = ? AND b.tool_id IS NOT NULL AND b.tool_id != ''
-          AND b.block_type IN ('tool_use', 'tool_result')
-        ORDER BY m.position, m.variant_index, b.position
-        """,
-        (session_id,),
+        f"""WITH associated AS ({association})
+        SELECT b.*,a.tool_outcome AS associated_outcome FROM associated a
+        JOIN blocks b ON b.block_id=a.tool_use_block_id""",
+        (session_id, session_id, session_id),
     ).fetchall()
-    uses: dict[str, list[sqlite3.Row]] = defaultdict(list)
-    results: dict[str, list[sqlite3.Row]] = defaultdict(list)
-    for row in rows:
-        if row["block_type"] == BlockType.TOOL_USE.value:
-            uses[row["tool_id"]].append(row)
-        else:
-            results[row["tool_id"]].append(row)
-
-    for tool_uses in uses.values():
-        tool_id = tool_uses[0]["tool_id"]
-        tool_results = results.get(tool_id, ())
-        for rank, use in enumerate(tool_uses):
-            outcome = tool_results[rank]["tool_outcome"] if rank < len(tool_results) else ToolOutcome.NO_RESULT.value
-            if outcome == use["tool_outcome"]:
-                continue
-            content_hash = _block_content_hash(
-                block_type=use["block_type"],
-                text=use["text"],
-                tool_name=use["tool_name"],
-                tool_input_json=use["tool_input"],
-                semantic_type=use["semantic_type"],
-                media_type=use["media_type"],
-                language=use["language"],
-                is_error=use["tool_result_is_error"],
-                exit_code=use["tool_result_exit_code"],
-                tool_outcome=outcome,
-                outcome_unknown_reason=use["tool_result_outcome_unknown_reason"],
-                semantic_extra_json=_hashed_semantic_extra_json(use["semantic_extra_json"]),
-            )
-            conn.execute(
-                "UPDATE blocks SET tool_outcome = ?, content_hash = ? WHERE block_id = ?",
-                (outcome, content_hash, use["block_id"]),
-            )
+    changed = False
+    for use in rows:
+        outcome = use["associated_outcome"]
+        # Result absence does not retract independent execution-sidecar facts.
+        if outcome == ToolOutcome.NO_RESULT.value and use["tool_outcome"] is not None:
+            continue
+        if outcome == use["tool_outcome"]:
+            continue
+        content_hash = _block_content_hash(
+            block_type=use["block_type"],
+            text=use["text"],
+            tool_name=use["tool_name"],
+            tool_input_json=use["tool_input"],
+            semantic_type=use["semantic_type"],
+            media_type=use["media_type"],
+            language=use["language"],
+            is_error=use["tool_result_is_error"],
+            exit_code=use["tool_result_exit_code"],
+            tool_outcome=outcome,
+            outcome_unknown_reason=use["tool_result_outcome_unknown_reason"],
+            semantic_extra_json=_hashed_semantic_extra_json(use["semantic_extra_json"]),
+        )
+        conn.execute(
+            "UPDATE blocks SET tool_outcome = ?, content_hash = ? WHERE block_id = ?",
+            (outcome, content_hash, use["block_id"]),
+        )
+        changed = True
+    return changed
 
 
 def _build_file_edit_rows(
@@ -4694,54 +4841,70 @@ def _iter_file_edit_rows(
     content_identities: Sequence[MessageContentIdentity],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
-) -> Iterator[tuple[object, ...]]:
+) -> Generator[tuple[object, ...], None, None]:
     source = messages.messages if isinstance(messages, _MessageTail) else messages
-    disk_index = _DiskMessageEventIndex(source.path.parent) if isinstance(source, SqliteMessageSink) else None
-    tool_use_block_id_by_tool_id: dict[str, str] | _DiskMessageEventIndex = disk_index if disk_index is not None else {}
-    for fallback_position, message in enumerate(messages):
-        message_id = _message_id(
-            session_id,
-            message,
-            fallback_position,
-            content_identities=content_identities,
-            duplicate_native_ids=duplicate_native_ids,
-        )
-        for position, block in enumerate(_message_blocks(message)):
-            if _block_type(block) is BlockType.TOOL_USE and block.tool_id:
-                tool_use_block_id_by_tool_id[block.tool_id] = f"{message_id}:{position}"
-
-    for fallback_position, message in enumerate(messages):
-        message_id = _message_id(
-            session_id,
-            message,
-            fallback_position,
-            content_identities=content_identities,
-            duplicate_native_ids=duplicate_native_ids,
-        )
-        for block in _message_blocks(message):
-            file_edit = getattr(block, "file_edit", None)
-            if file_edit is None or not block.tool_id:
-                continue
-            tool_use_block_id = tool_use_block_id_by_tool_id.get(block.tool_id)
-            if tool_use_block_id is None:
-                continue
-            yield (
-                tool_use_block_id,
+    disk_index = _DiskSourceMessageIds(source.path.parent) if isinstance(source, SqliteMessageSink) else None
+    tool_use_block_id_by_tool_id: dict[str, str] | _DiskSourceMessageIds = disk_index if disk_index is not None else {}
+    try:
+        for fallback_position, message in enumerate(messages):
+            message_id = _message_id(
                 session_id,
-                message_id,
-                _sqlite_text(file_edit.file_path),
-                _json_dumps(file_edit.structured_patch) if file_edit.structured_patch is not None else None,
-                _sqlite_text(file_edit.original_file),
-                _sqlite_text(file_edit.old_string),
-                _sqlite_text(file_edit.new_string),
-                _sqlite_bool(file_edit.replace_all),
-                _sqlite_bool(file_edit.user_modified),
-                message.occurred_at_ms
-                if message.occurred_at_ms is not None
-                else to_epoch_ms(message.timestamp, numeric_unit="seconds"),
+                message,
+                fallback_position,
+                content_identities=content_identities,
+                duplicate_native_ids=duplicate_native_ids,
             )
-    if disk_index is not None:
-        disk_index.close()
+            for position, block in enumerate(_message_blocks(message)):
+                if _block_type(block) is BlockType.TOOL_USE and block.tool_id:
+                    tool_use_block_id_by_tool_id[block.tool_id] = f"{message_id}:{position}"
+        if disk_index is not None:
+            disk_index.finish()
+
+        def pending_edits() -> Iterator[tuple[str, ParsedMessage, ParsedContentBlock]]:
+            for fallback_position, message in enumerate(messages):
+                message_id = _message_id(
+                    session_id,
+                    message,
+                    fallback_position,
+                    content_identities=content_identities,
+                    duplicate_native_ids=duplicate_native_ids,
+                )
+                for block in _message_blocks(message):
+                    if block.file_edit is not None and block.tool_id:
+                        yield message_id, message, block
+
+        pending = pending_edits()
+        while batch := list(islice(pending, 512)):
+            rows: list[tuple[object, ...]] = []
+            with disk_index.reader() if disk_index is not None else nullcontext():
+                for message_id, message, block in batch:
+                    file_edit = block.file_edit
+                    assert file_edit is not None and block.tool_id is not None
+                    tool_use_block_id = tool_use_block_id_by_tool_id.get(block.tool_id)
+                    if tool_use_block_id is None:
+                        continue
+                    rows.append(
+                        (
+                            tool_use_block_id,
+                            session_id,
+                            message_id,
+                            _sqlite_text(file_edit.file_path),
+                            _json_dumps(file_edit.structured_patch) if file_edit.structured_patch is not None else None,
+                            _sqlite_text(file_edit.original_file),
+                            _sqlite_text(file_edit.old_string),
+                            _sqlite_text(file_edit.new_string),
+                            _sqlite_bool(file_edit.replace_all),
+                            _sqlite_bool(file_edit.user_modified),
+                            message.occurred_at_ms
+                            if message.occurred_at_ms is not None
+                            else to_epoch_ms(message.timestamp, numeric_unit="seconds"),
+                        )
+                    )
+            # No generator-owned SQLite handle remains live at this boundary.
+            yield from rows
+    finally:
+        if disk_index is not None:
+            disk_index.close()
 
 
 def _write_file_edits(
@@ -4760,16 +4923,19 @@ def _write_file_edits(
         duplicate_native_ids=duplicate_native_ids,
         content_identities=content_identities,
     )
-    conn.executemany(
-        """
-        INSERT OR REPLACE INTO file_edits (
-            tool_use_block_id, session_id, message_id, file_path,
-            structured_patch_json, original_file, old_string, new_string,
-            replace_all, user_modified, observed_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows,
-    )
+    try:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO file_edits (
+                tool_use_block_id, session_id, message_id, file_path,
+                structured_patch_json, original_file, old_string, new_string,
+                replace_all, user_modified, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    finally:
+        rows.close()
 
 
 def _write_session_refs(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
@@ -5107,43 +5273,57 @@ class _UnionScratch:
 
     def __init__(self, directory: Path) -> None:
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-field-union-", dir=directory)
-        # Preparation and publication may run on different threads. The
-        # carrier is handed over only after preparation completes.
-        self.conn = sqlite3.connect(Path(self._scratch.name) / "union.db", check_same_thread=False)
         self._closed = False
-        self.conn.execute("PRAGMA journal_mode = DELETE")
-        for name in ("old_message", "new_message", "old_block", "new_block", "merged_message", "merged_block"):
+        self._lock = threading.RLock()
+        self._path = Path(self._scratch.name) / "union.db"
+        self._reader_owner: NativeSQLCustodyOwner | None = None
+        self._owner: NativeSQLCustodyOwner | None = None
+        self._conn: sqlite3.Connection | None = None
+        try:
+            self._owner = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        except NativeConnectionSettlementError as failure:
+            failure.owner.scratch_directory = self._scratch
+            raise
+        assert self._owner.connection is not None
+        self._conn = self._owner.connection
+        try:
+            for name in ("old_message", "new_message", "old_block", "new_block", "merged_message", "merged_block"):
+                self.conn.execute(
+                    f"CREATE TABLE {name} (ordinal INTEGER PRIMARY KEY, key TEXT, owner TEXT, position INTEGER, row_blob BLOB NOT NULL)"
+                )
+                self.conn.execute(f"CREATE INDEX {name}_key ON {name}(key)")
+                self.conn.execute(f"CREATE INDEX {name}_owner ON {name}(owner, position)")
+            self.conn.execute("CREATE TABLE live_message (message_id TEXT PRIMARY KEY) WITHOUT ROWID")
+            self.conn.execute("CREATE TABLE block_remap (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL) WITHOUT ROWID")
+            self.conn.execute("CREATE TABLE message_remap (old_id TEXT PRIMARY KEY, new_id TEXT) WITHOUT ROWID")
             self.conn.execute(
-                f"CREATE TABLE {name} (ordinal INTEGER PRIMARY KEY, key TEXT, owner TEXT, position INTEGER, row_blob BLOB NOT NULL)"
+                "CREATE TABLE native_message (native_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
             )
-            self.conn.execute(f"CREATE INDEX {name}_key ON {name}(key)")
-            self.conn.execute(f"CREATE INDEX {name}_owner ON {name}(owner, position)")
-        self.conn.execute("CREATE TABLE live_message (message_id TEXT PRIMARY KEY) WITHOUT ROWID")
-        self.conn.execute("CREATE TABLE block_remap (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL) WITHOUT ROWID")
-        self.conn.execute("CREATE TABLE message_remap (old_id TEXT PRIMARY KEY, new_id TEXT) WITHOUT ROWID")
-        self.conn.execute(
-            "CREATE TABLE native_message (native_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
-        )
-        self.conn.execute(
-            "CREATE TABLE old_only (anchor TEXT, old_ordinal INTEGER, native_id TEXT PRIMARY KEY) WITHOUT ROWID"
-        )
-        self.conn.execute("CREATE INDEX old_only_anchor ON old_only(anchor, old_ordinal)")
-        for name in (
-            "attachment_refs",
-            "attachment_native_ids",
-            "paste_spans",
-            "file_edits",
-            "web_content_constructs",
-            "provider_usage_events",
-        ):
-            self.conn.execute(f"CREATE TABLE captured_{name} (ordinal INTEGER PRIMARY KEY, row_blob BLOB NOT NULL)")
-        self.conn.execute("CREATE TABLE restored_attachment_ref (ref_id TEXT PRIMARY KEY) WITHOUT ROWID")
-        self.conn.execute(
-            "CREATE TABLE captured_attachment_owner (attachment_id TEXT NOT NULL, message_id TEXT NOT NULL)"
-        )
-        self.conn.execute("CREATE INDEX captured_attachment_owner_id ON captured_attachment_owner(attachment_id)")
-        self.conn.execute("CREATE TABLE refresh_attachment (attachment_id TEXT PRIMARY KEY) WITHOUT ROWID")
-        self.conn.execute("CREATE TABLE carried_attachment (attachment_id TEXT PRIMARY KEY) WITHOUT ROWID")
+            self.conn.execute(
+                "CREATE TABLE old_only (anchor TEXT, old_ordinal INTEGER, native_id TEXT PRIMARY KEY) WITHOUT ROWID"
+            )
+            self.conn.execute("CREATE INDEX old_only_anchor ON old_only(anchor, old_ordinal)")
+            for name in (
+                "attachment_refs",
+                "attachment_native_ids",
+                "paste_spans",
+                "file_edits",
+                "web_content_constructs",
+                "provider_usage_events",
+            ):
+                self.conn.execute(f"CREATE TABLE captured_{name} (ordinal INTEGER PRIMARY KEY, row_blob BLOB NOT NULL)")
+            self.conn.execute("CREATE TABLE restored_attachment_ref (ref_id TEXT PRIMARY KEY) WITHOUT ROWID")
+            self.conn.execute(
+                "CREATE TABLE captured_attachment_owner (attachment_id TEXT NOT NULL, message_id TEXT NOT NULL)"
+            )
+            self.conn.execute("CREATE INDEX captured_attachment_owner_id ON captured_attachment_owner(attachment_id)")
+            self.conn.execute("CREATE TABLE refresh_attachment (attachment_id TEXT PRIMARY KEY) WITHOUT ROWID")
+            self.conn.execute("CREATE TABLE carried_attachment (attachment_id TEXT PRIMARY KEY) WITHOUT ROWID")
+        except BaseException as primary:
+            self._owner.scratch_directory = self._scratch
+            _close_failed_native_construction(self._owner, primary)
+            self.close()
+            raise
 
     def put(
         self,
@@ -5170,27 +5350,74 @@ class _UnionScratch:
         return pickle.loads(result[0]) if result is not None else None
 
     def rows(self, table: str) -> _PickledRowSequence:
-        return _PickledRowSequence(self.conn, table)
+        return _PickledRowSequence(self, table)
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise RuntimeError("union SQL requires its creator-owned access scope")
+        owner = self._owner if self._owner is not None else self._reader_owner
+        if owner is None:
+            raise RuntimeError("union access has no native owner")
+        return owner.require_connection()
+
+    def finish(self) -> None:
+        """Close preparation SQL before transporting the artifact."""
+        self.conn.commit()
+        assert self._owner is not None
+        self._owner.close()
+        self._owner = None
+        self._conn = None
+
+    @contextmanager
+    def access(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("union artifact is closed")
+            if self._conn is not None:
+                yield self.conn
+                return
+            uri = self._path.as_uri() + ("?mode=rw" if write else "?mode=ro")
+            conn = connect_measured(uri, uri=True)
+            owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self))
+            self._reader_owner = owner
+            self._conn = conn
+            try:
+                yield owner.require_connection()
+                if write:
+                    conn.commit()
+            finally:
+                self._conn = None
+                self._reader_owner = None
+                owner.close()
 
     def close(self) -> None:
-        if not self._closed:
-            self.conn.close()
+        with self._lock:
+            if self._closed:
+                return
+            if self._owner is not None:
+                if self._owner in retained_native_sql_owners_for_lifetime(self):
+                    self._owner.close()
+                self._owner = None
+                self._conn = None
+            pending = retained_native_sql_owners_for_lifetime(self)
+            if pending:
+                raise NativeConnectionSettlementError(pending[0], RuntimeError("union artifact remains owned"))
             self._scratch.cleanup()
             self._closed = True
 
     def __del__(self) -> None:
-        if not getattr(self, "_closed", True):
-            with suppress(Exception):
-                self.close()
+        if hasattr(self, "_lock"):
+            self.close()
 
 
 class _PickledRowSequence(Sequence[tuple[object, ...]]):
-    def __init__(self, conn: sqlite3.Connection, table: str) -> None:
-        self.conn = conn
-        self.table = table
+    def __init__(self, scratch: _UnionScratch, table: str) -> None:
+        self.scratch, self.table = scratch, table
 
     def __len__(self) -> int:
-        return int(self.conn.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0])
+        with self.scratch.access() as conn:
+            return int(conn.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0])
 
     @overload
     def __getitem__(self, index: int) -> tuple[object, ...]: ...
@@ -5202,57 +5429,156 @@ class _PickledRowSequence(Sequence[tuple[object, ...]]):
         if isinstance(index, slice):
             return [self[position] for position in range(*index.indices(len(self)))]
         ordinal = index + len(self) if index < 0 else index
-        row = self.conn.execute(f"SELECT row_blob FROM {self.table} WHERE ordinal = ?", (ordinal,)).fetchone()
+        with self.scratch.access() as conn:
+            row = conn.execute(f"SELECT row_blob FROM {self.table} WHERE ordinal = ?", (ordinal,)).fetchone()
         if row is None:
             raise IndexError(index)
         return cast(tuple[object, ...], pickle.loads(row[0]))
 
     def __iter__(self) -> Iterator[tuple[object, ...]]:
-        for (row_blob,) in self.conn.execute(f"SELECT row_blob FROM {self.table} ORDER BY ordinal"):
-            yield pickle.loads(row_blob)
+        after = -1
+        while True:
+            with self.scratch.access() as conn:
+                rows = conn.execute(
+                    f"SELECT ordinal, row_blob FROM {self.table} WHERE ordinal > ? ORDER BY ordinal LIMIT 512", (after,)
+                ).fetchall()
+            if not rows:
+                return
+            after = int(rows[-1][0])
+            yield from (pickle.loads(row[1]) for row in rows)
 
 
 class _UnionMap(Mapping[str, str | None]):
-    def __init__(self, conn: sqlite3.Connection, table: str, key_col: str, value_col: str) -> None:
-        self.conn, self.table, self.key_col, self.value_col = conn, table, key_col, value_col
+    def __init__(self, scratch: _UnionScratch, table: str, key_col: str, value_col: str) -> None:
+        self.scratch, self.table, self.key_col, self.value_col = scratch, table, key_col, value_col
 
     def __getitem__(self, key: str) -> str | None:
-        row = self.conn.execute(
-            f"SELECT {self.value_col} FROM {self.table} WHERE {self.key_col} = ?", (key,)
-        ).fetchone()
+        with self.scratch.access() as conn:
+            row = conn.execute(f"SELECT {self.value_col} FROM {self.table} WHERE {self.key_col} = ?", (key,)).fetchone()
         if row is None:
             raise KeyError(key)
         return str(row[0]) if row[0] is not None else None
 
     def __iter__(self) -> Iterator[str]:
-        for (key,) in self.conn.execute(f"SELECT {self.key_col} FROM {self.table}"):
-            yield str(key)
+        after = ""
+        first = True
+        while True:
+            with self.scratch.access() as conn:
+                rows = conn.execute(
+                    f"SELECT {self.key_col} FROM {self.table} WHERE ? OR {self.key_col} > ? "
+                    f"ORDER BY {self.key_col} LIMIT 512",
+                    (first, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            first = False
+            yield from (str(row[0]) for row in rows)
 
     def __len__(self) -> int:
-        return int(self.conn.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0])
+        with self.scratch.access() as conn:
+            return int(conn.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0])
 
 
 class _UnionSet(Set[str]):
-    def __init__(self, conn: sqlite3.Connection, table: str, column: str) -> None:
-        self.conn, self.table, self.column = conn, table, column
+    def __init__(self, scratch: _UnionScratch, table: str, column: str) -> None:
+        self.scratch, self.table, self.column = scratch, table, column
 
     def __contains__(self, key: object) -> bool:
-        return (
-            isinstance(key, str)
-            and self.conn.execute(f"SELECT 1 FROM {self.table} WHERE {self.column} = ?", (key,)).fetchone() is not None
-        )
+        if not isinstance(key, str):
+            return False
+        with self.scratch.access() as conn:
+            return conn.execute(f"SELECT 1 FROM {self.table} WHERE {self.column} = ?", (key,)).fetchone() is not None
 
     def __iter__(self) -> Iterator[str]:
-        for (key,) in self.conn.execute(f"SELECT {self.column} FROM {self.table}"):
-            yield str(key)
+        yield from _UnionMap(self.scratch, self.table, self.column, self.column)
 
     def __len__(self) -> int:
-        return int(self.conn.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0])
+        with self.scratch.access() as conn:
+            return int(conn.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0])
 
 
 def _capture_session_projection_rows(
-    conn: sqlite3.Connection, session_id: str, *, scratch: _UnionScratch | None = None
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    scratch: _UnionScratch | None = None,
+    before_input: BeforeIndexInput | None = None,
 ) -> _CapturedProjections:
+    if before_input is not None:
+        fields = {
+            "attachment_refs": (
+                "attachment_id",
+                "session_id",
+                "message_id",
+                "position",
+                "upload_origin",
+                "direction",
+                "producer_ref",
+                "source_url",
+                "caption",
+                "supplying_raw_id",
+            ),
+            "paste_spans": (
+                "message_id",
+                "session_id",
+                "position",
+                "start_offset",
+                "end_offset",
+                "boundary_state",
+                "source_event_id",
+                "source_marker",
+                "content_hash",
+                "observed_at_ms",
+            ),
+            "file_edits": (
+                "tool_use_block_id",
+                "session_id",
+                "message_id",
+                "file_path",
+                "structured_patch_json",
+                "original_file",
+                "old_string",
+                "new_string",
+                "replace_all",
+                "user_modified",
+                "observed_at_ms",
+            ),
+            "web_content_constructs": (
+                "session_id",
+                "message_id",
+                "block_id",
+                "position",
+                "provider",
+                "construct_type",
+                "provider_key",
+                "title",
+                "url",
+                "text",
+                "source_id",
+                "group_id",
+                "group_title",
+                "query",
+                "asset_pointer",
+                "mime_type",
+                "status",
+                "task_id",
+                "task_type",
+                "rank",
+                "start_index",
+                "end_index",
+            ),
+            "session_provider_usage_events": _PROVIDER_USAGE_EVENT_COLUMNS,
+        }
+        for table, columns in fields.items():
+            before_input(table, tuple(columns), f"SELECT rowid FROM {table} WHERE session_id=?", (session_id,))
+        before_input(
+            "attachment_native_ids",
+            ("ref_id", "id_kind", "native_id"),
+            "SELECT ani.rowid FROM attachment_native_ids ani JOIN attachment_refs ar "
+            "ON ani.ref_id=ar.message_id || ':attachment:' || ar.position WHERE ar.session_id=?",
+            (session_id,),
+        )
     if scratch is not None:
         selections = {
             "attachment_refs": "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption, supplying_raw_id FROM attachment_refs WHERE session_id = ?",
@@ -5264,25 +5590,26 @@ def _capture_session_projection_rows(
             + " FROM session_provider_usage_events WHERE session_id = ? ORDER BY position",
         }
         for name, sql in selections.items():
-            for ordinal, row in enumerate(conn.execute(sql, (session_id,))):
+            with connection_cursor(conn, sql, (session_id,)) as _input_cursor:
+                for ordinal, row in enumerate(_input_cursor):
+                    scratch.conn.execute(
+                        f"INSERT INTO captured_{name} VALUES (?, ?)",
+                        (ordinal, pickle.dumps(tuple(row), protocol=5)),
+                    )
+                    if name == "attachment_refs":
+                        scratch.conn.execute("INSERT INTO captured_attachment_owner VALUES (?, ?)", (row[0], row[2]))
+        with connection_cursor(
+            conn,
+            "SELECT ani.ref_id, ani.id_kind, ani.native_id FROM attachment_native_ids ani "
+            "JOIN attachment_refs ar ON ani.ref_id = ar.message_id || ':attachment:' || ar.position "
+            "WHERE ar.session_id = ?",
+            (session_id,),
+        ) as _input_cursor:
+            for ordinal, row in enumerate(_input_cursor):
                 scratch.conn.execute(
-                    f"INSERT INTO captured_{name} VALUES (?, ?)",
+                    "INSERT INTO captured_attachment_native_ids VALUES (?, ?)",
                     (ordinal, pickle.dumps(tuple(row), protocol=5)),
                 )
-                if name == "attachment_refs":
-                    scratch.conn.execute("INSERT INTO captured_attachment_owner VALUES (?, ?)", (row[0], row[2]))
-        for ordinal, row in enumerate(
-            conn.execute(
-                "SELECT ani.ref_id, ani.id_kind, ani.native_id FROM attachment_native_ids ani "
-                "JOIN attachment_refs ar ON ani.ref_id = ar.message_id || ':attachment:' || ar.position "
-                "WHERE ar.session_id = ?",
-                (session_id,),
-            )
-        ):
-            scratch.conn.execute(
-                "INSERT INTO captured_attachment_native_ids VALUES (?, ?)",
-                (ordinal, pickle.dumps(tuple(row), protocol=5)),
-            )
         return _CapturedProjections(
             *(
                 scratch.rows(f"captured_{name}")
@@ -5296,44 +5623,54 @@ def _capture_session_projection_rows(
                 )
             )
         )
-    attachment_refs = conn.execute(
+    with connection_cursor(
+        conn,
         "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, "
         "caption, supplying_raw_id FROM attachment_refs WHERE session_id = ?",
         (session_id,),
-    ).fetchall()
+    ) as _input_cursor:
+        attachment_refs = _input_cursor.fetchall()
     ref_ids = [f"{row[2]}:attachment:{row[3]}" for row in attachment_refs]
     attachment_native_ids: list[sqlite3.Row] = []
     if ref_ids:
         placeholders = ",".join("?" for _ in ref_ids)
-        attachment_native_ids = conn.execute(
+        with connection_cursor(
+            conn,
             f"SELECT ref_id, id_kind, native_id FROM attachment_native_ids WHERE ref_id IN ({placeholders})",
             ref_ids,
-        ).fetchall()
-    paste_spans = conn.execute(
+        ) as _input_cursor:
+            attachment_native_ids = _input_cursor.fetchall()
+    with connection_cursor(
+        conn,
         "SELECT message_id, session_id, position, start_offset, end_offset, boundary_state, "
         "source_event_id, source_marker, content_hash, observed_at_ms FROM paste_spans WHERE session_id = ?",
         (session_id,),
-    ).fetchall()
-    file_edits = conn.execute(
+    ) as _input_cursor:
+        paste_spans = _input_cursor.fetchall()
+    with connection_cursor(
+        conn,
         "SELECT tool_use_block_id, session_id, message_id, file_path, structured_patch_json, "
         "original_file, old_string, new_string, replace_all, user_modified, observed_at_ms "
         "FROM file_edits WHERE session_id = ?",
         (session_id,),
-    ).fetchall()
-    web_content_constructs = conn.execute(
+    ) as _input_cursor:
+        file_edits = _input_cursor.fetchall()
+    with connection_cursor(
+        conn,
         "SELECT session_id, message_id, block_id, position, provider, construct_type, provider_key, "
         "title, url, text, source_id, group_id, group_title, query, asset_pointer, mime_type, status, "
         "task_id, task_type, rank, start_index, end_index FROM web_content_constructs WHERE session_id = ?",
         (session_id,),
-    ).fetchall()
-    provider_usage_events = conn.execute(
-        # One column list for capture and restore: a hand-copied second list
-        # silently drops whatever the two disagree about (polylogue-1pzmq).
+    ) as _input_cursor:
+        web_content_constructs = _input_cursor.fetchall()
+    with connection_cursor(
+        conn,
         "SELECT "
         + ", ".join(_PROVIDER_USAGE_EVENT_COLUMNS)
         + " FROM session_provider_usage_events WHERE session_id = ? ORDER BY position",
         (session_id,),
-    ).fetchall()
+    ) as _input_cursor:
+        provider_usage_events = _input_cursor.fetchall()
     return _CapturedProjections(
         attachment_refs=[tuple(r) for r in attachment_refs],
         attachment_native_ids=[tuple(r) for r in attachment_native_ids],
@@ -6104,6 +6441,7 @@ def _prepare_cross_acquisition_union(
     *,
     raw_id: str,
     directory: Path,
+    before_input: BeforeIndexInput | None = None,
 ) -> _PreparedCrossAcquisitionUnion | None:
     """Reconcile a different acquisition on a read-only index snapshot.
 
@@ -6112,11 +6450,27 @@ def _prepare_cross_acquisition_union(
     returned predecessor binding is checked again by the publisher before it
     deletes any row; a stale snapshot takes the normal prepared retry route.
     """
-    predecessor_row = conn.execute(
+    if before_input is not None:
+        before_input(
+            "sessions",
+            (
+                "raw_id",
+                "content_hash",
+                "parser_fingerprint",
+                "lowering_fingerprint",
+                "parent_session_id",
+                "active_leaf_message_id",
+            ),
+            "SELECT rowid FROM sessions WHERE session_id=?",
+            (session_id,),
+        )
+    with connection_cursor(
+        conn,
         "SELECT raw_id, content_hash, parser_fingerprint, lowering_fingerprint, "
         "parent_session_id, active_leaf_message_id FROM sessions WHERE session_id = ?",
         (session_id,),
-    ).fetchone()
+    ) as _input_cursor:
+        predecessor_row = _input_cursor.fetchone()
     if predecessor_row is None or predecessor_row[0] is None or predecessor_row[0] == raw_id:
         return None
     predecessor = tuple(predecessor_row)
@@ -6124,38 +6478,55 @@ def _prepare_cross_acquisition_union(
     b_cols = [col.name for col in archive_tiers_specs.BLOCKS_SPEC.writable_columns if col.extract_placeholder == "?"]
     mi = {name: index for index, name in enumerate(m_cols)}
     bi = {name: index for index, name in enumerate(b_cols)}
+    if before_input is not None:
+        before_input(
+            "messages",
+            tuple(m_cols),
+            "SELECT rowid FROM messages WHERE session_id=? ORDER BY position,variant_index",
+            (session_id,),
+        )
+        before_input(
+            "blocks",
+            tuple(b_cols),
+            "SELECT rowid FROM blocks WHERE session_id=? ORDER BY message_id,position",
+            (session_id,),
+        )
     scratch = _UnionScratch(directory)
     try:
-        for ordinal, row in enumerate(
-            conn.execute(
-                f"SELECT {', '.join(m_cols)} FROM messages WHERE session_id = ? ORDER BY position, variant_index",
-                (session_id,),
-            )
-        ):
-            native = row[mi["native_id"]]
-            if native is not None:
-                scratch.put(
-                    "old_message", ordinal, tuple(row), key=cast(str, native), position=cast(int, row[mi["position"]])
-                )
+        with connection_cursor(
+            conn,
+            f"SELECT {', '.join(m_cols)} FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+            (session_id,),
+        ) as _input_cursor:
+            for ordinal, row in enumerate(_input_cursor):
+                native = row[mi["native_id"]]
+                if native is not None:
+                    scratch.put(
+                        "old_message",
+                        ordinal,
+                        tuple(row),
+                        key=cast(str, native),
+                        position=cast(int, row[mi["position"]]),
+                    )
         if not len(scratch.rows("old_message")):
             scratch.close()
             return None
         for ordinal, row in enumerate(incoming.message_rows):
             native = row[mi["native_id"]]
             scratch.put("new_message", ordinal, tuple(row), key=cast("str | None", native), position=ordinal)
-        for ordinal, row in enumerate(
-            conn.execute(
-                f"SELECT {', '.join(b_cols)} FROM blocks WHERE session_id = ? ORDER BY message_id, position",
-                (session_id,),
-            )
-        ):
-            scratch.put(
-                "old_block",
-                ordinal,
-                tuple(row),
-                owner=cast(str, row[bi["message_id"]]),
-                position=cast(int, row[bi["position"]]),
-            )
+        with connection_cursor(
+            conn,
+            f"SELECT {', '.join(b_cols)} FROM blocks WHERE session_id = ? ORDER BY message_id, position",
+            (session_id,),
+        ) as _input_cursor:
+            for ordinal, row in enumerate(_input_cursor):
+                scratch.put(
+                    "old_block",
+                    ordinal,
+                    tuple(row),
+                    owner=cast(str, row[bi["message_id"]]),
+                    position=cast(int, row[bi["position"]]),
+                )
         for ordinal, row in enumerate(incoming.block_rows):
             scratch.put(
                 "new_block",
@@ -6164,14 +6535,13 @@ def _prepare_cross_acquisition_union(
                 owner=cast(str, row[bi["message_id"]]),
                 position=cast(int, row[bi["position"]]),
             )
-        parent_guard = (
-            conn.execute(
-                "SELECT 1 FROM session_links WHERE resolved_dst_session_id = ? AND inheritance = 'prefix-sharing' "
-                f"AND {topology_status_composes_sql()} LIMIT 1",
-                (session_id,),
-            ).fetchone()
-            is not None
-        )
+        with connection_cursor(
+            conn,
+            "SELECT 1 FROM session_links WHERE resolved_dst_session_id = ? AND inheritance = 'prefix-sharing' "
+            f"AND {topology_status_composes_sql()} LIMIT 1",
+            (session_id,),
+        ) as cursor:
+            parent_guard = cursor.fetchone() is not None
 
         # The old-only rows retain their old relative order, anchored after
         # the nearest preceding native id also present in the new evidence.
@@ -6399,7 +6769,7 @@ def _prepare_cross_acquisition_union(
             scratch.conn.execute(
                 "INSERT OR REPLACE INTO message_remap VALUES (?, ?)", (old_id, live[0] if live is not None else None)
             )
-        captured = _capture_session_projection_rows(conn, session_id, scratch=scratch)
+        captured = _capture_session_projection_rows(conn, session_id, scratch=scratch, before_input=before_input)
         scratch.conn.execute(
             "INSERT INTO carried_attachment SELECT DISTINCT owner.attachment_id "
             "FROM captured_attachment_owner owner "
@@ -6414,34 +6784,45 @@ def _prepare_cross_acquisition_union(
         )
         carry = _ProjectionCarryForward(
             captured,
-            cast(Mapping[str, str], _UnionMap(scratch.conn, "block_remap", "old_id", "new_id")),
-            _UnionSet(scratch.conn, "live_message", "message_id"),
-            _UnionMap(scratch.conn, "message_remap", "old_id", "new_id"),
+            cast(Mapping[str, str], _UnionMap(scratch, "block_remap", "old_id", "new_id")),
+            _UnionSet(scratch, "live_message", "message_id"),
+            _UnionMap(scratch, "message_remap", "old_id", "new_id"),
             scratch,
         )
-        builder = SessionShardBuilder(Path(scratch._scratch.name) / "merged.db")
+        with retain_native_sql_lifetimes(scratch):
+            builder = SessionShardBuilder(Path(scratch._scratch.name) / "merged.db")
         try:
             builder.add_streamed(
                 session_id=session_id,
                 session_content_hash=incoming.session_content_hash,
+                owner_resolution=incoming.owner_resolution,
                 message_rows=iter(scratch.rows("merged_message")),
                 block_rows=iter(scratch.rows("merged_block")),
             )
-            shard = open_session_shard(builder.seal().path)
-        except BaseException:
-            builder.abandon()
+            with retain_native_sql_lifetimes(scratch):
+                shard = open_session_shard(builder.seal().path)
+        except BaseException as primary:
+            try:
+                builder.abandon()
+            except BaseException as cleanup:
+                raise cleanup from primary
             raise
         entry = shard.sessions[0]
         rows = PreparedSessionRows(
             session_id,
             entry.session_content_hash,
-            _ShardRowSequence(shard.path, "messages", entry.message_lo, entry.message_hi),
-            _ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi),
+            _ShardRowSequence(shard.path, "messages", entry.message_lo, entry.message_hi, lifetime=scratch),
+            _ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi, lifetime=scratch),
             entry.content_identities,
+            entry.owner_resolution,
         )
+        scratch.finish()
         return _PreparedCrossAcquisitionUnion(predecessor, parent_guard, rows, carry)
-    except BaseException:
-        scratch.close()
+    except BaseException as primary:
+        try:
+            scratch.close()
+        except BaseException as cleanup:
+            raise cleanup from primary
         raise
 
 
@@ -6477,7 +6858,7 @@ def _replace_full_session_messages_and_blocks(
     stage_timing_prefix: str = "append",
     bulk_build: bool = False,
     defer_fts_rebuild: bool = False,
-    prepared: PreparedRows | None = None,
+    prepared: PreparedSessionRows | None = None,
     prepared_union: _PreparedCrossAcquisitionUnion | None = None,
 ) -> _ProjectionCarryForward | None:
     """Replace one session's messages/blocks wholesale.
@@ -6501,9 +6882,8 @@ def _replace_full_session_messages_and_blocks(
     lineage tail-slicing changed ``messages`` since. The message/block
     row-building loops (the CPU-bound part of this function -- per-item
     hashing, JSON encoding, enum lookups) are then skipped entirely.
-    ``PreparedSessionRows`` leaves the ``executemany`` on this (writer)
-    thread; ``PreparedSessionShardRows`` (polylogue-bp12n.6) replaces it with
-    one ``INSERT ... SELECT`` per table out of an attached shard. A different
+    ``PreparedSessionRows`` streams its sealed rows into the ``executemany``
+    on this (writer) thread. A different
     acquisition with prior rows requires ``prepared_union``: its reconciled
     rows were sealed outside the writer and its predecessor is rechecked.
     ``None`` retains the direct list-backed route.
@@ -6558,9 +6938,6 @@ def _replace_full_session_messages_and_blocks(
         raw_id=raw_id,
         existing_raw_id=existing_raw_id,
     )
-    shard_rows = prepared if isinstance(prepared, PreparedSessionShardRows) else None
-    if shard_rows is not None and needs_union:
-        raise PreparedSessionWriteRefusedError("cross-acquisition shard requires prepared field union")
     if (
         needs_union
         and prepared_union is None
@@ -6571,11 +6948,7 @@ def _replace_full_session_messages_and_blocks(
         )
     ):
         raise PreparedSessionWriteRefusedError("disk-backed cross-acquisition write requires prepared field union")
-    tuple_rows = (
-        prepared_union.rows
-        if prepared_union is not None
-        else (prepared if isinstance(prepared, PreparedSessionRows) else None)
-    )
+    tuple_rows = prepared_union.rows if prepared_union is not None else prepared
     # polylogue-geop: compute the field-path union against whatever is
     # currently stored *before* any delete below removes it. Must run ahead
     # of the FTS/base-table deletes -- both messages and blocks are read here.
@@ -6588,12 +6961,6 @@ def _replace_full_session_messages_and_blocks(
         unioned_message_rows = prepared_union.rows.message_rows
         unioned_block_rows = prepared_union.rows.block_rows
         carry_forward = prepared_union.carry_forward
-    elif shard_rows is not None:
-        # The rows are already built, in the shard; the writer copies them
-        # below without ever materializing a tuple on this thread.
-        unioned_message_rows = ()
-        unioned_block_rows = ()
-        carry_forward = None
     elif not needs_union:
         # A first write cannot have prior rows to reconcile.  The caller's
         # session PK lookup already proved this session_id is absent, and all
@@ -6639,6 +7006,15 @@ def _replace_full_session_messages_and_blocks(
     t0 = time.perf_counter()
     use_scoped_fts_rebuild = not bulk_build and message_fts_triggers_present_sync(conn)
     add_timing("fts_probe", t0)
+    if session_membership_existed:
+        note_current_lineage_change(conn, session_id)
+        note_current_deleted_message_ids(
+            conn,
+            (
+                str(row[0])
+                for row in conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,))
+            ),
+        )
     if use_scoped_fts_rebuild:
         # These deletes are keyed by session_id exactly like the base-table
         # cascade below. With neither a prior session row nor messages, they
@@ -6679,29 +7055,25 @@ def _replace_full_session_messages_and_blocks(
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             add_timing("delete_messages", t0)
         t0 = time.perf_counter()
-        if shard_rows is not None:
-            copy_shard_session_rows(conn, shard_rows.schema, shard_rows.entry)
-            add_timing("shard_copy", t0)
-        else:
-            _write_messages(
-                conn,
-                session_id,
-                messages,
-                duplicate_native_ids=duplicate_native_ids,
-                rows=unioned_message_rows,
-                content_identities=content_identities,
-            )
-            add_timing("messages", t0)
-            t0 = time.perf_counter()
-            _write_blocks(
-                conn,
-                session_id,
-                messages,
-                duplicate_native_ids=duplicate_native_ids,
-                rows=unioned_block_rows,
-                content_identities=content_identities,
-            )
-            add_timing("blocks", t0)
+        _write_messages(
+            conn,
+            session_id,
+            messages,
+            duplicate_native_ids=duplicate_native_ids,
+            rows=unioned_message_rows,
+            content_identities=content_identities,
+        )
+        add_timing("messages", t0)
+        t0 = time.perf_counter()
+        _write_blocks(
+            conn,
+            session_id,
+            messages,
+            duplicate_native_ids=duplicate_native_ids,
+            rows=unioned_block_rows,
+            content_identities=content_identities,
+        )
+        add_timing("blocks", t0)
         t0 = time.perf_counter()
         _write_file_edits(
             conn,
@@ -6711,10 +7083,6 @@ def _replace_full_session_messages_and_blocks(
             content_identities=content_identities,
         )
         add_timing("file_edits", t0)
-        t0 = time.perf_counter()
-        if not bulk_build:
-            refresh_action_pairs(conn, session_id, prior_rows=session_membership_existed)
-        add_timing("action_pairs", t0)
         t0 = time.perf_counter()
         _write_web_constructs(
             conn,
@@ -6811,7 +7179,7 @@ def _attachment_message_id_maps(
     content_identities: Sequence[MessageContentIdentity],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] | None = None,
-    owner_resolution: MessageOwnerResolution | None = None,
+    owner_resolution: MessageOwnerResolution,
     wanted_owner_keys: set[str] | None = None,
 ) -> tuple[MessageOwnerResolution, dict[str, str], dict[str, ParsedMessage]]:
     """Build the authoritative attachment-owner lookup maps.
@@ -6826,16 +7194,14 @@ def _attachment_message_id_maps(
     the production write.
     """
     duplicates = duplicate_native_ids if duplicate_native_ids is not None else _duplicate_message_native_ids(messages)
-    # Disk-backed callers enter disk_message_owner_resolution in
-    # _write_attachments and pass the live context here.
-    resolution = (
-        owner_resolution
-        if owner_resolution is not None
-        else message_owner_resolution(cast(list[ParsedMessage], messages))
-    )
+    resolution = owner_resolution
     by_owner_key: dict[str, str] = {}
     by_message_id: dict[str, ParsedMessage] = {}
-    for fallback_position, (message, owner_key) in enumerate(zip(messages, resolution.keys, strict=True)):
+    keys = iter(resolution.keys)
+    if isinstance(messages, _MessageTail):
+        for _ordinal in range(messages.start):
+            next(keys)
+    for fallback_position, (message, owner_key) in enumerate(zip(messages, keys, strict=True)):
         if owner_key in resolution.ambiguous_keys or (
             wanted_owner_keys is not None and owner_key not in wanted_owner_keys
         ):
@@ -6861,7 +7227,9 @@ def _next_message_position(conn: sqlite3.Connection, session_id: str) -> int:
     return int(row[0] or 0) if row is not None else 0
 
 
-def _stored_content_occurrences(conn: sqlite3.Connection, session_id: str) -> dict[str, int]:
+def _stored_content_occurrences(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> dict[str, int]:
     """Return per-digest content-occurrence counts already stored for a session.
 
     The append-side analogue of ``_next_message_position``: an appended
@@ -6869,7 +7237,15 @@ def _stored_content_occurrences(conn: sqlite3.Connection, session_id: str) -> di
     digest's numbering instead of restarting at zero and colliding with the
     stored row's ``message_id``.
     """
-    rows = conn.execute(
+    if before_input is not None:
+        before_input(
+            "messages",
+            ("content_identity",),
+            "SELECT rowid FROM messages WHERE session_id=? AND content_identity IS NOT NULL",
+            (session_id,),
+        )
+    with connection_cursor(
+        conn,
         """
         SELECT content_identity, COUNT(*)
         FROM messages
@@ -6877,7 +7253,8 @@ def _stored_content_occurrences(conn: sqlite3.Connection, session_id: str) -> di
         GROUP BY content_identity
         """,
         (session_id,),
-    ).fetchall()
+    ) as _input_cursor:
+        rows = _input_cursor.fetchall()
     return {str(row[0]): int(row[1]) for row in rows}
 
 
@@ -6892,8 +7269,8 @@ def _write_attachments(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     refresh_attachment_ids: Iterable[str] | None = None,
-    preacquired_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
-    owner_resolution: MessageOwnerResolution | None = None,
+    preacquired_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
+    owner_resolution: MessageOwnerResolution,
     inherited_prefix_message_ids: Sequence[str] = (),
     replace_owner_gaps: bool = True,
 ) -> tuple[tuple[str, AttachmentOwnerResolutionReason], ...]:
@@ -6917,24 +7294,6 @@ def _write_attachments(
         if replace_owner_gaps:
             _record_attachment_owner_gaps(conn, session_id, (), replace_session=True)
         return ()
-    source = messages.messages if isinstance(messages, _MessageTail) else messages
-    if isinstance(source, SqliteMessageSink) and owner_resolution is None:
-        with disk_message_owner_resolution(messages) as resolution:
-            return _write_attachments(
-                conn,
-                session_id,
-                messages,
-                attachments,
-                supplying_raw_id=supplying_raw_id,
-                content_identities=content_identities,
-                position_offset=position_offset,
-                duplicate_native_ids=duplicate_native_ids,
-                refresh_attachment_ids=refresh_attachment_ids,
-                preacquired_blobs=preacquired_blobs,
-                owner_resolution=resolution,
-                inherited_prefix_message_ids=inherited_prefix_message_ids,
-                replace_owner_gaps=replace_owner_gaps,
-            )
     wanted_owner_keys: set[str] | None = None
     if owner_resolution is not None:
         wanted_owner_keys = set()
@@ -7179,7 +7538,7 @@ def _write_attachment_row(
     conn: sqlite3.Connection,
     attachment_id: str,
     attachment: ParsedAttachment,
-    preacquired_blobs: dict[Any, tuple[bytes | None, int, str]] | None,
+    preacquired_blobs: Mapping[object, tuple[bytes | None, int, str]] | None,
 ) -> None:
     """Upsert the attachment's identity and bytes, leaving refs to the caller."""
     acquired_blob = (preacquired_blobs or {}).get(attachment.acquisition_key)
@@ -7306,6 +7665,45 @@ def _write_paste_spans(
             )
 
 
+class _StoredSessionParents(Mapping[str, str]):
+    """Native parent ids resolved to this session's stored native rows.
+
+    Only a parent id that names exactly one stored native row resolves: a
+    stored duplicate has a content-derived id and so no ``:n:`` row, and a
+    value the appended batch itself repeats stays ambiguous.
+    """
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        inherited: Mapping[str, str],
+        duplicate_native_ids: frozenset[str],
+    ) -> None:
+        self._conn = conn
+        self._session_id = session_id
+        self._inherited = inherited
+        self._duplicates = duplicate_native_ids
+
+    def __getitem__(self, key: str) -> str:
+        inherited = self._inherited.get(key)
+        if inherited is not None:
+            return inherited
+        native_id = _sqlite_text(key.strip())
+        if not native_id or native_id in self._duplicates:
+            raise KeyError(key)
+        candidate = archive_message_id(self._session_id, native_id)
+        if self._conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (candidate,)).fetchone() is None:
+            raise KeyError(key)
+        return candidate
+
+    def __iter__(self) -> Iterator[str]:
+        raise TypeError("stored session parents are resolved by key only")
+
+    def __len__(self) -> int:
+        raise TypeError("stored session parents are resolved by key only")
+
+
 def _write_parent_links(
     conn: sqlite3.Connection,
     session_id: str,
@@ -7315,6 +7713,7 @@ def _write_parent_links(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     inherited_message_ids: Mapping[str, str] | None = None,
+    stored_parents: bool = False,
 ) -> None:
     """Resolve each written message's declared parent to a stored row.
 
@@ -7322,10 +7721,21 @@ def _write_parent_links(
     parent is the last inherited message resolves through
     ``inherited_message_ids`` (provider id -> the inherited row), keeping the
     tree connected across the boundary instead of leaving it NULL.
+
+    A merge-append (``stored_parents``) writes only the new records of the
+    same session, so a new record whose declared native parent is an
+    earlier stored record resolves to that row. Without the edge, a later
+    tool reply chained under an earlier one cannot be paired with the
+    invocation both answer.
     """
     source = messages.messages if isinstance(messages, _MessageTail) else messages
     updates = _ParentLinkUpdates(conn)
-    inherited = inherited_message_ids or {}
+    batch_inherited = inherited_message_ids or {}
+    inherited: Mapping[str, str] = (
+        _StoredSessionParents(conn, session_id, batch_inherited, duplicate_native_ids)
+        if stored_parents
+        else batch_inherited
+    )
     if isinstance(source, SqliteMessageSink):
         disk_index = _DiskMessageEventIndex(source.path.parent)
         try:
@@ -7516,32 +7926,1352 @@ def _hook_extracted_fields(extracted: object, field_slices: Mapping[str, slice])
     return fields
 
 
-def _hook_spool_present(source_conn: sqlite3.Connection) -> bool:
-    """Whether this source tier carries the hook spool at all.
+class MembershipHeadSourceRead(Protocol):
+    """Selected Source evidence for the canonical membership head decision."""
 
-    An index-only harness (or a source tier predating the spool) has no such
-    table. Absent evidence is silence, never a conflict.
-    """
+    def raw_revision_authority(self, raw_id: str) -> str | None: ...
+
+    def membership_head_revision(self, raw_id: str) -> tuple[object, ...] | None: ...
+
+    def membership_has_dangling_append(
+        self,
+        logical_source_key: str,
+        existing_raw_id: str,
+        classified_raw_ids: frozenset[str],
+    ) -> bool: ...
+
+
+_MEMBERSHIP_HEAD_REVISION_SQL = (
+    "SELECT source_revision, acquisition_generation, append_end_offset, blob_size FROM raw_sessions WHERE raw_id=?"
+)
+
+
+def _membership_dangling_append_predicate(classified_raw_ids: frozenset[str]) -> str:
+    placeholders = ", ".join("?" for _ in classified_raw_ids) or "NULL"
     return (
-        source_conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_hook_events'").fetchone()
-        is not None
+        "child.logical_source_key=? AND child.raw_id!=? "
+        f"AND child.raw_id NOT IN ({placeholders}) "
+        "AND child.predecessor_source_revision IS NOT NULL "
+        "AND child.predecessor_source_revision=(SELECT source_revision FROM raw_sessions WHERE raw_id=?)"
     )
 
 
-def raw_source_path(source_conn: sqlite3.Connection | None, raw_id: str | None) -> str | None:
-    """The retained source path of one raw, or ``None`` when the source tier cannot say."""
-    if source_conn is None or not raw_id:
+class SessionSourceRead(Protocol):
+    """Scoped durable evidence used by canonical session preparation."""
+
+    @property
+    def blob_store(self) -> BlobStore: ...
+
+    def raw_export_order(self, raw_id: str) -> int | None: ...
+
+    def raw_revision_observation_order(self, raw_id: str) -> tuple[int, int]: ...
+
+    def raw_revision_lineage(self, raw_id: str) -> tuple[str | None, str | None] | None: ...
+
+    def session_enrichment_key(
+        self,
+        index: sqlite3.Connection,
+        *,
+        provider: Provider,
+        source_path: str | None,
+        native_id: str,
+    ) -> str | None: ...
+
+    def raw_path(self, raw_id: str) -> str | None: ...
+
+    def hook_spool_present(self) -> bool: ...
+
+    def raw_sessions_present(self) -> bool: ...
+
+    def codex_parent_rows(self, child_native_id: str) -> AbstractContextManager[sqlite3.Cursor]: ...
+
+    def claude_dispatch_rows(self, parent_native_id: str) -> AbstractContextManager[sqlite3.Cursor]: ...
+
+    def acquisition_rows(self, origin: str, native_id: str) -> AbstractContextManager[sqlite3.Cursor]: ...
+
+    def sidecar_page(
+        self,
+        source_path: str,
+        after: tuple[int, str] | None,
+    ) -> list[tuple[str, bytes, str, str, int]]: ...
+
+    def open_sidecar_payload(self, raw_id: str, blob_hash: bytes) -> AbstractContextManager[BinaryIO]: ...
+
+
+_SOURCE_RAW_PATH_SQL = "SELECT source_path FROM raw_sessions WHERE raw_id = ?"
+_SOURCE_RAW_REVISION_LINEAGE_SQL = "SELECT baseline_raw_id,predecessor_raw_id FROM raw_sessions WHERE raw_id=?"
+
+
+def _raw_revision_lineage_from_row(row: sqlite3.Row | None) -> tuple[str | None, str | None] | None:
+    if row is None:
         return None
-    row = source_conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
-    return str(row[0]) if row is not None and row[0] else None
+    baseline, predecessor = row
+    return (None if baseline is None else str(baseline), None if predecessor is None else str(predecessor))
+
+
+_SOURCE_CODEX_PARENT_SQL = """
+    SELECT json_extract(payload_json, '$.parent_thread_id')
+    FROM raw_hook_events
+    WHERE event_type = 'codex_thread_spawn_edge'
+      AND json_extract(payload_json, '$.child_thread_id') = ?
+    ORDER BY observed_at_ms DESC
+    LIMIT 1
+"""
+_SOURCE_ACQUISITION_SQL = "SELECT DISTINCT source_path FROM raw_sessions WHERE origin = ? AND native_id = ?"
+_SOURCE_SIDECAR_SQL = """
+    SELECT source_path, blob_hash, origin, raw_id, source_index
+    FROM raw_sessions WHERE source_path=?
+      AND (? IS NULL OR source_index>? OR (source_index=? AND raw_id>?))
+    ORDER BY source_index, raw_id LIMIT 256
+"""
+
+
+def _source_sidecar_page_parameters(
+    source_path: str,
+    after: tuple[int, str] | None,
+) -> tuple[object, ...]:
+    index, raw_id = after if after is not None else (None, None)
+    return source_path, index, index, index, raw_id
+
+
+def _source_sidecar_page(rows: Iterable[sqlite3.Row | tuple[Any, ...]]) -> list[tuple[str, bytes, str, str, int]]:
+    return [(str(row[0]), bytes(row[1]), str(row[2]), str(row[3]), int(row[4])) for row in rows]
+
+
+def _source_claude_dispatch_sql() -> str:
+    paths = [path for key in _AGENT_DISPATCH_HOOK_KEYS for path in _hook_payload_json_paths(key)]
+    path_sql = ", ".join(f"'{path}'" for path in paths)
+    events = ", ".join("?" * len(_AGENT_BEARING_HOOK_EVENTS))
+    return (
+        f"SELECT DISTINCT json_extract(payload_json, {path_sql}) FROM raw_hook_events "
+        f"WHERE origin = ? AND session_native_id = ? AND event_type IN ({events})"
+    )
+
+
+if TYPE_CHECKING:
+    from polylogue.archive.revision_replay import RevisionReplayPlan
+    from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
+    from polylogue.storage.sqlite.agent_thread_state import ThreadParentRowRead
+    from polylogue.storage.sqlite.archive_tiers.revision_application import RevisionApplicationReceipt
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        PreparedRevisionAdoption,
+        RawMembershipSelectionFamily,
+    )
+
+
+_RAW_PENDING_ENVELOPE_SQL = "SELECT logical_source_key FROM raw_sessions WHERE raw_id=?"
+
+
+def _raw_pending_envelope_from_row(row: sqlite3.Row | tuple[object, ...] | None) -> bool:
+    from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
+
+    return row is not None and str(row[0] or "").startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX)
+
+
+class ConnectionSessionSourceRead:
+    """Borrow the ordinary Source connection and close each evidence cursor."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    @property
+    def blob_store(self) -> BlobStore:
+        # Metadata-only predicates do not resolve or open a Blob capability.
+        # Actual payload access still derives it from this same connection.
+        return blob_store_for_connection(self._connection)
+
+    @contextmanager
+    def _statement(self, sql: str, parameters: tuple[object, ...] = ()) -> Generator[sqlite3.Cursor, None, None]:
+        with connection_cursor(self._connection, sql, parameters) as cursor:
+            yield cursor
+
+    def publication_source_path(self) -> Path:
+        from polylogue.storage.blob_publication import ConnectionBlobPublicationRead
+
+        return ConnectionBlobPublicationRead(self._connection).publication_source_path()
+
+    def publication_blob_is_excised(self, blob_hash: bytes) -> bool:
+        from polylogue.storage.blob_publication import ConnectionBlobPublicationRead
+
+        return ConnectionBlobPublicationRead(self._connection).publication_blob_is_excised(blob_hash)
+
+    def publication_reservation(self, publication_id: str) -> tuple[bytes, int, str] | None:
+        from polylogue.storage.blob_publication import ConnectionBlobPublicationRead
+
+        return ConnectionBlobPublicationRead(self._connection).publication_reservation(publication_id)
+
+    def retained_attachment_reference(
+        self, raw_id: str, raw_blob_hash: bytes, coordinate: str, blob_hash: bytes, size_bytes: int
+    ) -> None:
+        from polylogue.storage.blob_publication import ConnectionBlobPublicationRead
+
+        ConnectionBlobPublicationRead(self._connection).retained_attachment_reference(
+            raw_id, raw_blob_hash, coordinate, blob_hash, size_bytes
+        )
+
+    def raw_selection_values(
+        self,
+        family: RawMembershipSelectionFamily,
+        operands: Sequence[str],
+    ) -> set[str]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import _raw_selection_queries
+
+        found: set[str] = set()
+        if not operands:
+            return found
+        for table, column, predicate, parameters in _raw_selection_queries(family, tuple(operands)):
+            with self._statement(f"SELECT {column} FROM {table} WHERE {predicate}", parameters) as rows:
+                for row in rows:
+                    check_compute_cancelled()
+                    found.add(str(row[0]))
+        return found
+
+    def pending_raw_envelope_has_membership_authority(self, logical_source_key: str) -> bool:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            pending_raw_envelope_has_membership_authority,
+        )
+
+        return pending_raw_envelope_has_membership_authority(self._connection, logical_source_key)
+
+    def raw_revision_rebuild_logical_keys(self, raw_ids: Sequence[str]) -> tuple[str, ...]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import _raw_revision_rebuild_logical_keys
+
+        return _raw_revision_rebuild_logical_keys(self, raw_ids)
+
+    def replay_representative_rows(self, keys: Sequence[str]) -> AbstractContextManager[sqlite3.Cursor]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import _raw_replay_representative_query
+
+        return self._statement(*_raw_replay_representative_query(keys))
+
+    def completed_source_item_rows(self, raw_id: str) -> AbstractContextManager[sqlite3.Cursor]:
+        from polylogue.storage.sqlite.archive_tiers.source_items import _COMPLETED_SOURCE_ITEM_SQL
+
+        return self._statement(_COMPLETED_SOURCE_ITEM_SQL, (raw_id,))
+
+    def retained_artifact_page(
+        self,
+        origin: str,
+        artifact_kind: str,
+        coordinate: str,
+        *,
+        prefix: bool,
+        after: str | None,
+    ) -> list[tuple[str, str, str, int, int | None, int | None, str | None]]:
+        from polylogue.sources.retained_assembly import _retained_artifact_page_from_rows, _retained_artifact_page_sql
+
+        with self._statement(
+            _retained_artifact_page_sql(prefix),
+            (origin, coordinate, artifact_kind, after, after),
+        ) as rows:
+            return _retained_artifact_page_from_rows(rows)
+
+    def retained_group_member(
+        self,
+        generation: str,
+        item: str,
+        source_path: str,
+        origin: str,
+        artifact_kind: str,
+    ) -> tuple[str, str, int, str | None] | None:
+        from polylogue.sources.retained_assembly import _RETAINED_GROUP_MEMBER_SQL, _retained_group_member_from_row
+
+        with self._statement(
+            _RETAINED_GROUP_MEMBER_SQL,
+            (generation, item, source_path, origin, artifact_kind),
+        ) as rows:
+            return _retained_group_member_from_row(rows.fetchone())
+
+    def raw_export_order(self, raw_id: str) -> int | None:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            _RAW_EXPORT_ORDER_SQL,
+            _raw_export_order_from_row,
+        )
+
+        with self._statement(_RAW_EXPORT_ORDER_SQL, (raw_id,)) as rows:
+            return _raw_export_order_from_row(rows.fetchone())
+
+    def raw_revision_observation_order(self, raw_id: str) -> tuple[int, int]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            _RAW_ACQUISITION_TIME_SQL,
+            _RAW_OBSERVATION_RECEIPT_SQL,
+            _raw_acquisition_observation,
+        )
+
+        with self._statement(_RAW_OBSERVATION_RECEIPT_SQL, (raw_id,)) as rows:
+            row = rows.fetchone()
+        if row is not None:
+            return int(row[0]), int(row[1])
+        with self._statement(_RAW_ACQUISITION_TIME_SQL, (raw_id,)) as rows:
+            row = rows.fetchone()
+        return _raw_acquisition_observation(row, raw_id)
+
+    def raw_revision_lineage(self, raw_id: str) -> tuple[str | None, str | None] | None:
+        with self._statement(_SOURCE_RAW_REVISION_LINEAGE_SQL, (raw_id,)) as rows:
+            return _raw_revision_lineage_from_row(rows.fetchone())
+
+    def session_enrichment_key(
+        self,
+        index: sqlite3.Connection,
+        *,
+        provider: Provider,
+        source_path: str | None,
+        native_id: str,
+    ) -> str | None:
+        from polylogue.sources.revision_backfill import provider_binds_enrichment, session_enrichment_evidence_key
+
+        if not provider_binds_enrichment(provider) or not source_path or not native_id:
+            return None
+
+        return session_enrichment_evidence_key(
+            provider=provider,
+            source_path=source_path,
+            native_id=native_id,
+            index_conn=index,
+            source_conn=self._connection,
+            blob_root=self.blob_store.root,
+        )
+
+    def raw_has_pending_envelope(self, raw_id: str) -> bool:
+        with self._statement(_RAW_PENDING_ENVELOPE_SQL, (raw_id,)) as rows:
+            return _raw_pending_envelope_from_row(rows.fetchone())
+
+    def raw_revision_authority(self, raw_id: str) -> str | None:
+        with self._statement("SELECT revision_authority FROM raw_sessions WHERE raw_id=?", (raw_id,)) as rows:
+            row = rows.fetchone()
+        return None if row is None or row[0] is None else str(row[0])
+
+    def membership_head_revision(self, raw_id: str) -> tuple[object, ...] | None:
+        with self._statement(_MEMBERSHIP_HEAD_REVISION_SQL, (raw_id,)) as rows:
+            row = rows.fetchone()
+        return None if row is None else tuple(row)
+
+    def membership_has_dangling_append(
+        self,
+        logical_source_key: str,
+        existing_raw_id: str,
+        classified_raw_ids: frozenset[str],
+    ) -> bool:
+        parameters = (logical_source_key, existing_raw_id, *sorted(classified_raw_ids), existing_raw_id)
+        predicate = _membership_dangling_append_predicate(classified_raw_ids)
+        with self._statement(f"SELECT 1 FROM raw_sessions child WHERE {predicate} LIMIT 1", parameters) as rows:
+            return rows.fetchone() is not None
+
+    def raw_path(self, raw_id: str) -> str | None:
+        with self._statement(_SOURCE_RAW_PATH_SQL, (raw_id,)) as rows:
+            row = rows.fetchone()
+        return str(row[0]) if row is not None and row[0] else None
+
+    def hook_spool_present(self) -> bool:
+        with self._statement("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_hook_events'") as rows:
+            return rows.fetchone() is not None
+
+    def raw_sessions_present(self) -> bool:
+        with self._statement("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'") as rows:
+            return rows.fetchone() is not None
+
+    def codex_parent_rows(self, child_native_id: str) -> AbstractContextManager[sqlite3.Cursor]:
+        return self._statement(_SOURCE_CODEX_PARENT_SQL, (child_native_id,))
+
+    def claude_dispatch_rows(self, parent_native_id: str) -> AbstractContextManager[sqlite3.Cursor]:
+        return self._statement(
+            _source_claude_dispatch_sql(),
+            (Origin.CLAUDE_CODE_SESSION.value, parent_native_id, *_AGENT_BEARING_HOOK_EVENTS),
+        )
+
+    def acquisition_rows(self, origin: str, native_id: str) -> AbstractContextManager[sqlite3.Cursor]:
+        return self._statement(_SOURCE_ACQUISITION_SQL, (origin, native_id))
+
+    def sidecar_page(
+        self,
+        source_path: str,
+        after: tuple[int, str] | None,
+    ) -> list[tuple[str, bytes, str, str, int]]:
+        with self._statement(_SOURCE_SIDECAR_SQL, _source_sidecar_page_parameters(source_path, after)) as rows:
+            return _source_sidecar_page(rows)
+
+    def open_sidecar_payload(self, raw_id: str, blob_hash: bytes) -> AbstractContextManager[BinaryIO]:
+        return self.blob_store.open(blob_hash.hex())
+
+
+class PreparedSessionSourceRead:
+    """Read selected Source state through the original witness's pinned inputs.
+
+    The caller owns the original read window and Source producer context.
+    Exact predicates hydrate original matches; touched coordinates remain
+    suppressed, while canonical queries also include newly staged matches.
+    """
+
+    def __init__(self, seal: PreparedIndexMutation, *, blob_store: BlobStore) -> None:
+        if blob_store.root.resolve() != (seal.archive_root / "blob").resolve():
+            raise ReferenceSealError("prepared Source reads require their original archive's blob capability")
+        self._seal = seal
+        self.blob_store = blob_store
+
+    def raw_revision_lineage(self, raw_id: str) -> tuple[str | None, str | None] | None:
+        self._load_matches("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows(_SOURCE_RAW_REVISION_LINEAGE_SQL, (raw_id,)) as rows:
+            return _raw_revision_lineage_from_row(rows.fetchone())
+
+    def session_enrichment_key(
+        self,
+        index: sqlite3.Connection,
+        *,
+        provider: Provider,
+        source_path: str | None,
+        native_id: str,
+    ) -> str | None:
+        if index is not self._seal.observer("index"):
+            raise ReferenceSealError("enrichment preparation requires this Source reader's original Index observer")
+        from polylogue.sources.revision_backfill import session_enrichment_evidence_key_from_reader
+
+        return session_enrichment_evidence_key_from_reader(
+            provider=provider,
+            source_path=source_path,
+            native_id=native_id,
+            evidence_reader=self,
+        )
+
+    def hook_tool_responses(
+        self,
+        *,
+        origin: str,
+        session_native_ids: Iterable[str],
+        tool_use_ids: Iterable[str],
+    ) -> Mapping[str, object]:
+        """Read matching hook payloads inside this prepared Source fence.
+
+        Candidate rows are selected by provider-native session and tool-call
+        identity. Original rows are hydrated a page at a time into the sealed
+        Source view; decoding then streams from that view in bounded batches.
+        """
+        from polylogue.sources.live.hook_tool_response import hook_tool_responses_from_rows
+
+        natives = tuple(dict.fromkeys(value for value in session_native_ids if value))
+        tools = tuple(dict.fromkeys(value for value in tool_use_ids if value))
+        if not natives or not tools:
+            return {}
+        native_marks = ", ".join("?" for _ in natives)
+        result: dict[str, object] = {}
+        for start in range(0, len(tools), 128):
+            batch = tools[start : start + 128]
+            tool_marks = ", ".join("?" for _ in batch)
+            predicate = (
+                f"origin=? AND session_native_id IN ({native_marks}) AND event_type='PostToolUse' "
+                "AND json_valid(payload_json) "
+                "AND json_extract(payload_json, '$.payload.tool_use_id') IN (" + tool_marks + ")"
+            )
+            base_parameters = (origin, *natives, *batch)
+            after_observed: int | None = None
+            after_event: str | None = None
+            while True:
+                check_compute_cancelled()
+                with self._seal.original_rows(
+                    "source",
+                    f"SELECT rowid, observed_at_ms, hook_event_id FROM raw_hook_events WHERE {predicate} "
+                    "AND (? IS NULL OR observed_at_ms>? OR (observed_at_ms=? AND hook_event_id>?)) "
+                    "ORDER BY observed_at_ms, hook_event_id LIMIT 256",
+                    (*base_parameters, after_observed, after_observed, after_observed, after_event),
+                ) as rows:
+                    page = tuple(rows.fetchall())
+                if not page:
+                    break
+                for _rowid, _observed, event_id in page:
+                    check_compute_cancelled()
+                    self._load_matches(
+                        "raw_hook_events",
+                        "SELECT rowid FROM raw_hook_events WHERE hook_event_id=?",
+                        (event_id,),
+                    )
+                _rowid, after_observed, after_event = page[-1]
+
+            with self._seal.source_rows(
+                f"SELECT hook_event_id, payload_json FROM raw_hook_events WHERE {predicate} "
+                "ORDER BY observed_at_ms, hook_event_id",
+                base_parameters,
+            ) as rows:
+                while event_page := rows.fetchmany(256):
+                    check_compute_cancelled()
+                    result.update(hook_tool_responses_from_rows(event_page, tool_use_ids=batch))
+        return result
+
+    def hook_tool_response_evidence_digest(
+        self,
+        *,
+        origin: str,
+        session_native_ids: Iterable[str],
+    ) -> str | None:
+        """Digest every matching PostToolUse row within the prepared Source fence."""
+        from polylogue.sources.live.hook_tool_response import hook_tool_response_evidence_digest
+
+        natives = tuple(dict.fromkeys(value for value in session_native_ids if value))
+        if not natives:
+            return None
+        native_marks = ", ".join("?" for _ in natives)
+        predicate = f"origin=? AND session_native_id IN ({native_marks}) AND event_type='PostToolUse'"
+        parameters = (origin, *natives)
+        after_rowid = 0
+        while True:
+            check_compute_cancelled()
+            with self._seal.original_rows(
+                "source",
+                f"SELECT rowid FROM raw_hook_events WHERE {predicate} AND rowid>? ORDER BY rowid LIMIT 256",
+                (*parameters, after_rowid),
+            ) as rows:
+                page = tuple(int(row[0]) for row in rows.fetchall())
+            if not page:
+                break
+            for rowid in page:
+                self._load_matches("raw_hook_events", "SELECT rowid FROM raw_hook_events WHERE rowid=?", (rowid,))
+            after_rowid = page[-1]
+        with self._seal.source_rows(
+            f"SELECT hook_event_id, payload_json FROM raw_hook_events WHERE {predicate} ORDER BY hook_event_id",
+            parameters,
+        ) as rows:
+            return hook_tool_response_evidence_digest(rows)
+
+    def _load_matches(self, table: str, sql: str, parameters: tuple[object, ...]) -> None:
+
+        with self._seal.original_rows("source", sql, parameters) as rows:
+            for (rowid,) in rows:
+                check_compute_cancelled()
+                with self._seal.verified_namespace():
+                    if self._seal.source_row_is_touched(table, rowid):
+                        continue
+                    image = self._seal.retain_tier_row("source", table, rowid)
+                    if image is not None:
+                        self._seal.load_source_row(image)
+
+    @property
+    def archive_root(self) -> Path:
+        return self._seal.archive_root
+
+    def retained_state_titles(self, thread_ids: Iterable[str], source_path: str | None) -> Mapping[str, str] | None:
+        """Spool canonical titles from the same original enrolled Index owner."""
+        from polylogue.sources.codex_state_projection import iter_thread_title_candidates
+        from polylogue.sources.retained_title_index import RetainedTitleIndex
+
+        if not self._seal.has_tier_capability("index"):
+            return None
+        with closing(
+            iter_thread_title_candidates(
+                self._seal.observer("index"),
+                thread_ids=thread_ids,
+                source_path=source_path,
+                before_input=self._seal.before_index_input,
+            )
+        ) as rows:
+            return RetainedTitleIndex(rows)
+
+    def retained_assembly_evidence(
+        self,
+        sidecar_data: SidecarData,
+        *,
+        provider: Provider,
+        source_path: str,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None,
+    ) -> SidecarData:
+        from polylogue.sources.retained_assembly import with_retained_assembly_evidence
+
+        return with_retained_assembly_evidence(
+            sidecar_data,
+            provider=provider,
+            source_read=self,
+            blob_store=self.blob_store,
+            source_path=source_path,
+            captured_zip_coordinate=captured_zip_coordinate,
+        )
+
+    def completed_source_item_rows(self, raw_id: str) -> AbstractContextManager[sqlite3.Cursor]:
+        from polylogue.storage.sqlite.archive_tiers.source_items import _COMPLETED_SOURCE_ITEM_SQL
+
+        # Membership hydration includes its exact raw/item/generation FK
+        # dependencies. The native owner retains staged versions and includes
+        # new matches; an omitted original member never proves absence.
+        self._load_matches("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,))
+        self._load_matches(
+            "source_item_raw_members",
+            "SELECT rowid FROM source_item_raw_members WHERE raw_id=?",
+            (raw_id,),
+        )
+        return self._seal.source_rows(_COMPLETED_SOURCE_ITEM_SQL, (raw_id,))
+
+    def _load_assembly_raw_dependencies(self, raw_ids_sql: str, parameters: tuple[object, ...]) -> None:
+
+        after: str | None = None
+        while True:
+            check_compute_cancelled()
+            with self._seal.source_rows(
+                f"SELECT raw_id FROM ({raw_ids_sql}) WHERE (? IS NULL OR raw_id>?) "
+                "GROUP BY raw_id ORDER BY raw_id LIMIT 256",
+                (*parameters, after, after),
+            ) as rows:
+                page = tuple(str(row[0]) for row in rows)
+            if not page:
+                return
+            for raw_id in page:
+                check_compute_cancelled()
+                self._load_matches(
+                    "blob_refs",
+                    "SELECT rowid FROM blob_refs WHERE ref_id=? AND ref_type='raw_payload'",
+                    (raw_id,),
+                )
+                self._load_matches(
+                    "raw_container_coordinates",
+                    "SELECT rowid FROM raw_container_coordinates WHERE raw_id=?",
+                    (raw_id,),
+                )
+                self._load_matches("raw_artifacts", "SELECT rowid FROM raw_artifacts WHERE raw_id=?", (raw_id,))
+            after = page[-1]
+
+    def retained_artifact_page(
+        self,
+        origin: str,
+        artifact_kind: str,
+        coordinate: str,
+        *,
+        prefix: bool,
+        after: str | None,
+    ) -> list[tuple[str, str, str, int, int | None, int | None, str | None]]:
+        from polylogue.sources.retained_assembly import (
+            _retained_artifact_page_from_rows,
+            _retained_artifact_page_sql,
+            _retained_artifact_predicate,
+        )
+
+        predicate = f"a.origin=? AND ({_retained_artifact_predicate(prefix)}) AND a.artifact_kind=?"
+        parameters = (origin, coordinate, artifact_kind)
+        if after is None:
+            # The exact original predicate hydrates all matching coordinates,
+            # while the Native owner suppresses touched original versions.
+            # Canonical ranking then includes every new/staged matching row.
+            self._load_matches("raw_artifacts", f"SELECT a.rowid FROM raw_artifacts a WHERE {predicate}", parameters)
+            self._load_assembly_raw_dependencies(
+                f"SELECT a.raw_id FROM raw_artifacts a WHERE {predicate}",
+                parameters,
+            )
+        with self._seal.source_rows(
+            _retained_artifact_page_sql(prefix),
+            (*parameters, after, after),
+        ) as rows:
+            return _retained_artifact_page_from_rows(rows)
+
+    def retained_group_member(
+        self,
+        generation: str,
+        item: str,
+        source_path: str,
+        origin: str,
+        artifact_kind: str,
+    ) -> tuple[str, str, int, str | None] | None:
+        from polylogue.sources.retained_assembly import _RETAINED_GROUP_MEMBER_SQL, _retained_group_member_from_row
+
+        artifact_parameters = (source_path, origin, artifact_kind)
+        artifact_predicate = "source_path=? AND origin=? AND artifact_kind=?"
+        self._load_matches(
+            "raw_artifacts",
+            f"SELECT rowid FROM raw_artifacts WHERE {artifact_predicate}",
+            artifact_parameters,
+        )
+        self._load_assembly_raw_dependencies(
+            f"SELECT raw_id FROM raw_artifacts WHERE {artifact_predicate}",
+            artifact_parameters,
+        )
+        # A staged artifact can newly match this path even though its original
+        # version did not. Select its actual current raw coordinate first, then
+        # hydrate the exact original membership for that raw/group. No whole
+        # acquisition group is rescanned for each artifact path.
+        after: str | None = None
+        while True:
+            check_compute_cancelled()
+            with self._seal.source_rows(
+                f"SELECT raw_id FROM raw_artifacts WHERE {artifact_predicate} AND (? IS NULL OR raw_id>?) "
+                "GROUP BY raw_id ORDER BY raw_id LIMIT 256",
+                (*artifact_parameters, after, after),
+            ) as rows:
+                page = tuple(str(row[0]) for row in rows)
+            if not page:
+                break
+            for raw_id in page:
+                self._load_matches(
+                    "source_item_raw_members",
+                    "SELECT rowid FROM source_item_raw_members "
+                    "WHERE source_generation_id=? AND source_item_id=? AND raw_id=?",
+                    (generation, item, raw_id),
+                )
+            after = page[-1]
+        with self._seal.source_rows(
+            _RETAINED_GROUP_MEMBER_SQL,
+            (generation, item, source_path, origin, artifact_kind),
+        ) as rows:
+            return _retained_group_member_from_row(rows.fetchone())
+
+    def retained_attachment_reference(
+        self, raw_id: str, raw_blob_hash: bytes, coordinate: str, blob_hash: bytes, size_bytes: int
+    ) -> None:
+        from polylogue.storage.blob_publication import (
+            _RETAINED_ATTACHMENT_REFERENCE_SQL,
+            _require_retained_attachment_reference,
+        )
+
+        self._load_matches("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,))
+        self._load_matches(
+            "blob_refs",
+            "SELECT rowid FROM blob_refs WHERE ref_id=? AND ref_type='attachment' "
+            "AND coalesce(source_path,'')=? AND blob_hash=?",
+            (raw_id, coordinate, blob_hash),
+        )
+        with self._seal.source_rows(
+            _RETAINED_ATTACHMENT_REFERENCE_SQL, (raw_id, raw_blob_hash, coordinate, blob_hash, size_bytes)
+        ) as rows:
+            _require_retained_attachment_reference(rows.fetchone())
+
+    def publication_source_path(self) -> Path:
+        # The original observer's actual main identity belongs to this archive.
+        # The selected witness main is private preparation, never a Source target.
+        with self._seal.original_rows("source", "PRAGMA database_list") as rows:
+            database_path = next((str(row[2]) for row in rows if row[1] == "main"), "")
+        if not database_path:
+            raise PreparedSessionWriteRefusedError("published claim has no original Source target")
+        return Path(database_path).resolve()
+
+    def publication_blob_is_excised(self, blob_hash: bytes) -> bool:
+        self._load_matches(
+            "excised_content",
+            "SELECT rowid FROM excised_content WHERE removed_hash=? AND hash_kind='blob_hash'",
+            (blob_hash,),
+        )
+        with self._seal.source_rows(
+            "SELECT 1 FROM excised_content WHERE removed_hash=? AND hash_kind='blob_hash' LIMIT 1",
+            (blob_hash,),
+        ) as rows:
+            return rows.fetchone() is not None
+
+    def publication_reservation(self, publication_id: str) -> tuple[bytes, int, str] | None:
+        from polylogue.storage.blob_publication import _PUBLICATION_RESERVATION_SQL, _publication_reservation_from_row
+
+        self._load_matches(
+            "blob_publication_reservations",
+            "SELECT rowid FROM blob_publication_reservations WHERE publication_id=?",
+            (publication_id,),
+        )
+        with self._seal.source_rows(_PUBLICATION_RESERVATION_SQL, (publication_id,)) as rows:
+            return _publication_reservation_from_row(rows.fetchone())
+
+    def raw_selection_values(
+        self,
+        family: RawMembershipSelectionFamily,
+        operands: Sequence[str],
+    ) -> set[str]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import _raw_selection_queries
+
+        found: set[str] = set()
+        if not operands:
+            return found
+        for table, column, predicate, parameters in _raw_selection_queries(family, tuple(operands)):
+            self._load_matches(table, f"SELECT rowid FROM {table} WHERE {predicate}", parameters)
+            with self._seal.source_rows(f"SELECT {column} FROM {table} WHERE {predicate}", parameters) as rows:
+                for row in rows:
+                    check_compute_cancelled()
+                    found.add(str(row[0]))
+        return found
+
+    def expand_raw_membership_selection(self, raw_ids: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import _expand_raw_membership_selection
+
+        return _expand_raw_membership_selection(self, raw_ids)
+
+    def raw_membership_census_rows(self, raw_ids: Sequence[str]) -> tuple[tuple[str, int, bool, int], ...]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            _load_parser_census_source_inputs,
+            _raw_membership_census_query,
+            _raw_membership_census_rows_from_rows,
+        )
+
+        for raw_id in raw_ids:
+            _load_parser_census_source_inputs(self._seal, raw_id)
+        with self._seal.source_rows(*_raw_membership_census_query(raw_ids)) as rows:
+            return _raw_membership_census_rows_from_rows(rows)
+
+    def membership_key_has_pending_envelope_member(self, logical_source_key: str) -> bool:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            _MEMBERSHIP_PENDING_ENVELOPE_SQL,
+            _load_membership_selector_inputs,
+        )
+        from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
+
+        _load_membership_selector_inputs(self._seal, logical_source_key, None)
+        with self._seal.source_rows(
+            _MEMBERSHIP_PENDING_ENVELOPE_SQL,
+            (logical_source_key, len(PENDING_RAW_LOGICAL_SOURCE_PREFIX), PENDING_RAW_LOGICAL_SOURCE_PREFIX),
+        ) as rows:
+            return rows.fetchone() is not None
+
+    def raw_revision_replay_plan(self, logical_source_key: str) -> RevisionReplayPlan:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_revision_replay_plan
+
+        return prepared_raw_revision_replay_plan(self._seal, logical_source_key)
+
+    def pending_raw_envelope_has_membership_authority(self, logical_source_key: str) -> bool:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            _PENDING_ENVELOPE_MEMBERSHIP_SQL,
+            _load_parser_census_source_inputs,
+        )
+        from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
+
+        if not logical_source_key.startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX):
+            return False
+        self._load_matches(
+            "raw_sessions",
+            "SELECT rowid FROM raw_sessions WHERE logical_source_key=?",
+            (logical_source_key,),
+        )
+        after: str | None = None
+        while True:
+            with self._seal.source_rows(
+                "SELECT raw_id FROM raw_sessions WHERE logical_source_key=? "
+                "AND (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
+                (logical_source_key, after, after),
+            ) as rows:
+                page = rows.fetchall()
+            if not page:
+                break
+            for (raw_id,) in page:
+                check_compute_cancelled()
+                _load_parser_census_source_inputs(self._seal, str(raw_id))
+            after = str(page[-1][0])
+        with self._seal.source_rows(_PENDING_ENVELOPE_MEMBERSHIP_SQL, (logical_source_key,)) as rows:
+            return rows.fetchone() is not None
+
+    def raw_has_membership_authority(self, raw_id: str) -> bool:
+        self._load_matches(
+            "raw_session_memberships",
+            "SELECT rowid FROM raw_session_memberships WHERE raw_id=?",
+            (raw_id,),
+        )
+        with self._seal.source_rows(
+            "SELECT 1 FROM raw_session_memberships WHERE raw_id=? LIMIT 1",
+            (raw_id,),
+        ) as rows:
+            return rows.fetchone() is not None
+
+    def raw_has_membership_governed_pending_envelope(self, raw_id: str) -> bool:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            _RAW_PENDING_MEMBERSHIP_SQL,
+            _load_parser_census_source_inputs,
+        )
+        from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
+
+        _load_parser_census_source_inputs(self._seal, raw_id)
+        with self._seal.source_rows(
+            _RAW_PENDING_MEMBERSHIP_SQL,
+            (raw_id, len(PENDING_RAW_LOGICAL_SOURCE_PREFIX), PENDING_RAW_LOGICAL_SOURCE_PREFIX),
+        ) as rows:
+            return rows.fetchone() is not None
+
+    def raw_revision_rebuild_logical_keys(self, raw_ids: Sequence[str]) -> tuple[str, ...]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import _raw_revision_rebuild_logical_keys
+
+        return _raw_revision_rebuild_logical_keys(self, raw_ids)
+
+    def replay_representative_rows(self, keys: Sequence[str]) -> AbstractContextManager[sqlite3.Cursor]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            _load_raw_observation_inputs,
+            _raw_replay_representative_query,
+        )
+
+        marks = ",".join("?" for _ in keys)
+        parameters = tuple(keys)
+        self._load_matches(
+            "raw_sessions",
+            f"SELECT rowid FROM raw_sessions WHERE logical_source_key IN ({marks})",
+            parameters,
+        )
+        self._load_matches(
+            "raw_session_memberships",
+            f"SELECT rowid FROM raw_session_memberships WHERE logical_source_key IN ({marks})",
+            parameters,
+        )
+        after: str | None = None
+        while True:
+            with self._seal.source_rows(
+                f"SELECT raw_id FROM (SELECT raw_id FROM raw_sessions WHERE logical_source_key IN ({marks}) "
+                f"UNION SELECT raw_id FROM raw_session_memberships WHERE logical_source_key IN ({marks})) "
+                "WHERE (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
+                (*parameters, *parameters, after, after),
+            ) as rows:
+                page = rows.fetchall()
+            if not page:
+                break
+            for (raw_id,) in page:
+                _load_raw_observation_inputs(self._seal, str(raw_id))
+            after = str(page[-1][0])
+        return self._seal.source_rows(*_raw_replay_representative_query(keys))
+
+    def raw_membership_rebuild_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_membership_rebuild_raw_ids
+
+        return prepared_raw_membership_rebuild_raw_ids(self._seal, logical_source_key)
+
+    def raw_membership_logical_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import _MEMBERSHIP_LOGICAL_RAW_IDS_SQL
+
+        self._load_matches(
+            "raw_session_memberships",
+            "SELECT rowid FROM raw_session_memberships WHERE logical_source_key=?",
+            (logical_source_key,),
+        )
+        with self._seal.source_rows(_MEMBERSHIP_LOGICAL_RAW_IDS_SQL, (logical_source_key,)) as rows:
+            return tuple(str(row[0]) for row in rows)
+
+    def raw_revision_head_raw_id(self, logical_source_key: str) -> str | None:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            _RAW_REVISION_HEAD_SQL,
+            _raw_revision_head_from_row,
+        )
+
+        if not self._seal.has_tier_capability("index"):
+            return None
+        parameters = (logical_source_key,)
+        self._seal.before_index_input(
+            "raw_revision_heads",
+            ("accepted_raw_id",),
+            "SELECT rowid FROM raw_revision_heads WHERE logical_source_key=?",
+            parameters,
+        )
+        with self._seal.original_rows("index", _RAW_REVISION_HEAD_SQL, parameters) as rows:
+            return _raw_revision_head_from_row(rows.fetchone())
+
+    def adoption_session_hash(self, session_id: str) -> tuple[object, ...] | None:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import _REPLAY_ADOPTION_SESSION_SQL
+
+        parameters = (session_id,)
+        self._seal.before_index_input(
+            "sessions",
+            ("content_hash",),
+            "SELECT rowid FROM sessions WHERE session_id=?",
+            parameters,
+        )
+        with self._seal.original_rows("index", _REPLAY_ADOPTION_SESSION_SQL, parameters) as rows:
+            row = rows.fetchone()
+        return None if row is None else tuple(row)
+
+    def adoption_session_is_governed(self, session_id: str) -> bool:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import _REPLAY_ADOPTION_HEAD_SQL
+
+        parameters = (session_id,)
+        self._seal.before_index_input(
+            "raw_revision_heads",
+            ("session_id",),
+            "SELECT rowid FROM raw_revision_heads WHERE session_id=?",
+            parameters,
+        )
+        with self._seal.original_rows("index", _REPLAY_ADOPTION_HEAD_SQL, parameters) as rows:
+            return rows.fetchone() is not None
+
+    def adoption_raw_revision(self, logical_source_key: str, raw_id: str) -> tuple[str, int]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            _REPLAY_ADOPTION_RAW_REVISION_SQL,
+            _load_raw_session_input,
+        )
+
+        _load_raw_session_input(self._seal, raw_id)
+        parameters = (raw_id, logical_source_key)
+        with self._seal.original_rows(
+            "source",
+            "SELECT rowid FROM raw_session_memberships WHERE raw_id=? AND logical_source_key=?",
+            parameters,
+        ) as rows:
+            for (rowid,) in rows:
+                check_compute_cancelled()
+                if self._seal.source_row_is_touched("raw_session_memberships", rowid):
+                    continue
+                image = self._seal.retain_tier_row("source", "raw_session_memberships", rowid)
+                if image is not None:
+                    self._seal.load_source_row(image)
+        with self._seal.source_rows(_REPLAY_ADOPTION_RAW_REVISION_SQL, (logical_source_key, raw_id)) as rows:
+            row = rows.fetchone()
+        if row is None or row[0] is None:
+            raise ValueError(f"deferred raw revision lacks source evidence: {raw_id}")
+        return str(row[0]), int(row[1])
+
+    def prepare_raw_revision_replay_adoption(
+        self,
+        sessions: Sequence[ParsedSession],
+        *,
+        logical_source_key: str,
+        raw_ids: Sequence[str],
+    ) -> PreparedRevisionAdoption:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import prepare_raw_revision_replay_adoption
+
+        return prepare_raw_revision_replay_adoption(
+            self, sessions, logical_source_key=logical_source_key, raw_ids=raw_ids
+        )
+
+    def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_revision_descriptor
+
+        return prepared_raw_revision_descriptor(self._seal, raw_id)
+
+    def raw_validation_mode(self, raw_id: str) -> str | None:
+        """Read the persisted validation policy bound to this raw revision."""
+        self._load_matches("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows("SELECT validation_mode FROM raw_sessions WHERE raw_id=?", (raw_id,)) as rows:
+            row = rows.fetchone()
+        return None if row is None or row[0] is None else str(row[0])
+
+    def raw_schema_eligible(self, raw_id: str) -> bool:
+        """Whether this typed artifact participates in schema validation.
+
+        Missing or mixed artifact evidence is treated as eligible. Only an
+        explicitly typed non-session artifact may omit a validation policy.
+        """
+        self._load_matches("raw_artifacts", "SELECT rowid FROM raw_artifacts WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows(
+            "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=?) "
+            "OR EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=? "
+            "AND (parse_as_session IS NOT 0 OR schema_eligible IS NOT 0)) THEN 1 ELSE 0 END",
+            (raw_id, raw_id),
+        ) as rows:
+            row = rows.fetchone()
+        return row is not None and bool(row[0])
+
+    def raw_parser_confirmed_non_session(self, raw_id: str) -> bool:
+        """Whether current parser authority terminally classifies this raw as non-session."""
+        from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
+
+        self._load_matches("raw_membership_census", "SELECT rowid FROM raw_membership_census WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows(
+            "SELECT status, parser_fingerprint FROM raw_membership_census WHERE raw_id=?", (raw_id,)
+        ) as rows:
+            row = rows.fetchone()
+        return bool(row is not None and row[0] == "non_session" and row[1] == raw_authority_parser_fingerprint())
+
+    def raw_revision_file_mtime(self, raw_id: str) -> str | None:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_revision_file_mtime
+
+        return prepared_raw_revision_file_mtime(self._seal, raw_id)
+
+    def raw_native_id(self, raw_id: str) -> str | None:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_native_id
+
+        return prepared_raw_native_id(self._seal, raw_id)
+
+    def uncensused_identity_opaque_raw_ids(self, raw_ids: Sequence[str]) -> tuple[str, ...]:
+        """Selected raws with no native id or typed key whose parser census is not current.
+
+        Only its parsed content assigns such an envelope to a logical cohort,
+        so another envelope's replay cannot know whether it shares that cohort.
+        """
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_parser_census_is_current
+        from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
+
+        opaque: list[str] = []
+        for start in range(0, len(raw_ids), 256):
+            check_compute_cancelled()
+            chunk = tuple(raw_ids[start : start + 256])
+            marks = ",".join("?" for _ in chunk)
+            self._load_matches("raw_sessions", f"SELECT rowid FROM raw_sessions WHERE raw_id IN ({marks})", chunk)
+            with self._seal.source_rows(
+                f"SELECT raw_id FROM raw_sessions WHERE raw_id IN ({marks}) AND native_id IS NULL "
+                "AND (logical_source_key IS NULL OR substr(logical_source_key,1,?)=?) ORDER BY raw_id",
+                (*chunk, len(PENDING_RAW_LOGICAL_SOURCE_PREFIX), PENDING_RAW_LOGICAL_SOURCE_PREFIX),
+            ) as rows:
+                envelopes = tuple(str(row[0]) for row in rows)
+            opaque.extend(raw_id for raw_id in envelopes if not prepared_parser_census_is_current(self._seal, raw_id))
+        return tuple(opaque)
+
+    def raw_ids_for_native_session(self, origin: str, native_id: str) -> tuple[str, ...]:
+        """Retained raws acquired as one origin's native session, before or after census."""
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import _load_raw_observation_inputs
+
+        self._load_matches(
+            "raw_sessions",
+            "SELECT rowid FROM raw_sessions WHERE origin=? AND native_id=?",
+            (origin, native_id),
+        )
+        with self._seal.source_rows(
+            "SELECT raw_id FROM raw_sessions WHERE origin=? AND native_id=? ORDER BY raw_id",
+            (origin, native_id),
+        ) as rows:
+            raw_ids = tuple(str(row[0]) for row in rows)
+        for raw_id in raw_ids:
+            _load_raw_observation_inputs(self._seal, raw_id)
+        return raw_ids
+
+    @contextmanager
+    def open_raw_revision_material(
+        self,
+        raw_id: str,
+    ) -> Generator[tuple[Provider, BinaryIO, str, RawRevisionKind], None, None]:
+        provider, blob_hash, source_path, kind, _size = self.raw_revision_descriptor(raw_id)
+        self.raw_revision_blob_path(raw_id)
+        with self.blob_store.open(blob_hash) as payload:
+            yield provider, payload, source_path, kind
+
+    def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
+        with self.open_raw_revision_material(raw_id) as (provider, payload, source_path, kind):
+            return provider, payload.read(), source_path, kind
+
+    @contextmanager
+    def open_raw_container_material(self, raw_id: str) -> Generator[BinaryIO | None, None, None]:
+        """Open the accepted physical container a ZIP member raw was read from.
+
+        The container identity comes from the member's pinned coordinate
+        receipt; its bytes are charged as an original input before the read.
+        """
+        coordinate = self.raw_captured_zip_coordinate(raw_id)
+        if coordinate is None:
+            raise ValueError(f"raw has no captured ZIP container: {raw_id}")
+        path = self.blob_store.blob_path(coordinate.container_blob_hash)
+        if not path.exists():
+            yield None
+            return
+        self._seal.retain_original_container_input(bytes.fromhex(coordinate.container_blob_hash), path.stat().st_size)
+        with self.blob_store.open(coordinate.container_blob_hash) as container:
+            yield container
+
+    def raw_revision_blob_path(self, raw_id: str) -> Path | None:
+        """Enroll this original retained acquisition before any payload access.
+
+        The Native input ledger validates the same pinned raw descriptor and
+        charges its current reservation before a parser opens the file. This
+        capability cannot pretend a newly staged acquisition was original.
+        """
+        _provider, blob_hash, _source_path, _kind, size = self.raw_revision_descriptor(raw_id)
+        retained_hash, retained_size = self._seal.retain_original_blob_input(raw_id)
+        if retained_hash.hex() != blob_hash or retained_size != size:
+            raise ReferenceSealError("retained parser input changed its original acquisition bytes")
+        path = self.blob_store.blob_path(blob_hash)
+        return path if path.exists() else None
+
+    def raw_append_logical_key(self, raw_id: str) -> str | None:
+        from polylogue.storage.sqlite.archive_tiers.source_write import (
+            _RAW_APPEND_LOGICAL_KEY_SQL,
+            _raw_append_logical_key_from_row,
+        )
+
+        self._load_matches("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows(_RAW_APPEND_LOGICAL_KEY_SQL, (raw_id,)) as rows:
+            return _raw_append_logical_key_from_row(rows.fetchone())
+
+    def raw_profile_identity(self, raw_id: str) -> str | None:
+        from polylogue.storage.sqlite.archive_tiers.source_write import (
+            _RAW_PROFILE_IDENTITY_SQL,
+            _raw_profile_identity_from_row,
+        )
+
+        self._load_matches(
+            "raw_profile_identity_receipts",
+            "SELECT rowid FROM raw_profile_identity_receipts WHERE raw_id=?",
+            (raw_id,),
+        )
+        with self._seal.source_rows(_RAW_PROFILE_IDENTITY_SQL, (raw_id,)) as rows:
+            return _raw_profile_identity_from_row(rows.fetchone())
+
+    def raw_captured_zip_coordinate(self, raw_id: str) -> CapturedZipMemberCoordinate | None:
+        from polylogue.storage.sqlite.archive_tiers.source_write import (
+            _RAW_CAPTURED_ZIP_COORDINATE_SQL,
+            _raw_captured_zip_coordinate_from_row,
+        )
+
+        self._load_matches(
+            "raw_container_coordinates",
+            "SELECT rowid FROM raw_container_coordinates WHERE raw_id=?",
+            (raw_id,),
+        )
+        with self._seal.source_rows(_RAW_CAPTURED_ZIP_COORDINATE_SQL, (raw_id,)) as rows:
+            return _raw_captured_zip_coordinate_from_row(rows.fetchone())
+
+    def raw_export_order(self, raw_id: str) -> int | None:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_export_order
+
+        return prepared_raw_export_order(self._seal, raw_id)
+
+    def raw_revision_observation_order(self, raw_id: str) -> tuple[int, int]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_revision_observation_order
+
+        return prepared_raw_revision_observation_order(self._seal, raw_id)
+
+    def raw_has_pending_envelope(self, raw_id: str) -> bool:
+        self._load_matches("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows(_RAW_PENDING_ENVELOPE_SQL, (raw_id,)) as rows:
+            return _raw_pending_envelope_from_row(rows.fetchone())
+
+    def raw_revision_authority(self, raw_id: str) -> str | None:
+        self._load_matches("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows("SELECT revision_authority FROM raw_sessions WHERE raw_id=?", (raw_id,)) as rows:
+            row = rows.fetchone()
+        return None if row is None or row[0] is None else str(row[0])
+
+    def membership_head_revision(self, raw_id: str) -> tuple[object, ...] | None:
+        self._load_matches("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows(_MEMBERSHIP_HEAD_REVISION_SQL, (raw_id,)) as rows:
+            row = rows.fetchone()
+        return None if row is None else tuple(row)
+
+    def membership_has_dangling_append(
+        self,
+        logical_source_key: str,
+        existing_raw_id: str,
+        classified_raw_ids: frozenset[str],
+    ) -> bool:
+        self._load_matches("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (existing_raw_id,))
+        # Load the whole exact logical-key predicate before the canonical
+        # negative read. A newly staged parent revision can change which
+        # original child matches, and touched originals stay suppressed.
+        self._load_matches(
+            "raw_sessions", "SELECT rowid FROM raw_sessions WHERE logical_source_key=?", (logical_source_key,)
+        )
+        parameters = (logical_source_key, existing_raw_id, *sorted(classified_raw_ids), existing_raw_id)
+        predicate = _membership_dangling_append_predicate(classified_raw_ids)
+        with self._seal.source_rows(f"SELECT 1 FROM raw_sessions child WHERE {predicate} LIMIT 1", parameters) as rows:
+            return rows.fetchone() is not None
+
+    def raw_path(self, raw_id: str) -> str | None:
+        self._load_matches("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows(_SOURCE_RAW_PATH_SQL, (raw_id,)) as rows:
+            row = rows.fetchone()
+        return str(row[0]) if row is not None and row[0] else None
+
+    def hook_spool_present(self) -> bool:
+        with self._seal.original_rows(
+            "source", "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_hook_events'"
+        ) as rows:
+            return rows.fetchone() is not None
+
+    def raw_sessions_present(self) -> bool:
+        with self._seal.original_rows(
+            "source", "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'"
+        ) as rows:
+            return rows.fetchone() is not None
+
+    def codex_parent_rows(self, child_native_id: str) -> AbstractContextManager[sqlite3.Cursor]:
+        self._load_matches(
+            "raw_hook_events",
+            "SELECT rowid FROM raw_hook_events WHERE event_type='codex_thread_spawn_edge' "
+            "AND json_extract(payload_json, '$.child_thread_id')=?",
+            (child_native_id,),
+        )
+        return self._seal.source_rows(_SOURCE_CODEX_PARENT_SQL, (child_native_id,))
+
+    def claude_dispatch_rows(self, parent_native_id: str) -> AbstractContextManager[sqlite3.Cursor]:
+        events = ", ".join("?" * len(_AGENT_BEARING_HOOK_EVENTS))
+        parameters = (Origin.CLAUDE_CODE_SESSION.value, parent_native_id, *_AGENT_BEARING_HOOK_EVENTS)
+        self._load_matches(
+            "raw_hook_events",
+            f"SELECT rowid FROM raw_hook_events WHERE origin=? AND session_native_id=? AND event_type IN ({events})",
+            parameters,
+        )
+        return self._seal.source_rows(_source_claude_dispatch_sql(), parameters)
+
+    def acquisition_rows(self, origin: str, native_id: str) -> AbstractContextManager[sqlite3.Cursor]:
+        self._load_matches(
+            "raw_sessions", "SELECT rowid FROM raw_sessions WHERE origin=? AND native_id=?", (origin, native_id)
+        )
+        return self._seal.source_rows(_SOURCE_ACQUISITION_SQL, (origin, native_id))
+
+    def _load_retained_scope(self, predicate: str, parameters: tuple[object, ...]) -> None:
+
+        self._load_matches("raw_sessions", f"SELECT rowid FROM raw_sessions WHERE {predicate}", parameters)
+        after: str | None = None
+        while True:
+            check_compute_cancelled()
+            with self._seal.source_rows(
+                f"SELECT raw_id FROM raw_sessions WHERE ({predicate}) "
+                "AND (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
+                (*parameters, after, after),
+            ) as rows:
+                page = tuple(str(row[0]) for row in rows)
+            if not page:
+                return
+            for raw_id in page:
+                check_compute_cancelled()
+                self._load_matches(
+                    "blob_refs",
+                    "SELECT rowid FROM blob_refs WHERE ref_id=? AND ref_type='raw_payload'",
+                    (raw_id,),
+                )
+            after = page[-1]
+
+    def retained_children_rows(self, low: str, high: str) -> AbstractContextManager[sqlite3.Cursor]:
+        from polylogue.sources.live.sidecar_resolution import _RETAINED_CHILDREN_SQL
+
+        self._load_retained_scope("source_path>=? AND source_path<?", (low, high))
+        return self._seal.source_rows(_RETAINED_CHILDREN_SQL, (low, high))
+
+    def retained_sibling_rows(
+        self,
+        root_path: str,
+        low: str,
+        high: str,
+    ) -> AbstractContextManager[sqlite3.Cursor]:
+        from polylogue.sources.live.sidecar_resolution import _RETAINED_SIBLINGS_SQL
+
+        parameters = (root_path, low, high)
+        self._load_retained_scope("source_path=? OR (source_path>=? AND source_path<?)", parameters)
+        return self._seal.source_rows(_RETAINED_SIBLINGS_SQL, parameters)
+
+    def retained_sidecar_resolver(self) -> SidecarResolver:
+        from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+
+        return RetainedSidecarResolver(self.archive_root, blob_root=self.blob_store.root, source_read=self)
+
+    def sidecar_page(
+        self,
+        source_path: str,
+        after: tuple[int, str] | None,
+    ) -> list[tuple[str, bytes, str, str, int]]:
+        self._load_matches("raw_sessions", "SELECT rowid FROM raw_sessions WHERE source_path=?", (source_path,))
+        with self._seal.source_rows(_SOURCE_SIDECAR_SQL, _source_sidecar_page_parameters(source_path, after)) as rows:
+            return _source_sidecar_page(rows)
+
+    def open_sidecar_payload(self, raw_id: str, blob_hash: bytes) -> AbstractContextManager[BinaryIO]:
+        retained_hash, _size = self._seal.retain_original_blob_input(raw_id)
+        if retained_hash != blob_hash:
+            raise ReferenceSealError("selected sidecar changed its original acquisition bytes")
+        return self.blob_store.open(blob_hash.hex())
+
+    def raw_terminal_decode_refusal(self, raw_id: str) -> RetainedRawDecodeRefusalError | None:
+        """Read current refusal through this preparation's original Source inputs."""
+        from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
+        from polylogue.core.raw_failure_evidence import (
+            RAW_FAILURE_VALIDATION_FAILURE_KINDS,
+            retained_raw_decode_refusal_from_row,
+        )
+        from polylogue.storage.sqlite.queries.raw_state import retained_raw_decode_refusal_sql
+
+        for table in ("raw_sessions", "raw_authority_parser_census", "raw_artifacts"):
+            self._load_matches(table, f"SELECT rowid FROM {table} WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows(
+            retained_raw_decode_refusal_sql(),
+            (raw_id, raw_authority_parser_fingerprint(), *sorted(RAW_FAILURE_VALIDATION_FAILURE_KINDS)),
+        ) as rows:
+            return retained_raw_decode_refusal_from_row(raw_id, rows.fetchone())
+
+    def raw_parser_census_is_current(self, raw_id: str) -> bool:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_parser_census_is_current
+
+        return prepared_parser_census_is_current(self._seal, raw_id)
+
+
+def _hook_spool_present(source_read: SessionSourceRead) -> bool:
+    """Whether the original Source tier carries the declared hook spool."""
+    return source_read.hook_spool_present()
+
+
+def raw_source_path(source_read: SessionSourceRead | None, raw_id: str | None) -> str | None:
+    """The retained path of one raw in the caller's selected Source state."""
+    return source_read.raw_path(raw_id) if source_read is not None and raw_id else None
 
 
 def _codex_spawn_edge_parent_claim(
     conn: sqlite3.Connection,
-    source_conn: sqlite3.Connection | None,
+    source_read: SessionSourceRead | None,
     *,
     child_native_id: str,
     child_source_path: str | None,
+    before_input: BeforeIndexInput | None = None,
+    row_read: ThreadParentRowRead | None = None,
 ) -> _HookParentClaim | None:
     """Return projected or spooled Codex parent evidence for a child.
 
@@ -7558,7 +9288,9 @@ def _codex_spawn_edge_parent_claim(
     try:
         from polylogue.sources.codex_state_projection import read_parent_thread_id
 
-        projected_parent = read_parent_thread_id(conn, child_native_id, source_path=child_source_path)
+        projected_parent = read_parent_thread_id(
+            conn, child_native_id, source_path=child_source_path, before_input=before_input, row_read=row_read
+        )
     except (ImportError, sqlite3.Error) as exc:
         # Silence here archives a child as a root with no parent edge and no
         # trace that the projection was ever consulted (polylogue-3r36h). The
@@ -7577,19 +9309,10 @@ def _codex_spawn_edge_parent_claim(
         projected_parent = None
     if projected_parent is not None:
         return _HookParentClaim(projected_parent, {"codex_thread_spawn_edge_parent": projected_parent})
-    if source_conn is None or not _hook_spool_present(source_conn):
+    if source_read is None or not _hook_spool_present(source_read):
         return None
-    row = source_conn.execute(
-        """
-        SELECT json_extract(payload_json, '$.parent_thread_id')
-        FROM raw_hook_events
-        WHERE event_type = 'codex_thread_spawn_edge'
-          AND json_extract(payload_json, '$.child_thread_id') = ?
-        ORDER BY observed_at_ms DESC
-        LIMIT 1
-        """,
-        (child_native_id,),
-    ).fetchone()
+    with source_read.codex_parent_rows(child_native_id) as lineage_rows:
+        row = lineage_rows.fetchone()
     if row is None or row[0] is None:
         return None
     parent = str(row[0]).strip()
@@ -7602,31 +9325,40 @@ def _child_tool_use_id_matches(
     conn: sqlite3.Connection,
     child_session_id: str,
     tool_use_ids: Sequence[str],
+    before_input: BeforeIndexInput | None = None,
 ) -> int:
     """Count the hook-attributed tool calls archived as this child's own blocks."""
     matched = 0
     for start in range(0, len(tool_use_ids), _HOOK_TOOL_ID_CHUNK):
         chunk = tool_use_ids[start : start + _HOOK_TOOL_ID_CHUNK]
         placeholders = ", ".join("?" * len(chunk))
-        matched += int(
-            conn.execute(
-                f"""
-                SELECT COUNT(DISTINCT tool_id) FROM blocks
-                WHERE session_id = ? AND block_type = ? AND tool_id IN ({placeholders})
-                """,
+        if before_input is not None:
+            before_input(
+                "blocks",
+                ("tool_id",),
+                f"SELECT rowid FROM blocks WHERE session_id=? AND block_type=? AND tool_id IN ({placeholders})",
                 (child_session_id, BlockType.TOOL_USE.value, *chunk),
-            ).fetchone()[0]
-        )
+            )
+        with connection_cursor(
+            conn,
+            f"""
+            SELECT COUNT(DISTINCT tool_id) FROM blocks
+            WHERE session_id = ? AND block_type = ? AND tool_id IN ({placeholders})
+            """,
+            (child_session_id, BlockType.TOOL_USE.value, *chunk),
+        ) as cursor:
+            matched += int(cursor.fetchone()[0])
     return matched
 
 
 def _claude_agent_dispatch_parent_claim(
     conn: sqlite3.Connection,
-    source_conn: sqlite3.Connection,
+    source_read: SessionSourceRead,
     *,
     child_session_id: str,
     child_provider_values: Iterable[str],
     parent_candidate: str,
+    before_input: BeforeIndexInput | None = None,
 ) -> _HookParentClaim | None:
     """Return the hook-asserted dispatch of one Claude Code subagent child.
 
@@ -7659,35 +9391,23 @@ def _claude_agent_dispatch_parent_claim(
             if value.startswith(_SUBAGENT_STEM_PREFIX) and len(value) > len(_SUBAGENT_STEM_PREFIX)
         }
     )
-    if not agent_ids or not _hook_spool_present(source_conn):
+    if not agent_ids or not _hook_spool_present(source_read):
         return None
-    paths = [path for key in _AGENT_DISPATCH_HOOK_KEYS for path in _hook_payload_json_paths(key)]
     field_slices = _hook_field_slices(_AGENT_DISPATCH_HOOK_KEYS)
-    path_sql = ", ".join(f"'{path}'" for path in paths)
-    event_placeholders = ", ".join("?" * len(_AGENT_BEARING_HOOK_EVENTS))
-    rows = source_conn.execute(
-        f"""
-        SELECT DISTINCT json_extract(payload_json, {path_sql})
-        FROM raw_hook_events
-        WHERE origin = ?
-          AND session_native_id = ?
-          AND event_type IN ({event_placeholders})
-        """,
-        (Origin.CLAUDE_CODE_SESSION.value, parent_candidate, *_AGENT_BEARING_HOOK_EVENTS),
-    ).fetchall()
     wanted = set(agent_ids)
     tool_use_ids: dict[str, set[str]] = defaultdict(set)
     agent_types: dict[str, str] = {}
-    for (extracted,) in rows:
-        fields = _hook_extracted_fields(extracted, field_slices)
-        agent_id = fields.get("agent_id")
-        tool_use_id = fields.get("tool_use_id")
-        if agent_id is None or tool_use_id is None or agent_id not in wanted:
-            continue
-        tool_use_ids[agent_id].add(tool_use_id)
-        agent_type = fields.get("agent_type")
-        if agent_type is not None and agent_id not in agent_types:
-            agent_types[agent_id] = agent_type
+    with source_read.claude_dispatch_rows(parent_candidate) as lineage_rows:
+        for (extracted,) in lineage_rows:
+            fields = _hook_extracted_fields(extracted, field_slices)
+            agent_id = fields.get("agent_id")
+            tool_use_id = fields.get("tool_use_id")
+            if agent_id is None or tool_use_id is None or agent_id not in wanted:
+                continue
+            tool_use_ids[agent_id].add(tool_use_id)
+            agent_type = fields.get("agent_type")
+            if agent_type is not None and agent_id not in agent_types:
+                agent_types[agent_id] = agent_type
     # One tool_use_id belongs to exactly one agent instance. Two hook records
     # attributing the same id to different agents is a contradiction in the
     # evidence itself, and the sorted iteration below would otherwise resolve
@@ -7699,11 +9419,15 @@ def _claude_agent_dispatch_parent_claim(
             claimants_by_tool_use_id[tool_use_id].add(agent_id)
     contested = {tool_use_id for tool_use_id, owners in claimants_by_tool_use_id.items() if len(owners) > 1}
     for agent_id in agent_ids:
-        matches = _child_tool_use_id_matches(conn, child_session_id, sorted(tool_use_ids.get(agent_id, ())))
+        matches = _child_tool_use_id_matches(
+            conn, child_session_id, sorted(tool_use_ids.get(agent_id, ())), before_input
+        )
         if not matches:
             continue
         contested_ids = sorted(tool_use_ids.get(agent_id, set()) & contested)
-        contested_matches = contested_ids if _child_tool_use_id_matches(conn, child_session_id, contested_ids) else []
+        contested_matches = (
+            contested_ids if _child_tool_use_id_matches(conn, child_session_id, contested_ids, before_input) else []
+        )
         if contested_matches:
             return _HookParentClaim(
                 None,
@@ -7737,7 +9461,7 @@ def _child_provider_values(session: ParsedSession) -> tuple[str, ...]:
 
 def _authoritative_parent_claim(
     conn: sqlite3.Connection,
-    source_conn: sqlite3.Connection | None,
+    source_read: SessionSourceRead | None,
     *,
     origin: str,
     child_session_id: str,
@@ -7745,6 +9469,7 @@ def _authoritative_parent_claim(
     child_provider_values: Iterable[str],
     parent_candidate: str | None,
     child_source_path: str | None,
+    before_input: BeforeIndexInput | None = None,
 ) -> _HookParentClaim | None:
     """Return the hook-asserted parent for this child, or ``None`` for silence.
 
@@ -7766,30 +9491,45 @@ def _authoritative_parent_claim(
         return None
     if origin == Origin.CODEX_SESSION.value:
         return _codex_spawn_edge_parent_claim(
-            conn, source_conn, child_native_id=child_native_id, child_source_path=child_source_path
+            conn,
+            source_read,
+            child_native_id=child_native_id,
+            child_source_path=child_source_path,
+            before_input=before_input,
         )
     if origin != Origin.CLAUDE_CODE_SESSION.value:
         return None
     provider_values = tuple(child_provider_values)
-    preserved = conn.execute(
+    if before_input is not None:
+        before_input(
+            "session_links",
+            ("dst_native_id", "evidence_json"),
+            "SELECT rowid FROM session_links WHERE src_session_id=? AND dst_origin=? "
+            "AND method=? AND status IS NULL ORDER BY dst_native_id",
+            (child_session_id, origin, HOOK_AUTHORITATIVE_LINK_METHOD),
+        )
+    with connection_cursor(
+        conn,
         """
         SELECT dst_native_id, evidence_json FROM session_links
         WHERE src_session_id = ? AND dst_origin = ? AND method = ? AND status IS NULL
         ORDER BY dst_native_id
         """,
         (child_session_id, origin, HOOK_AUTHORITATIVE_LINK_METHOD),
-    ).fetchall()
+    ) as _input_cursor:
+        preserved = _input_cursor.fetchall()
     candidates = dict.fromkeys(
         candidate for candidate in (parent_candidate, *(str(row[0]) for row in preserved)) if candidate
     )
-    if source_conn is not None:
+    if source_read is not None:
         for candidate in candidates:
             claim = _claude_agent_dispatch_parent_claim(
                 conn,
-                source_conn,
+                source_read,
                 child_session_id=child_session_id,
                 child_provider_values=provider_values,
                 parent_candidate=candidate,
+                before_input=before_input,
             )
             if claim is not None:
                 return claim
@@ -7804,6 +9544,704 @@ def _authoritative_parent_claim(
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class CodexProjectionSessionInput:
+    physical_rowid: int
+    raw_id: str | None
+    created_at_ms: int | None
+    updated_at_ms: int | None
+    parent_session_id: str | None
+    root_session_id: str | None
+    branch_type: str | None
+    session_kind: str | None
+    source_path: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CodexProjectionLinkInput:
+    physical_rowid: int
+    src_session_id: str
+    dst_origin: str
+    dst_native_id: str
+    link_type: str
+    method: str | None
+    status: str | None
+    observed_at_ms: int | None
+    resolved_dst_session_id: str | None
+    resolved_at_ms: int | None
+    branch_point_message_id: str | None
+    branch_point_content_address: bytes | None
+    inheritance: str | None
+    parent_tool_use_block_id: str | None
+    evidence_json: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedCodexLinkInputs:
+    """Reachable original link operands on the graph carrier's same native owner."""
+
+    owner: NativeSQLCustodyOwner
+    reference_seal: PreparedIndexMutation
+
+    def session_record(self, session_id: str) -> CodexProjectionSessionInput | None:
+        with connection_cursor(
+            self.owner.require_connection(),
+            "SELECT physical_rowid,raw_id,created_at_ms,updated_at_ms,parent_session_id,"
+            "root_session_id,branch_type,session_kind,source_path "
+            "FROM codex_link_input_sessions WHERE session_id=?",
+            (session_id,),
+        ) as cursor:
+            row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Codex projection requested an unprepared original session coordinate")
+        return None if row[0] is None else CodexProjectionSessionInput(*tuple(row))
+
+    def link_record(self, physical_rowid: int) -> CodexProjectionLinkInput:
+        with connection_cursor(
+            self.owner.require_connection(),
+            "SELECT physical_rowid,"
+            + ",".join(_CODEX_LINK_FIELDS)
+            + " FROM codex_link_input_links WHERE physical_rowid=?",
+            (physical_rowid,),
+        ) as cursor:
+            row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Codex projection requested an unprepared original link coordinate")
+        return CodexProjectionLinkInput(*tuple(row))
+
+
+class PreparedCodexSpawnParentLinks:
+    """Serve retained original operands and explicitly written Index cells.
+
+    Native selectors retain the writer's sequential row ordering. Only a
+    column recorded by this producer as written may be fetched from its live
+    postimage; every other value must exist in the original domain carrier.
+    """
+
+    def __init__(self, inputs: PreparedCodexLinkInputs, connection: sqlite3.Connection) -> None:
+        from polylogue.storage.sqlite.reference_seal import ReferenceSealError, current_index_mutation_scope
+
+        scope = current_index_mutation_scope()
+        if scope is None or scope.seal is not inputs.reference_seal:
+            raise ReferenceSealError("prepared Codex links require their original admitted Index scope")
+        scope.require_new_work(connection)
+        self.inputs = inputs
+        self.connection = connection
+        with connection_cursor(
+            inputs.owner.require_connection(),
+            "CREATE TABLE codex_link_written_cells(table_name TEXT,physical_rowid INTEGER,"
+            "column_name TEXT,PRIMARY KEY(table_name,physical_rowid,column_name))",
+        ):
+            pass
+
+    def record_written(self, table: str, physical_rowid: int, columns: Iterable[str]) -> None:
+        allowed = (
+            _CODEX_LINK_FIELDS
+            if table == "session_links"
+            else _CODEX_LINK_SESSION_FIELDS
+            if table == "sessions"
+            else ()
+        )
+        for column in columns:
+            if column not in allowed:
+                raise RuntimeError("Codex link producer cannot record an undeclared written cell")
+            with connection_cursor(
+                self.inputs.owner.require_connection(),
+                "INSERT OR IGNORE INTO codex_link_written_cells VALUES(?,?,?)",
+                (table, physical_rowid, column),
+            ):
+                pass
+
+    def _written(self, table: str, physical_rowid: int, column: str) -> bool:
+        with connection_cursor(
+            self.inputs.owner.require_connection(),
+            "SELECT 1 FROM codex_link_written_cells WHERE table_name=? AND physical_rowid=? AND column_name=?",
+            (table, physical_rowid, column),
+        ) as cursor:
+            return cursor.fetchone() is not None
+
+    def _cell(self, table: str, physical_rowid: int, column: str, original: object) -> object:
+        if not self._written(table, physical_rowid, column):
+            return original
+        # Table and column are finite domain operands, never caller SQL.
+        with connection_cursor(
+            self.connection,
+            f"SELECT {column} FROM {table} WHERE rowid=?",
+            (physical_rowid,),
+        ) as cursor:
+            row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Codex producer's written coordinate disappeared")
+        return row[0]
+
+    def _link_cell(self, physical_rowid: int, column: str) -> object:
+        if self._written("session_links", physical_rowid, column):
+            return self._cell("session_links", physical_rowid, column, None)
+        return getattr(self.inputs.link_record(physical_rowid), column)
+
+    def _link_rowids(self, predicate: str, parameters: tuple[object, ...], order: str = "") -> list[int]:
+        with connection_cursor(
+            self.connection,
+            "SELECT rowid FROM session_links WHERE " + predicate + order,
+            parameters,
+        ) as cursor:
+            return [int(row[0]) for row in cursor]
+
+    def session_header(self, session_id: str) -> tuple[object, object, object] | None:
+        row = self.inputs.session_record(session_id)
+        if row is None:
+            return None
+        return (
+            self._cell("sessions", row.physical_rowid, "root_session_id", row.root_session_id),
+            self._cell("sessions", row.physical_rowid, "branch_type", row.branch_type),
+            self._cell("sessions", row.physical_rowid, "session_kind", row.session_kind),
+        )
+
+    def composing_parent_link(self, session_id: str) -> tuple[object, object] | None:
+        rowids = self._link_rowids(
+            "src_session_id=? AND resolved_dst_session_id IS NOT NULL AND " + topology_status_composes_sql(),
+            (session_id,),
+            " ORDER BY observed_at_ms IS NULL,observed_at_ms,dst_origin,dst_native_id,link_type LIMIT 1",
+        )
+        if not rowids:
+            return None
+        return (self._link_cell(rowids[0], "resolved_dst_session_id"), self._link_cell(rowids[0], "link_type"))
+
+    def first_link_type(self, session_id: str) -> tuple[object] | None:
+        rowids = self._link_rowids(
+            "src_session_id=?",
+            (session_id,),
+            " ORDER BY observed_at_ms IS NULL,observed_at_ms,dst_origin,dst_native_id,link_type LIMIT 1",
+        )
+        return None if not rowids else (self._link_cell(rowids[0], "link_type"),)
+
+    def parent_of(self, session_id: str) -> str | None:
+        composing = self.composing_parent_link(session_id)
+        if composing is not None:
+            return None if composing[0] is None else str(composing[0])
+        row = self.inputs.session_record(session_id)
+        if row is None:
+            return None
+        parent = self._cell("sessions", row.physical_rowid, "parent_session_id", row.parent_session_id)
+        return None if parent is None else str(parent)
+
+    def existing_method(self, source: str, origin: str, native_id: str, link_type: str) -> object | None:
+        rowids = self._link_rowids(
+            "src_session_id=? AND dst_origin=? AND dst_native_id=? AND link_type=?",
+            (source, origin, native_id, link_type),
+        )
+        return None if not rowids else self._link_cell(rowids[0], "method")
+
+    def stale_authoritative_destinations(self, source: str, link_type: str, winner: str) -> list[str]:
+        rowids = self._link_rowids(
+            "src_session_id=? AND link_type=? AND method=? AND dst_native_id!=?",
+            (source, link_type, HOOK_AUTHORITATIVE_LINK_METHOD, winner),
+        )
+        return [str(self._link_cell(rowid, "dst_native_id")) for rowid in rowids]
+
+    def resolution_candidates(self, session_id: str) -> list[tuple[str, str, str, str]]:
+        candidates: list[tuple[str, str, str, str]] = []
+        with connection_cursor(
+            self.connection,
+            "SELECT session_links.rowid,claims.rowid " + _LINK_RESOLUTION_CLAIM_FROM_SQL,
+            (session_id,),
+        ) as cursor:
+            selected = [(int(row[0]), int(row[1])) for row in cursor]
+        for link_rowid, claim_rowid in selected:
+            with connection_cursor(
+                self.inputs.owner.require_connection(),
+                "SELECT claimant_session_id FROM codex_link_input_claims WHERE physical_rowid=?",
+                (claim_rowid,),
+            ) as cursor:
+                claim = cursor.fetchone()
+            if claim is None:
+                raise RuntimeError("Codex link resolution selected an unprepared original identity claimant")
+            candidates.append(
+                (
+                    str(self._link_cell(link_rowid, "dst_origin")),
+                    str(self._link_cell(link_rowid, "dst_native_id")),
+                    str(self._link_cell(link_rowid, "link_type")),
+                    str(claim[0]),
+                )
+            )
+        with connection_cursor(
+            self.connection,
+            "SELECT links.rowid,sessions.rowid " + _LINK_RESOLUTION_FALLBACK_FROM_SQL,
+            (session_id,),
+        ) as cursor:
+            selected = [(int(row[0]), int(row[1])) for row in cursor]
+        for link_rowid, session_rowid in selected:
+            with connection_cursor(
+                self.inputs.owner.require_connection(),
+                "SELECT session_id FROM codex_link_input_sessions WHERE physical_rowid=?",
+                (session_rowid,),
+            ) as cursor:
+                target = cursor.fetchone()
+            if target is None:
+                raise RuntimeError("Codex link resolution selected an unprepared original fallback session")
+            candidates.append(
+                (
+                    str(self._link_cell(link_rowid, "dst_origin")),
+                    str(self._link_cell(link_rowid, "dst_native_id")),
+                    str(self._link_cell(link_rowid, "link_type")),
+                    str(target[0]),
+                )
+            )
+        return candidates
+
+    def resolution_written(self, physical_rowid: int, columns: tuple[str, ...]) -> None:
+        self.record_written("session_links", physical_rowid, columns)
+
+    def session_written(self, session_id: str, columns: tuple[str, ...]) -> None:
+        row = self.inputs.session_record(session_id)
+        if row is None:
+            raise RuntimeError("Codex projection wrote a session absent from its original carrier")
+        self.record_written("sessions", row.physical_rowid, columns)
+
+    def descendant_root_written(self, physical_rowid: int) -> None:
+        with connection_cursor(
+            self.inputs.owner.require_connection(),
+            "SELECT 1 FROM codex_link_input_sessions WHERE physical_rowid=?",
+            (physical_rowid,),
+        ) as cursor:
+            if cursor.fetchone() is None:
+                raise RuntimeError("Codex root propagation reached an unprepared original descendant")
+        self.record_written("sessions", physical_rowid, ("root_session_id",))
+
+    def inserted_link(self, physical_rowid: int) -> None:
+        self.record_written("session_links", physical_rowid, _CODEX_LINK_FIELDS)
+
+    def superseded_link(self, source: str, link_type: str, native_id: str) -> None:
+        for rowid in self._link_rowids(
+            "src_session_id=? AND link_type=? AND dst_native_id=?",
+            (source, link_type, native_id),
+        ):
+            self.record_written(
+                "session_links",
+                rowid,
+                (
+                    "status",
+                    "method",
+                    "evidence_json",
+                    "resolved_dst_session_id",
+                    "observed_at_ms",
+                ),
+            )
+
+    def existing_session_for_native(self, origin: str, native_id: str) -> str | None:
+        with connection_cursor(
+            self.inputs.owner.require_connection(),
+            "SELECT resolved_session_id FROM codex_link_input_targets WHERE origin=? AND native_id=? AND processed=1",
+            (origin, native_id),
+        ) as cursor:
+            row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Codex link projection requested an unprepared original target")
+        return None if row[0] is None else str(row[0])
+
+    def parser_rows(self, session_id: str, origin: str) -> list[tuple[object, ...]]:
+        rowids = self._link_rowids(
+            "src_session_id=? AND dst_origin=?",
+            (session_id, origin),
+            " ORDER BY observed_at_ms IS NULL,observed_at_ms,dst_native_id,link_type",
+        )
+        columns = (
+            "dst_native_id",
+            "link_type",
+            "method",
+            "status",
+            "branch_point_message_id",
+            "branch_point_content_address",
+            "inheritance",
+            "parent_tool_use_block_id",
+            "evidence_json",
+        )
+        return [tuple(self._link_cell(rowid, column) for column in columns) for rowid in rowids]
+
+
+def prepare_codex_link_inputs(
+    seal: PreparedIndexMutation,
+    *,
+    owner: NativeSQLCustodyOwner,
+    child_native_ids: Iterable[str],
+    parent_native_ids: Iterable[str],
+    source_read: SessionSourceRead,
+) -> PreparedCodexLinkInputs:
+    """Retain the canonical reachable original session/link/identity closure.
+
+    The caller supplies every possible graph parent, including superseded
+    fallbacks across scopes. All original reads belong to its same pinned
+    witness window. The worklists and operands use the existing graph child's
+    native scratch, and this function grants no writer or reference authority.
+    """
+    scratch = owner.require_connection()
+    original = seal.observer("index")
+    with connection_cursor(
+        scratch,
+        "CREATE TABLE codex_link_input_session_queue(session_id TEXT PRIMARY KEY, processed INTEGER NOT NULL DEFAULT 0)",
+    ):
+        pass
+    with connection_cursor(
+        scratch,
+        "CREATE TABLE codex_link_input_targets(origin TEXT, native_id TEXT, direct_session_id TEXT, resolved_session_id TEXT, processed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(origin,native_id))",
+    ):
+        pass
+    with connection_cursor(
+        scratch,
+        "CREATE TABLE codex_link_input_sessions(session_id TEXT PRIMARY KEY,physical_rowid INTEGER UNIQUE,"
+        "raw_id TEXT,created_at_ms INTEGER,updated_at_ms INTEGER,parent_session_id TEXT,root_session_id TEXT,"
+        "branch_type TEXT,session_kind TEXT,source_path TEXT)",
+    ):
+        pass
+    with connection_cursor(
+        scratch,
+        "CREATE TABLE codex_link_input_claims(physical_rowid INTEGER PRIMARY KEY,origin TEXT,"
+        "provider_value TEXT,claimant_session_id TEXT)",
+    ):
+        pass
+    with connection_cursor(
+        scratch,
+        "CREATE TABLE codex_link_input_links(physical_rowid INTEGER PRIMARY KEY,src_session_id TEXT,"
+        "dst_origin TEXT,dst_native_id TEXT,link_type TEXT,method TEXT,status TEXT,observed_at_ms INTEGER,"
+        "resolved_dst_session_id TEXT,resolved_at_ms INTEGER,branch_point_message_id TEXT,"
+        "branch_point_content_address BLOB,inheritance TEXT,parent_tool_use_block_id TEXT,evidence_json TEXT)",
+    ):
+        pass
+
+    def enqueue_session(session_id: str | None) -> None:
+        if session_id is not None:
+            with connection_cursor(
+                scratch, "INSERT OR IGNORE INTO codex_link_input_session_queue(session_id) VALUES(?)", (session_id,)
+            ):
+                pass
+
+    def enqueue_target(origin: str, native_id: str) -> None:
+        with connection_cursor(
+            scratch,
+            "INSERT OR IGNORE INTO codex_link_input_targets(origin,native_id) VALUES(?,?)",
+            (origin, native_id),
+        ):
+            pass
+
+    for native_id in chain(child_native_ids, parent_native_ids):
+        check_compute_cancelled()
+        if native_id and native_id.strip():
+            enqueue_target(Origin.CODEX_SESSION.value, native_id.strip())
+
+    while True:
+        check_compute_cancelled()
+        with connection_cursor(
+            scratch,
+            "SELECT origin,native_id FROM codex_link_input_targets WHERE processed=0 ORDER BY origin,native_id LIMIT 64",
+        ) as cursor:
+            targets = cursor.fetchall()
+        for origin, native_id in targets:
+            parameters = (origin, native_id)
+            resolved = _existing_session_id_for_native(original, origin, native_id, seal.before_index_input)
+            direct = archive_session_id(origin, native_id)
+            with connection_cursor(original, "SELECT rowid FROM sessions WHERE session_id=?", (direct,)) as cursor:
+                direct_exists = cursor.fetchone() is not None
+            if direct_exists:
+                enqueue_session(direct)
+            enqueue_session(resolved)
+            with connection_cursor(
+                original,
+                "SELECT rowid FROM session_identity_claims WHERE origin=? "
+                "AND identity_namespace='provider-session' AND provider_value=? ORDER BY claimant_session_id",
+                parameters,
+            ) as identities:
+                for (rowid,) in identities:
+                    check_compute_cancelled()
+                    seal.before_index_input(
+                        "session_identity_claims",
+                        ("origin", "identity_namespace", "provider_value", "claimant_session_id"),
+                        "SELECT rowid FROM session_identity_claims WHERE rowid=?",
+                        (rowid,),
+                    )
+                    with connection_cursor(
+                        original,
+                        "SELECT origin,provider_value,claimant_session_id FROM session_identity_claims WHERE rowid=?",
+                        (rowid,),
+                    ) as cursor:
+                        row = cursor.fetchone()
+                    if row is None:
+                        raise RuntimeError("selected Codex identity claimant disappeared inside its original window")
+                    with connection_cursor(
+                        scratch,
+                        "INSERT OR IGNORE INTO codex_link_input_claims VALUES(?,?,?,?)",
+                        (rowid, *tuple(row)),
+                    ):
+                        pass
+                    enqueue_session(str(row[2]))
+            with connection_cursor(
+                scratch,
+                "UPDATE codex_link_input_targets SET direct_session_id=?,resolved_session_id=?,processed=1 "
+                "WHERE origin=? AND native_id=?",
+                (direct if direct_exists else None, resolved, *parameters),
+            ):
+                pass
+        with connection_cursor(
+            scratch,
+            "SELECT session_id FROM codex_link_input_session_queue WHERE processed=0 ORDER BY session_id LIMIT 64",
+        ) as cursor:
+            sessions = cursor.fetchall()
+        for (session_id,) in sessions:
+            check_compute_cancelled()
+            with connection_cursor(original, "SELECT rowid FROM sessions WHERE session_id=?", (session_id,)) as cursor:
+                selected = cursor.fetchone()
+            if selected is None:
+                with connection_cursor(
+                    scratch, "INSERT INTO codex_link_input_sessions(session_id) VALUES(?)", (session_id,)
+                ):
+                    pass
+            else:
+                rowid = int(selected[0])
+                seal.before_index_input(
+                    "sessions", _CODEX_LINK_SESSION_FIELDS, "SELECT rowid FROM sessions WHERE rowid=?", (rowid,)
+                )
+                with connection_cursor(
+                    original,
+                    "SELECT " + ",".join(_CODEX_LINK_SESSION_FIELDS) + " FROM sessions WHERE rowid=?",
+                    (rowid,),
+                ) as cursor:
+                    header = cursor.fetchone()
+                if header is None:
+                    raise RuntimeError("selected Codex session disappeared inside its original window")
+                source_path = raw_source_path(source_read, header[1])
+                with connection_cursor(
+                    scratch,
+                    "INSERT INTO codex_link_input_sessions VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (header[0], rowid, *tuple(header[1:]), source_path),
+                ):
+                    pass
+                enqueue_session(None if header[4] is None else str(header[4]))
+                enqueue_session(None if header[5] is None else str(header[5]))
+                with connection_cursor(
+                    original,
+                    "SELECT rowid FROM session_links WHERE src_session_id=? "
+                    "ORDER BY observed_at_ms IS NULL,observed_at_ms,dst_origin,dst_native_id,link_type",
+                    (session_id,),
+                ) as identities:
+                    for (link_rowid,) in identities:
+                        check_compute_cancelled()
+                        seal.before_index_input(
+                            "session_links",
+                            _CODEX_LINK_FIELDS,
+                            "SELECT rowid FROM session_links WHERE rowid=?",
+                            (link_rowid,),
+                        )
+                        with connection_cursor(
+                            original,
+                            "SELECT " + ",".join(_CODEX_LINK_FIELDS) + " FROM session_links WHERE rowid=?",
+                            (link_rowid,),
+                        ) as cursor:
+                            link = cursor.fetchone()
+                        if link is None:
+                            raise RuntimeError("selected Codex link disappeared inside its original window")
+                        with connection_cursor(
+                            scratch,
+                            "INSERT INTO codex_link_input_links VALUES(" + ",".join("?" for _ in range(15)) + ")",
+                            (link_rowid, *tuple(link)),
+                        ):
+                            pass
+                        enqueue_target(str(link[1]), str(link[2]))
+                        enqueue_session(None if link[7] is None else str(link[7]))
+                with connection_cursor(
+                    original, "SELECT rowid FROM sessions WHERE parent_session_id=? ORDER BY rowid", (session_id,)
+                ) as descendants:
+                    for (child_rowid,) in descendants:
+                        check_compute_cancelled()
+                        seal.before_index_input(
+                            "sessions", ("session_id",), "SELECT rowid FROM sessions WHERE rowid=?", (child_rowid,)
+                        )
+                        with connection_cursor(
+                            original, "SELECT session_id FROM sessions WHERE rowid=?", (child_rowid,)
+                        ) as cursor:
+                            child = cursor.fetchone()
+                        if child is None:
+                            raise RuntimeError("selected Codex descendant disappeared inside its original window")
+                        enqueue_session(str(child[0]))
+            with connection_cursor(
+                scratch, "UPDATE codex_link_input_session_queue SET processed=1 WHERE session_id=?", (session_id,)
+            ):
+                pass
+        if not targets and not sessions:
+            break
+    scratch.commit()
+    return PreparedCodexLinkInputs(owner, seal)
+
+
+_CODEX_LINK_FIELDS = (
+    "src_session_id",
+    "dst_origin",
+    "dst_native_id",
+    "link_type",
+    "method",
+    "status",
+    "observed_at_ms",
+    "resolved_dst_session_id",
+    "resolved_at_ms",
+    "branch_point_message_id",
+    "branch_point_content_address",
+    "inheritance",
+    "parent_tool_use_block_id",
+    "evidence_json",
+)
+
+
+_CODEX_LINK_SESSION_FIELDS = (
+    "session_id",
+    "raw_id",
+    "created_at_ms",
+    "updated_at_ms",
+    "parent_session_id",
+    "root_session_id",
+    "branch_type",
+    "session_kind",
+)
+
+
+_LINK_RESOLUTION_CLAIM_FROM_SQL = "FROM session_links\n            JOIN session_identity_claims claims\n              ON claims.origin = session_links.dst_origin\n             AND claims.identity_namespace = 'provider-session'\n             AND claims.provider_value = session_links.dst_native_id\n            WHERE session_links.src_session_id = ?\n              AND session_links.resolved_dst_session_id IS NULL\n              AND session_links.status IS NULL\n              AND NOT EXISTS (\n                    SELECT 1 FROM session_identity_claims conflicts\n                    WHERE conflicts.origin = claims.origin\n                      AND conflicts.identity_namespace = claims.identity_namespace\n                      AND conflicts.provider_value = claims.provider_value\n                      AND conflicts.claimant_session_id != claims.claimant_session_id\n                  )\n            "
+
+
+_LINK_RESOLUTION_FALLBACK_FROM_SQL = "FROM session_links AS links\n            JOIN sessions\n              ON sessions.session_id = links.dst_origin || ':' || links.dst_native_id\n            WHERE links.src_session_id = ?\n              AND links.resolved_dst_session_id IS NULL\n              AND links.status IS NULL\n              AND NOT EXISTS (\n                    SELECT 1 FROM session_identity_claims claims\n                    WHERE claims.origin = links.dst_origin\n                      AND claims.identity_namespace = 'provider-session'\n                      AND claims.provider_value = links.dst_native_id\n              )\n            "
+
+
+class SessionLinkMutationRead(Protocol):
+    """Authority operands for the canonical hook link mutation bodies."""
+
+    def existing_method(self, source: str, origin: str, native_id: str, link_type: str) -> object | None: ...
+    def stale_authoritative_destinations(self, source: str, link_type: str, winner: str) -> list[str]: ...
+    def inserted_link(self, physical_rowid: int) -> None: ...
+    def superseded_link(self, source: str, link_type: str, native_id: str) -> None: ...
+
+
+class ConnectionSessionLinkMutationRead:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def inserted_link(self, physical_rowid: int) -> None:
+        pass
+
+    def superseded_link(self, source: str, link_type: str, native_id: str) -> None:
+        pass
+
+    def existing_method(self, source: str, origin: str, native_id: str, link_type: str) -> object | None:
+        with connection_cursor(
+            self._connection,
+            "SELECT method FROM session_links WHERE src_session_id=? AND dst_origin=? "
+            "AND dst_native_id=? AND link_type=?",
+            (source, origin, native_id, link_type),
+        ) as cursor:
+            row = cursor.fetchone()
+        return None if row is None else row[0]
+
+    def stale_authoritative_destinations(self, source: str, link_type: str, winner: str) -> list[str]:
+        with connection_cursor(
+            self._connection,
+            "SELECT dst_native_id FROM session_links WHERE src_session_id=? AND link_type=? "
+            "AND method=? AND dst_native_id!=?",
+            (source, link_type, HOOK_AUTHORITATIVE_LINK_METHOD, winner),
+        ) as cursor:
+            return [str(row[0]) for row in cursor]
+
+
+class SessionLinkResolutionRead(Protocol):
+    """Exact original/postimage operands of sequential link resolution."""
+
+    def resolution_candidates(self, session_id: str) -> list[tuple[str, str, str, str]]: ...
+    def parent_of(self, session_id: str) -> str | None: ...
+    def resolution_written(self, physical_rowid: int, columns: tuple[str, ...]) -> None: ...
+
+
+class ConnectionSessionLinkResolutionRead:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def parent_of(self, session_id: str) -> str | None:
+        return _walk_parent_of(self._connection, session_id)
+
+    def resolution_written(self, physical_rowid: int, columns: tuple[str, ...]) -> None:
+        # Ordinary reads already observe their connection's current postimage.
+        pass
+
+    def resolution_candidates(self, session_id: str) -> list[tuple[str, str, str, str]]:
+        with connection_cursor(
+            self._connection,
+            "SELECT session_links.dst_origin, session_links.dst_native_id, session_links.link_type,\n                   claims.claimant_session_id "
+            + _LINK_RESOLUTION_CLAIM_FROM_SQL,
+            (session_id,),
+        ) as cursor:
+            candidates = [(str(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in cursor]
+        # The canonical fallback applies only when no exact identity claim exists.
+        with connection_cursor(
+            self._connection,
+            "SELECT links.dst_origin, links.dst_native_id, links.link_type, sessions.session_id "
+            + _LINK_RESOLUTION_FALLBACK_FROM_SQL,
+            (session_id,),
+        ) as cursor:
+            candidates.extend((str(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in cursor)
+        return candidates
+
+
+class SessionLineageProjectionRead(Protocol):
+    """Original or produced lineage operands for the shared projection body."""
+
+    def session_header(self, session_id: str) -> tuple[object, object, object] | None: ...
+    def composing_parent_link(self, session_id: str) -> tuple[object, object] | None: ...
+    def first_link_type(self, session_id: str) -> tuple[object] | None: ...
+    def session_written(self, session_id: str, columns: tuple[str, ...]) -> None: ...
+    def descendant_root_written(self, physical_rowid: int) -> None: ...
+
+
+class ConnectionSessionLineageProjectionRead:
+    """Borrow ordinary Index operands and settle each actual read cursor."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def session_written(self, session_id: str, columns: tuple[str, ...]) -> None:
+        pass
+
+    def descendant_root_written(self, physical_rowid: int) -> None:
+        pass
+
+    def session_header(self, session_id: str) -> tuple[object, object, object] | None:
+        with connection_cursor(
+            self._connection,
+            "SELECT root_session_id,branch_type,session_kind FROM sessions WHERE session_id=?",
+            (session_id,),
+        ) as cursor:
+            row = cursor.fetchone()
+        return None if row is None else (row[0], row[1], row[2])
+
+    def composing_parent_link(self, session_id: str) -> tuple[object, object] | None:
+        with connection_cursor(
+            self._connection,
+            f"""
+            SELECT resolved_dst_session_id, link_type
+            FROM session_links
+            WHERE src_session_id = ? AND resolved_dst_session_id IS NOT NULL
+              AND {topology_status_composes_sql()}
+            ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_origin, dst_native_id, link_type
+            LIMIT 1
+            """,
+            (session_id,),
+        ) as cursor:
+            row = cursor.fetchone()
+        return None if row is None else (row[0], row[1])
+
+    def first_link_type(self, session_id: str) -> tuple[object] | None:
+        with connection_cursor(
+            self._connection,
+            "SELECT link_type FROM session_links WHERE src_session_id=? "
+            "ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_origin, dst_native_id, link_type LIMIT 1",
+            (session_id,),
+        ) as cursor:
+            row = cursor.fetchone()
+        return None if row is None else (row[0],)
+
+
 def _supersede_stale_authoritative_links(
     conn: sqlite3.Connection,
     *,
@@ -7811,6 +10249,7 @@ def _supersede_stale_authoritative_links(
     link_type: str,
     winning_dst_native_id: str,
     observed_at_ms: int,
+    read: SessionLinkMutationRead | None = None,
 ) -> None:
     """Demote any authoritative edge the newest hook claim disagrees with.
 
@@ -7828,15 +10267,12 @@ def _supersede_stale_authoritative_links(
     typed state is the same ``AUTHORITY_CONTRADICTED`` an inferred loser gets,
     because the outcome for composition is identical.
     """
-    stale = conn.execute(
-        """
-        SELECT dst_native_id FROM session_links
-        WHERE src_session_id = ? AND link_type = ? AND method = ? AND dst_native_id != ?
-        """,
-        (src_session_id, link_type, HOOK_AUTHORITATIVE_LINK_METHOD, winning_dst_native_id),
-    ).fetchall()
-    for row in stale:
-        conn.execute(
+    if read is None:
+        read = ConnectionSessionLinkMutationRead(conn)
+    stale = read.stale_authoritative_destinations(src_session_id, link_type, winning_dst_native_id)
+    for stale_native_id in stale:
+        with connection_cursor(
+            conn,
             """
             UPDATE session_links
                SET status = ?, method = ?, evidence_json = ?, resolved_dst_session_id = NULL,
@@ -7849,15 +10285,71 @@ def _supersede_stale_authoritative_links(
                 _json_dumps(
                     {
                         "superseded_by_hook_parent": winning_dst_native_id,
-                        "superseded_hook_parent": str(row[0]),
+                        "superseded_hook_parent": stale_native_id,
                     }
                 ),
                 observed_at_ms,
                 src_session_id,
                 link_type,
-                str(row[0]),
+                stale_native_id,
             ),
-        )
+        ):
+            pass
+        read.superseded_link(src_session_id, link_type, stale_native_id)
+
+
+MANUAL_CONTINUATION_VALUE_SCHEMA = "polylogue.manual-continuation.v1"
+
+
+class ManualContinuationAuthorityError(ReferenceSealError):
+    """Durable manual continuation authority cannot be read or projected."""
+
+
+def _project_manual_continuations(conn: sqlite3.Connection, session_id: str) -> None:
+    """Derive operator continuation edges from this scope's declared User tier.
+
+    Prose handoff assertions have no topology semantics. Only the explicit
+    value discriminator written by the manual continuation product is read.
+    Missing parents stay unresolved until the canonical graph pass sees them.
+    """
+    scope = current_index_mutation_scope()
+    if scope is None:
+        raise ManualContinuationAuthorityError("manual continuation projection requires its Index mutation scope")
+    scope.require_new_work(conn)
+    reader = scope.user_reader()
+    if reader is None:
+        # A declared standalone Index has no durable assertions to project.
+        return
+    scope.note_lineage_change(session_id)
+    conn.execute("DELETE FROM session_links WHERE src_session_id=? AND method='manual-continuation'", (session_id,))
+    try:
+        with connection_cursor(
+            reader,
+            "SELECT assertion_id, value_json, updated_at_ms FROM assertions "
+            "WHERE target_ref=? AND kind='handoff' AND COALESCE(status, '')!='deleted' "
+            "ORDER BY assertion_id",
+            (f"session:{session_id}",),
+        ) as rows:
+            for assertion_id, value_json, observed_at_ms in rows:
+                value = None if value_json is None else json.loads(value_json)
+                if not isinstance(value, dict) or value.get("_schema") != MANUAL_CONTINUATION_VALUE_SCHEMA:
+                    continue
+                parent = value.get("parent_session_id")
+                if not isinstance(parent, str) or ":" not in parent or not all(parent.split(":", 1)):
+                    raise ManualContinuationAuthorityError(
+                        f"manual continuation assertion {assertion_id!r} lacks an exact parent session id"
+                    )
+                parent_origin, parent_native = parent.split(":", 1)
+                # Explicit operator authority retains the manual product's
+                # replacement semantics for this exact edge coordinate.
+                conn.execute(
+                    "INSERT OR REPLACE INTO session_links "
+                    "(src_session_id,dst_origin,dst_native_id,link_type,inheritance,method,confidence,evidence_json,observed_at_ms) "
+                    "VALUES (?, ?, ?, 'continuation', 'spawned-fresh', 'manual-continuation', 1.0, '[]', ?)",
+                    (session_id, parent_origin, parent_native, observed_at_ms),
+                )
+    except (sqlite3.Error, json.JSONDecodeError) as exc:
+        raise ManualContinuationAuthorityError("cannot read durable manual continuation assertions") from exc
 
 
 def _upsert_session_link(
@@ -7876,7 +10368,8 @@ def _upsert_session_link(
     confidence: float,
     evidence_json: str,
     observed_at_ms: int,
-) -> None:
+    read: SessionLinkMutationRead | None = None,
+) -> int | None:
     """Write one edge without letting inference downgrade hook authority.
 
     This replaces a bare ``INSERT OR REPLACE``. That statement rewrote every
@@ -7889,20 +10382,13 @@ def _upsert_session_link(
     """
     if inheritance is not None:
         require_literal(inheritance, LineageInheritance, name="lineage inheritance")
-    existing = conn.execute(
-        """
-        SELECT method FROM session_links
-        WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
-        """,
-        (src_session_id, dst_origin, dst_native_id, link_type),
-    ).fetchone()
-    if (
-        existing is not None
-        and str(existing[0] or "") in HOOK_DERIVED_LINK_METHODS
-        and method not in HOOK_DERIVED_LINK_METHODS
-    ):
-        return
-    conn.execute(
+    if read is None:
+        read = ConnectionSessionLinkMutationRead(conn)
+    existing_method = read.existing_method(src_session_id, dst_origin, dst_native_id, link_type)
+    if str(existing_method or "") in HOOK_DERIVED_LINK_METHODS and method not in HOOK_DERIVED_LINK_METHODS:
+        return None
+    with connection_cursor(
+        conn,
         """
         INSERT OR REPLACE INTO session_links (
             src_session_id, dst_origin, dst_native_id, link_type,
@@ -7925,7 +10411,12 @@ def _upsert_session_link(
             evidence_json,
             observed_at_ms,
         ),
-    )
+    ) as cursor:
+        rowid = cursor.lastrowid
+    if rowid is None:
+        raise RuntimeError("session link replacement did not report its physical row identity")
+    read.inserted_link(int(rowid))
+    return int(rowid)
 
 
 #: ``evidence_json`` key holding the provider-native id of the parent message
@@ -8015,13 +10506,13 @@ def _write_session_link(
     branch_point_message_id: str | None = None,
     branch_point_content_address: bytes | None = None,
     inheritance: str | None = None,
-    source_conn: sqlite3.Connection | None = None,
+    source_read: SessionSourceRead | None = None,
     prior_links: bool = True,
     child_source_path: str | None = None,
 ) -> None:
     """Write this child's outbound parent edge, honouring hook authority.
 
-    ``source_conn`` is the durable ``source.db`` handle carrying the acquired
+    ``source_read`` is the durable ``source.db`` handle carrying the acquired
     hook evidence -- Codex ``codex_thread_spawn_edge`` rows and Claude Code's
     ``agent_id``/``agent_type`` tool-call stamps. It is optional exactly as it
     is on ``revision_authority_refuses_write``: an index-only harness passes
@@ -8056,7 +10547,7 @@ def _write_session_link(
         _retire_stale_parser_assertions(conn, session_id, parent_native_id)
     hook_claim = _authoritative_parent_claim(
         conn,
-        source_conn,
+        source_read,
         origin=origin,
         child_session_id=session_id,
         child_native_id=(session.provider_session_id or "").strip(),
@@ -8099,7 +10590,7 @@ def _write_session_link(
     if not dst_native_id:
         return
     link_type = branch_type_to_edge_type(session.branch_type, default=TopologyEdgeType.BRANCH).value
-    dispatch = _resolve_parent_tool_use_block(conn, session, source_conn=source_conn)
+    dispatch = _resolve_parent_tool_use_block(conn, session, source_read=source_read)
     parent_tool_use_block_id = dispatch.block_id
     method = dispatch.method or "parser-parent"
     evidence: dict[str, object] = {"parent_session_provider_id": session.parent_session_provider_id}
@@ -8269,7 +10760,9 @@ def rederive_codex_spawn_parent_links(
     conn: sqlite3.Connection,
     child_native_ids: Iterable[str],
     *,
-    source_conn: sqlite3.Connection | None,
+    source_read: SessionSourceRead | None,
+    prepared: PreparedCodexSpawnParentLinks | None = None,
+    graph_read: ThreadParentRowRead | None = None,
 ) -> list[str]:
     """Re-decide archived Codex children's parent edges from the current projection.
 
@@ -8285,7 +10778,7 @@ def rederive_codex_spawn_parent_links(
     ``parent_session_provider_id`` evidence); the hook decision is then the
     same one ``_write_session_link`` makes. A child the projection is silent
     about is left as its save wrote it, exactly as a save would. Returns the
-    session ids whose edges were rewritten. ``source_conn`` supplies each
+    session ids whose edges were rewritten. ``source_read`` supplies each
     child's retained rollout path, so its parent is read in its own install
     root exactly as its save read it.
 
@@ -8297,29 +10790,53 @@ def rederive_codex_spawn_parent_links(
     origin = Origin.CODEX_SESSION.value
     rewritten: list[str] = []
     for child_native_id in sorted({value.strip() for value in child_native_ids if value and value.strip()}):
-        child_session_id = _existing_session_id_for_native(conn, origin, child_native_id)
+        child_session_id = (
+            _existing_session_id_for_native(conn, origin, child_native_id)
+            if prepared is None
+            else prepared.existing_session_for_native(origin, child_native_id)
+        )
         if child_session_id is None:
             continue
-        stored_raw = conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (child_session_id,)).fetchone()
+        prepared_observed_at_ms: int | None = None
+        if prepared is None:
+            with connection_cursor(
+                conn, "SELECT raw_id FROM sessions WHERE session_id=?", (child_session_id,)
+            ) as cursor:
+                stored_raw = cursor.fetchone()
+            child_source_path = raw_source_path(source_read, stored_raw[0] if stored_raw is not None else None)
+        else:
+            stored = prepared.inputs.session_record(child_session_id)
+            if stored is None:
+                raise RuntimeError("prepared Codex target has no original child session")
+            child_source_path = stored.source_path
+            prepared_observed_at_ms = (
+                stored.updated_at_ms if stored.updated_at_ms is not None else stored.created_at_ms or 0
+            )
         hook_claim = _codex_spawn_edge_parent_claim(
             conn,
             None,
             child_native_id=child_native_id,
-            child_source_path=raw_source_path(source_conn, stored_raw[0] if stored_raw is not None else None),
+            child_source_path=child_source_path,
+            row_read=graph_read,
         )
         if hook_claim is None or hook_claim.parent_native_id is None:
             continue
         hook_parent = hook_claim.parent_native_id
-        rows = conn.execute(
-            """
+        if prepared is None:
+            with connection_cursor(
+                conn,
+                """
             SELECT dst_native_id, link_type, method, status, branch_point_message_id,
                    branch_point_content_address, inheritance, parent_tool_use_block_id, evidence_json
             FROM session_links
             WHERE src_session_id = ? AND dst_origin = ?
             ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_native_id, link_type
             """,
-            (child_session_id, origin),
-        ).fetchall()
+                (child_session_id, origin),
+            ) as cursor:
+                rows = cursor.fetchall()
+        else:
+            rows = prepared.parser_rows(child_session_id, origin)
         authoritative = [str(row[0]) for row in rows if row[2] == HOOK_AUTHORITATIVE_LINK_METHOD and row[3] is None]
         if authoritative == [hook_parent]:
             continue
@@ -8333,11 +10850,18 @@ def rederive_codex_spawn_parent_links(
             ),
             None,
         )
-        timing = conn.execute(
-            "SELECT COALESCE(updated_at_ms, created_at_ms, 0) FROM sessions WHERE session_id = ?",
-            (child_session_id,),
-        ).fetchone()
-        observed_at_ms = int(timing[0]) if timing is not None and timing[0] is not None else 0
+        if prepared is None:
+            with connection_cursor(
+                conn,
+                "SELECT COALESCE(updated_at_ms, created_at_ms, 0) FROM sessions WHERE session_id=?",
+                (child_session_id,),
+            ) as cursor:
+                timing = cursor.fetchone()
+            observed_at_ms = int(timing[0]) if timing is not None and timing[0] is not None else 0
+        else:
+            if prepared_observed_at_ms is None:
+                raise RuntimeError("prepared Codex target lacks its original timestamp")
+            observed_at_ms = prepared_observed_at_ms
         if parser_row is None:
             _supersede_stale_authoritative_links(
                 conn,
@@ -8345,6 +10869,7 @@ def rederive_codex_spawn_parent_links(
                 link_type=LinkType.SUBAGENT.value,
                 winning_dst_native_id=hook_parent,
                 observed_at_ms=observed_at_ms,
+                read=prepared,
             )
             _upsert_session_link(
                 conn,
@@ -8360,6 +10885,7 @@ def rederive_codex_spawn_parent_links(
                 confidence=1.0,
                 evidence_json=_json_dumps({**hook_claim.evidence, "parser_parent": None}),
                 observed_at_ms=observed_at_ms,
+                read=prepared,
             )
         else:
             (
@@ -8391,6 +10917,7 @@ def rederive_codex_spawn_parent_links(
                 link_type=link_type,
                 winning_dst_native_id=hook_parent,
                 observed_at_ms=observed_at_ms,
+                read=prepared,
             )
             _upsert_session_link(
                 conn,
@@ -8407,6 +10934,7 @@ def rederive_codex_spawn_parent_links(
                 confidence=1.0,
                 evidence_json=_json_dumps(evidence),
                 observed_at_ms=observed_at_ms,
+                read=prepared,
             )
             if not agreeing:
                 _upsert_session_link(
@@ -8424,20 +10952,29 @@ def rederive_codex_spawn_parent_links(
                     confidence=1.0,
                     evidence_json=_json_dumps({**hook_claim.evidence, "superseded_parser_parent": parser_parent}),
                     observed_at_ms=observed_at_ms,
+                    read=prepared,
                 )
-        _resolve_outbound_session_links(conn, child_session_id, origin)
-        parent_link = _composing_parent_link(conn, child_session_id)
-        conn.execute(
+        _resolve_outbound_session_links(conn, child_session_id, origin, read=prepared)
+        parent_link = (
+            _composing_parent_link(conn, child_session_id)
+            if prepared is None
+            else prepared.composing_parent_link(child_session_id)
+        )
+        with connection_cursor(
+            conn,
             "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
             (str(parent_link[0]) if parent_link is not None else None, child_session_id),
-        )
+        ):
+            pass
+        if prepared is not None:
+            prepared.session_written(child_session_id, ("parent_session_id",))
         rewritten.append(child_session_id)
     # One seen set means each rewritten child, and each ancestor the refresh
     # climbs to, is projected once; a child whose root moves carries its
     # descendants along (``_propagate_root_to_descendants``).
     seen: set[str] = set()
     for session_id in rewritten:
-        _refresh_session_projection(conn, session_id, seen=seen)
+        _refresh_session_projection(conn, session_id, seen=seen, read=prepared)
     return rewritten
 
 
@@ -8464,7 +11001,7 @@ def _resolve_parent_tool_use_block(
     conn: sqlite3.Connection,
     session: ParsedSession,
     *,
-    source_conn: sqlite3.Connection | None = None,
+    source_read: SessionSourceRead | None = None,
 ) -> _DispatchResolution:
     """Resolve parent-side dispatch evidence to the exact TOOL_USE block.
 
@@ -8479,7 +11016,7 @@ def _resolve_parent_tool_use_block(
     if parent_session_id is None:
         return _DISPATCH_PENDING
     child_session_id = archive_session_id(origin, session.provider_session_id.strip())
-    return _resolve_parent_dispatch_block(conn, parent_session_id, child_session_id, source_conn=source_conn)
+    return _resolve_parent_dispatch_block(conn, parent_session_id, child_session_id, source_read=source_read)
 
 
 def _branch_type_from_link_type(link_type: object) -> str | None:
@@ -8507,48 +11044,52 @@ class _CycleWalkResult:
     path: tuple[str, ...]
 
 
-def _walk_parent_of(conn: sqlite3.Connection, session_id: str) -> str | None:
-    """The parent ``session_id`` the cycle walk must follow out of *session_id*.
-
-    polylogue-nzf93: this deliberately reads the same authority
-    ``_refresh_session_projection`` derives ``sessions.parent_session_id``
-    from -- the first composing resolved ``session_links`` edge, in the same
-    order -- rather than the projection column itself.
-
-    The projection is refreshed only at the END of ``_resolve_session_graph``,
-    after its inbound-parent loop. Reading the column therefore made every
-    edge resolved earlier in the SAME write invisible to the guard, which is
-    how a mutual parent pair escaped: writing A(parent=B) before B exists
-    leaves A -> B unresolved, then writing B(parent=A) resolves B -> A
-    outbound, and the inbound loop's walk out of B still saw a NULL column and
-    called A -> B acyclic. Both edges resolved and ``parent_session_id`` itself
-    closed a two-node loop.
-
-    The ``sessions`` column remains the fallback for a session that carries no
-    composing resolved edge at all, so a parent chain projected without
-    ``session_links`` rows still walks.
-    """
-    row = conn.execute(
-        f"""
-        SELECT COALESCE(
-            (
-                SELECT links.resolved_dst_session_id
-                FROM session_links AS links
-                WHERE links.src_session_id = :session_id
-                  AND links.resolved_dst_session_id IS NOT NULL
-                  AND {topology_status_composes_sql("links.status")}
-                ORDER BY links.observed_at_ms IS NULL, links.observed_at_ms,
-                         links.dst_origin, links.dst_native_id, links.link_type
-                LIMIT 1
-            ),
-            (SELECT parent_session_id FROM sessions WHERE session_id = :session_id)
-        )
-        """,
-        {"session_id": session_id},
-    ).fetchone()
-    if row is None or row[0] is None:
-        return None
-    return str(row[0])
+def _walk_parent_of(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> str | None:
+    # Select the same composing edge before copying its potentially large ID.
+    # The session projection supplies the original COALESCE fallback only
+    # when this canonical edge predicate has no match.
+    if not conn.in_transaction:
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
+        try:
+            return _walk_parent_of(conn, session_id, before_input)
+        finally:
+            with connection_cursor(conn, "ROLLBACK"):
+                pass
+    with connection_cursor(
+        conn,
+        "SELECT rowid FROM session_links AS links WHERE links.src_session_id=? "
+        "AND links.resolved_dst_session_id IS NOT NULL "
+        f"AND {topology_status_composes_sql('links.status')} "
+        "ORDER BY links.observed_at_ms IS NULL,links.observed_at_ms,"
+        "links.dst_origin,links.dst_native_id,links.link_type LIMIT 1",
+        (session_id,),
+    ) as cursor:
+        selected = cursor.fetchone()
+    if selected is not None:
+        if before_input is not None:
+            before_input(
+                "session_links",
+                ("resolved_dst_session_id",),
+                "SELECT rowid FROM session_links WHERE rowid=?",
+                (selected[0],),
+            )
+        with connection_cursor(
+            conn, "SELECT resolved_dst_session_id FROM session_links WHERE rowid=?", (selected[0],)
+        ) as cursor:
+            row = cursor.fetchone()
+    else:
+        if before_input is not None:
+            before_input(
+                "sessions", ("parent_session_id",), "SELECT rowid FROM sessions WHERE session_id=?", (session_id,)
+            )
+        with connection_cursor(
+            conn, "SELECT parent_session_id FROM sessions WHERE session_id=?", (session_id,)
+        ) as cursor:
+            row = cursor.fetchone()
+    return None if row is None or row[0] is None else str(row[0])
 
 
 def _would_create_cycle(
@@ -8556,6 +11097,8 @@ def _would_create_cycle(
     *,
     child_id: str,
     proposed_parent_id: str,
+    before_input: BeforeIndexInput | None = None,
+    read: SessionLinkResolutionRead | None = None,
 ) -> _CycleWalkResult:
     """Classify the proposed edge without conflating exhaustion with a cycle.
 
@@ -8574,7 +11117,7 @@ def _would_create_cycle(
     visited = {proposed_parent_id}
     current = proposed_parent_id
     while True:
-        next_parent = _walk_parent_of(conn, current)
+        next_parent = _walk_parent_of(conn, current, before_input) if read is None else read.parent_of(current)
         if next_parent is None:
             return _CycleWalkResult("acyclic", tuple(path))
         if next_parent == child_id:
@@ -8596,7 +11139,7 @@ def _quarantine_session_link(
     link_type: str,
     cycle_walk: _CycleWalkResult,
     observed_at_ms: int,
-) -> None:
+) -> tuple[int, ...]:
     """Mark one unsafe edge quarantined with accurately typed evidence."""
     if cycle_walk.outcome == "cycle":
         evidence_payload: dict[str, JSONValue] = {
@@ -8616,7 +11159,8 @@ def _quarantine_session_link(
         raise ValueError("acyclic session link cannot be quarantined as a cycle risk")
     evidence_payload["resolution_reason"] = "cycle-quarantine"
     evidence = _json_dumps(evidence_payload)
-    conn.execute(
+    with connection_cursor(
+        conn,
         """
         UPDATE session_links
            SET status = ?,
@@ -8626,6 +11170,7 @@ def _quarantine_session_link(
            AND dst_origin = ?
            AND dst_native_id = ?
            AND link_type = ?
+        RETURNING rowid
         """,
         (
             TopologyEdgeStatus.QUARANTINED.value,
@@ -8636,7 +11181,8 @@ def _quarantine_session_link(
             dst_native_id,
             link_type,
         ),
-    )
+    ) as cursor:
+        return tuple(int(row[0]) for row in cursor)
 
 
 def _resolve_session_graph(
@@ -8650,7 +11196,7 @@ def _resolve_session_graph(
     bulk_fts: bool = False,
     bulk_build: bool = False,
     invalidated_session_ids: set[str] | None = None,
-    source_conn: sqlite3.Connection | None = None,
+    source_read: SessionSourceRead | None = None,
 ) -> set[str]:
     """Resolve this session's lineage edges and re-anchor what its write moved.
 
@@ -8682,7 +11228,7 @@ def _resolve_session_graph(
     _resolve_outbound_session_links(conn, session_id, origin)
     record_substage("outbound_links", t0)
     t0 = time.perf_counter()
-    _refill_inbound_dispatch_block_ids(conn, session_id, source_conn=source_conn)
+    _refill_inbound_dispatch_block_ids(conn, session_id, source_read=source_read)
     record_substage("inbound_dispatch_blocks", t0)
     t0 = time.perf_counter()
     has_outbound_link = (
@@ -8752,7 +11298,7 @@ def _resolve_session_graph(
                 observed_at_ms=int(time.time() * 1000),
             )
             continue
-        dispatch = _resolve_parent_dispatch_block(conn, session_id, child_id, source_conn=source_conn)
+        dispatch = _resolve_parent_dispatch_block(conn, session_id, child_id, source_read=source_read)
         conn.execute(
             f"""
             UPDATE session_links
@@ -8838,7 +11384,7 @@ def _refill_inbound_dispatch_block_ids(
     conn: sqlite3.Connection,
     parent_session_id: str,
     *,
-    source_conn: sqlite3.Connection | None = None,
+    source_read: SessionSourceRead | None = None,
 ) -> None:
     """Rebind resolved children to this parent's dispatch blocks.
 
@@ -8861,7 +11407,7 @@ def _refill_inbound_dispatch_block_ids(
         (parent_session_id,),
     ).fetchall()
     for src_session_id, dst_origin, dst_native_id, link_type in rows:
-        dispatch = _resolve_parent_dispatch_block(conn, parent_session_id, str(src_session_id), source_conn=source_conn)
+        dispatch = _resolve_parent_dispatch_block(conn, parent_session_id, str(src_session_id), source_read=source_read)
         conn.execute(
             f"""UPDATE session_links
                SET parent_tool_use_block_id = ?,
@@ -8901,7 +11447,13 @@ def _root_projection_current(conn: sqlite3.Connection, session_id: str) -> bool:
     return row is not None and row[0] == session_id and row[1] is None
 
 
-def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, origin: str) -> None:
+def _resolve_outbound_session_links(
+    conn: sqlite3.Connection,
+    session_id: str,
+    origin: str,
+    *,
+    read: SessionLinkResolutionRead | None = None,
+) -> None:
     """Resolve ``session_id``'s own unresolved outbound edges (it is the child).
 
     polylogue-4ts.10: candidates are evaluated one at a time (rather than a
@@ -8929,54 +11481,13 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
     future writer that sets a status post-resolution. It is not the mechanism
     that keeps contradicted edges out of lineage today.
     """
-    candidates = conn.execute(
-        """
-        SELECT session_links.dst_origin, session_links.dst_native_id, session_links.link_type,
-               claims.claimant_session_id
-        FROM session_links
-        JOIN session_identity_claims claims
-          ON claims.origin = session_links.dst_origin
-         AND claims.identity_namespace = 'provider-session'
-         AND claims.provider_value = session_links.dst_native_id
-        WHERE session_links.src_session_id = ?
-          AND session_links.resolved_dst_session_id IS NULL
-          AND session_links.status IS NULL
-          AND NOT EXISTS (
-                SELECT 1 FROM session_identity_claims conflicts
-                WHERE conflicts.origin = claims.origin
-                  AND conflicts.identity_namespace = claims.identity_namespace
-                  AND conflicts.provider_value = claims.provider_value
-                  AND conflicts.claimant_session_id != claims.claimant_session_id
-              )
-        """,
-        (session_id,),
-    ).fetchall()
-    # A session written before identity claims existed still has one exact
-    # canonical name. Admit that name as a canonical target without broadening
-    # the lookup to filename, ordering, or partial-string matches.
-    exact_candidates = conn.execute(
-        """
-        SELECT links.dst_origin, links.dst_native_id, links.link_type, sessions.session_id
-        FROM session_links AS links
-        JOIN sessions
-          ON sessions.session_id = links.dst_origin || ':' || links.dst_native_id
-        WHERE links.src_session_id = ?
-          AND links.resolved_dst_session_id IS NULL
-          AND links.status IS NULL
-          AND NOT EXISTS (
-                SELECT 1 FROM session_identity_claims claims
-                WHERE claims.origin = links.dst_origin
-                  AND claims.identity_namespace = 'provider-session'
-                  AND claims.provider_value = links.dst_native_id
-          )
-        """,
-        (session_id,),
-    ).fetchall()
-    candidates.extend(exact_candidates)
+    if read is None:
+        read = ConnectionSessionLinkResolutionRead(conn)
+    candidates = read.resolution_candidates(session_id)
     for dst_origin, dst_native_id, link_type, proposed_parent_id in candidates:
-        cycle_walk = _would_create_cycle(conn, child_id=session_id, proposed_parent_id=proposed_parent_id)
+        cycle_walk = _would_create_cycle(conn, child_id=session_id, proposed_parent_id=proposed_parent_id, read=read)
         if cycle_walk.outcome != "acyclic":
-            _quarantine_session_link(
+            written_rowids = _quarantine_session_link(
                 conn,
                 src_session_id=session_id,
                 dst_origin=dst_origin,
@@ -8985,8 +11496,11 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
                 cycle_walk=cycle_walk,
                 observed_at_ms=int(time.time() * 1000),
             )
+            for rowid in written_rowids:
+                read.resolution_written(rowid, ("status", "evidence_json", "resolved_at_ms"))
             continue
-        conn.execute(
+        with connection_cursor(
+            conn,
             """
             UPDATE session_links
                SET resolved_dst_session_id = ?,
@@ -8998,85 +11512,76 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
                AND link_type = ?
                AND resolved_dst_session_id IS NULL
                AND status IS NULL
+            RETURNING rowid
             """,
             (proposed_parent_id, session_id, dst_origin, dst_native_id, link_type),
-        )
+        ) as cursor:
+            for (rowid,) in cursor:
+                read.resolution_written(int(rowid), ("resolved_dst_session_id", "resolved_at_ms", "evidence_json"))
 
 
-def _projected_session_kind(conn: sqlite3.Connection, session_id: str, branch_type: object) -> str | None:
-    """Re-derive the stored session kind from the branch type being projected.
-
-    Admission derives the kind from parser evidence alone, but a subagent
-    child is often only discovered later, from hook evidence resolved into
-    ``session_links``. That evidence refreshes ``branch_type`` here, so the
-    kind must follow it or the session stays PRIMARY forever. Kinds that are
-    not branch-derived (prompt suggestions, temporary sessions) are preserved
-    by ``admitted_session_kind`` itself.
-    """
-    row = conn.execute("SELECT session_kind FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+def _projected_session_kind(
+    read: SessionLineageProjectionRead,
+    session_id: str,
+    branch_type: object,
+) -> str | None:
+    row = read.session_header(session_id)
     if row is None:
         return None
-    return admitted_session_kind(row[0], branch_type=cast("str | None", branch_type)).value
+    kind = row[2]
+    if kind is not None and not isinstance(kind, (str, SessionKind)):
+        raise ValueError("projected session has an invalid canonical kind")
+    return admitted_session_kind(kind, branch_type=cast("str | None", branch_type)).value
 
 
 def _composing_parent_link(conn: sqlite3.Connection, session_id: str) -> tuple[object, object] | None:
-    """Return ``(resolved parent session id, link type)`` of the edge the projection composes."""
-    row = conn.execute(
-        f"""
-        SELECT resolved_dst_session_id, link_type
-        FROM session_links
-        WHERE src_session_id = ? AND resolved_dst_session_id IS NOT NULL
-          AND {topology_status_composes_sql()}
-        ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_origin, dst_native_id, link_type
-        LIMIT 1
-        """,
-        (session_id,),
-    ).fetchone()
-    return (row[0], row[1]) if row is not None else None
+    return ConnectionSessionLineageProjectionRead(conn).composing_parent_link(session_id)
 
 
-def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
+def _refresh_session_projection(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    seen: set[str],
+    read: SessionLineageProjectionRead | None = None,
+) -> None:
     """Refresh the projection of ``session_id`` and every unrefreshed ancestor.
 
     Walks up to the first session already refreshed (or a root), then projects
     top-down, so a lineage of any depth never recurses; ``seen`` stops a cycle.
     """
+    if read is None:
+        read = ConnectionSessionLineageProjectionRead(conn)
     pending: list[tuple[str, str, object]] = []
     current = session_id
     while current not in seen:
         seen.add(current)
-        parent_link = _composing_parent_link(conn, current)
+        parent_link = read.composing_parent_link(current)
         if parent_link is None:
-            _project_lineage_root(conn, current)
+            _project_lineage_root(conn, current, read=read)
             break
         pending.append((current, str(parent_link[0]), parent_link[1]))
         current = str(parent_link[0])
     for child_session_id, parent_session_id, link_type in reversed(pending):
-        _project_lineage_child(conn, child_session_id, parent_session_id, link_type)
+        _project_lineage_child(conn, child_session_id, parent_session_id, link_type, read=read)
 
 
-def _project_lineage_root(conn: sqlite3.Connection, session_id: str) -> None:
-    unresolved_link = conn.execute(
-        """
-        SELECT link_type
-        FROM session_links
-        WHERE src_session_id = ?
-        ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_origin, dst_native_id, link_type
-        LIMIT 1
-        """,
-        (session_id,),
-    ).fetchone()
+def _project_lineage_root(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    read: SessionLineageProjectionRead,
+) -> None:
+    unresolved_link = read.first_link_type(session_id)
+    header = read.session_header(session_id)
     branch_type: str | None
     if unresolved_link is not None:
         branch_type = _branch_type_from_link_type(unresolved_link[0])
     else:
-        existing_branch = conn.execute(
-            "SELECT branch_type FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        branch_type = str(existing_branch[0]) if existing_branch is not None and existing_branch[0] else None
-    previous_root_id = _stored_root_session_id(conn, session_id)
-    conn.execute(
+        branch_type = str(header[1]) if header is not None and header[1] else None
+    previous_root_id = _stored_root_session_id(read, session_id)
+    with connection_cursor(
+        conn,
         """
         UPDATE sessions
         SET parent_session_id = NULL,
@@ -9085,25 +11590,30 @@ def _project_lineage_root(conn: sqlite3.Connection, session_id: str) -> None:
             session_kind = ?
         WHERE session_id = ?
         """,
-        (branch_type, _projected_session_kind(conn, session_id, branch_type), session_id),
-    )
+        (branch_type, _projected_session_kind(read, session_id, branch_type), session_id),
+    ):
+        pass
+    read.session_written(session_id, ("parent_session_id", "root_session_id", "branch_type", "session_kind"))
     if previous_root_id != session_id:
-        _propagate_root_to_descendants(conn, session_id, session_id)
+        _propagate_root_to_descendants(conn, session_id, session_id, read=read)
 
 
-def _project_lineage_child(conn: sqlite3.Connection, session_id: str, parent_session_id: str, link_type: Any) -> None:
-    parent_root_row = conn.execute(
-        """
-        SELECT COALESCE(root_session_id, session_id)
-        FROM sessions
-        WHERE session_id = ?
-        """,
-        (parent_session_id,),
-    ).fetchone()
-    parent_root_id = str(parent_root_row[0]) if parent_root_row is not None else parent_session_id
+def _project_lineage_child(
+    conn: sqlite3.Connection,
+    session_id: str,
+    parent_session_id: str,
+    link_type: object,
+    *,
+    read: SessionLineageProjectionRead,
+) -> None:
+    parent_header = read.session_header(parent_session_id)
+    parent_root_id = (
+        str(parent_header[0]) if parent_header is not None and parent_header[0] is not None else parent_session_id
+    )
     projected_branch_type = _branch_type_from_link_type(link_type)
-    previous_root_id = _stored_root_session_id(conn, session_id)
-    conn.execute(
+    previous_root_id = _stored_root_session_id(read, session_id)
+    with connection_cursor(
+        conn,
         """
         UPDATE sessions
         SET parent_session_id = ?,
@@ -9116,20 +11626,28 @@ def _project_lineage_child(conn: sqlite3.Connection, session_id: str, parent_ses
             parent_session_id,
             parent_root_id,
             projected_branch_type,
-            _projected_session_kind(conn, session_id, projected_branch_type),
+            _projected_session_kind(read, session_id, projected_branch_type),
             session_id,
         ),
-    )
+    ):
+        pass
+    read.session_written(session_id, ("parent_session_id", "root_session_id", "branch_type", "session_kind"))
     if previous_root_id != parent_root_id:
-        _propagate_root_to_descendants(conn, session_id, parent_root_id)
+        _propagate_root_to_descendants(conn, session_id, parent_root_id, read=read)
 
 
-def _stored_root_session_id(conn: sqlite3.Connection, session_id: str) -> str | None:
-    row = conn.execute("SELECT root_session_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+def _stored_root_session_id(read: SessionLineageProjectionRead, session_id: str) -> str | None:
+    row = read.session_header(session_id)
     return None if row is None or row[0] is None else str(row[0])
 
 
-def _propagate_root_to_descendants(conn: sqlite3.Connection, session_id: str, root_session_id: str) -> None:
+def _propagate_root_to_descendants(
+    conn: sqlite3.Connection,
+    session_id: str,
+    root_session_id: str,
+    *,
+    read: SessionLineageProjectionRead,
+) -> None:
     """Give every projected descendant of ``session_id`` its new root.
 
     A descendant's root is its parent's root, so when a late parent or a moved
@@ -9140,7 +11658,8 @@ def _propagate_root_to_descendants(conn: sqlite3.Connection, session_id: str, ro
     ``parent_session_id`` projection, touches only this subtree, and ``UNION``
     terminates it on a cycle.
     """
-    conn.execute(
+    with connection_cursor(
+        conn,
         """
         WITH RECURSIVE below(session_id) AS (
             SELECT session_id FROM sessions WHERE parent_session_id = :session_id
@@ -9151,9 +11670,12 @@ def _propagate_root_to_descendants(conn: sqlite3.Connection, session_id: str, ro
            SET root_session_id = :root_session_id
          WHERE session_id IN (SELECT session_id FROM below)
            AND root_session_id IS NOT :root_session_id
+        RETURNING rowid
         """,
         {"session_id": session_id, "root_session_id": root_session_id},
-    )
+    ) as cursor:
+        for (rowid,) in cursor:
+            read.descendant_root_written(int(rowid))
 
 
 def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
@@ -9221,6 +11743,10 @@ def _next_session_event_position(conn: sqlite3.Connection, session_id: str) -> i
 _SESSION_EVENTS_REDUNDANT_TYPES = frozenset(
     {"token_count", "message_usage", "agent_policy", "agent_message", "agent_reasoning"}
 )
+# Usage events carry a typed ``source_message_resolution``: an id naming
+# several occurrences is recorded as ``ambiguous`` (polylogue-1pzmq) instead of
+# refusing the session. Other events have no typed slot for that ambiguity.
+_TYPED_USAGE_EVENT_TYPES = frozenset({"token_count", "message_usage"})
 
 
 def _last_agent_policy_values(
@@ -9247,6 +11773,20 @@ def _last_agent_policy_values(
     if row is None:
         return None
     return (row[0], row[1], row[2])
+
+
+_SessionEventInsertRow = tuple[
+    str,
+    str | None,
+    str | None,
+    int,
+    str | None,
+    str,
+    int | None,
+    int | None,
+    int | None,
+    str | None,
+]
 
 
 def _stored_event_payload(
@@ -9280,6 +11820,7 @@ def _write_session_events(
     messages: Sequence[ParsedMessage],
     events: Iterable[ParsedSessionEvent],
     *,
+    owner_resolution: MessageOwnerResolution,
     content_identities: Sequence[MessageContentIdentity],
     position_offset: int = 0,
     event_position_offset: int = 0,
@@ -9290,176 +11831,287 @@ def _write_session_events(
 ) -> SessionEventWriteResult:
     source = messages.messages if isinstance(messages, _MessageTail) else messages
     disk_index = _DiskMessageEventIndex(source.path.parent) if isinstance(source, SqliteMessageSink) else None
-    by_native_id: dict[str, str] | _DiskMessageEventIndex = disk_index if disk_index is not None else {}
-    for fallback_position, message in enumerate(messages):
-        message_id = _message_id(
-            session_id,
-            message,
-            fallback_position,
-            content_identities=content_identities,
-            duplicate_native_ids=duplicate_native_ids,
-        )
-        if disk_index is not None:
-            effective_position = message.position if message.position is not None else fallback_position
-            disk_index.add_boundary(effective_position, message_id)
-        if (
-            message.provider_message_id
-            and _normalized_message_native_id(message) not in duplicate_native_ids
-            and _normalized_message_native_id(message) not in ambiguous_source_provider_ids
-        ):
-            by_native_id[message.provider_message_id] = message_id
-    wrote_provider_usage_events = False
-    position = event_position_offset
-    session_event_rows: list[tuple[object, ...]] = []
-    agent_policy_rows: list[tuple[object, ...]] = []
-    # polylogue-cuxz.11: the Codex wire restates the whole policy on every
-    # turn_context, so a row per observation made this table a change-log of
-    # non-changes -- 402,869 rows carrying 3,053 distinct facts across 3,031
-    # sessions, 99.3% of which never changed policy at all. Only a genuine
-    # value change is retained; `position` still marks where the retained
-    # value took effect, so a row is the START of an interval that runs until
-    # the next row.
-    last_agent_policy = _last_agent_policy_values(conn, session_id)
-    provider_usage_rows: list[tuple[object, ...]] = []
+    try:
+        by_native_id: dict[str, str] | _DiskMessageEventIndex = disk_index if disk_index is not None else {}
+        by_owner_key: dict[str, str | None] = {}
+        owner_keys = iter(owner_resolution.keys)
+        if isinstance(messages, _MessageTail):
+            for _ordinal in range(messages.start):
+                owner_key = next(owner_keys)
+                if owner_key in owner_resolution.ambiguous_keys:
+                    continue
+                if disk_index is not None:
+                    disk_index.add_occurrence(owner_key, None)
+                else:
+                    by_owner_key[owner_key] = None
+        for fallback_position, (message, owner_key) in enumerate(zip(messages, owner_keys, strict=True)):
+            message_id = _message_id(
+                session_id,
+                message,
+                fallback_position,
+                content_identities=content_identities,
+                duplicate_native_ids=duplicate_native_ids,
+            )
+            if owner_key not in owner_resolution.ambiguous_keys:
+                if disk_index is not None:
+                    disk_index.add_occurrence(owner_key, message_id)
+                else:
+                    by_owner_key[owner_key] = message_id
+            if disk_index is not None:
+                effective_position = message.position if message.position is not None else fallback_position
+                disk_index.add_boundary(effective_position, message_id)
+            if (
+                message.provider_message_id
+                and _normalized_message_native_id(message) not in duplicate_native_ids
+                and _normalized_message_native_id(message) not in ambiguous_source_provider_ids
+            ):
+                by_native_id[message.provider_message_id] = message_id
+        wrote_provider_usage_events = False
+        position = event_position_offset
+        session_event_rows: list[_SessionEventInsertRow] = []
+        agent_policy_rows: list[tuple[object, ...]] = []
+        # polylogue-cuxz.11: the Codex wire restates the whole policy on every
+        # turn_context, so a row per observation made this table a change-log of
+        # non-changes -- 402,869 rows carrying 3,053 distinct facts across 3,031
+        # sessions, 99.3% of which never changed policy at all. Only a genuine
+        # value change is retained; `position` still marks where the retained
+        # value took effect, so a row is the START of an interval that runs until
+        # the next row.
+        last_agent_policy = _last_agent_policy_values(conn, session_id)
+        provider_usage_rows: list[tuple[object, ...]] = []
 
-    def _flush_rows() -> None:
-        if session_event_rows:
-            conn.executemany(
+        def _flush_rows() -> None:
+            if session_event_rows:
+                conn.executemany(
+                    "DELETE FROM session_event_array_items WHERE session_id = ? AND event_position = ?",
+                    ((str(row[0]), int(row[3])) for row in session_event_rows),
+                )
+                conn.executemany(
+                    "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
+                    "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
+                    "boundary_start_position, boundary_end_position, boundary_message_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    session_event_rows,
+                )
+                session_event_rows.clear()
+            if agent_policy_rows:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO session_agent_policies (session_id, source_message_id, "
+                    "position, approval_policy, sandbox_policy, network_policy, observed_at_ms) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    agent_policy_rows,
+                )
+                agent_policy_rows.clear()
+            if provider_usage_rows:
+                conn.executemany(_PROVIDER_USAGE_EVENT_INSERT_SQL, provider_usage_rows)
+                provider_usage_rows.clear()
+
+        def _insert_streamed_event(row: _SessionEventInsertRow, arrays: Mapping[str, object]) -> None:
+            conn.execute(
+                "DELETE FROM session_event_array_items WHERE session_id = ? AND event_position = ?",
+                (str(row[0]), int(row[3])),
+            )
+            conn.execute(
                 "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
                 "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
                 "boundary_start_position, boundary_end_position, boundary_message_id) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                session_event_rows,
+                row,
             )
-            session_event_rows.clear()
-        if agent_policy_rows:
-            conn.executemany(
-                "INSERT OR REPLACE INTO session_agent_policies (session_id, source_message_id, "
-                "position, approval_policy, sandbox_policy, network_policy, observed_at_ms) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                agent_policy_rows,
-            )
-            agent_policy_rows.clear()
-        if provider_usage_rows:
-            conn.executemany(_PROVIDER_USAGE_EVENT_INSERT_SQL, provider_usage_rows)
-            provider_usage_rows.clear()
+            for payload_key, array in arrays.items():
+                from polylogue.sources.streamed_event_payload import StreamedJsonArray
 
-    for event in events:
-        source_message_provider_id = event.source_message_provider_id
-        if (
-            inherited_source_message_ids is not None
-            and source_message_provider_id is not None
-            and source_message_provider_id in inherited_source_message_ids
-        ):
-            continue
-        source_message_id = by_native_id.get(source_message_provider_id or "")
-        if source_message_id is None and inherited_source_message_ids is not None:
-            source_message_id = inherited_source_message_ids.get(source_message_provider_id or "")
-        if event.event_type not in _SESSION_EVENTS_REDUNDANT_TYPES:
-            boundary_message_id = None
-            if event.boundary_message_position is not None:
-                if disk_index is not None:
-                    boundary_message_id = disk_index.boundary_message_id(event.boundary_message_position)
-                else:
-                    for fallback_position, message in enumerate(messages):
-                        # Parsers may leave ``position`` unset; the ordinal is then
-                        # the message's position, exactly as ``_message_id`` derives it.
-                        effective_position = message.position if message.position is not None else fallback_position
-                        if effective_position == event.boundary_message_position:
-                            boundary_message_id = _message_id(
-                                session_id,
-                                message,
-                                fallback_position,
-                                content_identities=content_identities,
-                                duplicate_native_ids=duplicate_native_ids,
-                            )
-                            break
-            session_event_rows.append(
-                (
+                if not isinstance(array, StreamedJsonArray):
+                    raise TypeError("session event streamed payload marker changed after preparation")
+                conn.executemany(
+                    "INSERT INTO session_event_array_items "
+                    "(session_id, event_position, payload_key, item_ordinal, value_json) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        (session_id, int(row[3]), payload_key, ordinal, _json_dumps(value))
+                        for ordinal, value in enumerate(array.iter_values())
+                    ),
+                )
+
+        source_message_id: str | None
+        for event in events:
+            source_message_provider_id = event.source_message_provider_id
+            if (
+                event.owner_coordinate is None
+                and inherited_source_message_ids is not None
+                and source_message_provider_id is not None
+                and source_message_provider_id in inherited_source_message_ids
+            ):
+                continue
+            if event.owner_coordinate is not None:
+                event_owner_key = event_message_owner_key(event, owner_resolution)
+                source_message_id = (
+                    disk_index.occurrence_message_id(event_owner_key)
+                    if disk_index is not None and event_owner_key is not None
+                    else by_owner_key.get(event_owner_key or "")
+                )
+                if source_message_id is None:
+                    inherited = (
+                        disk_index.has_occurrence(event_owner_key)
+                        if disk_index is not None and event_owner_key is not None
+                        else event_owner_key in by_owner_key
+                    )
+                    if inherited:
+                        continue
+                    raise MessageOwnerAmbiguityError("event occurrence was not published")
+            else:
+                source_message_id = by_native_id.get(source_message_provider_id or "")
+                if (
+                    source_message_id is None
+                    and source_message_provider_id
+                    and event.event_type not in _TYPED_USAGE_EVENT_TYPES
+                    and (
+                        source_message_provider_id.strip() in duplicate_native_ids
+                        or source_message_provider_id.strip() in ambiguous_source_provider_ids
+                    )
+                ):
+                    raise MessageOwnerAmbiguityError("event native message ID requires exact occurrence evidence")
+            if source_message_id is None and inherited_source_message_ids is not None:
+                source_message_id = inherited_source_message_ids.get(source_message_provider_id or "")
+            if event.event_type not in _SESSION_EVENTS_REDUNDANT_TYPES:
+                boundary_message_id = None
+                if event.boundary_message_position is not None:
+                    if disk_index is not None:
+                        boundary_message_id = disk_index.boundary_message_id(event.boundary_message_position)
+                    else:
+                        for fallback_position, message in enumerate(messages):
+                            # Parsers may leave ``position`` unset; the ordinal is then
+                            # the message's position, exactly as ``_message_id`` derives it.
+                            effective_position = message.position if message.position is not None else fallback_position
+                            if effective_position == event.boundary_message_position:
+                                boundary_message_id = _message_id(
+                                    session_id,
+                                    message,
+                                    fallback_position,
+                                    content_identities=content_identities,
+                                    duplicate_native_ids=duplicate_native_ids,
+                                )
+                                break
+                stored_payload = _stored_event_payload(event, sidecar_blob_locators)
+                from polylogue.sources.streamed_event_payload import StreamedJsonArray
+
+                streamed_arrays = {
+                    key: value for key, value in stored_payload.items() if isinstance(value, StreamedJsonArray)
+                }
+                ordinary_payload: dict[str, object] = {}
+                for key, value in stored_payload.items():
+                    if isinstance(value, StreamedJsonArray):
+                        if len(value) == 0:
+                            ordinary_payload[key] = []
+                    else:
+                        ordinary_payload[key] = value
+                row: _SessionEventInsertRow = (
                     session_id,
                     source_message_id,
                     _sqlite_text(source_message_provider_id),
                     position,
                     _sqlite_text(event.event_type),
-                    _json_dumps(_stored_event_payload(event, sidecar_blob_locators)),
+                    _json_dumps(ordinary_payload),
                     to_epoch_ms(event.timestamp, numeric_unit="seconds"),
                     event.boundary_start_position + position_offset
                     if event.boundary_start_position is not None
                     else None,
                     event.boundary_end_position + position_offset if event.boundary_end_position is not None else None,
                     boundary_message_id,
-                ),
-            )
-        if event.event_type == "agent_policy":
-            # Every field keeps its named producer: approval/sandbox/network
-            # all come from this payload, and ``source_message_id`` is the
-            # resolved message the observation was attached to (its partial
-            # index and prefix-delete clear path live in
-            # ``clear_session_agent_policies_source_message_sql``). Nothing is
-            # dropped for having been constant in one census; what is dropped
-            # is the restatement of an unchanged value.
-            policy_values = (
-                _sqlite_text(_payload_string(event.payload, "approval", "approval_policy")),
-                _sqlite_text(_payload_string(event.payload, "sandbox", "sandbox_policy")),
-                _sqlite_text(_payload_string(event.payload, "network", "network_policy")),
-            )
-            if policy_values != last_agent_policy:
-                last_agent_policy = policy_values
-                agent_policy_rows.append(
-                    (
-                        session_id,
-                        source_message_id,
-                        position,
-                        *policy_values,
-                        to_epoch_ms(event.timestamp, numeric_unit="seconds"),
-                    ),
                 )
-        elif event.event_type in {"token_count", "message_usage"}:
-            # polylogue-1pzmq: an event whose declared provider message id
-            # resolves to no row here used to be dropped outright. The
-            # commonest cause is not a malformed export but a deliberate
-            # writer decision: a provider id duplicated within the session is
-            # excluded from ``by_native_id`` because those messages get
-            # content-derived ids, so every usage event attached to them
-            # vanished. The usage is still real evidence about this session;
-            # record it with its declared provider id and a typed statement of
-            # what the attribution actually is.
-            declared_provider_id = _sqlite_text(event.source_message_provider_id)
-            declared_provider_id = declared_provider_id.strip() if declared_provider_id else None
-            resolution = _provider_usage_source_resolution(
-                declared_provider_id,
-                source_message_id=source_message_id,
-                ambiguous_source_provider_ids=ambiguous_source_provider_ids,
-                duplicate_native_ids=duplicate_native_ids,
-            )
-            row = _provider_usage_event_row(
-                session_id,
-                source_message_id,
-                position,
-                event,
-                source_message_provider_id=declared_provider_id,
-                source_message_resolution=resolution,
-            )
-            if _provider_usage_event_has_evidence(event, row):
-                provider_usage_rows.append(row)
-                wrote_provider_usage_events = True
-        position += 1
-        if max(len(session_event_rows), len(agent_policy_rows), len(provider_usage_rows)) >= 128:
-            _flush_rows()
-    _flush_rows()
-    if disk_index is not None:
-        disk_index.close()
-    return SessionEventWriteResult(wrote_provider_usage_events=wrote_provider_usage_events)
+                if streamed_arrays:
+                    _flush_rows()
+                    _insert_streamed_event(row, streamed_arrays)
+                else:
+                    session_event_rows.append(row)
+            if event.event_type == "agent_policy":
+                # Every field keeps its named producer: approval/sandbox/network
+                # all come from this payload, and ``source_message_id`` is the
+                # resolved message the observation was attached to (its partial
+                # index and prefix-delete clear path live in
+                # ``clear_session_agent_policies_source_message_sql``). Nothing is
+                # dropped for having been constant in one census; what is dropped
+                # is the restatement of an unchanged value.
+                policy_values = (
+                    _sqlite_text(_payload_string(event.payload, "approval", "approval_policy")),
+                    _sqlite_text(_payload_string(event.payload, "sandbox", "sandbox_policy")),
+                    _sqlite_text(_payload_string(event.payload, "network", "network_policy")),
+                )
+                if policy_values != last_agent_policy:
+                    last_agent_policy = policy_values
+                    agent_policy_rows.append(
+                        (
+                            session_id,
+                            source_message_id,
+                            position,
+                            *policy_values,
+                            to_epoch_ms(event.timestamp, numeric_unit="seconds"),
+                        ),
+                    )
+            elif event.event_type in _TYPED_USAGE_EVENT_TYPES:
+                # polylogue-1pzmq: an event whose declared provider message id
+                # resolves to no row here used to be dropped outright. The
+                # commonest cause is not a malformed export but a deliberate
+                # writer decision: a provider id duplicated within the session is
+                # excluded from ``by_native_id`` because those messages get
+                # content-derived ids, so every usage event attached to them
+                # vanished. The usage is still real evidence about this session;
+                # record it with its declared provider id and a typed statement of
+                # what the attribution actually is.
+                declared_provider_id = _sqlite_text(event.source_message_provider_id)
+                declared_provider_id = declared_provider_id.strip() if declared_provider_id else None
+                resolution = _provider_usage_source_resolution(
+                    declared_provider_id,
+                    source_message_id=source_message_id,
+                    ambiguous_source_provider_ids=ambiguous_source_provider_ids,
+                    duplicate_native_ids=duplicate_native_ids,
+                )
+                usage_row = _provider_usage_event_row(
+                    session_id,
+                    source_message_id,
+                    position,
+                    event,
+                    source_message_provider_id=declared_provider_id,
+                    source_message_resolution=resolution,
+                )
+                if _provider_usage_event_has_evidence(event, usage_row):
+                    provider_usage_rows.append(usage_row)
+                    wrote_provider_usage_events = True
+            position += 1
+            if max(len(session_event_rows), len(agent_policy_rows), len(provider_usage_rows)) >= 128:
+                _flush_rows()
+        _flush_rows()
+        return SessionEventWriteResult(wrote_provider_usage_events=wrote_provider_usage_events)
+
+    finally:
+        if disk_index is not None:
+            disk_index.close()
 
 
 class _DiskMessageEventIndex(Mapping[str, str]):
     """Indexed source and boundary lookups for a disk-backed session."""
 
     def __init__(self, directory: Path) -> None:
+        from polylogue.storage.sqlite.connection_profile import open_scratch_connection
+
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-event-owners-", dir=directory)
-        self._conn = connect_scratch_database(Path(self._scratch.name) / "owners.db")
-        self._conn.execute("CREATE TABLE owner (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID")
-        self._conn.execute("CREATE TABLE boundary (position INTEGER PRIMARY KEY, message_id TEXT NOT NULL)")
+        self._sql_owner = open_scratch_connection(
+            Path(self._scratch.name) / "owners.db", scratch_directory=self._scratch, lifetime_dependencies=(self,)
+        )
+        assert self._sql_owner.connection is not None
+        try:
+            self._conn.execute(
+                "CREATE TABLE owner (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
+            )
+            self._conn.execute("CREATE TABLE boundary (position INTEGER PRIMARY KEY, message_id TEXT NOT NULL)")
+            self._conn.execute("CREATE TABLE occurrence (owner_key TEXT PRIMARY KEY, message_id TEXT) WITHOUT ROWID")
+        except BaseException as primary:
+            _close_failed_native_construction(self._sql_owner, primary)
+            self.close()
+            raise
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        return self._sql_owner.require_connection()
 
     def __setitem__(self, key: str, value: str) -> None:
         self._conn.execute("INSERT OR REPLACE INTO owner VALUES (?, ?)", (key, value))
@@ -9481,21 +12133,39 @@ class _DiskMessageEventIndex(Mapping[str, str]):
         return str(row[0])
 
     def __iter__(self) -> Iterator[str]:
-        for (key,) in self._conn.execute("SELECT provider_id FROM owner"):
-            yield str(key)
+        after = ""
+        first = True
+        while True:
+            rows = self._conn.execute(
+                "SELECT provider_id FROM owner WHERE ? OR provider_id > ? ORDER BY provider_id LIMIT 512",
+                (first, after),
+            ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            first = False
+            yield from (str(row[0]) for row in rows)
 
     def __len__(self) -> int:
         return int(self._conn.execute("SELECT COUNT(*) FROM owner").fetchone()[0])
 
     def close(self) -> None:
-        self._conn.close()
-        self._scratch.cleanup()
-        del self._conn
+        if self._sql_owner in retained_native_sql_owners_for_lifetime(self):
+            self._sql_owner.close()
 
     def __del__(self) -> None:
-        if getattr(self, "_conn", None) is not None:
-            with suppress(Exception):
-                self.close()
+        if getattr(self, "_sql_owner", None) is not None:
+            self.close()
+
+    def add_occurrence(self, owner_key: str, message_id: str | None) -> None:
+        self._conn.execute("INSERT INTO occurrence VALUES (?, ?)", (owner_key, message_id))
+
+    def has_occurrence(self, owner_key: str) -> bool:
+        return self._conn.execute("SELECT 1 FROM occurrence WHERE owner_key = ?", (owner_key,)).fetchone() is not None
+
+    def occurrence_message_id(self, owner_key: str) -> str | None:
+        row = self._conn.execute("SELECT message_id FROM occurrence WHERE owner_key = ?", (owner_key,)).fetchone()
+        return str(row[0]) if row is not None and row[0] is not None else None
 
 
 _PROVIDER_USAGE_EVENT_INSERT_SQL = """
@@ -9635,72 +12305,6 @@ def _provider_usage_event_has_evidence(event: ParsedSessionEvent, row: tuple[obj
     )
 
 
-def _provider_usage_projections(
-    conn: sqlite3.Connection,
-    session_id: str,
-    *,
-    start_position: int | None = None,
-) -> tuple[UsageProjectionModel, ...]:
-    """Stream the selected event authority through the canonical domain fold."""
-    models = _provider_usage_existing_models(conn, session_id)
-    sole_model = models[0] if len(models) == 1 else None
-    cursor = conn.execute(
-        """
-        SELECT ?, provider_event_type, model_name, position,
-               last_input_tokens, last_output_tokens, last_cached_input_tokens,
-               last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
-               total_input_tokens, total_output_tokens, total_cached_input_tokens,
-               total_cache_write_tokens, total_reasoning_output_tokens, total_tokens
-        FROM session_provider_usage_events
-        WHERE session_id = ? AND provider_event_type = 'token_count'
-          AND (? IS NULL OR position >= ?)
-        ORDER BY position
-        """,
-        (session_id, session_id, start_position, start_position),
-    )
-    names = (
-        "session_id",
-        "provider_event_type",
-        "model_name",
-        "position",
-        "last_input_tokens",
-        "last_output_tokens",
-        "last_cached_input_tokens",
-        "last_cache_write_tokens",
-        "last_reasoning_output_tokens",
-        "last_total_tokens",
-        "total_input_tokens",
-        "total_output_tokens",
-        "total_cached_input_tokens",
-        "total_cache_write_tokens",
-        "total_reasoning_output_tokens",
-        "total_tokens",
-    )
-
-    def events() -> Iterator[dict[str, object]]:
-        for row in cursor:
-            values = dict(zip(names, row, strict=True))
-            values["model_name"] = str(values["model_name"] or "").strip() or sole_model
-            if values["model_name"] is not None:
-                yield values
-
-    primary: BaseException | None = None
-    try:
-        return project_provider_usage_events(events(), origin="")
-    except BaseException as failure:
-        primary = failure
-        raise
-    finally:
-        try:
-            close_connection_cursor(conn, cursor)
-        except BaseException as cleanup:
-            if primary is None or cleanup is primary:
-                raise
-            raise builtins.BaseExceptionGroup(
-                "Usage projection and cursor cleanup failed", [primary, cleanup]
-            ) from None
-
-
 def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
     """Persist the canonical complete-session provider event projection."""
     for projection in _provider_usage_projections(conn, session_id):
@@ -9731,6 +12335,54 @@ def _aggregate_appended_provider_usage_into_model_usage(
                 "WHERE session_id = ? AND model_name = ?",
                 (session_id, model),
             )
+
+
+def _has_appended_claude_message_usage(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    start_position: int,
+) -> bool:
+    return (
+        conn.execute(
+            """
+        SELECT 1 FROM session_provider_usage_events
+        WHERE session_id = ? AND provider_event_type = 'message_usage' AND position >= ?
+        LIMIT 1
+        """,
+            (session_id, start_position),
+        ).fetchone()
+        is not None
+    )
+
+
+def _reconcile_session_model_usage_from_persisted_evidence(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> int:
+    """Rebuild model usage from stored messages and provider events in this transaction."""
+    _reconcile_session_model_usage_rows(conn, session_id)
+    _aggregate_message_tokens_into_model_usage(conn, session_id)
+    _reprice_model_usage_rows(conn, session_id)
+    _aggregate_provider_usage_into_model_usage(conn, session_id)
+    reported_cost_row = conn.execute(
+        "SELECT reported_cost_usd FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    model_names = tuple(
+        str(row[0])
+        for row in conn.execute(
+            "SELECT model_name FROM session_model_usage WHERE session_id = ? ORDER BY model_name",
+            (session_id,),
+        )
+    )
+    if reported_cost_row is not None and reported_cost_row[0] is not None and model_names:
+        _write_provider_cost(conn, session_id, model_names, ProviderCost(float(reported_cost_row[0])))
+    row = conn.execute(
+        "SELECT COUNT(*) FROM session_model_usage WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 def _provider_usage_existing_models(conn: sqlite3.Connection, session_id: str) -> list[str]:
@@ -10256,7 +12908,7 @@ def _write_repo_edges(
     observed_at_ms = to_epoch_ms(session.updated_at, numeric_unit="seconds") or to_epoch_ms(
         session.created_at, numeric_unit="seconds"
     )
-    raw_root_paths = tuple(path.strip() for path in session.working_directories if path.strip())
+    raw_root_paths = tuple(path for path in session.working_directories if path)
     origin_url = (session.git_repository_url or "").strip()
     # polylogue-cijx.4 decision 1: resolve each raw cwd to its git root before
     # deduplicating, so multiple cwds inside the same checkout (or a cwd
@@ -10450,10 +13102,11 @@ def _assert_unique_message_coordinates(
     if isinstance(messages, (SqliteMessageSink, _MessageTail)):
         source = messages.messages if isinstance(messages, _MessageTail) else messages
         if isinstance(source, SqliteMessageSink):
-            with (
-                tempfile.TemporaryDirectory(prefix="polylogue-coordinates-", dir=source.path.parent) as scratch,
-                closing(connect_scratch_database(Path(scratch) / "coordinates.db")) as index,
-            ):
+            from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+            with scratch_connection_context(
+                prefix="polylogue-coordinates-", filename="coordinates.db", directory=source.path.parent
+            ) as index:
                 index.execute(
                     "CREATE TABLE coordinate (position INTEGER NOT NULL, variant_index INTEGER NOT NULL, "
                     "native_id TEXT NOT NULL, PRIMARY KEY(position, variant_index)) WITHOUT ROWID"
@@ -10516,52 +13169,69 @@ def _message_blocks(message: ParsedMessage) -> Sequence[ParsedContentBlock]:
 # inherited only inside the matching leading run, so a genuinely-new block that
 # happens to equal a parent block is never dropped.
 
-_SIG_FIELD_SEP = "\x1f"
-_SIG_BLOCK_SEP = "\x1e"
+
+def _prefix_alignment_signature(role: str, block_hashes: Iterable[bytes]) -> str:
+    """Digest what a replayed prefix copies: the role and each block's evidence.
+
+    A child that replays its parent's prefix (a fork, a resume, a compaction
+    continuation) re-emits those messages under new provider ids, timestamps,
+    parent links and provenance classification, all of which the complete
+    semantic address hashes. Alignment compares the role and each block's
+    identity-free evidence digest (``blocks.content_hash``: text, tool call,
+    outcome, error and exit evidence), so a divergent answer still ends the
+    shared prefix. The branch point itself stays guarded by the parent's
+    stored complete content address (``branch_point_content_address``).
+    """
+    digest = hashlib.sha256(b"polylogue-prefix-alignment-v2\0")
+    encoded_role = role.encode("utf-8", "surrogatepass")
+    digest.update(len(encoded_role).to_bytes(8, "big"))
+    digest.update(encoded_role)
+    for block_hash in block_hashes:
+        digest.update(len(block_hash).to_bytes(8, "big"))
+        digest.update(block_hash)
+    return digest.hexdigest()
 
 
-def _canonical_json(value: object) -> str:
-    """Stable JSON for signature comparison; accepts a value or a JSON string."""
-    if value is None:
-        return "null"
-    parsed: object = value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except (ValueError, TypeError):
-            return value
-    try:
-        return json.dumps(parsed, sort_keys=True, separators=(",", ":"), default=str)
-    except (TypeError, ValueError):
-        return str(parsed)
-
-
-def _message_signature_from_blocks(role: str, block_fields: list[tuple[str, str, str, str]]) -> str:
-    parts = [role]
-    for block_type, text, tool_name, tool_input in block_fields:
-        parts.append(_SIG_FIELD_SEP.join((block_type, text, tool_name, tool_input)))
-    return hashlib.sha256(_SIG_BLOCK_SEP.join(parts).encode("utf-8", "surrogatepass")).hexdigest()
+def _parsed_block_evidence_hash(block: ParsedContentBlock) -> bytes:
+    """The stored ``blocks.content_hash`` this block will be written with."""
+    return _block_content_hash(
+        block_type=_block_type(block).value,
+        text=block.text,
+        tool_name=block.tool_name,
+        tool_input_json=_json_dumps(block.tool_input) if block.tool_input is not None else None,
+        semantic_type=_semantic_type(block),
+        media_type=block.media_type,
+        language=_block_language(block),
+        is_error=getattr(block, "is_error", None),
+        exit_code=getattr(block, "exit_code", None),
+        tool_outcome=getattr(block, "tool_outcome", None),
+        outcome_unknown_reason=_enum_value(block.outcome_unknown_reason),
+        semantic_extra_json=_block_semantic_extra_json(block),
+    )
 
 
 def _parsed_message_signature(message: ParsedMessage) -> str:
-    role = _enum_value(message.role) or ""
-    fields: list[tuple[str, str, str, str]] = []
-    for block in _message_blocks(message):
-        # Serialize tool_input through the same `_json_dumps` the writer uses to
-        # store it, then canonicalize — so the parsed-side signature matches the
-        # DB-side signature (which canonicalizes the stored JSON string). Calling
-        # `_canonical_json` on the raw value would mis-handle scalar strings, which
-        # it treats as JSON to re-parse (#2467 audit M6).
-        tool_input = _canonical_json(_json_dumps(block.tool_input)) if block.tool_input is not None else "null"
-        fields.append(
-            (
-                _block_type(block).value,
-                block.text or "",
-                block.tool_name or "",
-                tool_input,
-            )
-        )
-    return _message_signature_from_blocks(role, fields)
+    """The prefix alignment signature of a parsed message (see above)."""
+    return _prefix_alignment_signature(
+        _enum_value(message.role) or "",
+        (_parsed_block_evidence_hash(block) for block in _message_blocks(message)),
+    )
+
+
+def _signatures_from_block_rows(rows: Iterable[Sequence[object]]) -> Iterator[tuple[str, str]]:
+    """Group ``(message_id, role, block content_hash)`` rows per message."""
+    current_id: str | None = None
+    current_role = ""
+    hashes: list[bytes] = []
+    for message_id, role, block_hash in rows:
+        if message_id != current_id:
+            if current_id is not None:
+                yield current_id, _prefix_alignment_signature(current_role, hashes)
+            current_id, current_role, hashes = str(message_id), str(role or ""), []
+        if block_hash is not None:
+            hashes.append(bytes(cast(bytes, block_hash)))
+    if current_id is not None:
+        yield current_id, _prefix_alignment_signature(current_role, hashes)
 
 
 def _is_acompact_native_id(native_id: str) -> bool:
@@ -10602,25 +13272,25 @@ def _acompact_content_membership_ratio(
     repeated boilerplate cannot manufacture overlap.
     """
     if isinstance(parent_composed, _DiskSignatureSequence):
-        counts = parent_composed._conn
-        counts.execute(
-            "CREATE TABLE IF NOT EXISTS membership (digest TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID"
-        )
-        counts.execute("DELETE FROM membership")
-        for _message_id, signature in parent_composed:
+        with parent_composed.reader() as counts:
             counts.execute(
-                "INSERT INTO membership VALUES (?, 1) ON CONFLICT(digest) DO UPDATE SET n = n + 1",
-                (signature,),
+                "CREATE TEMP TABLE IF NOT EXISTS membership (digest TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID"
             )
-        matching_count = 0
-        total_count = 0
-        for signature in child_prefix_signatures:
-            total_count += 1
-            row = counts.execute("SELECT n FROM membership WHERE digest = ?", (signature,)).fetchone()
-            if row is not None and int(row[0]) > 0:
-                matching_count += 1
-                counts.execute("UPDATE membership SET n = n - 1 WHERE digest = ?", (signature,))
-        return matching_count / total_count if total_count else None
+            counts.execute("DELETE FROM membership")
+            for _message_id, signature in parent_composed:
+                counts.execute(
+                    "INSERT INTO membership VALUES (?, 1) ON CONFLICT(digest) DO UPDATE SET n = n + 1",
+                    (signature,),
+                )
+            matching_count = 0
+            total_count = 0
+            for signature in child_prefix_signatures:
+                total_count += 1
+                row = counts.execute("SELECT n FROM membership WHERE digest = ?", (signature,)).fetchone()
+                if row is not None and int(row[0]) > 0:
+                    matching_count += 1
+                    counts.execute("UPDATE membership SET n = n - 1 WHERE digest = ?", (signature,))
+            return matching_count / total_count if total_count else None
     prefix = tuple(child_prefix_signatures)
     if not prefix:
         return None
@@ -10669,105 +13339,107 @@ def _db_claude_acompact_branch_type(conn: sqlite3.Connection, session_id: str) -
     return str(branch_type) if branch_type is not None else ""
 
 
-def _own_db_signatures(conn: sqlite3.Connection, session_id: str) -> list[tuple[str, str]]:
-    """Return ``[(message_id, signature), ...]`` for ``session_id``'s OWN stored
-    message rows (no inherited prefix). This is the expensive SQL+SHA-256 leg of
-    composition; it depends only on the session's own rows, so it can be memoized
-    per ingest batch and invalidated whenever those rows change."""
-    own_rows = conn.execute(
+def _own_db_signatures(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> list[tuple[str, str]]:
+    """Return prefix alignment signatures for this session's own stored rows."""
+    if before_input is not None:
+        before_input(
+            "messages",
+            ("message_id", "role", "position", "variant_index"),
+            "SELECT rowid FROM messages WHERE session_id=? ORDER BY position,variant_index",
+            (session_id,),
+        )
+        before_input(
+            "blocks",
+            ("message_id", "position", "content_hash"),
+            "SELECT rowid FROM blocks WHERE session_id=? ORDER BY message_id,position",
+            (session_id,),
+        )
+    with connection_cursor(
+        conn,
         """
-        SELECT m.message_id, m.position, m.variant_index, m.role,
-               b.block_type, b.text, b.tool_name, b.tool_input
+        SELECT m.message_id, m.role, b.content_hash
         FROM messages m
         LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
         WHERE m.session_id = ?
         ORDER BY m.position, m.variant_index, b.position
         """,
         (session_id,),
-    ).fetchall()
-    own: list[tuple[str, str]] = []
-    cur_id: str | None = None
-    cur_role = ""
-    cur_blocks: list[tuple[str, str, str, str]] = []
-
-    def flush() -> None:
-        if cur_id is not None:
-            own.append((cur_id, _message_signature_from_blocks(cur_role, cur_blocks)))
-
-    for message_id, _position, _variant_index, role, block_type, text, tool_name, tool_input in own_rows:
-        if message_id != cur_id:
-            flush()
-            cur_id = message_id
-            cur_role = role or ""
-            cur_blocks = []
-        if block_type is not None:
-            cur_blocks.append(
-                (
-                    block_type,
-                    text or "",
-                    tool_name or "",
-                    _canonical_json(tool_input) if tool_input is not None else "null",
-                )
-            )
-    flush()
-    return own
+    ) as cursor:
+        return list(_signatures_from_block_rows(cursor))
 
 
 def _iter_own_db_signatures(
     conn: sqlite3.Connection,
     segment: _TranscriptSegment,
-) -> Iterator[tuple[str, str]]:
-    cursor = conn.execute(
+    before_input: BeforeIndexInput | None = None,
+) -> Generator[tuple[str, str], None, None]:
+    segment_parameters = (
+        segment.session_id,
+        segment.upto_position,
+        segment.upto_position,
+        segment.upto_position,
+        segment.upto_variant_index,
+    )
+    if before_input is not None:
+        before_input(
+            "messages",
+            ("message_id", "role", "position", "variant_index"),
+            "SELECT rowid FROM messages WHERE session_id=? "
+            "AND (? IS NULL OR position < ? OR (position = ? AND variant_index <= ?)) "
+            "ORDER BY position,variant_index",
+            segment_parameters,
+        )
+        before_input(
+            "blocks",
+            ("message_id", "position", "content_hash"),
+            "SELECT rowid FROM blocks WHERE session_id=? ORDER BY message_id,position",
+            (segment.session_id,),
+        )
+    with connection_cursor(
+        conn,
         """
-        SELECT m.message_id, m.role, b.block_type, b.text, b.tool_name, b.tool_input
-        FROM messages AS m
-        LEFT JOIN blocks AS b ON b.session_id = m.session_id AND b.message_id = m.message_id
+        SELECT m.message_id, m.role, b.content_hash
+        FROM messages m
+        LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
         WHERE m.session_id = ?
           AND (? IS NULL OR m.position < ? OR (m.position = ? AND m.variant_index <= ?))
         ORDER BY m.position, m.variant_index, b.position
         """,
-        (
-            segment.session_id,
-            segment.upto_position,
-            segment.upto_position,
-            segment.upto_position,
-            segment.upto_variant_index,
-        ),
-    )
-    current_id: str | None = None
-    current_role = ""
-    blocks: list[tuple[str, str, str, str]] = []
-    for message_id, role, block_type, body, tool_name, tool_input in cursor:
-        if message_id != current_id:
-            if current_id is not None:
-                yield current_id, _message_signature_from_blocks(current_role, blocks)
-            current_id = str(message_id)
-            current_role = role or ""
-            blocks = []
-        if block_type is not None:
-            blocks.append(
-                (
-                    str(block_type),
-                    body or "",
-                    tool_name or "",
-                    _canonical_json(tool_input) if tool_input is not None else "null",
-                )
-            )
-    if current_id is not None:
-        yield current_id, _message_signature_from_blocks(current_role, blocks)
+        segment_parameters,
+    ) as cursor:
+        yield from _signatures_from_block_rows(cursor)
 
 
 class _DiskSignatureSequence(Sequence[tuple[str, str]]):
     def __init__(self, directory: Path) -> None:
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-lineage-signatures-", dir=directory)
-        self._conn = sqlite3.connect(Path(self._scratch.name) / "signatures.db")
-        self._conn.execute(
-            "CREATE TABLE signature (ordinal INTEGER PRIMARY KEY, message_id TEXT NOT NULL, digest TEXT NOT NULL)"
-        )
-        self._count = 0
+        self._lock = threading.RLock()
+        self._closed = False
+        self._path = Path(self._scratch.name) / "signatures.db"
+        self._reader_owner: NativeSQLCustodyOwner | None = None
+        self._writer: NativeSQLCustodyOwner | None = None
+        try:
+            self._writer = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        except NativeConnectionSettlementError as failure:
+            failure.owner.scratch_directory = self._scratch
+            raise
+        assert self._writer.connection is not None
+        self._conn: sqlite3.Connection | None = self._writer.connection
+        try:
+            self._connection().execute(
+                "CREATE TABLE signature (ordinal INTEGER PRIMARY KEY, message_id TEXT NOT NULL, digest TEXT NOT NULL)"
+            )
+            self._count = 0
+        except BaseException as primary:
+            self._writer.scratch_directory = self._scratch
+            _close_failed_native_construction(self._writer, primary)
+            self.close()
+            raise
 
     def append(self, message_id: str, digest: str) -> None:
-        self._conn.execute("INSERT INTO signature VALUES (?, ?, ?)", (self._count, message_id, digest))
+        self._connection().execute("INSERT INTO signature VALUES (?, ?, ?)", (self._count, message_id, digest))
         self._count += 1
 
     def __len__(self) -> int:
@@ -10785,49 +13457,109 @@ class _DiskSignatureSequence(Sequence[tuple[str, str]]):
         ordinal = index + self._count if index < 0 else index
         if ordinal < 0 or ordinal >= self._count:
             raise IndexError(index)
-        row = self._conn.execute("SELECT message_id, digest FROM signature WHERE ordinal = ?", (ordinal,)).fetchone()
+        with self.reader() as conn:
+            row = conn.execute("SELECT message_id, digest FROM signature WHERE ordinal = ?", (ordinal,)).fetchone()
         if row is None:
             raise PreparedSessionWriteRefusedError("lineage signature disappeared")
         return str(row[0]), str(row[1])
 
     def __iter__(self) -> Iterator[tuple[str, str]]:
-        for message_id, digest in self._conn.execute("SELECT message_id, digest FROM signature ORDER BY ordinal"):
-            yield str(message_id), str(digest)
+        after = -1
+        while True:
+            with self.reader() as conn:
+                rows = conn.execute(
+                    "SELECT ordinal, message_id, digest FROM signature WHERE ordinal > ? ORDER BY ordinal LIMIT 512",
+                    (after,),
+                ).fetchall()
+            if not rows:
+                return
+            after = int(rows[-1][0])
+            yield from ((str(row[1]), str(row[2])) for row in rows)
+
+    def _connection(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise RuntimeError("signature SQL requires its creator-owned reader")
+        owner = self._writer if self._writer is not None else self._reader_owner
+        if owner is None:
+            raise RuntimeError("artifact reader has no native owner")
+        return owner.require_connection()
+
+    def finish(self) -> None:
+        self._connection().commit()
+        assert self._writer is not None
+        self._writer.close()
+        self._writer = None
+        self._conn = None
+
+    @contextmanager
+    def reader(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("signature artifact is closed")
+            if self._conn is not None:
+                yield self._connection()
+                return
+            conn = connect_measured(f"{self._path.as_uri()}?mode=ro", uri=True)
+            owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self))
+            self._reader_owner = owner
+            self._conn = conn
+            try:
+                yield owner.require_connection()
+            finally:
+                self._conn = None
+                self._reader_owner = None
+                owner.close()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            if self._writer is not None:
+                if self._writer in retained_native_sql_owners_for_lifetime(self):
+                    self._writer.close()
+                self._writer = None
+                self._conn = None
+            pending = retained_native_sql_owners_for_lifetime(self)
+            if pending:
+                raise NativeConnectionSettlementError(pending[0], RuntimeError("signature artifact remains owned"))
+            self._scratch.cleanup()
+            self._closed = True
 
     def __del__(self) -> None:
-        connection = getattr(self, "_conn", None)
-        if connection is not None:
-            connection.close()
-        scratch = getattr(self, "_scratch", None)
-        if scratch is not None:
-            scratch.cleanup()
+        if hasattr(self, "_lock"):
+            self.close()
 
 
-def _iter_composed_rows(conn: sqlite3.Connection, session_id: str) -> Iterator[tuple[str, str, str]]:
+def _iter_composed_rows(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> Generator[tuple[str, str, str], None, None]:
     """``(message_id, signature, owner)`` of a composed transcript, streamed segment by segment.
 
     The composition rules are ``_composed_db_signatures``': the first
     composing prefix-sharing edge, the branch-point witness, the visited set
     and the dangling-branch-point rule. Only the segment plan is held.
     """
+    if not conn.in_transaction:
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
+        try:
+            with closing(_iter_composed_rows(conn, session_id, before_input)) as rows:
+                yield from rows
+        finally:
+            with connection_cursor(conn, "ROLLBACK"):
+                pass
+        return
     chain: list[tuple[str, str]] = []
     visited = {session_id}
     cursor_session_id = session_id
     # ``visited`` bounds the walk: every step adds a new session.
     while True:
-        edge = conn.execute(
-            f"SELECT resolved_dst_session_id, branch_point_message_id, branch_point_content_address "
-            f"FROM session_links WHERE src_session_id = ? AND inheritance = 'prefix-sharing' "
-            f"AND resolved_dst_session_id IS NOT NULL AND branch_point_message_id IS NOT NULL "
-            f"AND {topology_status_composes_sql()} "
-            f"ORDER BY link_type, dst_origin, dst_native_id LIMIT 1",
-            (cursor_session_id,),
-        ).fetchone()
+        edge = _prefix_sharing_edge_row(conn, cursor_session_id, before_input)
         if edge is None:
             break
         parent_id, branch_point = str(edge[0]), str(edge[1])
         witness = bytes(edge[2]) if edge[2] is not None else None
-        if witness is not None and _message_content_address_for_id(conn, branch_point) != witness:
+        if witness is not None and _message_content_address_for_id(conn, branch_point, before_input) != witness:
             break
         if parent_id in visited:
             break
@@ -10837,33 +13569,48 @@ def _iter_composed_rows(conn: sqlite3.Connection, session_id: str) -> Iterator[t
     composed = _SegmentList(
         conn,
         (_TranscriptSegment(cursor_session_id, None, None, _count_session_messages(conn, cursor_session_id)),),
+        before_input,
     )
     for child_id, branch_point in reversed(chain):
         if not composed.cut_at(branch_point):
             composed.clear()
         composed.append(_TranscriptSegment(child_id, None, None, _count_session_messages(conn, child_id)))
     for segment in list(composed.segments):
-        for message_id, digest in _iter_own_db_signatures(conn, segment):
-            yield message_id, digest, segment.session_id
+        with closing(_iter_own_db_signatures(conn, segment, before_input)) as signatures:
+            for message_id, digest in signatures:
+                yield message_id, digest, segment.session_id
 
 
 def _disk_composed_db_signatures(
     conn: sqlite3.Connection,
     session_id: str,
     directory: Path,
+    *,
+    before_input: BeforeIndexInput | None = None,
 ) -> _DiskSignatureSequence:
     """Compose parent signatures through bounded segment queries."""
     opened_snapshot = not conn.in_transaction
     if opened_snapshot:
-        conn.execute("BEGIN DEFERRED")
+        with connection_cursor(conn, "BEGIN DEFERRED") as _input_cursor:
+            pass
+    result: _DiskSignatureSequence | None = None
     try:
         result = _DiskSignatureSequence(directory)
-        for message_id, digest, _owner in _iter_composed_rows(conn, session_id):
+        for message_id, digest, _owner in _iter_composed_rows(conn, session_id, before_input):
             result.append(message_id, digest)
+        result.finish()
         return result
+    except BaseException as primary:
+        if result is not None:
+            try:
+                result.close()
+            except BaseException as cleanup:
+                raise cleanup from primary
+        raise
     finally:
         if opened_snapshot:
-            conn.execute("ROLLBACK")
+            with connection_cursor(conn, "ROLLBACK") as _input_cursor:
+                pass
 
 
 def _signature_cache_get(
@@ -10908,6 +13655,7 @@ def _prefix_lineage_closure(
     conn: sqlite3.Connection,
     session_id: str,
     cache: _SignatureCacheLike | None,
+    before_input: BeforeIndexInput | None = None,
 ) -> frozenset[str]:
     """``session_id`` and every ancestor its composed transcript can draw from.
 
@@ -10922,7 +13670,7 @@ def _prefix_lineage_closure(
             return known
     closure = {session_id}
     cursor = session_id
-    while (edge := _prefix_sharing_edge_sync(conn, cursor)) is not None and edge[0] not in closure:
+    while (edge := _prefix_sharing_edge_sync(conn, cursor, before_input)) is not None and edge[0] not in closure:
         cursor = edge[0]
         closure.add(cursor)
     return frozenset(closure)
@@ -10934,6 +13682,7 @@ def _composed_db_signatures(
     *,
     cache: _SignatureCacheLike | None = None,
     composed_cache: dict[str, list[tuple[str, str]]] | None = None,
+    before_input: BeforeIndexInput | None = None,
 ) -> list[tuple[str, str]]:
     """Return ``[(message_id, signature), ...]`` for ``session_id``'s composed
     transcript (its inherited prefix + own tail). Walk the lineage iteratively
@@ -10953,16 +13702,20 @@ def _composed_db_signatures(
     ``read_archive_session_envelope``'s guard against a torn read.
     """
     if not conn.in_transaction:
-        conn.execute("BEGIN DEFERRED")
+        with connection_cursor(conn, "BEGIN DEFERRED") as _input_cursor:
+            pass
         try:
-            return _composed_db_signatures(conn, session_id, cache=cache, composed_cache=composed_cache)
+            return _composed_db_signatures(
+                conn, session_id, cache=cache, composed_cache=composed_cache, before_input=before_input
+            )
         finally:
-            conn.execute("ROLLBACK")
+            with connection_cursor(conn, "ROLLBACK") as _input_cursor:
+                pass
 
     def own_signatures(target_session_id: str) -> list[tuple[str, str]]:
         own = _signature_cache_get(cache, target_session_id)
         if own is None:
-            own = _own_db_signatures(conn, target_session_id)
+            own = _own_db_signatures(conn, target_session_id, before_input)
             _signature_cache_set(cache, target_session_id, own)
         return own
 
@@ -10987,23 +13740,10 @@ def _composed_db_signatures(
         if cached_composed is not None:
             composed = cached_composed
             if tracks_dependencies:
-                dependencies |= _prefix_lineage_closure(conn, cursor_session_id, cache)
+                dependencies |= _prefix_lineage_closure(conn, cursor_session_id, cache, before_input)
             break
         own = own_signatures(cursor_session_id)
-        edge = conn.execute(
-            f"""
-            SELECT resolved_dst_session_id, branch_point_message_id, branch_point_content_address
-            FROM session_links
-            WHERE src_session_id = ?
-              AND inheritance = 'prefix-sharing'
-              AND resolved_dst_session_id IS NOT NULL
-              AND branch_point_message_id IS NOT NULL
-              AND {topology_status_composes_sql()}
-            ORDER BY link_type, dst_origin, dst_native_id
-            LIMIT 1
-            """,
-            (cursor_session_id,),
-        ).fetchone()
+        edge = _prefix_sharing_edge_row(conn, cursor_session_id, before_input)
         if edge is None:
             composed = own
             if composed_cache is not None:
@@ -11013,7 +13753,7 @@ def _composed_db_signatures(
         parent_id, branch_point_message_id = str(edge[0]), str(edge[1])
         witness = None if edge[2] is None else bytes(edge[2])
         if witness is not None:
-            current = _message_content_address_for_id(conn, branch_point_message_id)
+            current = _message_content_address_for_id(conn, branch_point_message_id, before_input)
             if current is None or current != witness:
                 composed = own
                 # The refusal holds only while the branch point's content
@@ -11021,7 +13761,7 @@ def _composed_db_signatures(
                 # or one of its ancestors: a rewrite of any of them can restore
                 # the match.
                 if tracks_dependencies:
-                    dependencies |= _prefix_lineage_closure(conn, parent_id, cache)
+                    dependencies |= _prefix_lineage_closure(conn, parent_id, cache, before_input)
                 if composed_cache is not None:
                     composed_cache[cursor_session_id] = composed
                 _signature_cache_set_composed(cache, cursor_session_id, composed, dependencies=frozenset(dependencies))
@@ -11440,6 +14180,8 @@ def _reextract_prefix_tail_db(
         # refreshed by the write that owns this resolution, after the edges
         # settle.
         t0 = time.perf_counter()
+        _reconcile_tool_use_outcomes(conn, child_session_id)
+        _rehash_session_messages(conn, child_session_id)
         refresh_action_pairs(conn, child_session_id)
         record_substage("action_pairs", t0)
     return invalidated_branch_point_sources
@@ -12751,34 +15493,6 @@ def _repair_stale_prefix_branch_points_db(
         tuple(params),
     ).fetchall()
     repaired = 0
-    stable_rows = conn.execute(
-        f"""
-        SELECT l.src_session_id, l.resolved_dst_session_id, l.branch_point_message_id,
-               m.content_address
-        FROM session_links AS l
-        JOIN messages AS m ON m.message_id = l.branch_point_message_id
-        WHERE l.inheritance = 'prefix-sharing'
-          AND l.resolved_dst_session_id IS NOT NULL
-          AND l.branch_point_message_id IS NOT NULL
-          AND m.native_id IS NOT NULL
-          AND l.branch_point_content_address IS NOT NULL
-          AND l.branch_point_content_address IS NOT m.content_address
-          AND {topology_status_composes_sql("l.status")}
-          {scope_clause}
-        """,
-        tuple(params),
-    ).fetchall()
-    for src_session_id, parent_session_id, branch_point_message_id, content_address in stable_rows:
-        conn.execute(
-            """
-            UPDATE session_links
-            SET branch_point_content_address = ?
-            WHERE src_session_id = ? AND resolved_dst_session_id = ?
-              AND branch_point_message_id = ? AND inheritance = 'prefix-sharing'
-            """,
-            (content_address, str(src_session_id), str(parent_session_id), str(branch_point_message_id)),
-        )
-        repaired += 1
     local_composed_cache: dict[str, list[tuple[str, str]]] = composed_cache if composed_cache is not None else {}
     for src_session_id, parent_session_id, branch_point_message_id, witness in rows:
         parent_id = str(parent_session_id)
@@ -12895,6 +15609,8 @@ def _delete_all_session_message_dependents(
     survive. Empty-tail re-extraction can use the existing session indexes
     instead, avoiding huge ``IN (...)`` cleanup for replayed long sessions.
     """
+    note_current_deleted_session(conn, session_id)
+    note_current_lineage_change(conn, session_id)
     if not prefix_message_ids:
         return
     placeholders = ",".join("?" for _ in prefix_message_ids)
@@ -12920,6 +15636,7 @@ def _delete_prefix_message_dependents(conn: sqlite3.Connection, prefix_message_i
     """Mirror message FK side effects when bulk ingest has foreign keys off."""
     if not prefix_message_ids:
         return
+    note_current_deleted_message_ids(conn, (str(message_id) for message_id in prefix_message_ids))
     placeholders = ",".join("?" for _ in prefix_message_ids)
     params = tuple(prefix_message_ids)
     _clear_prefix_message_id_references(conn, placeholders, params)
@@ -13022,6 +15739,7 @@ def _extract_prefix_tail(
     cache: _SignatureCacheLike | None = None,
     parent_composed: Sequence[tuple[str, str]] | None = None,
     attachments: Sequence[ParsedAttachment] = (),
+    before_input: BeforeIndexInput | None = None,
 ) -> tuple[str | None, str | None, Sequence[ParsedMessage], Mapping[str, str], bytes | None, Sequence[str]]:
     """Align ``messages`` (the child's full parsed messages, which replay the
     parent's prefix) against the parent's composed transcript. Returns
@@ -13033,14 +15751,17 @@ def _extract_prefix_tail(
     shared prefix also ends before a message carrying one of ``attachments``
     its parent row does not reference (``_attachment_shared_prefix_limit``).
     """
+    owns_parent = parent_composed is None
     if parent_composed is None:
         source = messages.messages if isinstance(messages, _MessageTail) else messages
         parent_composed = (
-            _disk_composed_db_signatures(conn, parent_session_id, source.path.parent)
+            _disk_composed_db_signatures(conn, parent_session_id, source.path.parent, before_input=before_input)
             if isinstance(source, SqliteMessageSink)
-            else _composed_db_signatures(conn, parent_session_id, cache=cache)
+            else _composed_db_signatures(conn, parent_session_id, cache=cache, before_input=before_input)
         )
     if not parent_composed:
+        if owns_parent and isinstance(parent_composed, _DiskSignatureSequence):
+            parent_composed.close()
         return (None, "spawned-fresh", messages, {}, None, ())
     k = 0
     for message, (_, parent_signature) in zip(messages, parent_composed, strict=False):
@@ -13055,6 +15776,8 @@ def _extract_prefix_tail(
         attachments,
     )
     if k == 0:
+        if owns_parent and isinstance(parent_composed, _DiskSignatureSequence):
+            parent_composed.close()
         return (None, "spawned-fresh", messages, {}, None, ())
     branch_point_message_id = parent_composed[k - 1][0]
     duplicate_native_ids = _duplicate_message_native_ids(messages)
@@ -13062,12 +15785,35 @@ def _extract_prefix_tail(
     inherited_refs: dict[str, str] | _DiskSourceMessageIds = (
         _DiskSourceMessageIds(source.path.parent) if isinstance(source, SqliteMessageSink) else {}
     )
-    for index, (message, (parent_message_id, _signature)) in enumerate(zip(messages, parent_composed, strict=False)):
-        if index >= k:
-            break
-        provider_id = message.provider_message_id
-        if provider_id and _normalized_message_native_id(message) not in duplicate_native_ids:
-            inherited_refs[provider_id] = parent_message_id
+    try:
+        with ExitStack() as prefix_stack:
+            if isinstance(duplicate_native_ids, _DiskDuplicateNativeIds):
+                prefix_stack.enter_context(duplicate_native_ids.reader())
+            if isinstance(parent_composed, _DiskSignatureSequence):
+                prefix_stack.enter_context(parent_composed.reader())
+            for index, (message, (parent_message_id, _signature)) in enumerate(
+                zip(messages, parent_composed, strict=False)
+            ):
+                if index >= k:
+                    break
+                provider_id = message.provider_message_id
+                if provider_id and _normalized_message_native_id(message) not in duplicate_native_ids:
+                    inherited_refs[provider_id] = parent_message_id
+        if isinstance(inherited_refs, _DiskSourceMessageIds):
+            inherited_refs.finish()
+        if isinstance(duplicate_native_ids, _DiskDuplicateNativeIds):
+            duplicate_native_ids.close()
+    except BaseException as primary:
+        failures: list[BaseException] = []
+        for artifact in (inherited_refs, duplicate_native_ids):
+            if isinstance(artifact, (_DiskSourceMessageIds, _DiskDuplicateNativeIds)):
+                try:
+                    artifact.close()
+                except BaseException as cleanup:
+                    failures.append(cleanup)
+        if failures:
+            raise PreparedSessionSettlementError(failures) from primary
+        raise
     return (
         branch_point_message_id,
         "prefix-sharing",
@@ -13083,32 +15829,109 @@ class _DiskSourceMessageIds(Mapping[str, str]):
 
     def __init__(self, directory: Path) -> None:
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-prefix-refs-", dir=directory)
-        self._conn = sqlite3.connect(Path(self._scratch.name) / "refs.db")
-        self._conn.execute("CREATE TABLE refs (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID")
+        self._lock = threading.RLock()
+        self._closed = False
+        self._path = Path(self._scratch.name) / "refs.db"
+        self._reader_owner: NativeSQLCustodyOwner | None = None
+        self._writer: NativeSQLCustodyOwner | None = None
+        try:
+            self._writer = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        except NativeConnectionSettlementError as failure:
+            failure.owner.scratch_directory = self._scratch
+            raise
+        assert self._writer.connection is not None
+        self._conn: sqlite3.Connection | None = self._writer.connection
+        try:
+            self._connection().execute(
+                "CREATE TABLE refs (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
+            )
+        except BaseException as primary:
+            self._writer.scratch_directory = self._scratch
+            _close_failed_native_construction(self._writer, primary)
+            self.close()
+            raise
 
     def __setitem__(self, key: str, value: str) -> None:
-        self._conn.execute("INSERT OR REPLACE INTO refs VALUES (?, ?)", (key, value))
+        self._connection().execute("INSERT OR REPLACE INTO refs VALUES (?, ?)", (key, value))
 
     def __getitem__(self, key: str) -> str:
-        row = self._conn.execute("SELECT message_id FROM refs WHERE provider_id = ?", (key,)).fetchone()
+        with self.reader() as conn:
+            row = conn.execute("SELECT message_id FROM refs WHERE provider_id = ?", (key,)).fetchone()
         if row is None:
             raise KeyError(key)
         return str(row[0])
 
     def __iter__(self) -> Iterator[str]:
-        for (key,) in self._conn.execute("SELECT provider_id FROM refs"):
-            yield str(key)
+        after = ""
+        first = True
+        while True:
+            with self.reader() as conn:
+                rows = conn.execute(
+                    "SELECT provider_id FROM refs WHERE ? OR provider_id > ? ORDER BY provider_id LIMIT 512",
+                    (first, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            first = False
+            yield from (str(row[0]) for row in rows)
 
     def __len__(self) -> int:
-        return int(self._conn.execute("SELECT COUNT(*) FROM refs").fetchone()[0])
+        with self.reader() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM refs").fetchone()[0])
+
+    def _connection(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise RuntimeError("prefix SQL requires its creator-owned reader")
+        owner = self._writer if self._writer is not None else self._reader_owner
+        if owner is None:
+            raise RuntimeError("artifact reader has no native owner")
+        return owner.require_connection()
+
+    def finish(self) -> None:
+        self._connection().commit()
+        assert self._writer is not None
+        self._writer.close()
+        self._writer = None
+        self._conn = None
+
+    @contextmanager
+    def reader(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("prefix artifact is closed")
+            if self._conn is not None:
+                yield self._connection()
+                return
+            conn = connect_measured(f"{self._path.as_uri()}?mode=ro", uri=True)
+            owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self))
+            self._reader_owner = owner
+            self._conn = conn
+            try:
+                yield owner.require_connection()
+            finally:
+                self._conn = None
+                self._reader_owner = None
+                owner.close()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            if self._writer is not None:
+                if self._writer in retained_native_sql_owners_for_lifetime(self):
+                    self._writer.close()
+                self._writer = None
+                self._conn = None
+            pending = retained_native_sql_owners_for_lifetime(self)
+            if pending:
+                raise NativeConnectionSettlementError(pending[0], RuntimeError("prefix artifact remains owned"))
+            self._scratch.cleanup()
+            self._closed = True
 
     def __del__(self) -> None:
-        connection = getattr(self, "_conn", None)
-        if connection is not None:
-            connection.close()
-        scratch = getattr(self, "_scratch", None)
-        if scratch is not None:
-            scratch.cleanup()
+        if hasattr(self, "_lock"):
+            self.close()
 
 
 def _lineage_prefix_digest(signatures: Iterable[tuple[str, str]]) -> bytes:
@@ -13121,26 +15944,51 @@ def _lineage_prefix_digest(signatures: Iterable[tuple[str, str]]) -> bytes:
     return digest.digest()
 
 
-def _prefix_sharing_edge_sync(conn: sqlite3.Connection, session_id: str) -> tuple[str, str] | None:
-    """Return ``(parent_session_id, branch_point_message_id)`` for a resolved
-    prefix-sharing lineage edge, else ``None``. Mirrors the async reader."""
-    row = conn.execute(
-        f"""
-        SELECT resolved_dst_session_id, branch_point_message_id
-        FROM session_links
-        WHERE src_session_id = ?
-          AND inheritance = 'prefix-sharing'
-          AND resolved_dst_session_id IS NOT NULL
-          AND branch_point_message_id IS NOT NULL
-          AND {topology_status_composes_sql()}
-        ORDER BY link_type, dst_origin, dst_native_id
-        LIMIT 1
-        """,
+def _prefix_sharing_edge_row(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> sqlite3.Row | None:
+    """Return the canonical first composing prefix-sharing edge."""
+    if not conn.in_transaction:
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
+        try:
+            return _prefix_sharing_edge_row(conn, session_id, before_input)
+        finally:
+            with connection_cursor(conn, "ROLLBACK"):
+                pass
+    with connection_cursor(
+        conn,
+        "SELECT rowid FROM session_links WHERE src_session_id=? AND inheritance='prefix-sharing' "
+        "AND resolved_dst_session_id IS NOT NULL AND branch_point_message_id IS NOT NULL "
+        f"AND {topology_status_composes_sql()} ORDER BY link_type,dst_origin,dst_native_id LIMIT 1",
         (session_id,),
-    ).fetchone()
-    if row is None:
+    ) as cursor:
+        selected = cursor.fetchone()
+    if selected is None:
         return None
-    return (str(row[0]), str(row[1]))
+    if before_input is not None:
+        before_input(
+            "session_links",
+            ("resolved_dst_session_id", "branch_point_message_id", "branch_point_content_address"),
+            "SELECT rowid FROM session_links WHERE rowid=?",
+            (selected[0],),
+        )
+    with connection_cursor(
+        conn,
+        "SELECT resolved_dst_session_id,branch_point_message_id,branch_point_content_address FROM session_links WHERE rowid=?",
+        (selected[0],),
+    ) as cursor:
+        row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError("selected lineage edge disappeared inside its owned read")
+    return cast(sqlite3.Row, row)
+
+
+def _prefix_sharing_edge_sync(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> tuple[str, str] | None:
+    row = _prefix_sharing_edge_row(conn, session_id, before_input)
+    return None if row is None else (str(row[0]), str(row[1]))
 
 
 def _branch_point_content_address_matches(
@@ -13148,21 +15996,38 @@ def _branch_point_content_address_matches(
     child_session_id: str,
     parent_session_id: str,
     branch_point_message_id: str,
+    before_input: BeforeIndexInput | None = None,
 ) -> bool:
-    row = conn.execute(
-        """
-        SELECT l.branch_point_content_address, m.content_address
-        FROM session_links AS l
-        LEFT JOIN messages AS m ON m.message_id = l.branch_point_message_id
-        WHERE l.src_session_id = ?
-          AND l.resolved_dst_session_id = ?
-          AND l.branch_point_message_id = ?
-          AND l.inheritance = 'prefix-sharing'
-        LIMIT 1
-        """,
+    with connection_cursor(
+        conn,
+        "SELECT l.rowid,m.rowid FROM session_links AS l "
+        "LEFT JOIN messages AS m ON m.message_id=l.branch_point_message_id "
+        "WHERE l.src_session_id=? AND l.resolved_dst_session_id=? AND l.branch_point_message_id=? "
+        "AND l.inheritance='prefix-sharing' LIMIT 1",
         (child_session_id, parent_session_id, branch_point_message_id),
-    ).fetchone()
-    if row is None or row[0] is None:
+    ) as cursor:
+        selected = cursor.fetchone()
+    if selected is None:
+        return True
+    if before_input is not None:
+        before_input(
+            "session_links",
+            ("branch_point_content_address",),
+            "SELECT rowid FROM session_links WHERE rowid=?",
+            (selected[0],),
+        )
+        if selected[1] is not None:
+            before_input("messages", ("content_address",), "SELECT rowid FROM messages WHERE rowid=?", (selected[1],))
+    with connection_cursor(
+        conn,
+        "SELECT l.branch_point_content_address,m.content_address FROM session_links AS l "
+        "LEFT JOIN messages AS m ON m.message_id=l.branch_point_message_id WHERE l.rowid=?",
+        (selected[0],),
+    ) as cursor:
+        row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError("selected branch-point input disappeared inside its owned read")
+    if row[0] is None:
         return True
     return row[1] is not None and bytes(row[0]) == bytes(row[1])
 
@@ -13210,28 +16075,40 @@ def _resolved_hermes_parent_native_id(conn: sqlite3.Connection, origin_value: st
     return str(rows[0][0]) if len(rows) == 1 else parent_native_id
 
 
-def _existing_parent_session_id(conn: sqlite3.Connection, session: ParsedSession, origin_value: str) -> str | None:
+def _existing_parent_session_id(
+    conn: sqlite3.Connection, session: ParsedSession, origin_value: str, before_input: BeforeIndexInput | None = None
+) -> str | None:
     parent_provider_id = session.parent_session_provider_id
     if not parent_provider_id:
         return None
-    return _existing_session_id_for_native(conn, origin_value, parent_provider_id)
+    return _existing_session_id_for_native(conn, origin_value, parent_provider_id, before_input)
 
 
-def _existing_session_id_for_native(conn: sqlite3.Connection, origin_value: str, provider_id: str) -> str | None:
+def _existing_session_id_for_native(
+    conn: sqlite3.Connection, origin_value: str, provider_id: str, before_input: BeforeIndexInput | None = None
+) -> str | None:
     """Return the archived session one exact provider session id names, if unambiguous."""
     session_id = archive_session_id(origin_value, provider_id.strip())
-    row = conn.execute(
-        "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1",
-        (session_id,),
-    ).fetchone()
+    with connection_cursor(conn, "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1", (session_id,)) as _input_cursor:
+        row = _input_cursor.fetchone()
     if row is not None:
         return session_id
-    row = conn.execute(
+    if before_input is not None:
+        before_input(
+            "session_identity_claims",
+            ("claimant_session_id",),
+            "SELECT rowid FROM session_identity_claims WHERE origin=? "
+            "AND identity_namespace='provider-session' AND provider_value=? ORDER BY claimant_session_id",
+            (origin_value, provider_id.strip()),
+        )
+    with connection_cursor(
+        conn,
         """SELECT claimant_session_id FROM session_identity_claims
            WHERE origin = ? AND identity_namespace = 'provider-session'
              AND provider_value = ? ORDER BY claimant_session_id""",
         (origin_value, provider_id.strip()),
-    ).fetchall()
+    ) as _input_cursor:
+        row = _input_cursor.fetchall()
     return str(row[0][0]) if len(row) == 1 else None
 
 
@@ -13323,8 +16200,8 @@ def _session_provider_values(conn: sqlite3.Connection, session_id: str) -> set[s
 
 
 def _session_acquisition_paths(
-    conn: sqlite3.Connection, source_conn: sqlite3.Connection, session_id: str
-) -> Iterator[str]:
+    conn: sqlite3.Connection, source_read: SessionSourceRead, session_id: str
+) -> Generator[str, None, None]:
     """Indexed acquisition paths bound to this session, including retained copies.
 
     A new winning raw must not make a prior acquisition's sidecar disappear.
@@ -13332,26 +16209,31 @@ def _session_acquisition_paths(
     acquisitions use the existing (origin, native_id) index and only identities
     with no conflicting canonical claimant. No archive-wide source scan.
     """
-    row = conn.execute("SELECT raw_id, origin, native_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    with closing(
+        conn.execute("SELECT raw_id, origin, native_id FROM sessions WHERE session_id = ?", (session_id,))
+    ) as lineage_rows:
+        row = lineage_rows.fetchone()
     if row is None:
         return
     raw_id, origin, native_id = row
     if raw_id is not None:
-        raw = source_conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
-        if raw is not None:
-            yield str(raw[0])
+        raw_path = source_read.raw_path(str(raw_id))
+        if raw_path is not None:
+            yield raw_path
     for value in _session_provider_values(conn, session_id) | {str(native_id)}:
-        conflicting = conn.execute(
-            "SELECT 1 FROM session_identity_claims WHERE origin = ? AND identity_namespace = 'provider-session' "
-            "AND provider_value = ? AND claimant_session_id != ? LIMIT 1",
-            (origin, value, session_id),
-        ).fetchone()
+        with closing(
+            conn.execute(
+                "SELECT 1 FROM session_identity_claims WHERE origin = ? AND identity_namespace = 'provider-session' "
+                "AND provider_value = ? AND claimant_session_id != ? LIMIT 1",
+                (origin, value, session_id),
+            )
+        ) as lineage_rows:
+            conflicting = lineage_rows.fetchone()
         if conflicting is not None:
             continue
-        for acquisition in source_conn.execute(
-            "SELECT DISTINCT source_path FROM raw_sessions WHERE origin = ? AND native_id = ?", (origin, value)
-        ):
-            yield str(acquisition[0])
+        with source_read.acquisition_rows(str(origin), value) as acquisition_paths:
+            for acquisition in acquisition_paths:
+                yield str(acquisition[0])
 
 
 def _split_source_path(path: str) -> tuple[str, str, str]:
@@ -13367,13 +16249,13 @@ def _split_source_path(path: str) -> tuple[str, str, str]:
 
 def _sidecar_candidate_paths(
     conn: sqlite3.Connection,
-    source_conn: sqlite3.Connection,
+    source_read: SessionSourceRead,
     *,
     parent_session_id: str,
     child_session_id: str,
     parent_values: set[str],
     stems: set[str],
-) -> Iterator[str]:
+) -> Generator[str, None, None]:
     """Exact source paths where the child's dispatch sidecar can be stored.
 
     Claude Code writes ``<dir>/<parent>.jsonl``, and the child's transcript
@@ -13383,19 +16265,23 @@ def _sidecar_candidate_paths(
     ``subagents`` directory. A session with no recorded acquisition path
     contributes no candidate.
     """
-    for child_path in _session_acquisition_paths(conn, source_conn, child_session_id):
-        directory, _name, _separator = _split_source_path(child_path)
-        yield from (f"{directory}{stem}.meta.json" for stem in stems)
-    for parent_path in _session_acquisition_paths(conn, source_conn, parent_session_id):
-        directory, name, separator = _split_source_path(parent_path)
-        parent_stem = name.removesuffix(".jsonl").removesuffix(".ndjson")
-        if parent_stem in parent_values:
-            yield from (f"{directory}{parent_stem}{separator}subagents{separator}{stem}.meta.json" for stem in stems)
+    with closing(_session_acquisition_paths(conn, source_read, child_session_id)) as acquisition_paths:
+        for child_path in acquisition_paths:
+            directory, _name, _separator = _split_source_path(child_path)
+            yield from (f"{directory}{stem}.meta.json" for stem in stems)
+    with closing(_session_acquisition_paths(conn, source_read, parent_session_id)) as acquisition_paths:
+        for parent_path in acquisition_paths:
+            directory, name, separator = _split_source_path(parent_path)
+            parent_stem = name.removesuffix(".jsonl").removesuffix(".ndjson")
+            if parent_stem in parent_values:
+                yield from (
+                    f"{directory}{parent_stem}{separator}subagents{separator}{stem}.meta.json" for stem in stems
+                )
 
 
 def _sidecar_dispatch_tool_ids(
     conn: sqlite3.Connection,
-    source_conn: sqlite3.Connection | None,
+    source_read: SessionSourceRead | None,
     *,
     origin: str,
     parent_session_id: str,
@@ -13413,33 +16299,33 @@ def _sidecar_dispatch_tool_ids(
     holds, where a leading-wildcard pattern scanned every one of them per
     edge on the single writer.
     """
-    if source_conn is None or origin != Origin.CLAUDE_CODE_SESSION.value:
+    if source_read is None or origin != Origin.CLAUDE_CODE_SESSION.value:
         return set()
     stems = {value for value in child_values if value.startswith("agent-") and ":" not in value}
     if not stems:
         return set()
-    if (
-        source_conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_sessions'").fetchone()
-        is None
-    ):
+    if not source_read.raw_sessions_present():
         return set()
-    return _sidecar_paths_dispatch_tool_ids(
-        source_conn,
-        origin=origin,
-        sidecar_paths=_sidecar_candidate_paths(
+    with closing(
+        _sidecar_candidate_paths(
             conn,
-            source_conn,
+            source_read,
             parent_session_id=parent_session_id,
             child_session_id=child_session_id,
             parent_values=parent_values,
             stems=stems,
-        ),
-        parent_values=parent_values,
-    )
+        )
+    ) as sidecar_paths:
+        return _sidecar_paths_dispatch_tool_ids(
+            source_read,
+            origin=origin,
+            sidecar_paths=sidecar_paths,
+            parent_values=parent_values,
+        )
 
 
 def _sidecar_paths_dispatch_tool_ids(
-    source_conn: sqlite3.Connection,
+    source_read: SessionSourceRead,
     *,
     origin: str,
     sidecar_paths: Iterable[str],
@@ -13449,63 +16335,60 @@ def _sidecar_paths_dispatch_tool_ids(
 
     The parent directory must be one of the parent's own provider names, so a
     sidecar can never bind to a different session that happens to share a
-    child stem. The bytes are read from the CAS of the archive ``source_conn``
-    belongs to, never the process-configured one.
+    child stem. The bytes are read through the Source host's bound archive CAS
+    capability.
     """
     tool_ids: set[str] = set()
-    store = blob_store_for_connection(source_conn)
     for sidecar_path in sidecar_paths:
         # Only ``source_path`` is constrained in SQL, so the planner can serve
         # the probe from ``idx_raw_sessions_source_path`` alone; an ``origin``
         # term would let it walk every Claude raw through the origin index.
-        rows = source_conn.execute(
-            "SELECT source_path, blob_hash, origin FROM raw_sessions WHERE source_path = ? "
-            "ORDER BY source_index, raw_id",
-            (sidecar_path,),
-        )
-        for source_path, blob_hash, row_origin in rows:
-            if row_origin != origin:
-                continue
-            parts = str(source_path).replace("\\", "/").split("/")
-            if len(parts) < 3 or parts[-3] not in parent_values:
-                continue
-            # This runs in the synchronous writer, and ZIP admission permits
-            # very large members. Dispatch identity is a root field, so the
-            # sidecar is streamed to the root fields the artifact parser reads,
-            # never read whole; the tool_use id itself is kept complete, since
-            # it is the exact join key to the parent block.
-            try:
-                with store.open(bytes(blob_hash).hex()) as handle:
-                    (envelope,) = top_level_envelopes(
-                        handle,
-                        expand_arrays=False,
-                        fields=DOCUMENT_READ_FIELDS,
-                        identity_groups=IDENTITY_FIELD_GROUPS,
+        after: tuple[int, str] | None = None
+        while page := source_read.sidecar_page(sidecar_path, after):
+            after = (page[-1][4], page[-1][3])
+            for source_path, blob_hash, row_origin, raw_id, _source_index in page:
+                if row_origin != origin:
+                    continue
+                parts = str(source_path).replace("\\", "/").split("/")
+                if len(parts) < 3 or parts[-3] not in parent_values:
+                    continue
+                # The evidence cursor is closed before byte hydration. ZIP
+                # admission permits very large members. Dispatch identity is a root field, so the
+                # sidecar is streamed to the root fields the artifact parser reads,
+                # never read whole; the tool_use id itself is kept complete, since
+                # it is the exact join key to the parent block.
+                try:
+                    with source_read.open_sidecar_payload(raw_id, blob_hash) as handle:
+                        (envelope,) = top_level_envelopes(
+                            handle,
+                            expand_arrays=False,
+                            fields=DOCUMENT_READ_FIELDS,
+                            identity_groups=IDENTITY_FIELD_GROUPS,
+                        )
+                    # Only an object root carries dispatch identity; a scalar root
+                    # must not be decoded a second time into a document.
+                    artifact = (
+                        parse_claude_orchestration_artifact(str(source_path), envelope)
+                        if isinstance(envelope, dict)
+                        else None
                     )
-                # Only an object root carries dispatch identity; a scalar root
-                # must not be decoded a second time into a document.
-                artifact = (
-                    parse_claude_orchestration_artifact(str(source_path), envelope)
-                    if isinstance(envelope, dict)
-                    else None
-                )
-            # RecursionError is a RuntimeError, not a ValueError: a deeply
-            # nested sidecar would otherwise escape this handler and abort the
-            # whole session write, and because the raw row persists it would
-            # abort it again on every later replay of the same lineage.
-            except (OSError, ValueError, ArithmeticError, RecursionError, ijson.JSONError) as exc:
-                emit(
-                    "storage.dispatch_sidecar.refused",
-                    level=WARNING,
-                    outcome="refused",
-                    reason="sidecar_unreadable",
-                    source_path=source_path,
-                    error_type=type(exc).__name__,
-                )
-                continue
-            if artifact is None:
-                continue
-            tool_ids.update(fact.tool_use_id for fact in artifact.facts if fact.tool_use_id)
+                # RecursionError is a RuntimeError, not a ValueError: a deeply
+                # nested sidecar would otherwise escape this handler and abort the
+                # whole session write, and because the raw row persists it would
+                # abort it again on every later replay of the same lineage.
+                except (OSError, ValueError, ArithmeticError, RecursionError, ijson.JSONError) as exc:
+                    emit(
+                        "storage.dispatch_sidecar.refused",
+                        level=WARNING,
+                        outcome="refused",
+                        reason="sidecar_unreadable",
+                        source_path=source_path,
+                        error_type=type(exc).__name__,
+                    )
+                    continue
+                if artifact is None:
+                    continue
+                tool_ids.update(fact.tool_use_id for fact in artifact.facts if fact.tool_use_id)
     return tool_ids
 
 
@@ -13514,7 +16397,7 @@ def _resolve_parent_dispatch_block(
     parent_session_id: str,
     child_session_id: str,
     *,
-    source_conn: sqlite3.Connection | None = None,
+    source_read: SessionSourceRead | None = None,
 ) -> _DispatchResolution:
     """Bind a child edge to the exact parent tool_use block that dispatched it.
 
@@ -13569,7 +16452,7 @@ def _resolve_parent_dispatch_block(
         tool_ids.add(observation.provider_tool_id)
     tool_ids |= _sidecar_dispatch_tool_ids(
         conn,
-        source_conn,
+        source_read,
         origin=origin,
         parent_session_id=parent_session_id,
         child_session_id=child_session_id,
@@ -13801,36 +16684,14 @@ def _write_session_identity_claims(
     return invalidated_children
 
 
-def _message_content_address_for_id(conn: sqlite3.Connection, message_id: str) -> bytes | None:
-    row = conn.execute(
-        "SELECT content_address FROM messages WHERE message_id = ?",
-        (message_id,),
-    ).fetchone()
+def _message_content_address_for_id(
+    conn: sqlite3.Connection, message_id: str, before_input: BeforeIndexInput | None = None
+) -> bytes | None:
+    if before_input is not None:
+        before_input("messages", ("content_address",), "SELECT rowid FROM messages WHERE message_id=?", (message_id,))
+    with connection_cursor(conn, "SELECT content_address FROM messages WHERE message_id = ?", (message_id,)) as cursor:
+        row = cursor.fetchone()
     return None if row is None or row[0] is None else bytes(row[0])
-
-
-def _refresh_stable_branch_point_witnesses(conn: sqlite3.Connection, parent_session_id: str) -> int:
-    cursor = conn.execute(
-        """
-        UPDATE session_links
-        SET branch_point_content_address = (
-            SELECT m.content_address FROM messages AS m
-            WHERE m.message_id = session_links.branch_point_message_id
-        )
-        WHERE resolved_dst_session_id = ?
-          AND inheritance = 'prefix-sharing'
-          AND branch_point_message_id IS NOT NULL
-          AND branch_point_content_address IS NOT NULL
-          AND EXISTS (
-              SELECT 1 FROM messages AS m
-              WHERE m.message_id = session_links.branch_point_message_id
-                AND m.session_id = ?
-                AND m.native_id IS NOT NULL
-          )
-        """,
-        (parent_session_id, parent_session_id),
-    )
-    return max(cursor.rowcount, 0)
 
 
 def _active_leaf_message_id(
@@ -13934,67 +16795,111 @@ def _duplicate_message_native_ids(messages: Iterable[ParsedMessage]) -> frozense
 
 
 class _DiskDuplicateNativeIds(frozenset[str]):
-    """Membership for ambiguous ids across preparation and publication threads."""
+    """Sealed ambiguous-id file; each native access belongs to its creator."""
 
     def __new__(cls, messages: Iterable[ParsedMessage], directory: Path) -> _DiskDuplicateNativeIds:
         return super().__new__(cls)
 
     def __init__(self, messages: Iterable[ParsedMessage], directory: Path) -> None:
         self._lock = threading.RLock()
+        self._closed = False
+        self._conn: sqlite3.Connection | None = None
+        self._reader_owner: NativeSQLCustodyOwner | None = None
+        self._writer: NativeSQLCustodyOwner | None = None
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-duplicate-ids-", dir=directory)
-        # The prepared context moves from the read-only preparation thread to
-        # the writer, then may be released by a third thread. Every access to
-        # this shared handle, including close, is serialized by _lock.
-        self._conn: sqlite3.Connection | None = connect_scratch_database(
-            Path(self._scratch.name) / "native-ids.db", check_same_thread=False
-        )
-        self._conn.execute("CREATE TABLE ids (native_id TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID")
-        for message in messages:
-            native_id = _normalized_message_native_id(message)
-            if native_id is not None:
-                self._conn.execute(
-                    "INSERT INTO ids VALUES (?, 1) ON CONFLICT(native_id) DO UPDATE SET n = n + 1",
-                    (native_id,),
-                )
+        self._path = Path(self._scratch.name) / "native-ids.db"
+        try:
+            self._writer = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        except NativeConnectionSettlementError as failure:
+            failure.owner.scratch_directory = self._scratch
+            raise
+        assert self._writer.connection is not None
+        try:
+            conn = self._writer.connection
+            conn.execute("CREATE TABLE ids (native_id TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID")
+            for message in messages:
+                native_id = _normalized_message_native_id(message)
+                if native_id is not None:
+                    self._writer.require_connection().execute(
+                        "INSERT INTO ids VALUES (?, 1) ON CONFLICT(native_id) DO UPDATE SET n = n + 1",
+                        (native_id,),
+                    )
+            conn.commit()
+        except BaseException as primary:
+            self._writer.scratch_directory = self._scratch
+            _close_failed_native_construction(self._writer, primary)
+            self.close()
+            raise
+        self._writer.close()
+        self._writer = None
+
+    @contextmanager
+    def reader(self) -> Iterator[sqlite3.Connection]:
+        """Reuse one creator-owned reader for a complete publication window."""
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("duplicate native-id index was closed")
+            if self._conn is not None:
+                if self._reader_owner is None:
+                    raise RuntimeError("duplicate-id reader has no native owner")
+                yield self._reader_owner.require_connection()
+                return
+            conn = connect_measured(f"{self._path.as_uri()}?mode=ro", uri=True)
+            owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self))
+            self._reader_owner = owner
+            self._conn = conn
+            try:
+                yield owner.require_connection()
+            finally:
+                # Clear only the borrowing slot; the strong native census
+                # retains the actual handle and artifact after failed close.
+                self._conn = None
+                self._reader_owner = None
+                owner.close()
 
     def __contains__(self, value: object) -> bool:
         if not isinstance(value, str):
             return False
-        with self._lock:
-            conn = self._connection()
+        with self.reader() as conn:
             row = conn.execute("SELECT n FROM ids WHERE native_id = ?", (value,)).fetchone()
         return row is not None and int(row[0]) > 1
 
     def __iter__(self) -> Iterator[str]:
-        with self._lock:
-            for (value,) in self._connection().execute("SELECT native_id FROM ids WHERE n > 1"):
-                yield str(value)
+        after = ""
+        first = True
+        while True:
+            with self.reader() as conn:
+                rows = conn.execute(
+                    "SELECT native_id FROM ids WHERE n > 1 AND (? OR native_id > ?) ORDER BY native_id LIMIT 512",
+                    (first, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            first = False
+            yield from (str(row[0]) for row in rows)
 
     def __len__(self) -> int:
-        with self._lock:
-            return int(self._connection().execute("SELECT COUNT(*) FROM ids WHERE n > 1").fetchone()[0])
-
-    def _connection(self) -> sqlite3.Connection:
-        if self._conn is None:
-            raise RuntimeError("duplicate native-id index was closed")
-        return self._conn
+        with self.reader() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM ids WHERE n > 1").fetchone()[0])
 
     def close(self) -> None:
-        """Idempotently release the handle and its scratch from any thread."""
         with self._lock:
-            conn = self._conn
-            if conn is None:
+            if self._closed:
                 return
-            self._conn = None
-            try:
-                conn.close()
-            finally:
-                self._scratch.cleanup()
+            if self._writer is not None:
+                if self._writer in retained_native_sql_owners_for_lifetime(self):
+                    self._writer.close()
+                self._writer = None
+            pending = retained_native_sql_owners_for_lifetime(self)
+            if pending:
+                raise NativeConnectionSettlementError(pending[0], RuntimeError("duplicate-id artifact remains owned"))
+            self._scratch.cleanup()
+            self._closed = True
 
     def __del__(self) -> None:
-        if hasattr(self, "_lock") and hasattr(self, "_conn"):
-            with suppress(Exception):
-                self.close()
+        if hasattr(self, "_lock"):
+            self.close()
 
 
 def _normalized_message_native_id(message: ParsedMessage) -> str | None:
@@ -14023,7 +16928,7 @@ def _stored_session_native_id(native_id: str) -> str:
 
     Single source of truth for session identity (mirrors the message-level
     ab5bad1f FK-failure fix via ``_stored_message_native_id`` below, never
-    given a session-level sibling until polylogue-lyr2). ``_write_session``'s
+    given a session-level sibling until polylogue-lyr2). The session
     INSERT bind and every call to ``core.identity_law.session_id`` (which the
     generated ``sessions.session_id`` column reimplements in SQL as
     ``origin || ':' || native_id``) MUST route through this helper, or the
@@ -14075,6 +16980,19 @@ def _stored_message_native_id(message: ParsedMessage, duplicate_native_ids: froz
         return None
     stripped = native_id.strip()
     return stripped or None
+
+
+def _stored_native_id_exists(conn: sqlite3.Connection, session_id: str, native_id: object) -> bool:
+    """Whether a normalized incoming ID already has a row in this session."""
+    return (
+        isinstance(native_id, str)
+        and bool(native_id)
+        and conn.execute(
+            "SELECT 1 FROM messages WHERE session_id = ? AND native_id = ? LIMIT 1",
+            (session_id, native_id),
+        ).fetchone()
+        is not None
+    )
 
 
 def _block_type(block: ParsedContentBlock) -> BlockType:
@@ -14523,10 +17441,7 @@ def _enum_value(value: object) -> str | None:
 
 
 __all__ = [
-    "PreparedRows",
-    "PreparedSessionShardRows",
-    "bind_session_shard",
-    "copy_shard_session_rows",
+    "PreparedSessionRows",
     "prepare_session_shard",
     "ArchiveAgentPolicy",
     "ARCHIVE_BLOCK_ROW_COLUMNS",
@@ -14545,7 +17460,6 @@ __all__ = [
     "rebuild_archive_messages_fts",
     "replace_parser_ingest_flag_tags",
     "repo_identity_key",
-    "upsert_session_profile_costs",
     "upsert_parser_ingest_flag_tags",
     "upsert_session_tag",
     "raw_source_path",
@@ -14554,3 +17468,42 @@ __all__ = [
     "search_archive_blocks",
     "write_parsed_session_to_archive",
 ]
+
+
+def session_revision_row_values(raw_id: str | None, content_hash: bytes) -> dict[str, object]:
+    """The canonical session row's raw pointer and stored revision digest."""
+    return {"raw_id": raw_id, "content_hash": content_hash}
+
+
+if TYPE_CHECKING:
+    from polylogue.archive.revision_replay import RevisionReplayPlan
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        PreparedRevisionAdoption,
+        RawMembershipSelectionFamily,
+    )
+
+
+def _provider_usage_projections(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    start_position: int | None = None,
+) -> tuple[UsageProjectionModel, ...]:
+    """Stream the selected event authority through the canonical domain fold.
+
+    Claude Code can write several physical assistant records for one API
+    response. Its message-usage counters are snapshots at request grain, so
+    fold each request's latest present lane before the provider-neutral sum.
+    Every source event remains stored against its original fragment message.
+    """
+    models = _provider_usage_existing_models(conn, session_id)
+    sole_model = models[0] if len(models) == 1 else None
+
+    def events(selected: Iterator[dict[str, object]]) -> Iterator[dict[str, object]]:
+        for values in selected:
+            values["model_name"] = str(values["model_name"] or "").strip() or sole_model
+            if values["model_name"] is not None:
+                yield values
+
+    with closing(provider_usage_request_events(conn, session_id, start_position=start_position)) as selected:
+        return project_provider_usage_events(events(selected), origin="")

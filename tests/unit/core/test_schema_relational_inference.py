@@ -19,6 +19,7 @@ from polylogue.schemas.inference.relational.inference import (
     RelationalAnnotations,
     infer_relations,
 )
+from tests.infra.field_stats import distribution_sketch
 
 
 class TestInferRelations:
@@ -50,7 +51,7 @@ class TestInferRelations:
                 total_samples=20,
                 present_count=20,
                 value_count=20,
-                string_lengths=[8, 8],
+                string_length_distribution=distribution_sketch([8, 8]),
             ),
             "$.users.*.id": FieldStats(
                 path="$.users.*.id",
@@ -96,9 +97,9 @@ class TestInferRelations:
             # String length setup
             "$.description": FieldStats(
                 path="$.description",
-                string_lengths=[50, 100, 150, 200],
+                string_length_distribution=distribution_sketch([50, 100, 150, 200]),
                 is_multiline=3,
-                newline_counts=[1, 2, 3, 2],
+                newline_distribution=distribution_sketch([1, 2, 3, 2]),
                 total_samples=4,
                 present_count=4,
                 value_count=4,
@@ -141,7 +142,7 @@ class TestDetectForeignKeys:
                 total_samples=15,
                 present_count=15,
                 value_count=15,
-                string_lengths=[6] * 15,
+                string_length_distribution=distribution_sketch([6] * 15),
             ),
             "$.id": FieldStats(
                 path="$.id",
@@ -462,9 +463,9 @@ class TestDetectStringLengths:
         stats = {
             "$.description": FieldStats(
                 path="$.description",
-                string_lengths=[10, 50, 100, 150, 200],
+                string_length_distribution=distribution_sketch([10, 50, 100, 150, 200]),
                 is_multiline=2,
-                newline_counts=[0, 1, 2, 1, 2],
+                newline_distribution=distribution_sketch([0, 1, 2, 1, 2]),
                 total_samples=5,
                 present_count=5,
                 value_count=5,
@@ -486,9 +487,9 @@ class TestDetectStringLengths:
         stats = {
             "$.status": FieldStats(
                 path="$.status",
-                string_lengths=[1, 1, 2, 1],
+                string_length_distribution=distribution_sketch([1, 1, 2, 1]),
                 is_multiline=0,
-                newline_counts=[0] * 4,
+                newline_distribution=distribution_sketch([0] * 4),
                 total_samples=4,
                 present_count=4,
                 value_count=4,
@@ -503,9 +504,9 @@ class TestDetectStringLengths:
         stats = {
             "$.field": FieldStats(
                 path="$.field",
-                string_lengths=[50, 100],  # only 2 samples
+                string_length_distribution=distribution_sketch([50, 100]),  # only 2 samples
                 is_multiline=1,
-                newline_counts=[1, 0],
+                newline_distribution=distribution_sketch([1, 0]),
                 total_samples=2,
                 present_count=2,
                 value_count=2,
@@ -520,9 +521,9 @@ class TestDetectStringLengths:
         stats = {
             "$.content": FieldStats(
                 path="$.content",
-                string_lengths=[100, 200, 300],
+                string_length_distribution=distribution_sketch([100, 200, 300]),
                 is_multiline=2,
-                newline_counts=[1, 2, 1],
+                newline_distribution=distribution_sketch([1, 2, 1]),
                 total_samples=3,
                 present_count=3,
                 value_count=3,
@@ -539,9 +540,9 @@ class TestDetectStringLengths:
         stats = {
             "$.var_field": FieldStats(
                 path="$.var_field",
-                string_lengths=[10, 20, 30],
+                string_length_distribution=distribution_sketch([10, 20, 30]),
                 is_multiline=0,
-                newline_counts=[0] * 3,
+                newline_distribution=distribution_sketch([0] * 3),
                 total_samples=3,
                 present_count=3,
                 value_count=3,
@@ -567,9 +568,9 @@ class TestDetectStringLengths:
         stats = {
             "$.field": FieldStats(
                 path="$.field",
-                string_lengths=[min_len, max_len],
+                string_length_distribution=distribution_sketch([min_len, max_len]),
                 is_multiline=0,
-                newline_counts=[0, 0],
+                newline_distribution=distribution_sketch([0, 0]),
                 total_samples=2,
                 present_count=2,
                 value_count=2,

@@ -59,6 +59,7 @@ def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_
         origin=Origin.CLAUDE_CODE_SESSION,
         capture_mode=Provider.CLAUDE_CODE,
         source_path="/tmp/record.jsonl",
+        canonical_source_path="/tmp/record.jsonl",
         source_index=0,
         native_id="session-1",
         payload=payload,
@@ -163,6 +164,7 @@ def test_raw_writer_refuses_invalid_storage_blob_category_before_commit(tmp_path
                 conn,
                 origin=Origin.CLAUDE_CODE_SESSION,
                 source_path="/tmp/record.jsonl",
+                canonical_source_path="/tmp/record.jsonl",
                 source_index=0,
                 payload=b"payload",
                 acquired_at_ms=1,
@@ -189,6 +191,7 @@ def test_container_coordinate_writer_refuses_invalid_format_before_persistence(t
             conn,
             origin=Origin.CLAUDE_CODE_SESSION,
             source_path="/tmp/record.jsonl",
+            canonical_source_path="/tmp/record.jsonl",
             source_index=0,
             payload=b"payload",
             acquired_at_ms=1,
@@ -252,6 +255,7 @@ def test_raw_session_hydration_refuses_unowned_membership_values(
             conn,
             origin=Origin.CLAUDE_CODE_SESSION,
             source_path="/tmp/record.jsonl",
+            canonical_source_path="/tmp/record.jsonl",
             source_index=0,
             payload=b"payload",
             acquired_at_ms=1,
@@ -271,6 +275,7 @@ def test_raw_session_hydration_refuses_unowned_blob_ref_type(tmp_path: Path) -> 
             conn,
             origin=Origin.CLAUDE_CODE_SESSION,
             source_path="/tmp/record.jsonl",
+            canonical_source_path="/tmp/record.jsonl",
             source_index=0,
             payload=b"payload",
             acquired_at_ms=1,
@@ -293,6 +298,7 @@ def test_artifact_and_hook_hydration_refuse_unowned_domain_values(tmp_path: Path
             conn,
             origin=Origin.CLAUDE_CODE_SESSION,
             source_path="/tmp/record.jsonl",
+            canonical_source_path="/tmp/record.jsonl",
             source_index=0,
             payload=b"payload",
             acquired_at_ms=1,
@@ -332,6 +338,7 @@ def test_capture_mode_resolution_refuses_unowned_persisted_value(tmp_path: Path)
             conn,
             origin=Origin.CLAUDE_CODE_SESSION,
             source_path="/tmp/record.jsonl",
+            canonical_source_path="/tmp/record.jsonl",
             source_index=0,
             payload=b"payload",
             acquired_at_ms=1,
@@ -403,6 +410,7 @@ def test_source_artifact_upsert_keeps_coordinate_deduplication_and_raw_failure_f
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="/tmp/shared.jsonl",
+            canonical_source_path="/tmp/shared.jsonl",
             source_index=0,
             payload=f"payload-{suffix}".encode(),
             acquired_at_ms=index + 1,
@@ -511,6 +519,7 @@ def test_source_artifact_upsert_refreshes_current_equal_time_carrier(tmp_path: P
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/current.jsonl",
+        canonical_source_path="/tmp/current.jsonl",
         source_index=0,
         payload=b"current",
         acquired_at_ms=1,
@@ -571,6 +580,7 @@ def test_archive_tiers_source_writer_replays_hook_events_idempotently(tmp_path: 
         conn,
         origin=Origin.CLAUDE_CODE_SESSION,
         source_path="/tmp/record.jsonl",
+        canonical_source_path="/tmp/record.jsonl",
         source_index=0,
         native_id="session-1",
         payload=payload,
@@ -581,6 +591,7 @@ def test_archive_tiers_source_writer_replays_hook_events_idempotently(tmp_path: 
         conn,
         origin=Origin.CLAUDE_CODE_SESSION,
         source_path="/tmp/record.jsonl",
+        canonical_source_path="/tmp/record.jsonl",
         source_index=0,
         native_id="session-1",
         payload=payload,
@@ -598,6 +609,7 @@ def test_archive_tiers_source_writer_keeps_multiple_raw_captures_for_one_native_
         conn,
         origin=Origin.CHATGPT_EXPORT,
         source_path="/captures/direct.json",
+        canonical_source_path="/captures/direct.json",
         source_index=0,
         native_id="conversation-1",
         payload=b'{"title":"direct"}',
@@ -607,6 +619,7 @@ def test_archive_tiers_source_writer_keeps_multiple_raw_captures_for_one_native_
         conn,
         origin=Origin.CHATGPT_EXPORT,
         source_path="/captures/browser.json",
+        canonical_source_path="/captures/browser.json",
         source_index=0,
         native_id="conversation-1",
         payload=b'{"title":"browser"}',
@@ -638,6 +651,7 @@ def test_source_writers_backfill_legacy_capture_mode_on_duplicate_raw_id(tmp_pat
         conn,
         origin=Origin.AISTUDIO_DRIVE,
         source_path="/captures/aistudio.json",
+        canonical_source_path="/captures/aistudio.json",
         source_index=0,
         payload=payload,
         acquired_at_ms=1,
@@ -650,6 +664,7 @@ def test_source_writers_backfill_legacy_capture_mode_on_duplicate_raw_id(tmp_pat
             origin=Origin.AISTUDIO_DRIVE,
             capture_mode=Provider.DRIVE,
             source_path="/captures/aistudio.json",
+            canonical_source_path="/captures/aistudio.json",
             source_index=0,
             payload=payload,
             acquired_at_ms=1,
@@ -663,6 +678,7 @@ def test_source_writers_backfill_legacy_capture_mode_on_duplicate_raw_id(tmp_pat
         conn,
         origin=Origin.AISTUDIO_DRIVE,
         source_path="/captures/aistudio-blob.json",
+        canonical_source_path="/captures/aistudio-blob.json",
         source_index=0,
         blob_hash=blob_hash,
         blob_size=len(b"blob-backed aistudio"),
@@ -675,6 +691,7 @@ def test_source_writers_backfill_legacy_capture_mode_on_duplicate_raw_id(tmp_pat
             origin=Origin.AISTUDIO_DRIVE,
             capture_mode=Provider.DRIVE,
             source_path="/captures/aistudio-blob.json",
+            canonical_source_path="/captures/aistudio-blob.json",
             source_index=0,
             blob_hash=blob_hash,
             blob_size=len(b"blob-backed aistudio"),
@@ -722,6 +739,7 @@ def test_source_reference_commit_atomically_consumes_publication_reservation(tmp
         conn,
         origin=Origin.CHATGPT_EXPORT,
         source_path="/captures/reserved.json",
+        canonical_source_path="/captures/reserved.json",
         source_index=0,
         payload=payload,
         acquired_at_ms=2,
@@ -754,6 +772,7 @@ def test_capture_mode_resolution_ambiguous_gemini_then_drive(tmp_path: Path) -> 
         origin=Origin.AISTUDIO_DRIVE,
         capture_mode=Provider.GEMINI,
         source_path="/tmp/export.json",
+        canonical_source_path="/tmp/export.json",
         source_index=0,
         payload=payload,
         acquired_at_ms=1_000,
@@ -763,6 +782,7 @@ def test_capture_mode_resolution_ambiguous_gemini_then_drive(tmp_path: Path) -> 
         origin=Origin.AISTUDIO_DRIVE,
         capture_mode=Provider.DRIVE,
         source_path="/tmp/export.json",
+        canonical_source_path="/tmp/export.json",
         source_index=0,
         payload=payload,
         acquired_at_ms=2_000,
@@ -800,6 +820,7 @@ def test_capture_mode_resolution_ambiguous_drive_then_gemini(tmp_path: Path) -> 
         origin=Origin.AISTUDIO_DRIVE,
         capture_mode=Provider.DRIVE,
         source_path="/tmp/live-drive.json",
+        canonical_source_path="/tmp/live-drive.json",
         source_index=0,
         payload=payload,
         acquired_at_ms=1_000,
@@ -809,6 +830,7 @@ def test_capture_mode_resolution_ambiguous_drive_then_gemini(tmp_path: Path) -> 
         origin=Origin.AISTUDIO_DRIVE,
         capture_mode=Provider.GEMINI,
         source_path="/tmp/live-drive.json",
+        canonical_source_path="/tmp/live-drive.json",
         source_index=0,
         payload=payload,
         acquired_at_ms=2_000,
@@ -841,6 +863,7 @@ def test_capture_mode_resolution_unambiguous_single_observation(tmp_path: Path) 
         origin=Origin.CLAUDE_CODE_SESSION,
         capture_mode=Provider.CLAUDE_CODE,
         source_path="/tmp/single.jsonl",
+        canonical_source_path="/tmp/single.jsonl",
         source_index=0,
         payload=payload,
         acquired_at_ms=1_000,
@@ -851,6 +874,7 @@ def test_capture_mode_resolution_unambiguous_single_observation(tmp_path: Path) 
         origin=Origin.CLAUDE_CODE_SESSION,
         capture_mode=Provider.CLAUDE_CODE,
         source_path="/tmp/single.jsonl",
+        canonical_source_path="/tmp/single.jsonl",
         source_index=0,
         payload=payload,
         acquired_at_ms=2_000,
@@ -871,6 +895,7 @@ def test_capture_mode_resolution_unknown_when_never_observed(tmp_path: Path) -> 
         conn,
         origin=Origin.CLAUDE_CODE_SESSION,
         source_path="/tmp/no-capture-mode.jsonl",
+        canonical_source_path="/tmp/no-capture-mode.jsonl",
         source_index=0,
         payload=payload,
         acquired_at_ms=1_000,
@@ -894,6 +919,7 @@ def test_capture_mode_resolution_ambiguous_via_blob_ref_writer(tmp_path: Path) -
         origin=Origin.AISTUDIO_DRIVE,
         capture_mode=Provider.GEMINI,
         source_path="/tmp/blobref-export.json",
+        canonical_source_path="/tmp/blobref-export.json",
         source_index=0,
         blob_hash=blob_hash,
         blob_size=len(payload),
@@ -904,6 +930,7 @@ def test_capture_mode_resolution_ambiguous_via_blob_ref_writer(tmp_path: Path) -
         origin=Origin.AISTUDIO_DRIVE,
         capture_mode=Provider.DRIVE,
         source_path="/tmp/blobref-export.json",
+        canonical_source_path="/tmp/blobref-export.json",
         source_index=0,
         blob_hash=blob_hash,
         blob_size=len(payload),
@@ -951,75 +978,66 @@ def test_fresh_source_ddl_declares_no_parser_census_timestamp(tmp_path: Path) ->
 
 
 def test_parser_census_writers_persist_a_row_without_a_timestamp(tmp_path: Path) -> None:
-    """polylogue-48bos: both production writers still record their receipt.
+    """polylogue-48bos: the production census writer still records its receipt.
 
-    Concrete input: a fresh source tier holding one raw session, driven
-    through the complete production writer set for
-    ``raw_authority_parser_census`` --
-    ``record_current_parser_source_census`` and
-    ``record_resource_blocked_revision_census``.
+    Concrete input: a fresh archive holding one raw session, driven through
+    the production writer for ``raw_authority_parser_census``:
+    ``record_current_parser_source_census`` prepared on its original Source
+    seal and published by the dedicated Source writer. The former
+    ``record_resource_blocked_revision_census`` writer was retired with its
+    payload-envelope refusal (an outcome-changing size cap), so it has no arm.
 
     Wrong observable outcome prevented: a retirement that removed the column
     from the DDL and left a writer naming it, which turns every authority
     census into an ``OperationalError`` at the write boundary rather than a
     recorded receipt.
 
-    Anti-vacuity: reinstating ``censused_at_ms`` in either INSERT makes
-    exactly that writer's arm red with "table raw_authority_parser_census
-    has no column named censused_at_ms"; asserting the receipt row's
-    contents keeps a writer that silently wrote nothing from passing.
+    Anti-vacuity: reinstating ``censused_at_ms`` in the INSERT makes this law
+    red with "table raw_authority_parser_census has no column named
+    censused_at_ms"; asserting the receipt row's contents keeps a writer that
+    silently wrote nothing from passing.
     """
-    from polylogue.sources.revision_backfill import record_resource_blocked_revision_census
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.prepared_replay import publish_prepared_source
 
-    conn = _connect(tmp_path / "source.db")
-    raw_id = write_source_raw_session(
-        conn,
-        origin=Origin.CODEX_SESSION,
-        capture_mode=Provider.CODEX,
-        source_path="/tmp/session.jsonl",
-        source_index=0,
-        native_id="session-1",
-        payload=b'{"kind":"session"}',
-        acquired_at_ms=1_767_000_000_000,
-        parsed_at_ms=1_767_000_000_050,
-        validation_status=ValidationStatus.PASSED,
-        validation_drift_count=0,
-    )
-    conn.commit()
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"kind":"session"}',
+            source_path="/tmp/session.jsonl",
+            canonical_source_path="/tmp/session.jsonl",
+            source_index=0,
+            native_id="session-1",
+            acquired_at_ms=1_767_000_000_000,
+        )
 
-    record_current_parser_source_census(conn, raw_id, parser_sessions=[])
-    conn.commit()
-    row = conn.execute(
-        "SELECT parser_fingerprint, status, logical_keys_json, detail FROM raw_authority_parser_census WHERE raw_id = ?",
-        (raw_id,),
-    ).fetchone()
-    assert row is not None
-    assert str(row["status"]) in {"complete", "failed"}
-    assert str(row["detail"])
-
-    conn.close()
-    record_resource_blocked_revision_census(
+    publish_prepared_source(
         tmp_path,
-        (raw_id,),
-        max_payload_bytes=1,
-        total_payload_bytes=2,
-        stream_safe=True,
+        "test.parser-census-writer",
+        lambda seal: record_current_parser_source_census(seal, raw_id, parser_sessions=[]),
     )
     verify = sqlite3.connect(tmp_path / "source.db")
     verify.row_factory = sqlite3.Row
-    blocked = verify.execute(
-        "SELECT status, detail FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
-    ).fetchone()
-    assert str(blocked["status"]) == "failed"
-    assert "exceeds envelope" in str(blocked["detail"])
-    verify.close()
+    try:
+        row = verify.execute(
+            "SELECT parser_fingerprint, status, logical_keys_json, detail FROM raw_authority_parser_census "
+            "WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+        assert row is not None
+        assert str(row["status"]) in {"complete", "failed"}
+        assert str(row["detail"])
+    finally:
+        verify.close()
 
 
 def test_parser_census_identity_comparison_is_streamed_and_deduplicated(tmp_path: Path) -> None:
     """Parser identities stay in scratch SQLite and retain sorted-set parity."""
+    from polylogue.archive.revision_authority import parser_census_identity_measurement
     from polylogue.sources.parsers.base_models import ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.revision_governance import _file_backed_parser_census_keys
 
     class OnePassSessions:
         def __init__(self) -> None:
@@ -1034,18 +1052,27 @@ def test_parser_census_identity_comparison_is_streamed_and_deduplicated(tmp_path
 
     conn = _connect(tmp_path / "source.db")
     sessions = OnePassSessions()
-    valid, matches, count, encoded = _file_backed_parser_census_keys(
-        conn,
-        "synthetic-raw",
-        None,
-        None,
-        sessions,  # type: ignore[arg-type]
-    )
-    assert sessions.reads == 1
-    assert valid is True
-    assert matches is False
-    assert count == 2
-    assert encoded == '["chatgpt-export:a","chatgpt-export:b"]'
+    with parser_census_identity_measurement(
+        raw_logical_key=None,
+        revision_kind=None,
+        membership_logical_keys=(
+            row[0]
+            for row in conn.execute(
+                "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id=?", ("synthetic-raw",)
+            )
+        ),
+        observed_logical_keys=(f"{session.source_name.value}:{session.provider_session_id}" for session in sessions),
+    ) as measured:
+        assert sessions.reads == 1
+        assert measured.durable_valid is True
+        assert measured.identities_match is False
+        assert measured.observed_count == 2
+        with measured.keys_json_stream(sqlite_encoding=True) as (length, chunks):
+            encoded = b"".join(chunks)
+        assert length == len(encoded)
+        assert encoded == b'["chatgpt-export:a","chatgpt-export:b"]'
+        assert measured.connection.execute("PRAGMA temp_store").fetchone() == (1,)
+        assert measured.connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
     conn.close()
 
 
@@ -1072,6 +1099,7 @@ def test_newer_raw_replaces_a_terminal_carrier(tmp_path: Path) -> None:
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/replaced.jsonl",
+        canonical_source_path="/tmp/replaced.jsonl",
         source_index=0,
         payload=b"corrupt bytes",
         acquired_at_ms=1,
@@ -1094,6 +1122,7 @@ def test_newer_raw_replaces_a_terminal_carrier(tmp_path: Path) -> None:
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/replaced.jsonl",
+        canonical_source_path="/tmp/replaced.jsonl",
         source_index=0,
         payload=b"a valid replacement export",
         acquired_at_ms=2,
@@ -1127,6 +1156,7 @@ def test_newer_raw_replaces_a_terminal_carrier(tmp_path: Path) -> None:
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/kept.jsonl",
+        canonical_source_path="/tmp/kept.jsonl",
         source_index=0,
         payload=b"kept corrupt bytes",
         acquired_at_ms=3,
@@ -1153,3 +1183,66 @@ def test_newer_raw_replaces_a_terminal_carrier(tmp_path: Path) -> None:
     ).fetchone()
     assert kept is not None
     assert (kept["raw_id"], kept["artifact_kind"]) == (kept_raw, "terminal_corrupt_input")
+
+
+@pytest.mark.parametrize("mode", [None, "whole_member", "element"])
+def test_container_coordinate_writer_refuses_missing_captured_receipt_before_persistence(
+    tmp_path: Path, mode: str | None
+) -> None:
+    from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
+
+    conn = _connect(tmp_path / "source.db")
+    try:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CHATGPT_EXPORT,
+            source_path="/fixture/export.zip:session.json",
+            canonical_source_path="/fixture/export.zip:session.json",
+            source_index=0,
+            payload=b"{}",
+            acquired_at_ms=1,
+        )
+        before = tuple(conn.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone())
+        with pytest.raises(RetainedZipMembershipUnprovedError):
+            record_raw_container_coordinate(
+                conn, raw_id, coordinate_format="zip-v2", entry_ordinal=0, split_index=0, addressing_mode=mode
+            )
+        assert conn.execute("SELECT COUNT(*) FROM raw_container_coordinates").fetchone()[0] == 0
+        assert tuple(conn.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()) == before
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("canonical_source_path", [None, ""])
+def test_raw_writers_refuse_a_raw_without_its_canonical_source_path(
+    tmp_path: Path, canonical_source_path: str | None
+) -> None:
+    """Frontier admission refuses the whole archive over one NULL canonical path.
+
+    The write boundary therefore refuses that row. Anti-vacuity: drop the
+    writer's canonical-path check and both writes commit a NULL canonical path.
+    """
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"kind":"session"}'
+    with pytest.raises(ValueError, match="canonical source path"):
+        write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/tmp/no-canonical.jsonl",
+            canonical_source_path=canonical_source_path,  # type: ignore[arg-type]
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1,
+        )
+    with pytest.raises(ValueError, match="canonical source path"):
+        write_source_raw_session_blob_ref(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/tmp/no-canonical.jsonl",
+            canonical_source_path=canonical_source_path,  # type: ignore[arg-type]
+            source_index=0,
+            blob_hash=deterministic_blob_hash(payload),
+            blob_size=len(payload),
+            acquired_at_ms=1,
+        )
+    assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0

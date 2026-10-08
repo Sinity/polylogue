@@ -158,9 +158,8 @@ Options:
   --set TEXT...                   Set metadata key value
   --add-tag TEXT                  Add tags (comma-separated)
   --plain                         Force non-interactive plain output
-  --no-daemon                     Refuse daemon-served reads for this
-                                  invocation (reads will fail if they require
-                                  the daemon).
+  --no-daemon                     Refuse daemon-served reads; daemon-only
+                                  reads fail.
   -v, --verbose                   Verbose output
   --diagnose                      Explain CLI parser decisions on stderr
                                   before running. Useful when query-first
@@ -344,7 +343,8 @@ Examples:
   polylogue find id:codex-session:demo-receipts then read --view summary
   polylogue find id:codex-session:demo-receipts then read --view transcript
   polylogue find id:codex-session:demo-receipts then read --view messages
-  polylogue find repo:polylogue then read --view compact --max-tokens 4000
+  polylogue find id:codex-session:demo-receipts then read --view compact
+  --max-tokens 4000
 ```
 
 ## Select Verb
@@ -353,6 +353,13 @@ Examples:
 Usage: polylogue select [OPTIONS]
 
   Select one matched session or print bounded candidate identities.
+
+  Examples:
+      polylogue find 'origin:codex-session since:30d' then select --print title
+      polylogue find 'tag:review AND NOT tag:archived' then select --limit 5
+      polylogue find 'title:"release notes"' then select --format json
+      polylogue find 'origin:claude-code-session AND has:thinking' then select
+      polylogue find 'has:tools since:7d' then select --print origin
 
 Options:
   -n, --limit INTEGER RANGE  Max candidate sessions.  [default: 20; x>=1]
@@ -664,8 +671,8 @@ Options:
   -y, --yes        Skip confirmation prompt
   --session TEXT   Tombstone a specific session by ID
   --source PATH    Tombstone all sessions from a source path
-  --dry-run        Preview --session/--source identity-reset targets without
-                   mutating anything
+  --dry-run        Retain an audited preview of --session/--source targets
+                   without changing sessions
   --json           Shortcut for --format json (applies to --session/--source).
   --format [json]  Output format for --session/--source identity resets. JSON
                    emits a MutationResultPayload.

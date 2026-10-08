@@ -102,11 +102,6 @@
   {
     "target": "polylogue/api",
     "file": "polylogue/api/archive.py",
-    "import": "polylogue.storage.sqlite.async_sqlite"
-  },
-  {
-    "target": "polylogue/api",
-    "file": "polylogue/api/archive.py",
     "import": "polylogue.storage.sqlite.connection_profile"
   },
   {
@@ -196,16 +191,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/import_command.py",
-    "import": "polylogue.sources.parsers"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/import_command.py",
-    "import": "polylogue.sources.sqlite_snapshot"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/commands/maintenance/_archive_read.py",
     "import": "polylogue.storage.archive_identity"
   },
@@ -218,11 +203,6 @@
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/maintenance/_assertion_export.py",
     "import": "polylogue.storage.sqlite.archive_tiers.types"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/maintenance/_assertion_export.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.user_write"
   },
   {
     "target": "polylogue/cli",
@@ -608,11 +588,6 @@
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/healthz.py",
     "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/http.py",
-    "import": "polylogue.sources.import_preflight"
   },
   {
     "target": "polylogue/daemon",

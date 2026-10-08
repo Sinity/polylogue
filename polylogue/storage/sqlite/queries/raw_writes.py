@@ -1,36 +1,37 @@
-"""Async executor for the canonical raw-admission plan."""
+"""Async adapter to the sole source-tier raw-admission writer."""
 
 from __future__ import annotations
 
-from pathlib import Path
+import asyncio
+import threading
+from collections.abc import Callable, Iterable
 
 import aiosqlite
 
-from polylogue.archive.revision_authority import RawRevisionAuthority
 from polylogue.core.enums import Origin, Provider
 from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
 from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     RawAdmissionExecution,
     RawAdmissionPlan,
-    RawAdmissionResult,
+    execute_raw_admission_plan_sync,
 )
-from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+from polylogue.storage.sqlite.archive_tiers.source_items import (
+    FrozenSourceManifest,
+    SourceItemMemberDisposition,
+    complete_source_item_enumeration,
+    record_source_item_member_disposition,
+)
+from polylogue.storage.sqlite.archive_tiers.source_items import (
+    publish_acquired_zip_input as publish_acquired_zip_input_sync,
+)
 
 
-def _revision_values(plan: RawAdmissionPlan) -> tuple[object, ...]:
-    revision = plan.revision
-    return (
-        revision.logical_source_key,
-        revision.kind.value,
-        revision.source_revision,
-        revision.predecessor_source_revision,
-        revision.predecessor_raw_id,
-        revision.baseline_raw_id,
-        revision.append_start_offset,
-        revision.append_end_offset,
-        revision.acquisition_generation,
-        revision.authority.value,
-    )
+def _apply_plan(owner: aiosqlite.Connection, plan: RawAdmissionPlan, transaction_depth: int) -> RawAdmissionExecution:
+    """Run one complete admission on the connection's actual SQLite worker."""
+    conn = owner._conn
+    inserted = conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id=?", (plan.raw_id,)).fetchone() is None
+    result = execute_raw_admission_plan_sync(conn, plan, manage_transaction=transaction_depth == 0)
+    return RawAdmissionExecution(result=result, inserted=inserted)
 
 
 async def execute_raw_admission_plan_async(
@@ -38,154 +39,198 @@ async def execute_raw_admission_plan_async(
     plan: RawAdmissionPlan,
     transaction_depth: int,
 ) -> RawAdmissionExecution:
-    """Apply the canonical pending plan through the async SQLite adapter.
+    """Queue the canonical writer without transporting its native connection.
 
-    The plan owns identity, timestamp and pending-revision semantics. This
-    adapter retains only SQLite work, mirroring the source-tier writer's
-    conflict-before-side-effects, capture observation, blob reference, and
-    publication-reservation behavior.
+    Identity, profile and container receipts, renewed observations and conflict
+    rollback have one implementation. Cancellation propagates only after the
+    actual queued operation settles, so callers cannot reuse or close the
+    connection while admission still owns it.
     """
-    request = plan.request
-    origin_value = require_vocabulary(request.origin, Origin, field="origin")
-    capture_mode_value = (
-        require_vocabulary(request.capture_mode, Provider, field="capture_mode")
-        if request.capture_mode is not None
-        else None
-    )
-    if request.policy_snapshot is not None and not request.policy_snapshot.allows(request.blob_hash):
-        # Raise the excision error the ingest orchestrators catch: the base
-        # policy error would abort the whole batch instead of skipping one file.
-        raise ContentExcisedError(blob_hash=request.blob_hash, source_path=request.source_path)
-    cursor = await conn.execute("PRAGMA database_list")
-    schemas = {str(row[1]) for row in await cursor.fetchall()}
-    excision_schema = "source_tier" if "source_tier" in schemas else "main"
-    cursor = await conn.execute(
-        f"SELECT 1 FROM {excision_schema}.sqlite_master WHERE type = 'table' AND name = 'excised_content'"
-    )
-    if await cursor.fetchone() is not None:
-        cursor = await conn.execute(
-            f"SELECT 1 FROM {excision_schema}.excised_content "
-            "WHERE removed_hash = ? AND hash_kind = 'blob_hash' LIMIT 1",
-            (request.blob_hash,),
-        )
-        if await cursor.fetchone() is not None:
-            raise ContentExcisedError(blob_hash=request.blob_hash, source_path=request.source_path)
+    require_vocabulary(plan.request.origin, Origin, field="origin")
+    if plan.request.capture_mode is not None:
+        require_vocabulary(plan.request.capture_mode, Provider, field="capture_mode")
+    # Import lazily: the backend loads its query adapters during construction.
+    from polylogue.storage.sqlite.async_sqlite import _await_settled
 
-    cursor = await conn.execute(
-        """
-        SELECT origin, native_id, source_path, source_index, blob_hash, blob_size,
-               logical_source_key, revision_kind, source_revision,
-               predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
-               append_start_offset, append_end_offset, acquisition_generation,
-               revision_authority
-        FROM raw_sessions WHERE raw_id = ?
-        """,
-        (plan.raw_id,),
+    task: asyncio.Task[RawAdmissionExecution] = asyncio.ensure_future(
+        conn._execute(_apply_plan, conn, plan, transaction_depth)  # type: ignore[no-untyped-call]
     )
-    retained = await cursor.fetchone()
-    inserted = retained is None
-    if retained is not None:
-        retained_values = tuple(retained)
-        if retained_values[1:6] != (
-            request.native_id,
-            request.source_path,
-            request.source_index,
-            request.blob_hash,
-            request.blob_size,
-        ):
-            raise ValueError(f"raw id is already bound to different acquisition evidence: {plan.raw_id}")
-        incoming_origin = origin_value
-        stored_origin = retained_values[0]
-        if stored_origin != incoming_origin:
-            if stored_origin == "unknown-export" and incoming_origin != "unknown-export":
-                await conn.execute(
-                    "UPDATE raw_sessions SET origin = ? WHERE raw_id = ? AND origin = 'unknown-export'",
-                    (incoming_origin, plan.raw_id),
-                )
-            elif incoming_origin != "unknown-export":
-                raise ValueError(
-                    f"raw id is already bound to a conflicting origin: {plan.raw_id} "
-                    f"(stored={stored_origin!r}, incoming={incoming_origin!r})"
-                )
-        # A pre-parse reservation is deliberately replaced by the parser's
-        # typed revision envelope.  Re-acquiring the same observation after
-        # that bind is idempotent; only an unrelated non-pending conflict is
-        # fatal.
-        retained_revision = retained_values[6:]
-        pending_revision = _revision_values(plan)
-        if retained_revision != pending_revision and plan.revision.authority is not RawRevisionAuthority.QUARANTINED:
-            raise ValueError(f"raw id is already bound to a different revision envelope: {plan.raw_id}")
-    else:
-        origin = origin_value
-        cursor = await conn.execute(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, capture_mode, native_id, source_path, canonical_source_path, source_index, blob_hash,
-                blob_size, acquired_at_ms, file_mtime_ms, logical_source_key, revision_kind,
-                source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
-                append_start_offset, append_end_offset, acquisition_generation, revision_authority
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(raw_id) DO NOTHING
-            """,
-            (
-                plan.raw_id,
-                origin,
-                capture_mode_value,
-                request.native_id,
-                request.source_path,
-                str(Path(request.source_path).resolve()),
-                request.source_index,
-                request.blob_hash,
-                request.blob_size,
-                request.acquired_at_ms,
-                request.file_mtime_ms,
-                *_revision_values(plan),
-            ),
-        )
-        inserted = bool(cursor.rowcount > 0)
-        if not inserted:
-            # Another writer won between the read and insert. Re-enter through
-            # the exact same validation path before mutable side effects.
-            return await execute_raw_admission_plan_async(conn, plan, transaction_depth)
-
-    if request.capture_mode is not None:
-        capture_mode = capture_mode_value
-        await conn.execute(
-            "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
-            (capture_mode, plan.raw_id),
-        )
-        await conn.execute(
-            """
-            INSERT INTO raw_capture_observations (raw_id, capture_mode, first_observed_at_ms)
-            VALUES (?, ?, ?)
-            ON CONFLICT(raw_id, capture_mode) DO NOTHING
-            """,
-            (plan.raw_id, capture_mode, request.acquired_at_ms),
-        )
-    if request.file_mtime_ms is not None:
-        await conn.execute(
-            "UPDATE raw_sessions SET file_mtime_ms = ? WHERE raw_id = ? AND file_mtime_ms IS NULL",
-            (request.file_mtime_ms, plan.raw_id),
-        )
-    await conn.execute(
-        """
-        INSERT OR REPLACE INTO blob_refs (
-            blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
-        ) VALUES (?, ?, 'raw_payload', ?, ?, ?)
-        """,
-        (request.blob_hash, plan.raw_id, request.source_path, request.blob_size, request.acquired_at_ms),
-    )
-    if request.blob_publication_receipt_id is not None:
-        await conn.execute(
-            "DELETE FROM blob_publication_reservations WHERE publication_id = ? AND blob_hash = ?",
-            (request.blob_publication_receipt_id, request.blob_hash),
-        )
-    if transaction_depth == 0:
-        await conn.commit()
-    return RawAdmissionExecution(
-        result=RawAdmissionResult(arm=plan.arm, raw_id=plan.raw_id),
-        inserted=inserted,
-    )
+    await _await_settled(task)
+    return task.result()
 
 
 __all__ = ["execute_raw_admission_plan_async"]
+
+
+def _publish_input(owner: aiosqlite.Connection, manifest: FrozenSourceManifest, observed_at_ms: int, depth: int) -> str:
+    conn = owner._conn
+    conn.execute("SAVEPOINT acquired_zip_input")
+    try:
+        item = publish_acquired_zip_input_sync(conn, manifest, observed_at_ms=observed_at_ms)
+    except BaseException:
+        conn.execute("ROLLBACK TO acquired_zip_input")
+        conn.execute("RELEASE acquired_zip_input")
+        raise
+    conn.execute("RELEASE acquired_zip_input")
+    if depth == 0:
+        conn.commit()
+    return item
+
+
+async def publish_acquired_zip_input(
+    conn: aiosqlite.Connection,
+    manifest: FrozenSourceManifest,
+    *,
+    observed_at_ms: int,
+    transaction_depth: int,
+) -> str:
+    from polylogue.storage.sqlite.async_sqlite import _await_settled
+
+    task: asyncio.Task[str] = asyncio.ensure_future(
+        conn._execute(_publish_input, conn, manifest, observed_at_ms, transaction_depth)  # type: ignore[no-untyped-call]
+    )
+    await _await_settled(task)
+    return task.result()
+
+
+def _record_input_disposition(
+    owner: aiosqlite.Connection,
+    generation: str,
+    item: str,
+    ordinal: int,
+    name: str,
+    disposition: str,
+    diagnostic: str | None,
+    observed_at_ms: int,
+    depth: int,
+) -> None:
+    conn = owner._conn
+    conn.execute("SAVEPOINT acquired_zip_disposition")
+    try:
+        record_source_item_member_disposition(
+            conn,
+            source_generation_id=generation,
+            source_item_id=item,
+            entry_ordinal=ordinal,
+            member_name=name,
+            disposition=SourceItemMemberDisposition(disposition),
+            diagnostic=diagnostic or "",
+            observed_at_ms=observed_at_ms,
+        )
+    except BaseException:
+        conn.execute("ROLLBACK TO acquired_zip_disposition")
+        conn.execute("RELEASE acquired_zip_disposition")
+        raise
+    conn.execute("RELEASE acquired_zip_disposition")
+    if depth == 0:
+        conn.commit()
+
+
+async def record_acquired_zip_disposition(
+    conn: aiosqlite.Connection,
+    *,
+    source_generation_id: str,
+    source_item_id: str,
+    entry_ordinal: int,
+    member_name: str,
+    disposition: str,
+    diagnostic: str | None,
+    observed_at_ms: int,
+    transaction_depth: int,
+) -> None:
+    from polylogue.storage.sqlite.async_sqlite import _await_settled
+
+    task: asyncio.Task[None] = asyncio.ensure_future(
+        conn._execute(  # type: ignore[no-untyped-call]
+            _record_input_disposition,
+            conn,
+            source_generation_id,
+            source_item_id,
+            entry_ordinal,
+            member_name,
+            disposition,
+            diagnostic,
+            observed_at_ms,
+            transaction_depth,
+        )
+    )
+    await _await_settled(task)
+    task.result()
+
+
+def _complete_input(
+    owner: aiosqlite.Connection,
+    generation: str,
+    item: str,
+    fingerprint: str,
+    coordinates: Iterable[str],
+    member_count: int,
+    observed_at_ms: int,
+    depth: int,
+    check_stop: Callable[[], None],
+) -> str:
+    conn = owner._conn
+    conn.execute("SAVEPOINT acquired_zip_completion")
+    try:
+        result = complete_source_item_enumeration(
+            conn,
+            source_generation_id=generation,
+            source_item_id=item,
+            enumeration_fingerprint=fingerprint,
+            record_coordinates=coordinates,
+            member_ordinals=range(member_count),
+            member_count=member_count,
+            enumerated_at_ms=observed_at_ms,
+            check_stop=check_stop,
+        )
+    except BaseException:
+        conn.execute("ROLLBACK TO acquired_zip_completion")
+        conn.execute("RELEASE acquired_zip_completion")
+        raise
+    conn.execute("RELEASE acquired_zip_completion")
+    if depth == 0:
+        conn.commit()
+    return result
+
+
+async def complete_acquired_zip_input(
+    conn: aiosqlite.Connection,
+    *,
+    source_generation_id: str,
+    source_item_id: str,
+    enumeration_fingerprint: str,
+    record_coordinates: Iterable[str],
+    member_count: int,
+    observed_at_ms: int,
+    transaction_depth: int,
+) -> str:
+    from polylogue.storage.sqlite.async_sqlite import _await_settled
+
+    stopped = threading.Event()
+
+    def checkpoint() -> None:
+        if stopped.is_set():
+            raise asyncio.CancelledError()
+
+    task: asyncio.Task[str] = asyncio.ensure_future(
+        conn._execute(  # type: ignore[no-untyped-call]
+            _complete_input,
+            conn,
+            source_generation_id,
+            source_item_id,
+            enumeration_fingerprint,
+            record_coordinates,
+            member_count,
+            observed_at_ms,
+            transaction_depth,
+            checkpoint,
+        )
+    )
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        stopped.set()
+        await _await_settled(task)
+        raise
+    await _await_settled(task)
+    return task.result()

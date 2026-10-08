@@ -133,6 +133,10 @@ def _status_operation_result(
     # An opted-out invocation contacts no daemon over either transport.
     url = daemon_url or getattr(env, "daemon_url", None) or polylogue_config.daemon_url or _BUILTIN_DAEMON_URL
     if url.rstrip("/") != _BUILTIN_DAEMON_URL and not daemon_disabled:
+        # Direct-capable transport exception: an explicitly configured remote
+        # URL has no local archive-scoped UDS identity. /api/status is the
+        # daemon's public status product, not the browser query reader or a
+        # CLI-built archive query.
         import urllib.request
 
         from polylogue.daemon.api_auth import resolve_api_auth_token
@@ -141,8 +145,10 @@ def _status_operation_result(
             polylogue_config.api_auth_token, allow_no_auth=polylogue_config.api_allow_no_auth
         )
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        request = urllib.request.Request(url.rstrip("/") + "/api/status", headers=headers)
         try:
+            # A malformed configured URL is refused while building the request;
+            # it is the same transport failure as an unreachable one.
+            request = urllib.request.Request(url.rstrip("/") + "/api/status", headers=headers)
             with urllib.request.urlopen(request, timeout=probe_timeout_s) as response:
                 status = json.loads(response.read())
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -513,6 +519,10 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     raw_frontier = status.get("raw_frontier_integrity")
     if isinstance(raw_frontier, dict):
         _render_raw_frontier_integrity(env, raw_frontier)
+
+    schema_drift = status.get("schema_drift")
+    if isinstance(schema_drift, dict):
+        _render_schema_drift_status(env, schema_drift)
 
     assertion_candidate_queue = status.get("assertion_candidate_queue")
     if isinstance(assertion_candidate_queue, dict):

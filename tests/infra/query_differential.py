@@ -357,7 +357,7 @@ class CliSurface(QuerySurface):
         # An empty terminal page is reported through exit status 2 with an
         # empty-items envelope; that is still a well-formed answer.
         if exit_code not in (0, 2):
-            raise AssertionError(f"cli surface failed ({exit_code}) for {expression!r}: {exception or output}")
+            raise AssertionError(f"cli surface failed ({exit_code}) for {expression!r}: {exception!r}\n{output}")
         payload = cast(RowMapping, json.loads(output))
         return _normalize(self.name, unit, payload, response_bytes=len(output.encode("utf-8")))
 

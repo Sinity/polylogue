@@ -120,10 +120,26 @@ def session_order_values(plan: QuerySortPlan, session: Session) -> SessionOrderV
     return False, _time_value(session.updated_at), 0, ""
 
 
-def summary_order_values(plan: QuerySortPlan, summary: SessionSummary) -> SessionOrderValues:
-    """Preserve the summary comparator's date fallback and stable input ties."""
+def summary_order_values(
+    plan: QuerySortPlan,
+    summary: SessionSummary,
+    *,
+    metrics: tuple[int, int, int, bool, int] | None = None,
+) -> SessionOrderValues:
+    """Build summary ordering keys from declared values and optional transcript aggregates."""
     if plan.sort == "random":
         return False, random.random(), 0, ""
+    if metrics is not None:
+        message_count, word_count, longest, measured_tokens, tokens = metrics
+        ties = (_time_value(summary.updated_at or summary.created_at), str(summary.id))
+        if plan.sort == "messages":
+            return False, message_count, *ties
+        if plan.sort == "words":
+            return False, word_count, *ties
+        if plan.sort == "longest":
+            return False, longest, *ties
+        if plan.sort == "tokens":
+            return not measured_tokens, tokens, *ties
     return False, _time_value(summary.updated_at or summary.created_at), 0, ""
 
 

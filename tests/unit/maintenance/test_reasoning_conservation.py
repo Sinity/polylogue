@@ -15,9 +15,9 @@ index keeps the archive-wide thinking-block count exactly right.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from polylogue.core.outcomes import OutcomeStatus
@@ -44,8 +44,9 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.sources.parsers.codex import parse_stream
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import close_fixture_index_connection, write_fixture_index_session
 
 CHECK = "reasoning-conservation"
 
@@ -145,7 +146,7 @@ def _jsonl(records: tuple[dict[str, object], ...]) -> bytes:
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(path)
+    return connect_measured(path)
 
 
 def _insert_raw(root: Path, *, raw_id: str, origin: str, native_id: str, payload: bytes) -> None:
@@ -178,12 +179,11 @@ def _materialize(root: Path, *, raw_id: str, session: ParsedSession) -> None:
     conn = _connect(root / "index.db")
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        write_parsed_session_to_archive(
-            conn, session, content_hash=hashlib.sha256(raw_id.encode()).hexdigest(), raw_id=raw_id
-        )
+        with closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as source:
+            write_fixture_index_session(conn, session, raw_id=raw_id, archive_root=root, source_conn=source)
         conn.commit()
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
 def _seed_mixed_cohort(root: Path) -> None:

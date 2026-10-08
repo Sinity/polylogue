@@ -890,6 +890,8 @@ SESSIONS_SPEC = _make_table_spec(
     -- actually assigns and this CHECK is now generated from it like the
     -- other enum-backed columns instead of hand-listing the values.
     title_source            TEXT CHECK({nullable_check("title_source", TitleSource)})""",
+            record_name="title_source",
+            domain_name="title_source",
             conflict_update="excluded.title_source",
         ),
         _raw_column(
@@ -899,6 +901,8 @@ SESSIONS_SPEC = _make_table_spec(
     -- "codex-history:<id>", "message:<provider_message_id>").
     -- Derived/rebuildable, never hand-edited.
     title_ref               TEXT""",
+            record_name="title_ref",
+            domain_name="title_ref",
             conflict_update="excluded.title_ref",
         ),
         _raw_column(
@@ -1267,6 +1271,21 @@ SESSION_EVENTS_SPEC = _make_table_spec(
         _raw_column("boundary_message_id", """boundary_message_id      TEXT"""),
     ),
     table_constraints=("""PRIMARY KEY(session_id, position)""",),
+)
+
+SESSION_EVENT_ARRAY_ITEMS_SPEC = _make_table_spec(
+    "session_event_array_items",
+    (
+        _raw_column("session_id", "session_id TEXT NOT NULL"),
+        _raw_column("event_position", "event_position INTEGER NOT NULL"),
+        _raw_column("payload_key", "payload_key TEXT NOT NULL"),
+        _raw_column("item_ordinal", "item_ordinal INTEGER NOT NULL CHECK(item_ordinal >= 0)"),
+        _raw_column("value_json", "value_json TEXT NOT NULL CHECK(json_valid(value_json))"),
+    ),
+    table_constraints=(
+        "PRIMARY KEY(session_id, event_position, payload_key, item_ordinal)",
+        "FOREIGN KEY(session_id, event_position) REFERENCES session_events(session_id, position) ON DELETE CASCADE",
+    ),
 )
 
 SESSION_AGENT_POLICIES_SPEC = _make_table_spec(
@@ -2148,7 +2167,7 @@ WORK_EVIDENCE_EDGES_SPEC = _make_table_spec(
 # Embeddings tier (polylogue-a7xr.27)
 #
 # The index tier renders every CREATE TABLE from a TableColumnSpec; the
-# embeddings tier now does too. Its five STRICT tables are declared here so a
+# embeddings tier now does too. Its content and completion STRICT tables are declared here so a
 # column addition touches the spec and the tier's lifecycle delta only, and so
 # its two closed vocabularies generate their CHECK from the Python owner
 # (polylogue-3szyi) instead of a hand-typed value list. The vec0 virtual table
@@ -2282,12 +2301,40 @@ EMBEDDING_FAILURES_SPEC = _make_table_spec(
     ),
 )
 
+EXCISION_EMBEDDING_COMPLETIONS_SPEC = _make_table_spec(
+    "excision_embedding_completions",
+    (
+        _raw_column("operation_id", "operation_id TEXT NOT NULL"),
+        _raw_column("attempt_id", "attempt_id TEXT NOT NULL"),
+        _raw_column("plan_hash", "plan_hash BLOB NOT NULL CHECK(length(plan_hash) = 32)"),
+        _raw_column(
+            "source_command_sha256", "source_command_sha256 BLOB NOT NULL CHECK(length(source_command_sha256) = 32)"
+        ),
+        _raw_column(
+            "embeddings_intent_sha256",
+            "embeddings_intent_sha256 BLOB NOT NULL CHECK(length(embeddings_intent_sha256) = 32)",
+        ),
+        _raw_column("postimage_sha256", "postimage_sha256 BLOB NOT NULL CHECK(length(postimage_sha256) = 32)"),
+        _raw_column("deleted_refs", "deleted_refs INTEGER NOT NULL CHECK(deleted_refs >= 0)"),
+        _raw_column("deleted_meta", "deleted_meta INTEGER NOT NULL CHECK(deleted_meta >= 0)"),
+        _raw_column("deleted_vectors", "deleted_vectors INTEGER NOT NULL CHECK(deleted_vectors >= 0)"),
+        _raw_column("deleted_status", "deleted_status INTEGER NOT NULL CHECK(deleted_status >= 0)"),
+        _raw_column("deleted_failures", "deleted_failures INTEGER NOT NULL CHECK(deleted_failures >= 0)"),
+        _raw_column(
+            "deleted_derivation_state", "deleted_derivation_state INTEGER NOT NULL CHECK(deleted_derivation_state >= 0)"
+        ),
+        _raw_column("completed_at_ms", "completed_at_ms INTEGER NOT NULL CHECK(completed_at_ms >= 0)"),
+    ),
+    table_constraints=("PRIMARY KEY(operation_id, attempt_id)",),
+)
+
 EMBEDDINGS_TABLE_SPECS = {
     "message_embeddings_meta": MESSAGE_EMBEDDINGS_META_SPEC,
     "message_embedding_refs": MESSAGE_EMBEDDING_REFS_SPEC,
     "embedding_status": EMBEDDING_STATUS_SPEC,
     "embedding_derivation_state": EMBEDDING_DERIVATION_STATE_SPEC,
     "embedding_failures": EMBEDDING_FAILURES_SPEC,
+    "excision_embedding_completions": EXCISION_EMBEDDING_COMPLETIONS_SPEC,
 }
 
 INDEX_TABLE_SPECS = {
@@ -2300,6 +2347,7 @@ INDEX_TABLE_SPECS = {
     "session_refs": SESSION_REFS_SPEC,
     "action_pairs": ACTION_PAIRS_SPEC,
     "session_events": SESSION_EVENTS_SPEC,
+    "session_event_array_items": SESSION_EVENT_ARRAY_ITEMS_SPEC,
     "session_agent_policies": SESSION_AGENT_POLICIES_SPEC,
     "session_links": SESSION_LINKS_SPEC,
     "session_working_dirs": SESSION_WORKING_DIRS_SPEC,

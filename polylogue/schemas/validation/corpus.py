@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeAlias
@@ -16,8 +16,9 @@ from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw.models import RawSessionStateUpdate
-from polylogue.storage.sqlite.connection_profile import open_connection
-from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
+from polylogue.storage.sqlite.connection_profile import open_connection, readonly_connection_context
+from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update, raw_state_parameter
+from polylogue.storage.sqlite.write_lease import write_lease
 
 from .models import ProviderSchemaVerification, SchemaVerificationReport
 from .requests import SchemaVerificationRequest, bounded_window
@@ -25,7 +26,11 @@ from .requests import SchemaVerificationRequest, bounded_window
 VerificationRow: TypeAlias = tuple[str, str, str | None, str]
 VerificationSqlParam: TypeAlias = str | int
 VerificationSqlParams: TypeAlias = tuple[VerificationSqlParam, ...]
-VerificationUpdate: TypeAlias = tuple[str, str, str, str | None]
+#: One quarantine verdict: the raw row and why it failed verification.
+VerificationUpdate: TypeAlias = tuple[str, str]
+#: Persists quarantine verdicts. The CLI submits them to the resident daemon,
+#: the archive's only live writer, which applies :func:`quarantine_raw_sessions`.
+QuarantineWriter: TypeAlias = Callable[[Sequence[VerificationUpdate]], object]
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +183,6 @@ def _record_decode_error(
     *,
     raw_id: str,
     provider: str,
-    payload_provider: str | None,
     reason: str,
     stats_by_provider: dict[str, ProviderSchemaVerification],
     quarantine_updates: list[VerificationUpdate],
@@ -188,7 +192,7 @@ def _record_decode_error(
     provider_stats.decode_errors += 1
     if quarantine_malformed:
         provider_stats.quarantined_records += 1
-        quarantine_updates.append((raw_id, reason, provider, payload_provider))
+        quarantine_updates.append((raw_id, reason))
 
 
 # ---------------------------------------------------------------------------
@@ -199,18 +203,16 @@ def _record_decode_error(
 def apply_quarantine_updates(
     conn: sqlite3.Connection,
     *,
-    updates: list[VerificationUpdate],
-) -> None:
+    updates: Sequence[VerificationUpdate],
+) -> int:
     """Mark malformed/undecodable raw rows as failed on `raw_sessions`.
 
-    The raw row carries a single ``origin`` and millisecond
-    timestamps; there is no ``payload_provider`` / ``validation_provider``
-    column to rewrite, so the legacy provider fields are dropped. The
-    ``provider`` / ``payload_provider`` elements of each update are retained
-    only for caller bookkeeping and are not persisted.
+    The raw row carries a single ``origin`` and millisecond timestamps.
+    Returns how many named raw rows exist and were marked.
     """
     validated_at_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
-    for raw_id, reason, _provider, _payload_provider in updates:
+    marked = 0
+    for raw_id, reason in updates:
         set_clauses, params = compile_raw_state_update(
             RawSessionStateUpdate(
                 validation_status=ValidationStatus.FAILED,
@@ -219,11 +221,12 @@ def apply_quarantine_updates(
                 validation_mode=ValidationMode.STRICT,
             ),
             now_ms=validated_at_ms,
+            literal=raw_state_parameter,
         )
-        conn.execute(
+        marked += conn.execute(
             f"UPDATE raw_sessions SET {', '.join(set_clauses)} WHERE raw_id = ?",
             (*params, raw_id),
-        )
+        ).rowcount
         conn.execute(
             """
             UPDATE raw_sessions
@@ -233,6 +236,21 @@ def apply_quarantine_updates(
             (reason, raw_id),
         )
     conn.commit()
+    return marked
+
+
+def quarantine_raw_sessions(archive_root: Path, updates: Sequence[VerificationUpdate]) -> int:
+    """Persist quarantine verdicts on Source ``raw_sessions`` under the write lease.
+
+    The daemon's ``maintenance.schema.quarantine`` handler is the caller; a
+    CLI process never holds this writer.
+    """
+    with write_lease("schema.verify.quarantine", archive_root=archive_root):
+        writer = open_connection(archive_root / "source.db", archive_root=archive_root)
+        try:
+            return apply_quarantine_updates(writer, updates=updates)
+        finally:
+            writer.close()
 
 
 def verify_raw_corpus(
@@ -240,12 +258,17 @@ def verify_raw_corpus(
     db_path: Path,
     request: SchemaVerificationRequest,
     archive_location: ArchiveLocation | None = None,
+    quarantine: QuarantineWriter | None = None,
 ) -> SchemaVerificationReport:
     """Run schema verification over the ``raw_sessions`` corpus.
 
     ``db_path`` is the active ``index.db``. Durable source and blob evidence
     come from its explicit archive location, never from an ambient default.
+    Verification only reads; ``request.quarantine_malformed`` hands the
+    verdicts to ``quarantine``, which owns their write.
     """
+    if request.quarantine_malformed and quarantine is None:
+        raise ValueError("quarantining malformed raw rows requires a quarantine writer")
     bounded_limit, bounded_offset = bounded_window(request.record_limit, request.record_offset)
     from polylogue.schemas.sampling_db import SchemaArchiveEvidenceError, _schema_archive_location
 
@@ -258,10 +281,9 @@ def verify_raw_corpus(
     total_records = 0
     provider_filter = set(request.providers or [])
 
-    conn = open_connection(source_db_path, archive_root=location.configured_root)
-    conn.row_factory = sqlite3.Row
-    try:
-        quarantine_updates: list[VerificationUpdate] = []
+    quarantine_updates: list[VerificationUpdate] = []
+    with readonly_connection_context(source_db_path) as conn:
+        conn.row_factory = sqlite3.Row
         _ignored_limit, _ignored_offset, rows = iter_verification_rows(
             conn,
             providers=request.providers,
@@ -284,7 +306,6 @@ def verify_raw_corpus(
                     raw_source,
                     source_path=source_path,
                     fallback_provider=raw_provider,
-                    payload_provider=stored_payload_provider,
                     jsonl_dict_only=True,
                     sqlite_immutable=True,
                 )
@@ -304,7 +325,6 @@ def verify_raw_corpus(
                 _record_decode_error(
                     raw_id=raw_id,
                     provider=candidate_provider,
-                    payload_provider=stored_payload_provider,
                     reason=f"Unable to decode payload: {exc}",
                     stats_by_provider=stats_by_provider,
                     quarantine_updates=quarantine_updates,
@@ -328,7 +348,6 @@ def verify_raw_corpus(
                     _record_decode_error(
                         raw_id=raw_id,
                         provider=actual_provider,
-                        payload_provider=actual_provider,
                         reason=_format_malformed_jsonl_error(
                             malformed_lines=malformed_lines,
                             malformed_detail=malformed_detail,
@@ -381,10 +400,9 @@ def verify_raw_corpus(
 
             _report_progress(request.progress_callback)
 
-        if quarantine_updates:
-            apply_quarantine_updates(conn, updates=quarantine_updates)
-    finally:
-        conn.close()
+    if quarantine_updates:
+        assert quarantine is not None
+        quarantine(quarantine_updates)
 
     return SchemaVerificationReport(
         providers=stats_by_provider,
@@ -397,8 +415,10 @@ def verify_raw_corpus(
 
 __all__ = [
     "SchemaValidator",
+    "QuarantineWriter",
     "apply_quarantine_updates",
     "iter_verification_rows",
+    "quarantine_raw_sessions",
     "resolve_candidate_provider",
     "verification_provider_clause",
     "verify_raw_corpus",

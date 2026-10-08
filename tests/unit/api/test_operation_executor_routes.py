@@ -20,9 +20,10 @@ from polylogue.api import Polylogue
 from polylogue.core.errors import InsightMaintenanceRequiresDaemonError
 from polylogue.operations.mutation_transaction import MutationTransactionError, OperationExecutor
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_off_event_loop
 
 
-def _seed_archive(archive_root: Path, *, native_id: str) -> str:
+def _seed_archive_on_writer(archive_root: Path, *, native_id: str) -> str:
     initialize_active_archive_root(archive_root)
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
@@ -47,6 +48,11 @@ def _seed_archive(archive_root: Path, *, native_id: str) -> str:
             (native_id, raw_id, f"Maintenance route {native_id}"),
         )
     return session_id
+
+
+def _seed_archive(archive_root: Path, *, native_id: str) -> str:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_archive_on_writer(archive_root, native_id=native_id))
 
 
 @pytest.mark.asyncio

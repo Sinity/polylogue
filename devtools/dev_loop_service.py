@@ -53,6 +53,25 @@ def _service_paths() -> tuple[Path, Path]:
     return root / "archive", root / "artifacts"
 
 
+def _share_source_fingerprint_memo(home: Path) -> None:
+    """Let the isolated daemon read the host's source-fingerprint memo.
+
+    The memo holds digests of Polylogue's own source closures, keyed by their
+    bytes, and no host data. Without it the empty home recomputes every
+    parser closure cold (about 90 s under load) before the daemon can
+    converge one capture, which outlasts the proof's readiness wait.
+    """
+    from polylogue.sources.origin_specs import _source_memo_root
+
+    host_memo = _source_memo_root()
+    if host_memo is None:
+        return
+    isolated = home / ".cache" / "polylogue" / "source-fingerprints"
+    isolated.parent.mkdir(parents=True, exist_ok=True)
+    if not isolated.is_symlink():
+        isolated.symlink_to(host_memo, target_is_directory=True)
+
+
 def _proof_environment(*, archive_root: Path, artifact_root: Path) -> dict[str, str]:
     """The proof daemon's environment, isolated from the host's sources.
 
@@ -62,6 +81,7 @@ def _proof_environment(*, archive_root: Path, artifact_root: Path) -> dict[str, 
     """
     home = artifact_root / "home"
     home.mkdir(parents=True, exist_ok=True)
+    _share_source_fingerprint_memo(home)
     environment = isolated_home_environment(os.environ, home=home)
     environment.pop("POLYLOGUE_DAEMON_URL", None)
     environment.update(

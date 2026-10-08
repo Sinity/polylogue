@@ -10,7 +10,10 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.config import Config
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_archive_fixture_prepare
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.mcp import MCP_TOOL_NAME_BASELINE, MCPServerUnderTest, invoke_surface_async
 from tests.infra.storage_records import SessionBuilder
 
@@ -39,9 +42,13 @@ async def test_query_drains_real_archive_rows_with_continuation_only(
     mcp_server: MCPServerUnderTest, tmp_path: Path
 ) -> None:
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root):
-        _write_message(archive_root, "cutover-one", "cutover needle one")
-        _write_message(archive_root, "cutover-two", "cutover needle two")
+
+    def prepare_archive_1() -> None:
+        with ArchiveStore(archive_root):
+            _write_message(archive_root, "cutover-one", "cutover needle one")
+            _write_message(archive_root, "cutover-two", "cutover needle two")
+
+    await run_archive_fixture_prepare(prepare_archive_1)
 
     from polylogue import Polylogue
 
@@ -87,9 +94,13 @@ async def test_query_transaction_certifies_twenty_large_messages_across_api_and_
     """
     archive_root = tmp_path / "archive"
     body = "transaction-certification " + ("x" * 3_500)
-    with ArchiveStore(archive_root):
-        for number in range(20):
-            _write_message(archive_root, f"certification-{number:02d}", f"{body} {number:02d}")
+
+    def prepare_archive_1() -> None:
+        with ArchiveStore(archive_root):
+            for number in range(20):
+                _write_message(archive_root, f"certification-{number:02d}", f"{body} {number:02d}")
+
+    await run_archive_fixture_prepare(prepare_archive_1)
 
     from polylogue import Polylogue
 
@@ -134,9 +145,13 @@ async def test_query_transaction_certifies_twenty_large_messages_across_api_and_
 @pytest.mark.asyncio
 async def test_query_rejects_resume_parameter_overrides(mcp_server: MCPServerUnderTest, tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root):
-        _write_message(archive_root, "cutover-one", "cutover override needle")
-        _write_message(archive_root, "cutover-two", "cutover override needle")
+
+    def prepare_archive_1() -> None:
+        with ArchiveStore(archive_root):
+            _write_message(archive_root, "cutover-one", "cutover override needle")
+            _write_message(archive_root, "cutover-two", "cutover override needle")
+
+    await run_archive_fixture_prepare(prepare_archive_1)
 
     from polylogue import Polylogue
 
@@ -165,9 +180,13 @@ async def test_query_rejects_resume_parameter_overrides(mcp_server: MCPServerUnd
 @pytest.mark.asyncio
 async def test_query_rejects_epoch_stale_resume(mcp_server: MCPServerUnderTest, tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root):
-        _write_message(archive_root, "cutover-one", "cutover epoch needle")
-        _write_message(archive_root, "cutover-two", "cutover epoch needle")
+
+    def prepare_archive_1() -> None:
+        with ArchiveStore(archive_root):
+            _write_message(archive_root, "cutover-one", "cutover epoch needle")
+            _write_message(archive_root, "cutover-two", "cutover epoch needle")
+
+    await run_archive_fixture_prepare(prepare_archive_1)
 
     from polylogue import Polylogue
 
@@ -182,8 +201,12 @@ async def test_query_rejects_epoch_stale_resume(mcp_server: MCPServerUnderTest, 
                 limit=1,
             )
         )
-        with ArchiveStore(archive_root):
-            _write_message(archive_root, "cutover-three", "cutover epoch needle")
+
+        def prepare_archive_2() -> None:
+            with ArchiveStore(archive_root):
+                _write_message(archive_root, "cutover-three", "cutover epoch needle")
+
+        await run_archive_fixture_prepare(prepare_archive_2)
         stale = json.loads(
             await invoke_surface_async(mcp_server._tool_manager._tools["query"].fn, continuation=first["continuation"])
         )
@@ -194,8 +217,12 @@ async def test_query_rejects_epoch_stale_resume(mcp_server: MCPServerUnderTest, 
 @pytest.mark.asyncio
 async def test_read_and_get_accept_stable_session_uris(mcp_server: MCPServerUnderTest, tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root):
-        _write_message(archive_root, "cutover-ref", "stable ref")
+
+    def prepare_archive_1() -> None:
+        with ArchiveStore(archive_root):
+            _write_message(archive_root, "cutover-ref", "stable ref")
+
+    await run_archive_fixture_prepare(prepare_archive_1)
 
     uri = "polylogue://session/codex-session:cutover-ref"
     from polylogue import Polylogue
@@ -224,25 +251,24 @@ async def test_get_projection_events_surfaces_session_timeline_evidence(
     from polylogue.sources.parsers.base import ParsedMessage, ParsedSession, ParsedSessionEvent
 
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root) as archive_db:
-        parsed = ParsedSession(
-            source_name=Provider.from_string("codex"),
-            provider_session_id="mcp-events-ref",
-            title="MCP events projection",
-            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
-            session_events=[
-                ParsedSessionEvent(
-                    event_type="world_state",
-                    payload={"cwd": "/repo"},
-                ),
-            ],
-        )
-        archive_db.write_raw_and_parsed(
-            parsed,
-            payload=b'{"raw": "codex payload"}',
-            source_path="/tmp/raw.jsonl",
-            acquired_at_ms=1735689600000,
-        )
+
+    def prepare_archive_1() -> None:
+        with ArchiveStore(archive_root) as archive_db:
+            parsed = ParsedSession(
+                source_name=Provider.from_string("codex"),
+                provider_session_id="mcp-events-ref",
+                title="MCP events projection",
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
+                session_events=[
+                    ParsedSessionEvent(
+                        event_type="world_state",
+                        payload={"cwd": "/repo"},
+                    ),
+                ],
+            )
+            write_fixture_index_session(archive_db._conn, parsed, archive_root=archive_db.index_db_path.parent)
+
+    await run_archive_fixture_prepare(prepare_archive_1)
 
     uri = "polylogue://session/codex-session:mcp-events-ref"
     from polylogue import Polylogue
@@ -292,57 +318,56 @@ async def test_get_projection_file_edits_surfaces_structured_patch_evidence(
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedFileEdit, ParsedMessage, ParsedSession
 
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root) as archive_db:
-        parsed = ParsedSession(
-            source_name=Provider.CLAUDE_CODE,
-            provider_session_id="mcp-file-edits-ref",
-            title="MCP file-edits projection",
-            messages=[
-                ParsedMessage(
-                    provider_message_id="m1",
-                    role=Role.ASSISTANT,
-                    position=0,
-                    blocks=[
-                        ParsedContentBlock(
-                            type=BlockType.TOOL_USE,
-                            tool_name="Edit",
-                            tool_id="edit-tool-1",
-                            tool_input={"file_path": "/tmp/foo.py"},
-                        ),
-                    ],
-                ),
-                ParsedMessage(
-                    provider_message_id="m2",
-                    role=Role.USER,
-                    position=1,
-                    blocks=[
-                        ParsedContentBlock(
-                            type=BlockType.TOOL_RESULT,
-                            outcome_unknown_reason="not_reported",
-                            tool_id="edit-tool-1",
-                            text="applied",
-                            file_edit=ParsedFileEdit(
-                                file_path="/tmp/foo.py",
-                                structured_patch=[
-                                    {"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["+x"]}
-                                ],
-                                original_file="old contents\n",
-                                old_string="old",
-                                new_string="new",
-                                replace_all=False,
-                                user_modified=True,
+
+    def prepare_archive_1() -> None:
+        with ArchiveStore(archive_root) as archive_db:
+            parsed = ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="mcp-file-edits-ref",
+                title="MCP file-edits projection",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        position=0,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Edit",
+                                tool_id="edit-tool-1",
+                                tool_input={"file_path": "/tmp/foo.py"},
                             ),
-                        ),
-                    ],
-                ),
-            ],
-        )
-        archive_db.write_raw_and_parsed(
-            parsed,
-            payload=b'{"raw": "claude payload"}',
-            source_path="/tmp/raw.jsonl",
-            acquired_at_ms=1735689600000,
-        )
+                        ],
+                    ),
+                    ParsedMessage(
+                        provider_message_id="m2",
+                        role=Role.USER,
+                        position=1,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                outcome_unknown_reason="not_reported",
+                                tool_id="edit-tool-1",
+                                text="applied",
+                                file_edit=ParsedFileEdit(
+                                    file_path="/tmp/foo.py",
+                                    structured_patch=[
+                                        {"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["+x"]}
+                                    ],
+                                    original_file="old contents\n",
+                                    old_string="old",
+                                    new_string="new",
+                                    replace_all=False,
+                                    user_modified=True,
+                                ),
+                            ),
+                        ],
+                    ),
+                ],
+            )
+            write_fixture_index_session(archive_db._conn, parsed, archive_root=archive_db.index_db_path.parent)
+
+    await run_archive_fixture_prepare(prepare_archive_1)
 
     uri = "polylogue://session/claude-code-session:mcp-file-edits-ref"
     from polylogue import Polylogue
@@ -393,38 +418,37 @@ async def test_get_projection_agent_policies_surfaces_sandbox_facts(
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root) as archive_db:
-        parsed = ParsedSession(
-            source_name=Provider.CODEX,
-            provider_session_id="mcp-agent-policies-ref",
-            title="MCP agent-policies projection",
-            messages=[
-                ParsedMessage(
-                    provider_message_id="m1",
-                    role=Role.USER,
-                    text="run it",
-                    position=0,
-                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="run it")],
-                ),
-            ],
-            session_events=[
-                ParsedSessionEvent(
-                    event_type="agent_policy",
-                    timestamp="2026-01-01T00:00:01+00:00",
-                    payload={
-                        "approval_policy": "never",
-                        "sandbox_policy": "danger-full-access",
-                        "network_policy": "true",
-                    },
-                ),
-            ],
-        )
-        archive_db.write_raw_and_parsed(
-            parsed,
-            payload=b'{"raw": "codex payload"}',
-            source_path="/tmp/raw.jsonl",
-            acquired_at_ms=1735689600000,
-        )
+
+    def prepare_archive_1() -> None:
+        with ArchiveStore(archive_root) as archive_db:
+            parsed = ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="mcp-agent-policies-ref",
+                title="MCP agent-policies projection",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="run it",
+                        position=0,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="run it")],
+                    ),
+                ],
+                session_events=[
+                    ParsedSessionEvent(
+                        event_type="agent_policy",
+                        timestamp="2026-01-01T00:00:01+00:00",
+                        payload={
+                            "approval_policy": "never",
+                            "sandbox_policy": "danger-full-access",
+                            "network_policy": "true",
+                        },
+                    ),
+                ],
+            )
+            write_fixture_index_session(archive_db._conn, parsed, archive_root=archive_db.index_db_path.parent)
+
+    await run_archive_fixture_prepare(prepare_archive_1)
 
     uri = "polylogue://session/codex-session:mcp-agent-policies-ref"
     from polylogue import Polylogue
@@ -475,27 +499,26 @@ async def test_get_default_projection_surfaces_display_name_when_title_absent(
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root) as archive_db:
-        parsed = ParsedSession(
-            source_name=Provider.CLAUDE_CODE,
-            provider_session_id="mcp-slug-only-ref",
-            title=None,
-            display_name="greedy-squishing-hamming",
-            messages=[
-                ParsedMessage(
-                    provider_message_id="m1",
-                    role=Role.ASSISTANT,
-                    position=0,
-                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
-                ),
-            ],
-        )
-        archive_db.write_raw_and_parsed(
-            parsed,
-            payload=b'{"raw": "claude payload"}',
-            source_path="/tmp/raw.jsonl",
-            acquired_at_ms=1735689600000,
-        )
+
+    def prepare_archive_1() -> None:
+        with ArchiveStore(archive_root) as archive_db:
+            parsed = ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="mcp-slug-only-ref",
+                title=None,
+                display_name="greedy-squishing-hamming",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        position=0,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
+                    ),
+                ],
+            )
+            write_fixture_index_session(archive_db._conn, parsed, archive_root=archive_db.index_db_path.parent)
+
+    await run_archive_fixture_prepare(prepare_archive_1)
 
     uri = "polylogue://session/claude-code-session:mcp-slug-only-ref"
     from polylogue import Polylogue
@@ -521,8 +544,14 @@ async def test_registered_read_transactions_match_production_goldens(tmp_path: P
     metadata-only response makes one of these assertions fail.
     """
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root):
-        session_id = _write_message(archive_root, "read-contract-golden", "read contract golden needle")
+
+    def prepare_archive_1() -> str:
+        with ArchiveStore(archive_root):
+            session_id = _write_message(archive_root, "read-contract-golden", "read contract golden needle")
+
+        return session_id
+
+    session_id = await run_archive_fixture_prepare(prepare_archive_1)
 
     from polylogue import Polylogue
     from polylogue.mcp.server import build_server
@@ -530,7 +559,12 @@ async def test_registered_read_transactions_match_production_goldens(tmp_path: P
     with (
         patch(
             "polylogue.mcp.server._get_config",
-            return_value=SimpleNamespace(archive_root=archive_root, db_path=archive_root / "index.db"),
+            return_value=Config(
+                archive_root=archive_root,
+                render_root=archive_root / "render",
+                sources=[],
+                db_path=archive_root / "index.db",
+            ),
         ),
         patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
     ):
@@ -619,8 +653,12 @@ async def test_query_resource_golden_fails_when_shared_transaction_is_bypassed(t
     registration, which also owns a bounded transaction.
     """
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root):
-        _write_message(archive_root, "shared-transaction", "shared transaction needle")
+
+    def prepare_archive_1() -> None:
+        with ArchiveStore(archive_root):
+            _write_message(archive_root, "shared-transaction", "shared transaction needle")
+
+    await run_archive_fixture_prepare(prepare_archive_1)
 
     from polylogue.mcp.server import build_server
 

@@ -17,22 +17,6 @@ from polylogue.core.types import ConvergenceDebtStatus
 from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-_REQUIRED_CONVERGENCE_DEBT_COLUMNS = frozenset(
-    (
-        "debt_id",
-        "stage",
-        "target_type",
-        "target_id",
-        "status",
-        "priority",
-        "attempts",
-        "last_error",
-        "next_retry_at",
-        "materializer_version",
-        "created_at_ms",
-        "updated_at_ms",
-    )
-)
 _CONVERGENCE_DEBT_STATUSES = frozenset(get_args(ConvergenceDebtStatus))
 
 
@@ -199,11 +183,6 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
                     available=False,
                     error="convergence debt table is unavailable",
                 )
-            table_info = conn.execute("PRAGMA table_info(convergence_debt)").fetchall()
-            columns = {str(row[1]) for row in table_info if len(row) > 1}
-            missing_columns = sorted(_REQUIRED_CONVERGENCE_DEBT_COLUMNS - columns)
-            if missing_columns:
-                raise ValueError("convergence_debt is missing required column(s): " + ", ".join(missing_columns))
             rows = conn.execute(
                 """
                 SELECT stage, target_type, target_id, status, attempts,

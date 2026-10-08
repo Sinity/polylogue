@@ -20,10 +20,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.sources.source_layout import export_drop_layout
+
 if TYPE_CHECKING:
     from polylogue.sources.live.watcher import WatchSource
 
-__all__ = ["acquire_hook_carriers", "hook_event_count", "materialize_hook_carriers"]
+__all__ = [
+    "acquire_hook_carriers",
+    "hook_event_count",
+    "materialize_acquired_hook_carriers",
+    "materialize_hook_carriers",
+]
 
 #: A pass that admits nothing is the end of the backlog. The cap only bounds a
 #: test that has wired something into a loop; a real backlog drains in one pass
@@ -68,7 +75,7 @@ def _carrier_sources(spool_root: Path) -> tuple[WatchSource, ...]:
         WatchSource(
             name=f"{provider}-hooks",
             root=hook_carrier_provider_dir(provider, spool_root),
-            suffixes=(".ndjson",),
+            layout=export_drop_layout((".ndjson",)),
             source_id=f"primary-hook-spool:{provider}",
             role="primary-writable",
         )
@@ -96,37 +103,50 @@ async def _acquire(archive_root: Path, spool_root: Path) -> int:
     from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
     from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
     from polylogue.sources.live.watcher import LiveWatcher
+    from tests.infra.raw_owner_routes import live_owner_set
 
     sources = _carrier_sources(spool_root)
-    watcher = LiveWatcher(_ArchiveRootOwner(archive_root), sources)
-    context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
-    dispatcher = FairIntakeDispatcher(
-        tuple(
-            IntakeClassSpec(
-                name=f"hook_carrier:{source.name}",
-                adapter=FileIntakeAdapter(context, source, class_name=f"hook_carrier:{source.name}"),
+    # Carrier acquisition writes the Source tier, so the watcher runs on the
+    # daemon's own writer and owners, exactly as ``polylogued run`` wires it.
+    async with live_owner_set(archive_root) as owners:
+        watcher = LiveWatcher(_ArchiveRootOwner(archive_root), sources, **owners.watcher_kwargs())
+        try:
+            context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
+            dispatcher = FairIntakeDispatcher(
+                tuple(
+                    IntakeClassSpec(
+                        name=f"hook_carrier:{source.name}",
+                        adapter=FileIntakeAdapter(context, source, class_name=f"hook_carrier:{source.name}"),
+                    )
+                    for source in sources
+                )
             )
-            for source in sources
-        )
-    )
-    admitted = 0
-    for _pass in range(_MAX_PASSES):
-        report = await dispatcher.run_once()
-        moved = sum(int(entry.admitted) for entry in report.classes)
-        admitted += moved
-        if not moved:
-            break
-    return admitted
+            admitted = 0
+            for _pass in range(_MAX_PASSES):
+                report = await dispatcher.run_once()
+                moved = sum(int(entry.admitted) for entry in report.classes)
+                admitted += moved
+                if not moved:
+                    break
+            return admitted
+        finally:
+            watcher.stop()
 
 
 def acquire_hook_carriers(archive_root: Path, *, spool_root: Path | None = None) -> int:
     """Admit every carrier under the spool root; return the items admitted."""
 
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import run_off_event_loop
 
-    with _pinned_archive_root(archive_root):
-        initialize_active_archive_root(archive_root)
-        return _run(_acquire(archive_root, spool_root or archive_root / "hooks"))
+    def acquire() -> int:
+        with _pinned_archive_root(archive_root):
+            initialize_active_archive_root(archive_root)
+            return _run(_acquire(archive_root, spool_root or archive_root / "hooks"))
+
+    # Async facade tests call this from their loop; bootstrap's synchronous
+    # write lease must run where it cannot block that loop.
+    return run_off_event_loop(acquire)
 
 
 def hook_event_count(archive_root: Path) -> int:
@@ -145,8 +165,19 @@ def materialize_hook_carriers(archive_root: Path, *, spool_root: Path | None = N
     """Acquire every pending carrier, materialize its events, and count them."""
 
     acquire_hook_carriers(archive_root, spool_root=spool_root)
-    with _pinned_archive_root(archive_root):
-        return _converge(archive_root)
+    return materialize_acquired_hook_carriers(archive_root)
+
+
+def materialize_acquired_hook_carriers(archive_root: Path) -> int:
+    """Materialize the events of every already-acquired carrier, and count them."""
+
+    from tests.infra.archive_templates import run_off_event_loop
+
+    def converge() -> int:
+        with _pinned_archive_root(archive_root):
+            return _converge(archive_root)
+
+    return run_off_event_loop(converge)
 
 
 def _converge(archive_root: Path) -> int:

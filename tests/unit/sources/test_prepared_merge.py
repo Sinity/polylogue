@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,25 @@ from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact
 from polylogue.sources.prepared_merge import prepare_retained_cohort_artifact, prepared_cohort_source_hash
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
+from tests.infra.index_writer import write_fixture_index_session
+
+
+@pytest.fixture
+def event_index(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+    from polylogue.core.write_lease import write_lease
+    from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.index_writer import close_fixture_index_connection
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    with write_lease("test.event-archive.bootstrap", archive_root=root):
+        bootstrap_archive_root(root)
+        conn = open_isolated_write_connection(root / "index.db", purpose="test.event-archive", archive_root=root)
+    try:
+        yield conn
+    finally:
+        close_fixture_index_connection(conn)
 
 
 def _chunk_artifact(directory: Path, session: ParsedSession, source_hash: str) -> PreparedJsonl:
@@ -149,17 +170,16 @@ def test_prepared_cohort_rejects_conflicting_session_identity(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize("prepared", [False, True], ids=["memory", "prepared"])
-def test_chunk_references_survive_composition_and_archive_write(tmp_path: Path, prepared: bool) -> None:
+def test_chunk_references_survive_composition_and_archive_write(
+    tmp_path: Path, prepared: bool, event_index: sqlite3.Connection
+) -> None:
     """F016: the second chunk's compaction and attachment must not bind to the first."""
     import hashlib
-    import sqlite3
     from contextlib import closing
 
     from polylogue.core.message_owner import MessageOwnerCoordinate
     from polylogue.sources.parsers.base import ParsedAttachment
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+    from tests.infra.index_writer import write_fixture_index_session
 
     first = ParsedSession(
         source_name=Provider.CODEX,
@@ -232,25 +252,22 @@ def test_chunk_references_survive_composition_and_archive_write(tmp_path: Path, 
         assert merged.messages[5].parent_message_position == 3
         blob = hashlib.sha256(b"synthetic").digest()
         key = merged.attachments[0].acquisition_key if prepared else original_key
-        with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON")
-            initialize_archive_tier(conn, ArchiveTier.INDEX)
-            sid = write_parsed_session_to_archive(
-                conn, merged, preacquired_attachment_blobs={key: (blob, len(b"synthetic"), "acquired")}
-            )
-            stored = conn.execute(
-                "SELECT boundary_start_position, boundary_end_position, boundary_message_id "
-                "FROM session_events WHERE session_id = ? AND event_type = 'compaction'",
-                (sid,),
-            ).fetchone()
-            assert tuple(stored) == (3, 5, f"{sid}:n:second-3")
-            assert conn.execute("SELECT message_id FROM attachment_refs").fetchall()[0][0] == f"{sid}:n:second-1"
-            assert conn.execute("SELECT blob_hash FROM attachments").fetchone()[0] == blob
-            assert (
-                conn.execute("SELECT parent_message_id FROM messages WHERE native_id = 'second-2'").fetchone()[0]
-                == f"{sid}:n:second-0"
-            )
+        conn = event_index
+        sid = write_fixture_index_session(
+            conn, merged, preacquired_attachment_blobs={key: (blob, len(b"synthetic"), "acquired")}
+        )
+        stored = conn.execute(
+            "SELECT boundary_start_position, boundary_end_position, boundary_message_id "
+            "FROM session_events WHERE session_id = ? AND event_type = 'compaction'",
+            (sid,),
+        ).fetchone()
+        assert tuple(stored) == (3, 5, f"{sid}:n:second-3")
+        assert conn.execute("SELECT message_id FROM attachment_refs").fetchall()[0][0] == f"{sid}:n:second-1"
+        assert conn.execute("SELECT blob_hash FROM attachments").fetchone()[0] == blob
+        assert (
+            conn.execute("SELECT parent_message_id FROM messages WHERE native_id = 'second-2'").fetchone()[0]
+            == f"{sid}:n:second-0"
+        )
     finally:
         for artifact in reversed(artifacts):
             artifact.discard()
@@ -375,6 +392,11 @@ def test_prepared_cohort_leaf_is_not_a_revision_storage_default(tmp_path: Path) 
     cohort's last message makes the lowering treat the merge's leaf as a
     storage default and leave both explicit ``False`` paths unset.
     """
+    from contextlib import closing
+
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.sources.prepared_message_sink import SqliteMessageSink
+
     first = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="same",
@@ -401,10 +423,208 @@ def test_prepared_cohort_leaf_is_not_a_revision_storage_default(tmp_path: Path) 
     ]
 
     aggregate = prepare_retained_cohort_artifact(ordered, tmp_path)
-    messages = list(next(iter(aggregate.iter_sessions())).messages)
+    with closing(aggregate.iter_sessions()) as sessions:
+        selected = next(sessions)
+    messages = list(selected.messages)
 
     assert [(message.is_active_leaf, message.active_leaf_fallback) for message in messages] == [
         (False, False),
         (True, False),
     ]
-    assert [message.is_active_path for message in messages] == [True, True]
+    # Parser observations remain intact; publication borrows the separately sealed lowering.
+    assert [message.is_active_path for message in messages] == [False, False]
+    assert isinstance(selected.messages, SqliteMessageSink)
+    normalized = selected.messages.normalized_messages(
+        selected.session_events, origin=origin_from_provider(selected.source_name)
+    )
+    assert [message.is_active_path for message in normalized] == [True, True]
+
+
+@pytest.mark.parametrize("prepared", [False, True], ids=["memory", "prepared"])
+@pytest.mark.parametrize("end_anchor", [False, True], ids=["next-message", "fragment-end"])
+def test_real_codex_instructions_anchor_keeps_its_fragment(
+    tmp_path: Path,
+    prepared: bool,
+    end_anchor: bool,
+    event_index: sqlite3.Connection,
+) -> None:
+    from contextlib import closing
+
+    from polylogue.sources.parsers.codex import _codex_instructions_changed_event
+
+    chunks = [
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="instruction-fragments",
+            messages=[
+                ParsedMessage(provider_message_id=name, role=Role.USER, text=name, position=position)
+                for position, name in enumerate(names)
+            ],
+        )
+        for names in (("A", "B"), ("C", "D"))
+    ]
+    chunks[1].session_events.append(
+        _codex_instructions_changed_event(
+            kind="developer",
+            instructions="synthetic second fragment policy",
+            revision=1,
+            timestamp=None,
+            source_index=0,
+            effective_from_message_position=2 if end_anchor else 0,
+        )
+    )
+    artifacts = []
+    try:
+        if prepared:
+            artifacts = [
+                _chunk_artifact(tmp_path / f"chunk-{index}", chunk, str(index + 1) * 64)
+                for index, chunk in enumerate(chunks)
+            ]
+            aggregate = prepare_retained_cohort_artifact(
+                [(str(index), artifact) for index, artifact in enumerate(artifacts)],
+                tmp_path / "merged",
+            )
+            artifacts.append(aggregate)
+            with closing(aggregate.iter_sessions()) as sessions:
+                merged = next(sessions)
+        else:
+            merged = merge_parsed_session_chunks(chunks)[0]
+        assert [message.provider_message_id for message in merged.messages] == ["A", "B", "C", "D"]
+        conn = event_index
+        sid = write_fixture_index_session(conn, merged)
+        row = conn.execute(
+            "SELECT m.position FROM session_events e LEFT JOIN messages m "
+            "ON m.message_id = e.boundary_message_id WHERE e.session_id = ?",
+            (sid,),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == (None if end_anchor else 2)
+    finally:
+        for artifact in reversed(artifacts):
+            artifact.discard()
+
+
+@pytest.mark.parametrize("prepared", [False, True], ids=["memory", "prepared"])
+def test_repeated_native_event_uses_exact_occurrence_after_composition(
+    tmp_path: Path, prepared: bool, event_index: sqlite3.Connection
+) -> None:
+    from contextlib import closing
+
+    from polylogue.core.message_owner import MessageOwnerCoordinate
+
+    chunks = [
+        ParsedSession(
+            source_name=Provider.CLAUDE_AI,
+            provider_session_id="event-occurrences",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="repeated",
+                    role=Role.ASSISTANT,
+                    text=text,
+                    position=0,
+                    owner_coordinate=MessageOwnerCoordinate(stable_key=text, position=0),
+                ),
+            ],
+        )
+        for text in ("first occurrence", "second occurrence")
+    ]
+    chunks[1].session_events.append(
+        ParsedSessionEvent(
+            event_type="model_configuration",
+            source_message_provider_id="repeated",
+            payload={"model": "synthetic"},
+            owner_coordinate=chunks[1].messages[0].owner_coordinate,
+        )
+    )
+    artifacts = []
+    try:
+        if prepared:
+            artifacts = [
+                _chunk_artifact(tmp_path / f"chunk-{index}", chunk, str(index + 1) * 64)
+                for index, chunk in enumerate(chunks)
+            ]
+            aggregate = prepare_retained_cohort_artifact(
+                [(str(index), artifact) for index, artifact in enumerate(artifacts)],
+                tmp_path / "merged",
+            )
+            artifacts.append(aggregate)
+            with closing(aggregate.iter_sessions()) as sessions:
+                merged = next(sessions)
+        else:
+            merged = merge_parsed_session_chunks(chunks)[0]
+        assert merged.session_events[0].owner_coordinate == MessageOwnerCoordinate(
+            stable_key="second occurrence", position=1
+        )
+        conn = event_index
+        sid = write_fixture_index_session(conn, merged)
+        row = conn.execute(
+            "SELECT m.position FROM session_events e JOIN messages m "
+            "ON m.message_id = e.source_message_id WHERE e.session_id = ?",
+            (sid,),
+        ).fetchone()
+        assert row is not None and row[0] == 1
+    finally:
+        for artifact in reversed(artifacts):
+            artifact.discard()
+
+
+@pytest.mark.parametrize("composition", ["unmerged", "memory", "prepared"])
+def test_real_claude_repeated_message_events_keep_their_authored_occurrence(
+    tmp_path: Path, event_index: sqlite3.Connection, composition: str
+) -> None:
+    import json
+    from contextlib import closing
+
+    from polylogue.sources.parsers.claude.ai_parser import parse_ai
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    records = [
+        {
+            "uuid": "repeated-native",
+            "sender": "assistant",
+            "content": [{"type": "text", "text": text}],
+            "thinking_config": {"budget_tokens": budget},
+        }
+        for text, budget in (("first authored occurrence", 101), ("second authored occurrence", 202))
+    ]
+    envelope = {"uuid": "real-event-occurrences", "name": "Neutral event fragments"}
+    artifacts: list[PreparedJsonl] = []
+    try:
+        if composition == "unmerged":
+            merged = parse_ai({**envelope, "chat_messages": records}, "fallback")
+        else:
+            chunks = [parse_ai({**envelope, "chat_messages": [record]}, "fallback") for record in records]
+            if composition == "memory":
+                merged = merge_parsed_session_chunks(chunks)[0]
+            else:
+                artifacts = [
+                    _chunk_artifact(tmp_path / f"real-chunk-{i}", chunk, str(i + 1) * 64)
+                    for i, chunk in enumerate(chunks)
+                ]
+                aggregate = prepare_retained_cohort_artifact(
+                    [(str(i), artifact) for i, artifact in enumerate(artifacts)], tmp_path / "real-merged"
+                )
+                artifacts.append(aggregate)
+                with closing(aggregate.iter_sessions()) as sessions:
+                    merged = next(sessions)
+        # These are original Claude provider objects, not admitted replacement events.
+        assert len(merged.messages) == 2
+        assert all(
+            event.owner_coordinate is not None
+            for event in merged.session_events
+            if event.event_type == "model_configuration"
+        )
+        sid = write_fixture_index_session(event_index, merged)
+        with closing(open_readonly_connection(tmp_path / "archive" / "index.db")) as reopened:
+            rows = reopened.execute(
+                "SELECT b.text,e.payload_json FROM session_events e "
+                "JOIN blocks b ON b.message_id=e.source_message_id "
+                "WHERE e.session_id=? AND e.event_type='model_configuration'",
+                (sid,),
+            ).fetchall()
+            actual = {row[0]: json.loads(row[1])["thinking"]["budget_tokens"] for row in rows}
+            assert len(rows) == 2
+            assert actual == {"first authored occurrence": 101, "second authored occurrence": 202}
+    finally:
+        for artifact in reversed(artifacts):
+            artifact.discard()

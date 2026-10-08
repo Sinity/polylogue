@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
 
 import pytest
 
@@ -19,18 +18,21 @@ from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.batch import _STREAMING_FULL_INGEST_BYTES, LiveBatchProcessor
-from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, _parse_path_as_session_artifact
+from polylogue.sources.live.batch_support import _detect_provider_from_path, _parse_path_as_session_artifact
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity, hermes_state, local_agent
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.source_parsing import iter_source_sessions, iter_source_sessions_with_raw
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.schema import _ensure_schema
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import db_setup
+
+# Well above any small-file assumption: input size is a parameter of the one
+# retained route, never a branch or refusal.
+_LARGE_INPUT_BYTES = 8 * 1024 * 1024
 
 
 def _write_hermes_state_db(path: Path) -> None:
@@ -419,7 +421,7 @@ def test_gemini_cli_contentless_turn_tokens_reach_the_cost_rollup(workspace_env:
     [session] = parse_payload("gemini-cli", payload, "fallback")
 
     with open_connection(db_setup(workspace_env)) as conn:
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         rollup = conn.execute("SELECT model_name, input_tokens, output_tokens FROM session_model_usage").fetchall()
         usage_events = conn.execute(
             "SELECT source_message_id, last_input_tokens, last_output_tokens"
@@ -1165,11 +1167,12 @@ def test_hermes_state_db_source_iterator_captures_raw_blob(tmp_path: Path) -> No
 
 
 def test_hermes_configured_directory_admits_only_its_state_database(tmp_path: Path) -> None:
-    """Enumeration is broad; admission is structural.
+    """Enumeration is the declared layout; admission is structural.
 
-    Anti-vacuity: dropping the recognizer from admission would make
-    ``unrelated.sqlite`` produce sessions (or a parse failure) instead of a
-    typed non-session observation.
+    ``unrelated.sqlite`` and ``notes.txt`` have no Hermes position, so the
+    walk never offers them.
+
+    Anti-vacuity: walking by suffix again enumerates ``unrelated.sqlite``.
     """
 
     source_root = tmp_path / "hermes"
@@ -1191,7 +1194,7 @@ def test_hermes_configured_directory_admits_only_its_state_database(tmp_path: Pa
         )
     )
 
-    assert _resolve_source_paths(hermes_source) == [db_path, unrelated_path]
+    assert _resolve_source_paths(hermes_source) == [db_path]
     assert [session.provider_session_id.split("@", 1)[0] for _raw, session in rows] == [
         "hermes-root",
         "hermes-child",
@@ -1199,7 +1202,8 @@ def test_hermes_configured_directory_admits_only_its_state_database(tmp_path: Pa
 
 
 def test_unrelated_configured_hermes_sqlite_is_enumerated_but_not_admitted(tmp_path: Path) -> None:
-    db_path = tmp_path / "unrelated.sqlite"
+    """A database at the declared ``state.db`` position is offered, then refused by structure."""
+    db_path = tmp_path / "state.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
 
@@ -1367,7 +1371,7 @@ def test_hermes_state_db_live_batch_classifies_as_session_artifact(tmp_path: Pat
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)
 
-    assert _detect_provider_from_path_sample(db_path, Provider.UNKNOWN) is Provider.HERMES
+    assert _detect_provider_from_path(db_path, Provider.UNKNOWN) is Provider.HERMES
     assert _parse_path_as_session_artifact(db_path, provider=Provider.HERMES) is True
 
 
@@ -1449,15 +1453,16 @@ def test_antigravity_brain_artifact_metadata_parses_sibling_markdown(tmp_path: P
     )
 
 
-def test_antigravity_metadata_sidecar_is_rejected_without_blocking_conversation_json(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_antigravity_metadata_sidecar_is_rejected_without_blocking_conversation_json(tmp_path: Path) -> None:
     metadata_path = tmp_path / "brain" / "work-session" / "plan.metadata.json"
     metadata_path.parent.mkdir(parents=True)
     metadata_payload: JSONDocument = {
         "artifactType": "ARTIFACT_TYPE_OTHER",
         # Keep this as a valid brain metadata document while forcing the
-        # ``_ingest_full_paths_sync`` large-file branch. The sidecar must be
-        # excluded before its bytes are copied or parsed as a session.
-        "summary": "Plan " + ("x" * _STREAMING_FULL_INGEST_BYTES),
+        # acquisition branch. Retained classification keeps the sidecar
+        # bytes as evidence without admitting them as a session.
+        "summary": "Plan " + ("x" * _LARGE_INPUT_BYTES),
         "updatedAt": "2026-08-04T08:00:00Z",
     }
     metadata_path.write_text(json.dumps(metadata_payload), encoding="utf-8")
@@ -1494,25 +1499,60 @@ def test_antigravity_metadata_sidecar_is_rejected_without_blocking_conversation_
     assert session.provider_session_id == "cascade-json"
     assert [message.text for message in session.messages] == ["hello", "hi"]
 
-    assert metadata_path.stat().st_size > _STREAMING_FULL_INGEST_BYTES
-    assert conversation_path.stat().st_size < _STREAMING_FULL_INGEST_BYTES
-    index_db = tmp_path / "index.db"
-    processor = LiveBatchProcessor(
-        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="antigravity", root=tmp_path),),
-        cursor=CursorStore(index_db),
-        parser_fingerprint="test-parser",
-    )
+    assert metadata_path.stat().st_size > _LARGE_INPUT_BYTES
+    assert conversation_path.stat().st_size < _LARGE_INPUT_BYTES
+    from polylogue import Polylogue
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
+    from polylogue.sources.live.watcher import LiveWatcher
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    admission = processor._ingest_full_paths_sync(
-        [metadata_path, conversation_path],
-        source_name="antigravity",
-    )
-
-    assert admission.succeeded == [metadata_path, conversation_path]
-    assert admission.failed == []
-    assert str(metadata_path) not in processor._cursor.list_excluded()
-    assert str(conversation_path) not in processor._cursor.list_excluded()
+    root = tmp_path / "archive"
+    root.mkdir()
+    async with prepared_live_convergence_owner(root) as owner:
+        coordinator = owner._write_coordinator
+        await coordinator.run_sync("fixture.antigravity.bootstrap", lambda: bootstrap_archive_root(root))
+        cursor = await coordinator.run_sync(
+            "fixture.antigravity.cursor", lambda: CursorStore(root / "index.db", ops_db_path=root / "ops.db")
+        )
+        archive = Polylogue(archive_root=root)
+        watcher = LiveWatcher(
+            archive,
+            [WatchSource(name="antigravity", root=tmp_path)],
+            cursor=cursor,
+            write_coordinator=coordinator,
+            sqlite_capture_stage=LiveSQLiteCaptureStage(compute_adapter=owner._compute_adapter),
+            append_runner=owner.ingest_append_plans,
+            convergence_runner=owner.run_convergence_sync,
+            retained_runner=owner.ingest_retained_raw_ids,
+        )
+        try:
+            metrics = await watcher._ingest_files([metadata_path, conversation_path])
+            assert metrics.failed_file_count == 0
+            assert metrics.ingested_session_count == 1
+            with ArchiveStore.open_existing(root, read_only=True) as stored:
+                raws = stored.source_connection.execute(
+                    "SELECT source_path,canonical_source_path,blob_hash FROM raw_sessions"
+                ).fetchall()
+                assert {(row[0], row[1], row[2]) for row in raws} == {
+                    (str(path), str(path.resolve()), hashlib.sha256(path.read_bytes()).digest())
+                    for path in (metadata_path, conversation_path)
+                }
+                [sidecar] = stored.source_connection.execute(
+                    "SELECT artifact_kind,parse_as_session,schema_eligible,decode_error FROM raw_artifacts "
+                    "WHERE source_path=?",
+                    (str(metadata_path),),
+                ).fetchall()
+                assert tuple(sidecar) == (ArtifactKind.AGENT_SIDECAR_META.value, 0, 0, None)
+                assert stored._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+                retained = stored.read_session("antigravity-session:cascade-json")
+                assert [block.text for message in retained.messages for block in message.blocks] == ["hello", "hi"]
+            assert str(metadata_path) not in cursor.list_excluded()
+            assert str(conversation_path) not in cursor.list_excluded()
+        finally:
+            watcher.stop()
+            await archive.close()
 
 
 def test_antigravity_language_server_markdown_export_parses_turns() -> None:
@@ -1717,7 +1757,7 @@ def test_hermes_snapshot_and_state_db_share_one_session_identity(tmp_path: Path)
     try:
         _ensure_schema(conn)
         for parsed in (state_root, snapshot):
-            write_parsed_session_to_archive(conn, parsed, content_hash=session_content_hash(parsed))
+            write_fixture_index_session(conn, parsed, content_hash=session_content_hash(parsed), standalone_memory=True)
         rows = [
             row["native_id"]
             for row in conn.execute("SELECT native_id FROM sessions WHERE origin = 'hermes-session'").fetchall()

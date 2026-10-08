@@ -26,14 +26,17 @@ import polylogue.sources.sqlite_export as sqlite_export
 import polylogue.sources.sqlite_snapshot as sqlite_snapshot
 from polylogue import Polylogue
 from polylogue.core.enums import Provider
+from polylogue.pipeline.services.acquisition_records import make_raw_record
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.watcher import LiveWatcher
 from polylogue.sources.origin_specs import database_capability_for_provider
+from polylogue.sources.parsers.base import RawSessionData
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.sqlite_export import (
+    logical_source_context,
     looks_like_logical_export_path,
-    open_logical_source,
 )
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
@@ -41,13 +44,13 @@ from polylogue.sources.sqlite_snapshot import (
     is_declared_logical_export,
     is_undeclared_logical_export,
     member_export_scope,
-    retained_content_revision,
     snapshot_sqlite_to_blob,
     sqlite_logical_revision,
     sqlite_member_revision,
     sqlite_source_revision,
 )
 from polylogue.storage.blob_store import BlobStore
+from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 _STATE_DB_SCHEMA = """
 CREATE TABLE schema_version(version INTEGER NOT NULL);
@@ -293,24 +296,42 @@ def test_two_empty_members_of_one_profile_keep_distinct_identities(tmp_path: Pat
 
     revision = sqlite_logical_revision(state)
     assert sqlite_logical_revision(verification) == revision, "sanity: both members are logically empty"
-    assert hermes_profile_raw_id(state, 0, revision) != hermes_profile_raw_id(verification, 0, revision)
+    from polylogue.sources.parsers.hermes_identity import profile_key
+
+    key = profile_key(profile)
+    assert hermes_profile_raw_id(
+        state, 0, revision, identity_path=state, profile_identity=key
+    ) != hermes_profile_raw_id(verification, 0, revision, identity_path=verification, profile_identity=key)
 
 
-def test_retained_blob_yields_the_same_content_term_as_live_acquisition(tmp_path: Path) -> None:
-    """The import and replay routes must not mint a second identity.
-
-    Anti-vacuity: return ``blob_hash`` unconditionally from
-    ``retained_content_revision`` and the imported raw id stops matching the
-    live one for the same database state.
-    """
+def test_retained_blob_yields_the_same_raw_identity_as_live_acquisition(tmp_path: Path) -> None:
+    """Changing the captured export content term mints a second raw identity."""
     source = tmp_path / "state.db"
     _write_state_db(source, sessions=2)
     store = _blob_store(tmp_path)
     snapshot = snapshot_sqlite_to_blob(source, store)
-
+    record = make_raw_record(
+        RawSessionData(
+            source_path=str(snapshot.source_path),
+            canonical_source_path=str(snapshot.identity_path),
+            captured_profile_key=snapshot.captured_profile_key,
+            captured_profile_source_path=str(snapshot.captured_profile_source_path),
+            blob_hash=snapshot.blob_hash,
+            blob_size=snapshot.blob_size,
+            source_index=0,
+            provider_hint=Provider.HERMES,
+        ),
+        "hermes",
+        blob_store=store,
+        acquired_at="2026-02-02T12:00:00+00:00",
+    )
     assert is_declared_logical_export(store.blob_path(snapshot.blob_hash), source)
-    assert retained_content_revision(store.blob_path(snapshot.blob_hash), snapshot.blob_hash) == (
-        snapshot.source_revision
+    assert record.raw_id == hermes_profile_raw_id(
+        source,
+        0,
+        snapshot.source_revision,
+        identity_path=snapshot.captured_profile_source_path,
+        profile_identity=snapshot.captured_profile_key,
     )
 
 
@@ -324,7 +345,6 @@ def test_a_historical_page_image_cannot_recover_logical_source_identity(tmp_path
     page_image = store.blob_path(page_hash)
 
     assert not is_declared_logical_export(page_image, source)
-    assert retained_content_revision(page_image, page_hash) == page_hash
 
 
 def test_declared_and_undeclared_logical_export_predicates_truth_table(tmp_path: Path) -> None:
@@ -394,7 +414,7 @@ def test_the_retained_material_is_the_declared_logical_export(tmp_path: Path) ->
         "projects",
         "project_roots",
     }
-    with closing(open_logical_source(blob)) as conn:
+    with logical_source_context(blob) as conn:
         assert list(conn.execute("SELECT id, title FROM threads")) == [("t-1", "Curated")]
         assert list(conn.execute("SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges")) == [
             ("t-1", "t-2", "closed")
@@ -446,7 +466,7 @@ def test_an_export_round_trips_every_storage_class(tmp_path: Path) -> None:
 
     export = tmp_path / "export.jsonl"
     export.write_bytes(sqlite_export.logical_export_bytes(source))
-    with closing(open_logical_source(export)) as conn:
+    with logical_source_context(export) as conn:
         conn.text_factory = bytes
         rebuilt = {
             bytes(row[0]).decode(): (row[1], type(row[1]).__name__) for row in conn.execute("SELECT kind, value FROM v")
@@ -472,12 +492,35 @@ def test_an_export_round_trips_every_storage_class(tmp_path: Path) -> None:
 
 
 def test_non_sqlite_material_is_identified_by_its_bytes(tmp_path: Path) -> None:
-    """Anti-vacuity: try to open every blob as SQLite and a Hermes ATOF
-    stream's raw identity raises instead of resolving."""
-    store = _blob_store(tmp_path)
-    blob_hash, _size = store.write_from_bytes(b'{"event": "atof"}\n')
+    """Observer-stream acquisition must use captured bytes without a SQLite read."""
+    from polylogue.core.provider_identity import captured_hermes_profile_key
 
-    assert retained_content_revision(store.blob_path(blob_hash), blob_hash) == blob_hash
+    store = _blob_store(tmp_path)
+    blob_hash, blob_size = store.write_from_bytes(b'{"event": "atof"}\n')
+    profile = tmp_path / "profile"
+    source = profile / "observability/nemo-relay/atof/events.jsonl"
+    key = captured_hermes_profile_key(profile)
+    record = make_raw_record(
+        RawSessionData(
+            source_path=str(source),
+            captured_profile_key=key,
+            captured_profile_source_path=str(source),
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            source_index=0,
+            provider_hint=Provider.HERMES,
+        ),
+        "hermes",
+        blob_store=store,
+        acquired_at="2026-02-02T12:00:00+00:00",
+    )
+    assert record.raw_id == hermes_profile_raw_id(
+        source,
+        0,
+        blob_hash,
+        identity_path=source,
+        profile_identity=key,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -507,10 +550,10 @@ def test_wal_source_with_an_uncommitted_writer_snapshots_committed_state_only(tm
 
     blob = store.blob_path(snapshot.blob_hash)
     assert looks_like_logical_export_path(blob), "the retained material is the export, never a page image"
-    with closing(open_logical_source(blob)) as conn:
+    with logical_source_context(blob) as conn:
         ids = {str(row[0]) for row in conn.execute("SELECT id FROM sessions")}
     assert ids == {"session-0", "session-1"}
-    assert retained_content_revision(blob, snapshot.blob_hash) == snapshot.source_revision
+    assert snapshot.blob_hash == snapshot.source_revision
 
 
 def test_a_commit_during_the_export_cannot_enter_it(tmp_path: Path) -> None:
@@ -545,7 +588,7 @@ def test_a_commit_during_the_export_cannot_enter_it(tmp_path: Path) -> None:
     assert sink.committed, "sanity: the racing commit ran while the export was streaming"
     export = tmp_path / "export.jsonl"
     export.write_bytes(bytes(sink.buffer))
-    with closing(open_logical_source(export)) as conn:
+    with logical_source_context(export) as conn:
         ids = {str(row[0]) for row in conn.execute("SELECT id FROM sessions")}
     assert ids == {"session-0", "session-1"}
 
@@ -568,7 +611,7 @@ def test_commit_after_export_cannot_authorize_a_cursor_skip(tmp_path: Path, monk
     writer.execute("PRAGMA wal_autocheckpoint=0")
     store = _blob_store(tmp_path)
 
-    original_export = sqlite_export.write_logical_export
+    original_export = sqlite_export._write_logical_export_bound
     committed = False
 
     def export_then_commit(handle_source: Path, handle: Any, **kwargs: Any) -> None:
@@ -582,11 +625,11 @@ def test_commit_after_export_cannot_authorize_a_cursor_skip(tmp_path: Path, monk
         # ``snapshot_sqlite_to_blob`` resolves the writer through the
         # sqlite_snapshot module, so patching its imported symbol exercises
         # the actual acquisition route rather than a test-only wrapper.
-        monkeypatch.setattr(sqlite_snapshot, "write_logical_export", export_then_commit)
+        monkeypatch.setattr(sqlite_snapshot, "_write_logical_export_bound", export_then_commit)
         snapshot = snapshot_sqlite_to_blob(source, store)
 
         assert committed
-        with closing(open_logical_source(store.blob_path(snapshot.blob_hash))) as conn:
+        with logical_source_context(store.blob_path(snapshot.blob_hash)) as conn:
             assert list(conn.execute("SELECT title FROM threads")) == [("old-0",)]
 
         current_stat = source.stat()
@@ -606,7 +649,7 @@ def test_commit_after_export_cannot_authorize_a_cursor_skip(tmp_path: Path, monk
             mtime_ns=current_stat.st_mtime_ns,
         )
         watcher = LiveWatcher.__new__(LiveWatcher)
-        watcher._sources = (WatchSource(name="codex-state", root=tmp_path, suffixes=(".sqlite",)),)
+        watcher._sources = (WatchSource(name="codex-state", root=tmp_path, layout=export_drop_layout((".sqlite",))),)
         corroboration_probes: list[Path] = []
 
         def corroborated(path: Path) -> bool:
@@ -732,7 +775,9 @@ def test_declared_logical_tables_exist_in_the_parsed_schema(tmp_path: Path) -> N
 
 
 def _hermes_source(root: Path) -> WatchSource:
-    return WatchSource(name="hermes", root=root, suffixes=(".json", ".jsonl", ".db", ".sqlite", ".sqlite3"))
+    return WatchSource(
+        name="hermes", root=root, layout=export_drop_layout((".json", ".jsonl", ".db", ".sqlite", ".sqlite3"))
+    )
 
 
 def _processor(
@@ -742,7 +787,7 @@ def _processor(
     root.mkdir(parents=True)
     db_path = workspace_env["data_root"] / db_name
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
-    cursor = CursorStore(db_path)
+    cursor = CursorStore(db_path, ops_db_path=workspace_env["archive_root"] / "ops.db")
     processor = LiveBatchProcessor(
         archive,
         (_hermes_source(root),),
@@ -776,7 +821,7 @@ async def test_reingesting_a_repaged_database_adds_no_raw_revision(
     source_path = root / "state.db"
     try:
         _write_state_db(source_path, sessions=2)
-        first = await processor.ingest_files([source_path], emit_event=False)
+        first = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert first.failed_file_count == 0
         after_first = _raw_rows(workspace_env["archive_root"], source_path)
         assert len(after_first) == 1
@@ -785,7 +830,7 @@ async def test_reingesting_a_repaged_database_adds_no_raw_revision(
             conn.execute("PRAGMA page_size=8192")
             conn.execute("VACUUM")
 
-        second = await processor.ingest_files([source_path], emit_event=False)
+        second = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert second.failed_file_count == 0
         assert _raw_rows(workspace_env["archive_root"], source_path) == after_first
     finally:
@@ -812,7 +857,7 @@ async def test_sqlite_acquisition_failure_is_a_failed_file_not_a_batch_abort(
             raise sqlite3.DatabaseError("database disk image is malformed")
 
         monkeypatch.setattr("polylogue.sources.live.batch.snapshot_sqlite_to_blob", fail_snapshot)
-        result = await processor.ingest_files([source_path], emit_event=False)
+        result = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         assert result.failed_file_count == 1
         assert result.succeeded_file_count == 0
@@ -852,12 +897,16 @@ async def test_sqlite_acquisition_failure_does_not_fail_its_healthy_siblings(
 
         monkeypatch.setattr("polylogue.sources.live.batch.snapshot_sqlite_to_blob", fail_only_state)
 
-        result = await processor.ingest_files([broken, healthy], emit_event=False)
+        result = await ingest_files_with_owners(processor, [broken, healthy], emit_event=False)
 
         assert result.failed_file_count == 1
-        assert result.succeeded_file_count == 1
         assert [Path(path).name for path in result.failed_paths] == ["state.db"]
-        assert [Path(path).name for path in result.succeeded_paths] == ["verification_evidence.db"]
+        # The sibling completes its own observation. Its bytes are a state
+        # schema under the verification-ledger name, so the ledger parser
+        # settles it as a typed no-session observation rather than a session.
+        assert {Path(path).name for path in result.succeeded_paths} | {
+            Path(path).name for path in result.settled_exclusion_paths
+        } == {"verification_evidence.db"}
     finally:
         await archive.close()
 
@@ -872,13 +921,13 @@ async def test_one_changed_row_produces_exactly_one_new_raw_revision(
     source_path = root / "state.db"
     try:
         _write_state_db(source_path, sessions=2)
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
         after_first = _raw_rows(workspace_env["archive_root"], source_path)
 
         with closing(sqlite3.connect(source_path)) as conn, conn:
             conn.execute("UPDATE sessions SET title = 'renamed' WHERE id = 'session-1'")
 
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
         after_second = _raw_rows(workspace_env["archive_root"], source_path)
 
         assert len(after_first) == 1
@@ -904,7 +953,7 @@ async def test_the_freshness_gate_skips_a_checkpointed_but_unchanged_database(
     source_path = root / "state.db"
     try:
         _write_state_db(source_path, sessions=2, wal=True)
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         with closing(sqlite3.connect(source_path)) as conn:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -941,7 +990,7 @@ async def test_the_freshness_gate_reopens_a_logically_changed_database(
     source_path = root / "state.db"
     try:
         _write_state_db(source_path, sessions=2, wal=True)
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         with closing(sqlite3.connect(source_path)) as conn, conn:
             conn.execute("UPDATE sessions SET title = 'renamed' WHERE id = 'session-0'")
@@ -979,7 +1028,7 @@ def test_an_out_of_scope_database_is_not_a_declared_codex_member(tmp_path: Path)
                 archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "cursor.db"), config=None
             ),
         ),
-        (WatchSource(name="codex-state", root=root, suffixes=(".sqlite", ".db")),),
+        (WatchSource(name="codex-state", root=root, layout=export_drop_layout((".sqlite", ".db"))),),
         cursor=cursor,
     )
 
@@ -1043,12 +1092,12 @@ def test_a_read_index_hint_is_built_in_the_reconstruction_and_answers_the_scan(t
     export = tmp_path / "export.jsonl"
     export.write_bytes(sqlite_export.logical_export_bytes(source))
 
-    with closing(open_logical_source(export)) as unhinted:
+    with logical_source_context(export) as unhinted:
         unhinted_rows = list(unhinted.execute("SELECT id, session_id, body FROM messages ORDER BY id"))
         unhinted_indexes = _index_definitions(unhinted)
         unhinted_plan = _per_session_plan(unhinted)
 
-    with closing(open_logical_source(export, read_indexes=_MESSAGE_READ_HINT)) as hinted:
+    with logical_source_context(export, read_indexes=_MESSAGE_READ_HINT) as hinted:
         hinted_rows = list(hinted.execute("SELECT id, session_id, body FROM messages ORDER BY id"))
         hinted_indexes = _index_definitions(hinted)
         hinted_plan = _per_session_plan(hinted)
@@ -1069,7 +1118,7 @@ def test_a_read_index_hint_never_touches_a_live_database(tmp_path: Path) -> None
     """A hint is honoured only for the private reconstruction.
 
     Anti-vacuity: move the ``read_indexes`` handling out of the export branch
-    of ``open_logical_source`` into a statement executed on every connection
+    of ``logical_source_context`` into a statement executed on every connection
     and the operator's own file grows an index -- a write against a source the
     archive only ever reads.
     """
@@ -1079,7 +1128,7 @@ def test_a_read_index_hint_never_touches_a_live_database(tmp_path: Path) -> None
     with closing(sqlite3.connect(source)) as observer:
         before_master = observer.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
 
-    with closing(open_logical_source(source, read_indexes=_MESSAGE_READ_HINT)) as conn:
+    with logical_source_context(source, read_indexes=_MESSAGE_READ_HINT) as conn:
         assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 12
         assert _index_definitions(conn) == {}
 
@@ -1095,7 +1144,7 @@ def test_a_read_index_hint_naming_an_absent_table_or_column_is_ignored(tmp_path:
     Reporting an unsupported shape stays the parser's job, so a hint that
     does not apply must not turn the open into a failure. Anti-vacuity: drop
     the membership test in ``materialize_export`` and each of these hints
-    raises ``sqlite3.OperationalError`` out of ``open_logical_source``.
+    raises ``sqlite3.OperationalError`` out of ``logical_source_context``.
     """
     source = tmp_path / "state.db"
     _write_message_source(source)
@@ -1108,7 +1157,7 @@ def test_a_read_index_hint_naming_an_absent_table_or_column_is_ignored(tmp_path:
         ("messages", ("session_id", "thread_id")),
         ("messages", ()),
     )
-    with closing(open_logical_source(export, read_indexes=hints)) as conn:
+    with logical_source_context(export, read_indexes=hints) as conn:
         assert _index_definitions(conn) == {}
         assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 12
 
@@ -1138,7 +1187,7 @@ def test_the_reconstruction_does_not_reproduce_source_collation(tmp_path: Path) 
 
     export = tmp_path / "export.jsonl"
     export.write_bytes(sqlite_export.logical_export_bytes(source))
-    with closing(open_logical_source(export)) as rebuilt:
+    with logical_source_context(export) as rebuilt:
         rebuilt_matches = [str(row[0]) for row in rebuilt.execute("SELECT note FROM people WHERE name = 'ABC'")]
         stated = [
             str(row[0])
@@ -1198,3 +1247,25 @@ def test_a_database_larger_than_the_residue_cohort_acquires_in_bounded_memory(tm
     growth_bytes = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before_kb) * 1024
     # One row plus its hex and JSON encodings, with headroom; never the file.
     assert growth_bytes < 16 * _SCALE_ROW_BYTES, growth_bytes
+
+
+@pytest.mark.parametrize("sequence_value, expected", [(1, ["i", 1]), ("1", ["t", "1"]), (None, None)])
+def test_logical_export_preserves_sqlite_sequence_storage_class(
+    tmp_path: Path, sequence_value: object, expected: object
+) -> None:
+    import hashlib
+    import json
+
+    source = tmp_path / "sequence.sqlite"
+    with closing(sqlite3.connect(source)) as conn, conn:
+        conn.execute("CREATE TABLE authored(id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT)")
+        conn.execute("INSERT INTO authored(body) VALUES ('neutral authored text')")
+        conn.execute("UPDATE sqlite_sequence SET seq=? WHERE name='authored'", (sequence_value,))
+    exported = sqlite_export.logical_export_bytes(source)
+    header = json.loads(exported.splitlines()[0])
+    assert header["sqlite_sequence"] == [[["t", "authored"], expected]]
+    assert sqlite_export.logical_export_digest(source) == hashlib.sha256(exported).hexdigest()
+    retained = tmp_path / "retained.jsonl"
+    retained.write_bytes(exported)
+    with logical_source_context(retained) as conn:
+        assert conn.execute("SELECT id, body FROM authored").fetchall() == [(1, "neutral authored text")]

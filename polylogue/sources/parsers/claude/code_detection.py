@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from polylogue.sources.detection_projection import DetectorProjection
+
 #: Type tokens specific enough to Claude Code's own record vocabulary that
 #: their bare presence is sufficient evidence on its own.
 _CODE_ONLY_TYPES = frozenset(
@@ -27,14 +29,17 @@ _CODE_ONLY_TYPES = frozenset(
 #: envelope marker instead -- every real Claude Code JSONL record carries at
 #: least one of these regardless of its own ``type``.
 _AMBIGUOUS_ROLE_TYPES = frozenset({"user", "assistant"})
-#: Keys strong enough that their bare presence alone is sufficient evidence
-#: (unchanged from the original detector).
-_STRONG_SESSION_KEYS = ("parentUuid", "leafUuid", "sessionId", "session_id")
+#: Keys strong enough that their bare presence alone is sufficient evidence:
+#: Claude Code's own camelCase transcript envelope.
+_STRONG_SESSION_KEYS = ("parentUuid", "leafUuid", "sessionId")
 #: Weaker companion markers that only count when paired with an ambiguous
 #: role-word ``type`` value (see ``_AMBIGUOUS_ROLE_TYPES``) -- not strong
 #: enough to stand alone (``"uuid"`` in particular is too generic a field name
-#: across unrelated JSON shapes to be positive evidence by itself).
-_AMBIGUOUS_TYPE_ENVELOPE_MARKERS = frozenset({"uuid", "cwd", "version", "message"})
+#: across unrelated JSON shapes to be positive evidence by itself). The
+#: snake_case ``session_id`` of Claude Code's stream-json output is one of
+#: them: Hermes and other origins carry the same key on their own documents,
+#: so alone it is no evidence of Claude Code.
+_AMBIGUOUS_TYPE_ENVELOPE_MARKERS = frozenset({"uuid", "cwd", "version", "message", "session_id"})
 
 
 def looks_like_code(payload: Sequence[object]) -> bool:
@@ -57,3 +62,12 @@ def looks_like_code(payload: Sequence[object]) -> bool:
 
 
 __all__ = ["looks_like_code"]
+
+
+def detection_projection() -> DetectorProjection:
+    """Keep envelope markers exactly; consume every other field and record."""
+    fields: dict[str, DetectorProjection | None] = dict.fromkeys(
+        (*_STRONG_SESSION_KEYS, *_AMBIGUOUS_TYPE_ENVELOPE_MARKERS)
+    )
+    fields["type"] = DetectorProjection()
+    return DetectorProjection(fields=fields)

@@ -3686,6 +3686,9 @@ class SearchCursor(BaseModel):
       Surfaces SHOULD reject a cursor whose lane does not match the
       current request so paginated state does not silently leak across
       lane changes.
+    - ``o``: whether an explicit result sort determines continuation order.
+      This field is required so cursors minted under an older ordering
+      contract are rejected instead of silently interpreted differently.
     """
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)
@@ -3696,6 +3699,7 @@ class SearchCursor(BaseModel):
     c: str
     lane: str = Field(validation_alias="l", serialization_alias="l")
     query_hash: str | None = Field(default=None, validation_alias="q", serialization_alias="q")
+    ordered: bool = Field(validation_alias="o", serialization_alias="o")
 
 
 class InvalidSearchCursorError(ValueError):
@@ -3710,6 +3714,7 @@ def build_search_cursor(
     hits: Sequence[SessionSearchHitPayload],
     *,
     request_identity: str | None = None,
+    ordered: bool = False,
 ) -> str | None:
     """Build an opaque keyset cursor token from the last hit of a page.
 
@@ -3733,6 +3738,7 @@ def build_search_cursor(
         c=last.session.id,
         lane=last.match.retrieval_lane,
         query_hash=request_identity,
+        ordered=ordered,
     )
     payload = cursor.model_dump_json(by_alias=True)
     return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
@@ -3781,10 +3787,9 @@ def apply_search_cursor(
 ) -> tuple[SessionSearchHitPayload, ...]:
     """Drop hits up to and including the cursor anchor.
 
-    Stability rule: a hit survives iff its ``(score, session_id)``
-    sorts strictly *after* the cursor anchor under the lane's natural
-    ordering, or — when no score is available — its rank strictly
-    exceeds the anchor rank.
+    Explicitly ordered results use their global result rank, which is the
+    order selected by the query. Otherwise the lane's score ordering and
+    deterministic session ID tie-break preserve ranked pagination.
 
     When ``retrieval_lane`` is supplied it is compared against the
     cursor's lane field; mismatched lanes raise
@@ -3823,10 +3828,13 @@ def search_cursor_lane_matches_request(cursor_lane: str, requested_lane: str | N
 def _cursor_strictly_before(cursor: SearchCursor, hit: SessionSearchHitPayload) -> bool:
     """Return True when ``hit`` is strictly after the cursor anchor.
 
-    Comparison uses lane-natural score ordering when both sides have a
-    numeric score, otherwise falls back to rank. ``session_id`` is
-    the deterministic tie-break.
+    Explicitly sorted pages compare the staged result rank. Natural ranked
+    pages compare lane scores and use rank/session ID for ties.
     """
+    if cursor.ordered:
+        if hit.match.rank != cursor.r:
+            return hit.match.rank > cursor.r
+        return bool(hit.session.id > cursor.c)
     anchor_score = cursor.s
     hit_score = hit.match.score
     score_kind = hit.match.score_kind
@@ -3886,7 +3894,7 @@ def build_search_envelope(
     if hits_tuple and len(hits_tuple) == limit and (total is None or offset + limit < total):
         # More results likely available; expose both pagination handles.
         next_offset = offset + limit
-        next_cursor = build_search_cursor(hits_tuple, request_identity=request_identity)
+        next_cursor = build_search_cursor(hits_tuple, request_identity=request_identity, ordered=sort is not None)
     if action_affordances is None:
         from polylogue.operations.action_contracts import query_result_action_affordance_payloads
 
@@ -4359,6 +4367,7 @@ class ContextPreambleBlackboardNote(SurfacePayloadModel):
 
 
 class MutationResultPayload(SurfacePayloadModel):
+    domain_receipt: dict[str, object] | None = None
     """Shared result envelope for user-visible mutation surfaces.
 
     Carries idempotent status codes, context fields, and bulk-operation

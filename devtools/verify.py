@@ -40,9 +40,6 @@ from devtools.pytest_invocation import (
     effective_hypothesis_profile,
     managed_plugin_args,
 )
-from devtools.pytest_rerun import (
-    report_nodeid_to_selector,
-)
 from devtools.pytest_slot import (
     OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
@@ -51,7 +48,12 @@ from devtools.pytest_slot import (
     run_pytest_isolated,
     termination_metadata,
 )
-from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument, spool_paths
+from devtools.pytest_stream_report import (
+    REPORT_FILE_OPTION,
+    report_file_argument,
+    report_nodeid_to_selector,
+    spool_paths,
+)
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
 from devtools.required_gate import executable_gate_result
 from devtools.testmon_provision import (
@@ -1197,7 +1199,6 @@ def _aggregate_pytest_results(
 ) -> dict[str, Any]:
     pytest_results = [result for result in results if str(result.get("name", "")).startswith("pytest")]
     outcomes: dict[str, int] = {}
-    flaky: list[str] = []
     selected_counts: list[int] = []
     terminal_counts: list[int] = []
     for result in pytest_results:
@@ -1211,9 +1212,6 @@ def _aggregate_pytest_results(
             terminal_counts.append(terminal)
         for outcome, count in (statistics.get("outcomes") or {}).items():
             outcomes[str(outcome)] = outcomes.get(str(outcome), 0) + int(count)
-        rerun = result.get("rerun")
-        if isinstance(rerun, Mapping):
-            flaky.extend(str(nodeid) for nodeid in rerun.get("flaky") or ())
     complete = mode == "all" and exit_code == 0 and len(pytest_results) == expected_step_count
     return {
         "selection_mode": mode,
@@ -1222,7 +1220,6 @@ def _aggregate_pytest_results(
         "selected_union_count": sum(selected_counts) if selected_counts else None,
         "terminal_union_count": sum(terminal_counts) if terminal_counts else None,
         "outcomes": outcomes,
-        "flaky": flaky,
         "terminal_green": exit_code == 0,
         "complete_corpus_covered": complete,
     }
@@ -1331,11 +1328,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     sys.stderr.write(f"verify: {identity.describe()}\n")
     # Every step must see one tree: its Git-visible content is compared at the end.
     started_content = git_worktree_content_sha256(ROOT)
-    # Before this run writes its own ``running`` receipt, give a terminal state
-    # to any earlier one whose process is gone. A verification killed outright
-    # runs no handler of its own, so the next reader is the only thing that can
-    # close it out.
-    reconcile_and_record_verify_runs(runs_root=ROOT / VERIFY_RUNS_DIR)
     validate_authority_matrix()
     started = time.monotonic()
     selection = "all" if args.all_tests else "affected"
@@ -1343,13 +1335,9 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     if not args.quick and not args.all_tests:
         changed_paths = _git_changed_paths(ROOT)
         selection = _selection_for_changes(changed_paths)
-    seeded_from_primary = sync_testmon_graph(
-        ROOT, **({"profile": args.hypothesis_profile} if args.hypothesis_profile is not None else {})
-    )
-    graph = inspect_testmon_graph(
-        ROOT, **({"profile": args.hypothesis_profile} if args.hypothesis_profile is not None else {})
-    )
     scope = _scope(quick=args.quick, selection=selection)
+    # The import-root contract is checked before this run writes anything under
+    # the verify cache: a mismatched checkout must leave no receipt or graph.
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools verify")
     except CheckoutImportMismatchError as exc:
@@ -1366,6 +1354,17 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         sys.stderr.write(f"verify: {exc}\n")
         _emit(payload, use_json=args.json, operation=agentctl_operation)
         return 125
+    # Before this run writes its own ``running`` receipt, give a terminal state
+    # to any earlier one whose process is gone. A verification killed outright
+    # runs no handler of its own, so the next reader is the only thing that can
+    # close it out.
+    reconcile_and_record_verify_runs(runs_root=ROOT / VERIFY_RUNS_DIR)
+    seeded_from_primary = sync_testmon_graph(
+        ROOT, **({"profile": args.hypothesis_profile} if args.hypothesis_profile is not None else {})
+    )
+    graph = inspect_testmon_graph(
+        ROOT, **({"profile": args.hypothesis_profile} if args.hypothesis_profile is not None else {})
+    )
     head = git_head(ROOT)
     tier = "quick" if args.quick else selection
     # The complete plan, pytest included, is fixed before admission: a refusal

@@ -450,6 +450,7 @@ Arguments:
 |---|---|---:|---|
 | `operation` | `string` | yes | The declared maintenance operation. |
 | `confirm` | `boolean` | no | Explicit confirmation required by the full-effect operations. |
+| `session_ids` | `array` | no | Sessions whose insights to rebuild; omitted selects every session. |
 
 Example — Rebuild session insights:
 
@@ -907,7 +908,7 @@ Prompts: `cost_of`.
 - `hermes-session` — Hermes agent sessions
 - `antigravity-session` — Antigravity language-server and trajectory SQLite conversations
 - `beads-issue` — Reserved Beads issue origin (not admitted)
-- `grok-export` — Grok account-data exports (lab: xAI)
+- `grok-export` — Grok account exports and original endpoint bundles (lab: xAI)
 - `chatgpt-export` — ChatGPT web exports (lab: OpenAI)
 - `claude-ai-export` — Claude web exports (lab: Anthropic)
 - `claude-design-session` — Claude Design agentic sessions (lab: Anthropic)

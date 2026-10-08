@@ -18,10 +18,12 @@ from pathlib import Path
 
 import pytest
 
+from tests.infra.archive_templates import seeds_off_event_loop
 from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import build_tools, installed_runtime_services, invoke_surface_async
 
 
+@seeds_off_event_loop
 def _seed_two_origin_sessions(archive_root: Path) -> None:
     """Write one claude-code-session and one chatgpt-export session, each
     with a single ``role:user`` message, so an origin-scoped count can be

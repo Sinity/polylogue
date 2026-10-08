@@ -200,6 +200,32 @@ class CompletionClaimExperimentResult:
         }
 
 
+def codex_session_source_rows(conn: sqlite3.Connection, provider_session_id: str) -> list[sqlite3.Row]:
+    """Source raws that carry one Codex session, however their authority binds it.
+
+    A native rollout is bound by its own revision key; a grouped export names
+    the session through its membership census. Both are the session's source
+    material, so one query selects either binding.
+    """
+    logical_source_key = f"{origin_from_provider(Provider.CODEX).value}:{provider_session_id}"
+    return conn.execute(
+        """
+        SELECT DISTINCT r.raw_id, hex(r.blob_hash) AS blob_hash
+        FROM raw_sessions AS r
+        WHERE r.origin = ?
+          AND (
+            r.logical_source_key = ?
+            OR EXISTS (
+              SELECT 1 FROM raw_session_memberships AS m
+              WHERE m.raw_id = r.raw_id AND m.logical_source_key = ? AND m.provider_session_id = ?
+            )
+          )
+        ORDER BY r.raw_id
+        """,
+        (Origin.CODEX_SESSION.value, logical_source_key, logical_source_key, provider_session_id),
+    ).fetchall()
+
+
 def _connect(path: Path) -> sqlite3.Connection:
     conn = open_readonly_connection(path)
     conn.row_factory = sqlite3.Row
@@ -539,22 +565,7 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
     try:
         with _connect(source_db) as conn:
             provider_session_id = DEMO_CODEX_RECEIPTS_SESSION_ID.removeprefix("codex-session:")
-            rows = conn.execute(
-                """
-                SELECT DISTINCT r.raw_id, hex(r.blob_hash) AS blob_hash
-                FROM raw_sessions AS r
-                JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-                WHERE r.origin = ?
-                  AND m.logical_source_key = ?
-                  AND m.provider_session_id = ?
-                ORDER BY r.raw_id
-                """,
-                (
-                    Origin.CODEX_SESSION.value,
-                    f"{origin_from_provider(Provider.CODEX).value}:{provider_session_id}",
-                    provider_session_id,
-                ),
-            ).fetchall()
+            rows = codex_session_source_rows(conn, provider_session_id)
             if not rows:
                 problems.append("source material row for receipts session is missing")
             elif len(rows) > 1:

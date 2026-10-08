@@ -10,8 +10,8 @@ from unittest.mock import patch
 import pytest
 
 from polylogue import Polylogue
+from polylogue.archive.context_models import ContextImage
 from polylogue.config import resolve_runtime_config
-from polylogue.context.compiler import ContextImage
 from polylogue.mcp import server_support
 from polylogue.services import RuntimeServices
 from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async

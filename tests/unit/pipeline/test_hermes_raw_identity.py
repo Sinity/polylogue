@@ -10,6 +10,7 @@ from pathlib import Path
 
 from polylogue.config import Config, Source
 from polylogue.core.enums import Provider
+from polylogue.daemon.drive_catchup import DriveCatchupExecution
 from polylogue.pipeline.services.acquisition import AcquisitionService
 from polylogue.pipeline.services.acquisition_records import make_raw_record
 from polylogue.pipeline.services.parsing import ParsingService
@@ -17,6 +18,8 @@ from polylogue.sources.parsers.base import RawSessionData
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
 def _write_minimal_hermes_state(path: Path) -> None:
@@ -133,204 +136,228 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
     shutil.copyfile(first_db, second_db)
     assert first_db.read_bytes() == second_db.read_bytes()
 
-    backend = SQLiteBackend(db_path=tmp_path / "archive.db")
+    archive_root = tmp_path / "archive"
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
+    backend = SQLiteBackend(db_path=archive_root / "index.db")
     sources = [
         Source(name="hermes", path=first_db),
         Source(name="hermes", path=second_db),
     ]
     config = Config(
-        archive_root=tmp_path,
+        archive_root=archive_root,
         render_root=tmp_path / "render",
         sources=sources,
     )
     try:
-        acquired = await AcquisitionService(backend=backend).acquire_sources(sources)
-        assert acquired.acquired == 2
-        assert len(set(acquired.raw_ids)) == 2
+        async with prepared_live_convergence_owner(archive_root) as owner:
+            execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+            acquired = await AcquisitionService(backend=backend, execution=execution).acquire_sources(sources)
+            assert acquired.acquired == 2
+            assert len(set(acquired.raw_ids)) == 2
 
-        records = await backend.get_raw_sessions_batch(acquired.raw_ids)
-        assert len(records) == 2
-        assert {record.source_path for record in records} == {str(first_db), str(second_db)}
-        assert len({record.blob_hash for record in records}) == 1
-        assert records[0].blob_hash is not None
-        assert all(record.raw_id != record.blob_hash for record in records)
-        assert list(BlobStore(tmp_path / "blob").iter_all()) == [records[0].blob_hash]
+            records = await backend.get_raw_sessions_batch(acquired.raw_ids)
+            assert len(records) == 2
+            assert {record.source_path for record in records} == {str(first_db), str(second_db)}
+            assert len({record.blob_hash for record in records}) == 1
+            assert records[0].blob_hash is not None
+            assert all(record.raw_id != record.blob_hash for record in records)
+            assert list(BlobStore(archive_root / "blob").iter_all()) == [records[0].blob_hash]
 
-        parser = ParsingService(
-            repository=SessionRepository(backend=backend),
-            archive_root=tmp_path,
-            config=config,
-        )
-        first_parse = await parser.parse_from_raw(raw_ids=acquired.raw_ids)
-        assert first_parse.parse_failures == 0
-
-        async with backend.connection() as conn:
-            rows = list(
-                await (
-                    await conn.execute(
-                        "SELECT session_id, raw_id FROM sessions WHERE origin = 'hermes-session' ORDER BY session_id"
-                    )
-                ).fetchall()
+            parser = ParsingService(
+                repository=SessionRepository(backend=backend),
+                archive_root=archive_root,
+                config=config,
+                execution=execution,
+                retained_runner=owner.ingest_retained_raw_ids,
             )
-        assert len(rows) == 2
-        assert len({str(row["session_id"]) for row in rows}) == 2
-        assert {str(row["raw_id"]) for row in rows} == set(acquired.raw_ids)
-        session_ids = [str(row["session_id"]) for row in rows]
+            first_parse = await parser.parse_from_raw(raw_ids=acquired.raw_ids)
+            assert first_parse.parse_failures == 0
 
-        async def durable_cost_typed_totals() -> list[dict[str, object]]:
             async with backend.connection() as conn:
-                event_rows = list(
+                rows = list(
                     await (
                         await conn.execute(
-                            """
-                            SELECT total_input_tokens, total_output_tokens, total_cached_input_tokens,
-                                   total_cache_write_tokens, total_reasoning_output_tokens, total_tokens
-                            FROM session_provider_usage_events
-                            WHERE provider_event_type = 'token_count'
-                            ORDER BY session_id, position
-                            """
+                            "SELECT session_id, raw_id FROM sessions WHERE origin = 'hermes-session' ORDER BY session_id"
                         )
                     ).fetchall()
                 )
-            return [dict(row) for row in event_rows]
+            assert len(rows) == 2
+            assert len({str(row["session_id"]) for row in rows}) == 2
+            assert {str(row["raw_id"]) for row in rows} == set(acquired.raw_ids)
+            session_ids = [str(row["session_id"]) for row in rows]
 
-        async def durable_hermes_events() -> dict[str, list[tuple[str, dict[str, object]]]]:
-            async with backend.connection() as conn:
-                event_rows = list(
-                    await (
-                        await conn.execute(
-                            """
-                            SELECT session_id, event_type, payload_json
-                            FROM session_events
-                            WHERE event_type LIKE 'hermes_%' OR event_type = 'rewind'
-                            ORDER BY session_id, position
-                            """
-                        )
-                    ).fetchall()
-                )
-            result: dict[str, list[tuple[str, dict[str, object]]]] = {}
-            for row in event_rows:
-                result.setdefault(str(row["session_id"]), []).append(
-                    (str(row["event_type"]), json.loads(str(row["payload_json"])))
-                )
-            return result
+            async def durable_cost_typed_totals() -> list[dict[str, object]]:
+                async with backend.connection() as conn:
+                    event_rows = list(
+                        await (
+                            await conn.execute(
+                                """
+                                SELECT total_input_tokens, total_output_tokens, total_cached_input_tokens,
+                                       total_cache_write_tokens, total_reasoning_output_tokens, total_tokens
+                                FROM session_provider_usage_events
+                                WHERE provider_event_type = 'token_count'
+                                ORDER BY session_id, position
+                                """
+                            )
+                        ).fetchall()
+                    )
+                return [dict(row) for row in event_rows]
 
-        async def durable_message_state() -> dict[str, dict[str, list[object]]]:
-            async with backend.connection() as conn:
-                message_rows = list(
-                    await (
-                        await conn.execute(
-                            """
-                            SELECT
-                                m.session_id,
-                                m.message_id,
-                                m.material_origin,
-                                m.is_active_path,
-                                COUNT(b.block_id) AS block_count
-                            FROM messages AS m
-                            LEFT JOIN blocks AS b ON b.message_id = m.message_id
-                            GROUP BY m.session_id, m.message_id, m.position
-                            ORDER BY m.session_id, m.position
-                            """
-                        )
-                    ).fetchall()
-                )
-                state_rows = list(
-                    await (
-                        await conn.execute(
-                            """
-                            SELECT session_id, source_message_id, json_extract(payload_json, '$.state') AS state
-                            FROM session_events
-                            WHERE event_type = 'hermes_message_state'
-                            ORDER BY session_id, position
-                            """
-                        )
-                    ).fetchall()
-                )
-            result: dict[str, dict[str, list[object]]] = {}
-            for row in message_rows:
-                session_state = result.setdefault(
-                    str(row["session_id"]),
-                    {"message_ids": [], "material_origins": [], "active_path": [], "block_counts": [], "states": []},
-                )
-                session_state["message_ids"].append(str(row["message_id"]))
-                session_state["material_origins"].append(str(row["material_origin"]))
-                session_state["active_path"].append(int(row["is_active_path"]))
-                session_state["block_counts"].append(int(row["block_count"]))
-            for row in state_rows:
-                result[str(row["session_id"])]["states"].append((str(row["source_message_id"]), str(row["state"])))
-            return result
+            async def durable_hermes_events() -> dict[str, list[tuple[str, dict[str, object]]]]:
+                async with backend.connection() as conn:
+                    event_rows = list(
+                        await (
+                            await conn.execute(
+                                """
+                                SELECT session_id, event_type, payload_json
+                                FROM session_events
+                                WHERE event_type LIKE 'hermes_%' OR event_type = 'rewind'
+                                ORDER BY session_id, position
+                                """
+                            )
+                        ).fetchall()
+                    )
+                result: dict[str, list[tuple[str, dict[str, object]]]] = {}
+                for row in event_rows:
+                    result.setdefault(str(row["session_id"]), []).append(
+                        (str(row["event_type"]), json.loads(str(row["payload_json"])))
+                    )
+                return result
 
-        # polylogue-664l: the eight Hermes billing-provenance columns
-        # (estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
-        # pricing_version, billing_provider, billing_base_url, billing_mode)
-        # were dropped from session_provider_usage_events (index v61) -- a
-        # 2026-07-31 producer/consumer audit found zero production readers
-        # anywhere in the repo. This fixture's Hermes session carries only
-        # billing evidence and zero real token counts, so with the billing
-        # columns gone there is no evidence left to write a row for at all:
-        # `_provider_usage_event_row_has_evidence` now gates purely on the
-        # token counters, and an all-zero-counter row with no billing data
-        # would carry no information. The pipeline correctly writes zero
-        # session_provider_usage_events rows for this fixture now.
-        assert await durable_cost_typed_totals() == []
+            async def durable_message_state() -> dict[str, dict[str, list[object]]]:
+                async with backend.connection() as conn:
+                    message_rows = list(
+                        await (
+                            await conn.execute(
+                                """
+                                SELECT
+                                    m.session_id,
+                                    m.message_id,
+                                    m.material_origin,
+                                    m.is_active_path,
+                                    COUNT(b.block_id) AS block_count
+                                FROM messages AS m
+                                LEFT JOIN blocks AS b ON b.message_id = m.message_id
+                                GROUP BY m.session_id, m.message_id, m.position
+                                ORDER BY m.session_id, m.position
+                                """
+                            )
+                        ).fetchall()
+                    )
+                    state_rows = list(
+                        await (
+                            await conn.execute(
+                                """
+                                SELECT session_id, source_message_id, json_extract(payload_json, '$.state') AS state
+                                FROM session_events
+                                WHERE event_type = 'hermes_message_state'
+                                ORDER BY session_id, position
+                                """
+                            )
+                        ).fetchall()
+                    )
+                result: dict[str, dict[str, list[object]]] = {}
+                for row in message_rows:
+                    session_state = result.setdefault(
+                        str(row["session_id"]),
+                        {
+                            "message_ids": [],
+                            "material_origins": [],
+                            "active_path": [],
+                            "block_counts": [],
+                            "states": [],
+                        },
+                    )
+                    session_state["message_ids"].append(str(row["message_id"]))
+                    session_state["material_origins"].append(str(row["material_origin"]))
+                    session_state["active_path"].append(int(row["is_active_path"]))
+                    session_state["block_counts"].append(int(row["block_count"]))
+                for row in state_rows:
+                    result[str(row["session_id"])]["states"].append((str(row["source_message_id"]), str(row["state"])))
+                return result
 
-        hermes_events = await durable_hermes_events()
-        assert set(hermes_events) == set(session_ids)
-        identity_payloads = [
-            payload
-            for events in hermes_events.values()
-            for event_type, payload in events
-            if event_type == "hermes_identity"
-        ]
-        assert {payload["raw_session_id"] for payload in identity_payloads} == {"shared-session"}
-        assert len({payload["profile_key"] for payload in identity_payloads}) == 2
-        expected_states = ["active", "active", "observed", "observed", "rewound", "rewound", "compacted", "compacted"]
-        for events in hermes_events.values():
-            event_types = [event_type for event_type, _payload in events]
-            assert event_types.count("hermes_session_metadata") == 1
-            assert event_types.count("rewind") == 1
-            assert [
-                payload["state"] for event_type, payload in events if event_type == "hermes_message_state"
-            ] == expected_states
+            # polylogue-664l dropped the Hermes billing-provenance columns, so
+            # billing facts write nothing here. The fixture's state.db does
+            # store its token counters, as explicit zeros, and a measured zero
+            # is evidence (#5300): each profile's session gets one token_count
+            # row of zeros. total_tokens stays NULL because Hermes never
+            # reports it.
+            measured_zero: dict[str, object] = {
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "total_cached_input_tokens": 0,
+                "total_cache_write_tokens": 0,
+                "total_reasoning_output_tokens": 0,
+                "total_tokens": None,
+            }
+            usage_totals = await durable_cost_typed_totals()
+            assert usage_totals == [measured_zero, measured_zero]
 
-        message_state = await durable_message_state()
-        assert set(message_state) == set(session_ids)
-        for state in message_state.values():
-            assert state["material_origins"] == [
-                "human_authored",
-                "human_authored",
-                "runtime_context",
-                "runtime_context",
-                "assistant_authored",
-                "assistant_authored",
-                "assistant_authored",
-                "assistant_authored",
+            hermes_events = await durable_hermes_events()
+            assert set(hermes_events) == set(session_ids)
+            identity_payloads = [
+                payload
+                for events in hermes_events.values()
+                for event_type, payload in events
+                if event_type == "hermes_identity"
             ]
-            assert state["active_path"] == [1, 1, 1, 1, 0, 0, 0, 0]
-            assert state["block_counts"] == [1, 0, 1, 0, 1, 0, 1, 0]
-            assert state["states"] == list(zip(state["message_ids"], expected_states, strict=True))
+            assert {payload["raw_session_id"] for payload in identity_payloads} == {"shared-session"}
+            assert len({payload["profile_key"] for payload in identity_payloads}) == 2
+            expected_states = [
+                "active",
+                "active",
+                "observed",
+                "observed",
+                "rewound",
+                "rewound",
+                "compacted",
+                "compacted",
+            ]
+            for events in hermes_events.values():
+                event_types = [event_type for event_type, _payload in events]
+                assert event_types.count("hermes_session_metadata") == 1
+                assert event_types.count("rewind") == 1
+                assert [
+                    payload["state"] for event_type, payload in events if event_type == "hermes_message_state"
+                ] == expected_states
 
-        async with backend.connection() as conn:
-            await conn.execute("DELETE FROM sessions")
-            await conn.commit()
-            empty_row = await (await conn.execute("SELECT COUNT(*) FROM sessions")).fetchone()
-        assert empty_row is not None
-        assert int(empty_row[0]) == 0
+            message_state = await durable_message_state()
+            assert set(message_state) == set(session_ids)
+            for state in message_state.values():
+                assert state["material_origins"] == [
+                    "human_authored",
+                    "human_authored",
+                    "runtime_context",
+                    "runtime_context",
+                    "assistant_authored",
+                    "assistant_authored",
+                    "assistant_authored",
+                    "assistant_authored",
+                ]
+                assert state["active_path"] == [1, 1, 1, 1, 0, 0, 0, 0]
+                assert state["block_counts"] == [1, 0, 1, 0, 1, 0, 1, 0]
+                assert state["states"] == list(zip(state["message_ids"], expected_states, strict=True))
 
-        second_parse = await parser.parse_from_raw(raw_ids=acquired.raw_ids)
-        assert second_parse.parse_failures == 0
-        async with backend.connection() as conn:
-            raw_row = await (await conn.execute("SELECT COUNT(*) FROM raw_sessions")).fetchone()
-            session_row = await (await conn.execute("SELECT COUNT(*) FROM sessions")).fetchone()
-        assert raw_row is not None
-        assert session_row is not None
-        raw_count = int(raw_row[0])
-        session_count = int(session_row[0])
-        assert raw_count == 2
-        assert session_count == 2
-        assert await durable_cost_typed_totals() == []
-        assert await durable_hermes_events() == hermes_events
-        assert await durable_message_state() == message_state
+            async with backend.connection() as conn:
+                await conn.execute("DELETE FROM sessions")
+                await conn.commit()
+                empty_row = await (await conn.execute("SELECT COUNT(*) FROM sessions")).fetchone()
+            assert empty_row is not None
+            assert int(empty_row[0]) == 0
+
+            second_parse = await parser.parse_from_raw(raw_ids=acquired.raw_ids)
+            assert second_parse.parse_failures == 0
+            async with backend.connection() as conn:
+                raw_row = await (await conn.execute("SELECT COUNT(*) FROM raw_sessions")).fetchone()
+                session_row = await (await conn.execute("SELECT COUNT(*) FROM sessions")).fetchone()
+            assert raw_row is not None
+            assert session_row is not None
+            raw_count = int(raw_row[0])
+            session_count = int(session_row[0])
+            assert raw_count == 2
+            assert session_count == 2
+            assert await durable_cost_typed_totals() == usage_totals
+            assert await durable_hermes_events() == hermes_events
+            assert await durable_message_state() == message_state
     finally:
         await backend.close()

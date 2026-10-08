@@ -60,3 +60,29 @@ def test_unreadable_index_refuses_instead_of_denying_the_target(tmp_path: Path) 
 def test_missing_index_is_absence_not_unavailability(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="is not materialized"):
         _resolve(tmp_path)
+
+
+def test_complete_existence_probe_runs_on_original_bounded_creator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from polylogue.api import user_state_resolver
+    from polylogue.core.compute import current_cancellation
+    from polylogue.core.evidence import Evidence
+
+    _materialized_index(tmp_path)
+    creator = threading.get_ident()
+    actual_probe = user_state_resolver._index_db_path
+    workers: list[int] = []
+
+    def probe(root: Path) -> Evidence[Path]:
+        workers.append(threading.get_ident())
+        assert current_cancellation() is not None
+        return actual_probe(root)
+
+    monkeypatch.setattr(user_state_resolver, "_index_db_path", probe)
+    with pytest.raises(ValueError, match="not materialized"):
+        _resolve(tmp_path)
+    assert len(workers) == 1
+    assert workers[0] != creator

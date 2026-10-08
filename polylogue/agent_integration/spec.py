@@ -714,6 +714,12 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 False,
                 "Explicit confirmation required by the full-effect operations.",
             ),
+            _arg(
+                "session_ids",
+                "array",
+                False,
+                "Sessions whose insights to rebuild; omitted selects every session.",
+            ),
         ),
         examples=(
             _example(

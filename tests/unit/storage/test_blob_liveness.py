@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
-import re
 import sqlite3
 import time
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_gc import run_blob_gc_report
 from polylogue.storage.blob_liveness import (
     LivenessState,
@@ -23,6 +25,7 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     publish_source_generation,
     record_source_item_raw_member,
 )
+from polylogue.storage.sqlite.archive_tiers.source_write import BlobRefType
 
 
 def _archive(tmp_path: Path) -> tuple[Path, bytes]:
@@ -296,25 +299,22 @@ def test_gc_refuses_missing_current_owner_surface_before_unlink(tmp_path: Path) 
     assert store.exists(blob_hash)
 
 
-def test_blob_refs_check_vocabulary_and_liveness_join_map_agree(tmp_path: Path) -> None:
-    """Every ref_type the source DDL admits must have a liveness referent join.
+def test_blob_refs_writer_vocabulary_and_liveness_join_map_agree() -> None:
+    """Every ref_type the Source writer admits must have a liveness referent join.
 
-    A ref_type the schema accepts but the map cannot resolve makes liveness
+    A ref_type the writer accepts but the map cannot resolve makes liveness
     projection return BLOCKED for any archive holding such a row, stalling GC
-    on data the writer was entitled to create. The two vocabularies live in
-    different files, so nothing but this proof couples them.
+    on data the writer was entitled to create. Durable DDL carries no enum
+    CHECK; the writer validates ``ref_type`` against ``BlobRefType`` at its
+    boundary, so that declared vocabulary is what the map must cover. The two
+    vocabularies live in different files, so nothing but this proof couples
+    them.
     """
 
-    root, _ = _archive(tmp_path)
-    with sqlite3.connect(root / "source.db") as conn:
-        sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'blob_refs'").fetchone()[0]
-    match = re.search(r"ref_type\s+TEXT\s+NOT NULL\s+CHECK\(ref_type IN \(([^)]*)\)\)", sql)
-    assert match is not None, f"could not read the blob_refs ref_type CHECK from: {sql}"
-    admitted = {literal.strip().strip("'") for literal in match.group(1).split(",")}
-
+    admitted = set(get_args(BlobRefType))
     mapped = {ref_type for ref_type, _table, _column in validated_blob_ref_liveness_joins()}
     assert admitted == mapped, (
-        f"blob_refs CHECK admits {sorted(admitted)} but the liveness join map resolves "
+        f"the Source writer admits ref_types {sorted(admitted)} but the liveness join map resolves "
         f"{sorted(mapped)}; unresolved ref_types block liveness projection"
     )
 
@@ -403,59 +403,53 @@ async def test_acquired_sidecar_bytes_outlive_their_source_tree_and_the_index_ti
     import shutil
 
     import polylogue.sources.live.watcher as live_watcher
-    from polylogue import Polylogue
     from polylogue.sources.live import WatchSource
-    from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+    from tests.infra.live_batch import prepared_live_batch_processor
 
     tree_root = workspace_env["data_root"] / "projects"
     tree_root.mkdir(parents=True)
     owner, sidecar, sidecar_text = _claude_code_session_tree_with_sidecar(tree_root)
     archive_root = workspace_env["archive_root"]
 
-    archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "index.db")
-    cursor = CursorStore(workspace_env["data_root"] / "cursor.db")
-    processor = LiveBatchProcessor(
-        archive,
-        (WatchSource(name="claude-code", root=tree_root, suffixes=(".jsonl",)),),
-        cursor=cursor,
+    # The live route publishes through the daemon's supplied owners: write
+    # coordinator, capture stage and retained Raw owner.
+    async with prepared_live_batch_processor(
+        archive_root,
+        (WatchSource(name="claude-code", root=tree_root, layout=export_drop_layout((".jsonl",))),),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
-    try:
+    ) as processor:
         await processor.ingest_files([sidecar, owner], emit_event=False)
 
-        with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source:
-            retained = source.execute(
-                "SELECT hex(blob_hash) FROM raw_sessions WHERE source_path = ?", (str(sidecar),)
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source:
+        retained = source.execute(
+            "SELECT hex(blob_hash) FROM raw_sessions WHERE source_path = ?", (str(sidecar),)
+        ).fetchone()
+        assert retained is not None, "acquisition left no source-tier row for the sidecar"
+        sidecar_hash = str(retained[0]).lower()
+        # The ledger ref exists beside the direct column owner, so the
+        # bytes are owned twice over rather than by a derived payload.
+        assert (
+            source.execute(
+                "SELECT 1 FROM blob_refs WHERE blob_hash = ? AND ref_type = 'raw_payload'",
+                (bytes.fromhex(sidecar_hash),),
             ).fetchone()
-            assert retained is not None, "acquisition left no source-tier row for the sidecar"
-            sidecar_hash = str(retained[0]).lower()
-            # The ledger ref exists beside the direct column owner, so the
-            # bytes are owned twice over rather than by a derived payload.
-            assert (
-                source.execute(
-                    "SELECT 1 FROM blob_refs WHERE blob_hash = ? AND ref_type = 'raw_payload'",
-                    (bytes.fromhex(sidecar_hash),),
-                ).fetchone()
-                is not None
-            )
+            is not None
+        )
 
-        with (
-            sqlite3.connect(archive_root / "source.db") as source,
-            sqlite3.connect(archive_root / "index.db") as index,
-        ):
-            decision = inspect_blob_liveness(source, sidecar_hash, index_conn=index)
-        assert decision.state is LivenessState.LIVE
-        assert decision.surfaces == ("source.db.raw_sessions", "source.db.blob_refs")
-    finally:
-        await archive.close()
+    with (
+        sqlite3.connect(archive_root / "source.db") as source,
+        sqlite3.connect(archive_root / "index.db") as index,
+    ):
+        decision = inspect_blob_liveness(source, sidecar_hash, index_conn=index)
+    assert decision.state is LivenessState.LIVE
+    assert decision.surfaces == ("source.db.raw_sessions", "source.db.blob_refs")
 
     # The transient staging is gone: the source tree the bytes came from, and
     # the whole index tier, rebuilt empty as a reindex would leave it.
     shutil.rmtree(tree_root)
     (archive_root / "index.db").unlink()
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
 
     store = BlobStore(archive_root / "blob")
     aged = time.time() - 3600
@@ -463,7 +457,7 @@ async def test_acquired_sidecar_bytes_outlive_their_source_tree_and_the_index_ti
         if blob_file.is_file():
             os.utime(blob_file, (aged, aged))
 
-    report = run_blob_gc_report(archive_root / "source.db", store.root)
+    report = await asyncio.to_thread(run_blob_gc_report, archive_root / "source.db", store.root)
     assert report.blocked_reason is None
     assert report.deleted_count == 0
     assert store.exists(sidecar_hash)

@@ -39,7 +39,6 @@ each stayed green under the mutation it was meant to catch:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -51,12 +50,15 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_default_convergence_stages
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.storage.sqlite.connection_profile import open_connection
+from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.raw_owner_routes import run_ingest_files
 
 _FILES = 6
 _MESSAGES_PER_SESSION = 4
@@ -146,32 +148,41 @@ class _Polylogue:
         self.config = None
 
 
-def _processor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[LiveBatchProcessor, list[Path]]:
+def _processor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[LiveBatchProcessor, list[Path], BoundedComputeAdapter]:
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
+    # The daemon ingests into a bootstrapped root; source-only acquisition
+    # refuses a missing Source tier.
+    bootstrap_archive_root(archive_root)
     corpus_root = tmp_path / "corpus"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(archive_root / "polylogue.toml"))
     db_path = archive_root / "index.db"
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     processor = LiveBatchProcessor(
         cast(Any, _Polylogue(archive_root, db_path)),
         (WatchSource(name="claude-code", root=corpus_root),),
         cursor=CursorStore(db_path),
         parser_fingerprint="ops-work-v1",
-        converger=DaemonConverger(stages=make_default_convergence_stages(db_path)),
+        converger=DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute)),
     )
-    return processor, [_write_session(corpus_root, ordinal) for ordinal in range(_FILES)]
+    return processor, [_write_session(corpus_root, ordinal) for ordinal in range(_FILES)], compute
 
 
-def _ingest(processor: LiveBatchProcessor, paths: list[Path]) -> None:
-    metrics = asyncio.run(processor.ingest_files(paths, emit_event=False, whole_archive_convergence=False))
+def _ingest(processor: LiveBatchProcessor, paths: list[Path], compute: BoundedComputeAdapter) -> None:
+    try:
+        metrics = run_ingest_files(processor, paths, emit_event=False, whole_archive_convergence=False)
+    finally:
+        compute.shutdown(wait=True)
     assert metrics.succeeded_file_count == _FILES, metrics.succeeded_file_count
 
 
 def test_ops_connections_per_ingested_file_stay_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    processor, paths = _processor(tmp_path, monkeypatch)
+    processor, paths, compute = _processor(tmp_path, monkeypatch)
     with _ops_work(monkeypatch) as work:
-        _ingest(processor, paths)
+        _ingest(processor, paths, compute)
 
     per_file = work.connections / _FILES
     assert per_file <= _MAX_OPS_CONNECTIONS_PER_FILE, (
@@ -182,7 +193,7 @@ def test_ops_connections_per_ingested_file_stay_bounded(tmp_path: Path, monkeypa
 
 def test_batch_cursor_snapshot_is_not_re_read_per_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A batch that read every cursor once must not ask again path by path."""
-    processor, paths = _processor(tmp_path, monkeypatch)
+    processor, paths, compute = _processor(tmp_path, monkeypatch)
     single_reads: list[str] = []
     real_get_record = CursorStore.get_record
 
@@ -191,7 +202,7 @@ def test_batch_cursor_snapshot_is_not_re_read_per_path(tmp_path: Path, monkeypat
         return real_get_record(self, path)
 
     monkeypatch.setattr(CursorStore, "get_record", counting_get_record)
-    _ingest(processor, paths)
+    _ingest(processor, paths, compute)
 
     assert single_reads == [], (
         "the batch already read every offered path's cursor in one query; "

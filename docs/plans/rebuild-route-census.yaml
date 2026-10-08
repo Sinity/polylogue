@@ -45,33 +45,18 @@ routes:
       apply_demo_post_ingest_augmentation, whose own entry points are declared
       below. Not a route over an operator archive.
 
-  - function: polylogue.cli.commands.demo.seed_command
+  - function: polylogue.demo.seed._seed_demo_archive_owned.finish
     kinds: [entry_root]
     entrypoints:
       - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
     route: fixture_seeding
     reason: >-
-      `polylogue demo seed` builds a throwaway demo archive in-process. It
-      refuses an unsafe target with DemoSeedTargetUnsafeError rather than
-      writing wherever it is pointed.
-
-  - function: polylogue.cli.commands.demo.receipts_command
-    kinds: [entry_root]
-    entrypoints:
-      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
-    route: fixture_seeding
-    reason: >-
-      `polylogue demo receipts` seeds its own polylogue-receipts-demo/archive
-      before rendering, through the same guarded seed_demo_archive.
-
-  - function: polylogue.cli.commands.demo.tour_command
-    kinds: [entry_root]
-    entrypoints:
-      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
-    route: fixture_seeding
-    reason: >-
-      `polylogue demo tour` runs run_demo_tour, which seeds the same demo
-      archive before measuring the tour budget.
+      The post-ingest half of seed_demo_archive, run on a worker thread
+      (asyncio.to_thread) so its synchronous archive custody never blocks the
+      seed's event loop; the thread hop is why it is a root. It is reached from
+      `polylogue demo seed`, `demo receipts` and `demo tour`, which build a
+      throwaway demo archive in-process and refuse an unsafe target with
+      DemoSeedTargetUnsafeError rather than writing wherever they are pointed.
 
   # ── Daemon-hosted demo augmentation ─────────────────────────────────
   - function: polylogue.operations.daemon_mutations.maintenance_demo_augment
@@ -120,10 +105,9 @@ routes:
       above, which has no production caller of its own.
 
   - function: polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights
-    kinds: [direct_caller, entry_root]
+    kinds: [entry_root]
     entrypoints:
       - polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights
-      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
     route: unreached
     reason: >-
       Its docstring claimed polylogue.api calls it; at this head nothing in
@@ -138,3 +122,13 @@ routes:
     reason: >-
       The async twin of rebuild_session_insights_sync is exported and exercised
       only by tests; no production caller reaches it.
+
+  - function: polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.rebuild_session_insights
+    kinds: [direct_caller, entry_root]
+    entrypoints:
+      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
+    route: unreached
+    reason: >-
+      The retained archive adapter delegates to this Store mutation owner.
+      No product caller reaches the adapter; tests exercise its physical
+      custody across the materializer's internal commits.

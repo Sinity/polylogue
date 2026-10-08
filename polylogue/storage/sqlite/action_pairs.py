@@ -4,70 +4,35 @@ from __future__ import annotations
 
 import sqlite3
 
+from polylogue.core.tool_association import tool_association_ctes_sql
+
 
 def action_pairing_ctes_sql(*, use_bound: str = "", result_bound: str = "", session_index_hint: str = "") -> str:
-    """Return narrow CTEs ending in one ``paired_uses`` row per named use.
+    """Project original stored facts into the shared association owner.
 
-    Leading orphan receipts belong to no invocation. After that prefix, a
-    clean alternating use/result stream supports sequential ID reuse. A gap
-    or duplicate destroys that alignment: the affected use and remaining
-    same-ID suffix stay unknown, not nearest-paired. A final outstanding use
-    alone is simply resultless. Variant creation order is not causal order:
-    cross-message reuse involving variants also stays unresolved.
-
-    Windows carry identifiers and positions only, never transcript payloads.
-    Both bounded physical scans retain the caller's session-index hint.
+    Exact resolved parent chains can prove multiple replies to one invocation.
+    Without that proof, only clean alternating reuse is associated; gaps,
+    duplicate replies and conflicting variants leave the suffix unknown.
+    Bounded scans retain the caller's original session-index hint.
     """
+    association = tool_association_ctes_sql()
     return f"""
-    tool_events AS (
-        SELECT u.session_id, u.tool_id, u.block_id, u.message_id,
-               um.position AS message_position, um.variant_index,
-               u.position AS block_position, 1 AS is_use
-        FROM blocks u{session_index_hint}
-        JOIN messages um ON um.message_id = u.message_id
-        WHERE u.block_type = 'tool_use' AND u.tool_id IS NOT NULL AND u.tool_id != ''{use_bound}
+    association_messages AS (
+        SELECT session_id AS session_key,message_id AS message_key,parent_message_id AS parent_key,
+               role,position AS message_position,variant_index FROM messages
+    ), association_blocks AS (
+        SELECT u.session_id AS session_key,u.block_id AS block_key,u.message_id AS message_key,
+               u.tool_id,1 AS is_use,u.tool_outcome AS outcome,
+               u.tool_result_outcome_unknown_reason AS unknown_reason,u.position AS block_position
+        FROM blocks u{session_index_hint} WHERE u.block_type='tool_use'{use_bound}
         UNION ALL
-        SELECT r.session_id, r.tool_id, r.block_id, r.message_id,
-               rm.position, rm.variant_index, r.position, 0 AS is_use
-        FROM blocks r{session_index_hint}
-        JOIN messages rm ON rm.message_id = r.message_id
-        WHERE r.block_type = 'tool_result' AND r.tool_id IS NOT NULL AND r.tool_id != ''{result_bound}
-    ), numbered_events AS (
-        SELECT *,
-               SUM(is_use) OVER (
-                   PARTITION BY session_id, tool_id
-                   ORDER BY message_position, variant_index, block_position
-                   ROWS UNBOUNDED PRECEDING
-               ) AS use_rank,
-               MAX(variant_index) OVER (PARTITION BY session_id, tool_id) AS max_variant
-        FROM tool_events
-    ), invocation_windows AS (
-        SELECT session_id, tool_id, use_rank,
-               MAX(CASE WHEN is_use = 1 THEN block_id END) AS tool_use_block_id,
-               MAX(CASE WHEN is_use = 1 THEN message_id END) AS use_message_id,
-               MAX(CASE WHEN is_use = 0 THEN message_id END) AS result_message_id,
-               MAX(CASE WHEN is_use = 0 THEN block_id END) AS candidate_result_id,
-               SUM(1 - is_use) AS result_count,
-               MAX(max_variant) AS max_variant
-        FROM numbered_events
-        WHERE use_rank > 0
-        GROUP BY session_id, tool_id, use_rank
-    ), classified_windows AS (
-        SELECT *,
-               CASE
-                   WHEN result_count > 1 THEN 1
-                   WHEN result_count = 0 AND
-                        LEAD(use_rank) OVER (PARTITION BY session_id, tool_id ORDER BY use_rank) IS NOT NULL THEN 1
-                   WHEN result_count = 1 AND max_variant > 0 AND use_message_id != result_message_id THEN 1
-                   ELSE 0
-               END AS ambiguous
-        FROM invocation_windows
-    ), paired_uses AS (
-        SELECT session_id, tool_id, use_rank, tool_use_block_id, candidate_result_id,
-               MAX(ambiguous) OVER (
-                   PARTITION BY session_id, tool_id ORDER BY use_rank ROWS UNBOUNDED PRECEDING
-               ) AS ambiguous
-        FROM classified_windows
+        SELECT r.session_id,r.block_id,r.message_id,r.tool_id,0,r.tool_outcome,
+               r.tool_result_outcome_unknown_reason,r.position
+        FROM blocks r{session_index_hint} WHERE r.block_type='tool_result'{result_bound}
+    ), {association}, paired_uses AS (
+        SELECT session_key AS session_id,tool_id,use_rank,use_key AS tool_use_block_id,
+               result_key AS candidate_result_id,result_count,ambiguous,verdict,verdict_reason,association_state
+        FROM tool_associations
     )
     """.strip()
 
@@ -78,16 +43,13 @@ def action_pairs_select_sql(*, use_bound: str = "", result_bound: str = "", sess
         use_bound=use_bound, result_bound=result_bound, session_index_hint=session_index_hint
     )
     return f"""
-        WITH {ctes}
+        WITH RECURSIVE {ctes}
         SELECT u.block_id AS tool_use_block_id, u.session_id, u.message_id, u.tool_id, pair.use_rank,
                u.tool_name, u.semantic_type, u.tool_command, u.tool_path,
                r.block_id AS tool_result_block_id,
-               r.tool_result_is_error AS is_error, r.tool_result_exit_code AS exit_code,
-               CASE WHEN pair.ambiguous = 1 THEN 'unknown'
-                    WHEN r.block_id IS NULL THEN 'no_result'
-                    ELSE COALESCE(r.tool_outcome, 'unknown') END AS tool_outcome,
-               CASE WHEN pair.ambiguous = 1 THEN 'ambiguous_tool_id_reuse'
-                    ELSE r.tool_result_outcome_unknown_reason END AS outcome_unknown_reason
+               r.tool_result_is_error AS is_error,
+               r.tool_result_exit_code AS exit_code,
+               pair.verdict AS tool_outcome,pair.verdict_reason AS outcome_unknown_reason
         FROM paired_uses pair
         JOIN blocks u ON u.block_id = pair.tool_use_block_id
         LEFT JOIN blocks r ON r.block_id = pair.candidate_result_id AND pair.ambiguous = 0

@@ -38,26 +38,26 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.sources import origin_from_provider
-from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.ids import MessageOwnerResolution, session_content_hash
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
-    bind_session_shard,
     prepare_session_rows,
     prepare_session_shard,
-    write_parsed_session_to_archive,
+    prepared_session_rows_from_shard,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import (
+from polylogue.storage.sqlite.session_shard import (
     SessionShardBuilder,
     ShardRefusedError,
-    attached_session_shard,
     build_session_shard,
     open_session_shard,
     shard_column_signature,
 )
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.revision_backfill_benchmark import build_large_parent_shared_prefix_sessions
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -66,11 +66,17 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 def _connect(path: Path) -> sqlite3.Connection:
     # ``uri=True`` matches the archive's own write connection: it is what
     # lets the shard be ATTACHed read-only.
-    conn = sqlite3.connect(path, uri=True)
+    conn = connect_measured(path, uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
+
+
+def _archive_index(root: Path) -> Path:
+    """Give each comparison archive its own root: a root owns one active Index."""
+    root.mkdir()
+    return root / "index.db"
 
 
 def _synthetic_sessions() -> list[ParsedSession]:
@@ -188,35 +194,32 @@ def _dump_table(conn: sqlite3.Connection, table: str, order_by: str) -> list[tup
 
 def _write_inline(conn: sqlite3.Connection, sessions: list[ParsedSession]) -> None:
     for session in sessions:
-        write_parsed_session_to_archive(conn, session, content_hash=str(session_content_hash(session)))
+        write_fixture_index_session(conn, session, content_hash=str(session_content_hash(session)))
 
 
 def _session_key(session: ParsedSession) -> str:
     return archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
 
 
-def _copy_from_shard(conn: sqlite3.Connection, sessions: list[ParsedSession], shard_path: Path) -> None:
-    """The writer's half: attach a sealed shard and write each of its sessions."""
-    shard = open_session_shard(shard_path)
-    with attached_session_shard(conn, shard) as schema:
-        bindings = bind_session_shard(schema, shard)
-        for session in sessions:
-            write_parsed_session_to_archive(
-                conn,
-                session,
-                content_hash=str(session_content_hash(session)),
-                prepared=bindings[_session_key(session)],
-            )
+def _write_from_shard(conn: sqlite3.Connection, sessions: list[ParsedSession], shard_path: Path) -> None:
+    """The writer's half: bind each session's sealed shard rows as its prepared carrier."""
+    for session in sessions:
+        write_fixture_index_session(
+            conn,
+            session,
+            content_hash=str(session_content_hash(session)),
+            prepared_rows=prepared_session_rows_from_shard(shard_path, _session_key(session)),
+        )
 
 
 def _write_through_shard(conn: sqlite3.Connection, sessions: list[ParsedSession], directory: Path) -> None:
-    _copy_from_shard(conn, sessions, prepare_session_shard(directory, sessions).path)
+    _write_from_shard(conn, sessions, prepare_session_shard(directory, sessions).path)
 
 
 def test_shard_and_inline_writes_produce_identical_rows(tmp_path: Path) -> None:
     sessions = _synthetic_sessions()
-    inline_conn = _connect(tmp_path / "inline.db")
-    shard_conn = _connect(tmp_path / "shard-written.db")
+    inline_conn = _connect(_archive_index(tmp_path / "inline"))
+    shard_conn = _connect(_archive_index(tmp_path / "shard-written"))
     try:
         _write_inline(inline_conn, sessions)
         _write_through_shard(shard_conn, sessions, tmp_path / "shards")
@@ -257,22 +260,21 @@ def test_sealed_message_sink_replaces_same_raw_from_streamed_shard(
 
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(conn, original, raw_id="same-acquisition")
-        with attached_session_shard(conn, shard) as schema:
-            prepared = bind_session_shard(schema, shard)[_session_key(publication)]
+        write_fixture_index_session(conn, original, raw_id="same-acquisition")
+        prepared = prepared_session_rows_from_shard(shard.path, _session_key(publication))
 
-            def forbid_inline(*_args: object, **_kwargs: object) -> object:
-                raise AssertionError("writer rebuilt canonical rows instead of copying the shard")
+        def forbid_inline(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("writer rebuilt canonical rows instead of binding the shard rows")
 
-            monkeypatch.setattr(archive_tier_write, "_iter_message_rows", forbid_inline)
-            monkeypatch.setattr(archive_tier_write, "_iter_block_rows", forbid_inline)
-            write_parsed_session_to_archive(
-                conn,
-                publication,
-                content_hash=publication.content_hash,
-                raw_id="same-acquisition",
-                prepared=prepared,
-            )
+        monkeypatch.setattr(archive_tier_write, "_iter_message_rows", forbid_inline)
+        monkeypatch.setattr(archive_tier_write, "_iter_block_rows", forbid_inline)
+        write_fixture_index_session(
+            conn,
+            publication,
+            content_hash=publication.content_hash,
+            raw_id="same-acquisition",
+            prepared_rows=prepared,
+        )
         rows = conn.execute(
             "SELECT native_id, text FROM messages JOIN blocks USING (message_id) "
             "WHERE messages.session_id = ? ORDER BY messages.position",
@@ -310,18 +312,16 @@ def test_sealed_message_sink_preserves_attachment_owner_projection(tmp_path: Pat
     sealed = SqliteMessageSink(store.path, sink.session_ordinal, count=len(sink))
     publication = worker_session.model_copy(update={"messages": sealed})
 
-    inline = _connect(tmp_path / "inline-attachment.db")
-    streamed = _connect(tmp_path / "streamed-attachment.db")
+    inline = _connect(_archive_index(tmp_path / "inline-attachment"))
+    streamed = _connect(_archive_index(tmp_path / "streamed-attachment"))
     try:
-        write_parsed_session_to_archive(inline, session, content_hash=str(session_content_hash(session)))
-        with attached_session_shard(streamed, shard) as schema:
-            prepared = bind_session_shard(schema, shard)[_session_key(publication)]
-            write_parsed_session_to_archive(
-                streamed,
-                publication,
-                content_hash=publication.content_hash,
-                prepared=prepared,
-            )
+        write_fixture_index_session(inline, session, content_hash=str(session_content_hash(session)))
+        write_fixture_index_session(
+            streamed,
+            publication,
+            content_hash=publication.content_hash,
+            prepared_rows=prepared_session_rows_from_shard(shard.path, _session_key(publication)),
+        )
         for table, order_by in (
             ("sessions", "session_id"),
             ("messages", "message_id"),
@@ -336,31 +336,31 @@ def test_sealed_message_sink_preserves_attachment_owner_projection(tmp_path: Pat
         streamed.close()
 
 
-def test_shard_copy_replaces_the_row_binding_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Anti-vacuity: with the binding writers poisoned, only a real copy can succeed."""
+def test_shard_rows_replace_the_writer_row_builders(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: with the row builders poisoned, only the sealed rows can be written."""
     sessions = _synthetic_sessions()[:2]
     # The shard is built first, by the stage-A half, which legitimately uses
     # the row builders. Only the writer's half is poisoned.
     shard_path = prepare_session_shard(tmp_path / "shards", sessions).path
 
     def _boom(*args: object, **kwargs: object) -> object:
-        raise AssertionError("a shard write must not build or bind rows on the writer thread")
+        raise AssertionError("a shard-carried write must not build rows on the writer thread")
 
-    monkeypatch.setattr(archive_tier_write, "_write_messages", _boom)
-    monkeypatch.setattr(archive_tier_write, "_write_blocks", _boom)
+    monkeypatch.setattr(archive_tier_write, "_iter_message_rows", _boom)
+    monkeypatch.setattr(archive_tier_write, "_iter_block_rows", _boom)
     monkeypatch.setattr(archive_tier_write, "_build_message_rows", _boom)
     monkeypatch.setattr(archive_tier_write, "_build_block_rows", _boom)
 
     conn = _connect(tmp_path / "index.db")
     try:
-        _copy_from_shard(conn, sessions, shard_path)
+        _write_from_shard(conn, sessions, shard_path)
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 4
         assert conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0] > 0
     finally:
         conn.close()
 
 
-def test_shard_copy_reuses_carried_identities_without_writer_recomputation(
+def test_shard_rows_reuse_carried_identities_without_writer_recomputation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A complete shard supplies every identity needed by the writer."""
@@ -373,14 +373,14 @@ def test_shard_copy_reuses_carried_identities_without_writer_recomputation(
     monkeypatch.setattr(archive_tier_write, "message_content_identities", _boom)
     conn = _connect(tmp_path / "index.db")
     try:
-        _copy_from_shard(conn, sessions, shard_path)
+        _write_from_shard(conn, sessions, shard_path)
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 4
     finally:
         conn.close()
 
 
-def test_shard_copy_preserves_search_text_and_fts(tmp_path: Path) -> None:
-    """The copy feeds the same generated columns and FTS surfaces as an insert."""
+def test_shard_rows_preserve_search_text_and_fts(tmp_path: Path) -> None:
+    """Shard-carried rows feed the same generated columns and FTS surfaces as an insert."""
     sessions = _synthetic_sessions()
     conn = _connect(tmp_path / "index.db")
     try:
@@ -425,16 +425,12 @@ def test_shard_replaces_prior_rows_from_the_same_acquisition(tmp_path: Path) -> 
         conn.close()
 
 
-def test_shared_prefix_prior_rows_demote_shard_and_preserve_finished_projection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A bounded parent/child witness keeps a prior child rewrite inline.
+def test_shared_prefix_prior_rows_reconcile_shard_rows_and_preserve_finished_projection(tmp_path: Path) -> None:
+    """A bounded parent/child witness reconciles a prior child rewrite.
 
     The child has a sizeable inherited prefix and already has stored rows when
-    its changed tail arrives. A sealed shard is valid transport for a fresh
-    session only, so the writer must decline its prepared rows and use its
-    ordinary inline replacement path. Poisoning the shard copy makes that
-    fallback observable while the completed logical and FTS projections still
+    its changed tail arrives. The writer reconciles the sealed rows against
+    the stored ones, and the completed logical and FTS projections still
     match the explicit inline control.
     """
     *children, parent = build_large_parent_shared_prefix_sessions()
@@ -453,16 +449,11 @@ def test_shared_prefix_prior_rows_demote_shard_and_preserve_finished_projection(
             ]
         }
     )
-    control = _connect(tmp_path / "inline-control.db")
-    witness = _connect(tmp_path / "shard-fallback-witness.db")
+    control = _connect(_archive_index(tmp_path / "inline-control"))
+    witness = _connect(_archive_index(tmp_path / "shard-fallback-witness"))
     try:
         _write_inline(control, [parent, child, rewritten])
         _write_inline(witness, [parent, child])
-
-        def reject_copy(*args: object, **kwargs: object) -> object:
-            raise AssertionError("prior session rows must demote prepared shard transport")
-
-        monkeypatch.setattr(archive_tier_write, "copy_shard_session_rows", reject_copy)
         _write_through_shard(witness, [rewritten], tmp_path / "shared-prefix-shards")
 
         for table, order_by in (("sessions", "session_id"), ("messages", "message_id"), ("blocks", "block_id")):
@@ -495,15 +486,12 @@ def test_stale_shard_content_hash_falls_back_to_fresh_content(tmp_path: Path) ->
     )
     conn = _connect(tmp_path / "index.db")
     try:
-        reopened = open_session_shard(shard.path)
-        with attached_session_shard(conn, reopened) as schema:
-            bindings = bind_session_shard(schema, reopened)
-            write_parsed_session_to_archive(
-                conn,
-                mutated,
-                content_hash=str(session_content_hash(mutated)),
-                prepared=bindings[_session_key(original)],
-            )
+        write_fixture_index_session(
+            conn,
+            mutated,
+            content_hash=str(session_content_hash(mutated)),
+            prepared_rows=prepared_session_rows_from_shard(shard.path, _session_key(original)),
+        )
         envelope = archive_tier_write.read_archive_session_envelope(conn, _session_key(original))
         texts = ["".join(block.text or "" for block in message.blocks) for message in envelope.messages]
         assert texts == ["a DIFFERENT body -- the raw changed before the writer ran"]
@@ -524,7 +512,7 @@ def _kill_a_builder_mid_write(tmp_path: Path) -> Path:
         from polylogue.core.enums import MaterialOrigin, Provider
         from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
-        from polylogue.storage.sqlite.archive_tiers.write_shard import SessionShardBuilder
+        from polylogue.storage.sqlite.session_shard import SessionShardBuilder
 
         session = ParsedSession(
             source_name=Provider.CODEX,
@@ -563,7 +551,7 @@ def _kill_a_builder_mid_write(tmp_path: Path) -> Path:
 
 
 @pytest.mark.slow
-def test_a_shard_from_a_killed_worker_is_never_attached(tmp_path: Path) -> None:
+def test_a_shard_from_a_killed_worker_is_never_opened(tmp_path: Path) -> None:
     shard_path = _kill_a_builder_mid_write(tmp_path)
 
     # The kill landed with real data on disk, not before the first page.
@@ -588,10 +576,15 @@ def test_an_unsealed_shard_is_refused(tmp_path: Path) -> None:
     builder = SessionShardBuilder(tmp_path / "unsealed.db")
     builder.add(prepare_session_rows(_synthetic_sessions()[0]))
     builder._conn.execute("COMMIT")  # the rows land; the seal never does
-    builder._conn.close()
+    # Keep the unsealed file for refusal, but retire its registered SQL owner.
+    builder._discard_on_close = False
+    builder.close()
 
     with pytest.raises(ShardRefusedError, match="unsealed"):
         open_session_shard(tmp_path / "unsealed.db")
+
+
+_EMPTY_OWNER_RESOLUTION = MessageOwnerResolution((), {}, frozenset(), {}, frozenset(), frozenset(), {}, frozenset())
 
 
 def test_many_small_sessions_keep_manifest_off_python_heap(tmp_path: Path) -> None:
@@ -605,6 +598,7 @@ def test_many_small_sessions_keep_manifest_off_python_heap(tmp_path: Path) -> No
                 message_rows=(),
                 block_rows=(),
                 content_identities=(),
+                owner_resolution=_EMPTY_OWNER_RESOLUTION,
             )
         )
 
@@ -639,38 +633,18 @@ def test_a_shard_built_against_other_columns_is_refused(tmp_path: Path) -> None:
     assert shard_column_signature() != "a-build-with-other-columns"
 
 
-def test_a_shard_with_two_entries_for_one_session_is_refused(tmp_path: Path) -> None:
-    """Bindings are keyed by session id, so a duplicate would address the wrong rows."""
+def test_a_shard_preserves_duplicate_ordinals_but_refuses_ambiguous_writer_binding(tmp_path: Path) -> None:
+    """The parser carrier retains outputs; an identity cannot select either duplicate range."""
     session = _synthetic_sessions()[0]
-    shard = build_session_shard(tmp_path / "shards", [prepare_session_rows(session), prepare_session_rows(session)])
-    with sqlite3.connect(shard.path) as conn:
-        conn.execute("UPDATE shard_seal SET session_count = 2")
+    built = build_session_shard(tmp_path / "shards", [prepare_session_rows(session), prepare_session_rows(session)])
+    shard = open_session_shard(built.path)
+    assert len(shard.sessions) == 2
+    first, second = shard.sessions
+    assert first.session_id == second.session_id
+    assert first.message_lo != second.message_lo
     with pytest.raises(ShardRefusedError, match="twice"):
-        open_session_shard(shard.path)
+        shard.by_session_id()[first.session_id]
+    from polylogue.storage.sqlite.archive_tiers.write import prepared_session_rows_from_shard
 
-
-def test_a_shard_cannot_be_attached_inside_a_transaction(tmp_path: Path) -> None:
-    """SQLite will not detach a database a live transaction read, so entering
-    inside one would strand the attachment. Refuse at the door instead."""
-    shard = build_session_shard(tmp_path / "shards", [prepare_session_rows(_synthetic_sessions()[0])])
-    conn = _connect(tmp_path / "index.db")
-    try:
-        conn.execute("BEGIN")
-        with pytest.raises(ShardRefusedError, match="never inside one"):
-            with attached_session_shard(conn, open_session_shard(shard.path)):
-                pass
-        conn.execute("ROLLBACK")
-    finally:
-        conn.close()
-
-
-def test_an_attached_shard_cannot_be_written(tmp_path: Path) -> None:
-    """The transport is read-only to the writer, enforced by SQLite."""
-    shard = build_session_shard(tmp_path / "shards", [prepare_session_rows(_synthetic_sessions()[0])])
-    conn = _connect(tmp_path / "index.db")
-    try:
-        with attached_session_shard(conn, open_session_shard(shard.path)) as schema:
-            with pytest.raises(sqlite3.OperationalError, match="readonly"):
-                conn.execute(f"DELETE FROM {schema}.messages")
-    finally:
-        conn.close()
+    with pytest.raises(ShardRefusedError, match="twice"):
+        prepared_session_rows_from_shard(shard.path, first.session_id)

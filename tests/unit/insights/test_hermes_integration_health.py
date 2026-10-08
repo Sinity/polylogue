@@ -28,6 +28,7 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.hermes_lifecycle import TOOL_START
 from tests.infra.hook_carriers import materialize_hook_carriers
+from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 _STATE_DB_SCHEMA = """
 CREATE TABLE schema_version(version INTEGER NOT NULL);
@@ -56,12 +57,12 @@ CREATE TABLE messages (
 """
 
 
-def _make_processor(
-    workspace_env: dict[str, Path], root_name: str, db_name: str
-) -> tuple[Polylogue, LiveBatchProcessor, Path]:
+def _make_processor(workspace_env: dict[str, Path], root_name: str) -> tuple[Polylogue, LiveBatchProcessor, Path]:
     root = workspace_env["data_root"] / root_name
     root.mkdir(parents=True)
-    db_path = workspace_env["data_root"] / db_name
+    # Live ingest bookkeeping is scoped to the archive its writer is bound to;
+    # the cursor store lives in that archive's index tier.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -116,7 +117,8 @@ def test_malformed_event_renders_explicit_parser_failure(workspace_env: dict[str
 
     hermes_root = workspace_env["data_root"] / "hermes-malformed"
     hermes_root.mkdir(parents=True)
-    (hermes_root / "session.json").write_text("{not-valid-json-at-all", encoding="utf-8")
+    (hermes_root / "sessions").mkdir()
+    (hermes_root / "sessions" / "session_bad.json").write_text("{not-valid-json-at-all", encoding="utf-8")
 
     health = build_hermes_integration_health(workspace_env["archive_root"], hermes_root=hermes_root)
 
@@ -124,7 +126,7 @@ def test_malformed_event_renders_explicit_parser_failure(workspace_env: dict[str
     assert health.verdict == "degraded"
     assert len(health.parser_failures) == 1
     failure = health.parser_failures[0]
-    assert failure.source_ref == "session.json"
+    assert failure.source_ref == "session_bad.json"
     assert "decode failure" in failure.reason
     # No raw content or absolute path leaks into the response.
     assert str(hermes_root) not in failure.reason
@@ -146,7 +148,9 @@ def test_unpaired_atof_scope_is_surfaced_as_fidelity_debt(workspace_env: dict[st
         "name": "terminal",
         "metadata": {"session_id": "unpaired-session-1", "tool_call_id": "call-1"},
     }
-    (hermes_root / "events.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    atof = hermes_root / "observability" / "nemo-relay" / "atof"
+    atof.mkdir(parents=True)
+    (atof / "events.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
 
     health = build_hermes_integration_health(workspace_env["archive_root"], hermes_root=hermes_root)
 
@@ -172,7 +176,7 @@ async def test_healthy_state_db_reaches_healthy_verdict_through_named_freshness(
     stage, and the assertion below fails.
     """
 
-    archive, processor, root = _make_processor(workspace_env, "hermes-home-healthy", "hermes-state-healthy.db")
+    archive, processor, root = _make_processor(workspace_env, "hermes-home-healthy")
     source_path = root / "state.db"
     try:
         with sqlite3.connect(source_path) as conn:
@@ -185,7 +189,7 @@ async def test_healthy_state_db_reaches_healthy_verdict_through_named_freshness(
                 "INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (1, 'root', 'user', 'hi', 2.0)"
             )
 
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert metrics.failed_file_count == 0
         assert metrics.ingested_session_count == 1
 

@@ -9,12 +9,15 @@ part of this relation.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Sequence, Set
 from dataclasses import dataclass
 from enum import Enum
+from typing import Protocol
 
-from polylogue.core.sqlite_introspection import column_exists as _column_exists
+from polylogue.core.evidence import Measured, Unavailable
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.storage.io_phase_metrics import connection_cursor
+from polylogue.storage.tier_access import capture_sqlite_read
 
 
 #: An attachment the writer retained with an ambiguous owner is unreferenced by
@@ -140,13 +143,6 @@ def _known_ref_types() -> frozenset[str]:
     return frozenset(owner.ref_type for owner in _owners(tier="source", ledger=True) if owner.ref_type is not None)
 
 
-def blob_refs_has_ref_type_column(conn: sqlite3.Connection) -> bool:
-    if not _table_exists(conn, "blob_refs"):
-        return False
-    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(blob_refs)")}
-    return {"blob_hash", "ref_id", "ref_type"}.issubset(columns)
-
-
 def _schema_blockers(conn: sqlite3.Connection, *, tier: str, required: bool) -> list[str]:
     if not required:
         return []
@@ -157,20 +153,14 @@ def _schema_blockers(conn: sqlite3.Connection, *, tier: str, required: bool) -> 
             if owner.table in _OPTIONAL_OWNER_TABLES:
                 continue
             blockers.append(f"{tier}.{owner.table} is missing")
-        elif not _column_exists(conn, owner.table, owner.blob_column):
-            blockers.append(f"{tier}.{owner.table} is missing columns: {owner.blob_column}")
     if tier == "source":
         if not _table_exists(conn, "blob_refs"):
             blockers.append("source.blob_refs is missing")
-        elif not blob_refs_has_ref_type_column(conn):
-            blockers.append("source.blob_refs is missing columns: blob_hash, ref_id, ref_type")
         else:
             for owner in _owners(tier="source", ledger=True):
                 assert owner.referent_column is not None
                 if not _table_exists(conn, owner.table):
                     blockers.append(f"source.{owner.table} is missing")
-                elif not _column_exists(conn, owner.table, owner.referent_column):
-                    blockers.append(f"source.{owner.table} is missing columns: {owner.referent_column}")
     return blockers
 
 
@@ -178,28 +168,42 @@ def _source_global_blockers(source_conn: sqlite3.Connection) -> list[str]:
     blockers = _schema_blockers(source_conn, tier="source", required=True)
     if blockers:
         return blockers
-    try:
-        unknown = sorted(
-            str(row[0])
-            for row in source_conn.execute("SELECT DISTINCT ref_type FROM blob_refs")
-            if str(row[0]) not in _known_ref_types()
-        )
-    except sqlite3.Error as exc:
-        return [f"source.blob_refs is unreadable: {exc}"]
+    close_failures: list[sqlite3.Error] = []
+
+    def scan() -> list[str]:
+        scan_complete = False
+        try:
+            with connection_cursor(source_conn, "SELECT DISTINCT ref_type FROM blob_refs") as cursor:
+                rows = sorted(str(row[0]) for row in cursor if str(row[0]) not in _known_ref_types())
+                scan_complete = True
+        except sqlite3.Error as exc:
+            # A completed read can fail here only while physically closing
+            # its cursor. That cleanup failure must retain custody and escape,
+            # never become a schema blocker.
+            if scan_complete:
+                close_failures.append(exc)
+            raise
+        return rows
+
+    evidence = capture_sqlite_read(scan)
+    if close_failures:
+        raise close_failures[0]
+    if not isinstance(evidence, Measured):
+        detail = evidence.detail if isinstance(evidence, Unavailable) else None
+        return [f"source.blob_refs is unreadable: {detail or 'sqlite_read_failed'}"]
+    unknown = evidence.value
     if unknown:
         blockers.append(f"unknown blob_refs ref_type(s): {', '.join(unknown)}")
     return blockers
 
 
 def _ledger_surfaces(source_conn: sqlite3.Connection, blob_bytes: bytes, *, prefix: str) -> list[str]:
-    if not blob_refs_has_ref_type_column(source_conn):
+    if not _table_exists(source_conn, "blob_refs"):
         return []
     surfaces: list[str] = []
     for owner in _owners(tier="source", ledger=True):
         assert owner.ref_type is not None and owner.referent_column is not None
-        if not _table_exists(source_conn, owner.table) or not _column_exists(
-            source_conn, owner.table, owner.referent_column
-        ):
+        if not _table_exists(source_conn, owner.table):
             continue
         row = source_conn.execute(
             f"""SELECT 1 FROM blob_refs AS ref WHERE ref.blob_hash = ? AND ref.ref_type = ?
@@ -216,7 +220,7 @@ def _direct_surfaces(conn: sqlite3.Connection, blob_bytes: bytes, *, tier: str, 
     surfaces: list[str] = []
     for owner in _owners(tier=tier, ledger=False):
         assert owner.blob_column is not None
-        if not _table_exists(conn, owner.table) or not _column_exists(conn, owner.table, owner.blob_column):
+        if not _table_exists(conn, owner.table):
             continue
         if (
             conn.execute(f"SELECT 1 FROM {owner.table} WHERE {owner.blob_column} = ? LIMIT 1", (blob_bytes,)).fetchone()
@@ -238,7 +242,7 @@ def index_tier_blob_population(index_conn: sqlite3.Connection) -> int:
     hashes: set[bytes] = set()
     for owner in _owners(tier="index", ledger=False):
         assert owner.blob_column is not None
-        if not _table_exists(index_conn, owner.table) or not _column_exists(index_conn, owner.table, owner.blob_column):
+        if not _table_exists(index_conn, owner.table):
             continue
         for row in index_conn.execute(
             f"SELECT DISTINCT {owner.blob_column} FROM {owner.table} WHERE {owner.blob_column} IS NOT NULL"
@@ -304,12 +308,69 @@ _CENSUS_OWNER_TABLES: frozenset[str] = frozenset({"source_attachments"})
 _REFERENCE_QUERY_CHUNK = 500
 
 
+class SessionBlobLivenessSourceRead(Protocol):
+    """Finite Source observations consumed by the canonical session classifier."""
+
+    def session_blob_global_blockers(self) -> tuple[str, ...]: ...
+    def session_blob_owner_available(self, owner: BlobOwner) -> bool: ...
+    def session_blob_direct_hashes(self, owner: BlobOwner, hashes: tuple[bytes, ...]) -> tuple[bytes, ...]: ...
+    def session_blob_ledger_hashes(self, owner: BlobOwner, hashes: tuple[bytes, ...]) -> tuple[bytes, ...]: ...
+
+
+def _require_session_blob_owner(owner: BlobOwner, *, ledger: bool) -> None:
+    if owner not in _owners(tier="source", ledger=ledger):
+        raise ValueError(f"noncanonical session blob owner: {owner!r}")
+
+
+def session_blob_direct_query(owner: BlobOwner, hashes: tuple[bytes, ...]) -> tuple[str, tuple[object, ...]]:
+    """Build the sole direct-owner query, including an empty selection."""
+    _require_session_blob_owner(owner, ledger=False)
+    marks = ",".join("?" for _ in hashes)
+    predicate = f"{owner.blob_column} IN ({marks})" if hashes else "0"
+    return f"SELECT DISTINCT {owner.blob_column} FROM {owner.table} WHERE {predicate}", hashes
+
+
+def session_blob_ledger_query(owner: BlobOwner, hashes: tuple[bytes, ...]) -> tuple[str, tuple[object, ...]]:
+    """Build the sole typed-ledger query with its actual surviving referent."""
+    _require_session_blob_owner(owner, ledger=True)
+    marks = ",".join("?" for _ in hashes)
+    predicate = f"ref.blob_hash IN ({marks})" if hashes else "0"
+    return (
+        f"SELECT DISTINCT ref.blob_hash FROM blob_refs AS ref WHERE {predicate} AND ref.ref_type = ? "
+        f"AND EXISTS (SELECT 1 FROM {owner.table} AS owner WHERE owner.{owner.referent_column} = ref.ref_id)",
+        (*hashes, owner.ref_type),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionSessionBlobLivenessRead:
+    """Borrow an ordinary Source connection without taking its write/lifetime authority."""
+
+    connection: sqlite3.Connection
+
+    def session_blob_global_blockers(self) -> tuple[str, ...]:
+        return tuple(_source_global_blockers(self.connection))
+
+    def session_blob_owner_available(self, owner: BlobOwner) -> bool:
+        _require_session_blob_owner(owner, ledger=False)
+        assert owner.blob_column is not None
+        return _table_exists(self.connection, owner.table)
+
+    def session_blob_direct_hashes(self, owner: BlobOwner, hashes: tuple[bytes, ...]) -> tuple[bytes, ...]:
+        with connection_cursor(self.connection, *session_blob_direct_query(owner, hashes)) as cursor:
+            return tuple(bytes(row[0]) for row in cursor)
+
+    def session_blob_ledger_hashes(self, owner: BlobOwner, hashes: tuple[bytes, ...]) -> tuple[bytes, ...]:
+        with connection_cursor(self.connection, *session_blob_ledger_query(owner, hashes)) as cursor:
+            return tuple(bytes(row[0]) for row in cursor)
+
+
 def inspect_session_blob_references(
-    source_conn: sqlite3.Connection,
+    source: SessionBlobLivenessSourceRead,
     blob_hashes: Sequence[bytes],
     *,
     index_conn: sqlite3.Connection | None,
-    excluding_session_ids: frozenset[str],
+    excluding_session_ids: Set[str],
     index_authority_blocker: str | None = None,
 ) -> dict[bytes, BlobLiveness]:
     """Whether a session outside ``excluding_session_ids`` still references each blob.
@@ -339,7 +400,7 @@ def inspect_session_blob_references(
     fails propagates, so the caller's transaction rolls back.
     """
     hashes = tuple(dict.fromkeys(blob_hashes))
-    blockers = _source_global_blockers(source_conn)
+    blockers = list(source.session_blob_global_blockers())
     if index_conn is not None:
         blockers.extend(_schema_blockers(index_conn, tier="index", required=True))
         if not _table_exists(index_conn, "attachment_refs"):
@@ -348,41 +409,31 @@ def inspect_session_blob_references(
         blocked = BlobLiveness(LivenessState.BLOCKED, blockers=tuple(dict.fromkeys(blockers)))
         return dict.fromkeys(hashes, blocked)
     surfaces: dict[bytes, list[str]] = {blob_hash: [] for blob_hash in hashes}
-    excluded = tuple(sorted(excluding_session_ids))
-    outside = f" AND r.session_id NOT IN ({','.join('?' for _ in excluded)})" if excluded else ""
     for start in range(0, len(hashes), _REFERENCE_QUERY_CHUNK):
         chunk = hashes[start : start + _REFERENCE_QUERY_CHUNK]
         marks = ",".join("?" for _ in chunk)
         for owner in _owners(tier="source", ledger=False):
             assert owner.blob_column is not None
-            if (
-                owner.table in _CENSUS_OWNER_TABLES
-                or not _table_exists(source_conn, owner.table)
-                or not _column_exists(source_conn, owner.table, owner.blob_column)
-            ):
+            if owner.table in _CENSUS_OWNER_TABLES or not source.session_blob_owner_available(owner):
                 continue
-            for (found,) in source_conn.execute(
-                f"SELECT DISTINCT {owner.blob_column} FROM {owner.table} WHERE {owner.blob_column} IN ({marks})",
-                chunk,
-            ):
-                surfaces[bytes(found)].append(f"source.db.{owner.table}")
+            for found in source.session_blob_direct_hashes(owner, chunk):
+                surfaces[found].append(f"source.db.{owner.table}")
         for owner in _owners(tier="source", ledger=True):
             assert owner.ref_type is not None and owner.referent_column is not None
-            for (found,) in source_conn.execute(
-                f"""SELECT DISTINCT ref.blob_hash FROM blob_refs AS ref
-                WHERE ref.blob_hash IN ({marks}) AND ref.ref_type = ?
-                AND EXISTS (SELECT 1 FROM {owner.table} AS owner WHERE owner.{owner.referent_column} = ref.ref_id)""",
-                (*chunk, owner.ref_type),
-            ):
-                surfaces[bytes(found)].append("source.db.blob_refs")
+            for found in source.session_blob_ledger_hashes(owner, chunk):
+                surfaces[found].append("source.db.blob_refs")
         if index_conn is not None:
-            for (found,) in index_conn.execute(
-                "SELECT DISTINCT a.blob_hash FROM attachments AS a "
+            with connection_cursor(
+                index_conn,
+                "SELECT DISTINCT a.blob_hash,r.session_id FROM attachments AS a "
                 "JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id "
-                f"WHERE a.blob_hash IN ({marks}){outside}",
-                (*chunk, *excluded),
-            ):
-                surfaces[bytes(found)].append("index.db.attachment_refs")
+                f"WHERE a.blob_hash IN ({marks})",
+                chunk,
+            ) as cursor:
+                for found, session_id in cursor:
+                    found_surfaces = surfaces[bytes(found)]
+                    if "index.db.attachment_refs" not in found_surfaces and session_id not in excluding_session_ids:
+                        found_surfaces.append("index.db.attachment_refs")
     decisions: dict[bytes, BlobLiveness] = {}
     for blob_hash, found_surfaces in surfaces.items():
         if found_surfaces:
@@ -403,10 +454,6 @@ def inspect_blob_reservation(source_conn: sqlite3.Connection, blob_hash: str) ->
     """
     if not _table_exists(source_conn, "blob_publication_reservations"):
         return BlobLiveness(LivenessState.UNREFERENCED)
-    if not _column_exists(source_conn, "blob_publication_reservations", "blob_hash"):
-        return BlobLiveness(
-            LivenessState.BLOCKED, blockers=("source.blob_publication_reservations is missing columns: blob_hash",)
-        )
     blob_bytes = blob_hash_bytes(blob_hash)
     if blob_bytes is None:
         return BlobLiveness(LivenessState.UNREFERENCED)
@@ -450,7 +497,7 @@ def project_live_blob_hashes(
                 continue
             for owner in _owners(tier=tier, ledger=False):
                 assert owner.blob_column is not None
-                if not _table_exists(conn, owner.table) or not _column_exists(conn, owner.table, owner.blob_column):
+                if not _table_exists(conn, owner.table):
                     continue
                 owner_name = f"{tier}.db.{owner.table}"
                 for row in conn.execute(f"SELECT DISTINCT {owner.blob_column} FROM {owner.table}"):
@@ -458,12 +505,10 @@ def project_live_blob_hashes(
                         blob_hash = row[0].hex()
                         hashes.add(blob_hash)
                         owner_hashes.setdefault(owner_name, set()).add(blob_hash)
-        if blob_refs_has_ref_type_column(source_conn):
+        if _table_exists(source_conn, "blob_refs"):
             for owner in _owners(tier="source", ledger=True):
                 assert owner.ref_type is not None and owner.referent_column is not None
-                if not _table_exists(source_conn, owner.table) or not _column_exists(
-                    source_conn, owner.table, owner.referent_column
-                ):
+                if not _table_exists(source_conn, owner.table):
                     continue
                 for row in source_conn.execute(
                     f"""SELECT DISTINCT ref.blob_hash FROM blob_refs AS ref WHERE ref.ref_type = ? AND EXISTS (
@@ -484,12 +529,15 @@ def project_live_blob_hashes(
 
 __all__ = [
     "BLOB_OWNERS",
+    "SessionBlobLivenessSourceRead",
+    "ConnectionSessionBlobLivenessRead",
+    "session_blob_direct_query",
+    "session_blob_ledger_query",
     "acquired_attachment_missing_ref_predicate",
     "BlobLiveness",
     "BlobLivenessProjection",
     "LivenessState",
     "blob_hash_bytes",
-    "blob_refs_has_ref_type_column",
     "index_tier_blob_population",
     "inspect_blob_liveness",
     "inspect_blob_reservation",

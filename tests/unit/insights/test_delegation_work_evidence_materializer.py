@@ -20,7 +20,7 @@ from polylogue.analysis.delegation_work_evidence_materializer import (
 )
 from polylogue.core.stage_admission import stage_write_admission
 from polylogue.daemon.convergence_stages import make_delegation_work_evidence_stage
-from polylogue.storage.sqlite.write_guard import install_archive_write_guard
+from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
 from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement, write_lease
 from tests.infra.delegation_packets import seed_delegations
 
@@ -130,9 +130,9 @@ def test_delegation_stage_reads_without_daemon_writer_lease(tmp_path: Path) -> N
         with write_lease(actor, archive_root=tmp_path):
             return work()
 
-    with install_archive_write_guard(), arm_write_lease_enforcement():
+    with arm_write_lease_enforcement():
         with pytest.raises(UnleasedWriteError):
-            sqlite3.connect(tmp_path / "index.db")
+            open_isolated_write_connection(tmp_path / "index.db", purpose="test.unadmitted", archive_root=tmp_path)
         with stage_write_admission(admit):
             assert stage.check(tmp_path / "source.jsonl") is True
             assert stage.execute(tmp_path / "source.jsonl") is True
@@ -145,6 +145,13 @@ def test_stage_uses_active_index_generation_after_promotion(
 ) -> None:
     """The active pointer wins when the conventional index is missing or stale."""
     seed_delegations(tmp_path)
+    # Moving or copying only the main file of a WAL database drops the frames
+    # still in its -wal; settle them into index.db first, as a promotion does.
+    conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
     generation = tmp_path / ".index-generations" / "promoted"
     generation.mkdir(parents=True)
     if conventional_path == "missing":

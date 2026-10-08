@@ -136,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
                 provider=provider,
                 payload=_codex_payload(args.record_count) if args.record_count is not None else _payload(index),
                 source_path=f"/synthetic/{args.provider}/session-{index}.{'jsonl' if provider is Provider.CODEX else 'json'}",
+                canonical_source_path=f"/synthetic/{args.provider}/session-{index}.{'jsonl' if provider is Provider.CODEX else 'json'}",
                 acquired_at_ms=1_700_000_000_000 + index,
                 raw_id=f"synthetic-raw-{index}",
             )

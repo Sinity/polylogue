@@ -10,15 +10,11 @@ retryability, evidence, and remediation, *without ever text-matching against
 an error string*. Every classification below keys off the caught exception's
 *type* or a structural boolean the pipeline already computed.
 
-Two call sites use this:
-
-- ``polylogue.pipeline.services.ingest_worker`` classifies each raw record at
-  the acquire/detect/parse/materialize boundary (subprocess-safe, no DB
-  access) -- see ``_record_result`` call sites there.
-- ``polylogue.sources.live.batch`` classifies each ingest-attempt's terminal
-  outcome at the archive-write boundary (schema mismatch, database error,
-  transient SQLite lock, or clean completion) before it lands in the
-  ``ingest_attempts`` ops-tier row via ``CursorStore``.
+``polylogue.sources.live.batch`` classifies each ingest attempt's terminal
+outcome at the archive-write boundary (schema mismatch, database error,
+transient SQLite lock, or clean completion) before it lands in the
+``ingest_attempts`` ops-tier row via ``CursorStore``; retained preparation
+classifies decode refusals with :func:`classify_decode_exception`.
 """
 
 from __future__ import annotations
@@ -113,24 +109,6 @@ def non_session_artifact_disposition(*, evidence_ref: str, diagnostic: str | Non
     )
 
 
-def unsupported_shape_disposition(*, evidence_ref: str, diagnostic: str | None = None) -> IngestAttemptDisposition:
-    return IngestAttemptDisposition(
-        outcome=IngestOutcome.UNSUPPORTED_SHAPE,
-        evidence_ref=evidence_ref,
-        diagnostic=bounded_diagnostic(diagnostic),
-        remediation="this artifact shape/kind is not admitted for session parsing; open a source-support issue",
-    )
-
-
-def validation_rejected_disposition(*, evidence_ref: str, diagnostic: str | None) -> IngestAttemptDisposition:
-    return IngestAttemptDisposition(
-        outcome=IngestOutcome.VALIDATION_REJECTED,
-        evidence_ref=evidence_ref,
-        diagnostic=bounded_diagnostic(diagnostic),
-        remediation="fix the source input to satisfy strict schema validation, or relax validation mode",
-    )
-
-
 def value_bound_refused_disposition(*, stage: str, diagnostic: str | None) -> IngestAttemptDisposition:
     """A value SQLite cannot store in one cell: permanent and input-specific, never a parser defect."""
     from polylogue.sources.value_bounds import VALUE_BOUND_REFUSED
@@ -214,26 +192,6 @@ def classify_decode_exception(exc: BaseException) -> IngestAttemptDisposition:
     return parser_defect_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
 
 
-def classify_parse_exception(exc: BaseException) -> IngestAttemptDisposition:
-    """Classify a per-record parse-stage failure by the exception's type.
-
-    A ``pydantic.ValidationError`` is a structural validation rejection, not
-    a parser bug -- it means the input itself failed the provider's own
-    strict record validation. Everything else at this boundary is treated
-    as a genuine parser defect (the honest "we didn't expect this" bucket).
-    """
-    from pydantic import ValidationError
-
-    from polylogue.sources.value_bounds import ValueBoundRefusedError
-
-    evidence_ref = f"parse:{type(exc).__name__}"
-    if isinstance(exc, ValidationError):
-        return validation_rejected_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
-    if isinstance(exc, ValueBoundRefusedError):
-        return value_bound_refused_disposition(stage="parse", diagnostic=str(exc))
-    return parser_defect_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
-
-
 def storage_fault_disposition(kind: StorageFaultKind, *, diagnostic: str | None) -> IngestAttemptDisposition:
     """The disposition for an archive storage fault (full disk, I/O, corrupt page, read-only).
 
@@ -259,19 +217,20 @@ def storage_fault_disposition(kind: StorageFaultKind, *, diagnostic: str | None)
 def classify_archive_write_exception(exc: BaseException) -> IngestAttemptDisposition:
     """Classify a batch-level archive-write failure (the daemon writer boundary).
 
-    A ``sqlite3.OperationalError`` recognized by
-    :func:`polylogue.sources.live.sqlite_locking.is_transient_sqlite_lock` is
-    retryable infrastructure contention, never a poisoned payload. A storage
-    fault (:func:`polylogue.core.storage_faults.storage_fault_kind`) is
-    retryable infrastructure failure for the same reason. Any other
+    A typed daemon-compute backpressure refusal, a transient SQLite lock, or a
+    storage fault is retryable infrastructure contention, never a poisoned
+    payload. Any other
     exception escaping the archive-write boundary is treated as a parser
     defect (see AC2: materialization/index-failure is deliberately deferred
     to follow-up work, so it also lands here today rather than silently
     vanishing as ``LEGACY_UNKNOWN``).
     """
+    from polylogue.core.compute import DaemonBackpressureError
     from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 
     evidence_ref = f"archive_write:{type(exc).__name__}"
+    if isinstance(exc, DaemonBackpressureError):
+        return transient_error_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
         return transient_error_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
     fault = storage_fault_kind(exc)
@@ -285,7 +244,6 @@ __all__ = [
     "bounded_diagnostic",
     "classify_archive_write_exception",
     "classify_decode_exception",
-    "classify_parse_exception",
     "corrupt_input_disposition",
     "downstream_failure_disposition",
     "interrupted_disposition",
@@ -295,6 +253,4 @@ __all__ = [
     "storage_fault_disposition",
     "success_disposition",
     "transient_error_disposition",
-    "unsupported_shape_disposition",
-    "validation_rejected_disposition",
 ]

@@ -28,9 +28,14 @@ def test_storage_one_shot_readers_cannot_mutate(
     tmp_path: Path,
     open_reader: Callable[[Path], sqlite3.Connection],
 ) -> None:
-    """Mutation: changing a storage reader to read-write permits INSERT."""
+    """Mutation: changing a storage reader to read-write permits INSERT.
+
+    The measured reader's authorizer refuses the write (``DatabaseError: not
+    authorized``) before SQLite's read-only refusal (``OperationalError``, a
+    subclass) would; either is a refusal.
+    """
     database = tmp_path / "maintenance.db"
     _open_seeded_database(database)
 
-    with open_reader(database) as conn, pytest.raises(sqlite3.OperationalError):
+    with open_reader(database) as conn, pytest.raises(sqlite3.DatabaseError):
         conn.execute("INSERT INTO entries VALUES ('forbidden')")

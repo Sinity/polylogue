@@ -67,6 +67,50 @@ def test_uses_real_clock_marker_bypasses_the_guard() -> None:
     datetime.now()
 
 
+@pytest.fixture(scope="module")
+def writable_checkout(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A writable copy of the executed checkout for nested collection proofs.
+
+    Managed runs execute from a readonly copy of the declared source, so a
+    proof module cannot be added to the checkout itself. The copy keeps the
+    same Git object store, the exact executed bytes of every declared file and
+    its own environment over the original installed dependencies, so the
+    nested ``devtools test`` admits it like the real checkout.
+    """
+    root = Path(__file__).resolve().parents[3]
+    destination = tmp_path_factory.mktemp("clock-guard-checkout") / "checkout"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(destination)],
+        check=True,
+        capture_output=True,
+    )
+    # A branch of its own: devtools refuses a run on the clone's default branch.
+    subprocess.run(["git", "-C", str(destination), "checkout", "--quiet", "-b", "clock-guard-proof"], check=True)
+    listed = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=root,
+        capture_output=True,
+        check=True,
+    )
+    for name in sorted(set(listed.stdout.split(b"\0")) - {b""}):
+        source = root / os.fsdecode(name)
+        target = destination / os.fsdecode(name)
+        if not source.is_file() or source.is_symlink():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        shutil.copymode(source, target)
+    # Devtools refuses an interpreter, or import paths, that resolve into
+    # another checkout, so the copy owns its environment: a reflinked copy of
+    # the executed checkout's installed dependencies.
+    subprocess.run(
+        ["cp", "-a", "--reflink=auto", str(root / ".venv"), str(destination / ".venv")],
+        check=True,
+        capture_output=True,
+    )
+    return destination
+
+
 def _managed_collection(module: Path, *, root: Path, state: Path) -> subprocess.CompletedProcess[str]:
     """Collect ``module`` through ``devtools test`` without touching operator history.
 
@@ -77,7 +121,17 @@ def _managed_collection(module: Path, *, root: Path, state: Path) -> subprocess.
     """
     history = state / "history.jsonl"
     result = subprocess.run(
-        [sys.executable, "-m", "devtools", "test", "--collect-only", "--rootdir", str(root), str(module), "--json"],
+        [
+            str(root / ".venv" / "bin" / "python"),
+            "-m",
+            "devtools",
+            "test",
+            "--collect-only",
+            "--rootdir",
+            str(root),
+            str(module),
+            "--json",
+        ],
         cwd=root,
         capture_output=True,
         text=True,
@@ -103,9 +157,11 @@ def _managed_collection(module: Path, *, root: Path, state: Path) -> subprocess.
     "expression",
     ("datetime.now()", "time.time()", "time.time_ns()", "time.monotonic()", "time.monotonic_ns()"),
 )
-def test_module_level_clock_read_fails_during_managed_collection(expression: str, tmp_path: Path) -> None:
+def test_module_level_clock_read_fails_during_managed_collection(
+    expression: str, tmp_path: Path, writable_checkout: Path
+) -> None:
     """The guard must be armed before pytest imports ordinary test modules."""
-    root = Path(__file__).resolve().parents[3]
+    root = writable_checkout
     temporary_root = root / "tests" / f".clock-guard-{uuid4().hex}"
     temporary_root.mkdir()
     violating_module = temporary_root / "test_module_level_clock.py"
@@ -126,8 +182,8 @@ def test_module_level_clock_read_fails_during_managed_collection(expression: str
     assert "frozen_clock" in result.stdout + result.stderr
 
 
-def test_module_level_real_clock_marker_exempts_managed_collection(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[3]
+def test_module_level_real_clock_marker_exempts_managed_collection(tmp_path: Path, writable_checkout: Path) -> None:
+    root = writable_checkout
     temporary_root = root / "tests" / f".clock-guard-{uuid4().hex}"
     temporary_root.mkdir()
     exempt_module = temporary_root / "test_module_level_clock_exempt.py"
@@ -150,15 +206,24 @@ def test_module_level_real_clock_marker_exempts_managed_collection(tmp_path: Pat
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def _collect_guarded_module(source: str) -> subprocess.CompletedProcess[str]:
-    root = Path(__file__).resolve().parents[3]
+def _collect_guarded_module(source: str, root: Path) -> subprocess.CompletedProcess[str]:
     directory = root / "tests" / f".clock-guard-{uuid4().hex}"
     directory.mkdir()
     module = directory / "test_guard_regression.py"
     module.write_text(source, encoding="utf-8")
     try:
         return subprocess.run(
-            [sys.executable, "-m", "devtools", "test", "--collect-only", "--rootdir", str(root), str(module)],
+            # The checkout's own interpreter: devtools refuses another checkout's.
+            [
+                str(root / ".venv" / "bin" / "python"),
+                "-m",
+                "devtools",
+                "test",
+                "--collect-only",
+                "--rootdir",
+                str(root),
+                str(module),
+            ],
             cwd=root,
             capture_output=True,
             text=True,
@@ -183,13 +248,13 @@ def _collect_guarded_module(source: str) -> subprocess.CompletedProcess[str]:
     ),
     ids=("module-marker-covers-whole-source", "marker-below-clock-reading-decorator"),
 )
-def test_collection_clock_exemption_covers_declared_source(source: str) -> None:
+def test_collection_clock_exemption_covers_declared_source(source: str, writable_checkout: Path) -> None:
     """Both cases fail collection when an exemption starts/ends at the wrong line."""
-    result = _collect_guarded_module(source)
+    result = _collect_guarded_module(source, writable_checkout)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_caught_clock_read_cannot_disarm_collection_profile() -> None:
+def test_caught_clock_read_cannot_disarm_collection_profile(writable_checkout: Path) -> None:
     """Raising from the profiler lets the first caught read disable the second."""
     result = _collect_guarded_module(
         "import time\n"
@@ -198,7 +263,8 @@ def test_caught_clock_read_cannot_disarm_collection_profile() -> None:
         "except RuntimeError:\n"
         "    pass\n"
         "time.monotonic()\n"
-        "def test_collected(): pass\n"
+        "def test_collected(): pass\n",
+        writable_checkout,
     )
     output = result.stdout + result.stderr
     assert result.returncode != 0

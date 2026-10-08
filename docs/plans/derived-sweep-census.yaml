@@ -9,6 +9,13 @@
 # unclassified until a reviewer assigns a permitted classification.
 package: polylogue
 sites:
+  - file: "polylogue/sources/parsers/hermes_state.py"
+    function: "_parse_session_row"
+    subject: "is_active_leaf"
+    kind: "read_path_substitution"
+    scope: "writing_module"
+    classification: presentation_projection
+    reason: "The parser derives the active leaf from this retained session's active-path evidence and places it in the caller-owned preparation sink; it does not read or correct a derived archive value."
   - file: "polylogue/analysis/claude_workflow_materializer.py"
     function: "_replace_graph_family"
     subject: "work_evidence_graphs"
@@ -72,13 +79,6 @@ sites:
     scope: "read_only_module"
     classification: presentation_projection
     reason: "Budget.coerce composes an in-memory pass budget from the caller's Budget and an outer deadline: it keeps the tighter of the two deadlines via dataclasses.replace. The substituted member is a value this call computed, not a stored producer output, and the function touches no database."
-  - file: "polylogue/daemon_client.py"
-    function: "DaemonClient.operation.bound_body"
-    subject: "daemon_version"
-    kind: "read_path_substitution"
-    scope: "read_only_module"
-    classification: presentation_projection
-    reason: "Composes an absent request precondition from the installed client's canonical code version or Index DDL version before transmission; explicit caller operands remain unchanged. These are client expectations, not substituted stored archive values. The daemon still compares them against its own current identity and refuses a mismatch."
   - file: "polylogue/daemon/session_profile_composition.py"
     function: "_merge_reports"
     subject: "truncated"
@@ -93,6 +93,13 @@ sites:
     scope: "read_only_module"
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
+  - file: "polylogue/daemon_client.py"
+    function: "DaemonClient.operation.bound_body"
+    subject: "daemon_version"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: presentation_projection
+    reason: "Composes an absent request precondition from the installed client's canonical code version or Index DDL version before transmission; explicit caller operands remain unchanged. These are client expectations, not substituted stored archive values. The daemon still compares them against its own current identity and refuses a mismatch."
   - file: "polylogue/operations/audit.py"
     function: "AuditRepository.finalize_attempt"
     subject: "receipt_ref"
@@ -107,6 +114,13 @@ sites:
     scope: "read_only_module"
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
+  - file: "polylogue/operations/daemon_mutations.py"
+    function: "_prepare_mutation_selection"
+    subject: "vector_failure"
+    kind: "read_path_substitution"
+    scope: "writing_module"
+    classification: presentation_projection
+    reason: "Compose canonical read dependencies from the original pinned vector failure and provider failure; the pinned failure takes precedence and reaches the authoritative selection verdict."
   - file: "polylogue/operations/read_view_dialogue_temporal.py"
     function: "execute_temporal_read"
     subject: "limit"
@@ -128,55 +142,6 @@ sites:
     scope: "read_only_module"
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
-    function: "_delete_sessions_without_fk_cascade"
-    subject: "{}"
-    kind: "unresolved_rewrite_scope"
-    scope: "unresolved"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
-    function: "_ensure_ingest_index_incarnation"
-    subject: "ingest_index_incarnation"
-    kind: "state_selected_subject"
-    scope: "state_predicate"
-    classification: producer_scoped_transaction
-    reason: "the SELECT reads only the singleton physical-index identity row, whose CHECK constraint permits exactly one row. It is not a content subject or archive sweep; the ingest publisher compares the recorded device/inode with the connection's actual index file before binding new witnesses to that file instance"
-  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
-    function: "_ensure_ingest_index_incarnation"
-    subject: "ingest_index_incarnation"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: producer_scoped_transaction
-    reason: "the singleton incarnation row is inserted on first use or replaced only when the currently open index file's device/inode differs from the recorded physical instance. This is producer-owned witness scoping metadata; it does not correct session content or select archive rows for a sweep"
-  - file: "polylogue/security/excision.py"
-    function: "_apply_single_session_excision"
-    subject: "ingest_marker_witnesses"
-    kind: "state_selected_subject"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/security/excision.py"
-    function: "_apply_single_session_excision"
-    subject: "ingest_marker_witnesses"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/security/excision.py"
-    function: "_apply_single_session_excision"
-    subject: "message_embeddings"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/security/excision.py"
-    function: "_apply_single_session_excision"
-    subject: "message_embeddings_meta"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
   - file: "polylogue/sources/assembly_chatgpt.py"
     function: "_resolve_attachment_renditions"
     subject: "mime_type"
@@ -191,6 +156,13 @@ sites:
     scope: "read_only_module"
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
+  - file: "polylogue/sources/decoder_zip.py"
+    function: "process_zip"
+    subject: "addressing_mode"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: presentation_projection
+    reason: "The parser-owned raw value is assigned its captured whole-member reading before canonical ZIP admission; no stored derived output is substituted or corrected."
   - file: "polylogue/sources/dispatch.py"
     function: "merge_parsed_session_chunks"
     subject: "branch_type"
@@ -242,18 +214,18 @@ sites:
     reason: "pinned by the initial census; adjudication is follow-up work"
   - file: "polylogue/sources/parsers/browser_capture.py"
     function: "_merge_envelope_attachments"
-    subject: "owner_coordinate"
-    kind: "read_path_substitution"
-    scope: "read_only_module"
-    classification: presentation_projection
-    reason: "Composes excluded private parser-to-writer ownership evidence from retained native turns and acquired attachment descriptors; no stored read-model value is substituted or repaired."
-  - file: "polylogue/sources/parsers/browser_capture.py"
-    function: "_merge_envelope_attachments"
     subject: "name"
     kind: "read_path_substitution"
     scope: "read_only_module"
     classification: unclassified
     reason: "pinned by the initial census; adjudication is follow-up work"
+  - file: "polylogue/sources/parsers/browser_capture.py"
+    function: "_merge_envelope_attachments"
+    subject: "owner_coordinate"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: presentation_projection
+    reason: "Composes excluded private parser-to-writer ownership evidence from retained native turns and acquired attachment descriptors; no stored read-model value is substituted or repaired."
   - file: "polylogue/sources/parsers/browser_capture.py"
     function: "_merge_envelope_attachments"
     subject: "producer_ref"
@@ -443,9 +415,9 @@ sites:
     scope: "no_where"
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/storage/frontier_existence.py"
-    function: "prune_consumed_journal_rows"
-    subject: "raw_existence_changes"
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "prune_prepared_frontier_journals.publish"
+    subject: "{}"
     kind: "unbound_rewrite"
     scope: "state_predicate"
     classification: unclassified
@@ -513,13 +485,6 @@ sites:
     scope: "no_where"
     classification: whole_relation_derivation
     reason: "bulk-generation repopulate: the relation is emptied and re-derived in full from canonical index rows in the same call -- action_pairs from the archive-wide action-pair statement, delegation_facts from delegation_facts_source, messages_fts from blocks WHERE search_text != ''. A producer defect reappears on the next pass instead of being corrected away, and no row survives the delete to be patched"
-  - file: "polylogue/storage/sqlite/archive_tiers/archive.py"
-    function: "ArchiveStore.delete_sessions"
-    subject: "derived_refresh_guard"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: producer_scoped_transaction
-    reason: "derived_refresh_guard is the writer's own trigger-suppression flag: the same function inserts the named guard row before its session writes and deletes that exact guard_name afterwards (in delete_sessions, from a finally block). The subject is the one row this call created, not archive state"
   - file: "polylogue/storage/sqlite/archive_tiers/embedding_write.py"
     function: "replace_message_embedding_derivation"
     subject: "message_embeddings"
@@ -584,27 +549,6 @@ sites:
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
   - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "apply_raw_membership_classification"
-    subject: "raw_revision_heads"
-    kind: "state_selected_subject"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "apply_raw_membership_classification"
-    subject: "raw_revision_heads"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "apply_raw_revision_replay"
-    subject: "raw_revision_heads"
-    kind: "state_selected_subject"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
     function: "apply_raw_revision_replay"
     subject: "raw_revision_heads"
     kind: "unbound_rewrite"
@@ -632,6 +576,13 @@ sites:
     scope: "no_where"
     classification: producer_scoped_transaction
     reason: "the message reads without a WHERE on the subject are the INSERT ... SELECT copies driven by the per-child TEMP plan table (JOIN on plan.old_id), inside the parent write that is changing the child's inherited rows (polylogue-gy2yu). The subject is exactly the one child the write captured before its replace; no stale derived row is selected for repair"
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_reconcile_tool_use_outcomes"
+    subject: "blocks"
+    kind: "state_selected_subject"
+    scope: "no_where"
+    classification: unclassified
+    reason: "newly visible to the census; route review is needed before classification"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "_replace_full_session_messages_and_blocks"
     subject: "derived_refresh_guard"
@@ -689,26 +640,12 @@ sites:
     classification: whole_relation_derivation
     reason: "bulk-generation repopulate: the relation is emptied and re-derived in full from canonical index rows in the same call -- action_pairs from the archive-wide action-pair statement, delegation_facts from delegation_facts_source, messages_fts from blocks WHERE search_text != ''. A producer defect reappears on the next pass instead of being corrected away, and no row survives the delete to be patched"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
-    function: "_propagate_root_to_descendants"
-    subject: "sessions"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: producer_scoped_transaction
-    reason: "Called only when one session root changes inside the shared writer transaction. A recursive CTE seeded by the bound session_id follows indexed parent_session_id edges and updates only that affected subtree, with UNION terminating cycles; it is neither a whole-archive sweep nor a repair route. Replaces the Codex-only duplicate propagation."
-  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "write_parsed_session_to_archive"
     subject: "derived_refresh_guard"
     kind: "unbound_rewrite"
     scope: "state_predicate"
     classification: producer_scoped_transaction
-    reason: "derived_refresh_guard is the writer's own trigger-suppression flag: the same function inserts the named guard row before its session writes and deletes that exact guard_name afterwards (in delete_sessions, from a finally block). The subject is the one row this call created, not archive state"
-  - file: "polylogue/storage/sqlite/archive_tiers/write_shard.py"
-    function: "copy_shard_session_rows"
-    subject: "blocks"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
+    reason: "derived_refresh_guard is the writer's own trigger-suppression flag: the same function inserts the named guard row before its session writes and deletes that exact guard_name afterwards (in the borrowed Index scope, from a finally block). The subject is the one row this call created, not archive state"
   - file: "polylogue/storage/sqlite/delegation_facts.py"
     function: "rebuild_all_delegation_facts_sync"
     subject: "delegation_facts"
@@ -751,11 +688,3 @@ sites:
     scope: "state_predicate"
     classification: declared_retention
     reason: "DELETE FROM attachments WHERE ref_count <= 0 after the refs this session dropped were recounted; it removes rows nothing references and never rewrites a retained one"
-
-  - file: "polylogue/operations/daemon_mutations.py"
-    function: "_prepare_mutation_selection"
-    subject: "vector_failure"
-    kind: "read_path_substitution"
-    scope: "writing_module"
-    classification: presentation_projection
-    reason: "Compose canonical read dependencies from the original pinned vector failure and provider failure; the pinned failure takes precedence and reaches the authoritative selection verdict."

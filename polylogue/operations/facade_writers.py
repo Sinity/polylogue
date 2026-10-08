@@ -11,12 +11,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.archive.context_models import ContextImage
 from polylogue.config import Config
 from polylogue.config import active_archive_root as _active_archive_root
-from polylogue.context.compiler import ContextImage
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.refs import normalize_object_ref_text, parse_public_ref
 from polylogue.operations.archive_mutation import require_archive_write_authority as _require_archive_write_authority
+from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
+from polylogue.operations.operation_context_types import OperationContext
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -321,70 +323,63 @@ def record_manual_continuation_product(config: Config, child_session_id: str, pa
     parent = str(parent_session_id).strip()
     if not child or not parent or ":" not in child or ":" not in parent:
         raise ValueError("manual continuation requires origin-prefixed child and parent session ids")
-    parent_origin, parent_native = parent.split(":", 1)
     root = _active_archive_root(config)
     _require_archive_write_authority(config, "api.record_manual_continuation")
+    from polylogue.core.errors import ArchiveTierUnavailableError
+
+    if not (root / "user.db").is_file():
+        raise ArchiveTierUnavailableError(
+            tier="user.db",
+            path=str(root / "user.db"),
+            reason="required User authority is missing",
+            guidance="restore the durable User tier from a verified backup before recording a continuation",
+        )
     now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+    from polylogue.storage.sqlite.archive_tiers.write import (
+        MANUAL_CONTINUATION_VALUE_SCHEMA,
+        _project_manual_continuations,
+        _resolve_session_graph,
+        _would_create_cycle,
+    )
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
     index = open_connection(root / "index.db", archive_root=root)
     try:
         if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (child,)).fetchone() is None:
             raise ValueError("manual continuation child session does not exist")
         if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (parent,)).fetchone() is None:
             raise ValueError("manual continuation parent session does not exist")
-        from polylogue.storage.sqlite.archive_tiers.write import _resolve_session_graph, _would_create_cycle
-
-        # The edge is written already resolved, and the resolver's cycle guard
-        # only examines unresolved inbound edges, so validate it here before any
-        # projection refresh can publish a cyclic parent chain.
         cycle_walk = _would_create_cycle(index, child_id=child, proposed_parent_id=parent)
         if cycle_walk.outcome != "acyclic":
             raise ValueError(f"manual continuation refused ({cycle_walk.outcome}): {' -> '.join(cycle_walk.path)}")
-        index.execute(
-            # ``status`` is an exceptional marker (``TopologyEdgeStatus``:
-            # repaired / quarantined / authority-contradicted), not the
-            # ordinary resolved state -- resolvedness is carried by
-            # ``resolved_dst_session_id IS NOT NULL``. Writing 'resolved'
-            # here failed the column's generated CHECK, so this route
-            # raised IntegrityError on every call (polylogue-pkst).
-            """INSERT OR REPLACE INTO session_links
-               (src_session_id, dst_origin, dst_native_id, link_type, inheritance,
-                resolved_dst_session_id, method, confidence, evidence_json, observed_at_ms)
-               VALUES (?, ?, ?, 'continuation', 'spawned-fresh', ?,
-                       'manual-continuation', 1.0, '[]', ?)""",
-            (child, parent_origin, parent_native, parent, now_ms),
-        )
-        # Reuse the canonical topology projection pass so the accepted edge's
-        # read accelerators are refreshed in the same transaction.
-        child_origin, child_native = child.split(":", 1)
-        _resolve_session_graph(index, child, child_native, child_origin)
-        index.commit()
+        # Commit the durable authority before publishing its rebuildable edge.
+        # A failed Index publication leaves replayable User evidence.
+        user = open_connection(root / "user.db", archive_root=root)
+        try:
+            upsert_assertion(
+                user,
+                assertion_id="handoff:" + hashlib.sha256(f"{child}\0{parent}".encode()).hexdigest()[:32],
+                target_ref=f"session:{child}",
+                kind=AssertionKind.HANDOFF,
+                value={"_schema": MANUAL_CONTINUATION_VALUE_SCHEMA, "parent_session_id": parent},
+                body_text=f"Continuation from session {parent}.",
+                author_ref="actor:polylogue",
+                author_kind="service",
+                evidence_refs=[f"session:{parent}", f"session:{child}"],
+                status=AssertionStatus.CANDIDATE,
+                context_policy={"inject": False, "promotion_required": True},
+                now_ms=now_ms,
+            )
+            user.commit()
+        finally:
+            user.close()
+        with PreparedIndexMutation(root / "index.db", archive_root=root) as seal, seal.mutation_scope(index):
+            _project_manual_continuations(index, child)
+            child_origin, child_native = child.split(":", 1)
+            _resolve_session_graph(index, child, child_native, child_origin)
     finally:
         index.close()
-
-    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
-
-    user = open_connection(root / "user.db", archive_root=root)
-    try:
-        upsert_assertion(
-            user,
-            assertion_id="handoff:" + hashlib.sha256(f"{child}\0{parent}".encode()).hexdigest()[:32],
-            target_ref=f"session:{child}",
-            kind=AssertionKind.HANDOFF,
-            body_text=f"Continuation from session {parent}.",
-            # ``author_ref`` is an ObjectRef: ``service`` is not a
-            # declared kind, so this raised before the assertion landed
-            # (polylogue-pkst). ``actor:`` is the kind the other
-            # automated writers use (``actor:judgment-automation``).
-            author_ref="actor:polylogue",
-            author_kind="service",
-            evidence_refs=[f"session:{parent}", f"session:{child}"],
-            status=AssertionStatus.CANDIDATE,
-            context_policy={"inject": False, "promotion_required": True},
-            now_ms=now_ms,
-        )
-        user.commit()
-    finally:
-        user.close()
 
 
 def record_context_ledger_product(config: Config, admission: Any, *, observed_at_ms: int) -> None:
@@ -421,21 +416,96 @@ def _daemon_writer_result(request: Any, value: object, *, affected_count: int = 
     }
 
 
-def facade_record_work_event(request: Any, context: Any, audit: Any, snapshot: Any) -> dict[str, object]:
-    from polylogue.operations.facade_mutations import record_work_event_product
+async def facade_record_work_event(
+    request: DaemonOperationRequest, context: OperationContext
+) -> DaemonOperationEnvelope:
+    """Acquire one work event, then publish through the original resident owner."""
+    from time import monotonic
 
-    del audit, snapshot
-    payload = request.payload
-    result = record_work_event_product(
-        _daemon_config(context.archive_root),
-        str(payload["session_id"]),
-        event_id=str(payload["event_id"]),
-        event_type=str(payload["event_type"]),
-        summary=str(payload["summary"]),
-        payload=payload.get("payload"),
-        timestamp=payload.get("timestamp"),
+    from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
+    from polylogue.operations.daemon_protocol import validate_operation_result
+    from polylogue.operations.operation_context import (
+        OperationControlRead,
+        observe_control_authority,
+        open_operation_read,
     )
-    return _daemon_writer_result(request, result)
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    request = validate_execution_request(request, context)
+    runtime = context.runtime
+    if runtime is None:
+        raise PermissionError("daemon_required")
+    await runtime.recover_interrupted_operations(resolver_actor_ref=context.principal.actor_ref)
+    started = monotonic()
+    payload = request.payload
+
+    def observe_event_authority() -> OperationControlRead:
+        with open_operation_read(
+            context.archive_root, publication_guard=runtime.publication_guard, execution_context=context.read_control
+        ) as snapshot:
+            _validate_identity(request, context, snapshot)
+            return OperationControlRead(snapshot.identity, snapshot.schema_versions, snapshot.degraded_components)
+
+    authority = await runtime.compute_phase(observe_event_authority)
+
+    def acquire() -> dict[str, object]:
+        current = observe_control_authority(context.archive_root)
+        if current.identity != authority.identity:
+            raise ValueError("archive_identity_stale")
+        with ArchiveStore.open_existing(context.archive_root, read_only=False) as archive:
+            index = archive.index_connection
+            if index is None:
+                raise ValueError("index_unavailable")
+            version = int(index.execute("PRAGMA user_version").fetchone()[0])
+            if version != authority.schema_versions.get("index"):
+                raise ValueError("schema_version_mismatch")
+            _validate_identity(request, context, authority)
+            runtime.observe_snapshot(request, authority)
+            runtime.begin_unbound_write(request, snapshot=authority)
+            event_payload = payload.get("payload") or {}
+            if not isinstance(event_payload, Mapping):
+                raise TypeError("work event payload must be a mapping")
+            timestamp = payload.get("timestamp")
+            if timestamp is not None and not isinstance(timestamp, str):
+                raise TypeError("work event timestamp must be a string")
+            return archive.admit_work_event(
+                session_id=str(payload["session_id"]),
+                event_type=str(payload["event_type"]),
+                payload=dict(event_payload),
+                event_id=str(payload["event_id"]),
+                summary=str(payload["summary"]),
+                timestamp=timestamp,
+            )
+
+    admitted = await runtime.write_phase("work-event.acquire", acquire)
+
+    def refuse(_subjects: object, failure: BaseException) -> None:
+        raise failure
+
+    def refuse_one(failure: BaseException) -> None:
+        raise failure
+
+    replay = await runtime.materialize_retained_raw_ids(
+        (str(admitted["raw_id"]),),
+        on_terminal_refusal=refuse,
+        on_dependency_refusal=refuse_one,
+        on_membership_refusal=refuse_one,
+        before_publication=lambda: None,
+    )
+    receipts = replay.outcome.require_complete()
+    result = _daemon_writer_result(
+        request,
+        {
+            "event_id": admitted["event_id"],
+            "session_id": admitted["session_id"],
+            "event_type": admitted["event_type"],
+            "summary": admitted["summary"],
+            "content_changed": any(admitted["raw_id"] in receipt.writer_changed_raw_ids for receipt in receipts),
+        },
+    )
+    validate_operation_result(request.operation, result)
+    settled = await runtime.compute_phase(observe_event_authority)
+    return operation_envelope(request, context, snapshot=settled, started_at=started, result=result)
 
 
 def facade_record_manual_continuation(request: Any, context: Any, audit: Any, snapshot: Any) -> dict[str, object]:

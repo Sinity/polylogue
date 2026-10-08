@@ -1,7 +1,8 @@
 """Red twins for parent-session source/index accounting.
 
 Every row this census reads is produced by a live production write route --
-``ArchiveStore.write_raw_and_parsed_result`` (acquire + parse + index),
+``write_raw_payload`` and the canonical prepared fixture writer (acquire +
+index an admitted parsed fixture),
 ``write_raw_payload`` (acquire only), ``mark_raw_parse_failed``, and
 ``delete_sessions``.  The parent references themselves come from the writer's
 own topology derivation inside ``write_parsed_session_to_archive``: a fixture
@@ -25,7 +26,7 @@ produces them -- they are the durable damage the census exists to report:
 
 * ``source_unavailable`` -- a retained ``raw_sessions`` row whose bytes are
   gone.  No production route reaches it: every raw-deleting route
-  (``cleanup_superseded_raw_snapshots``, ``apply_session_excision``) removes
+  (``cleanup_superseded_raw_snapshots``, the audited Excision operation) removes
   the ``raw_sessions`` row with the ref.  The fixture therefore removes
   the export file and the ``blob_refs`` row after acquisition, which is the
   loss event itself, not a fabricated census row.
@@ -34,18 +35,27 @@ produces them -- they are the durable damage the census exists to report:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from polylogue.archive.message.roles import Role
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
+from polylogue.core.sources import origin_from_provider
 from polylogue.maintenance.archive_verification import ArchiveVerificationCheck, verify_archive
 from polylogue.maintenance.parent_session_accounting import (
     ParentSessionAccountingReport,
     audit_parent_session_accounting,
 )
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_blob_hash
+from polylogue.storage.sqlite.reference_seal import IndexMutationScope, PreparedIndexMutation
+from tests.infra.index_writer import write_fixture_index_session
 
 #: Fixed acquisition instant. The census only ever reads ``parsed_at_ms`` as
 #: NULL / not-NULL, so no assertion here depends on a clock; the constant keeps
@@ -77,16 +87,54 @@ def _export_file(tmp_path: Path, native_id: str, payload: bytes) -> Path:
 
 
 def _acquire_and_index(archive: ArchiveStore, tmp_path: Path, session: ParsedSession, *, order: int) -> str:
-    """Acquire real bytes and index them through the production write route."""
+    """Acquire bytes and index an admitted parsed fixture through its sealed writer."""
     native_id = session.provider_session_id
     payload = f"transcript bytes for {native_id}".encode()
     path = _export_file(tmp_path, native_id, payload)
-    return archive.write_raw_and_parsed_result(
-        session,
+    provider = Provider.from_string(session.source_name)
+    # A first observation of its logical source is a FULL/ASSERTED baseline,
+    # exactly as canonical raw admission records it.
+    raw_id = archive.write_raw_payload(
+        provider=provider,
         payload=payload,
         source_path=str(path),
+        canonical_source_path=str(path),
+        native_id=native_id,
         acquired_at_ms=_ACQUIRED_AT_MS + order,
-    ).session_id
+        revision=RawRevisionEnvelope(
+            logical_source_key=f"{origin_from_provider(provider).value}:{native_id}",
+            kind=RawRevisionKind.FULL,
+            source_revision=deterministic_blob_hash(payload).hex(),
+            acquisition_generation=0,
+            authority=RawRevisionAuthority.ASSERTED,
+        ),
+    )
+    root = archive.archive_root
+
+    @contextmanager
+    def publication_scope(seal: PreparedIndexMutation) -> Iterator[IndexMutationScope]:
+        with archive.index_mutation_scope(prepared_seal=seal) as scope:
+            yield scope
+
+    with closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as source:
+        session_id = write_fixture_index_session(
+            archive._conn,
+            session,
+            raw_id=raw_id,
+            archive_root=root,
+            source_conn=source,
+            index_scope_factory=publication_scope,
+        )
+    archive.commit()
+    archive.finalize_raw_parse_state(
+        raw_id,
+        state=RawSessionStateUpdate(
+            parsed_at=datetime.fromtimestamp((_ACQUIRED_AT_MS + order) / 1000, UTC).isoformat(),
+            parse_error=None,
+            payload_provider=session.source_name,
+        ),
+    )
+    return session_id
 
 
 def _acquire_only(
@@ -104,6 +152,7 @@ def _acquire_only(
         provider=provider,
         payload=payload,
         source_path=str(path),
+        canonical_source_path=str(path),
         acquired_at_ms=_ACQUIRED_AT_MS + order,
         native_id=native_id,
     )

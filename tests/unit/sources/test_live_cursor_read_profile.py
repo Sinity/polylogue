@@ -9,6 +9,7 @@ import pytest
 
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.connection_profile import ReadFrame
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
@@ -52,7 +53,9 @@ def test_interrupted_cursor_recovery_reads_committed_wal_rows(tmp_path: Path) ->
         assert Path(f"{source_db}-wal").exists()
 
         store = _store(archive_root)
-        store.set(source_path, 64, byte_offset=64, last_complete_newline=64)
+        store.set(
+            source_path, 64, byte_offset=64, last_complete_newline=64, authority=fixture_cursor_authority(source_path)
+        )
 
         store._rewind_interrupted_unparsed_cursors((str(source_path),))
 
@@ -77,7 +80,13 @@ def test_interrupted_cursor_recovery_rebinds_after_midstream_expiry(
 
     store = _store(archive_root)
     for source_path in paths:
-        store.set(Path(source_path), 64, byte_offset=64, last_complete_newline=64)
+        store.set(
+            Path(source_path),
+            64,
+            byte_offset=64,
+            last_complete_newline=64,
+            authority=fixture_cursor_authority(Path(source_path)),
+        )
 
     frames: list[ReadFrame] = []
     real_stream = ReadFrame.stream
@@ -110,7 +119,9 @@ def test_interrupted_cursor_recovery_keeps_cursor_when_source_tier_is_missing(tm
     archive_root.mkdir()
     store = _store(archive_root)
     source_path = archive_root / "capture.jsonl"
-    store.set(source_path, 64, byte_offset=64, last_complete_newline=64)
+    store.set(
+        source_path, 64, byte_offset=64, last_complete_newline=64, authority=fixture_cursor_authority(source_path)
+    )
 
     store._rewind_interrupted_unparsed_cursors((str(source_path),))
 
@@ -138,7 +149,13 @@ def test_interrupted_attempts_stay_running_when_the_recovery_read_expires(
     source_path = str(archive_root / "capture.jsonl")
     _seed_unparsed_raw(source_db, source_path, "raw-0")
     store = _store(archive_root)
-    store.set(Path(source_path), 64, byte_offset=64, last_complete_newline=64)
+    store.set(
+        Path(source_path),
+        64,
+        byte_offset=64,
+        last_complete_newline=64,
+        authority=fixture_cursor_authority(Path(source_path)),
+    )
     with store._connect_ops() as conn:
         conn.execute(
             "INSERT INTO ingest_attempts (attempt_id, source_path, origin, status, phase, started_at_ms, "

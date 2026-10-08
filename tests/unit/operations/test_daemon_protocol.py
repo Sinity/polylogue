@@ -213,8 +213,13 @@ def test_discovery_declares_unbounded_reads_and_preserves_other_authority_deadli
         if spec.authority is DaemonAuthority.READ:
             assert spec.deadline_s is None
             assert discovery[spec.name]["deadline_s"] is None
+        elif spec.name == "operation.result":
+            assert spec.deadline_s is None
+            assert not spec.durable_request and not spec.accepted_reference
+        elif spec.deadline_s is None:
+            assert spec.durable_request or spec.accepted_reference
         else:
-            assert spec.deadline_s is not None and spec.deadline_s > 0
+            assert spec.deadline_s > 0
     assert discovery["operation.status"]["deadline_s"] == 2.0
     assert discovery["operation.await"]["deadline_s"] == 30.0
     assert discovery["operation.cancel"]["deadline_s"] == 2.0

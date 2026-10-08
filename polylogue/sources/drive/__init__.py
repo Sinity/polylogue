@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import json
+import hashlib
 import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 import ijson
 
+from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.storage.blob_publication import publication_receipt_id
@@ -15,7 +17,6 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
 from ...config import Source
-from ...paths.sanitize import safe_path_component
 from ..parsers.base import RawSessionData
 from ..source_acquisition_components import (
     ObservationCallback,
@@ -25,6 +26,7 @@ from ..source_acquisition_components import (
 )
 from .source import DriveSourceAPI, _parse_modified_time, build_drive_source_client
 from .types import DriveConfigLike, DriveFile, DriveUILike
+from .witness import DriveListingWitness, drive_cache_directory, drive_source_coordinate
 
 logger = get_logger(__name__)
 
@@ -82,12 +84,9 @@ def _resolved_drive_client(
     return client or build_drive_source_client(ui=ui, config=drive_config)
 
 
-def drive_cache_file_path(dest_dir: Path, name: str) -> Path:
+def drive_cache_file_path(dest_dir: Path, file_id: str) -> Path:
     """Return the canonical local cache path for a Drive JSON payload."""
-    safe_name = safe_path_component(name, fallback="drive_file")
-    if not any(safe_name.lower().endswith(ext) for ext in (".json", ".jsonl", ".ndjson")):
-        safe_name += ".json"
-    return dest_dir / safe_name
+    return dest_dir / f"{hashlib.sha256(file_id.encode()).hexdigest()}.json"
 
 
 def _cache_revision_path(path: Path) -> Path:
@@ -97,7 +96,7 @@ def _cache_revision_path(path: Path) -> Path:
 def _read_valid_cache(path: Path, revision: str | None) -> bytes | None:
     """Return cached bytes only when they are the provider's complete, readable document at ``revision``.
 
-    A cache is keyed by file name, so without its revision a document that
+    A cache is keyed by native file ID, so without its revision a document that
     changed on Drive would be served from the stale copy forever. A revision
     that cannot be proven (no provider ``modifiedTime``, or no record of the
     cached one) is a miss.
@@ -110,14 +109,10 @@ def _read_valid_cache(path: Path, revision: str | None) -> bytes | None:
         raw = path.read_bytes()
         if not raw.strip():
             return None
-        if path.suffix.lower() in {".jsonl", ".ndjson"}:
-            for line in raw.splitlines():
-                if line.strip():
-                    json.loads(line)
-        else:
-            json.loads(raw)
+        for _event in ijson.parse(BytesIO(raw), multiple_values=True):
+            pass
         return raw
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+    except (OSError, UnicodeDecodeError, ijson.JSONError, TypeError, ValueError):
         return None
 
 
@@ -134,21 +129,12 @@ def _cache_document_is_readable(path: Path) -> bool:
     ``_read_valid_cache`` returns bytes for.
     """
     try:
-        if path.suffix.lower() in {".jsonl", ".ndjson"}:
-            saw_record = False
-            with path.open("rb") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    saw_record = True
-                    json.loads(line)
-            return saw_record
         with path.open("rb") as handle:
             # Consume every event: short-circuiting on the first one would
             # accept a truncated document, which is exactly the cache
             # ``_read_valid_cache`` refuses to hand back.
             events = 0
-            for _event in ijson.parse(handle):
+            for _event in ijson.parse(handle, multiple_values=True):
                 events += 1
             return events > 0
     except (OSError, UnicodeDecodeError, ValueError, ijson.JSONError):
@@ -213,11 +199,14 @@ def download_drive_files(
     for file_info in client.iter_json_files(folder_id):
         file_id = file_info.file_id
         name = file_info.name
-        dest_path = drive_cache_file_path(dest_dir, name)
+        dest_path = drive_cache_file_path(drive_cache_directory(dest_dir, folder_id), file_id)
 
         try:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
             client.download_to_path(file_id, dest_path)
             downloaded.append(dest_path)
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             logger.warning("Failed to download %s (%s): %s", name, file_id, exc)
             failed.append(
@@ -247,6 +236,7 @@ def iter_drive_raw_data(
     observation_callback: ObservationCallback | None = None,
     status_callback: StatusCallback | None = None,
     blob_store: BlobStore | None = None,
+    witness: DriveListingWitness | None = None,
 ) -> Iterable[RawSessionData]:
     """Iterate Drive payloads as raw bytes without writing a local cache.
 
@@ -261,79 +251,118 @@ def iter_drive_raw_data(
     folder_id = drive_client.resolve_folder_id(source.folder)
     tracker = _cursor_tracker(cursor_state)
 
-    for file_meta in drive_client.iter_json_files(folder_id):
-        dest_path = drive_cache_file_path(source.path or Path(source.name), file_meta.name)
-        source_path = str(dest_path)
-        tracker.observe_file(file_meta)
-        heartbeat = make_status_heartbeat(
-            status_callback,
-            source_name=source.name,
-            source_path=source_path,
-        )
-        if heartbeat is not None:
-            heartbeat()
+    own_witness = witness is None
+    witness = witness or DriveListingWitness(source.name, source.folder)
+    try:
+        witness.enumerate(drive_client, folder_id)
+        for file_meta in witness.files():
+            cache_dir = drive_cache_directory(source.path or Path(source.name), folder_id)
+            cache_path = drive_cache_file_path(cache_dir, file_meta.file_id)
+            source_path = drive_source_coordinate(source.name, folder_id, file_meta.file_id)
+            tracker.observe_file(file_meta)
+            heartbeat = make_status_heartbeat(
+                status_callback,
+                source_name=source.name,
+                source_path=file_meta.name,
+            )
+            if heartbeat is not None:
+                heartbeat()
 
-        if blob_store is None:
-            from polylogue.paths import blob_store_root
+            if blob_store is None:
+                from polylogue.paths import blob_store_root
 
-            blob_store = BlobStore(blob_store_root())
+                blob_store = BlobStore(blob_store_root())
 
-        # Check if a local cache file exists (drive-cache or legacy path).
-        # If so, use it instead of re-downloading from Drive.
-        cache_path = drive_cache_file_path(source.path or Path(source.name), file_meta.name)
-        blob_hash: str | None = None
-        blob_size: int = 0
-        cache_exists = cache_path.exists()
-        if (
-            known_mtimes is not None
-            and file_meta.modified_time is not None
-            and known_mtimes.get(source_path) == file_meta.modified_time
-            and (not cache_exists or _cache_holds_readable_revision(cache_path, file_meta.modified_time))
-        ):
-            # Unchanged revision with a still-decodable cache: nothing here
-            # needs the payload, so nothing here reads it.
-            continue
+            # Cache identity follows the resolved folder and native file ID. Names
+            # are presentation metadata and cannot select another file's bytes.
+            blob_hash: str | None = None
+            blob_size: int = 0
+            cache_exists = cache_path.exists()
+            if (
+                known_mtimes is not None
+                and file_meta.modified_time is not None
+                and _parse_modified_time(file_meta.modified_time) is not None
+                and _parse_modified_time(known_mtimes.get(source_path)) == _parse_modified_time(file_meta.modified_time)
+                and (not cache_exists or _cache_holds_readable_revision(cache_path, file_meta.modified_time))
+            ):
+                # Unchanged revision with a still-decodable cache: nothing here
+                # needs the payload, so nothing here reads it.
+                continue
 
-        raw_bytes = _read_valid_cache(cache_path, file_meta.modified_time) if cache_exists else None
-        if raw_bytes is None:
+            raw_bytes = _read_valid_cache(cache_path, file_meta.modified_time) if cache_exists else None
+            if raw_bytes is None:
+                try:
+                    before = drive_client.get_metadata(file_meta.file_id, refresh=True)
+                    raw_bytes = drive_client.download_bytes(file_meta.file_id)
+                    after = drive_client.get_metadata(file_meta.file_id, refresh=True)
+                    if any(
+                        (observed.file_id, observed.mime_type, observed.modified_time, observed.size_bytes)
+                        != (file_meta.file_id, file_meta.mime_type, file_meta.modified_time, file_meta.size_bytes)
+                        for observed in (before, after)
+                    ):
+                        witness.changed = True
+                        continue
+                except DaemonOperationCancelled:
+                    raise
+                except Exception as exc:
+                    tracker.record_failure(file_name=file_meta.name, error=exc)
+                    witness.record_failure(source_path, "download", exc)
+                    logger.warning(
+                        "Failed to download Drive payload for %s (%s): %s",
+                        file_meta.name,
+                        file_meta.file_id,
+                        exc,
+                    )
+                    continue
+                try:
+                    _write_cache_atomically(cache_path, raw_bytes, file_meta.modified_time)
+                except DaemonOperationCancelled:
+                    raise
+                except Exception as exc:
+                    tracker.record_failure(file_name=file_meta.name, error=exc)
+                    witness.record_failure(source_path, "cache", exc)
+                    continue
+
             try:
-                raw_bytes = drive_client.download_bytes(file_meta.file_id)
+                blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 tracker.record_failure(file_name=file_meta.name, error=exc)
-                logger.warning(
-                    "Failed to download Drive payload for %s (%s): %s",
-                    file_meta.name,
-                    file_meta.file_id,
-                    exc,
-                )
+                witness.record_failure(source_path, "blob", exc)
                 continue
-            _write_cache_atomically(cache_path, raw_bytes, file_meta.modified_time)
+            del raw_bytes
 
-        blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
-        del raw_bytes
+            witness.record_acquired_revision(source_path, file_meta.modified_time)
+            provider_hint = Provider.from_string(source.name)
+            observe_acquisition(
+                observation_callback,
+                phase="drive-file-streamed",
+                source_path=source_path,
+                provider_hint=provider_hint,
+                blob_size=blob_size,
+                drive_file_id=file_meta.file_id,
+                drive_file_name=file_meta.name,
+                drive_modified_time=file_meta.modified_time,
+                drive_size_bytes=file_meta.size_bytes,
+            )
+            yield RawSessionData(
+                raw_bytes=b"",
+                source_path=source_path,
+                # The native source coordinate is independent of local cache and name.
+                canonical_source_path=source_path,
+                source_index=None,
+                file_mtime=file_meta.modified_time,
+                provider_hint=provider_hint,
+                blob_hash=blob_hash,
+                blob_size=blob_size,
+                blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
+            )
 
-        provider_hint = Provider.from_string(source.name)
-        observe_acquisition(
-            observation_callback,
-            phase="drive-file-streamed",
-            source_path=source_path,
-            provider_hint=provider_hint,
-            blob_size=blob_size,
-            drive_file_id=file_meta.file_id,
-            drive_file_name=file_meta.name,
-            drive_modified_time=file_meta.modified_time,
-            drive_size_bytes=file_meta.size_bytes,
-        )
-        yield RawSessionData(
-            raw_bytes=b"",
-            source_path=source_path,
-            source_index=None,
-            file_mtime=file_meta.modified_time,
-            provider_hint=provider_hint,
-            blob_hash=blob_hash,
-            blob_size=blob_size,
-            blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
-        )
+        witness.reobserve(drive_client)
+    finally:
+        if own_witness:
+            witness.close()
 
 
 __all__ = [

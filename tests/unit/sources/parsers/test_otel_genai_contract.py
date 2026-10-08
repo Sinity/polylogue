@@ -16,15 +16,15 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.origin_specs import SEMCONV_SCHEMA_URL, origin_specs
 from polylogue.sources.parsers import otel_genai
+from polylogue.sources.source_layout import export_drop_layout
 
 FIXTURE = Path(__file__).parents[3] / "fixtures" / "otel-genai" / "trace.json"
 
 
 def test_configured_file_root_acquires_and_archives_otel_trace(tmp_path: Path) -> None:
     """The configured OTel root must reach the ordinary live archive route."""
-    from polylogue.api import Polylogue
-    from polylogue.sources.live import LiveBatchProcessor, WatchSource
-    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live import WatchSource
+    from tests.infra.live_batch import prepared_live_batch_processor
 
     async def ingest() -> tuple[Path, Path, Path, Any]:
         source_root = tmp_path / "configured-otel-root"
@@ -32,18 +32,15 @@ def test_configured_file_root_acquires_and_archives_otel_trace(tmp_path: Path) -
         source_path = source_root / "trace.json"
         shutil.copyfile(FIXTURE, source_path)
 
-        archive = Polylogue(archive_root=tmp_path / "archive")
-        processor = LiveBatchProcessor(
-            archive,
-            (WatchSource(name="otel-genai", root=source_root, suffixes=(".json",)),),
-            cursor=CursorStore(archive.backend.db_path),
+        archive_root = tmp_path / "archive"
+        # The live processor publishes through the daemon's retained Raw owner.
+        async with prepared_live_batch_processor(
+            archive_root,
+            (WatchSource(name="otel-genai", root=source_root, layout=export_drop_layout((".json",))),),
             parser_fingerprint="test-otel-parser",
-        )
-        try:
+        ) as processor:
             result = await processor.ingest_files([source_path], emit_event=False)
-            return source_path, archive.archive_root / "source.db", archive.archive_root / "index.db", result
-        finally:
-            await archive.close()
+        return source_path, archive_root / "source.db", archive_root / "index.db", result
 
     source_path, source_db, index_db, result = asyncio.run(ingest())
 

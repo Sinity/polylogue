@@ -10,6 +10,7 @@ from typing import Any, NoReturn, cast
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon import embedding_backlog, embedding_owner
 from polylogue.daemon.derivation import (
     BaseDerivation,
@@ -22,7 +23,6 @@ from polylogue.daemon.derivation import (
     WorkCounters,
     converge,
 )
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.status import format_daemon_status_lines
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 
@@ -67,7 +67,7 @@ def test_periodic_embedding_backlog_waits_for_watcher_registration(monkeypatch: 
     assert calls == [None]
 
 
-def test_embedding_admission_bounds_no_timeout_wait_on_owner_loop_liveness() -> None:
+def test_embedding_admission_bounds_no_timeout_wait_on_owner_loop_liveness(tmp_path: Path) -> None:
     """The surviving embedding bridge call cannot strand its caller forever.
 
     The embedding owner deliberately passes ``None`` as its wait budget: an
@@ -88,7 +88,7 @@ def test_embedding_admission_bounds_no_timeout_wait_on_owner_loop_liveness() -> 
 
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
-        coordinator = DaemonWriteCoordinator()
+        coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
         bridge = DaemonWriteThreadBridge(coordinator, loop, timeout=0.05)
 
         async def compose() -> None:

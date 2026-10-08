@@ -1,14 +1,17 @@
-"""Browser-capture envelopes read as a stream, never held whole.
+"""Browser-capture envelope facts folded from retained bytes.
 
 A capture is admitted from a staged file of any size. One streamed pass
 validates the envelope and folds every fact spool admission decides from --
 identity, turn count, deduplication fingerprint, attachment identities and
 carriers, accepted message identities, native-payload shape -- so memory is
-bounded by the largest single turn or attachment, not by the capture.
-``raw_provider_payload`` (a provider transcript as large as the capture
-itself) and the open-ended ``provider_meta`` objects are never materialized:
+proportional to individual turns or attachments in the ordinary fold.
+The ordinary fold does not materialize ``raw_provider_payload`` (a provider
+transcript as large as the capture itself) or open-ended ``provider_meta``:
 each contributes a structural digest (plus, for the raw payload, the shape of
-its root fields).
+its root fields). Native state-only turns additionally need canonical parser
+evidence. Preparation can supply its existing scratch-backed witness; an
+independent replay derives it from the original native model, whose token,
+record and session allocations remain an explicit memory limitation.
 """
 
 from __future__ import annotations
@@ -19,10 +22,10 @@ import fcntl
 import hashlib
 import os
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Literal
+from typing import IO, BinaryIO, Literal
 
 import ijson
 from pydantic import ValidationError
@@ -41,6 +44,7 @@ from polylogue.browser_capture.models import (
     BrowserCaptureProvenance,
     BrowserCaptureSession,
     BrowserCaptureTurn,
+    _CanonicalNativeTurnWitness,
     envelope_has_native_provider_payload,
 )
 from polylogue.core.enums import Provider
@@ -59,6 +63,12 @@ STAGING_DIRNAME = ".staging"
 # deduplication fingerprint, while retaining any future semantic backfill
 # metadata a provider might add.
 _BACKFILL_OBSERVER_ATTRIBUTION_KEYS = frozenset({"job_id", "queue_id", "instance_id"})
+
+# These fields describe which retained raw revision produced a prepared asset
+# and what the receiver acquired for it. They remain in the serialized
+# envelope and its content fingerprint; they are not intrinsic attachment
+# identity when two snapshots of the same provider session are compared.
+_ATTACHMENT_RAW_COORDINATE_KEYS = frozenset({"native_attachment_ordinal", "native_turn_ordinal", "native_raw_position"})
 
 _DEDUP_DOMAIN = b"polylogue-browser-capture-dedup/v2\x00"
 
@@ -86,6 +96,11 @@ class CaptureEnvelopeError(ValueError):
 
 class CaptureBodyIncompleteError(ValueError):
     """The request ended before its declared ``Content-Length``."""
+
+
+class _NativeWitnessRequiredError(CaptureEnvelopeError):
+    def __init__(self) -> None:
+        super().__init__("invalid_payload", "state-only turn requires canonical native content")
 
 
 class SpoolStorageExhaustedError(RuntimeError):
@@ -122,6 +137,44 @@ class StagedCapture:
         if self._lock_fd is not None:
             os.close(self._lock_fd)
             self._lock_fd = None
+
+
+def stage_retained_capture(
+    handle: BinaryIO, artifact_path: Path, *, size_bytes: int, sha256: str, spool_root: Path
+) -> StagedCapture:
+    """Borrow an immutable rooted artifact for ordinary spool publication.
+
+    Admission moves only this staging link. The registry's original artifact
+    and its custody roots survive publication, cancellation and response loss.
+    The shared inode lock excludes stale-stage and unrooted-artifact reaping.
+    """
+    directory = spool_root / STAGING_DIRNAME
+    directory.mkdir(parents=True, exist_ok=True)
+    fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+    placeholder_fd, name = tempfile.mkstemp(prefix=_STAGING_PREFIX, suffix=_STAGING_SUFFIX, dir=directory)
+    path = Path(name)
+    lock_fd = None
+    try:
+        fcntl.flock(placeholder_fd, fcntl.LOCK_EX)
+        path.unlink()
+        os.link(artifact_path, path)
+        lock_fd = os.open(path, os.O_RDONLY)
+        fcntl.flock(lock_fd, fcntl.LOCK_SH)
+        expected = os.fstat(handle.fileno())
+        actual = os.fstat(lock_fd)
+        if (actual.st_dev, actual.st_ino, actual.st_size) != (expected.st_dev, expected.st_ino, size_bytes):
+            raise CaptureEnvelopeError("invalid_payload", "retained capture artifact changed")
+        with os.fdopen(os.dup(lock_fd), "rb") as linked:
+            if hashlib.file_digest(linked, "sha256").hexdigest() != sha256:
+                raise CaptureEnvelopeError("invalid_payload", "retained capture artifact digest mismatch")
+        return StagedCapture(path, size_bytes, sha256, lock_fd)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        if lock_fd is not None:
+            os.close(lock_fd)
+        raise
+    finally:
+        os.close(placeholder_fd)
 
 
 def _available_bytes(directory: Path) -> int:
@@ -184,28 +237,55 @@ def stage_capture_body(read: Callable[[int], bytes], length: int, *, spool_root:
     so no body is held in memory. The staged file is fsynced and stays locked
     until the caller publishes it by ``os.replace`` or discards it.
     """
+
+    def chunks() -> Iterator[bytes]:
+        remaining = length
+        while remaining > 0:
+            chunk = read(min(CAPTURE_READ_CHUNK_BYTES, remaining))
+            if not chunk:
+                raise CaptureBodyIncompleteError(f"request body ended {remaining} bytes before its declared length")
+            remaining -= len(chunk)
+            yield chunk
+
+    return stage_capture_chunks(chunks(), spool_root=spool_root, durable=True, reserved_length=length)
+
+
+def stage_capture_chunks(
+    chunks: Iterator[bytes], *, spool_root: Path, durable: bool = True, reserved_length: int | None = None
+) -> StagedCapture:
+    """Seal generated artifact bytes through the same locked staging owner.
+
+    A received File reserves its known length before reading. A generated
+    prefix/final artifact has no declared length: actual filesystem exhaustion
+    remains a typed refusal, and no arbitrary body limit is substituted.
+    Publication bytes are fsynced before their artifact owner adopts them.
+    Transient JSON cells and responses are flushed for their immediate reader;
+    their durable authority is the committed registry, not this scratch file.
+    The caller's chunk/token allocation remains its own memory contract.
+    """
     staging = spool_root / STAGING_DIRNAME
     staging.mkdir(parents=True, exist_ok=True)
     fd, path = _locked_staging_file(staging)
     digest = hashlib.sha256()
-    remaining = length
+    size = 0
     try:
-        _reserve(fd, staging, length)
+        if reserved_length is not None:
+            _reserve(fd, staging, reserved_length)
         with os.fdopen(os.dup(fd), "wb") as handle:
-            while remaining > 0:
-                chunk = read(min(CAPTURE_READ_CHUNK_BYTES, remaining))
-                if not chunk:
-                    raise CaptureBodyIncompleteError(f"request body ended {remaining} bytes before its declared length")
+            for chunk in chunks:
+                size += len(chunk)
                 handle.write(chunk)
                 digest.update(chunk)
-                remaining -= len(chunk)
             handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
+            if durable:
+                os.fsync(handle.fileno())
+    except BaseException as exc:
         path.unlink(missing_ok=True)
         os.close(fd)
+        if isinstance(exc, OSError) and is_storage_exhausted(exc):
+            raise SpoolStorageExhaustedError(size, None) from exc
         raise
-    return StagedCapture(path=path, size_bytes=length, sha256=digest.hexdigest(), lock_fd=fd)
+    return StagedCapture(path=path, size_bytes=size, sha256=digest.hexdigest(), lock_fd=fd)
 
 
 def reap_stale_staging(spool_root: Path) -> int:
@@ -248,30 +328,60 @@ def is_storage_exhausted(exc: OSError) -> bool:
 class AttachmentFact:
     """What convergence compares about one attachment, without its bytes.
 
-    ``identity`` digests the fields that identify the observed object;
-    ``carrier`` digests the decoded ``content_base64`` bytes (``None`` when the
-    attachment carries none); ``carrier_valid`` is false for a malformed one.
+    ``identity`` digests the stable observed provider descriptor;
+    ``size_bytes`` is compatible evidence (unknown may be enriched);
+    ``carrier`` digests the decoded ``content_base64`` bytes; ``inline_carrier``
+    and ``data_carrier`` digest the corresponding fallback fields. A digest is
+    ``None`` when that carrier is absent; its validity flag is false when the
+    field is present but malformed.
     ``scope`` (``session`` or ``turn:<provider_turn_id>``) and ``attachment_id``
     locate it: attachment IDs need not be unique, and a turn inserted before
     another must not pair its attachments with the other turn's.
     """
 
     identity: bytes
+    size_bytes: int | None
     carrier: bytes | None
     carrier_valid: bool
     scope: str
     attachment_id: str
+    message_provider_id: str | None
     #: Digest of the ``inline_base64``/``data`` bytes an attachment already
     #: carries (``None`` when neither is present; an empty string is present).
     inline_carrier: bytes | None = None
     inline_valid: bool = True
+    data_carrier: bytes | None = None
+    data_valid: bool = True
 
     @property
     def effective_carrier(self) -> tuple[bytes | None, bool]:
-        """The bytes this attachment carries by any carrier, and their validity."""
-        if self.carrier is not None:
-            return self.carrier, self.carrier_valid
-        return self.inline_carrier, self.inline_valid
+        """The preferred present carrier and its validity."""
+        for digest, valid in (
+            (self.carrier, self.carrier_valid),
+            (self.inline_carrier, self.inline_valid),
+            (self.data_carrier, self.data_valid),
+        ):
+            if digest is not None:
+                return digest, valid
+        return None, True
+
+    @property
+    def carrier_evidence(self) -> tuple[tuple[bytes, bool], ...]:
+        """Every present encoded byte carrier, preserving malformed evidence."""
+        return tuple(
+            (digest, valid)
+            for digest, valid in (
+                (self.carrier, self.carrier_valid),
+                (self.inline_carrier, self.inline_valid),
+                (self.data_carrier, self.data_valid),
+            )
+            if digest is not None
+        )
+
+    @property
+    def has_invalid_or_conflicting_carrier(self) -> bool:
+        evidence = self.carrier_evidence
+        return any(not valid for _, valid in evidence) or len({digest for digest, _ in evidence}) > 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,8 +399,9 @@ class CaptureSummary:
     observation-specific provenance: an extension instance and its capture
     time identify *who saw* a snapshot, not a different session revision, so
     two concurrently running instances converge on one spool artifact while
-    each poster's attribution is still echoed. ``carrierless_fingerprint`` is
-    the same fingerprint with every ``content_base64`` carrier removed.
+    each poster's attribution is still echoed. ``carrierless_fingerprint``
+    keeps the ordered stable attachment descriptors while omitting byte
+    carriers, acquisition outcomes and raw-revision attachment coordinates.
     """
 
     head: BrowserCaptureEnvelope
@@ -327,56 +438,69 @@ def carrier_digest(value: str) -> bytes | None:
 
 
 def _attachment_fact(attachment: BrowserCaptureAttachment, *, scope: str) -> AttachmentFact:
-    identity = dumps_bytes(
-        [
-            attachment.provider_attachment_id,
-            attachment.message_provider_id,
-            attachment.attachment_kind,
-            attachment.name,
-            attachment.mime_type,
-            attachment.size_bytes,
-            attachment.url,
-            attachment.extracted_content,
-            attachment.inline_base64,
-            attachment.data,
-            attachment.provider_meta,
-        ],
-        sort_keys=True,
-    )
-    carrier: bytes | None = None
-    valid = True
-    if attachment.content_base64 is not None:
-        decoded_digest = carrier_digest(attachment.content_base64)
-        valid = decoded_digest is not None
-        carrier = decoded_digest if decoded_digest is not None else hashlib.sha256(b"").digest()
-    inline_value = attachment.inline_base64 if attachment.inline_base64 is not None else attachment.data
-    inline_carrier: bytes | None = None
-    inline_valid = True
-    if inline_value is not None:
-        inline_digest = carrier_digest(inline_value)
-        inline_valid = inline_digest is not None
-        inline_carrier = inline_digest if inline_digest is not None else hashlib.sha256(b"").digest()
+    identity = dumps_bytes(_attachment_comparison_payload(attachment), sort_keys=True)
+
+    def digest(value: str | None) -> tuple[bytes | None, bool]:
+        if value is None:
+            return None, True
+        decoded = carrier_digest(value)
+        return (decoded if decoded is not None else hashlib.sha256(b"").digest()), decoded is not None
+
+    carrier, valid = digest(attachment.content_base64)
+    inline_carrier, inline_valid = digest(attachment.inline_base64)
+    data_carrier, data_valid = digest(attachment.data)
     return AttachmentFact(
         identity=hashlib.sha256(identity).digest(),
+        size_bytes=attachment.size_bytes,
         carrier=carrier,
         carrier_valid=valid,
         scope=scope,
         attachment_id=attachment.provider_attachment_id,
+        message_provider_id=attachment.message_provider_id,
         inline_carrier=inline_carrier,
         inline_valid=inline_valid,
+        data_carrier=data_carrier,
+        data_valid=data_valid,
     )
+
+
+def _attachment_comparison_payload(attachment: BrowserCaptureAttachment) -> dict[str, object]:
+    """Return stable observed descriptors, separate from size and acquired bytes.
+
+    Size is retained as compatible evidence: absence may be enriched, while
+    two known unequal sizes conflict. Inline and content carriers are compared
+    by decoded bytes in ``AttachmentFact``. The explicit acquisition and
+    raw-coordinate fields stay in the envelope. They do not change identity
+    across retained revisions when a nonempty provider message owner is
+    present; id-less attachments retain those ordinal constraints.
+    """
+    stable_owner = bool(attachment.message_provider_id)
+    provider_meta = {
+        key: value
+        for key, value in attachment.provider_meta.items()
+        if key not in {"asset_acquisition", "content_sha256"}
+        and (not stable_owner or key not in _ATTACHMENT_RAW_COORDINATE_KEYS)
+    }
+    return {
+        "provider_attachment_id": attachment.provider_attachment_id,
+        "message_provider_id": attachment.message_provider_id,
+        "attachment_kind": attachment.attachment_kind,
+        "name": attachment.name,
+        "mime_type": attachment.mime_type,
+        "url": attachment.url,
+        "extracted_content": attachment.extracted_content,
+        "provider_meta": provider_meta,
+    }
+
+
+def _attachment_comparison_dump(attachments: list[BrowserCaptureAttachment]) -> list[dict[str, object]]:
+    """Keep attachment occurrences and order while folding stable descriptors."""
+    return [_attachment_comparison_payload(attachment) for attachment in attachments]
 
 
 def _framed(digest: hashlib._Hash, payload: bytes) -> None:
     digest.update(len(payload).to_bytes(8, "big"))
     digest.update(payload)
-
-
-def _without_carriers(attachments: object) -> None:
-    if isinstance(attachments, list):
-        for attachment in attachments:
-            if isinstance(attachment, dict):
-                attachment.pop("content_base64", None)
 
 
 @dataclass
@@ -388,11 +512,12 @@ class _ItemFold:
     carrierless: hashlib._Hash = field(default_factory=hashlib.sha256)
     attachments: list[AttachmentFact] = field(default_factory=list)
     identities: list[tuple[str, BrowserCaptureIdentityObservation]] = field(default_factory=list)
+    native_witness: _CanonicalNativeTurnWitness | None = None
 
     def add_turn(self, turn: BrowserCaptureTurn) -> None:
         dump = turn.model_dump(mode="json", exclude_none=True)
         _framed(self.digest, dumps_bytes(dump, sort_keys=True))
-        _without_carriers(dump.get("attachments"))
+        dump["attachments"] = _attachment_comparison_dump(turn.attachments)
         _framed(self.carrierless, dumps_bytes(dump, sort_keys=True))
         scope = f"turn:{turn.provider_turn_id}"
         self.attachments.extend(_attachment_fact(attachment, scope=scope) for attachment in turn.attachments)
@@ -401,7 +526,15 @@ class _ItemFold:
         self.count += 1
 
     def add_raw_turn(self, item: object) -> None:
-        self.add_turn(BrowserCaptureTurn.model_validate(item))
+        if self.native_witness is None and isinstance(item, Mapping):
+            text = item.get("text")
+            if (
+                (text is None or isinstance(text, str) and not text.strip())
+                and not item.get("blocks")
+                and not item.get("attachments")
+            ):
+                raise _NativeWitnessRequiredError()
+        self.add_turn(BrowserCaptureTurn.model_validate(item, context={"canonical_native_turns": self.native_witness}))
 
     def add_raw_attachment(self, item: object) -> None:
         self.add_attachment(BrowserCaptureAttachment.model_validate(item))
@@ -409,8 +542,7 @@ class _ItemFold:
     def add_attachment(self, attachment: BrowserCaptureAttachment) -> None:
         dump = attachment.model_dump(mode="json", exclude_none=True)
         _framed(self.digest, dumps_bytes(dump, sort_keys=True))
-        dump.pop("content_base64", None)
-        _framed(self.carrierless, dumps_bytes(dump, sort_keys=True))
+        _framed(self.carrierless, dumps_bytes(_attachment_comparison_payload(attachment), sort_keys=True))
         self.attachments.append(_attachment_fact(attachment, scope="session"))
         self.count += 1
 
@@ -445,10 +577,6 @@ def _object_digest(members: dict[str, bytes]) -> bytes:
         _framed(digest, key.encode("utf-8", "surrogatepass"))
         digest.update(members[key])
     return digest.digest()
-
-
-#: Root scalars of ``raw_provider_payload`` that native-payload detection reads.
-_SHAPE_SCALAR_KEYS = frozenset({"polylogue_bridge_projection"})
 
 
 def _scalar_digest(value: object) -> bytes:
@@ -549,7 +677,11 @@ def _read_raw_payload(events: Iterator[_Event], event: str, value: object) -> _R
         elif event == "start_array":
             shape[key] = []
         else:
-            shape[key] = value if key in _SHAPE_SCALAR_KEYS else None
+            shape[key] = (
+                "chatgpt-native-compact-v1"
+                if key == "polylogue_bridge_projection" and value == "chatgpt-native-compact-v1"
+                else None
+            )
         members[key] = _structural_digest(events, event, value)
     return _RawFold(digest=_object_digest(members), shape=shape)
 
@@ -627,7 +759,9 @@ def _read_list(
         add(_build(events, event, value))
 
 
-def _read_session(events: Iterator[_Event], event: str) -> _SessionFold:
+def _read_session(
+    events: Iterator[_Event], event: str, native_witness: _CanonicalNativeTurnWitness | None = None
+) -> _SessionFold:
     if event != "start_map":
         raise CaptureEnvelopeError("invalid_payload", "session must be an object")
     session = _SessionFold()
@@ -638,7 +772,7 @@ def _read_session(events: Iterator[_Event], event: str) -> _SessionFold:
         key = str(value)
         event, value = next(events)
         if key == "turns":
-            session.turns = _ItemFold()
+            session.turns = _ItemFold(native_witness=native_witness)
             _read_list(events, event, key, session.turns.add_raw_turn)
         elif key == "attachments":
             session.attachments = _ItemFold()
@@ -651,7 +785,9 @@ def _read_session(events: Iterator[_Event], event: str) -> _SessionFold:
             _skip(events, event)
 
 
-def summarize_capture_stream(handle: IO[bytes]) -> CaptureSummary:
+def _summarize_capture_stream(
+    handle: IO[bytes], *, native_witness: _CanonicalNativeTurnWitness | None = None
+) -> CaptureSummary:
     """Validate and fold one capture envelope in a single streamed pass."""
     events: Iterator[_Event] = _json_events(handle)
     root: dict[str, object] = {}
@@ -670,7 +806,7 @@ def summarize_capture_stream(handle: IO[bytes]) -> CaptureSummary:
             key = str(value)
             event, value = next(events)
             if key == "session":
-                session = _read_session(events, event)
+                session = _read_session(events, event, native_witness)
             elif key == "raw_provider_payload":
                 raw = _read_raw_payload(events, event, value)
             elif key == "provider_meta":
@@ -696,6 +832,79 @@ def summarize_capture_stream(handle: IO[bytes]) -> CaptureSummary:
             raise
         raise CaptureEnvelopeError("invalid_payload", repr(exc)) from exc
     return _summary(root, session, raw, meta_digest=meta_digest, provenance_meta_digest=provenance_meta_digest)
+
+
+def _native_witness_from_stream(handle: IO[bytes]) -> _CanonicalNativeTurnWitness:
+    """Parse this retained raw revision, without materializing typed turns.
+
+    Native preparation supplies its existing scratch-backed witness directly.
+    Independent spool replay uses the ordinary native model route here, whose
+    provider/session allocation remains an explicit memory limitation.
+    """
+    from polylogue.browser_capture.identity import legacy_browser_capture_native_id
+    from polylogue.sources.parsers.browser_capture import parse_native_payload
+
+    events = _json_events(handle)
+    event, _ = next(events)
+    if event != "start_map":
+        raise CaptureEnvelopeError("invalid_payload", "capture envelope must be an object")
+    provider = Provider.UNKNOWN
+    native_id = None
+    raw = None
+    for event, value in events:
+        if event == "end_map":
+            break
+        key = str(value)
+        event, value = next(events)
+        if key == "raw_provider_payload":
+            raw = _build(events, event, value)
+        elif key == "session" and event == "start_map":
+            while True:
+                event, value = next(events)
+                if event == "end_map":
+                    break
+                field_name = str(value)
+                event, value = next(events)
+                if field_name == "provider" and event == "string":
+                    provider = Provider.from_string(str(value))
+                elif field_name == "provider_session_id" and event == "string":
+                    native_id = str(value)
+                else:
+                    _skip(events, event)
+        else:
+            _skip(events, event)
+    if not native_id:
+        raise CaptureEnvelopeError("invalid_payload", "state-only turn requires a native conversation")
+    parsed = parse_native_payload(provider, raw, legacy_browser_capture_native_id(provider, native_id) or native_id)
+    return _CanonicalNativeTurnWitness(parsed.messages)
+
+
+def summarize_capture_stream(
+    handle: IO[bytes], *, native_witness: _CanonicalNativeTurnWitness | None = None
+) -> CaptureSummary:
+    """Fold a capture, deriving native evidence only for actual state-only turns."""
+    if not handle.seekable():
+        # A replayable file is necessary only to inspect original native bytes
+        # after a state-only turn is found. Never reject a valid stream solely
+        # because its source does not implement seek.
+        with tempfile.TemporaryFile(mode="w+b") as retained:
+            while part := handle.read(CAPTURE_READ_CHUNK_BYTES):
+                retained.write(part)
+            retained.seek(0)
+            return summarize_capture_stream(retained, native_witness=native_witness)
+    start = handle.tell()
+    try:
+        return _summarize_capture_stream(handle, native_witness=native_witness)
+    except _NativeWitnessRequiredError:
+        if native_witness is not None:
+            raise
+    handle.seek(start)
+    try:
+        witness = _native_witness_from_stream(handle)
+    except (ValueError, StopIteration, ijson.JSONError) as exc:
+        raise CaptureEnvelopeError("invalid_payload", str(exc)) from exc
+    handle.seek(start)
+    return _summarize_capture_stream(handle, native_witness=witness)
 
 
 def _require_well_formed(events: Iterator[_Event]) -> None:
@@ -798,9 +1007,9 @@ def _turn_fidelities(
     )
 
 
-def summarize_capture_file(path: Path) -> CaptureSummary:
+def summarize_capture_file(path: Path, *, native_witness: _CanonicalNativeTurnWitness | None = None) -> CaptureSummary:
     with path.open("rb") as handle:
-        return summarize_capture_stream(handle)
+        return summarize_capture_stream(handle, native_witness=native_witness)
 
 
 def read_capture_state_fields(path: Path) -> tuple[object, object]:
@@ -863,6 +1072,8 @@ __all__ = [
     "read_capture_state_fields",
     "reap_stale_staging",
     "stage_capture_body",
+    "stage_capture_chunks",
+    "stage_retained_capture",
     "summarize_capture_file",
     "summarize_capture_stream",
 ]

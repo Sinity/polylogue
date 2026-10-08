@@ -29,12 +29,7 @@ The three observable outcomes are:
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import stat
-import tempfile
-from collections.abc import Callable, Mapping
-from contextlib import suppress
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,138 +41,21 @@ from polylogue.paths import archive_root
 
 if TYPE_CHECKING:
     from polylogue.demo import DemoVerifyResult
+    from polylogue.operations.import_operations import ImportSourceAdmission
 
 # Statuses that mean the daemon accepted scheduling and the work is now
 # observable through ``polylogue ops status``.
 _ACCEPTED_STATUSES = frozenset({"accepted", "pending", "scheduled", "queued"})
 
 
-def _clone_file(
-    source: str | Path, destination: str | Path, *, before_publish: Callable[[], None] | None = None
-) -> Path:
-    """Stage one regular file by reflink where supported, else by copy.
-
-    Account exports run to tens of gigabytes; on a copy-on-write filesystem a
-    reflink stages them without duplicating the bytes. The staged entry is
-    replaced only once the new copy is complete, so a failed restage keeps
-    the earlier import.
-    """
-    from polylogue.core.durable_fs import clone_or_copy_replace
-
-    destination_path = Path(destination)
-    clone_or_copy_replace(Path(source), destination_path, before_publish=before_publish)
-    return destination_path
-
-
-def _remove_staged_entry(entry: Path) -> None:
-    """Remove a staged file or tree, including one with read-only directories.
-
-    ``copytree`` copies each source directory's mode after its contents, so a
-    ``0555`` export directory is read-only once staged and its members could
-    not be unlinked without first making it owner-writable again.
-    """
-    if entry.is_dir() and not entry.is_symlink():
-        for directory, _subdirectories, _files in os.walk(entry):
-            mode = stat.S_IMODE(os.stat(directory).st_mode)
-            if not mode & stat.S_IWUSR:
-                os.chmod(directory, mode | stat.S_IWUSR)
-        shutil.rmtree(entry)
-    else:
-        entry.unlink(missing_ok=True)
-
-
-def _stage_directory(source: Path, dest: Path) -> None:
-    """Stage ``source`` at ``dest`` as an exact copy of the tree.
-
-    The ingest operation keys every staged member on its path under the
-    caller's ``source_path``, so the staged tree must hold exactly the
-    source's members: copying over an earlier staging of a same-named tree
-    would acquire that tree's leftovers as members of this one. The copy is
-    built in a fresh sibling and swapped in only once complete, so a failed
-    restage leaves the earlier staged tree as it was.
-    """
-    # Short fixed prefixes: embedding the destination name could push a valid
-    # 255-byte name past the filesystem's component limit.
-    fresh = Path(tempfile.mkdtemp(prefix=".stage-", dir=dest.parent))
-    try:
-        shutil.copytree(source, fresh, dirs_exist_ok=True, copy_function=_clone_file)
-    except BaseException:
-        _remove_staged_entry(fresh)
-        raise
-    if not (dest.exists() or dest.is_symlink()):
-        fresh.rename(dest)
-        return
-    retired_root = Path(tempfile.mkdtemp(prefix=".retired-", dir=dest.parent))
-    retired = retired_root / "entry"
-    try:
-        dest.rename(retired)
-        try:
-            fresh.rename(dest)
-        except BaseException:
-            retired.rename(dest)
-            raise
-    except BaseException:
-        _remove_staged_entry(fresh)
-        raise
-    finally:
-        # Only once one tree is in place: an earlier tree that could not be
-        # put back stays in its retired sibling rather than being deleted.
-        if dest.exists():
-            with suppress(FileNotFoundError):
-                _remove_staged_entry(retired_root)
-
-
-def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
-    """Stage a local import target for the daemon's ``ingest`` operation."""
-    from polylogue.operations.import_staging import import_staging_root
-    from polylogue.sources.parsers import antigravity, hermes_state
-    from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
-
-    resolved = path.expanduser().resolve()
-    if not resolved.exists():
-        fail("import", f"Path does not exist: {resolved}")
-
-    staging = import_staging_root(archive_root())
-    staging.mkdir(parents=True, exist_ok=True)
-    dest = staging / resolved.name
-
-    if dest.exists() and resolved == dest.resolve():
-        return dest
+def _stage_for_daemon(path: Path) -> Path:
+    """Capture one private import slot with its immutable outside receipt."""
+    from polylogue.operations.import_staging import stage_import_input
 
     try:
-        if replace_existing and dest.exists():
-            _remove_staged_entry(dest)
-        if hermes_state.looks_like_state_db_path(resolved) or antigravity.looks_like_trajectory_db_path(resolved):
-            stage_sqlite_snapshot(resolved, dest)
-            return dest
-        # A restaged non-snapshot has no SQLite provenance. An earlier staged
-        # snapshot keeps its sidecar for the whole copy: the sidecar is
-        # retired only once the replacement is complete, directly before the
-        # rename that publishes it, and restored if that publication fails.
-        metadata_path = sqlite_staging_metadata_path(dest)
-        if resolved.is_dir():
-            _stage_directory(resolved, dest)
-            metadata_path.unlink(missing_ok=True)
-        else:
-            retired: list[bytes] = []
-
-            def retire_provenance() -> None:
-                with suppress(FileNotFoundError):
-                    retired.append(metadata_path.read_bytes())
-                    metadata_path.unlink()
-
-            try:
-                _clone_file(resolved, dest, before_publish=retire_provenance)
-            except OSError:
-                if retired:
-                    from polylogue.core.durable_fs import atomic_replace
-
-                    atomic_replace(metadata_path, retired[0], mode=0o600)
-                raise
-    except OSError as exc:
-        fail("import", f"Could not stage {resolved} for import: {exc}")
-
-    return dest
+        return stage_import_input(path, archive_root(), check_stop=lambda: None)
+    except (OSError, ValueError) as exc:
+        fail("import", f"Could not stage {path} for import: {exc}")
 
 
 def _materialize_demo_source() -> Path:
@@ -284,7 +162,7 @@ def _daemon_endpoint(config: object) -> str:
     return str(daemon_socket_path(config.archive_root))  # type: ignore[attr-defined]
 
 
-def _preflight_or_fail(staged: Path) -> None:
+def _preflight_or_fail(staged: Path) -> ImportSourceAdmission:
     """Refuse an inadmissible source before asking the daemon to schedule it.
 
     The daemon runs the same read-only admissibility check before it accepts
@@ -292,18 +170,24 @@ def _preflight_or_fail(staged: Path) -> None:
     "this export shape is not parseable" without a scheduled operation that
     can only fail later.
     """
-    from polylogue.operations.import_operations import import_source_admissibility
+    from polylogue.operations.import_operations import prepare_import_source_admission
 
-    preflight = import_source_admissibility(staged)
+    try:
+        admission = prepare_import_source_admission(staged)
+    except (OSError, ValueError) as exc:
+        fail("import", f"Staged input could not be authenticated: {exc}")
+    preflight = admission.preflight
     if preflight.admissible:
-        return
+        return admission
     fail(
         "import",
         f"{preflight.error_code}: {preflight.summary()}\n  The staged copy was left in place at {staged}.",
     )
 
 
-def _submit_ingest(env: AppEnv, *, staged: Path, requested_source: Path) -> tuple[dict[str, object], dict[str, object]]:
+def _submit_ingest(
+    env: AppEnv, *, staged: Path, admission: ImportSourceAdmission
+) -> tuple[dict[str, object], dict[str, object]]:
     """Submit the declared ``ingest`` operation and report its acceptance.
 
     Returns an :class:`~polylogue.operations.import_contracts.ImportOperation`
@@ -324,7 +208,8 @@ def _submit_ingest(env: AppEnv, *, staged: Path, requested_source: Path) -> tupl
     config = load_effective_config(env)
     payload: dict[str, object] = {
         "path": str(staged),
-        "source_path": str(requested_source.expanduser().resolve()),
+        "source_path": admission.request.source_path,
+        "source_name": admission.request.source_name,
         "idempotency_key": None,
     }
     try:
@@ -473,7 +358,7 @@ def import_command(
         if path is not None:
             fail("import", "Use either PATH or --demo, not both.")
         requested_source = _materialize_demo_source()
-        staged = _stage_for_daemon(requested_source, replace_existing=True)
+        staged = _stage_for_daemon(requested_source)
     else:
         if path is None:
             fail("import", "Provide a source PATH or pass --demo.")
@@ -482,8 +367,8 @@ def import_command(
 
     from polylogue.cli.shared.helpers import load_effective_config
 
-    _preflight_or_fail(staged)
-    raw, accepted_envelope = _submit_ingest(env, staged=staged, requested_source=requested_source)
+    admission = _preflight_or_fail(staged)
+    raw, accepted_envelope = _submit_ingest(env, staged=staged, admission=admission)
 
     from polylogue.operations.import_contracts import ImportOperation
 

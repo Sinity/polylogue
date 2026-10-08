@@ -25,14 +25,17 @@ from polylogue.sources.parsers.base import (
 from polylogue.sources.parsers.claude import parse_ai
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import _attachment_id, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.identity import archive_message_id
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -92,7 +95,7 @@ def test_inline_attachment_bytes_are_stored_with_true_hash(tmp_path: Path, monke
             inline_bytes=payload,
         )
     )
-    write_parsed_session_to_archive(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
+    write_fixture_index_session(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
 
     row = conn.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
     assert row["acquisition_status"] == "acquired"
@@ -125,7 +128,7 @@ def test_precomputed_blob_attachment_is_stored_as_acquired(tmp_path: Path, monke
     preacquired: dict[int, tuple[bytes | None, int, str]] = {
         id(attachment): (bytes.fromhex(blob_hash), size, "acquired")
     }
-    write_parsed_session_to_archive(conn, session, preacquired_attachment_blobs=preacquired)
+    write_fixture_index_session(conn, session, preacquired_attachment_blobs=preacquired)
 
     row = conn.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
     assert row["acquisition_status"] == "acquired"
@@ -152,7 +155,7 @@ def test_prepared_attachment_preacquisition_survives_a_fresh_row_read(tmp_path: 
         acquisition_key = attachments[0].acquisition_key
         assert acquisition_key == attachments[0].acquisition_key
         conn = _connect(tmp_path / "index.db")
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             session,
             preacquired_attachment_blobs={acquisition_key: (bytes.fromhex(blob_hash), size, "acquired")},
@@ -176,7 +179,7 @@ def test_low_level_writer_rejects_precomputed_blob_without_preacquisition(tmp_pa
     )
 
     with pytest.raises(ValueError, match="preacquired_attachment_blobs"):
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
 
 
 def test_attachment_without_bytes_is_marked_unfetched_not_faked(
@@ -186,7 +189,7 @@ def test_attachment_without_bytes_is_marked_unfetched_not_faked(
     monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
 
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(
+    write_fixture_index_session(
         conn,
         _session_with_attachment(
             ParsedAttachment(
@@ -241,7 +244,7 @@ def test_claude_extracted_attachment_content_is_acquired(tmp_path: Path, monkeyp
     )
     conn = _connect(tmp_path / "index.db")
 
-    write_parsed_session_to_archive(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
+    write_fixture_index_session(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
 
     rows = conn.execute(
         """
@@ -308,7 +311,7 @@ def test_claude_content_base64_preserves_non_utf8_bytes_and_identity(
     assert binary.attachments[0].inline_bytes == payload
 
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(conn, binary, preacquired_attachment_blobs=_preacquired(store, binary))
+    write_fixture_index_session(conn, binary, preacquired_attachment_blobs=_preacquired(store, binary))
     row = conn.execute("SELECT attachment_id, blob_hash, acquisition_status FROM attachments").fetchone()
     assert row["attachment_id"]
     assert bytes(row["blob_hash"]) == hashlib.sha256(payload).digest()
@@ -353,7 +356,7 @@ def test_low_level_writer_rejects_inline_bytes_without_preacquisition(tmp_path: 
     )
 
     with pytest.raises(ValueError, match="preacquired_attachment_blobs"):
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
 
 
 @pytest.mark.asyncio
@@ -396,55 +399,62 @@ async def test_orphaned_attachment_ref_is_swept_not_left_unreachable(
     attachment_id = _attachment_id("", attachment)
 
     db_path = tmp_path / "index.db"
-    conn = _connect(db_path)
 
-    # First ingest: attachment lands on message m0 and is reachable.
-    first_session = _session_with_attachment(attachment)
-    write_parsed_session_to_archive(
-        conn, first_session, preacquired_attachment_blobs=_preacquired(store, first_session)
-    )
-
-    row = conn.execute(
-        "SELECT acquisition_status, ref_count FROM attachments WHERE attachment_id = ?",
-        (attachment_id,),
-    ).fetchone()
-    assert row is not None
-    assert row["acquisition_status"] == "acquired"
-    assert row["ref_count"] == 1
-
-    # Second ingest of the SAME session (full replace, no merge_append): the
-    # provider's message set no longer includes m0 (e.g. it was renumbered,
-    # or excluded as a duplicate native id on this pass), so the attachment
-    # -- which still names message_provider_id="m0" -- can no longer be
-    # resolved to any message this time and _write_attachments skips
-    # re-writing its ref. The attachment_refs row for it was already dropped
-    # by the full replace's message CASCADE.
-    second_session = ParsedSession(
-        source_name=first_session.source_name,
-        provider_session_id=first_session.provider_session_id,
-        title=first_session.title,
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.USER,
-                text="a different message, m0 is gone",
-                position=0,
-                variant_index=0,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="a different message, m0 is gone")],
+    def ingest_then_orphan() -> None:
+        # The fixture writer's synchronous lease must not block this event loop.
+        conn = _connect(db_path)
+        try:
+            # First ingest: attachment lands on message m0 and is reachable.
+            first_session = _session_with_attachment(attachment)
+            write_fixture_index_session(
+                conn, first_session, preacquired_attachment_blobs=_preacquired(store, first_session)
             )
-        ],
-        attachments=[attachment],
-    )
-    write_parsed_session_to_archive(conn, second_session, force_replace=True)
 
-    surviving_row = conn.execute(
-        "SELECT 1 FROM attachments WHERE attachment_id = ?",
-        (attachment_id,),
-    ).fetchone()
-    assert surviving_row is None, (
-        "orphaned attachment row (acquired, real bytes) must be garbage-collected "
-        "once its last ref is dropped, not left permanently unreachable"
-    )
+            row = conn.execute(
+                "SELECT acquisition_status, ref_count FROM attachments WHERE attachment_id = ?",
+                (attachment_id,),
+            ).fetchone()
+            assert row is not None
+            assert row["acquisition_status"] == "acquired"
+            assert row["ref_count"] == 1
+
+            # Second ingest of the SAME session (full replace, no merge_append): the
+            # provider's message set no longer includes m0 (e.g. it was renumbered,
+            # or excluded as a duplicate native id on this pass), so the attachment
+            # -- which still names message_provider_id="m0" -- can no longer be
+            # resolved to any message this time and _write_attachments skips
+            # re-writing its ref. The attachment_refs row for it was already dropped
+            # by the full replace's message CASCADE.
+            second_session = ParsedSession(
+                source_name=first_session.source_name,
+                provider_session_id=first_session.provider_session_id,
+                title=first_session.title,
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="a different message, m0 is gone",
+                        position=0,
+                        variant_index=0,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="a different message, m0 is gone")],
+                    )
+                ],
+                attachments=[attachment],
+            )
+            write_fixture_index_session(conn, second_session, force_replace=True)
+
+            surviving_row = conn.execute(
+                "SELECT 1 FROM attachments WHERE attachment_id = ?",
+                (attachment_id,),
+            ).fetchone()
+            assert surviving_row is None, (
+                "orphaned attachment row (acquired, real bytes) must be garbage-collected "
+                "once its last ref is dropped, not left permanently unreachable"
+            )
+        finally:
+            conn.close()
+
+    run_off_event_loop(ingest_then_orphan)
 
     async with aiosqlite.connect(db_path) as aconn:
         aconn.row_factory = aiosqlite.Row

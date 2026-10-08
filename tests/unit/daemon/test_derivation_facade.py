@@ -17,10 +17,12 @@ import asyncio
 import contextlib
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import cast
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.convergence import DaemonConverger, SessionProfileConvergenceOwner
 from polylogue.daemon.derivation import (
     BaseDerivation,
@@ -32,7 +34,6 @@ from polylogue.daemon.derivation import (
     PendingReason,
     Replacement,
 )
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 
 FRAME = DerivationFrame(archive_root="/archive", source_revision="r1")
@@ -169,7 +170,7 @@ class _DemandVsAuditDerivation(StringStatusDerivation):
 
 
 @pytest.mark.asyncio
-async def test_a_demand_sweep_leaves_the_archive_audit_cursor_alone() -> None:
+async def test_a_demand_sweep_leaves_the_archive_audit_cursor_alone(tmp_path: Path) -> None:
     """A demand-only pass pages its own keyspace from its own cursor.
 
     Anti-vacuity (polylogue-6remh): with one shared cursor the demand pass
@@ -181,7 +182,7 @@ async def test_a_demand_sweep_leaves_the_archive_audit_cursor_alone() -> None:
     adapter.domain = "session_profile"
     converger = DaemonConverger([], derivations=[adapter])
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     owner = SessionProfileConvergenceOwner(
         converger,
         compute_adapter=compute,
@@ -225,7 +226,7 @@ def test_a_promoted_generation_restarts_the_demand_cursor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope() -> None:
+async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope(tmp_path: Path) -> None:
     """A targeted earlier id cannot inherit an archive sweep's page cursor.
 
     Anti-vacuity: pass ``resume=True`` through an incremental scope and the
@@ -236,7 +237,7 @@ async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope() 
     adapter.domain = "session_profile"
     converger = DaemonConverger([], derivations=[adapter])
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     owner = SessionProfileConvergenceOwner(
         converger,
         compute_adapter=compute,
@@ -260,7 +261,7 @@ async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope() 
 
 
 @pytest.mark.asyncio
-async def test_no_hint_owner_reports_quiet_work_without_certifying_a_complete_sweep() -> None:
+async def test_no_hint_owner_reports_quiet_work_without_certifying_a_complete_sweep(tmp_path: Path) -> None:
     """A terminal cursor does not clear debt while a quiet key remains pending.
 
     Anti-vacuity: clear legacy derived debt from ``cursor.swept`` alone and
@@ -277,7 +278,7 @@ async def test_no_hint_owner_reports_quiet_work_without_certifying_a_complete_sw
 
     adapter = QuietArchiveDerivation(("a", "b"))
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     owner = SessionProfileConvergenceOwner(
         DaemonConverger([], derivations=[adapter]),
         compute_adapter=compute,
@@ -295,7 +296,7 @@ async def test_no_hint_owner_reports_quiet_work_without_certifying_a_complete_sw
 
 
 @pytest.mark.asyncio
-async def test_session_owner_cancellation_waits_for_an_admitted_publication() -> None:
+async def test_session_owner_cancellation_waits_for_an_admitted_publication(tmp_path: Path) -> None:
     """Cancellation cannot abandon a worker holding the bridged writer gate.
 
     Anti-vacuity: return immediately from ``CancelledError`` and this task
@@ -318,7 +319,7 @@ async def test_session_owner_cancellation_waits_for_an_admitted_publication() ->
 
     adapter = BlockingDerivation()
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     owner = SessionProfileConvergenceOwner(
         DaemonConverger([], derivations=[adapter]),
         compute_adapter=compute,
@@ -346,7 +347,7 @@ async def test_session_owner_cancellation_waits_for_an_admitted_publication() ->
 
 
 @pytest.mark.asyncio
-async def test_session_owner_serializes_a_sweep_and_targeted_callback() -> None:
+async def test_session_owner_serializes_a_sweep_and_targeted_callback(tmp_path: Path) -> None:
     """Concurrent owner callers cannot race one mutable kernel cursor.
 
     Anti-vacuity: remove the owner-local coroutine lock and the targeted
@@ -376,7 +377,7 @@ async def test_session_owner_serializes_a_sweep_and_targeted_callback() -> None:
 
     adapter = ScopedDerivation()
     compute = BoundedComputeAdapter(max_workers=1, queue_units=2)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     converger = DaemonConverger([], derivations=[adapter])
     owner = SessionProfileConvergenceOwner(
         converger,
@@ -525,3 +526,105 @@ def test_stage_state_cannot_certify_a_derived_output() -> None:
     converger.converge_batch([], whole_archive=False)
 
     assert converger.converge_derivations(FRAME).done == 2
+
+
+@pytest.mark.asyncio
+async def test_publication_preserves_preparation_creator_and_entry_sql(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_scratch_connection
+
+    class CreatorBoundDerivation(StringStatusDerivation):
+        domain = "session_profile"
+
+        def __init__(self) -> None:
+            super().__init__(("a",))
+            self.creator: threading.Thread | None = None
+
+        def compute(self, frame: DerivationFrame, key: str) -> Replacement:
+            self.creator = threading.current_thread()
+            self.prepared = open_scratch_connection(tmp_path / "prepared.sqlite")
+            self.prepared.require_connection().execute("CREATE TABLE evidence(value INTEGER)")
+            self.prepared.require_connection().execute("INSERT INTO evidence VALUES (7)")
+            return super().compute(frame, key)
+
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            assert threading.current_thread() is self.creator
+            assert self.prepared.require_connection().execute("SELECT value FROM evidence").fetchone()[0] == 7
+            return super().publish(frame, replacement)
+
+    adapter = CreatorBoundDerivation()
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    owner = SessionProfileConvergenceOwner(
+        DaemonConverger([], derivations=[adapter]),
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    try:
+        assert (await owner.converge(FRAME)).done == 1
+        assert adapter.prepared.connection is None
+        assert compute.snapshot().active_units == 0
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_publication_native_close_failure_retains_writer_until_creator_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_scratch_connection
+
+    failed_close = threading.Event()
+    allow_close = threading.Event()
+
+    class RetainedPublication(StringStatusDerivation):
+        domain = "session_profile"
+
+        def __init__(self) -> None:
+            super().__init__(("a",))
+
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            native = open_scratch_connection(tmp_path / "publication.sqlite")
+            native.require_connection().execute("CREATE TABLE publication(value INTEGER)")
+            close = native.close
+            creator = threading.current_thread()
+
+            def controlled_close() -> None:
+                assert threading.current_thread() is creator
+                if not allow_close.is_set():
+                    failed_close.set()
+                    raise OSError("synthetic native close failure")
+                close()
+
+            monkeypatch.setattr(native, "close", controlled_close)
+            return super().publish(frame, replacement)
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    owner = SessionProfileConvergenceOwner(
+        DaemonConverger([], derivations=[RetainedPublication()]),
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    task = asyncio.create_task(owner.converge(FRAME))
+    try:
+        assert await asyncio.to_thread(failed_close.wait, 1.0)
+        while not compute.retained_sql_settlements():
+            assert not task.done()
+            await asyncio.sleep(0)
+        assert not task.done()
+        assert coordinator.snapshot().active_actor == "derivation.session_profile"
+        assert compute.snapshot().active_units == 1
+        allow_close.set()
+        compute.retry_sql_settlement()
+        report = await task
+        assert report.failed == 1
+        assert coordinator.snapshot().active_actor is None
+        assert compute.snapshot().active_units == 0
+    finally:
+        allow_close.set()
+        compute.retry_sql_settlement()
+        if not task.done():
+            await task
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)

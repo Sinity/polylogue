@@ -39,6 +39,7 @@ import time
 import types
 import uuid
 import zlib
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,6 +64,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 if TYPE_CHECKING:
     from polylogue.sources.live.production_baseline import BaselineProgress, ProductionSourceBaseline
     from polylogue.sources.live.watcher import WatchSource
+    from polylogue.storage.index_generation import PreparedIndexPromotion
 
 
 _ACCEPTED_PROGRESS_STALL_AFTER_S = 60.0
@@ -300,6 +302,7 @@ class ColdBuildGeneration:
     _promoted: bool = False
     _discarded: bool = False
     _receipt_cleared: bool = False
+    _promotion_candidate_ready: bool = field(default=False, init=False, repr=False)
     settlement_state: str = "building"
     settlement_reason: str | None = None
     settlement_last_error: str | None = None
@@ -474,32 +477,58 @@ class ColdBuildGeneration:
                 error_detail=str(exc),
             )
 
+    @staticmethod
+    def observe_source_baseline(
+        sources: tuple[WatchSource, ...],
+        *,
+        progress: BaselineProgress | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> ProductionSourceBaseline:
+        """Capture the production discovery denominator a cold build will bind.
+
+        The walk, pre-acquisition classification and revision hashing read
+        source files only and write nothing, so they run before, and outside,
+        the writer call :meth:`begin` makes. A slow or large source then
+        never holds the archive's single writer.
+        """
+        from polylogue.sources.live.production_baseline import capture_production_source_baseline
+
+        if progress is not None:
+            progress("baseline_walk")
+        return capture_production_source_baseline(
+            sources,
+            operation_id=f"cold-build-{uuid.uuid4().hex}",
+            cancelled=cancelled,
+            progress=progress,
+        )
+
     @classmethod
     def begin(
         cls,
         archive_root: Path,
         *,
         reason: str,
-        sources: tuple[WatchSource, ...],
+        observed: ProductionSourceBaseline,
         owner_id: str | None = None,
         progress: BaselineProgress | None = None,
     ) -> ColdBuildGeneration:
         """Create the inactive generation this build will fill.
 
-        ``progress`` hears each preparation phase (baseline walk and hashing,
-        capacity projection, source snapshot, generation creation) as it
+        ``observed`` is the baseline :meth:`observe_source_baseline` captured
+        off the writer; this writer call merges it with a pending receipt,
+        publishes it, and binds it. ``progress`` hears each remaining phase
+        (capacity projection, source snapshot, generation creation) as it
         starts, so the caller can report the time before the first intake
         page instead of an idle status.
 
-        Captures the production discovery denominator and checks free space before the generation
-        directory exists. A cold build is the whole index again on disk beside the one
-        still serving reads, and it is engaged automatically whenever the
-        active generation is empty -- so this preflight cannot be conditioned
-        on the operator having asked for it, or the unattended 40 GB case
-        would be the one left unguarded. The refusal is fatal on purpose:
-        there is no smaller build to fall back to, and letting ingest fill
-        the active generation instead would allocate the same bytes with
-        readers attached.
+        Checks free space before the generation directory exists. A cold
+        build is the whole index again on disk beside the one still serving
+        reads, and it is engaged automatically whenever the active generation
+        is empty -- so this preflight cannot be conditioned on the operator
+        having asked for it, or the unattended 40 GB case would be the one
+        left unguarded. The refusal is fatal on purpose: there is no smaller
+        build to fall back to, and letting ingest fill the active generation
+        instead would allocate the same bytes with readers attached.
         """
         archive_root = Path(archive_root)
         # Every durable member must already exist: ``create`` links exactly
@@ -512,15 +541,9 @@ class ColdBuildGeneration:
         (archive_root / "blob").mkdir(mode=0o700, exist_ok=True)
         store = IndexGenerationStore.for_archive_root(archive_root)
         _reclaim_abandoned_cold_generations(store)
-        # The whole-tree walk this costs is measured in tens of seconds on a
-        # real archive (77s over ~790k inodes), against a build measured in
-        # hours -- and it runs once per build, not once per pass, because
-        # ``begin`` is only reached when a cold build is actually starting.
-        # That is the only cost gate this needs; intent is not a gate.
-        operation_id = f"cold-build-{uuid.uuid4().hex}"
+        operation_id = observed.operation_id
         from polylogue.sources.live.production_baseline import (
             MATERIAL_BYTE_DEFINITION,
-            capture_production_source_baseline,
             load_pending_production_baseline,
             merge_pending_production_baseline,
             publish_pending_production_baseline,
@@ -531,11 +554,7 @@ class ColdBuildGeneration:
             if progress is not None:
                 progress(name)
 
-        phase("baseline_walk")
-        baseline = merge_pending_production_baseline(
-            capture_production_source_baseline(sources, operation_id=operation_id, progress=progress),
-            load_pending_production_baseline(archive_root),
-        )
+        baseline = merge_pending_production_baseline(observed, load_pending_production_baseline(archive_root))
         publish_pending_production_baseline(archive_root, baseline)
         phase("capacity_projection")
         blob_block_bytes, source_db_block_bytes = evidence_allocation_block_bytes(archive_root)
@@ -661,7 +680,7 @@ class ColdBuildGeneration:
             candidate = cls(
                 archive_root=Path(archive_root),
                 generation=generation,
-                reason="interrupted promotion",
+                reason="interrupted_promotion",
                 operation_id=baseline.operation_id,
                 _store=store,
                 source_baseline=baseline,
@@ -1006,17 +1025,16 @@ class ColdBuildGeneration:
         self._ops_checkpoint_holder = None
         holder.close()
 
-    def promote(self) -> IndexGeneration:
-        """Run the readiness pass and swap the active-index pointer."""
+    def prepare_promotion_candidate(self) -> None:
+        """Run the final candidate writes before off-gate promotion proof."""
         if self._promoted:
-            return self.reconcile_promoted()
+            return
         if self._discarded:
             raise RuntimeError(f"cold-build generation {self.generation_id} is already settled")
         import json
 
         from polylogue.sources.live.production_baseline import (
             ProductionBaselineError,
-            clear_pending_production_baseline,
         )
 
         receipt = json.loads((self.generation_root / "source-baseline.json").read_text(encoding="utf-8"))
@@ -1032,8 +1050,24 @@ class ColdBuildGeneration:
         # ``final_candidate_allocated_bytes == 0`` and ``calibrated_index_ratio``
         # returns its unmeasured default forever.
         self._store.observe_candidate_capacity(operation_id=self.operation_id, generation_id=self.generation_id)
+        self._promotion_candidate_ready = True
+
+    def prepare_promotion_proof(self) -> PreparedIndexPromotion:
+        """Build the full retained reference/coverage proof outside writer custody."""
+        if not self._promotion_candidate_ready:
+            raise RuntimeError("cold-build candidate must finish readiness before promotion proof")
+        return self._store.prepare_promotion(self.generation)
+
+    def promote_prepared(self, prepared: PreparedIndexPromotion) -> IndexGeneration:
+        """Settle a previously prepared promotion while holding writer custody."""
+        if self._promoted:
+            return self.reconcile_promoted()
+        if self._discarded:
+            raise RuntimeError(f"cold-build generation {self.generation_id} is already settled")
+        if not self._promotion_candidate_ready:
+            raise RuntimeError("cold-build candidate readiness was not published")
         try:
-            promoted = self._store.promote(self.generation)
+            promoted = self._store.promote(self.generation, prepared)
         except Exception as exc:
             current = self._store.load(self.generation_id)
             if self._store.active_pointer.resolve() == Path(current.index_path).resolve():
@@ -1057,6 +1091,9 @@ class ColdBuildGeneration:
             raise
         self._promoted = True
         try:
+            self._stamp_promoted_parse_success(promoted)
+            from polylogue.sources.live.production_baseline import clear_pending_production_baseline
+
             clear_pending_production_baseline(self.archive_root, self.source_baseline)
             self._receipt_cleared = True
         finally:
@@ -1069,6 +1106,44 @@ class ColdBuildGeneration:
             reason=self.reason,
         )
         return promoted
+
+    def promote(self) -> IndexGeneration:
+        """Run readiness, prepare references off-gate, then swap the pointer."""
+        from polylogue.core.write_lease import current_write_lease
+
+        if self._promoted:
+            # The promotion tail writes Source (parse acknowledgements), so it
+            # runs under the writer custody its caller holds or takes here.
+            if current_write_lease() is not None:
+                return self.reconcile_promoted()
+            from polylogue.storage.sqlite.write_lease import write_lease
+
+            with write_lease("storage.cold_build.reconcile_promoted", archive_root=self.archive_root):
+                return self.reconcile_promoted()
+        if current_write_lease() is not None:
+            raise RuntimeError("cold-build promotion must prepare references before writer admission")
+        self.prepare_promotion_candidate()
+        with self.prepare_promotion_proof() as prepared:
+            from polylogue.storage.sqlite.write_lease import require_write_lease, write_lease
+
+            require_write_lease("cold-build promotion", archive_root=self.archive_root)
+            with write_lease("storage.cold_build.promote", archive_root=self.archive_root):
+                return self.promote_prepared(prepared)
+
+    def _stamp_promoted_parse_success(self, promoted: IndexGeneration) -> None:
+        """Acknowledge the cold replay's parses at promotion, its commit point.
+
+        A cold build has no live Source authority, so its replay stages no
+        Source effects; the promoted Index names the raws it applied, and
+        those are acknowledged here, under the promotion's writer custody.
+        """
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import stamp_promoted_revision_parse_success
+        from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+
+        with closing(
+            open_source_tier_write_connection(self.archive_root / "source.db", archive_root=self.archive_root)
+        ) as source:
+            stamp_promoted_revision_parse_success(source, Path(promoted.index_path))
 
     def reconcile_promoted(self) -> IndexGeneration:
         """Finish a failed receipt tail only after confirming the active pointer."""
@@ -1089,6 +1164,7 @@ class ColdBuildGeneration:
                 promoted = self._store.complete_promotion_recovery(self.generation_id)
             if promoted.state != "active":
                 raise RuntimeError("promoted cold-build candidate has incomplete metadata")
+            self._stamp_promoted_parse_success(promoted)
             if not self._receipt_cleared:
                 from polylogue.sources.live.production_baseline import clear_pending_production_baseline
 

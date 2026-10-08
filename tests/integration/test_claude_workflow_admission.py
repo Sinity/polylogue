@@ -31,9 +31,10 @@ from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.retained_replay import replay_retained_components
 
 RUN_ID = "wf_54d4fb2e-841"
 ATTEMPT_COUNT = 91
@@ -68,10 +69,9 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
     assert result.parse_failures == 0
 
     summary = materialize_claude_workflow_archive(archive_root)
-    assert summary.current_artifact_count == 224
-    assert summary.retained_raw_revision_count == 224
+    assert summary.current_artifact_count == 223
+    assert summary.retained_raw_revision_count == 223
     assert summary.artifact_counts == {
-        "adopt_manifest": 1,
         "agent_sidecar_meta": 91,
         "agent_transcript": 129,
         "coordinator_session_stream": 1,
@@ -92,8 +92,8 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
     assert summary.human_prompt_count == 1
 
     with sqlite3.connect(archive_root / "source.db") as source_conn:
-        assert source_conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()[0] == 224
-        assert source_conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 224
+        assert source_conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()[0] == 223
+        assert source_conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 223
     with sqlite3.connect(archive_root / "index.db") as index_conn:
         assert (
             index_conn.execute("SELECT COUNT(*) FROM sessions WHERE origin = 'claude-code-session'").fetchone()[0]
@@ -122,7 +122,7 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
                 "structured-result",
             )
         } == {
-            "artifact": 94,
+            "artifact": 93,
             "attempt": 91,
             "call": 50,
             "invocation": 4,
@@ -174,35 +174,42 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
         assert any(value.startswith("artifact:raw:") for value in evidence_values)
 
     plan = claude_workflow_reparse_plan(archive_root)
-    assert plan.projector_only_raw_artifact_reads == 94
+    assert plan.projector_only_raw_artifact_reads == 93
     assert plan.session_parser_raw_reads_if_authorship_or_event_semantics_change == 130
     assert plan.indexed_session_bindings_reused == 129
     assert plan.graphs_atomically_replaced == 1
-    assert plan.retained_raw_revisions_preserved == 224
+    assert plan.retained_raw_revisions_preserved == 223
     assert plan.stale is False
 
     old_snapshot = summary.corpus_snapshot_ref
     revised_run = _run_snapshot(final_value="final result revision two")
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        revised_raw_id = archive.write_raw_payload(
-            provider=Provider.CLAUDE_CODE,
-            payload=json.dumps(revised_run, sort_keys=True).encode(),
-            source_path=str(run_path),
-            source_index=0,
-            acquired_at_ms=2_000_000_000_000,
-        )
+
+    def write_revision() -> str:
+        # The archive's synchronous mutation lease refuses to block the loop.
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=json.dumps(revised_run, sort_keys=True).encode(),
+                source_path=str(run_path),
+                canonical_source_path=str(run_path),
+                source_index=0,
+                acquired_at_ms=2_000_000_000_000,
+            )
+
+    revised_raw_id = run_off_event_loop(write_revision)
 
     assert claude_workflow_materialization_needed(archive_root) is True
     pending = materialize_claude_workflow_archive(archive_root)
-    assert pending.current_artifact_count == 223
-    assert pending.retained_raw_revision_count == 225
+    assert pending.current_artifact_count == 222
+    assert pending.retained_raw_revision_count == 224
     assert pending.artifact_counts.get("workflow_run_snapshot", 0) == 0
 
-    backfill_historical_revision_evidence(archive_root, selected_raw_ids=[revised_raw_id])
+    # The retained replay helper drives its own event loop; run it off this one.
+    run_off_event_loop(lambda: replay_retained_components(archive_root, selected_raw_ids=[revised_raw_id]))
     assert claude_workflow_materialization_needed(archive_root) is True
     revised = materialize_claude_workflow_archive(archive_root)
-    assert revised.current_artifact_count == 224
-    assert revised.retained_raw_revision_count == 225
+    assert revised.current_artifact_count == 223
+    assert revised.retained_raw_revision_count == 224
     assert revised.graph_count == 1
     assert revised.final_result_count == 1
     assert revised.corpus_snapshot_ref != old_snapshot
@@ -287,6 +294,7 @@ def test_materializer_does_not_repair_pending_source_artifact_inventory(
             provider=Provider.CLAUDE_CODE,
             payload=fact_payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             source_index=0,
             acquired_at_ms=2_000_000_000_000,
             classification=classification,
@@ -295,6 +303,7 @@ def test_materializer_does_not_repair_pending_source_artifact_inventory(
             provider=Provider.CLAUDE_CODE,
             payload=pending_payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             source_index=0,
             acquired_at_ms=2_000_000_000_001,
             post_parse=True,
@@ -414,12 +423,15 @@ async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
 
 
 def _write_fixture(claude_root: Path) -> tuple[Path, Path, Path]:
-    project = claude_root / "projects" / "fixture-project"
-    subagents = project / "subagents"
+    # The declared Claude Code layout: the coordinator transcript in its
+    # project directory, everything the run wrote below its session directory.
+    projects = claude_root / "projects"
+    project = projects / "-fixture-project"
+    session_dir = project / "coordinator-session"
+    subagents = session_dir / "subagents"
     workflow_dir = subagents / "workflows" / RUN_ID
-    workflows = project / "workflows"
-    jobs = project / "jobs" / "coordinator-session"
-    for directory in (subagents, workflow_dir, workflows, jobs):
+    workflows = session_dir / "workflows"
+    for directory in (subagents, workflow_dir, workflows):
         directory.mkdir(parents=True, exist_ok=True)
 
     coordinator_path = project / "coordinator-session.jsonl"
@@ -552,21 +564,8 @@ def _write_fixture(claude_root: Path) -> tuple[Path, Path, Path]:
         json.dumps(_run_snapshot(final_value="final result revision one"), sort_keys=True),
         encoding="utf-8",
     )
-    (jobs / "adopt.json").write_text(
-        json.dumps(
-            {
-                "runId": RUN_ID,
-                "resumeFromRunId": RUN_ID,
-                "adoptedSessionId": "coordinator-session",
-                "entrypoint": "resume",
-                "status": "adopted",
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
     assert first_meta_path is not None
-    return claude_root, run_path, first_meta_path
+    return projects, run_path, first_meta_path
 
 
 def _run_snapshot(*, final_value: str) -> dict[str, object]:

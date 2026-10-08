@@ -507,6 +507,58 @@ class ContextImageReadRequest(_OperationPayload):
     include_messages: bool = True
     include_assertions: bool = True
     redact_paths: bool = True
+    #: Compiled read views for a composed image (``messages``, ``temporal``,
+    #: ``chronicle``). ``None`` keeps the context-image lens, whose only view
+    #: is the message transcript gated by ``include_messages``. A view the
+    #: compiler does not support is reported as an ``unsupported`` omission.
+    read_views: list[str] | None = None
+    purpose: Literal["handoff", "continue"] = "handoff"
+
+
+class IdentityResetPreviewRequest(_OperationPayload):
+    """Resolve one selector into a frozen, authenticated audited preview."""
+
+    session: str | None = Field(default=None, min_length=1)
+    source_path: str | None = Field(default=None, min_length=1)
+    reason: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def exactly_one_selector(self) -> IdentityResetPreviewRequest:
+        if (self.session is None) == (self.source_path is None):
+            raise ValueError("identity reset preview needs exactly one selector")
+        return self
+
+
+class IdentityResetTargetsRequest(_OperationPayload):
+    preview_request_id: str = Field(min_length=1)
+    offset: int = Field(default=0, ge=0)
+    page_size: int = Field(default=256, ge=1)
+
+
+class ExcisionPlanRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    cascade_lineage: bool = False
+
+
+class AssertionExportRequest(_OperationPayload):
+    """Every assertion row by default: an export includes marks, overlays and deleted rows."""
+
+    kinds: list[str] | None = None
+    statuses: list[str] | None = None
+    limit: int | None = Field(default=None, ge=0)
+    offset: int = Field(default=0, ge=0)
+    page_size: int = Field(default=256, ge=1)
+    selection_ref: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def continued_export_requires_selection(self) -> AssertionExportRequest:
+        if self.offset and self.selection_ref is None:
+            raise ValueError("continued assertion export requires selection_ref")
+        return self
+
+
+class AssertionExportReleaseRequest(_OperationPayload):
+    selection_ref: str = Field(min_length=1)
 
 
 class ContinuationRouteRequest(_OperationPayload):
@@ -844,6 +896,17 @@ class SecretScanRequest(_OperationPayload):
         if sum((self.session_id is not None, self.scan_all, self.status_only)) != 1:
             raise ValueError("select exactly one of session_id, scan_all, or status_only")
         return self
+
+
+class SchemaQuarantineVerdict(_OperationPayload):
+    raw_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class SchemaQuarantineRequest(_OperationPayload):
+    """Schema-verification verdicts to persist on Source ``raw_sessions`` rows."""
+
+    verdicts: list[SchemaQuarantineVerdict] = Field(min_length=1)
 
 
 class WorkEvidenceGraphReplaceRequest(_OperationPayload):
@@ -1186,10 +1249,13 @@ class SessionLifecycleRequest(_OperationPayload):
     confirm: bool = False
 
 
-class IdentityResetRequest(_OperationPayload):
-    session_ids: list[str] = Field(min_length=1, max_length=10_000)
-    reason: str = Field(min_length=1, max_length=4096)
+class IdentityResetAuthorizeRequest(_OperationPayload):
+    preview_request_id: str = Field(min_length=1)
     confirm: bool = False
+
+
+class IdentityResetRequest(_OperationPayload):
+    authorization_request_id: str = Field(min_length=1)
 
 
 class RawAuthorityBlockerResolveRequest(_OperationPayload):
@@ -1256,6 +1322,16 @@ class OperationAwaitRequest(OperationStatusRequest):
     timeout_ms: int = Field(default=30_000, ge=1, le=30_000)
 
 
+class OperationResultDocument(_OperationPayload):
+    request_id: str = Field(min_length=1)
+    byte_length: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class OperationResultRequest(OperationResultDocument):
+    offset: int = Field(default=0, ge=0)
+
+
 class OperationCancelRequest(OperationStatusRequest):
     pass
 
@@ -1268,6 +1344,13 @@ class _OperationResult(BaseModel):
     """Base for declared result payloads; envelopes own authority metadata."""
 
     model_config = ConfigDict(extra="allow", frozen=True, strict=True)
+
+
+class OperationResultPage(_OperationPayload):
+    document: OperationResultDocument
+    offset: int = Field(ge=0)
+    data_base64: str
+    next_offset: int | None = Field(default=None, ge=0)
 
 
 class UserOverlayListResult(_OperationResult):
@@ -1288,6 +1371,36 @@ class UserOverlayGetResult(_OperationResult):
 
 class UserSettingGetResult(UserOverlayGetResult):
     outcome: dict[str, object]
+
+
+class AssertionExportReleaseResult(_OperationResult):
+    released: bool
+
+
+class AssertionExportResult(UserOverlayListResult):
+    selection_ref: str
+    outcome: dict[str, object]
+    offset: int = Field(ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
+    snapshot_epoch: str
+
+
+class IdentityResetTargetsResult(_OperationResult):
+    session_ids: list[str]
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
+    outcome: dict[str, object]
+
+
+class ExcisionPlanResult(_OperationResult):
+    found: bool
+    #: Set when the session is a prefix-sharing lineage parent and the request
+    #: did not cascade: the dependents that excising it alone would orphan.
+    lineage_dependent_session_ids: list[str]
+    refused: bool
+    detail: str | None = None
+    plan: dict[str, object] | None = None
 
 
 class UserSettingListResult(UserOverlayListResult):
@@ -1554,6 +1667,7 @@ class InsightRebuildResult(_OperationPayload):
 
 
 class MutationResult(_OperationPayload):
+    result_document: OperationResultDocument | None = None
     status: Literal["prepared", "authorized", "cancelled"] | None = None
     operation: str | None = None
     preview_ref: str | None = None
@@ -1561,6 +1675,7 @@ class MutationResult(_OperationPayload):
     session_ids_sample: list[str] | None = None
     session_count: int | None = Field(default=None, ge=0)
     expires_at_ms: int | None = None
+    lifetime: Literal["accepted-request"] | None = None
     outcome: str | None = None
     sequence: int | None = Field(default=None, ge=0)
     reference: AcceptedOperationReference | None = None
@@ -1617,8 +1732,20 @@ class MutationResult(_OperationPayload):
                 raise ValueError("prepared result requires its measured selection")
             if len(self.session_ids_sample) != min(self.session_count, DELETE_PREVIEW_SAMPLE_IDS):
                 raise ValueError("prepared result requires the declared bounded selection sample")
-            if self.session_count:
-                if self.reference is None or self.expires_at_ms is None:
+            reset = self.operation == "identity-reset"
+            if reset:
+                if (
+                    self.lifetime != "accepted-request"
+                    or self.expires_at_ms is not None
+                    or self.reference is None
+                    or self.reference.operation_name != "mutation.identity-reset.preview"
+                    or self.preview_ref is not None
+                ):
+                    raise ValueError("reset preview requires its sealed accepted-request custody")
+            elif self.lifetime is not None:
+                raise ValueError("accepted-request lifetime belongs only to reset previews")
+            if self.session_count or reset:
+                if self.reference is None or (not reset and self.expires_at_ms is None):
                     raise ValueError("nonempty preview requires its durable operation reference and expiry")
                 if self.reference.artifact_kind != "preview-batch":
                     raise ValueError("prepared result does not name sealed preview authority")
@@ -1797,7 +1924,7 @@ class DaemonOperationSpec:
     @property
     def recovery(self) -> DaemonRecovery:
         """How a client settles this operation when its outcome is lost."""
-        if self.authority is DaemonAuthority.READ:
+        if self.authority is DaemonAuthority.READ or self.name == "operation.result":
             return DaemonRecovery.RETRY
         if self.accepted_reference or self.durable_request:
             return DaemonRecovery.AWAIT_REQUEST
@@ -1810,8 +1937,12 @@ class DaemonOperationSpec:
             raise ValueError("a read operation carries no authorization binding")
         if self.authority is DaemonAuthority.READ and self.deadline_s is not None:
             raise ValueError("read operations have no implicit execution deadline")
-        if self.authority is not DaemonAuthority.READ and self.deadline_s is None:
-            raise ValueError("non-read operations declare an execution deadline")
+        if (
+            self.authority in {DaemonAuthority.WRITE, DaemonAuthority.LONG_RUNNING}
+            and self.deadline_s is None
+            and not (self.accepted_reference or self.durable_request)
+        ):
+            raise ValueError("write operations require an execution deadline or durable owner")
         if not self.handler:
             object.__setattr__(self, "handler", self.name.replace(".", "_"))
         if self.request_type and self.result_type:
@@ -1867,6 +1998,15 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         idempotent=True,
         handler="execute_insights_rebuild_operation",
         handler_module="polylogue.operations.daemon_insights",
+    ),
+    DaemonOperationSpec(
+        "operation.result",
+        DaemonAuthority.CONTROL,
+        DaemonFallback.NEVER,
+        capability="read",
+        request_model=OperationResultRequest,
+        result_model=OperationResultPage,
+        handler="operation_result",
     ),
     DaemonOperationSpec(
         "operation.status",
@@ -2151,6 +2291,44 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="user.settings.list.result/v1",
         request_model=UserOverlayListRequest,
         result_model=UserSettingListResult,
+    ),
+    DaemonOperationSpec(
+        "user.assertions.export",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.assertions.export.request/v3",
+        result_contract="user.assertions.export.result/v3",
+        request_model=AssertionExportRequest,
+        result_model=AssertionExportResult,
+    ),
+    DaemonOperationSpec(
+        "user.assertions.export.release",
+        DaemonAuthority.CONTROL,
+        DaemonFallback.NEVER,
+        request_contract="user.assertions.export.release.request/v1",
+        result_contract="user.assertions.export.release.result/v1",
+        request_model=AssertionExportReleaseRequest,
+        result_model=AssertionExportReleaseResult,
+    ),
+    DaemonOperationSpec(
+        "session.identity-reset.targets",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        capability="archive.identity_reset",
+        handler="identity_reset_targets",
+        request_contract="session.identity-reset.targets.request/v3",
+        result_contract="session.identity-reset.targets.result/v2",
+        request_model=IdentityResetTargetsRequest,
+        result_model=IdentityResetTargetsResult,
+    ),
+    DaemonOperationSpec(
+        "session.excision.plan",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="session.excision.plan.request/v1",
+        result_contract="session.excision.plan.result/v1",
+        request_model=ExcisionPlanRequest,
+        result_model=ExcisionPlanResult,
     ),
     DaemonOperationSpec(
         "user.marks.list",
@@ -2767,6 +2945,20 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         handler="maintenance_secret_scan",
     ),
     DaemonOperationSpec(
+        "maintenance.schema.quarantine",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.schema_quarantine",
+        deadline_s=120.0,
+        request_contract="maintenance.schema.quarantine.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="SchemaQuarantineRequest",
+        result_type="MutationResult",
+        request_model=SchemaQuarantineRequest,
+        result_model=MutationResult,
+        handler="maintenance_schema_quarantine",
+    ),
+    DaemonOperationSpec(
         "mutation.work_evidence.graph.replace",
         DaemonAuthority.WRITE,
         DaemonFallback.NEVER,
@@ -2798,6 +2990,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=DeletePreviewRequest,
         result_model=MutationResult,
         durable_request=True,
+        handler="execute_selected_preview_operation",
     ),
     DaemonOperationSpec(
         "mutation.session.delete.authorize",
@@ -2995,7 +3188,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="MutationResult",
         request_model=SessionExcisionRequest,
         result_model=MutationResult,
-        handler="mutation_session_excision",
+        handler="execute_session_excision_operation",
+        handler_module="polylogue.operations.daemon_excision",
         authorization=DaemonAuthorization.CONFIRMATION,
     ),
     DaemonOperationSpec(
@@ -3014,27 +3208,45 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         authorization=DaemonAuthorization.CONFIRMATION,
     ),
     DaemonOperationSpec(
+        "mutation.identity-reset.preview",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.identity_reset",
+        accepted_reference=True,
+        request_contract="mutation.identity-reset.preview.request/v2",
+        result_contract="mutation.result/v1",
+        request_model=IdentityResetPreviewRequest,
+        result_model=MutationResult,
+        handler="execute_selected_preview_operation",
+        handler_module="polylogue.operations.daemon_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.identity-reset.authorize",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.identity_reset",
+        accepted_reference=True,
+        request_contract="mutation.identity-reset.authorize.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=IdentityResetAuthorizeRequest,
+        result_model=MutationResult,
+        handler="mutation_identity_reset_authorize",
+        authorization=DaemonAuthorization.CONFIRMATION,
+    ),
+    DaemonOperationSpec(
         "mutation.identity-reset",
         DaemonAuthority.LONG_RUNNING,
         DaemonFallback.NEVER,
         capability="archive.identity_reset",
-        deadline_s=300.0,
-        progress=True,
-        # IdentityResetRequest declares session_ids up to 10_000 and a 4 KiB
-        # reason. At ~60 bytes per JSON-quoted session id that is ~600 KiB, so
-        # the default 64 KiB body cap would refuse ~1,100 ids as
-        # ``request_too_large`` while the contract still advertised 10_000 --
-        # and cli/commands/reset.py submits exactly that payload. The bound the
-        # request contract already promises is the honest one to admit.
-        max_body_bytes=8 * 1024 * 1024,
-        request_contract="mutation.identity-reset.request/v1",
+        accepted_reference=True,
+        request_contract="mutation.identity-reset.request/v3",
         result_contract="mutation.result/v1",
         request_type="IdentityResetRequest",
         result_type="MutationResult",
         request_model=IdentityResetRequest,
         result_model=MutationResult,
         handler="mutation_identity_reset",
-        authorization=DaemonAuthorization.CONFIRMATION,
+        authorization=DaemonAuthorization.PREVIEW,
     ),
     DaemonOperationSpec(
         "mutation.raw-authority-blocker.resolve",
@@ -3048,7 +3260,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="MutationResult",
         request_model=RawAuthorityBlockerResolveRequest,
         result_model=MutationResult,
-        handler="mutation_raw_authority_blocker_resolve",
+        handler="execute_raw_authority_blocker_resolve_operation",
         authorization=DaemonAuthorization.CONFIRMATION,
     ),
     DaemonOperationSpec(
@@ -3066,7 +3278,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="MutationResult",
         request_model=RawAuthorityFrontierRequest,
         result_model=MutationResult,
-        handler="maintenance_raw_authority_frontier",
+        handler="execute_raw_authority_frontier_operation",
     ),
     DaemonOperationSpec(
         "maintenance.reset",
@@ -3484,16 +3696,20 @@ class DaemonOperationRequest:
         )
 
     @property
-    def fingerprint(self) -> str:
-        """Stable exchange identity used for safe duplicate recovery."""
-        intent = {
+    def fingerprint_intent(self) -> dict[str, object]:
+        """The complete semantic intent used by exchange identity."""
+        return {
             "operation": self.operation,
             "payload": self.payload,
             "archive_root": self.archive_root,
             "expected_archive_identity": self.expected_archive_identity,
             "expected_generation_id": self.expected_generation_id,
         }
-        encoded = json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()
+
+    @property
+    def fingerprint(self) -> str:
+        """Stable exchange identity used for safe duplicate recovery."""
+        encoded = json.dumps(self.fingerprint_intent, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
     def to_dict(self) -> dict[str, object]:

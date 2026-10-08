@@ -31,7 +31,10 @@ def test_session_claim_membership_respects_inherited_cut_and_active_page(tmp_pat
     foreign = SessionBuilder(index, "foreign")
     foreign.add_message(message_id="foreign", text="foreign session")
     foreign.save()
-    with write_lease("test.session-claims"), ArchiveStore.open_existing(root, read_only=False) as archive:
+    with (
+        write_lease("test.session-claims", archive_root=root),
+        ArchiveStore.open_existing(root, read_only=False) as archive,
+    ):
         conn = archive._conn
         message_ids = {
             str(row["session_id"]): [

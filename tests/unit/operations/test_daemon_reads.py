@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -20,6 +19,7 @@ from polylogue.operations.daemon_reads import (
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import fixture_index_connection, write_fixture_index_session
 
 
 def test_sampled_and_moving_date_queries_are_not_cached() -> None:
@@ -489,17 +489,15 @@ def _seed_lineage_child(root: Path) -> str:
     from polylogue.archive.session.branch_type import BranchType
     from polylogue.core.enums import Provider
     from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
     def _msg(pid: str, role: Role, text: str, position: int) -> ParsedMessage:
         return ParsedMessage(provider_message_id=pid, role=role, text=text, position=position)
 
-    bootstrap_archive_root(root)
-    conn = sqlite3.connect(root / "index.db")
-    try:
-        conn.row_factory = sqlite3.Row
+    # Fixture writers prepare on the measured Index connection they will
+    # publish through; a bare sqlite3 handle is not that creator.
+    with fixture_index_connection(root / "index.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -511,7 +509,7 @@ def _seed_lineage_child(root: Path) -> str:
                 ],
             ),
         )
-        child_id = write_parsed_session_to_archive(
+        child_id = write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -527,9 +525,6 @@ def _seed_lineage_child(root: Path) -> str:
                 ],
             ),
         )
-        conn.commit()
-    finally:
-        conn.close()
     return str(child_id)
 
 
@@ -814,3 +809,10 @@ def test_keyless_text_search_with_retained_binding_remains_disabled(
     finally:
         connection.close()
     acquisition.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["cli.query", "read.temporal", "read.chronicle", "read.compact"])
+@pytest.mark.parametrize("session_ref", ["codex-session:selected", "", None])
+def test_only_selected_temporal_reads_skip_vector_admission(name: str, session_ref: str | None) -> None:
+    payload = {"session_id": session_ref, "params": {"similar_text": "synthetic query"}}
+    assert requires_vector_snapshot(name, payload) is not (name == "read.temporal" and bool(session_ref))

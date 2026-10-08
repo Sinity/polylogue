@@ -28,7 +28,6 @@ from polylogue.storage.embeddings.materialization import (
     select_pending_session_window,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
-from polylogue.storage.runtime import MessageRecord
 from tests.infra.live_ingest import write_index_session
 
 
@@ -38,16 +37,6 @@ class _FakeV1VectorProvider:
 
     def __init__(self) -> None:
         self.texts: list[str] = []
-
-    def upsert(
-        self,
-        session_id: str,
-        messages: list[MessageRecord],
-        *,
-        origin: str | None = None,
-    ) -> None:
-        del session_id, messages, origin
-        raise AssertionError("archive embedding helper must not call old upsert")
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         return []
@@ -105,7 +94,9 @@ _MESSAGES_DDL = """
     CREATE TABLE IF NOT EXISTS messages (
         message_id       TEXT PRIMARY KEY,
         session_id  TEXT NOT NULL,
-        text             TEXT,
+        position         INTEGER NOT NULL DEFAULT 0,
+        variant_index    INTEGER NOT NULL DEFAULT 0,
+        content_hash     BLOB NOT NULL CHECK(length(content_hash) = 32),
         role             TEXT NOT NULL DEFAULT 'user',
         message_type     TEXT NOT NULL DEFAULT 'message',
         material_origin  TEXT NOT NULL DEFAULT 'human_authored',
@@ -114,12 +105,48 @@ _MESSAGES_DDL = """
 """
 
 
+_BLOCKS_DDL = """
+    CREATE TABLE IF NOT EXISTS blocks (
+        block_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        block_type TEXT NOT NULL,
+        text TEXT
+    );
+"""
+
+
+def _insert_message(
+    conn: sqlite3.Connection,
+    message_id: str,
+    session_id: str,
+    text: str,
+    role: str = "user",
+    message_type: str = "message",
+    material_origin: str = "human_authored",
+    word_count: int = 6,
+) -> None:
+    conn.execute(
+        "INSERT INTO messages "
+        "(message_id, session_id, content_hash, role, message_type, material_origin, word_count) "
+        "VALUES (?, ?, zeroblob(32), ?, ?, ?, ?)",
+        (message_id, session_id, role, message_type, material_origin, word_count),
+    )
+    conn.execute(
+        "INSERT INTO blocks (block_id, session_id, message_id, position, block_type, text) "
+        "VALUES (?, ?, ?, 0, 'text', ?)",
+        (f"{message_id}:text", session_id, message_id, text),
+    )
+
+
 def _setup_minimal_embedding_db(conn: sqlite3.Connection) -> None:
     """Create the minimum tables needed for embedding stats reading."""
     conn.executescript(_EMBEDDING_STATUS_DDL)
     conn.executescript(_MESSAGE_EMBEDDING_REFS_DDL)
     conn.executescript(_SESSIONS_DDL)
     conn.executescript(_MESSAGES_DDL)
+    conn.executescript(_BLOCKS_DDL)
     conn.commit()
 
 
@@ -132,14 +159,7 @@ def _insert_session(conn: sqlite3.Connection, session_id: str, *, message_count:
         (session_id, session_id, 1_700_000_000_000, message_count, f"hash-{session_id}"),
     )
     for index in range(message_count):
-        conn.execute(
-            """
-            INSERT INTO messages (
-                message_id, session_id, text, role, message_type, material_origin, word_count
-            ) VALUES (?, ?, ?, 'user', 'message', 'human_authored', 6)
-            """,
-            (f"{session_id}-msg-{index}", session_id, "long enough message text for embedding"),
-        )
+        _insert_message(conn, f"{session_id}-msg-{index}", session_id, "long enough message text for embedding")
 
 
 # ---------------------------------------------------------------------------
@@ -286,10 +306,7 @@ def test_embedding_status_lifecycle(
                 "INSERT INTO sessions (session_id, origin, title, message_count) VALUES (?, ?, ?, ?)",
                 (conv_id, "unknown-export", f"Test {conv_id}", 1),
             )
-            conn.execute(
-                "INSERT INTO messages (message_id, session_id, text) VALUES (?, ?, ?)",
-                (f"{conv_id}-msg-1", conv_id, "hello from embedding status test"),
-            )
+            _insert_message(conn, f"{conv_id}-msg-1", conv_id, "hello from embedding status test")
         conn.commit()
 
         # Seed embedding_status rows
@@ -329,10 +346,7 @@ def test_missing_embedding_status_rows_count_as_pending_messages() -> None:
             "INSERT INTO sessions (session_id, origin, title, message_count) VALUES (?, ?, ?, ?)",
             ("conv-new", "unknown-export", "New", 1),
         )
-        conn.execute(
-            "INSERT INTO messages (message_id, session_id, text) VALUES (?, ?, ?)",
-            ("msg-new", "conv-new", "this message has never been embedded"),
-        )
+        _insert_message(conn, "msg-new", "conv-new", "this message has never been embedded")
         conn.commit()
 
         stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
@@ -522,14 +536,8 @@ def test_pending_archive_window_counts_only_embeddable_prose() -> None:
             ("m-context", "mixed", "runtime context", "user", "message", "context_generated", 2),
             ("m-tool", "mixed", "tool output", "tool", "tool_result", "tool_result", 2),
         ]
-        conn.executemany(
-            """
-            INSERT INTO messages (
-                message_id, session_id, text, role, message_type, material_origin, word_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
+        for row in rows:
+            _insert_message(conn, *row)
         conn.commit()
 
         pending = select_pending_archive_session_window(conn, status_table="", min_messages=1)
@@ -1287,7 +1295,7 @@ def test_pending_window_measures_concatenated_block_prose() -> None:
     try:
         conn.executescript(
             """
-            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, title TEXT, sort_key_ms INTEGER);
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT NOT NULL, title TEXT, sort_key_ms INTEGER);
             CREATE TABLE messages (
                 message_id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
@@ -1307,7 +1315,7 @@ def test_pending_window_measures_concatenated_block_prose() -> None:
                 block_type TEXT NOT NULL,
                 text TEXT
             );
-            INSERT INTO sessions VALUES ('multi', 'multi', 1);
+            INSERT INTO sessions VALUES ('multi', 'unknown-export', 'multi', 1);
             INSERT INTO messages VALUES
                 ('multi:n:m1', 'multi', 0, 0, 'user', 'message', 'human_authored', 4, zeroblob(32)),
                 ('multi:n:m2', 'multi', 1, 0, 'user', 'message', 'human_authored', 1, zeroblob(32));
@@ -1324,3 +1332,30 @@ def test_pending_window_measures_concatenated_block_prose() -> None:
         assert [(item.session_id, item.message_count) for item in pending] == [("multi", 1)]
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize(
+    ("material_origin", "message_type", "role", "text", "should_embed"),
+    [
+        ("human_authored", "message", "user", "12345678901234567890", True),
+        ("human_authored", "message", "user", "1234567890123456789", False),
+        ("human_authored", "message", "user", "   \n\t  ", False),
+        ("assistant_authored", "message", "assistant", "A sufficiently long assistant answer.", True),
+        ("assistant_authored", "message", "system", "This is a sufficiently long system message.", False),
+        ("tool_result", "tool_result", "tool", "File contents: def hello(): print('world')", False),
+        ("context_generated", "message", "user", "Runtime context that is long enough.", False),
+    ],
+)
+def test_archive_embedding_eligibility_admits_only_authored_prose(
+    material_origin: str, message_type: str, role: str, text: str, should_embed: bool
+) -> None:
+    """The archive embedding route's per-message eligibility law.
+
+    Moved from the retired provider-side ``_should_embed_message``: the
+    20-character floor applies to stripped prose, and only authored user or
+    assistant messages are bought. Anti-vacuity: drop the floor and the
+    19-character row embeds; admit the ``system`` role and its row embeds.
+    """
+    from polylogue.storage.embeddings.materialization import _should_embed_archive_message
+
+    assert _should_embed_archive_message(material_origin, message_type, role, text) is should_embed

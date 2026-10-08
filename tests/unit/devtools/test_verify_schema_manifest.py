@@ -179,6 +179,44 @@ def test_new_fresh_lineage_allows_floor_ddl_change_without_migration(monkeypatch
     assert verify_schema_manifest._durable_ddl_evolution_violations() == []
 
 
+@pytest.mark.parametrize("new_lineage", [True, False], ids=["new-lineage", "same-lineage"])
+def test_only_a_new_lineage_folds_one_tiers_chain_into_its_floor(
+    new_lineage: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Source v6 may return to a v1 floor that absorbs 002-006 only under a new marker lineage.
+
+    Anti-vacuity: without the lineage change the same fold is a backwards move,
+    because an archive already at the old floor would otherwise admit the new one.
+    """
+    base_lineage = "polylogue.archive-format.v5"
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(
+            source_version=6 if ref == "base" else 1,
+            source_ddl="CREATE TABLE folded (a TEXT) STRICT;",
+            lineage=base_lineage if ref == "base" or not new_lineage else "polylogue.archive-format.v6",
+        ),
+    )
+    deleted = tuple(
+        verify_schema_manifest._MigrationChange("D", f"polylogue/storage/sqlite/migrations/source/{name}", "")
+        for name in ("002_folded.sql", "002.train.json")
+    )
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_migration_changes",
+        lambda _base, tier: deleted if tier is ArchiveTier.SOURCE else (),
+    )
+
+    violations = verify_schema_manifest._durable_ddl_evolution_violations()
+
+    if new_lineage:
+        assert violations == []
+    else:
+        assert violations == ["source: schema version moved backwards from v6 to v1"]
+
+
 def test_durable_evolution_rejects_removing_an_object_without_a_version_bump(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -20,6 +22,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 SchemaObjectType = Literal["table", "index", "trigger", "view", "column"]
@@ -227,34 +230,29 @@ def _objects_from_connection(connection: sqlite3.Connection, tier: ArchiveTier) 
     return tuple(objects)
 
 
-def _canonical_connection(tier: ArchiveTier) -> sqlite3.Connection:
-    connection = sqlite3.connect(":memory:")
-    connection.row_factory = sqlite3.Row
-    if tier is ArchiveTier.EMBEDDINGS:
-        loaded, error = try_load_sqlite_vec(connection)
-        if not loaded:
-            connection.close()
-            raise SchemaCensusError(f"canonical {tier.value} tier unavailable: sqlite-vec: {error or 'not loadable'}")
-    try:
+@contextmanager
+def _canonical_connection(tier: ArchiveTier) -> Iterator[sqlite3.Connection]:
+    with sqlite_connection(":memory:") as connection:
+        connection.row_factory = sqlite3.Row
+        if tier is ArchiveTier.EMBEDDINGS:
+            loaded, error = try_load_sqlite_vec(connection)
+            if not loaded:
+                raise SchemaCensusError(
+                    f"canonical {tier.value} tier unavailable: sqlite-vec: {error or 'not loadable'}"
+                )
         initialize_runtime_tier_probe(connection, tier)
         if tier is ArchiveTier.OPS:
             from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
 
             connection.executescript(DERIVED_SCHEMA_META_DDL)
-    except BaseException:
-        connection.close()
-        raise
-    connection.execute("PRAGMA query_only = ON")
-    return connection
+        connection.execute("PRAGMA query_only = ON")
+        yield connection
 
 
 def canonical_schema_objects(tier: ArchiveTier) -> tuple[SchemaObject, ...]:
     """Derive the complete declaration universe from fresh canonical DDL."""
-    connection = _canonical_connection(tier)
-    try:
+    with _canonical_connection(tier) as connection:
         return _objects_from_connection(connection, tier)
-    finally:
-        connection.close()
 
 
 def _schema_identity(tier: ArchiveTier, objects: tuple[SchemaObject, ...]) -> str:

@@ -664,17 +664,6 @@ CREATE TABLE IF NOT EXISTS raw_existence_journal_control (
     retained_floor INTEGER NOT NULL DEFAULT 0 CHECK(retained_floor >= 0)
 ) STRICT;
 INSERT OR IGNORE INTO raw_existence_journal_control(singleton) VALUES (1);
-CREATE TRIGGER IF NOT EXISTS raw_existence_session_insert AFTER INSERT ON sessions
-WHEN NEW.raw_id IS NOT NULL
-BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
-CREATE TRIGGER IF NOT EXISTS raw_existence_session_update AFTER UPDATE OF raw_id ON sessions
-WHEN NEW.raw_id IS NOT NULL AND NEW.raw_id IS NOT OLD.raw_id
-BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
-CREATE TRIGGER IF NOT EXISTS raw_existence_head_insert AFTER INSERT ON raw_revision_heads
-BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.accepted_raw_id); END;
-CREATE TRIGGER IF NOT EXISTS raw_existence_head_update AFTER UPDATE OF accepted_raw_id ON raw_revision_heads
-WHEN NEW.accepted_raw_id IS NOT OLD.accepted_raw_id
-BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.accepted_raw_id); END;
 CREATE TRIGGER IF NOT EXISTS raw_existence_journal_prune AFTER DELETE ON raw_existence_changes
 BEGIN UPDATE raw_existence_journal_control
      SET retained_floor = max(retained_floor, OLD.sequence) WHERE singleton = 1; END;
@@ -1108,6 +1097,10 @@ END;
 
 CREATE TABLE IF NOT EXISTS session_events (
     {TABLE_SPECS["session_events"].ddl_body}
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS session_event_array_items (
+    {TABLE_SPECS["session_event_array_items"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_events_source_message
@@ -2243,9 +2236,11 @@ WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session
     SELECT parent_session_id
     FROM delegation_facts
     WHERE child_session_id = NEW.session_id;
-    DELETE FROM delegation_facts
-    WHERE parent_session_id = NEW.session_id OR child_session_id = NEW.session_id;
     INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    -- The insert rebuilds every scoped parent cohort, so the delete clears
+    -- those whole cohorts: a sibling of this child keeps its delegation_id.
+    DELETE FROM delegation_facts
+    WHERE parent_session_id IN (SELECT parent_session_id FROM delegation_refresh_scope);
     {delegation_facts_insert_sql("NEW.session_id")};
     DELETE FROM delegation_refresh_scope;
 END;
@@ -2364,6 +2359,42 @@ LEFT JOIN repo_json rj
   ON rj.source_name = dm.source_name AND rj.bucket_day = dm.bucket_day AND rj.tag = dm.tag
 GROUP BY dm.tag, dm.bucket_day, dm.source_name;
 
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_sessions_insert AFTER INSERT ON sessions
+WHEN NEW.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_sessions_update AFTER UPDATE ON sessions
+WHEN NEW.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_sessions_update_old_key AFTER UPDATE OF raw_id ON sessions
+WHEN OLD.raw_id IS NOT NULL AND NEW.raw_id IS NOT OLD.raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_sessions_delete AFTER DELETE ON sessions
+WHEN OLD.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_heads_insert AFTER INSERT ON raw_revision_heads
+WHEN NEW.accepted_raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.accepted_raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_heads_update AFTER UPDATE ON raw_revision_heads
+WHEN NEW.accepted_raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.accepted_raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_heads_update_old_key AFTER UPDATE OF accepted_raw_id ON raw_revision_heads
+WHEN OLD.accepted_raw_id IS NOT NULL AND NEW.accepted_raw_id IS NOT OLD.accepted_raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.accepted_raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_heads_delete AFTER DELETE ON raw_revision_heads
+WHEN OLD.accepted_raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.accepted_raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_applications_insert AFTER INSERT ON raw_revision_applications
+WHEN NEW.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_applications_update AFTER UPDATE ON raw_revision_applications
+WHEN NEW.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_applications_update_old_key AFTER UPDATE OF raw_id ON raw_revision_applications
+WHEN OLD.raw_id IS NOT NULL AND NEW.raw_id IS NOT OLD.raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_applications_delete AFTER DELETE ON raw_revision_applications
+WHEN OLD.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
 """
 
 # polylogue-a7xr.5 consolidated the FTS trigger CREATE statements into

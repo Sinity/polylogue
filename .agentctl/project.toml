@@ -12,12 +12,11 @@ command = ["nix", "develop", "--accept-flake-config", "--command"]
 # print-dev-env` realization keyed on them instead of copying a dirty
 # worktree into the store per job (~7-30 s after an edit, ~1 s cached).
 cache_inputs = ["flake.nix", "flake.lock", "nix"]
-inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "UV_CACHE_DIR", "UV_LINK_MODE", "POLYLOGUE_PYTEST_WORKERS", "POLYLOGUE_LIFECYCLE_RECEIPT_DIR", "POLYLOGUE_VERIFICATION_EVIDENCE_PATH", "OPENAI_API_KEY", "GITHUB_TOKEN"]
-unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
-require = ["POLYLOGUE_ARCHIVE_ROOT"]
+inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "UV_CACHE_DIR", "UV_LINK_MODE", "POLYLOGUE_PYTEST_WORKERS", "POLYLOGUE_LIFECYCLE_RECEIPT_DIR", "POLYLOGUE_VERIFICATION_EVIDENCE_PATH", "POLYLOGUE_FAKE_INDEXEDDB_PACKAGE", "OPENAI_API_KEY", "GITHUB_TOKEN"]
+unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX", "POLYLOGUE_ARCHIVE_ROOT", "XDG_DATA_HOME"]
+require = []
 
 [environment.values]
-POLYLOGUE_ARCHIVE_ROOT = "/realm/state/polylogue"
 POLYLOGUE_VERIFY_HISTORY_PATH = "/realm/project/polylogue/source/development/verify-history.jsonl"
 POLYLOGUE_RETIRED_VERIFY_HISTORY_PATHS = "/realm/activity/dev/polylogue/verify-history.jsonl:/realm/activity/development/polylogue/verify-history.jsonl:/realm/projects/polylogue/source/development/verify-history.jsonl"
 
@@ -131,7 +130,8 @@ cache = "none"
 timeout_seconds = 180
 
 [operations.live_provider_proof]
-description = "Run the shared-Chrome provider proof through AgentCTL"
+description = "Capture explicitly selected conversations in owned shared-Chrome windows"
+arguments = "required"
 exec = ["python", "-m", "devtools.live_provider_proof_service", "--json"]
 pool = "interactive"
 result = "json"

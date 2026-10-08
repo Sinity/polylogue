@@ -11,19 +11,16 @@ from polylogue.core.enums import BlockType, Provider, ToolOutcome, ToolResultUnk
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.sources.parsers.codex import parse as parse_codex
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import (
-    read_archive_session_envelope,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+from tests.infra.archive_templates import bootstrapped_tier_path
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
 
 
@@ -43,7 +40,7 @@ def _session(provider: Provider, result: ParsedContentBlock | None, *, tool_id: 
 def test_structured_outcome_round_trips_for_each_provider_wire(provider: Provider, tmp_path: Path) -> None:
     conn = _connect(tmp_path / f"{provider.value}.db")
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             _session(
                 provider,
@@ -104,7 +101,7 @@ def test_sidecar_execution_evidence_derives_result_outcome(tmp_path: Path) -> No
             and event.payload == {"tool_use_id": "call-1", "exit_code": 2}
             for event in session.session_events
         )
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             session,
         )
@@ -141,7 +138,7 @@ def test_sidecar_execution_evidence_refuses_conflicting_direct_verdict(tmp_path:
             }
         )
         with pytest.raises(ValueError, match="conflicting result evidence"):
-            write_parsed_session_to_archive(conn, session)
+            write_fixture_index_session(conn, session)
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     finally:
         conn.close()
@@ -153,7 +150,7 @@ def test_declared_unknown_outcome_is_admitted_and_preserves_reason(
 ) -> None:
     conn = _connect(tmp_path / f"unknown-{reason.value}.db")
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             _session(
                 Provider.CLAUDE_CODE,
@@ -256,7 +253,7 @@ def test_real_parser_unknown_shape_is_admitted_by_writer(
         assert len(result_blocks) == 1
         assert result_blocks[0].outcome_unknown_reason == ToolResultUnknownReason.NOT_REPORTED.value
 
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         row = conn.execute(
             """
             SELECT tool_outcome, tool_result_is_error, tool_result_exit_code,
@@ -279,7 +276,7 @@ def test_real_parser_unknown_shape_is_admitted_by_writer(
 def test_unpaired_tool_use_is_no_result(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "no-result.db")
     try:
-        session_id = write_parsed_session_to_archive(conn, _session(Provider.CODEX, None))
+        session_id = write_fixture_index_session(conn, _session(Provider.CODEX, None))
         assert conn.execute("SELECT tool_outcome FROM blocks WHERE session_id = ?", (session_id,)).fetchone()[0] == (
             ToolOutcome.NO_RESULT.value
         )
@@ -308,8 +305,8 @@ def test_merge_selects_unknown_verdict_as_one_atomic_legacy_projection(tmp_path:
                 outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
             ),
         )
-        session_id = write_parsed_session_to_archive(conn, first)
-        write_parsed_session_to_archive(conn, second)
+        session_id = write_fixture_index_session(conn, first)
+        write_fixture_index_session(conn, second)
         row = conn.execute(
             "SELECT tool_outcome, tool_result_is_error, tool_result_outcome_unknown_reason "
             "FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
@@ -343,8 +340,8 @@ def test_merge_known_verdict_clears_conflicting_legacy_exit_code(
             Provider.CLAUDE_CODE,
             ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="second", is_error=second_is_error),
         )
-        session_id = write_parsed_session_to_archive(conn, first)
-        write_parsed_session_to_archive(conn, second)
+        session_id = write_fixture_index_session(conn, first)
+        write_fixture_index_session(conn, second)
         row = conn.execute(
             "SELECT tool_outcome, tool_result_is_error, tool_result_exit_code FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
             (session_id,),
@@ -384,7 +381,7 @@ def test_result_without_any_outcome_evidence_refuses_write(tmp_path: Path) -> No
         block.outcome_unknown_reason = None
         assert block.is_error is None and block.tool_outcome is None
         with pytest.raises(ValueError, match="chatgpt-export.*unsupported tool_result block shape"):
-            write_parsed_session_to_archive(conn, session)
+            write_fixture_index_session(conn, session)
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     finally:
         conn.close()
@@ -436,7 +433,7 @@ def test_sidecar_execution_evidence_is_per_record_not_per_tool_id(tmp_path: Path
             ],
             "sidecar-siblings",
         )
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         rows = conn.execute(
             """
             SELECT m.native_id, b.tool_outcome, b.tool_result_exit_code, b.tool_result_outcome_unknown_reason
@@ -513,7 +510,7 @@ def test_distinct_result_owners_keep_distinct_sidecar_and_inline_verdicts(tmp_pa
                     event for event in session.session_events if event.event_type == "claude_tool_execution_result"
                 ]
                 assert [event.source_message_provider_id for event in evidence_events] == ["result-ok", "result-error"]
-            session_id = write_parsed_session_to_archive(conn, session)
+            session_id = write_fixture_index_session(conn, session)
             rows = conn.execute(
                 """
                 SELECT m.native_id, b.tool_outcome, b.tool_result_exit_code
@@ -565,10 +562,10 @@ def test_unmatched_tool_use_sidecar_fallback_requires_one_outcome(
         )
         if expected is None:
             with pytest.raises(ValueError):
-                write_parsed_session_to_archive(conn, session)
+                write_fixture_index_session(conn, session)
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
         else:
-            session_id = write_parsed_session_to_archive(conn, session)
+            session_id = write_fixture_index_session(conn, session)
             assert (
                 conn.execute(
                     "SELECT tool_outcome FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
@@ -597,7 +594,7 @@ def test_conflicting_sidecars_for_same_result_owner_still_refuse(tmp_path: Path)
             ],
         )
         with pytest.raises(ValueError):
-            write_parsed_session_to_archive(conn, session)
+            write_fixture_index_session(conn, session)
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     finally:
         conn.close()
@@ -641,7 +638,7 @@ def test_ownerless_sidecar_conflicts_with_different_owned_outcome(ownerless_firs
             session_events=[ownerless, owned] if ownerless_first else [owned, ownerless],
         )
         with pytest.raises(ValueError, match="conflicting execution evidence"):
-            write_parsed_session_to_archive(conn, session)
+            write_fixture_index_session(conn, session)
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     finally:
         conn.close()
@@ -684,7 +681,7 @@ def test_ownerless_sidecar_accepts_matching_owned_outcome(ownerless_first: bool,
             ],
             session_events=[ownerless, owned] if ownerless_first else [owned, ownerless],
         )
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         rows = conn.execute(
             """SELECT b.block_type, b.tool_outcome, b.tool_result_exit_code
             FROM blocks b JOIN messages m ON m.message_id = b.message_id
@@ -703,6 +700,11 @@ def test_unmatched_sidecar_fallback_work_does_not_grow_with_owner_cohort(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Repeated unmatched uses probe outcome bounds instead of rescanning owners.
+
+    A lone use is the one use its tool ID names, so the agreeing sidecars bind
+    to it and it takes their ``error``. Several uses sharing that tool ID
+    leave every sidecar unbound to a specific use: each use is a deliberate
+    ``unknown``, none is singled out and no ``error`` is invented.
 
     Anti-vacuity: removing the `(tool_id, outcome)` index and scanning/grouping
     every same-ID sidecar per use makes the large-cohort delta grow with the
@@ -747,10 +749,11 @@ def test_unmatched_sidecar_fallback_work_does_not_grow_with_owner_cohort(
             )
             with monkeypatch.context() as patch:
                 patch.setattr(sqlite3, "connect", traced_connect)
-                session_id = write_parsed_session_to_archive(conn, session)
+                session_id = write_fixture_index_session(conn, session)
+            expected = ToolOutcome.ERROR if uses == 1 else ToolOutcome.UNKNOWN
             rows = conn.execute(
                 "SELECT COUNT(*), SUM(tool_outcome = ?) FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
-                (ToolOutcome.ERROR.value, session_id),
+                (expected.value, session_id),
             ).fetchone()
             assert rows is not None
             assert tuple(rows) == (uses, uses)

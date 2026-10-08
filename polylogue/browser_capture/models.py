@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypeGuard
+from typing import Literal, Protocol, TypeGuard
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationInfo, field_validator, model_validator
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, Provider, ToolOutcome
 from polylogue.core.json import is_json_document, json_document
+from polylogue.sources.parsers.base_models import ParsedFileEdit, ParsedWebConstruct
 
 BROWSER_CAPTURE_KIND: Literal["browser_llm_session"] = "browser_llm_session"
 BROWSER_CAPTURE_SCHEMA_VERSION: Literal[1] = 1
@@ -127,12 +129,10 @@ class BrowserCaptureBlock(BaseModel):
     (``polylogue/sources/parsers/browser_capture.py``) converts these 1:1 into
     ``ParsedContentBlock`` rows.
 
-    Deliberate divergence from ``ParsedContentBlock``: no ``web_constructs``
-    field. Web-construct extraction (citations, canvases, ...) is a derived
-    enrichment computed by the archive-side parsers from raw segment
-    dictionaries (see ``sources/parsers/claude/common.py::_claude_content_blocks``);
-    it is not itself observable at the wire boundary, so there is nothing for
-    the extension to populate here.
+    Native preparation uses the canonical provider parser, including its
+    constructs, file-edit evidence, signatures and normalized tool outcomes.
+    Page adapters may leave those fields absent; typed validation preserves
+    them whenever the canonical preparation supplies them.
     """
 
     type: BlockType
@@ -147,6 +147,11 @@ class BrowserCaptureBlock(BaseModel):
     # them, never regex-guessed from rendered text.
     is_error: bool | None = None
     exit_code: int | None = None
+    signature: str | None = None
+    tool_outcome: ToolOutcome | None = None
+    outcome_unknown_reason: str | None = None
+    file_edit: ParsedFileEdit | None = None
+    web_constructs: list[ParsedWebConstruct] = Field(default_factory=list)
 
     @field_validator("type", mode="before")
     @classmethod
@@ -159,6 +164,37 @@ class BrowserCaptureBlock(BaseModel):
         if value is None:
             return None
         return dict(json_document(value))
+
+
+class _NativeMessageWitness(Protocol):
+    provider_message_id: str
+    role: Role
+    text: str | None
+    timestamp: str | None
+    parent_message_provider_id: str | None
+
+
+@dataclass(frozen=True)
+class _CanonicalNativeTurnWitness:
+    """Process-local canonical parser evidence, never a wire mode flag.
+
+    Callers retain the exact raw revision and complete canonical parsing before
+    supplying this witness. The sequence can be the existing SQLite sink.
+    """
+
+    messages: Sequence[_NativeMessageWitness]
+
+    def matches(self, turn: BrowserCaptureTurn) -> bool:
+        if "ordinal" not in turn.model_fields_set or not 0 <= turn.ordinal < len(self.messages):
+            return False
+        native = self.messages[turn.ordinal]
+        return (
+            native.provider_message_id == turn.provider_turn_id
+            and native.role == turn.role
+            and native.text == turn.text
+            and native.timestamp == turn.timestamp
+            and native.parent_message_provider_id == turn.parent_turn_id
+        )
 
 
 class BrowserCaptureTurn(BaseModel):
@@ -193,9 +229,11 @@ class BrowserCaptureTurn(BaseModel):
         return Role.normalize(str(value) if value is not None else "unknown")
 
     @model_validator(mode="after")
-    def require_content(self) -> BrowserCaptureTurn:
+    def require_content(self, info: ValidationInfo) -> BrowserCaptureTurn:
         if (self.text is None or not self.text.strip()) and not self.attachments and not self.blocks:
-            raise ValueError("browser capture turn must include text, blocks, or attachments")
+            witness = info.context.get("canonical_native_turns") if isinstance(info.context, dict) else None
+            if not isinstance(witness, _CanonicalNativeTurnWitness) or not witness.matches(self):
+                raise ValueError("browser capture turn must include text, blocks, or attachments")
         if (
             not self.provider_turn_id
             and any(not attachment.message_provider_id for attachment in self.attachments)
@@ -228,12 +266,21 @@ class BrowserCaptureProvenance(BaseModel):
     captured_at: str
     extension_id: str | None = None
     extension_instance_id: str | None = Field(default=None, min_length=1, max_length=128)
+    # The browser owner stores this counter as an exactly represented JS
+    # integer. It orders acquisitions only within the declared instance.
+    acquisition_sequence: int | None = Field(default=None, strict=True, ge=1, le=2**53 - 1)
     browser_profile: str | None = None
     adapter_name: str
     adapter_version: str | None = None
     capture_mode: Literal["snapshot", "tail"] = "snapshot"
     capture_interruption: BrowserCaptureInterruption | None = None
     provider_meta: dict[str, object] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def require_acquisition_owner(self) -> BrowserCaptureProvenance:
+        if self.acquisition_sequence is not None and self.extension_instance_id is None:
+            raise ValueError("acquisition_sequence requires extension_instance_id")
+        return self
 
     @field_validator("provider_meta", mode="before")
     @classmethod
@@ -309,6 +356,8 @@ class BrowserCaptureEnvelope(BaseModel):
                 raise ValueError("native record payload must contain JSON objects")
             return [dict(json_document(record)) for record in value]
         payload: dict[str, object] = dict(json_document(value))
+        if payload.get("polylogue_bridge_projection") == "chatgpt-native-compact-v1":
+            raise ValueError("capture_retired_projection: synthetic compact payload is not provider-native evidence")
         return payload
 
     @model_validator(mode="after")
@@ -399,82 +448,6 @@ class BrowserCaptureCapabilitiesPayload(BaseModel):
         Literal["receiver_request_id"], Literal["content_hash"], Literal["submitted_content_hash"], Literal["outcome"]
     ] = ("receiver_request_id", "content_hash", "submitted_content_hash", "outcome")
     assertion_candidates: Literal[True] = True
-
-
-class BrowserBackfillCheckpointRequest(BaseModel):
-    """Extension-submitted backfill-ledger checkpoint mirror (polylogue-06zm).
-
-    The receiver becomes a durable second copy of the extension's IndexedDB
-    backfill ledger (job/queue/revision state, already sanitized of provider
-    credentials by the extension before it ever leaves the browser — see
-    browser-extension/src/backfill/storage.js exportRecoveryCheckpoint), so a
-    browser profile loss that also destroys the extension's local
-    chrome.storage.local mirror still leaves a recoverable checkpoint.
-    IndexedDB remains the fast primary source; this mirror is a fallback.
-
-    The receiver treats ``checkpoint`` as an opaque JSON object: its internal
-    job/queue/revision shape is the extension's concern, matching the browser
-    capture envelope's own "receiver does not reinterpret payload structure"
-    trust boundary (see BrowserCaptureHandler's class docstring).
-    """
-
-    extension_instance_id: str = Field(min_length=1, max_length=128)
-    checkpoint: dict[str, object]
-
-    @field_validator("checkpoint", mode="before")
-    @classmethod
-    def require_checkpoint_document(cls, value: object) -> dict[str, object]:
-        # This field is the disaster-recovery mirror of the extension's
-        # backfill ledger (polylogue-06zm): a malformed request must be
-        # REJECTED, never silently coerced to {} and persisted as if it were
-        # a legitimate checkpoint -- that would report HTTP 202 success while
-        # overwriting a previously-good stored checkpoint with an empty one.
-        if not is_json_document(value):
-            raise ValueError("checkpoint must be a JSON object")
-        return dict(value)
-
-
-class BrowserBackfillCheckpointRecord(BaseModel):
-    """Persisted checkpoint envelope, one per extension instance (last write wins)."""
-
-    extension_instance_id: str
-    checkpoint: dict[str, object]
-    stored_at: str
-
-    @field_validator("checkpoint", mode="before")
-    @classmethod
-    def require_checkpoint_document(cls, value: object) -> dict[str, object]:
-        # Same durability rationale as BrowserBackfillCheckpointRequest above:
-        # a checkpoint file on disk that fails to parse as a JSON object is
-        # corrupt, not an empty-but-valid checkpoint. Raising here makes
-        # read_backfill_checkpoint's `except Exception: return None` treat a
-        # corrupt stored file as "no checkpoint found" rather than silently
-        # presenting fabricated empty data as a real one.
-        if not is_json_document(value):
-            raise ValueError("checkpoint must be a JSON object")
-        return dict(value)
-
-
-class BrowserBackfillCheckpointAcceptedPayload(BaseModel):
-    """Response to ``POST /v1/backfill-checkpoint``."""
-
-    ok: Literal[True] = True
-    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
-    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    extension_instance_id: str
-    stored_at: str
-    bytes_written: int
-
-
-class BrowserBackfillCheckpointPayload(BaseModel):
-    """Response to ``GET /v1/backfill-checkpoint``."""
-
-    ok: Literal[True] = True
-    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
-    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    extension_instance_id: str
-    checkpoint: dict[str, object]
-    stored_at: str
 
 
 class BrowserCaptureErrorPayload(BaseModel):
@@ -802,16 +775,11 @@ class BrowserActionCapabilitiesPayload(BaseModel):
     providers: dict[str, object]
 
 
-#: The bridge projection whose ``mapping`` the extension synthesizes rather
-#: than receiving it from ChatGPT. It is deliberately not provider evidence.
-COMPACT_CHATGPT_BRIDGE_PROJECTION = "chatgpt-native-compact-v1"
-
-
 def has_chatgpt_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
     """Whether a raw provider payload is a trusted ChatGPT conversation mapping."""
     return (
         isinstance(payload, dict)
-        and payload.get("polylogue_bridge_projection") != COMPACT_CHATGPT_BRIDGE_PROJECTION
+        and payload.get("polylogue_bridge_projection") != "chatgpt-native-compact-v1"
         and isinstance(payload.get("mapping"), dict)
     )
 
@@ -819,6 +787,15 @@ def has_chatgpt_native_payload(payload: object) -> TypeGuard[Mapping[str, object
 def has_claude_ai_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
     """Whether a raw provider payload is a trusted Claude.ai conversation body."""
     return isinstance(payload, dict) and isinstance(payload.get("chat_messages"), list)
+
+
+def has_grok_native_payload(payload: object) -> TypeGuard[dict[str, object]]:
+    """Identify the endpoint bundle carrier; the native parser validates identity."""
+    return (
+        isinstance(payload, dict)
+        and isinstance(payload.get("conversation"), dict)
+        and isinstance(payload.get("responses"), (dict, list))
+    )
 
 
 def envelope_has_native_provider_payload(envelope: BrowserCaptureEnvelope) -> bool:
@@ -842,6 +819,8 @@ def envelope_has_native_provider_payload(envelope: BrowserCaptureEnvelope) -> bo
         return has_chatgpt_native_payload(payload)
     if envelope.session.provider is Provider.CLAUDE_AI:
         return has_claude_ai_native_payload(payload)
+    if envelope.session.provider is Provider.GROK:
+        return has_grok_native_payload(payload)
     return False
 
 
@@ -860,13 +839,15 @@ def _lift_spilled_carriers(raw_items: object, attachments: list[BrowserCaptureAt
             attachment._spilled_carriers = spilled
 
 
-def validate_capture_envelope(payload: object) -> BrowserCaptureEnvelope:
+def validate_capture_envelope(
+    payload: object, *, native_witness: _CanonicalNativeTurnWitness | None = None
+) -> BrowserCaptureEnvelope:
     """Validate an envelope, keeping carriers a streamed decode spilled.
 
     Validation turns a :class:`SpilledCarrier` into a plain empty string;
     the blob it names is re-attached to the attachment at the same position.
     """
-    envelope = BrowserCaptureEnvelope.model_validate(payload)
+    envelope = BrowserCaptureEnvelope.model_validate(payload, context={"canonical_native_turns": native_witness})
     session = payload.get("session") if isinstance(payload, Mapping) else None
     if not isinstance(session, Mapping):
         return envelope
@@ -898,10 +879,6 @@ __all__ = [
     "BROWSER_CAPTURE_RECEIVER",
     "BROWSER_CAPTURE_SCHEMA_VERSION",
     "BROWSER_CAPTURE_TRANSPORT_SOURCE",
-    "BrowserBackfillCheckpointAcceptedPayload",
-    "BrowserBackfillCheckpointPayload",
-    "BrowserBackfillCheckpointRecord",
-    "BrowserBackfillCheckpointRequest",
     "BrowserCaptureBlock",
     "BrowserActionApprovalDecisionRequest",
     "BrowserActionApprovalReason",
@@ -941,7 +918,6 @@ __all__ = [
     "BrowserCaptureSession",
     "BrowserCaptureSessionKind",
     "BrowserCaptureTurn",
-    "COMPACT_CHATGPT_BRIDGE_PROJECTION",
     "RECEIVER_ATTESTATION_CHALLENGE_PATTERN",
     "envelope_has_native_provider_payload",
     "has_chatgpt_native_payload",

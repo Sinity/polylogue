@@ -7,17 +7,20 @@ read these observations, but they must not reconstruct them after acquisition.
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Any
 
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.artifacts.inspection import artifact_observation_id
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceArtifact,
+    SourceArtifactProducer,
+    _upsert_raw_artifact,
+)
 
 
 def record_session_artifact_observation(
-    archive: Any,
+    producer: SourceArtifactProducer,
     *,
     raw_id: str,
     provider: Provider,
@@ -38,8 +41,8 @@ def record_session_artifact_observation(
     if classification is None or not classification.parse_as_session:
         return False
     origin = origin_from_provider(provider)
-    upsert_raw_artifact(
-        archive._ensure_source_conn(),
+    _upsert_raw_artifact(
+        producer,
         raw_id,
         ArchiveSourceArtifact(
             artifact_id=artifact_observation_id(

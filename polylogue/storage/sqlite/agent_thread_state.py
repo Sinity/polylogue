@@ -26,10 +26,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable, Collection, Iterable, Sequence
+from builtins import BaseExceptionGroup
+from collections.abc import Callable, Collection, Generator, Iterable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.logging import DEBUG, emit
+from polylogue.storage.io_phase_metrics import close_connection_cursor, connect_measured, connection_cursor
+from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
 #: Graph-id namespace for runtime-reported thread state.
 GRAPH_PREFIX = "agent-thread-state:"
@@ -106,35 +112,68 @@ class SpawnRecord:
     status: str
 
 
-def read_provenance(conn: sqlite3.Connection, *, source_scope: str | None = None) -> ThreadStateProvenance | None:
-    """Return one scope's provenance, or the newest across scopes."""
-    try:
-        if source_scope is None:
-            row = conn.execute(
-                "SELECT source_evidence_ref, corpus_snapshot_ref, observed_at_ms, observation_order "
-                "FROM work_evidence_graphs WHERE graph_id LIKE ? AND source_evidence_ref IS NOT NULL "
-                "ORDER BY observation_order DESC, source_evidence_ref DESC, graph_id DESC "
-                "LIMIT 1",
-                (f"{GRAPH_PREFIX}%",),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT source_evidence_ref, corpus_snapshot_ref, observed_at_ms, observation_order "
-                "FROM work_evidence_graphs WHERE graph_id = ? AND source_evidence_ref IS NOT NULL",
-                (thread_state_graph_id(source_scope),),
-            ).fetchone()
-    except sqlite3.Error as exc:
-        emit(
-            "storage.agent_thread_state.provenance_unreadable",
-            level=DEBUG,
-            outcome="unmeasured",
-            reason="the index tier is unreadable, so no scope provenance is known",
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
+def read_provenance(
+    conn: sqlite3.Connection,
+    *,
+    source_scope: str | None = None,
+    before_input: Callable[[str, tuple[str, ...], str, tuple[object, ...]], None] | None = None,
+) -> ThreadStateProvenance | None:
+    """Return one scope's provenance; propagate unreadable evidence."""
+    if not conn.in_transaction:
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
+        primary: BaseException | None = None
+        try:
+            return read_provenance(conn, source_scope=source_scope, before_input=before_input)
+        except BaseException as failure:
+            primary = failure
+            raise
+        finally:
+            try:
+                with connection_cursor(conn, "ROLLBACK"):
+                    pass
+            except BaseException as cleanup:
+                if primary is not None:
+                    raise BaseExceptionGroup(
+                        "graph provenance read and snapshot cleanup failed", [primary, cleanup]
+                    ) from None
+                raise
+    with connection_cursor(
+        conn, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'work_evidence_graphs'"
+    ) as cursor:
+        present = cursor.fetchone() is not None
+    if not present:
+        return None
+    if source_scope is None:
+        sql = (
+            "SELECT rowid FROM work_evidence_graphs WHERE graph_id LIKE ? AND source_evidence_ref IS NOT NULL "
+            "ORDER BY observation_order DESC, source_evidence_ref DESC, graph_id DESC LIMIT 1"
         )
+        parameters = (f"{GRAPH_PREFIX}%",)
+    else:
+        sql = "SELECT rowid FROM work_evidence_graphs WHERE graph_id = ? AND source_evidence_ref IS NOT NULL"
+        parameters = (thread_state_graph_id(source_scope),)
+    with connection_cursor(conn, sql, parameters) as cursor:
+        selected = cursor.fetchone()
+    if selected is None:
         return None
+    rowid = int(selected[0])
+    if before_input is not None:
+        before_input(
+            "work_evidence_graphs",
+            ("source_evidence_ref", "corpus_snapshot_ref", "observed_at_ms", "observation_order"),
+            "SELECT rowid FROM work_evidence_graphs WHERE rowid=?",
+            (rowid,),
+        )
+    with connection_cursor(
+        conn,
+        "SELECT source_evidence_ref, corpus_snapshot_ref, observed_at_ms, observation_order "
+        "FROM work_evidence_graphs WHERE rowid=?",
+        (rowid,),
+    ) as cursor:
+        row = cursor.fetchone()
     if row is None:
-        return None
+        raise RuntimeError("selected thread graph provenance disappeared inside its read window")
     raw_id = str(row[0]).removeprefix("artifact:")
     blob_hash = str(row[1]).removeprefix("artifact:")
     return ThreadStateProvenance(raw_id, blob_hash, int(row[2]), int(row[3]))
@@ -191,164 +230,148 @@ _GraphRow = tuple[str, tuple[object, ...], tuple[object, ...]]
 
 def _export_rows(
     source_scope: str,
-    threads: Sequence[ThreadRecord],
-    spawn_edges: Sequence[SpawnRecord],
+    threads: Iterable[ThreadRecord],
+    spawn_edges: Iterable[SpawnRecord],
     *,
     raw_id: str,
     blob_hash: str,
     observed_at_ms: int,
-) -> tuple[list[_GraphRow], list[_GraphRow]]:
-    """The node and edge rows one export names, in foreign-key order."""
+) -> tuple[Iterable[_GraphRow], Iterable[_GraphRow]]:
+    """Stream graph rows from repeatable sealed records in foreign-key order."""
     snapshot_ref = f"artifact:{blob_hash}"
     evidence_json = json.dumps([f"artifact:{raw_id}"])
-    context_rows: dict[str, tuple[str, int | None]] = {}
-    for thread in threads:
-        if not thread.thread_id:
-            continue
-        label = (thread.title or "").strip() or thread.thread_id
-        context_rows[thread.thread_id] = (label, thread.occurred_at_ms)
-    for edge in spawn_edges:
-        # An edge endpoint the export's thread list is silent about is still
-        # a context this runtime named; the graph's foreign keys require both
-        # endpoints to exist.
-        for endpoint in (edge.parent_thread_id, edge.child_thread_id):
-            if endpoint and endpoint not in context_rows:
-                context_rows[endpoint] = (endpoint, None)
-    titled = [
-        (thread.thread_id, (thread.title or "").strip(), thread.occurred_at_ms)
-        for thread in threads
-        if thread.thread_id and (thread.title or "").strip()
-    ]
-    nodes: list[_GraphRow] = []
-    for thread_id, (label, occurred_at_ms) in sorted(context_rows.items()):
+
+    def context(thread_id: str, label: str, occurred_at_ms: int | None) -> _GraphRow:
         ref = thread_context_ref(source_scope, thread_id)
-        nodes.append(
+        return (
+            ref,
             (
                 ref,
-                (
-                    ref,
-                    "execution-context",
-                    label,
-                    evidence_json,
-                    snapshot_ref,
-                    occurred_at_ms,
-                    thread_context_id(source_scope, thread_id),
-                ),
-                (None,),
-            )
+                "execution-context",
+                label,
+                evidence_json,
+                snapshot_ref,
+                occurred_at_ms,
+                thread_context_id(source_scope, thread_id),
+            ),
+            (None,),
         )
-    for thread_id, title, occurred_at_ms in titled:
-        ref = _title_claim_ref(source_scope, thread_id)
-        nodes.append((ref, (ref, "claim", title, evidence_json, snapshot_ref, occurred_at_ms, None), (title,)))
-    edges: list[_GraphRow] = []
-    for thread_id, _title, occurred_at_ms in titled:
-        ref = _title_edge_ref(source_scope, thread_id)
-        edges.append(
-            (
-                ref,
-                (
+
+    def nodes() -> Iterable[_GraphRow]:
+        # Endpoints absent from the declared thread table still need contexts.
+        # Declared thread rows follow and replace these placeholder labels.
+        for edge in spawn_edges:
+            check_compute_cancelled()
+            for endpoint in (edge.parent_thread_id, edge.child_thread_id):
+                if endpoint:
+                    yield context(endpoint, endpoint, None)
+        for thread in threads:
+            check_compute_cancelled()
+            if not thread.thread_id:
+                continue
+            title = (thread.title or "").strip()
+            yield context(thread.thread_id, title or thread.thread_id, thread.occurred_at_ms)
+            if title:
+                ref = _title_claim_ref(source_scope, thread.thread_id)
+                yield (ref, (ref, "claim", title, evidence_json, snapshot_ref, thread.occurred_at_ms, None), (title,))
+
+    def edges() -> Iterable[_GraphRow]:
+        for thread in threads:
+            check_compute_cancelled()
+            if thread.thread_id and (thread.title or "").strip():
+                ref = _title_edge_ref(source_scope, thread.thread_id)
+                yield (
                     ref,
-                    "claimed",
-                    thread_context_ref(source_scope, thread_id),
-                    _title_claim_ref(source_scope, thread_id),
-                    evidence_json,
-                    snapshot_ref,
-                    occurred_at_ms,
-                ),
-                (None,),
-            )
-        )
-    for edge in spawn_edges:
-        if not (edge.parent_thread_id and edge.child_thread_id):
-            continue
-        ref = _spawn_edge_ref(source_scope, edge.parent_thread_id, edge.child_thread_id)
-        edges.append(
-            (
-                ref,
-                (
+                    (
+                        ref,
+                        "claimed",
+                        thread_context_ref(source_scope, thread.thread_id),
+                        _title_claim_ref(source_scope, thread.thread_id),
+                        evidence_json,
+                        snapshot_ref,
+                        thread.occurred_at_ms,
+                    ),
+                    (None,),
+                )
+        for edge in spawn_edges:
+            check_compute_cancelled()
+            if edge.parent_thread_id and edge.child_thread_id:
+                ref = _spawn_edge_ref(source_scope, edge.parent_thread_id, edge.child_thread_id)
+                yield (
                     ref,
-                    "invoked",
-                    thread_context_ref(source_scope, edge.parent_thread_id),
-                    thread_context_ref(source_scope, edge.child_thread_id),
-                    evidence_json,
-                    snapshot_ref,
-                    observed_at_ms,
-                ),
-                (edge.status or "unknown",),
-            )
-        )
-    return nodes, edges
+                    (
+                        ref,
+                        "invoked",
+                        thread_context_ref(source_scope, edge.parent_thread_id),
+                        thread_context_ref(source_scope, edge.child_thread_id),
+                        evidence_json,
+                        snapshot_ref,
+                        observed_at_ms,
+                    ),
+                    (edge.status or "unknown",),
+                )
+
+    return nodes(), edges()
 
 
-def _bound_rows(graph_id: str, rows: Sequence[_GraphRow], state: str) -> list[tuple[object, ...]]:
-    return [(graph_id, *head, state, *tail) for _ref, head, tail in rows]
+def _bound_rows(graph_id: str, rows: Iterable[_GraphRow], state: str) -> Iterable[tuple[object, ...]]:
+    return ((graph_id, *head, state, *tail) for _ref, head, tail in rows)
 
 
-def _write_nodes(conn: sqlite3.Connection, graph_id: str, rows: Sequence[_GraphRow], state: str) -> None:
-    conn.executemany(_NODE_SQL, _bound_rows(graph_id, rows, state))
+def _write_nodes(conn: sqlite3.Connection, graph_id: str, rows: Iterable[_GraphRow], state: str) -> None:
+    _write_graph_rows(conn, _NODE_SQL, _bound_rows(graph_id, rows, state))
 
 
-def _write_edges(conn: sqlite3.Connection, graph_id: str, rows: Sequence[_GraphRow], state: str) -> None:
-    conn.executemany(_EDGE_SQL, _bound_rows(graph_id, rows, state))
+def _write_edges(conn: sqlite3.Connection, graph_id: str, rows: Iterable[_GraphRow], state: str) -> None:
+    _write_graph_rows(conn, _EDGE_SQL, _bound_rows(graph_id, rows, state))
 
 
 def _retain_older_export_rows(
     conn: sqlite3.Connection,
     graph_id: str,
-    nodes: Sequence[_GraphRow],
-    edges: Sequence[_GraphRow],
+    nodes: Iterable[_GraphRow],
+    edges: Iterable[_GraphRow],
     *,
     incoming_key: tuple[int, str, str],
     export_order: ExportOrder,
 ) -> bool:
-    """Fold an export older than the current one into the retained rows.
+    """Retain older evidence by exact row lookup without collecting the graph."""
+    written = False
 
-    The current export's rows stay as they are. Every other row the older
-    export names is superseded evidence: it is added when absent and
-    rewritten when the export that last wrote it is older still, so the
-    retained rows are those of the newest export naming each object whatever
-    order the exports arrive in.
-    """
-    orders: dict[str, int] = {}
-
-    def writer_key(evidence_refs_json: str, snapshot_ref: str) -> tuple[int, str, str]:
-        refs = json.loads(evidence_refs_json)
-        writer = str(refs[0]).removeprefix("artifact:") if refs else ""
-        if writer not in orders:
-            # An export the source tier no longer holds ranks below any it holds.
-            ranked = export_order(writer)
-            orders[writer] = -1 if ranked is None else ranked
-        return (orders[writer], writer, snapshot_ref.removeprefix("artifact:"))
-
-    def retainable(table: str, ref_column: str, rows: Sequence[_GraphRow]) -> list[_GraphRow]:
-        existing = {
-            str(ref): (str(state), str(evidence), str(snapshot))
-            for ref, state, evidence, snapshot in conn.execute(
-                f"SELECT {ref_column}, association_state, evidence_refs_json, corpus_snapshot_ref "
-                f"FROM {table} WHERE graph_id = ?",
-                (graph_id,),
-            )
-        }
-        kept: list[_GraphRow] = []
+    def retainable(table: str, ref_column: str, rows: Iterable[_GraphRow]) -> Iterable[_GraphRow]:
+        nonlocal written
         for row in rows:
-            held = existing.get(row[0])
-            if held is None or (held[0] == "superseded" and writer_key(held[1], held[2]) < incoming_key):
-                kept.append(row)
-        return kept
+            check_compute_cancelled()
+            with connection_cursor(
+                conn,
+                f"SELECT association_state, evidence_refs_json, corpus_snapshot_ref FROM {table} "
+                f"WHERE graph_id = ? AND {ref_column} = ?",
+                (graph_id, row[0]),
+            ) as cursor:
+                held = cursor.fetchone()
+            if held is None:
+                written = True
+                yield row
+            elif str(held[0]) == "superseded":
+                refs = json.loads(str(held[1]))
+                writer = str(refs[0]).removeprefix("artifact:") if refs else ""
+                ranked = export_order(writer)
+                writer_key = (-1 if ranked is None else ranked, writer, str(held[2]).removeprefix("artifact:"))
+                if writer_key <= incoming_key:
+                    written = True
+                    yield row
 
-    retained_nodes = retainable("work_evidence_nodes", "node_ref", nodes)
-    retained_edges = retainable("work_evidence_edges", "edge_ref", edges)
-    _write_nodes(conn, graph_id, retained_nodes, "superseded")
-    _write_edges(conn, graph_id, retained_edges, "superseded")
-    return bool(retained_nodes or retained_edges)
+    _write_nodes(conn, graph_id, retainable("work_evidence_nodes", "node_ref", nodes), "superseded")
+    _write_edges(conn, graph_id, retainable("work_evidence_edges", "edge_ref", edges), "superseded")
+    return written
 
 
 def write_thread_state_graph(
     conn: sqlite3.Connection,
     *,
     source_scope: str,
-    threads: Sequence[ThreadRecord],
-    spawn_edges: Sequence[SpawnRecord],
+    threads: Iterable[ThreadRecord],
+    spawn_edges: Iterable[SpawnRecord],
     raw_id: str,
     blob_hash: str,
     observed_at_ms: int,
@@ -429,94 +452,147 @@ def read_thread_titles(
     *,
     thread_ids: Sequence[str] | None = None,
     source_scope: str | None = None,
+    before_input: Callable[[str, tuple[str, ...], str, tuple[object, ...]], None] | None = None,
 ) -> dict[str, str]:
-    """Return ``{thread_id: title}`` from the claimed titles in the graph.
+    """Collect the canonical first retained title per thread for explicit readers."""
+    from contextlib import closing
 
-    Only a genuinely absent evidence table means "no titles". Any other read
-    failure (an interrupted or expired frame, a locked or unreadable file)
-    propagates: reporting it as absence would let ingest persist sessions
-    without their retained titles instead of retrying.
-    """
-    predicate, parameters = _scope_predicate(source_scope)
-    base = f"""
-        SELECT e.source_ref, n.claim_text
-        FROM work_evidence_edges AS e
-        JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
-        JOIN work_evidence_nodes AS n ON n.graph_id = e.graph_id AND n.node_ref = e.target_ref
-        WHERE {predicate} AND e.edge_kind = 'claimed' AND n.node_kind = 'claim'
-          AND n.claim_text IS NOT NULL
-    """
-    ordering = _RECENCY.format(alias="e")
     titles: dict[str, str] = {}
-    present = conn.execute(
-        "SELECT COUNT(DISTINCT name) FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)",
+    with closing(
+        iter_thread_title_candidates(conn, thread_ids=thread_ids, source_scope=source_scope, before_input=before_input)
+    ) as candidates:
+        for thread_id, title in candidates:
+            titles.setdefault(thread_id, title)
+    return titles
+
+
+def iter_thread_title_candidates(
+    conn: sqlite3.Connection,
+    *,
+    thread_ids: Iterable[str] | None = None,
+    source_scope: str | None = None,
+    before_input: Callable[[str, tuple[str, ...], str, tuple[object, ...]], None] | None = None,
+) -> Generator[tuple[str, str], None, None]:
+    """Read canonical retained titles after selecting their physical inputs.
+
+    A missing graph table is declared absence; read and accounting faults
+    propagate. The same selected edge/node identities are hydrated after the
+    callback, under the caller's original snapshot.
+    """
+    if not conn.in_transaction:
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
+        try:
+            yield from iter_thread_title_candidates(
+                conn,
+                thread_ids=thread_ids,
+                source_scope=source_scope,
+                before_input=before_input,
+            )
+        finally:
+            with connection_cursor(conn, "ROLLBACK"):
+                pass
+        return
+    with connection_cursor(
+        conn,
+        "SELECT COUNT(DISTINCT name) FROM sqlite_master WHERE type='table' AND name IN (?, ?, ?)",
         _TITLE_TABLES,
-    ).fetchone()[0]
+    ) as cursor:
+        present = cursor.fetchone()[0]
     if present != len(_TITLE_TABLES):
-        # Only a genuinely absent evidence table means "no titles"; every read
-        # failure below propagates.
         emit(
             "storage.agent_thread_state.titles_absent",
             level=DEBUG,
             outcome="empty",
             reason="the index tier has no work-evidence graph tables, so there are no retained titles",
         )
-        return {}
-    rows: list[tuple[object, ...]] = []
-    if thread_ids is None:
-        rows = conn.execute(f"{base} {ordering}", parameters).fetchall()
-    else:
-        wanted = list(dict.fromkeys(thread_ids))
-        if not wanted:
-            return {}
-        for start in range(0, len(wanted), 500):
-            chunk = wanted[start : start + 500]
+        return
+    predicate, parameters = _scope_predicate(source_scope)
+    relation = f"""
+        FROM work_evidence_edges AS e
+        JOIN work_evidence_graphs AS g ON g.graph_id=e.graph_id
+        JOIN work_evidence_nodes AS n ON n.graph_id=e.graph_id AND n.node_ref=e.target_ref
+        WHERE {predicate} AND e.edge_kind='claimed' AND n.node_kind='claim'
+          AND n.claim_text IS NOT NULL
+    """
+    ordering = _RECENCY.format(alias="e")
+
+    def chunks() -> Iterable[tuple[str, ...] | None]:
+        if thread_ids is None:
+            yield None
+            return
+        from itertools import islice
+
+        selected = iter(thread_ids)
+        while page := tuple(dict.fromkeys(islice(selected, 500))):
+            check_compute_cancelled()
+            yield page
+
+    for chunk in chunks():
+        check_compute_cancelled()
+        clause = ""
+        operands: tuple[object, ...] = tuple(parameters)
+        if chunk is not None:
             if source_scope is None:
-                # Scope is unknown, so match on the thread-id tail of the
-                # context ref rather than on a ref we cannot spell.
-                clause = " OR ".join("e.source_ref LIKE ?" for _ in chunk)
-                chunk_parameters = [f"%{_SCOPE_SEPARATOR}{item}" for item in chunk]
+                clause = " AND (" + " OR ".join("e.source_ref LIKE ?" for _ in chunk) + ")"
+                operands += tuple(f"%{_SCOPE_SEPARATOR}{item}" for item in chunk)
             else:
-                clause = " OR ".join("e.source_ref = ?" for _ in chunk)
-                chunk_parameters = [thread_context_ref(source_scope, item) for item in chunk]
-            rows.extend(
-                conn.execute(
-                    f"{base} AND ({clause}) {ordering}",
-                    [*parameters, *chunk_parameters],
-                ).fetchall()
-            )
-    for row in rows:
-        thread_id = thread_id_from_context_ref(str(row[0]))
-        title = row[1]
-        if thread_id and thread_id not in titles and isinstance(title, str) and title.strip():
-            titles[thread_id] = title.strip()
-    return titles
+                clause = " AND (" + " OR ".join("e.source_ref=?" for _ in chunk) + ")"
+                operands += tuple(thread_context_ref(source_scope, item) for item in chunk)
+        with connection_cursor(
+            conn,
+            f"SELECT e.rowid,n.rowid,g.rowid {relation} {clause} {ordering}",
+            operands,
+        ) as identities:
+            for edge_rowid, node_rowid, graph_rowid in identities:
+                check_compute_cancelled()
+                if before_input is not None:
+                    before_input(
+                        "work_evidence_edges",
+                        ("source_ref", "edge_kind", "association_state", "graph_id", "target_ref"),
+                        "SELECT rowid FROM work_evidence_edges WHERE rowid=?",
+                        (edge_rowid,),
+                    )
+                    before_input(
+                        "work_evidence_nodes",
+                        ("claim_text", "node_kind", "graph_id", "node_ref"),
+                        "SELECT rowid FROM work_evidence_nodes WHERE rowid=?",
+                        (node_rowid,),
+                    )
+                    before_input(
+                        "work_evidence_graphs",
+                        ("graph_id", "observation_order"),
+                        "SELECT rowid FROM work_evidence_graphs WHERE rowid=?",
+                        (graph_rowid,),
+                    )
+                with connection_cursor(
+                    conn,
+                    "SELECT e.source_ref,n.claim_text FROM work_evidence_edges e,work_evidence_nodes n "
+                    "WHERE e.rowid=? AND n.rowid=?",
+                    (edge_rowid, node_rowid),
+                ) as fields:
+                    row = fields.fetchone()
+                if row is None:
+                    raise RuntimeError("selected retained title input disappeared from its original snapshot")
+                thread_id = thread_id_from_context_ref(str(row[0]))
+                title = row[1]
+                if thread_id and isinstance(title, str) and title.strip():
+                    yield thread_id, title.strip()
 
 
 def read_spawn_edges(conn: sqlite3.Connection, *, source_scope: str | None = None) -> dict[tuple[str, str], str]:
     """Return ``{(parent_thread_id, child_thread_id): status}`` from the graph."""
     predicate, parameters = _scope_predicate(source_scope)
-    try:
-        rows = conn.execute(
-            f"""
-            SELECT e.source_ref, e.target_ref, e.source_state_label
-            FROM work_evidence_edges AS e
-            JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
-            WHERE {predicate} AND e.edge_kind = 'invoked'
-            {_RECENCY.format(alias="e")}
-            """,
-            parameters,
-        ).fetchall()
-    except sqlite3.Error as exc:
-        emit(
-            "storage.agent_thread_state.spawn_edges_unreadable",
-            level=DEBUG,
-            outcome="unmeasured",
-            reason="the index tier is unreadable, so no spawn evidence is reported",
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return {}
+    rows = conn.execute(
+        f"""
+        SELECT e.source_ref, e.target_ref, e.source_state_label
+        FROM work_evidence_edges AS e
+        JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
+        WHERE {predicate} AND e.edge_kind = 'invoked'
+        {_RECENCY.format(alias="e")}
+        """,
+        parameters,
+    ).fetchall()
     edges: dict[tuple[str, str], str] = {}
     for row in rows:
         parent = thread_id_from_context_ref(str(row[0]))
@@ -592,36 +668,76 @@ def read_spawn_edge_children(conn: sqlite3.Connection) -> set[str]:
 
 
 def read_parent_thread_id(
-    conn: sqlite3.Connection, child_thread_id: str, *, source_scope: str | None = None
+    conn: sqlite3.Connection,
+    child_thread_id: str,
+    *,
+    source_scope: str | None = None,
+    before_input: Callable[[str, tuple[str, ...], str, tuple[object, ...]], None] | None = None,
+    row_read: ThreadParentRowRead | None = None,
 ) -> str | None:
-    """Return the projected parent of ``child_thread_id``, or ``None`` when silent.
+    """Read one child's agreed parent without retaining every scope's graph.
 
-    ``None`` means the graph is silent about this child, which is not the same
-    as it naming a different parent; only the latter is a conflict. Without a
-    scope, the child's parent is known only where every scope naming it
-    agrees (see :func:`_agreed_parents`).
+    Each scope contributes its newest resolved association, then superseded
+    evidence. SQL failures propagate so publication cannot mistake them for
+    an absent parent.
     """
+    if not conn.in_transaction:
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
+        try:
+            return read_parent_thread_id(
+                conn, child_thread_id, source_scope=source_scope, before_input=before_input, row_read=row_read
+            )
+        finally:
+            with connection_cursor(conn, "ROLLBACK"):
+                pass
     if not child_thread_id:
         return None
-    if source_scope is None:
-        child_predicate = "AND e.target_ref LIKE ?"
-        child_parameter = f"%{_SCOPE_SEPARATOR}{child_thread_id}"
-    else:
-        child_predicate = "AND e.target_ref = ?"
-        child_parameter = thread_context_ref(source_scope, child_thread_id)
-    try:
-        rows = _spawn_parent_rows(conn, source_scope, child_predicate, (child_parameter,))
-    except sqlite3.Error as exc:
-        emit(
-            "storage.agent_thread_state.spawn_parent_unreadable",
-            level=DEBUG,
-            outcome="unmeasured",
-            reason="the index tier is unreadable, so the graph is treated as silent about this child",
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return None
-    return _agreed_parents(rows, {child_thread_id}).get(child_thread_id)
+    predicate, operands = _thread_parent_predicate(child_thread_id, source_scope)
+    # The same canonical scope winner supplies identity and payload. No
+    # independent tied LIMIT/partition selection occurs after accounting.
+    with connection_cursor(
+        conn,
+        f"""
+        SELECT physical_rowid FROM (
+            SELECT e.rowid AS physical_rowid,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY e.graph_id
+                       ORDER BY CASE WHEN e.association_state = 'superseded' THEN 1 ELSE 0 END,
+                                g.observation_order DESC, e.source_ref
+                   ) AS scope_rank
+            FROM work_evidence_edges AS e
+            JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
+            WHERE {predicate}
+        ) WHERE scope_rank = 1
+        """,
+        operands,
+    ) as identities:
+        parent: str | None = None
+        for (rowid,) in identities:
+            if row_read is not None:
+                source_ref = row_read.source_ref(int(rowid))
+            else:
+                if before_input is not None:
+                    before_input(
+                        "work_evidence_edges",
+                        ("source_ref",),
+                        "SELECT rowid FROM work_evidence_edges WHERE rowid=?",
+                        (rowid,),
+                    )
+                with connection_cursor(
+                    conn, "SELECT source_ref FROM work_evidence_edges WHERE rowid=?", (rowid,)
+                ) as cursor:
+                    row = cursor.fetchone()
+                if row is None:
+                    raise RuntimeError("selected thread parent disappeared inside its owned snapshot")
+                source_ref = str(row[0])
+            candidate = thread_id_from_context_ref(source_ref).strip()
+            if candidate:
+                if parent is not None and candidate != parent:
+                    return None
+                parent = candidate
+        return parent
 
 
 __all__ = [
@@ -643,3 +759,317 @@ __all__ = [
     "thread_state_graph_id",
     "write_thread_state_graph",
 ]
+
+
+def _write_graph_rows(conn: sqlite3.Connection, sql: str, rows: Iterable[tuple[object, ...]]) -> None:
+    # Retain the actual statement before entering its streamed operand body:
+    # that body may fail while SQLite is still consuming this same cursor.
+    cursor = conn.cursor()
+    primary: BaseException | None = None
+    try:
+        cursor.executemany(sql, rows)
+    except BaseException as failure:
+        primary = failure
+        raise
+    finally:
+        try:
+            close_connection_cursor(conn, cursor)
+        except BaseException as cleanup:
+            if primary is not None:
+                raise BaseExceptionGroup("Graph rows and native cursor close failed", [primary, cleanup]) from primary
+            raise
+
+
+def _older_graph_row_is_retainable(
+    held: Sequence[object] | None,
+    *,
+    incoming_key: tuple[int, str, str],
+    export_order: ExportOrder,
+) -> bool:
+    if held is None:
+        return True
+    if str(held[0]) != "superseded":
+        return False
+    refs = json.loads(str(held[1]))
+    writer = str(refs[0]).removeprefix("artifact:") if refs else ""
+    ranked = export_order(writer)
+    writer_key = (-1 if ranked is None else ranked, writer, str(held[2]).removeprefix("artifact:"))
+    return writer_key <= incoming_key
+
+
+def _apply_current_thread_state_graph(
+    conn: sqlite3.Connection,
+    graph_id: str,
+    nodes: Iterable[_GraphRow],
+    edges: Iterable[_GraphRow],
+    *,
+    raw_id: str,
+    blob_hash: str,
+    observed_at_ms: int,
+    observation_order: int,
+) -> None:
+    with connection_cursor(
+        conn,
+        """
+        INSERT INTO work_evidence_graphs(
+            graph_id, corpus_snapshot_ref, source_evidence_ref, observed_at_ms, observation_order
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(graph_id) DO UPDATE SET
+            corpus_snapshot_ref = excluded.corpus_snapshot_ref,
+            source_evidence_ref = excluded.source_evidence_ref,
+            observed_at_ms = excluded.observed_at_ms,
+            observation_order = excluded.observation_order
+        """,
+        (graph_id, f"artifact:{blob_hash}", f"artifact:{raw_id}", observed_at_ms, observation_order),
+    ):
+        pass
+    with connection_cursor(
+        conn,
+        "UPDATE work_evidence_nodes SET association_state = 'superseded' WHERE graph_id = ?",
+        (graph_id,),
+    ):
+        pass
+    with connection_cursor(
+        conn,
+        "UPDATE work_evidence_edges SET association_state = 'superseded' WHERE graph_id = ?",
+        (graph_id,),
+    ):
+        pass
+    _write_nodes(conn, graph_id, nodes, "resolved")
+    _write_edges(conn, graph_id, edges, "resolved")
+
+
+@dataclass(slots=True)
+class PreparedThreadStateGraph:
+    """Ordered graph operands prepared on the original creator and witness."""
+
+    owner: NativeSQLCustodyOwner
+    reference_seal: PreparedIndexMutation
+    source_scope: str
+    raw_id: str
+    blob_hash: str
+    observed_at_ms: int
+    observation_order: int
+    older: bool
+    written: bool = False
+
+    def rows(self, kind: str) -> Generator[_GraphRow, None, None]:
+        connection = self.owner.require_connection()
+        with connection_cursor(
+            connection,
+            "SELECT operands_json FROM graph_operands WHERE kind=? ORDER BY ordinal",
+            (kind,),
+        ) as cursor:
+            for (encoded,) in cursor:
+                check_compute_cancelled()
+                ref, head, tail = json.loads(encoded)
+                yield str(ref), tuple(head), tuple(tail)
+
+    def close(self) -> None:
+        self.owner.close()
+
+    def apply(self, connection: sqlite3.Connection) -> bool:
+        # The original witness validates currency before this admitted phase.
+        # This body reads only its prepared operands, never original payloads.
+        from polylogue.storage.sqlite.reference_seal import ReferenceSealError, current_index_mutation_scope
+
+        scope = current_index_mutation_scope()
+        if scope is None or scope.seal is not self.reference_seal:
+            raise ReferenceSealError("prepared thread graph requires its original admitted Index scope")
+        scope.require_new_work(connection)
+        self.owner.require_connection()
+        graph_id = thread_state_graph_id(self.source_scope)
+        nodes = self.rows("node")
+        edges = self.rows("edge")
+        primary: BaseException | None = None
+        try:
+            if self.older:
+                _write_nodes(connection, graph_id, nodes, "superseded")
+                _write_edges(connection, graph_id, edges, "superseded")
+            else:
+                _apply_current_thread_state_graph(
+                    connection,
+                    graph_id,
+                    nodes,
+                    edges,
+                    raw_id=self.raw_id,
+                    blob_hash=self.blob_hash,
+                    observed_at_ms=self.observed_at_ms,
+                    observation_order=self.observation_order,
+                )
+            return self.written
+        except BaseException as failure:
+            primary = failure
+            raise
+        finally:
+            failures: list[BaseException] = []
+            for records in (nodes, edges):
+                try:
+                    records.close()
+                except BaseException as cleanup:
+                    failures.append(cleanup)
+            if failures:
+                if primary is not None:
+                    failures.insert(0, primary)
+                raise BaseExceptionGroup("prepared graph application and cursor cleanup failed", failures) from None
+
+
+def prepare_thread_state_graph(
+    seal: PreparedIndexMutation,
+    *,
+    directory: Path,
+    source_scope: str,
+    threads: Iterable[ThreadRecord],
+    spawn_edges: Iterable[SpawnRecord],
+    raw_id: str,
+    blob_hash: str,
+    observed_at_ms: int,
+    observation_order: int,
+    export_order: ExportOrder,
+) -> PreparedThreadStateGraph:
+    """Prepare the existing graph decisions before writer admission.
+
+    Repeated references consult the earlier accepted operand in this same
+    preparation. This preserves the older export's endpoint/title sequence.
+    The parent owns the original read window; every original cursor closes
+    here before the prepared carrier can enter publication.
+    """
+    import uuid
+
+    original = seal.observer("index")
+    current = read_provenance(original, source_scope=source_scope, before_input=seal.before_index_input)
+    incoming_key = (observation_order, raw_id, blob_hash)
+    older = current is not None and (current.observation_order, current.raw_id, current.blob_hash) > incoming_key
+    connection = connect_measured(directory / f"thread-graph-{uuid.uuid4().hex}.db")
+    owner = NativeSQLCustodyOwner(connection, terminal_parent=seal)
+    result = PreparedThreadStateGraph(
+        owner,
+        seal,
+        source_scope,
+        raw_id,
+        blob_hash,
+        observed_at_ms,
+        observation_order,
+        older,
+        not older,
+    )
+    try:
+        with connection_cursor(
+            connection,
+            "CREATE TABLE graph_operands(kind TEXT, ordinal INTEGER, operands_json TEXT, PRIMARY KEY(kind,ordinal)) WITHOUT ROWID",
+        ):
+            pass
+        with connection_cursor(
+            connection,
+            "CREATE TABLE graph_prior(kind TEXT, ref TEXT, association_state TEXT, evidence_refs_json TEXT, corpus_snapshot_ref TEXT, PRIMARY KEY(kind,ref)) WITHOUT ROWID",
+        ):
+            pass
+        graph_id = thread_state_graph_id(source_scope)
+        nodes, edges = _export_rows(
+            source_scope,
+            threads,
+            spawn_edges,
+            raw_id=raw_id,
+            blob_hash=blob_hash,
+            observed_at_ms=observed_at_ms,
+        )
+        for kind, table, ref_column, records in (
+            ("node", "work_evidence_nodes", "node_ref", nodes),
+            ("edge", "work_evidence_edges", "edge_ref", edges),
+        ):
+            for ordinal, row in enumerate(records):
+                check_compute_cancelled()
+                if older:
+                    with connection_cursor(
+                        connection,
+                        "SELECT association_state,evidence_refs_json,corpus_snapshot_ref "
+                        "FROM graph_prior WHERE kind=? AND ref=?",
+                        (kind, row[0]),
+                    ) as cursor:
+                        held = cursor.fetchone()
+                    if held is None:
+                        rowid_sql = f"SELECT rowid FROM {table} WHERE graph_id=? AND {ref_column}=?"
+                        parameters = (graph_id, row[0])
+                        with connection_cursor(original, rowid_sql, parameters) as cursor:
+                            selected = cursor.fetchone()
+                        if selected is not None:
+                            rowid = int(selected[0])
+                            seal.before_index_input(
+                                table,
+                                ("association_state", "evidence_refs_json", "corpus_snapshot_ref"),
+                                f"SELECT rowid FROM {table} WHERE rowid=?",
+                                (rowid,),
+                            )
+                            with connection_cursor(
+                                original,
+                                f"SELECT association_state,evidence_refs_json,corpus_snapshot_ref "
+                                f"FROM {table} WHERE rowid=?",
+                                (rowid,),
+                            ) as cursor:
+                                held = cursor.fetchone()
+                            if held is None:
+                                raise RuntimeError("selected older graph row disappeared inside its read window")
+                    if not _older_graph_row_is_retainable(held, incoming_key=incoming_key, export_order=export_order):
+                        continue
+                    evidence_index = 3 if kind == "node" else 4
+                    with connection_cursor(
+                        connection,
+                        "INSERT INTO graph_prior VALUES(?,?,'superseded',?,?) "
+                        "ON CONFLICT(kind,ref) DO UPDATE SET association_state=excluded.association_state, "
+                        "evidence_refs_json=excluded.evidence_refs_json,corpus_snapshot_ref=excluded.corpus_snapshot_ref",
+                        (kind, row[0], row[1][evidence_index], row[1][evidence_index + 1]),
+                    ):
+                        pass
+                    result.written = True
+                with connection_cursor(
+                    connection,
+                    "INSERT INTO graph_operands VALUES(?,?,?)",
+                    (kind, ordinal, json.dumps(row)),
+                ):
+                    pass
+        connection.commit()
+        return result
+    except BaseException as primary:
+        try:
+            owner.close()
+        except BaseException as cleanup:
+            raise BaseExceptionGroup("graph preparation and physical cleanup failed", [primary, cleanup]) from None
+        raise
+
+
+class ThreadParentRowRead(Protocol):
+    """Source-reference operands for the canonical native graph winner selector."""
+
+    def source_ref(self, physical_rowid: int) -> str: ...
+
+
+def _thread_parent_predicate(child_thread_id: str, source_scope: str | None) -> tuple[str, tuple[str, ...]]:
+    predicate, parameters = _scope_predicate(source_scope)
+    if source_scope is None:
+        suffix = f"{_SCOPE_SEPARATOR}{child_thread_id}"
+        child_predicate = "substr(e.target_ref, -length(?)) = ?"
+        child_parameters = [suffix, suffix]
+    else:
+        child_predicate = "e.target_ref = ?"
+        child_parameters = [thread_context_ref(source_scope, child_thread_id)]
+    return f"{predicate} AND e.edge_kind = 'invoked' AND {child_predicate}", (*parameters, *child_parameters)
+
+
+def parent_thread_candidate_coordinates(
+    conn: sqlite3.Connection, child_thread_id: str
+) -> Generator[tuple[int, int], None, None]:
+    """Yield all physical candidates of the canonical cross-scope selector."""
+    predicate, operands = _thread_parent_predicate(child_thread_id, None)
+    with connection_cursor(
+        conn,
+        "SELECT e.rowid,g.rowid FROM work_evidence_edges e "
+        "JOIN work_evidence_graphs g ON g.graph_id=e.graph_id WHERE " + predicate,
+        operands,
+    ) as cursor:
+        for edge_rowid, graph_rowid in cursor:
+            check_compute_cancelled()
+            yield int(edge_rowid), int(graph_rowid)
+
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation

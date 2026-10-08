@@ -10,14 +10,15 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.usage import session_usage_costs_for_connection
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _conn(tmp_path: Path) -> sqlite3.Connection:
     initialize_active_archive_root(tmp_path)
-    conn = sqlite3.connect(tmp_path / "index.db")
+    conn = connect_measured(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -67,8 +68,8 @@ def test_session_profiles_have_no_usage_or_pricing_columns(tmp_path: Path) -> No
 
 def test_canonical_usage_projection_preserves_priced_and_unpriced_states(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
-    write_parsed_session_to_archive(conn, _session("priced", "claude-sonnet-4-5"))
-    write_parsed_session_to_archive(conn, _session("unpriced", "totally-unknown-model-xyz"))
+    write_fixture_index_session(conn, _session("priced", "claude-sonnet-4-5"))
+    write_fixture_index_session(conn, _session("unpriced", "totally-unknown-model-xyz"))
     ids = [str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id")]
     costs = session_usage_costs_for_connection(conn, ids)
     assert costs["claude-code-session:priced"].total_usd is not None
@@ -79,7 +80,7 @@ def test_canonical_usage_projection_preserves_priced_and_unpriced_states(tmp_pat
 
 def test_cost_insight_keeps_unpriced_tokens_unknown(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
-    write_parsed_session_to_archive(conn, _session("unpriced", "totally-unknown-model-xyz"))
+    write_fixture_index_session(conn, _session("unpriced", "totally-unknown-model-xyz"))
     from polylogue.storage.sqlite.archive_tiers.archive import _session_cost_insight_from_archive_row
 
     row = conn.execute("SELECT * FROM sessions WHERE native_id = 'unpriced'").fetchone()
@@ -95,7 +96,7 @@ def test_session_cost_lookup_pages_at_the_connection_bind_limit(tmp_path: Path) 
     """Both previous IN statements failed when all requested IDs exceeded the limit."""
     conn = _conn(tmp_path)
     try:
-        ids = [write_parsed_session_to_archive(conn, _session(f"bind-{i}", "claude-sonnet-4-5")) for i in range(5)]
+        ids = [write_fixture_index_session(conn, _session(f"bind-{i}", "claude-sonnet-4-5")) for i in range(5)]
         previous_limit = conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 2)
         try:
             costs = session_usage_costs_for_connection(conn, [*ids, ids[0]])
@@ -113,7 +114,7 @@ def test_session_subscription_fallback_normalizes_provider_qualified_models(tmp_
 
     conn = _conn(tmp_path)
     try:
-        session_id = write_parsed_session_to_archive(conn, _session("qualified-credit", "claude-sonnet-4-5"))
+        session_id = write_fixture_index_session(conn, _session("qualified-credit", "claude-sonnet-4-5"))
         conn.execute(
             "UPDATE session_model_usage SET model_name = ?, cost_credits = NULL WHERE session_id = ?",
             ("anthropic/claude-sonnet-4-5", session_id),
@@ -134,7 +135,7 @@ def test_session_subscription_amount_is_dollars_not_raw_credits(tmp_path: Path, 
 
     conn = _conn(tmp_path)
     try:
-        session_id = write_parsed_session_to_archive(conn, _session("stored-credit", "claude-sonnet-4-5"))
+        session_id = write_fixture_index_session(conn, _session("stored-credit", "claude-sonnet-4-5"))
         credits = 1_234_567
         conn.execute("UPDATE session_model_usage SET cost_credits = ? WHERE session_id = ?", (credits, session_id))
         if configured_tier is not None:
@@ -160,7 +161,7 @@ def test_session_subscription_amount_is_unknown_without_a_rate_or_tier(
     conn = _conn(tmp_path)
     try:
         model = "claude-sonnet-4-5" if stored_tier is not None else "claude-unrated-future-model"
-        session_id = write_parsed_session_to_archive(conn, _session("unknown-credit", model))
+        session_id = write_fixture_index_session(conn, _session("unknown-credit", model))
         conn.execute("UPDATE session_model_usage SET cost_credits = NULL WHERE session_id = ?", (session_id,))
         if stored_tier is not None:
             monkeypatch.setattr(usage, "_resolve_subscription_tier_setting", lambda _root: stored_tier)

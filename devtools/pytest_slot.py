@@ -142,6 +142,7 @@ INHERITED_ENVIRONMENT_KEYS: Final[tuple[str, ...]] = (
 )
 
 LAUNCH_DIR: Final = Path(".cache/verify")
+ISOLATED_ARCHIVE_PARENT: Final = Path("/realm/tmp/work/polylogue-pytest-archives")
 
 REFUSAL = (
     "pytest could not acquire the host's pytest slot: {reason}. "
@@ -698,11 +699,15 @@ def _write_launch(
     log_path: Path,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    worker_environment = dict(env)
+    # The queue snapshot must not serialize an operator archive path. The
+    # receiving worker installs a private scratch root before running pytest.
+    worker_environment.pop("POLYLOGUE_ARCHIVE_ROOT", None)
     document = {
         "kind": "polylogue.pytest-slot-launch",
         "argv": list(argv),
         "working_directory": cwd,
-        "environment": dict(env),
+        "environment": worker_environment,
         "log_path": str(log_path),
     }
     # The launch file carries the resolved environment; keep it off other users.
@@ -1371,35 +1376,6 @@ def _run_held_admitted(
     )
 
 
-def _in_slot_rerun_cleared(env: Mapping[str, str], *, first_provenance: object = None) -> bool:
-    """Whether this launch's in-slot rerun passed every failure it reran, on the same content."""
-    from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, RERUN_IN_SLOT_RESULT
-
-    raw = env.get(RERUN_IN_SLOT_ENV)
-    if not raw:
-        return False
-    try:
-        spec = json.loads(raw)
-        step_dir = Path(spec["step_dir"])
-        record = json.loads((step_dir / RERUN_IN_SLOT_RESULT).read_text(encoding="utf-8"))
-        rerun = json.loads((step_dir / "pytest-rerun.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError, KeyError, TypeError):
-        return False
-    if not isinstance(record, dict) or record.get("rerun_exit") != 0 or not isinstance(rerun, dict):
-        return False
-    # Exit 0 is not enough: a rerun can skip a node. Every attempted node must
-    # have passed, as the client's adjudication will require.
-    outcomes = {
-        str(test.get("nodeid")): test.get("outcome") for test in rerun.get("tests", []) if isinstance(test, dict)
-    }
-    attempted = record.get("attempted")
-    # A rerun over different content is rejected by the client, which leaves
-    # the run red; its scratch is diagnostic evidence then.
-    if record.get("worktree_provenance") != first_provenance:
-        return False
-    return isinstance(attempted, list) and all(outcomes.get(str(nodeid)) == "passed" for nodeid in attempted)
-
-
 def run_pytest(
     command: Sequence[str],
     *,
@@ -1533,158 +1509,6 @@ def _read_launch(path: Path) -> dict[str, Any]:
     return document
 
 
-def _rerun_failures_in_slot(
-    environment: Mapping[str, str],
-    *,
-    cwd: str,
-    log: IO[bytes],
-    on_start: Callable[[subprocess.Popen[Any]], None],
-    first_group: int | None = None,
-    source_guard: Any = None,
-) -> None:
-    """Rerun a failed run's failures once, alone, while this job holds the slot.
-
-    This helper is an explicit diagnostic entry point, not part of ordinary
-    launch completion. The caller names its original report and step
-    directory in ``RERUN_IN_SLOT_ENV``. The separate retry record preserves
-    its exit and provenance; the original launch exit remains unchanged.
-    """
-    from devtools.pytest_rerun import (
-        RERUN_IN_SLOT_ENV,
-        RERUN_IN_SLOT_RESULT,
-        build_rerun,
-        rerun_cost_dir,
-        rerun_environment,
-    )
-    from devtools.pytest_suite_cost_plugin import write_run_receipt
-
-    raw = environment.get(RERUN_IN_SLOT_ENV)
-    if not raw:
-        return
-    try:
-        spec = json.loads(raw)
-        report_path, step_dir, root = Path(spec["report_path"]), Path(spec["step_dir"]), Path(spec["root"])
-        command = [str(argument) for argument in spec.get("command") or []]
-    except (ValueError, KeyError, TypeError):
-        return
-    from devtools.pytest_rerun import semantic_rerun_options, testmon_rerun_environment
-
-    options = semantic_rerun_options(command) if command else []
-    plan = build_rerun(
-        report_path=report_path,
-        step_dir=step_dir,
-        root=root,
-        options=options,
-        testmon_env=testmon_rerun_environment(command),
-    )
-    if plan is None:
-        return
-    failed, command, _rerun_report = plan
-    if source_guard is None and first_group is not None and not _group_reaped(first_group):
-        # A descendant of the first attempt (a server, a lock holder) would
-        # share the rerun's slot and state, so no rerun happens and the
-        # failures stand.
-        log.write(f"\n  rerun skipped: first attempt's process group {first_group} survived termination\n".encode())
-        with contextlib.suppress(OSError):
-            (step_dir / RERUN_IN_SLOT_RESULT).write_text(
-                json.dumps({"attempted": failed, "rerun_exit": 125, "first_group_survived": first_group}),
-                encoding="utf-8",
-            )
-        return
-    log.write(f"\n  rerun {len(failed)} failed test(s) alone, in this slot ...\n".encode())
-    log.flush()
-    # Fresh scratch for the second attempt, as a separately queued rerun had:
-    # a test that leaves a sentinel in the temp dir must not see its own.
-    rerun_env = rerun_environment(environment, step_dir=step_dir)
-    first_scratch = environment.get("TMPDIR")
-    if first_scratch:
-        try:
-            fresh = tempfile.mkdtemp(prefix="in-slot-rerun-", dir=first_scratch)
-        except OSError as exc:
-            # A rerun on the first attempt's scratch could pass on that
-            # attempt's leftovers, so none happens and the failures stand.
-            log.write(f"\n  rerun skipped: fresh scratch unavailable ({exc})\n".encode())
-            with contextlib.suppress(OSError):
-                (step_dir / RERUN_IN_SLOT_RESULT).write_text(
-                    json.dumps({"attempted": failed, "rerun_exit": 125, "scratch_error": str(exc)[:500]}),
-                    encoding="utf-8",
-                )
-            return
-        rerun_env.update({"TMPDIR": fresh, "TMP": fresh, "TEMP": fresh})
-    # Taken as the rerun starts, like the first run's -- after the first
-    # attempt's group is reaped and the scratch made, immediately before the
-    # launch: the client compares the two and refuses to clear a failure of
-    # content the rerun never ran.
-    try:
-        provenance = _focused_worktree_provenance(cwd, environment)
-    except Exception as exc:
-        # Without the rerun's identity nothing it proves can be attributed to
-        # the failing run's content, so no rerun happens and the failures stand.
-        log.write(f"\n  rerun skipped: worktree provenance unavailable ({exc})\n".encode())
-        with contextlib.suppress(OSError):
-            (step_dir / RERUN_IN_SLOT_RESULT).write_text(
-                json.dumps({"attempted": failed, "rerun_exit": 125, "provenance_error": str(exc)[:500]}),
-                encoding="utf-8",
-            )
-        return
-    # Published before the rerun starts: if its result cannot be written
-    # afterwards, this typed record (the rerun ran, its outcome is unknown)
-    # stands, and the client neither clears the failures nor runs them a third
-    # time. When even this record cannot be written, no rerun happens.
-    try:
-        (step_dir / RERUN_IN_SLOT_RESULT).write_text(
-            json.dumps(
-                {
-                    "attempted": failed,
-                    "rerun_exit": 125,
-                    "result_unpublished": True,
-                    "worktree_provenance": provenance,
-                }
-            ),
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        log.write(f"\n  rerun skipped: its result could not be recorded ({exc})\n".encode())
-        return
-    try:
-        execution_command = (
-            source_guard.command(command, rerun_env, provenance) if source_guard is not None else command
-        )
-        process = subprocess.Popen(
-            execution_command,
-            cwd=cwd,
-            env=rerun_env,
-            pass_fds=source_guard.pass_fds if source_guard is not None else (),
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-        )
-    except (OSError, PytestSlotUnavailableError) as exc:
-        if source_guard is not None:
-            source_guard.failure = str(exc)
-        log.write(f"devtools.pytest_slot: could not start the rerun: {exc}\n".encode())
-        with contextlib.suppress(OSError):
-            (step_dir / RERUN_IN_SLOT_RESULT).write_text(
-                json.dumps({"attempted": failed, "rerun_exit": 125, "launch_error": str(exc)[:500]}),
-                encoding="utf-8",
-            )
-        return
-    # The launch's signal handlers stop whichever child is registered, so a
-    # cancelled or deadline-killed job reaps the rerun and still writes its
-    # interrupted receipt.
-    on_start(process)
-    if source_guard is not None:
-        source_guard.launched_process(process)
-    rerun_exit = process.wait()
-    with contextlib.suppress(OSError):
-        write_run_receipt(rerun_cost_dir(step_dir))
-    with contextlib.suppress(OSError):
-        (step_dir / RERUN_IN_SLOT_RESULT).write_text(
-            json.dumps({"attempted": failed, "rerun_exit": rerun_exit, "worktree_provenance": provenance}),
-            encoding="utf-8",
-        )
-
-
 def _group_alive(pgid: int) -> bool:
     """Whether any process of group ``pgid`` still runs.
 
@@ -1744,6 +1568,9 @@ def _run_launch(launch_path: Path) -> int:
     # run that consumes it.
     launch_path.unlink(missing_ok=True)
     environment = dict(launch["environment"])
+    ISOLATED_ARCHIVE_PARENT.mkdir(parents=True, exist_ok=True)
+    archive_root = Path(tempfile.mkdtemp(prefix="pytest-", dir=ISOLATED_ARCHIVE_PARENT))
+    environment["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
     environment[SLOT_ESCAPE_ENV] = SLOT_HELD
     worktree_provenance = None
     log_path = Path(launch["log_path"])
@@ -1918,6 +1745,8 @@ def _run_launch(launch_path: Path) -> int:
         finish_execution(guard, environment)
         if ledger is not None:
             ledger.release()
+        if archive_root.parent == ISOLATED_ARCHIVE_PARENT:
+            remove_temp_tree(archive_root)
         for number, handler in previous.items():
             with contextlib.suppress(ValueError, OSError):
                 signal.signal(number, handler)
@@ -1944,7 +1773,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     from devtools.run_tests import main as run_focused_tests
 
-    return run_focused_tests(arguments)
+    ISOLATED_ARCHIVE_PARENT.mkdir(parents=True, exist_ok=True)
+    archive_root = Path(tempfile.mkdtemp(prefix="pytest-", dir=ISOLATED_ARCHIVE_PARENT))
+    os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
+    try:
+        return run_focused_tests(arguments)
+    finally:
+        remove_temp_tree(archive_root)
 
 
 if __name__ == "__main__":  # pragma: no cover - console entry point

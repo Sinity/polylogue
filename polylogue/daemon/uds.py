@@ -27,7 +27,7 @@ from polylogue.operations.daemon_protocol import (
 from polylogue.operations.mutation_transaction import MutationPrincipal
 
 if TYPE_CHECKING:
-    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 
@@ -75,7 +75,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
     server: DaemonAPIUnixHTTPServer
 
     def setup(self) -> None:
-        self.request.settimeout(5.0)
+        self.request.settimeout(None)
         super().setup()
 
     def log_message(self, _format: str, *_args: object) -> None:
@@ -205,7 +205,11 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
 
         with observe_peer_disconnect(self.connection) as disconnected:
             envelope = self.server.operation_runtime.call(
-                request, principal, started_at=started, client_disconnect=disconnected
+                request,
+                principal,
+                started_at=started,
+                client_disconnect=disconnected,
+                request_body_bytes=len(body),
             )
         outcome = envelope.get("outcome")
         status = 202 if outcome in {"accepted", "running", "indeterminate"} else 200
@@ -242,7 +246,7 @@ def _unlink_stale_socket(socket_path: Path) -> None:
 
 
 class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    daemon_threads = True
+    daemon_threads = False
     request_queue_size = 24
     #: Bounded window for draining a refused caller's in-flight request so it
     #: reads the 503 instead of a reset. Never a retry or a wait for work.
@@ -258,16 +262,32 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         execution_kernel: BoundedComputeAdapter,
         operation_runtime: DaemonOperationRuntime | None = None,
     ) -> None:
+        from polylogue.config import load_polylogue_config
+        from polylogue.core.enums import ValidationMode
         from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 
         self.socket_path = socket_path
         self.auth_token = auth_token
         self._connections = threading.BoundedSemaphore(self.request_queue_size)
         self._socket_identity: tuple[int, int] | None = None
+        self._handler_condition = threading.Condition()
+        self._handler_sockets: set[socket.socket] = set()
+        self._closing_handlers = False
+        from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+
+        validation_mode = ValidationMode.from_string(load_polylogue_config().schema_validation)
+
         self.operation_runtime = operation_runtime or DaemonOperationRuntime(
             archive_root,
             write_bridge=write_bridge,
             execution_kernel=execution_kernel,
+            raw_observation_owner=RawObservationConvergenceOwner(
+                archive_root,
+                compute_adapter=execution_kernel,
+                write_bridge=write_bridge,
+                write_coordinator=write_bridge.coordinator,
+                validation_mode=validation_mode,
+            ),
             owner_loop=write_bridge.owner_loop,
         )
         ensure_private_socket_dir(socket_path.parent)
@@ -321,9 +341,18 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
             finally:
                 self.shutdown_request(request)
             return
+        with self._handler_condition:
+            if self._closing_handlers:
+                self._connections.release()
+                self.shutdown_request(request)
+                return
+            self._handler_sockets.add(request)
         try:
             super().process_request(request, client_address)
         except BaseException:
+            with self._handler_condition:
+                self._handler_sockets.remove(request)
+                self._handler_condition.notify_all()
             self._connections.release()
             raise
 
@@ -333,9 +362,24 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         try:
             super().process_request_thread(request, client_address)
         finally:
+            connection = request[1] if isinstance(request, tuple) else request
+            with self._handler_condition:
+                self._handler_sockets.remove(connection)
+                self._handler_condition.notify_all()
             self._connections.release()
 
     def server_close(self) -> None:
+        # Stop transport waits before joining their original handler lifetimes.
+        # Slow valid peers have no deadline; closing ingress interrupts their
+        # physical socket reads and writes, while runtime cancellation owns work.
+        with self._handler_condition:
+            self._closing_handlers = True
+            connections = tuple(self._handler_sockets)
+        for connection in connections:
+            with suppress(OSError):
+                connection.shutdown(socket.SHUT_RDWR)
+        with self._handler_condition:
+            self._handler_condition.wait_for(lambda: not self._handler_sockets)
         super().server_close()
         if self._socket_identity is not None:
             try:

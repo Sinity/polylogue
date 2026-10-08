@@ -96,7 +96,6 @@ def run_in_pty(
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
-        "UV_SYSTEM_PYTHON": "1",
         "VOYAGE_API_KEY": "",
         "HOME": os.environ.get("HOME", "/tmp"),
         "TERM": "xterm-256color",  # Set TERM for PTY

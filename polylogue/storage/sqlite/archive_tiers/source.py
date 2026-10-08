@@ -34,6 +34,7 @@ SOURCE_HAND_WRITTEN_DDL_REASONS: dict[str, str] = dict.fromkeys(
         "raw_existence_changes",
         "raw_existence_journal_control",
         "raw_container_coordinates",
+        "raw_profile_identity_receipts",
         "raw_capture_observations",
         "raw_session_memberships",
         "raw_membership_census",
@@ -134,6 +135,7 @@ CREATE TABLE IF NOT EXISTS prepared_source_manifest_members (
     source_path TEXT NOT NULL CHECK(length(trim(source_path)) > 0),
     blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
     publication_receipt_id TEXT NOT NULL CHECK(length(publication_receipt_id) > 0),
+    captured_input_identity TEXT,
     PRIMARY KEY(source_generation_id, ordinal),
     UNIQUE(source_generation_id, coordinate)
 ) STRICT;
@@ -171,7 +173,7 @@ CREATE TABLE IF NOT EXISTS source_items (
     )),
     stage                TEXT NOT NULL CHECK(length(trim(stage)) > 0),
     retryable            INTEGER CHECK(retryable IN (0, 1)),
-    diagnostic           TEXT CHECK(diagnostic IS NULL OR length(diagnostic) <= 4096),
+    diagnostic           TEXT,
     evidence_ref         TEXT,
     content_fingerprint  TEXT,
     source_fingerprint   TEXT,
@@ -189,6 +191,7 @@ CREATE TABLE IF NOT EXISTS source_items (
     enumerated_at_ms INTEGER CHECK(enumerated_at_ms IS NULL OR enumerated_at_ms >= 0),
     enumerated_member_count INTEGER CHECK(enumerated_member_count IS NULL OR enumerated_member_count >= 0),
     enumeration_member_digest TEXT CHECK(enumeration_member_digest IS NULL OR length(enumeration_member_digest) = 64),
+    captured_input_identity TEXT,
     PRIMARY KEY(source_generation_id, source_item_id),
     UNIQUE(source_generation_id, logical_coordinate, addressing_mode)
 ) STRICT;
@@ -231,7 +234,7 @@ CREATE TABLE IF NOT EXISTS material_observations (
         'claimed', 'acquired', 'duplicate', 'partial', 'unavailable',
         'expired', 'access_denied', 'malformed', 'superseded'
     )),
-    diagnostic              TEXT NOT NULL DEFAULT '' CHECK(length(diagnostic) <= 4096),
+    diagnostic              TEXT NOT NULL DEFAULT '',
     retryable               INTEGER NOT NULL CHECK(retryable IN (0, 1)),
     supersedes_material_id  TEXT REFERENCES material_observations(material_id),
     blob_hash               BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32),
@@ -287,9 +290,9 @@ CREATE TABLE IF NOT EXISTS source_item_member_dispositions (
     source_generation_id TEXT NOT NULL,
     source_item_id TEXT NOT NULL,
     entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal >= 0),
-    member_name TEXT NOT NULL CHECK(length(trim(member_name)) > 0),
+    member_name TEXT NOT NULL CHECK(length(member_name) > 0),
     disposition TEXT NOT NULL CHECK(disposition IN ('refused', 'unselected')),
-    diagnostic TEXT NOT NULL DEFAULT '' CHECK(length(diagnostic) <= 4096),
+    diagnostic TEXT NOT NULL DEFAULT '',
     observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms >= 0),
     PRIMARY KEY(source_generation_id, source_item_id, entry_ordinal),
     FOREIGN KEY(source_generation_id, source_item_id)
@@ -424,11 +427,6 @@ CREATE TABLE IF NOT EXISTS raw_existence_journal_control (
     retained_floor INTEGER NOT NULL DEFAULT 0 CHECK(retained_floor >= 0)
 ) STRICT;
 INSERT OR IGNORE INTO raw_existence_journal_control(singleton) VALUES (1);
-CREATE TRIGGER IF NOT EXISTS raw_existence_delete AFTER DELETE ON raw_sessions
-BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
-CREATE TRIGGER IF NOT EXISTS raw_existence_key_change AFTER UPDATE OF raw_id ON raw_sessions
-WHEN OLD.raw_id != NEW.raw_id
-BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
 CREATE TRIGGER IF NOT EXISTS raw_existence_journal_prune AFTER DELETE ON raw_existence_changes
 BEGIN UPDATE raw_existence_journal_control
      SET retained_floor = max(retained_floor, OLD.sequence) WHERE singleton = 1; END;
@@ -444,7 +442,13 @@ CREATE TABLE IF NOT EXISTS raw_container_coordinates (
     addressing_mode    TEXT,
     -- Digest of the decoded provider value (or opaque bytes for raw-only
     -- members).  Coordinates and source_index are hints only.
-    content_identity   TEXT CHECK(content_identity IS NULL OR length(content_identity) = 64)
+    content_identity   TEXT CHECK(content_identity IS NULL OR length(content_identity) = 64),
+    captured_coordinate TEXT
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS raw_profile_identity_receipts (
+    raw_id TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    profile_key TEXT NOT NULL CHECK(length(profile_key) = 12)
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_origin
@@ -474,6 +478,9 @@ WHERE parsed_at_ms IS NULL
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_logical_revision
 ON raw_sessions(logical_source_key, acquisition_generation, raw_id)
 WHERE logical_source_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_raw_sessions_predecessor_raw_id ON raw_sessions(predecessor_raw_id);
+CREATE INDEX IF NOT EXISTS idx_raw_sessions_baseline_raw_id ON raw_sessions(baseline_raw_id);
 
 -- v14 (polylogue blob-store audit): blob GC's per-candidate reference check
 -- (storage/blob_gc.py:_archive_reference_surfaces) queries
@@ -613,6 +620,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_authority_blockers_open_plan
 ON raw_authority_blockers(plan_input_digest)
 WHERE resolved_at_ms IS NULL;
 
+CREATE INDEX IF NOT EXISTS idx_raw_authority_blockers_frontier_key
+ON raw_authority_blockers(json_extract(expected_json,'$.logical_keys[0]'),blocker_id)
+WHERE resolved_at_ms IS NULL
+AND json_extract(expected_json,'$.authority_witness.schema')='polylogue.raw-authority-frontier-plan.v1';
+
 -- v22 (polylogue-tfzw0): 'hook_payload' is a distinct ref_type from
 -- 'raw_payload' so blob GC's liveness join (storage/blob_gc.py) can tell a
 -- hook event's own durable blob ref apart from a raw_sessions payload ref --
@@ -649,18 +661,23 @@ CREATE TABLE IF NOT EXISTS raw_authority_verdicts (
 CREATE INDEX IF NOT EXISTS idx_raw_authority_verdicts_logical_source
 ON raw_authority_verdicts(logical_source_key);
 
+-- Attachment references include their provider coordinate in the unique key,
+-- so identical bytes under two file IDs keep two references. Other reference
+-- kinds keep their raw or hook owner key. ref_type vocabulary is validated at
+-- the write boundary.
 CREATE TABLE IF NOT EXISTS blob_refs (
-    blob_hash       BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    ref_id          TEXT NOT NULL,
-    ref_type        TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar', 'hook_payload')),
-    source_path     TEXT,
-    size_bytes      INTEGER NOT NULL CHECK(size_bytes >= 0),
-    acquired_at_ms  INTEGER NOT NULL,
-    PRIMARY KEY(blob_hash, ref_type, ref_id)
+    blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    ref_id TEXT NOT NULL,
+    ref_type TEXT NOT NULL,
+    source_path TEXT,
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+    acquired_at_ms INTEGER NOT NULL
 ) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_blob_refs_ref_id
-ON blob_refs(ref_id);
+CREATE INDEX IF NOT EXISTS idx_blob_refs_ref_id ON blob_refs(ref_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_blob_refs_owner_identity
+ON blob_refs(blob_hash, ref_type, ref_id) WHERE ref_type != 'attachment';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_blob_refs_attachment_identity
+ON blob_refs(blob_hash, ref_type, ref_id, coalesce(source_path, '')) WHERE ref_type = 'attachment';
 
 CREATE TABLE IF NOT EXISTS blob_publication_reservations (
     publication_id   TEXT PRIMARY KEY,
@@ -734,7 +751,10 @@ WHERE artifact_kind NOT IN (
     'terminal_superseded_deferred_cas_frontier',
     'terminal_unknown_json_decode',
     'terminal_unknown_export_no_session',
-    'terminal_unsupported_shape'
+    'terminal_unsupported_shape',
+    'terminal_missing_source_coordinates',
+    'terminal_missing_profile_identity',
+    'terminal_retained_zip_membership_unproved'
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_artifacts_failure_identity
@@ -748,7 +768,10 @@ WHERE artifact_kind IN (
     'terminal_superseded_deferred_cas_frontier',
     'terminal_unknown_json_decode',
     'terminal_unknown_export_no_session',
-    'terminal_unsupported_shape'
+    'terminal_unsupported_shape',
+    'terminal_missing_source_coordinates',
+    'terminal_missing_profile_identity',
+    'terminal_retained_zip_membership_unproved'
 );
 
 CREATE INDEX IF NOT EXISTS idx_raw_artifacts_raw_id
@@ -955,6 +978,91 @@ INSERT OR IGNORE INTO audit_continuity_control(
     singleton, committed_generation, committed_head_sha256,
     pending_mutation_id, pending_payload_json, pending_payload_sha256, prepared_at_ms
 ) VALUES (1, 0, '{AUDIT_CONTINUITY_GENESIS_HEAD_SHA256}', NULL, NULL, NULL, NULL);
+
+-- Every write that can change a raw's existence evidence records the raw key
+-- in raw_existence_changes in the same transaction, including writes from
+-- external writers: the raw row itself, its artifacts, memberships, census
+-- rows, payload blob refs, and blob receipts or GC members keyed by its blob.
+-- A key change records both the old and the new key.
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_sessions_insert AFTER INSERT ON raw_sessions
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_sessions_update AFTER UPDATE ON raw_sessions
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_sessions_update_old_key AFTER UPDATE OF raw_id ON raw_sessions
+WHEN NEW.raw_id IS NOT OLD.raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_sessions_delete AFTER DELETE ON raw_sessions
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_artifacts_insert AFTER INSERT ON raw_artifacts
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_artifacts_update AFTER UPDATE ON raw_artifacts
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_artifacts_update_old_key AFTER UPDATE OF raw_id ON raw_artifacts
+WHEN NEW.raw_id IS NOT OLD.raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_artifacts_delete AFTER DELETE ON raw_artifacts
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_session_memberships_insert AFTER INSERT ON raw_session_memberships
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_session_memberships_update AFTER UPDATE ON raw_session_memberships
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_session_memberships_update_old_key AFTER UPDATE OF raw_id ON raw_session_memberships
+WHEN NEW.raw_id IS NOT OLD.raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_session_memberships_delete AFTER DELETE ON raw_session_memberships
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_membership_census_insert AFTER INSERT ON raw_membership_census
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_membership_census_update AFTER UPDATE ON raw_membership_census
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_membership_census_update_old_key AFTER UPDATE OF raw_id ON raw_membership_census
+WHEN NEW.raw_id IS NOT OLD.raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_membership_census_delete AFTER DELETE ON raw_membership_census
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_authority_parser_census_insert AFTER INSERT ON raw_authority_parser_census
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_authority_parser_census_update AFTER UPDATE ON raw_authority_parser_census
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_authority_parser_census_update_old_key AFTER UPDATE OF raw_id ON raw_authority_parser_census
+WHEN NEW.raw_id IS NOT OLD.raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_authority_parser_census_delete AFTER DELETE ON raw_authority_parser_census
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_verified_blob_receipts_insert AFTER INSERT ON verified_blob_receipts
+BEGIN INSERT INTO raw_existence_changes(raw_id) SELECT raw_id FROM raw_sessions WHERE blob_hash=NEW.blob_hash; END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_verified_blob_receipts_update AFTER UPDATE ON verified_blob_receipts
+BEGIN INSERT INTO raw_existence_changes(raw_id) SELECT raw_id FROM raw_sessions WHERE blob_hash=NEW.blob_hash; END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_verified_blob_receipts_delete AFTER DELETE ON verified_blob_receipts
+BEGIN INSERT INTO raw_existence_changes(raw_id) SELECT raw_id FROM raw_sessions WHERE blob_hash=OLD.blob_hash; END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_gc_generation_members_insert AFTER INSERT ON gc_generation_members
+BEGIN INSERT INTO raw_existence_changes(raw_id) SELECT raw_id FROM raw_sessions WHERE blob_hash=NEW.blob_hash; END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_gc_generation_members_update AFTER UPDATE ON gc_generation_members
+BEGIN INSERT INTO raw_existence_changes(raw_id) SELECT raw_id FROM raw_sessions WHERE blob_hash=NEW.blob_hash; END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_gc_generation_members_delete AFTER DELETE ON gc_generation_members
+BEGIN INSERT INTO raw_existence_changes(raw_id) SELECT raw_id FROM raw_sessions WHERE blob_hash=OLD.blob_hash; END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_verified_blob_receipts_update_old_key AFTER UPDATE OF blob_hash ON verified_blob_receipts
+WHEN NEW.blob_hash IS NOT OLD.blob_hash
+BEGIN INSERT INTO raw_existence_changes(raw_id) SELECT raw_id FROM raw_sessions WHERE blob_hash=OLD.blob_hash; END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_gc_generation_members_update_old_key AFTER UPDATE OF blob_hash ON gc_generation_members
+WHEN NEW.blob_hash IS NOT OLD.blob_hash
+BEGIN INSERT INTO raw_existence_changes(raw_id) SELECT raw_id FROM raw_sessions WHERE blob_hash=OLD.blob_hash; END;
+
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_blob_refs_insert AFTER INSERT ON blob_refs
+WHEN NEW.ref_type='raw_payload'
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.ref_id); END;
+
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_blob_refs_update AFTER UPDATE ON blob_refs
+WHEN NEW.ref_type='raw_payload'
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.ref_id); END;
+
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_blob_refs_delete AFTER DELETE ON blob_refs
+WHEN OLD.ref_type='raw_payload'
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.ref_id); END;
+
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_blob_refs_update_old_key AFTER UPDATE ON blob_refs
+WHEN OLD.ref_type='raw_payload' AND (NEW.ref_type IS NOT OLD.ref_type OR NEW.ref_id IS NOT OLD.ref_id OR NEW.source_path IS NOT OLD.source_path)
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.ref_id); END;
 
 """
 

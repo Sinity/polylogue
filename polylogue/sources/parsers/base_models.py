@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import heapq
+import json
 import math
 from bisect import bisect_right
-from collections.abc import Iterator, Mapping, Sequence
-from typing import Literal
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from pathlib import Path
+from typing import Literal, Protocol
 
 from pydantic import (
     AliasChoices,
@@ -14,6 +18,7 @@ from pydantic import (
     Field,
     FieldSerializationInfo,
     PrivateAttr,
+    SkipValidation,
     ValidationInfo,
     field_serializer,
     field_validator,
@@ -35,10 +40,28 @@ from polylogue.core.enums import (
     WebConstructType,
 )
 from polylogue.core.message_owner import MessageOwnerCoordinate
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.core.types import AttachmentDirection, AttachmentUploadOrigin
+
+
+def _require_string_mapping_keys(value: object, *, field: str) -> object:
+    """Refuse keys that Pydantic's ``str`` mapping schema would coerce.
+
+    In particular, ``{b"a": 1, "a": 2}`` silently becomes ``{"a": 2}``
+    during validation.  These fields declare JSON object keys, so accepting
+    that input would discard parser evidence before hashing or storage sees it.
+    Nested values typed as ``object`` retain their original mapping keys and
+    are handled by the semantic hash projection.
+    """
+    if value is None:
+        return value
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field} requires an object mapping")
+    if any(not isinstance(key, str) for key in value):
+        raise ValueError(f"{field} requires string mapping keys")
+    return value
 
 
 class AdmissionUnit(PolylogueStrEnum):
@@ -92,6 +115,22 @@ class AdmissionOutcome(BaseModel):
         return self
 
 
+class AdmissionOutcomeCollection(Protocol):
+    """Replayable outcomes with a count and a bounded iteration interface."""
+
+    accounting_id: str
+
+    def __len__(self) -> int: ...
+
+    def __iter__(self) -> Iterator[AdmissionOutcome]: ...
+
+    def iter_unit(self, unit: str) -> Iterator[dict[str, object]]: ...
+
+    def count_by_unit(self) -> dict[str, int]: ...
+
+    def overlaps(self, unit: str, start: int, end: int) -> bool: ...
+
+
 def _ordinal_in_ranges(ranges: Sequence[tuple[int, int]], ordinal: int) -> bool:
     """Membership test over sorted, disjoint half-open ordinal ranges."""
     index = bisect_right(ranges, (ordinal, math.inf))
@@ -120,35 +159,141 @@ class ParseAccounting(BaseModel):
     conserved denominator and must not name the same ordinal twice.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     expected: dict[AdmissionUnit, int] = Field(default_factory=dict)
-    outcomes: list[AdmissionOutcome] = Field(default_factory=list)
+    outcomes: SkipValidation[list[AdmissionOutcome] | AdmissionOutcomeCollection] = Field(default_factory=list)
     materialized_ordinals: dict[AdmissionUnit, list[tuple[int, int]]] = Field(default_factory=dict)
+
+    def stable_binding_digest(self) -> str:
+        """Hash the complete accounting witness without expanding materialized ranges.
+
+        The digest deliberately excludes the preparation database path and
+        scratch ``accounting_id``. Spilled exceptional outcomes are consumed
+        one row at a time; compact materialized ranges remain compact.
+        """
+        digest = hashlib.sha256(b"polylogue.parse-accounting-binding.v1\0")
+
+        def add(value: object) -> None:
+            encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+
+        expected = sorted((unit.value, int(count)) for unit, count in self.expected.items())
+        add({"expected": expected})
+        for unit in sorted(self.materialized_ordinals, key=lambda item: item.value):
+            values = self.materialized_ordinals[unit]
+            add({"materialized_unit": unit.value, "range_count": len(values)})
+            for start, end in values:
+                add([int(start), int(end)])
+        outcomes = self.outcomes
+        if isinstance(outcomes, list):
+            # Outcome order is not semantic; replay addresses them by unit and
+            # ordinal. Sorting the existing resident list makes inline and
+            # spilled representations share one identity.
+            for outcome in sorted(outcomes, key=lambda item: (item.unit.value, item.ordinal)):
+                add(outcome.model_dump(mode="json"))
+        else:
+            # Spilled storage is ordered by unit and ordinal and does not expose
+            # its random scratch identity as part of the witness.
+            units = {item.value for item in self.expected} | {item.value for item in self.materialized_ordinals}
+            units.update(outcomes.count_by_unit())
+            for unit_name in sorted(units):
+                for outcome_record in outcomes.iter_unit(unit_name):
+                    add(outcome_record)
+        return digest.hexdigest()
+
+    def to_prepared_payload(self) -> dict[str, object]:
+        if not isinstance(self.outcomes, list):
+            outcomes: object = {
+                "$polylogue_spilled_outcomes": self.outcomes.accounting_id,
+                "count": len(self.outcomes),
+            }
+        else:
+            outcomes = [item.model_dump(mode="json") for item in self.outcomes]
+        return {
+            "expected": {unit.value: count for unit, count in self.expected.items()},
+            "outcomes": outcomes,
+            "materialized_ordinals": {
+                unit.value: [[start, end] for start, end in ranges]
+                for unit, ranges in self.materialized_ordinals.items()
+            },
+        }
+
+    @classmethod
+    def from_prepared_payload(cls, value: object, path: Path) -> ParseAccounting:
+        from polylogue.sources.parse_accounting_spool import SpilledParseAccountingOutcomes
+
+        if not isinstance(value, Mapping):
+            raise ValueError("prepared parse accounting must be an object")
+        raw_outcomes = value.get("outcomes", [])
+        if isinstance(raw_outcomes, Mapping) and isinstance(raw_outcomes.get("$polylogue_spilled_outcomes"), str):
+            accounting_id = str(raw_outcomes["$polylogue_spilled_outcomes"])
+            raw_outcomes = SpilledParseAccountingOutcomes.from_prepared_reference(
+                path, accounting_id, int(raw_outcomes.get("count", -1))
+            )
+        return cls(
+            expected=value.get("expected", {}),
+            outcomes=raw_outcomes,
+            materialized_ordinals=value.get("materialized_ordinals", {}),
+        )
+
+    @field_validator("outcomes", mode="before")
+    @classmethod
+    def validate_outcomes(cls, value: object) -> object:
+        from polylogue.sources.parse_accounting_spool import SpilledParseAccountingOutcomes
+
+        if isinstance(value, SpilledParseAccountingOutcomes):
+            return value
+        if value is None:
+            return []
+        if isinstance(value, (str, bytes, Mapping)):
+            raise ValueError("parse accounting outcomes require an iterable of outcome records")
+        if not isinstance(value, Iterable):
+            raise ValueError("parse accounting outcomes require an iterable of outcome records")
+        return [item if isinstance(item, AdmissionOutcome) else AdmissionOutcome.model_validate(item) for item in value]
 
     def iter_outcomes(self) -> Iterator[AdmissionOutcome]:
         """Yield every terminal outcome, materialized ranges expanded, in ordinal order per unit."""
+        outcomes = self.outcomes
+        if not isinstance(outcomes, list):
+            units = list(dict.fromkeys((*self.expected, *self.materialized_ordinals)))
+            for unit in units:
+                spilled_exceptional = (AdmissionOutcome.model_validate(item) for item in outcomes.iter_unit(unit.value))
+                spilled_ranges = _materialized_outcomes(unit, self.materialized_ordinals.get(unit, ()))
+                yield from heapq.merge(spilled_exceptional, spilled_ranges, key=lambda item: item.ordinal)
+            return
         by_unit: dict[AdmissionUnit, list[AdmissionOutcome]] = {}
-        for outcome in self.outcomes:
+        for outcome in outcomes:
             by_unit.setdefault(outcome.unit, []).append(outcome)
         units = list(dict.fromkeys((*self.materialized_ordinals, *by_unit)))
         for unit in units:
-            expanded: list[AdmissionOutcome] = list(by_unit.get(unit, ()))
-            for start, end in self.materialized_ordinals.get(unit, ()):
-                expanded.extend(
-                    AdmissionOutcome(
-                        unit=unit,
-                        ordinal=ordinal,
-                        key=str(ordinal),
-                        disposition=AdmissionDisposition.MATERIALIZED,
-                    )
-                    for ordinal in range(start, end)
-                )
-            expanded.sort(key=lambda item: item.ordinal)
-            yield from expanded
+            exceptional = sorted(by_unit.get(unit, ()), key=lambda item: item.ordinal)
+            ranges = _materialized_outcomes(unit, self.materialized_ordinals.get(unit, ()))
+            yield from heapq.merge(iter(exceptional), ranges, key=lambda item: item.ordinal)
 
     def assert_conserved(self) -> None:
         expected = {unit: int(count) for unit, count in self.expected.items()}
         if any(count < 0 for count in expected.values()):
             raise ValueError("admission denominators cannot be negative")
+        if not isinstance(self.outcomes, list):
+            spilled_actual = self.outcomes.count_by_unit()
+            for unit, raw_ranges in self.materialized_ordinals.items():
+                ordered = sorted((int(start), int(end)) for start, end in raw_ranges)
+                previous_end = 0
+                for start, end in ordered:
+                    if end <= start or start < 0 or end > expected.get(unit, 0) or start < previous_end:
+                        raise ValueError(f"invalid materialized admission range for {unit.value}: [{start}, {end})")
+                    if self.outcomes.overlaps(unit.value, start, end):
+                        raise ValueError(f"duplicate admission outcome for {unit.value}[{start}]")
+                    previous_end = end
+                    spilled_actual[unit.value] = spilled_actual.get(unit.value, 0) + end - start
+            normalized_expected = {unit.value: count for unit, count in expected.items() if count}
+            if spilled_actual != normalized_expected:
+                raise ValueError(
+                    f"admission denominator mismatch: expected={normalized_expected}, actual={spilled_actual}"
+                )
+            return
         actual: dict[AdmissionUnit, int] = {}
         # Ranges are validated without enumerating their members: sorted,
         # non-empty, and pairwise disjoint proves the same no-duplicate
@@ -178,6 +323,17 @@ class ParseAccounting(BaseModel):
             actual[outcome.unit] = actual.get(outcome.unit, 0) + 1
         if actual != {unit: count for unit, count in expected.items() if count}:
             raise ValueError(f"admission denominator mismatch: expected={expected}, actual={actual}")
+
+
+def _materialized_outcomes(unit: AdmissionUnit, ranges: Sequence[tuple[int, int]]) -> Iterator[AdmissionOutcome]:
+    for start, end in ranges:
+        for ordinal in range(start, end):
+            yield AdmissionOutcome(
+                unit=unit,
+                ordinal=ordinal,
+                key=str(ordinal),
+                disposition=AdmissionDisposition.MATERIALIZED,
+            )
 
 
 class ParsedWebConstruct(BaseModel):
@@ -236,6 +392,16 @@ class ParsedFileEdit(BaseModel):
     replace_all: bool | None = None
     user_modified: bool | None = None
 
+    @field_validator("structured_patch", mode="before")
+    @classmethod
+    def validate_structured_patch_keys(cls, value: object) -> object:
+        if value is None:
+            return value
+        if isinstance(value, (list, tuple)):
+            for patch in value:
+                _require_string_mapping_keys(patch, field="structured_patch")
+        return value
+
 
 class ParsedContentBlock(BaseModel):
     """A single structured content block within a parsed message.
@@ -282,6 +448,11 @@ class ParsedContentBlock(BaseModel):
     # TOOL_RESULT block carrying the provider's edit outcome fields.
     file_edit: ParsedFileEdit | None = None
     web_constructs: list[ParsedWebConstruct] = Field(default_factory=list)
+
+    @field_validator("tool_input", "metadata", mode="before")
+    @classmethod
+    def validate_mapping_keys(cls, value: object, info: ValidationInfo) -> object:
+        return _require_string_mapping_keys(value, field=info.field_name or "content block mapping")
 
     @model_validator(mode="after")
     def validate_tool_result_outcome(self) -> ParsedContentBlock:
@@ -620,9 +791,15 @@ class ParsedSessionEvent(BaseModel):
         default=None,
         validation_alias=AliasChoices("source_message_provider_id", "source_message_id"),
     )
+    owner_coordinate: MessageOwnerCoordinate | None = Field(default=None, exclude=True, repr=False)
     boundary_start_position: int | None = None
     boundary_end_position: int | None = None
     boundary_message_position: int | None = Field(default=None, exclude=True)
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def validate_payload_keys(cls, value: object) -> object:
+        return _require_string_mapping_keys(value, field="session event payload")
 
 
 class ParsedDispatchObservation(BaseModel):
@@ -656,13 +833,12 @@ def upgrade_chat_export_user_authorship(provider: Provider, message: ParsedMessa
     """Apply the session-level user-channel guarantee to one parsed message."""
     from polylogue.core.sources import provider_to_source
 
-    if (
-        provider_to_source(provider).runtime_root is None
-        and message.role is Role.USER
-        and message.message_type is MessageType.MESSAGE
-        and message.material_origin is MaterialOrigin.UNKNOWN
+    if provider_to_source(provider).runtime_root is None and not any(
+        block.type is BlockType.DOCUMENT for block in message.blocks
     ):
-        message.material_origin = MaterialOrigin.HUMAN_AUTHORED
+        from .base_support import human_authored_override
+
+        message.material_origin = human_authored_override(message.role, message.message_type, message.material_origin)
     return message
 
 
@@ -770,6 +946,14 @@ class ParsedSession(BaseModel):
     # (pr-link today, issue refs generalize to the same relation).
     session_refs: list[ParsedSessionRef] = Field(default_factory=list)
 
+    @field_validator("pending_drafts", mode="before")
+    @classmethod
+    def validate_pending_draft_keys(cls, value: object) -> object:
+        if isinstance(value, (list, tuple)):
+            for draft in value:
+                _require_string_mapping_keys(draft, field="pending_drafts")
+        return value
+
     @field_validator("source_name", mode="before")
     @classmethod
     def coerce_provider(cls, v: object) -> Provider:
@@ -830,6 +1014,12 @@ class RawSessionData(BaseModel):
 
     raw_bytes: bytes = b""
     source_path: str
+    # Frozen by acquisition; publication never resolves a mutable source alias.
+    canonical_source_path: str | None = None
+    captured_profile_key: str | None = None
+    captured_profile_source_path: str | None = Field(default=None, exclude=True)
+    captured_file_observation: tuple[int, int, int, int, int] | None = Field(default=None, exclude=True)
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = Field(default=None, exclude=True)
     source_index: int | None = None
     # The address kind this payload was acquired under. ``source_index`` is a
     # position inside a container member and cannot express "the member

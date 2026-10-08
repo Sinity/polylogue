@@ -262,7 +262,7 @@ def _wait_for_lifecycle_start(proc: subprocess.Popen[bytes], ops_db: Path, *, ti
     while time.monotonic() < deadline:
         _assert_daemon_alive(proc)
         try:
-            with sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True) as conn:
+            with closing(sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)) as conn:
                 row = conn.execute("SELECT run_id FROM daemon_lifecycle LIMIT 1").fetchone()
             if row is not None:
                 return
@@ -291,7 +291,7 @@ def _wait_for_messages(
     last_count = 0
     while time.monotonic() < deadline:
         try:
-            with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
                 cur = conn.execute("SELECT COUNT(*) FROM messages")
                 row = cur.fetchone()
                 count = int(row[0]) if row else 0
@@ -337,7 +337,7 @@ def _wait_for_cold_build_messages(
             ):
                 continue
             try:
-                with sqlite3.connect(f"file:{candidate}?mode=ro", uri=True, timeout=0.1) as conn:
+                with closing(sqlite3.connect(f"file:{candidate}?mode=ro", uri=True, timeout=0.1)) as conn:
                     count = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
                     last_count = max(last_count, count)
                     if count >= min_count:
@@ -628,7 +628,7 @@ def _wait_for_sessions(
     last_count = 0
     while time.monotonic() < deadline:
         try:
-            with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
                 cur = conn.execute("SELECT COUNT(*) FROM sessions")
                 row = cur.fetchone()
                 count = int(row[0]) if row else 0
@@ -663,7 +663,7 @@ def _wait_for_daemon_ready(proc: subprocess.Popen[bytes], *, timeout_s: float = 
 
 def _get_fts_triggers(db: Path) -> list[str]:
     """Return the sorted list of FTS trigger names present in the database."""
-    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE '%_fts_%' ORDER BY name"
         ).fetchall()
@@ -681,7 +681,7 @@ def _expected_fts_triggers() -> set[str]:
 
 def _content_hashes(db: Path, limit: int = 10) -> list[tuple[str, bytes]]:
     """Return (session_id, content_hash) for up to *limit* sessions."""
-    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
         rows = conn.execute(
             "SELECT session_id, content_hash FROM sessions ORDER BY session_id LIMIT ?",
             (limit,),
@@ -767,7 +767,8 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
     - Daemon reaches ready state within timeout.
     """
     archive_root = workspace_env["archive_root"]
-    corpus_root = Path.home() / ".claude" / "projects"
+    # A project directory of the declared Claude Code layout.
+    corpus_root = Path.home() / ".claude" / "projects" / "-synthetic-resilience"
     db = archive_root / "index.db"
 
     # 1. Create source files.
@@ -873,9 +874,8 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
             assert not missing, f"Missing FTS triggers after restart: {sorted(missing)}"
 
             # Sessions not lost.
-            conv_count_after = (
-                sqlite3.connect(f"file:{db}?mode=ro", uri=True).execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-            )
+            with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
+                conv_count_after = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             assert conv_count_after >= conv_count_before, f"Sessions lost: {conv_count_before} → {conv_count_after}"
             # All N sessions should be present eventually.
             assert conv_count_after == N_SESSIONS, f"Expected {N_SESSIONS} sessions, got {conv_count_after}"
@@ -912,7 +912,8 @@ def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
     4. Restart; assert WAL is checkpointed and no corruption.
     """
     archive_root = workspace_env["archive_root"]
-    corpus_root = Path.home() / ".claude" / "projects"
+    # A project directory of the declared Claude Code layout.
+    corpus_root = Path.home() / ".claude" / "projects" / "-synthetic-resilience"
     db = archive_root / "index.db"
 
     # Write enough sessions to keep the daemon busy.
@@ -947,12 +948,13 @@ def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
         # 1. Let daemon ingest some sessions.
         _wait_for_messages(db, min_count=50, timeout_s=120.0)
 
-        # 2. Run PRAGMA wal_checkpoint(TRUNCATE).
+        # 2. Checkpoint the Index WAL. Only `main`: the Index connection
+        # attaches Source read-only, which no checkpoint may backfill.
         from polylogue.storage.sqlite.connection_profile import open_connection
 
         try:
             with open_connection(db, timeout=5.0) as conn:
-                row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                row = conn.execute("PRAGMA main.wal_checkpoint(TRUNCATE)").fetchone()
             # (busy, log, checkpointed)
             assert row is not None, "wal_checkpoint returned None"
         except sqlite3.OperationalError as exc:
@@ -994,7 +996,7 @@ def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
                 from polylogue.storage.sqlite.connection_profile import open_connection as oc2
 
                 with oc2(db, timeout=5.0) as conn:
-                    row2 = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                    row2 = conn.execute("PRAGMA main.wal_checkpoint(TRUNCATE)").fetchone()
                 assert row2 is not None
                 busy_after = int(row2[0])
                 # If not busy, checkpoint should succeed.
@@ -1030,7 +1032,8 @@ def test_daemon_memory_pressure(workspace_env: dict[str, Path]) -> None:
     skipped when systemd-run is not available (CI without systemd, macOS).
     """
     archive_root = workspace_env["archive_root"]
-    corpus_root = Path.home() / ".claude" / "projects"
+    # A project directory of the declared Claude Code layout.
+    corpus_root = Path.home() / ".claude" / "projects" / "-synthetic-resilience"
     db = archive_root / "index.db"
 
     N_SESSIONS = 8
@@ -1080,7 +1083,7 @@ def test_daemon_memory_pressure(workspace_env: dict[str, Path]) -> None:
 
                 def session_ids(path: Path) -> tuple[set[str], str | None]:
                     try:
-                        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.1) as conn:
+                        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.1)) as conn:
                             return {str(row[0]) for row in conn.execute("SELECT native_id FROM sessions")}, None
                     except (OSError, sqlite3.Error) as error:
                         return set(), type(error).__name__
@@ -1101,7 +1104,9 @@ def test_daemon_memory_pressure(workspace_env: dict[str, Path]) -> None:
                 debt_rows: list[tuple[str, str, str]] = []
                 ops_error: str | None = None
                 try:
-                    with sqlite3.connect(f"file:{archive_root / 'ops.db'}?mode=ro", uri=True, timeout=0.1) as conn:
+                    with closing(
+                        sqlite3.connect(f"file:{archive_root / 'ops.db'}?mode=ro", uri=True, timeout=0.1)
+                    ) as conn:
                         for path in sorted(corpus_root.glob("memtest-*.jsonl"))[:N_SESSIONS]:
                             row = conn.execute(
                                 "SELECT failure_count, next_retry_at, excluded, content_fingerprint IS NOT NULL "
@@ -1190,7 +1195,8 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
     - FTS triggers intact.
     """
     archive_root = workspace_env["archive_root"]
-    corpus_root = Path.home() / ".claude" / "projects"
+    # A project directory of the declared Claude Code layout.
+    corpus_root = Path.home() / ".claude" / "projects" / "-synthetic-resilience"
     db = archive_root / "index.db"
 
     session_id = "large-session-000000000000"
@@ -1257,7 +1263,7 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
             )
 
         # All messages ingested.
-        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
             count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         assert count >= n_messages, f"Expected {n_messages} messages, got {count}"
 
@@ -1273,7 +1279,7 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
         fts_count = 0
         while time.monotonic() < fts_deadline:
             try:
-                with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+                with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
                     fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
                 if fts_count >= n_messages:
                     break
@@ -1307,7 +1313,8 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
     4. Run ``polylogue --plain analyze --count`` through the same public route.
     """
     archive_root = workspace_env["archive_root"]
-    corpus_root = Path.home() / ".claude" / "projects"
+    # A project directory of the declared Claude Code layout.
+    corpus_root = Path.home() / ".claude" / "projects" / "-synthetic-resilience"
     db = archive_root / "index.db"
 
     # Write sessions so the daemon stays busy.

@@ -292,6 +292,33 @@ def test_import_explain_reports_verification_evidence_db_fidelity(tmp_path: Path
     assert entry.fidelity.capabilities["command_evidence"].status == "exact"
 
 
+def test_bound_verification_preview_crosses_both_former_row_caps(tmp_path: Path) -> None:
+    """The actual preview must count the complete ledger without materializing it."""
+    path = tmp_path / "verification_evidence.db"
+    _write_verification_evidence_db(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("DELETE FROM verification_events")
+        conn.execute("DELETE FROM verification_state")
+        conn.executemany(
+            "INSERT INTO verification_events (created_at, session_id, cwd, root, command, canonical_command, "
+            "kind, scope, status, exit_code, output_summary) "
+            "VALUES ('2026-07-14T00:00:00+00:00', 'complete-ledger', '.', ?, 'check', 'check', "
+            "'check', 'targeted', 'passed', 0, 'complete')",
+            ((f"root-{index % 100_001}",) for index in range(500_001)),
+        )
+        conn.executemany(
+            "INSERT INTO verification_state (session_id, root, last_event_id, changed_paths_json) "
+            "VALUES ('complete-ledger', ?, ?, '[]')",
+            ((f"root-{index}", index + 1) for index in range(100_001)),
+        )
+    [entry] = explain_import_path(path, source_name="hermes").entries
+    assert entry.detector == "hermes_verification_evidence_db"
+    assert entry.produced.sessions == 1
+    assert entry.fidelity is not None
+    assert entry.fidelity.capabilities["command_evidence"].observed == 500_001
+    assert entry.fidelity.capabilities["changed_paths"].observed == 100_001
+
+
 def test_parse_is_idempotent_across_repeated_reads(tmp_path: Path) -> None:
     path = tmp_path / "verification_evidence.db"
     _write_verification_evidence_db(path)
@@ -469,29 +496,35 @@ def test_empty_verification_evidence_db_produces_no_sessions_not_a_crash(tmp_pat
     assert fidelity.capabilities["command_evidence"].status == "absent"
 
 
-def test_verification_evidence_db_refuses_a_row_count_past_the_declared_bound(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """polylogue-v85tn: the parser loaded both tables with no row or byte budget.
-
-    ``decode`` routes any structurally-matching SQLite path here ahead of the
-    generic JSON decoder, so the producer's documented limits are not
-    enforceable on the consumer side. The bound is a counted refusal, never a
-    silent truncation of verification evidence.
-
-    Anti-vacuity: remove the ``_MAX_VERIFICATION_EVENT_ROWS`` check and this
-    parses all the rows and returns sessions instead of raising.
-    """
-    from polylogue.sources.parsers import hermes_verification
-
-    monkeypatch.setattr(hermes_verification, "_MAX_VERIFICATION_EVENT_ROWS", 1)
+def test_verification_preview_preserves_evidence_beyond_both_former_consumer_caps(tmp_path: Path) -> None:
+    """One actual explain operation counts the complete large ledger without parsed-event retention."""
     path = tmp_path / "verification_evidence.db"
     _write_verification_evidence_db(path)
+    event_count, state_count = 500_001, 100_001
     with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM verification_events").fetchone()[0] > 1
-
-    with pytest.raises(hermes_verification.HermesVerificationTooLargeError, match="refusing"):
-        hermes_verification.parse_verification_evidence_db(path)
+        conn.execute("DELETE FROM verification_events")
+        conn.execute("DELETE FROM verification_state")
+        conn.execute(
+            "WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM rows WHERE n < ?) "
+            "INSERT INTO verification_events "
+            "(created_at,session_id,cwd,root,command,canonical_command,kind,scope,status,exit_code,output_summary) "
+            "SELECT '2026-01-01','large-ledger','','','check','check','test','targeted','passed',0,'' FROM rows",
+            (event_count,),
+        )
+        conn.execute(
+            "WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM rows WHERE n < ?) "
+            "INSERT INTO verification_state(session_id,root,changed_paths_json) "
+            "SELECT 'large-ledger',CAST(n AS TEXT),'[]' FROM rows",
+            (state_count,),
+        )
+    payload = explain_import_path(path)
+    assert payload.produced.sessions == 1
+    assert payload.produced.messages == 1
+    fidelity = payload.entries[0].fidelity
+    assert fidelity is not None
+    assert fidelity.capabilities["command_evidence"].observed == event_count
+    assert fidelity.capabilities["changed_paths"].observed == state_count
+    assert fidelity.capabilities["correlation"].expected == event_count + state_count
 
 
 # THE PRIVATE READER'S CONNECTION LIFETIME
@@ -502,14 +535,13 @@ def test_parse_verification_evidence_db_closes_its_private_reader_on_success(
 ) -> None:
     """A leaked connection is invisible to any assertion about parsed rows.
 
-    ``open_logical_source`` unlinks the reconstruction it builds for a
+    ``logical_source_context`` owns the reconstruction it builds for a
     retained export, so the connection is the only reference keeping that
     inode alive; ``sqlite3``'s own context manager commits or rolls back and
     never closes.
 
-    Anti-vacuity: revert ``closing(_connect_readonly(...))`` in
-    ``parse_verification_evidence_db`` to a bare ``with
-    _connect_readonly(...)`` and ``probe.closed`` is ``False`` while the two
+    Anti-vacuity: omit context exit in
+    ``parse_verification_evidence_db`` and ``probe.closed`` is ``False`` while the two
     parsed sessions below stay exactly right.
     """
     path = tmp_path / "verification_evidence.db"
@@ -527,7 +559,7 @@ def test_parse_verification_evidence_db_closes_its_private_reader_when_it_refuse
 ) -> None:
     """The refusal path owns the connection too.
 
-    Anti-vacuity: revert to a bare ``with`` and this probe reports ``closed is
+    Anti-vacuity: omit native close on context exit and this probe reports ``closed is
     False`` while the ``ValueError`` still raises, so only the lifecycle
     assertion can catch it.
     """
@@ -546,7 +578,7 @@ def test_parse_verification_evidence_db_closes_its_private_reader_when_it_refuse
 def test_parse_verification_evidence_db_leaves_no_handle_on_the_unlinked_reconstruction(tmp_path: Path) -> None:
     """The production route, with nothing patched, strands no inode.
 
-    Anti-vacuity: revert ``closing(_connect_readonly(...))`` to a bare
+    Anti-vacuity: revert ``closing(_readonly_context(...))`` to a bare
     ``with`` and the descriptor count rises by one per parse and never falls.
     """
     path = tmp_path / "verification_evidence.db"
@@ -559,3 +591,34 @@ def test_parse_verification_evidence_db_leaves_no_handle_on_the_unlinked_reconst
 
     assert len(sessions) == 2, "sanity: the parse really ran"
     assert after == before, f"a reconstruction handle survived the parse: {before} -> {after}"
+
+
+def test_bound_verification_preview_preserves_python_grouping_under_native_nocase(tmp_path: Path) -> None:
+    """SQL NOCASE grouping would collapse ABC and abc into one observer identity."""
+    from dataclasses import asdict
+
+    from polylogue.core.provider_identity import profile_root_for_artifact
+
+    path = tmp_path / "verification_evidence.db"
+    _write_verification_evidence_db(path)
+    with sqlite3.connect(path) as conn:
+        for table in ("verification_events", "verification_state"):
+            sql = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (table,)).fetchone()[0]
+            original = f"original_{table}"
+            conn.execute(f"ALTER TABLE {table} RENAME TO {original}")
+            conn.execute(sql.replace("session_id TEXT NOT NULL", "session_id TEXT COLLATE NOCASE NOT NULL"))
+            conn.execute(f"INSERT INTO {table} SELECT * FROM {original}")
+            conn.execute(f"DROP TABLE {original}")
+        conn.execute("UPDATE verification_events SET session_id = CASE WHEN id=1 THEN 'ABC' ELSE 'abc' END")
+        # State is unique per (session, root): keep one state row per root for 'abc'.
+        conn.execute("DELETE FROM verification_state WHERE session_id = 'verify-session-redacted-2'")
+        conn.execute("UPDATE verification_state SET session_id = 'abc'")
+    sessions = hermes_verification.parse_verification_evidence_db(path, profile_root=profile_root_for_artifact(path))
+    payload = explain_import_path(path)
+    assert payload.produced.session_refs == tuple(
+        f"session:hermes:{session.provider_session_id}" for session in sessions
+    )
+    assert payload.produced.sessions == 2
+    fidelity = payload.entries[0].fidelity
+    assert fidelity is not None
+    assert fidelity.model_dump() == asdict(hermes_verification.import_fidelity_declaration(sessions))

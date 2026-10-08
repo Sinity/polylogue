@@ -37,10 +37,12 @@ from unittest.mock import patch
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import _AppendResult, _DeferredAppend, _FullIngestResult
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
@@ -120,19 +122,24 @@ def _seed_source_raw_prefix(archive_root: Path, *, path: Path, raw_bytes: bytes)
     source_db = archive_root / "source.db"
     initialize_runtime_source_fixture(source_db)
     raw_id = sha256(raw_bytes).hexdigest()
+    # Acquisition freezes the canonical path on every file-backed raw, but
+    # records a profile identity only where the provider declares one
+    # (``declares_profile_identity``): a Claude Code raw carries none, and
+    # reconciliation refuses a raw whose receipt differs from that rule.
     with sqlite3.connect(source_db) as conn:
         conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index,
+                raw_id, origin, native_id, source_path, canonical_source_path, source_index,
                 blob_hash, blob_size, acquired_at_ms, parsed_at_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 raw_id,
                 "claude-code-session",
                 path.stem,
+                str(path),
                 str(path),
                 0,
                 bytes.fromhex(raw_id),
@@ -183,16 +190,20 @@ def _mock_live_ingest(
             raw_byte_sizes={path: path.stat().st_size for path in paths},
         )
 
-    def fake_append_ingest(plans: list[Any]) -> _AppendResult:
+    async def fake_append_ingest(_processor: Any, plans: list[Any]) -> _AppendResult:
         return _AppendResult(succeeded=plans, failed=[], worker_count=1)
 
     def fake_existing_provider_session_id(path: Path, *, expected_origin: str) -> str | None:
         del expected_origin
         return existing_ids.get(path)
 
+    # Source-writing batch bodies (raw compaction) run only on the daemon
+    # writer runner; give the processor the real coordinator's runner.
+    writer = DaemonWriteCoordinator(archive_root=Path(proc._polylogue.archive_root))
     with (
+        patch.object(proc, "_sync_runner", writer.run_sync),
         patch.object(proc, "_ingest_full_paths", fake_full_ingest),
-        patch.object(proc, "_ingest_append_plans", fake_append_ingest),
+        patch.object(proc, "_append_runner", fake_append_ingest),
         patch.object(proc, "_existing_provider_session_id", fake_existing_provider_session_id),
     ):
         yield existing_ids
@@ -212,7 +223,7 @@ def processor(tmp_path: Path) -> Iterator[tuple[LiveBatchProcessor, Path, Path]]
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path), config=None)
     proc = LiveBatchProcessor(
         cast(Any, polylogue),
-        (WatchSource(name="claude-code", root=root),),
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -418,7 +429,7 @@ class TestActiveAppendNoFullReread:
             *,
             whole_archive: bool = True,
             session_ids: Iterable[str] = (),
-        ) -> tuple[set[Path], float, dict[str, float], list[object]]:
+        ) -> tuple[set[Path], float, dict[str, float], list[object], list[object]]:
             # Bound to the production signature of
             # ``LiveBatchProcessor._converge_paths``: the real route passes
             # ``whole_archive=`` and ``session_ids=`` as keywords, and a double
@@ -429,7 +440,8 @@ class TestActiveAppendNoFullReread:
             if not appended_after_persistence:
                 _append_jsonl(path, [_claude_code_record(session_id=session_id, uuid="later")])
                 appended_after_persistence = True
-            return set(paths), 0.0, {}, []
+            # (converged paths, seconds, stage seconds, open debt, debt settlements)
+            return set(paths), 0.0, {}, [], []
 
         monkeypatch.setattr(proc, "_converge_paths", append_after_persistence)
         full_route_paths: list[Path] = []
@@ -487,7 +499,7 @@ class TestMtimeDriftCatchUp:
         # Seed: one ingested file, cursor populated.
         path = root / "session-abc.jsonl"
         _write_jsonl(path, [_claude_code_record(session_id="abc", uuid=f"m-{i}") for i in range(5)])
-        sources = (WatchSource(name="claude-code", root=root),)
+        sources = (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
 
         proc = LiveBatchProcessor(
             cast(Any, polylogue),
@@ -546,7 +558,7 @@ class TestRestartedCursorReconcile:
             path,
             [_claude_code_record(session_id="abc", uuid="m-appended", text="new tail")],
         )
-        sources = (WatchSource(name="claude-code", root=root),)
+        sources = (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
         watcher = LiveWatcher(cast(Any, polylogue), sources, cursor=cursor)
 
         needs_work = watcher._needs_work_from_state(path, stat=path.stat(), cursor=None)
@@ -637,7 +649,7 @@ class TestCatchUpReadsEachFileAtMostOnce:
         db_path = tmp_path / "index.db"
         cursor = CursorStore(db_path)
         polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path), config=None)
-        sources = (WatchSource(name="claude-code", root=root),)
+        sources = (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
 
         # Seed 50 files with first-time full ingest (smaller than the AC's
         # 1000 to keep the test fast; the per-file behaviour is what we're

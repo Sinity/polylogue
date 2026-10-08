@@ -11,23 +11,12 @@ session row back into ``index.db`` consults the suppression first.
 live ingest and full replay/reindex (see ``CLAUDE.md``), so the check lives
 there and this module owns the lookup.
 
-Resolution is *ambient on the connection* rather than an extra writer
-argument on purpose: a required argument would be forgettable by exactly
-the kind of new replay path that caused this defect, and an optional one
-defaulting to "no guard" reproduces it. The user tier is found from the
-index connection itself:
-
-1. an already-``ATTACH``ed ``user_tier`` schema (``ArchiveStore``'s own
-   read path attaches it), otherwise
-2. a ``user.db`` sitting beside the connection's ``main`` database file,
-   or one directory up (the promoted-generation layout, where the active
-   index lives in a generation directory under the archive root).
-
-A connection with no reachable ``user.db`` (``:memory:`` archives, bare
-index fixtures) has no durable tier that could hold a tombstone, so it is
-resolved as "nothing suppressed" -- not as a refusal. A ``user.db`` that
-exists but cannot be read is a refusal: failing open there would resurrect
-content exactly when the durable tier is in trouble.
+The matching Index mutation scope owns its User reader for one commit window.
+Active scopes borrow their already-retained reference-seal observer; inactive
+generations open one creator-owned reader against their declared archive root.
+A genuinely standalone scope has no durable tier. Other direct callers use a
+single readonly context against an attached or neighboring User tier. A
+canonical archive missing its required User tier refuses before a write.
 
 Refusals are counted, never silent. :func:`suppression_refusal_scope`
 gives a replay run a totals window, and every refusal also emits
@@ -45,14 +34,14 @@ from pathlib import Path
 
 from polylogue.core.enums import AssertionKind
 from polylogue.logging import WARNING, emit
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
 
 __all__ = [
     "SuppressionRefusal",
     "SuppressionRefusalTotals",
     "SuppressionTierUnreadableError",
     "record_suppression_refusal",
-    "reset_suppression_caches",
     "session_write_is_suppressed",
     "suppression_refusal_scope",
     "suppression_resolution_for_connection",
@@ -168,6 +157,8 @@ def _user_db_path_beside(main_file: str) -> Path | None:
     for candidate in (main_path.parent / "user.db", main_path.parent.parent / "user.db"):
         if candidate.is_file():
             return candidate
+        if any((candidate.parent / marker).exists() for marker in ("source.db", "audit.db", ".polylogue-format.json")):
+            raise SuppressionTierUnreadableError("declared archive is missing its required durable User tier")
     return None
 
 
@@ -200,18 +191,6 @@ def suppression_resolution_for_connection(conn: sqlite3.Connection) -> Suppressi
     return SuppressionResolution(path=path)
 
 
-def reset_suppression_caches() -> None:
-    """Close and drop memoized read-only ``user.db`` handles.
-
-    Tests build and tear down archive roots at the same temporary paths, so
-    the pooled handles have to be droppable.
-    """
-    with _connection_cache_lock:
-        for conn in _connection_cache.values():
-            conn.close()
-        _connection_cache.clear()
-
-
 #: Matched on ``target_ref``/``kind`` rather than the derived assertion id so
 #: the index writer never has to import the user-tier id recipe (which would
 #: pull ``user_write`` into its schema-identity closure). ``target_ref`` is
@@ -220,27 +199,6 @@ def reset_suppression_caches() -> None:
 _SUPPRESSION_LOOKUP_SQL = (
     "SELECT 1 FROM {schema}assertions WHERE target_ref = ? AND kind = ? AND COALESCE(status, '') != 'deleted' LIMIT 1"
 )
-
-_connection_cache: dict[str, sqlite3.Connection] = {}
-_connection_cache_lock = threading.Lock()
-
-
-def _cached_user_connection(path: Path) -> sqlite3.Connection:
-    key = str(path)
-    with _connection_cache_lock:
-        cached = _connection_cache.get(key)
-        if cached is not None:
-            return cached
-        try:
-            conn = open_readonly_connection(
-                path, validate_schema=False, timeout_class="interactive-read", check_same_thread=False
-            )
-        except sqlite3.Error as exc:
-            raise SuppressionTierUnreadableError(
-                f"cannot open the durable user tier at {path} to check session suppressions: {exc}"
-            ) from exc
-        _connection_cache[key] = conn
-        return conn
 
 
 def _assertions_table_present(conn: sqlite3.Connection, schema: str) -> bool:
@@ -264,6 +222,11 @@ def _assertions_table_present(conn: sqlite3.Connection, schema: str) -> bool:
 
 def session_write_is_suppressed(conn: sqlite3.Connection, session_id: str) -> bool:
     """Return whether ``session_id`` carries a live durable suppression."""
+    scope = current_index_mutation_scope()
+    if scope is not None:
+        scope.require_new_work(conn)
+        reader = scope.user_reader()
+        return _reader_suppresses(reader, session_id) if reader is not None else False
     target_ref = f"session:{session_id}"
     resolution = suppression_resolution_for_connection(conn)
     if not resolution.reachable:
@@ -281,14 +244,23 @@ def session_write_is_suppressed(conn: sqlite3.Connection, session_id: str) -> bo
         return row is not None
 
     assert resolution.path is not None
-    user_conn = _cached_user_connection(resolution.path)
+    try:
+        with readonly_connection_context(resolution.path, validate_schema=False) as user_conn:
+            return _reader_suppresses(user_conn, session_id)
+    except sqlite3.Error as exc:
+        raise SuppressionTierUnreadableError(f"cannot read session suppressions from {resolution.path}: {exc}") from exc
+
+
+def _reader_suppresses(user_conn: sqlite3.Connection, session_id: str) -> bool:
     if not _assertions_table_present(user_conn, ""):
         return False
     try:
         row = user_conn.execute(
             _SUPPRESSION_LOOKUP_SQL.format(schema=""),
-            (target_ref, str(AssertionKind.SUPPRESSION)),
+            (f"session:{session_id}", str(AssertionKind.SUPPRESSION)),
         ).fetchone()
     except sqlite3.Error as exc:
-        raise SuppressionTierUnreadableError(f"cannot read session suppressions from {resolution.path}: {exc}") from exc
+        raise SuppressionTierUnreadableError(
+            f"cannot read session suppressions from the owned User reader: {exc}"
+        ) from exc
     return row is not None

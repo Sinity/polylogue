@@ -5,12 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.context.compiler import (
-    ContextImage,
-    ContextSegment,
-    ContextSpec,
-    context_snapshot_record_from_image,
-)
+from polylogue.archive.context_models import ContextImage, ContextSegment, ContextSpec
+from polylogue.context.compiler import context_snapshot_record_from_image
 from polylogue.context.hermes_delivery_correlation import correlate_hermes_context_deliveries
 from polylogue.core.refs import EvidenceRef
 from polylogue.sources.hooks import append_hook_event

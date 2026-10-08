@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from itertools import islice
+from collections.abc import Iterable, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.core.json import JSONDocument, JSONValue, json_document
+
+if TYPE_CHECKING:
+    from polylogue.sources.detection_projection import DetectorProjection
 
 _PATH_ONLY_SIDECARS = {
     "bridge-pointer.json": "bridge pointer sidecar",
@@ -114,7 +117,7 @@ def looks_like_session_document(payload: JSONDocument) -> bool:
         return True
 
     messages = payload.get("messages")
-    return isinstance(messages, list) and any(looks_like_message_entry(item) for item in messages[:12])
+    return isinstance(messages, list) and any(looks_like_message_entry(item) for item in messages)
 
 
 def looks_like_record_stream(payload: list[JSONDocument]) -> bool:
@@ -173,7 +176,7 @@ def record_carries_provider_envelope(payload: object) -> bool:
     return isinstance(payload, dict) and any(key in payload for key in _TYPE_ENVELOPE_MARKERS)
 
 
-def looks_like_extracted_transcript_corpus(dict_items: list[JSONDocument]) -> bool:
+def looks_like_extracted_transcript_corpus(dict_items: Iterable[JSONDocument]) -> bool:
     """True when decoded records are an extract of other transcripts.
 
     At least one record must carry the positive extraction evidence, and no
@@ -182,11 +185,12 @@ def looks_like_extracted_transcript_corpus(dict_items: list[JSONDocument]) -> bo
     refused by this rule, and a stream mixing extracted rows with rows this
     taxonomy cannot name stays refused rather than guessing.
     """
-    if not dict_items:
-        return False
-    if any(record_carries_provider_envelope(item) for item in dict_items):
-        return False
-    return any(looks_like_extracted_transcript_record(item) for item in dict_items)
+    extracted = False
+    for item in dict_items:
+        if record_carries_provider_envelope(item):
+            return False
+        extracted = extracted or looks_like_extracted_transcript_record(item)
+    return extracted
 
 
 def looks_like_hook_event(payload: object) -> bool:
@@ -271,22 +275,16 @@ def looks_metadataish_dict(payload: JSONDocument) -> bool:
         return False
     if looks_like_session_document(payload):
         return False
+    complete_values = getattr(payload, "metadata_values_scalarish", None)
+    if isinstance(complete_values, bool):
+        return complete_values
     return all(is_scalarish(value) for value in payload.values())
 
 
-def looks_metadataish_list(payload: list[JSONValue]) -> bool:
-    if not payload:
-        return True
-    # A bounded 513-item peek answers "more than 512 items?" without forcing
-    # ``len(payload)`` -- for a lazy full-corpus record stream
-    # (``ReplayableRecordSamples``) that would otherwise decode the entire
-    # backing file just to classify one artifact.
-    head = list(islice(payload, 513))
-    if len(head) > 512:
-        return False
+def looks_metadataish_list(payload: Sequence[JSONValue]) -> bool:
+    """Require metadata evidence from every element, without a prefix verdict."""
     return all(
-        isinstance(item, _SCALAR_TYPES) or (isinstance(item, dict) and looks_metadataish_dict(item))
-        for item in head[:64]
+        isinstance(item, _SCALAR_TYPES) or (isinstance(item, dict) and looks_metadataish_dict(item)) for item in payload
     )
 
 
@@ -318,3 +316,64 @@ def normalize_source_path(source_path: str | Path | None) -> str:
     if source_path is None:
         return ""
     return str(source_path).replace("\\", "/")
+
+
+def record_candidacy_projection() -> DetectorProjection:
+    """Declare the fields and complete folds used by artifact candidacy.
+
+    This projection supplies admission evidence, never schema validation or
+    parser material. The canonical parser still consumes the original bytes.
+    """
+    from polylogue.sources.detection_projection import DetectorProjection
+    from polylogue.sources.parsers import grok
+    from polylogue.sources.parsers.chatgpt_codex_sidecar import looks_like as looks_like_codex_task
+
+    scalar = DetectorProjection()
+    fields: dict[str, DetectorProjection | None] = dict.fromkeys(
+        _RECORDISH_KEYS
+        | _TYPE_ENVELOPE_MARKERS
+        | _MESSAGE_KEYS
+        | _RELATIONSHIP_INDEX_KEYS
+        | _RELATIONSHIP_INDEX_KEYS_CONVERSATION
+        | _HOOK_EVENT_KEYS
+        | _BEADS_INTERACTION_KEYS
+        | _EXTRACTED_PROVENANCE_KEYS
+        | frozenset(_COPIED_CONTENT_KEYS)
+        | {
+            "id",
+            "polylogue_capture_kind",
+            "mapping",
+            "chat_messages",
+            "chunkedPrompt",
+            "chunks",
+            "source",
+            "cascadeId",
+            "markdown",
+            "account_uuid",
+            "conversations_memory",
+            "project_memories",
+            "docs",
+            "prompt_template",
+            "is_starter_project",
+            "atof_version",
+            "kind",
+            "name",
+            "schema_version",
+            "steps",
+            "polylogue_artifact",
+        },
+        scalar,
+    )
+    fields["messages"] = DetectorProjection(
+        item=DetectorProjection(fields=dict.fromkeys(_MESSAGE_KEYS)),
+        array_fold="any",
+        array_predicate=looks_like_message_entry,
+    )
+    fields["turns"] = DetectorProjection(
+        item=DetectorProjection(fields={"id": scalar, "role": scalar}),
+        array_fold="all",
+        array_predicate=lambda item: looks_like_codex_task({"id": "task_e_projection", "turns": [item]}),
+    )
+    fields.update(grok.detection_projection().fields or {})
+    fields.update(grok.native_detection_projection().fields or {})
+    return DetectorProjection(fields=fields, preserve_mapping_size=True, capture_metadata_values=True)

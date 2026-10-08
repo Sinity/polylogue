@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.sources.sqlite_export import logical_export_bytes, open_logical_source, read_export_header
+from polylogue.sources.sqlite_export import logical_export_bytes, logical_source_context, read_export_header
 from polylogue.sources.sqlite_snapshot import sqlite_logical_revision
 
 
@@ -45,7 +45,7 @@ def test_sequence_high_water_storage_class_changes_retained_identity(
     export = tmp_path / "sequence.export"
     export.write_bytes(payload)
     assert read_export_header(export).tables == ("item",)
-    with closing(open_logical_source(export)) as replay:
+    with logical_source_context(export) as replay:
         assert replay.execute("SELECT id, label FROM item").fetchall() == [(1, "neutral")]
 
 

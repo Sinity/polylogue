@@ -27,9 +27,12 @@ import pytest
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider, Role
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.prepared_replay import apply_prepared_revision_replay
+from tests.infra.replay_lineage import codex_lineage_payload
+from tests.infra.retained_replay import replay_retained_components
 
 LOGICAL_KEY = "codex:reparse-session"
 SESSION_ID = "codex-session:reparse-session"
@@ -59,26 +62,17 @@ def _hashes(root: Path) -> tuple[bytes | None, bytes | None]:
 
 
 def test_revision_replay_receipts_the_parser_identity_of_a_retained_raw(tmp_path: Path) -> None:
+    """Canonical retained replay records the parser identity of the raw it parsed."""
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=PAYLOAD,
+            payload=codex_lineage_payload("reparse-session", ["retained parse"]),
             source_path=SOURCE_PATH,
+            canonical_source_path=SOURCE_PATH,
             acquired_at_ms=1,
         )
-        archive.bind_raw_revision(
-            raw_id,
-            RawRevisionEnvelope(
-                LOGICAL_KEY,
-                RawRevisionKind.FULL,
-                hashlib.sha256(PAYLOAD).hexdigest(),
-                0,
-                authority=RawRevisionAuthority.BYTE_PROVEN,
-            ),
-        )
-        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
-        archive.apply_raw_revision_replay(plan, {raw_id: _session("retained parse")}, acquired_at_ms=1)
+    replay_retained_components(tmp_path)
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         receipt = conn.execute(
@@ -86,7 +80,7 @@ def test_revision_replay_receipts_the_parser_identity_of_a_retained_raw(tmp_path
             (raw_id,),
         ).fetchone()
     assert receipt == (
-        RAW_AUTHORITY_PARSER_FINGERPRINT,
+        raw_authority_parser_fingerprint(),
         "complete",
         '["codex-session:reparse-session"]',
     )
@@ -100,6 +94,7 @@ def test_reparse_of_accepted_head_keeps_head_and_session_content_hash_in_sync(tm
             provider=Provider.CODEX,
             payload=PAYLOAD,
             source_path=SOURCE_PATH,
+            canonical_source_path=SOURCE_PATH,
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -112,22 +107,18 @@ def test_reparse_of_accepted_head_keeps_head_and_session_content_hash_in_sync(tm
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
-        archive.apply_raw_revision_replay(plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair(LOGICAL_KEY)
+        apply_prepared_revision_replay(archive, plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
 
     head_hash, session_hash = _hashes(tmp_path)
     assert head_hash is not None, "the replay must establish an accepted head"
     assert head_hash == session_hash
 
-    # A parser fix re-derives DIFFERENT content from the SAME accepted raw,
-    # through the ordinary session-write path rather than a replay plan.
+    # A parser fix re-derives DIFFERENT content from the SAME accepted raw;
+    # the retained raw is replayed again through its prepared route.
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        archive.write_parsed_for_retained_raw_result(
-            _session("corrected parse"),
-            raw_id=raw_id,
-            source_path=SOURCE_PATH,
-            acquired_at_ms=2,
-        )
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair(LOGICAL_KEY)
+        apply_prepared_revision_replay(archive, plan, {raw_id: _session("corrected parse")}, acquired_at_ms=2)
 
     reparsed_head, reparsed_session = _hashes(tmp_path)
     assert reparsed_session != session_hash, "the reparse must actually change session content"
@@ -160,6 +151,7 @@ def test_batched_reparse_rolls_back_receipt_and_head_with_failed_session_write(t
             provider=Provider.CODEX,
             payload=PAYLOAD,
             source_path=SOURCE_PATH,
+            canonical_source_path=SOURCE_PATH,
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -172,8 +164,8 @@ def test_batched_reparse_rolls_back_receipt_and_head_with_failed_session_write(t
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
-        archive.apply_raw_revision_replay(plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair(LOGICAL_KEY)
+        apply_prepared_revision_replay(archive, plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
         before = _hashes(tmp_path)
         before_receipt_count = archive._conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
 
@@ -182,63 +174,16 @@ def test_batched_reparse_rolls_back_receipt_and_head_with_failed_session_write(t
             side_effect=RuntimeError("synthetic session-write failure"),
         ):
             with pytest.raises(RuntimeError, match="synthetic session-write failure"):
-                archive.apply_raw_revision_replay(
+                apply_prepared_revision_replay(
+                    archive,
                     plan,
                     {raw_id: _session("corrected parse")},
                     acquired_at_ms=2,
                     manage_transaction=False,
                 )
 
-        assert archive._conn.in_transaction
-        archive.rollback()
-        assert _hashes(tmp_path) == before
-        assert (
-            archive._conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
-            == before_receipt_count
-        )
-
-
-def test_batched_retained_reparse_keeps_receipt_uncommitted_with_failed_session_write(tmp_path: Path) -> None:
-    """The grouped ingest route opens its index batch before reaffirming a head."""
-    initialize_active_archive_root(tmp_path)
-
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=PAYLOAD,
-            source_path=SOURCE_PATH,
-            acquired_at_ms=1,
-        )
-        archive.bind_raw_revision(
-            raw_id,
-            RawRevisionEnvelope(
-                LOGICAL_KEY,
-                RawRevisionKind.FULL,
-                hashlib.sha256(PAYLOAD).hexdigest(),
-                0,
-                authority=RawRevisionAuthority.BYTE_PROVEN,
-            ),
-        )
-        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
-        archive.apply_raw_revision_replay(plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
-        before = _hashes(tmp_path)
-        before_receipt_count = archive._conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
-
-        with patch(
-            "polylogue.storage.sqlite.archive_tiers.revision_governance.write_parsed_session_to_archive",
-            side_effect=RuntimeError("synthetic session-write failure"),
-        ):
-            with pytest.raises(RuntimeError, match="synthetic session-write failure"):
-                archive.write_parsed_for_retained_raw_result(
-                    _session("corrected parse"),
-                    raw_id=raw_id,
-                    source_path=SOURCE_PATH,
-                    acquired_at_ms=2,
-                    manage_transaction=False,
-                )
-
-        assert archive._conn.in_transaction
-        archive.rollback()
+        # The Index mutation scope that published the prepared write owns its
+        # rollback: nothing of the failed reparse is committed.
         assert _hashes(tmp_path) == before
         assert (
             archive._conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
@@ -255,6 +200,7 @@ def test_unchanged_reparse_of_accepted_head_issues_no_new_receipt(tmp_path: Path
             provider=Provider.CODEX,
             payload=PAYLOAD,
             source_path=SOURCE_PATH,
+            canonical_source_path=SOURCE_PATH,
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -267,8 +213,8 @@ def test_unchanged_reparse_of_accepted_head_issues_no_new_receipt(tmp_path: Path
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
-        archive.apply_raw_revision_replay(plan, {raw_id: _session("stable parse")}, acquired_at_ms=1)
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair(LOGICAL_KEY)
+        apply_prepared_revision_replay(archive, plan, {raw_id: _session("stable parse")}, acquired_at_ms=1)
 
     def receipt_count() -> int:
         with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -277,11 +223,7 @@ def test_unchanged_reparse_of_accepted_head_issues_no_new_receipt(tmp_path: Path
     before = receipt_count()
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        archive.write_parsed_for_retained_raw_result(
-            _session("stable parse"),
-            raw_id=raw_id,
-            source_path=SOURCE_PATH,
-            acquired_at_ms=2,
-        )
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair(LOGICAL_KEY)
+        apply_prepared_revision_replay(archive, plan, {raw_id: _session("stable parse")}, acquired_at_ms=2)
 
     assert receipt_count() == before

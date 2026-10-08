@@ -14,8 +14,10 @@ chunk/catch-up/hook-drain route. That route is deleted. Those receipts are
 historical for a deleted path, not current production.
 
 Run with:
-    pytest tests/benchmarks/test_daemon_convergence.py \\
-      --benchmark-enable -p no:xdist -o "addopts=" -v
+    devtools test tests/benchmarks/test_daemon_convergence.py --benchmark-enable
+
+The md, lg, xl and xxl tiers and the huge-session probe are the heavy lane:
+add ``--run-heavy-benchmarks`` to run them.
 """
 
 from __future__ import annotations
@@ -23,15 +25,16 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
 from polylogue.schemas.synthetic import SyntheticCorpus
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
+from tests.infra.compute_owner import owned_compute_adapter
 from tests.infra.convergence_probe_contract import intake_measurement
 from tests.infra.workload_declarations import (
+    CONVERGENCE_HEAVY_SCALE_TIERS,
     CONVERGENCE_SCALE_TIERS,
     convergence_corpus_specs,
     convergence_workload_profile,
@@ -90,9 +93,11 @@ def _make_claude_code_session(uuid: str, n_messages: int, *, include_tools: bool
 def _generate_corpus(tmp_path: Path, tier: str) -> Path:
     """Generate a synthetic corpus at the given scale tier."""
     workload = convergence_corpus_specs(tier)[0]
-    root = tmp_path / "corpus" / "test-project"
+    # The writer places each session at its declared layout position below
+    # the source root.
+    root = tmp_path / "corpus"
     SyntheticCorpus.write_spec_artifacts(workload, root, prefix="convergence", index_width=4)
-    return root.parent
+    return root
 
 
 # ── Probe: convergence model ────────────────────────────────────────
@@ -110,76 +115,88 @@ def _run_convergence_probe(
 
     from polylogue.daemon.convergence import DaemonConverger
     from polylogue.daemon.convergence_stages import make_default_convergence_stages
-    from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import WatchSource
+    from tests.infra.live_batch import prepared_live_batch_processor
 
     # Use a fresh DB for clean measurement. Archive root / config are scoped by
     # the calling test via ``monkeypatch.setenv`` so the probe never mutates
-    # process-global ``os.environ`` directly (#1878). The convergence path reads
-    # the archive root from the ``_BenchmarkPolylogue`` object, not the env.
+    # process-global ``os.environ`` directly (#1878).
     db_path = tmp_path / "index.db"
 
     # Collect all JSONL files.
     files = list(corpus_root.rglob("*.jsonl"))
 
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
-    polylogue = _BenchmarkPolylogue(tmp_path, db_path)
-    processor = LiveBatchProcessor(
-        cast(Any, polylogue),
-        (WatchSource(name="benchmark", root=corpus_root),),
-        cursor=CursorStore(db_path),
-        parser_fingerprint="benchmark-v1",
-        converger=converger,
-    )
+    with owned_compute_adapter() as compute:
+        converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute))
 
-    timings: dict[str, float] = {}
+        async def ingest() -> tuple[Any, float]:
+            # The production live batch bootstraps the archive and runs its
+            # Source bodies and retained publication on the daemon owners.
+            async with prepared_live_batch_processor(
+                tmp_path,
+                (WatchSource(name="claude-code", root=corpus_root),),
+                parser_fingerprint="benchmark-v1",
+                converger=converger,
+                compute_adapter=compute,
+            ) as processor:
+                started = time.perf_counter()
+                result = await processor.ingest_files(files, emit_event=False)
+                return result, time.perf_counter() - started
 
-    # Measure canonical batched live ingestion with post-ingest convergence.
-    t_total = time.perf_counter()
-    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
-    timings["total_s"] = time.perf_counter() - t_total
-    timings["files"] = float(len(files))
-    timings["parse_wall_s"] = metrics.parse_time_s
-    timings["convergence_wall_s"] = metrics.convergence_time_s
+        timings: dict[str, float] = {}
 
-    summary = converger.summary()
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        # Measure canonical batched live ingestion with post-ingest convergence.
+        metrics, elapsed = asyncio.run(ingest())
+        timings["total_s"] = elapsed
+        timings["files"] = float(len(files))
+        timings["parse_wall_s"] = metrics.parse_time_s
+        timings["convergence_wall_s"] = metrics.convergence_time_s
 
-    with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
-        stored_sessions = archive.count_sessions()
-        stored_messages = archive.count_session_messages(metrics.changed_session_ids)
-    measurement = intake_measurement(
-        expected_files=len(files),
-        expected_sessions=int(metrics.ingested_session_count),
-        expected_messages=int(metrics.ingested_message_count),
-        succeeded_files=metrics.succeeded_file_count,
-        failed_files=metrics.failed_file_count,
-        skipped_files=metrics.skipped_file_count,
-        excluded_files=metrics.excluded_file_count,
-        deferred_files=metrics.deferred_file_count,
-        refused_bytes=metrics.refused_bytes,
-        stored_sessions=stored_sessions,
-        stored_messages=stored_messages,
-        stage_summary=summary,
-    )
-    timings.update({key: float(value) for key, value in measurement.items()})
-    timings["total_files"] = float(len(files))
+        summary = converger.summary()
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    return timings
+        with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
+            stored_sessions = archive.count_sessions()
+            stored_messages = archive.count_session_messages(metrics.changed_session_ids)
+        measurement = intake_measurement(
+            expected_files=len(files),
+            expected_sessions=int(metrics.ingested_session_count),
+            expected_messages=int(metrics.ingested_message_count),
+            succeeded_files=metrics.succeeded_file_count,
+            failed_files=metrics.failed_file_count,
+            skipped_files=metrics.skipped_file_count,
+            excluded_files=metrics.excluded_file_count,
+            deferred_files=metrics.deferred_file_count,
+            refused_bytes=metrics.refused_bytes,
+            stored_sessions=stored_sessions,
+            stored_messages=stored_messages,
+            stage_summary=summary,
+        )
+        timings.update({key: float(value) for key, value in measurement.items()})
+        timings["total_files"] = float(len(files))
 
-
-class _BenchmarkPolylogue:
-    def __init__(self, archive_root: Path, db_path: Path) -> None:
-        self.archive_root = archive_root
-        self.backend = SimpleNamespace(db_path=db_path)
+        return timings
 
 
 # ── Benchmark tests ─────────────────────────────────────────────────
 
 
+#: Heavy tiers keep cancellation with the managed run (``timeout(0)``, see
+#: TESTING.md) instead of a fixed deadline: their declared workloads need
+#: longer than the repository's 900 s cap on explicit deadlines, and a
+#: deadline that fails slow-but-progressing work is a defect.
+_HEAVY_LANE = (pytest.mark.heavy_benchmark, pytest.mark.timeout(0))
+
+
+def _scale_tier_params() -> list[Any]:
+    return [
+        *(pytest.param(tier, id=str(tier.value)) for tier in CONVERGENCE_SCALE_TIERS),
+        *(pytest.param(tier, id=str(tier.value), marks=_HEAVY_LANE) for tier in CONVERGENCE_HEAVY_SCALE_TIERS),
+    ]
+
+
 @pytest.mark.benchmark
-@pytest.mark.parametrize("tier", CONVERGENCE_SCALE_TIERS)
+@pytest.mark.parametrize("tier", _scale_tier_params())
 def test_convergence_scale_tier(benchmark, tier: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
     """Measure convergence throughput at each scale tier."""
     corpus_root = _generate_corpus(tmp_path, tier)
@@ -254,65 +271,69 @@ def _run_convergence_memory_probe(
 
     from polylogue.daemon.convergence import DaemonConverger
     from polylogue.daemon.convergence_stages import make_default_convergence_stages
-    from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import WatchSource
+    from tests.infra.live_batch import prepared_live_batch_processor
 
     db_path = tmp_path / "index.db"
 
     files = list(corpus_root.rglob("*.jsonl"))
 
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
-    polylogue = _BenchmarkPolylogue(tmp_path, db_path)
-    processor = LiveBatchProcessor(
-        cast(Any, polylogue),
-        (WatchSource(name="benchmark", root=corpus_root),),
-        cursor=CursorStore(db_path),
-        parser_fingerprint="benchmark-memory-v1",
-        converger=converger,
-    )
+    with owned_compute_adapter() as compute:
+        converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute))
 
-    t_total = time.perf_counter()
-    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
-    elapsed = time.perf_counter() - t_total
-    summary = converger.summary()
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        async def ingest() -> tuple[Any, float]:
+            # The production live batch bootstraps the archive and runs its
+            # Source bodies and retained publication on the daemon owners.
+            async with prepared_live_batch_processor(
+                tmp_path,
+                (WatchSource(name="claude-code", root=corpus_root),),
+                parser_fingerprint="benchmark-memory-v1",
+                converger=converger,
+                compute_adapter=compute,
+            ) as processor:
+                started = time.perf_counter()
+                result = await processor.ingest_files(files, emit_event=False)
+                return result, time.perf_counter() - started
 
-    with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
-        stored_sessions = archive.count_sessions()
-        stored_messages = archive.count_session_messages(metrics.changed_session_ids)
-    measurement = intake_measurement(
-        expected_files=len(files),
-        expected_sessions=int(metrics.ingested_session_count),
-        expected_messages=int(metrics.ingested_message_count),
-        succeeded_files=metrics.succeeded_file_count,
-        failed_files=metrics.failed_file_count,
-        skipped_files=metrics.skipped_file_count,
-        excluded_files=metrics.excluded_file_count,
-        deferred_files=metrics.deferred_file_count,
-        refused_bytes=metrics.refused_bytes,
-        stored_sessions=stored_sessions,
-        stored_messages=stored_messages,
-        stage_summary=summary,
-    )
+        metrics, elapsed = asyncio.run(ingest())
+        summary = converger.summary()
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    return {
-        # Return the unrounded elapsed time. Rounding to 2 decimals here would
-        # collapse a sub-10ms run to ``0.0`` and trip the ``total_s > 0``
-        # measurement guard in callers (#1878); round only at display time.
-        "total_s": elapsed,
-        "files": float(len(files)),
-        **{key: float(value) for key, value in measurement.items()},
-        "parse_wall_s": metrics.parse_time_s,
-        "convergence_wall_s": metrics.convergence_time_s,
-        "rss_current_mb": metrics.rss_current_mb or 0.0,
-        "rss_peak_self_mb": metrics.rss_peak_self_mb or 0.0,
-        "rss_peak_children_mb": metrics.rss_peak_children_mb or 0.0,
-        "cgroup_memory_current_mb": metrics.cgroup_memory_current_mb or 0.0,
-        "cgroup_memory_peak_mb": metrics.cgroup_memory_peak_mb or 0.0,
-        "input_bytes": float(metrics.input_bytes),
-        "source_payload_read_bytes": float(metrics.source_payload_read_bytes),
-    }
+        with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
+            stored_sessions = archive.count_sessions()
+            stored_messages = archive.count_session_messages(metrics.changed_session_ids)
+        measurement = intake_measurement(
+            expected_files=len(files),
+            expected_sessions=int(metrics.ingested_session_count),
+            expected_messages=int(metrics.ingested_message_count),
+            succeeded_files=metrics.succeeded_file_count,
+            failed_files=metrics.failed_file_count,
+            skipped_files=metrics.skipped_file_count,
+            excluded_files=metrics.excluded_file_count,
+            deferred_files=metrics.deferred_file_count,
+            refused_bytes=metrics.refused_bytes,
+            stored_sessions=stored_sessions,
+            stored_messages=stored_messages,
+            stage_summary=summary,
+        )
+
+        return {
+            # Return the unrounded elapsed time. Rounding to 2 decimals here would
+            # collapse a sub-10ms run to ``0.0`` and trip the ``total_s > 0``
+            # measurement guard in callers (#1878); round only at display time.
+            "total_s": elapsed,
+            "files": float(len(files)),
+            **{key: float(value) for key, value in measurement.items()},
+            "parse_wall_s": metrics.parse_time_s,
+            "convergence_wall_s": metrics.convergence_time_s,
+            "rss_current_mb": metrics.rss_current_mb or 0.0,
+            "rss_peak_self_mb": metrics.rss_peak_self_mb or 0.0,
+            "rss_peak_children_mb": metrics.rss_peak_children_mb or 0.0,
+            "cgroup_memory_current_mb": metrics.cgroup_memory_current_mb or 0.0,
+            "cgroup_memory_peak_mb": metrics.cgroup_memory_peak_mb or 0.0,
+            "input_bytes": float(metrics.input_bytes),
+            "source_payload_read_bytes": float(metrics.source_payload_read_bytes),
+        }
 
 
 @pytest.mark.benchmark
@@ -358,6 +379,8 @@ def test_convergence_large_session_memory(
 
 
 @pytest.mark.benchmark
+@pytest.mark.heavy_benchmark
+@pytest.mark.timeout(0)
 def test_convergence_huge_session_memory_bounded(
     benchmark: BenchmarkFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1,3 +1,4 @@
+import { stagingRuntime, attachmentBytes } from "../infra/capture-staging.js";
 import { Buffer } from "node:buffer";
 import { createHash, webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -10,6 +11,7 @@ import { JSDOM } from "jsdom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
+const assetStreamSource = readFileSync(resolve(testDirectory, "../../src/content/asset_stream.js"), "utf8");
 const bridgeSource = readFileSync(resolve(testDirectory, "../../src/content/chatgpt_bridge.js"), "utf8");
 const commonSource = readFileSync(resolve(testDirectory, "../../src/common.js"), "utf8");
 const contentSource = readFileSync(resolve(testDirectory, "../../src/content/chatgpt.js"), "utf8");
@@ -35,6 +37,12 @@ function byteResponse(bytes, status = 200, declaredSize = null) {
 
 function authorizationHeader(options) {
   return new globalThis.Headers(options?.headers || {}).get("authorization");
+}
+
+function sandboxPlan(path = "/mnt/data/kit.zip", messageId = "assistant-message-1", recordKey = "assistant-node", ordinal = 0) {
+  return { ordinal, descriptor: { provider_attachment_id: `sandbox:${messageId}:${path}`,
+    message_provider_id: messageId, attachment_kind: "sandbox_file", name: path.split("/").at(-1), url: `sandbox:${path}`,
+    original_record_key: recordKey, original_record_ordinal: ordinal, provider_meta: {} } };
 }
 
 function conversationPayload() {
@@ -115,6 +123,7 @@ function makeDom(adapter, url = "https://chatgpt.com/c/conversation-1") {
   // the production dependency on Web Crypto, but adapt test bytes into the
   // host realm before invoking the real digest implementation.
   const cryptoAdapter = {
+    randomUUID: () => webcrypto.randomUUID(),
     subtle: {
       digest(algorithm, data) {
         return webcrypto.subtle.digest(algorithm, Buffer.from(new dom.window.Uint8Array(data)));
@@ -136,58 +145,54 @@ function installBridge(adapter, source = bridgeSource, { bootstrapToken = null }
   }
   const pending = new Map();
   const posted = [];
+  dom.__captureRuntime = stagingRuntime();
+  Object.defineProperty(dom.window, "chrome", { configurable: true, value: { storage: { local: { get: async () => ({ polylogueAmbientSettings: {}, polylogueReceiverPairing: { receiver_id: "neutral", state: "online" } }) } }, runtime: { id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", sendMessage: dom.__captureRuntime.sendMessage } } });
   Object.defineProperty(dom.window, "postMessage", {
     configurable: true,
     value(data) {
       posted.push(data);
+      dom.window.queueMicrotask(() => dom.window.dispatchEvent(new dom.window.MessageEvent("message", { source: dom.window, origin: dom.window.location.origin, data })));
       const resolve = pending.get(data?.requestId);
-      if (data?.type === "polylogue.chatgpt.assetFetchResponse" && resolve) {
+      if (data?.type === "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chatgpt.assetFetchResponse" && resolve) {
         pending.delete(data.requestId);
         resolve(data.outcome);
       }
     },
   });
+  new Script(assetStreamSource).runInContext(dom.getInternalVMContext());
   new Script(source).runInContext(dom.getInternalVMContext());
 
   function requestAsset(overrides = {}) {
     const requestId = `asset-request-${pending.size + 1}-${posted.length}`;
     const response = new Promise((resolve) => pending.set(requestId, resolve));
-    dom.window.dispatchEvent(
-      new dom.window.MessageEvent("message", {
-        source: dom.window,
-        origin: dom.window.location.origin,
-        data: {
-          type: "polylogue.chatgpt.assetFetchRequest",
-          requestId,
-          request: {
-            kind: "sandbox",
-            conversationId: "conversation-1",
-            messageId: "assistant-message-1",
-            sandboxPath: "/mnt/data/kit.zip",
-            maxBytes: 1024,
-            ...overrides,
-          },
-        },
-      }),
-    );
-    return response;
+    return dom.window.polylogueAssetStream.request({ provider: "chatgpt", requestId, signal: new dom.window.AbortController().signal, start: () => {
+      dom.window.postMessage({
+        type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chatgpt.assetFetchRequest", requestId,
+        request: { kind: "sandbox", conversationId: "conversation-1",
+          messageId: "assistant-message-1", sandboxPath: "/mnt/data/kit.zip", ...overrides },
+      }, dom.window.location.origin);
+      return response;
+    } });
   }
 
   return { dom, posted, requestAsset };
 }
 
-function installFullCapture(adapter, { url, beforeInstall } = {}) {
+function installFullCapture(adapter, { url, beforeInstall, plan = [], summary = {} } = {}) {
   const dom = makeDom(adapter, url);
   beforeInstall?.(dom.window.document);
   const posted = [];
   const runtimeMessages = [];
   const runtimeListeners = [];
   const chrome = {
+    storage: { local: { get: async () => ({ polylogueAmbientSettings: {}, polylogueReceiverPairing: { receiver_id: "neutral", state: "online" } }) } },
     runtime: {
-      id: "synthetic-extension-id",
+      id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       getManifest: () => ({ version: "0.1.0" }),
       onMessage: { addListener: (listener) => runtimeListeners.push(listener) },
       async sendMessage(message) {
+        const assetResult = await dom.__captureRuntime.sendMessage(message);
+        if (assetResult !== undefined) return assetResult;
         runtimeMessages.push(message);
         if (message.type === "polylogue.capture") {
           return {
@@ -202,6 +207,9 @@ function installFullCapture(adapter, { url, beforeInstall } = {}) {
       },
     },
   };
+  dom.__captureRuntime = stagingRuntime();
+  dom.__captureRuntime.nativeContract.plan = plan;
+  dom.__captureRuntime.nativeContract.summary = summary;
   Object.defineProperty(dom.window, "chrome", { configurable: true, value: chrome });
   Object.defineProperty(dom.window, "postMessage", {
     configurable: true,
@@ -219,6 +227,7 @@ function installFullCapture(adapter, { url, beforeInstall } = {}) {
     },
   });
   const context = dom.getInternalVMContext();
+  new Script(assetStreamSource).runInContext(context);
   new Script(bridgeSource).runInContext(context);
   new Script(commonSource).runInContext(context);
   new Script(contentSource).runInContext(context);
@@ -228,14 +237,91 @@ function installFullCapture(adapter, { url, beforeInstall } = {}) {
       if (!listener) reject(new Error(`no runtime listener accepted ${message.type}`));
     });
   }
-  return { dom, posted, runtimeListeners, runtimeMessages, sendRuntimeMessage };
+  dom.__captureRuntime.setDispatch(sendRuntimeMessage);
+  async function materializeResult(result) {
+    if (result?.envelope) result.envelope = await dom.__captureRuntime.materialize(result.envelope);
+    return result;
+  }
+  return { dom, posted, runtimeListeners, runtimeMessages,
+    sendRuntimeMessage: async (message) => materializeResult(await sendRuntimeMessage(message)),
+    capturePage: async () => materializeResult(await dom.window.polylogueCapture.capturePage()),
+  };
 }
 
 afterEach(() => {
-  for (const dom of openDoms.splice(0)) dom.window.close();
+  for (const dom of openDoms.splice(0)) {
+    dom.window.dispatchEvent(new dom.window.Event("pagehide"));
+    dom.window.close();
+  }
 });
 
 describe("ChatGPT authenticated interpreter bridge response contract", () => {
+  it("cancels a pending capture clone without waiting for or cancelling the app response", async () => {
+    const { dom } = installBridge({ fetch: vi.fn() });
+    let producer;
+    const original = new globalThis.Response(new globalThis.ReadableStream({ start(controller) { producer = controller; } }));
+    const controller = new dom.window.AbortController();
+    const capture = dom.window.polylogueAssetStream.stream(original.clone(), "pending-clone", controller.signal, { borrowedResponse: true });
+    const refused = expect(capture).rejects.toMatchObject({ name: "AbortError" });
+    await Promise.resolve();
+    controller.abort(new dom.window.DOMException("capture_cancelled", "AbortError"));
+    // This must settle while the original branch is still waiting for bytes.
+    await refused;
+    producer.enqueue(new TextEncoder().encode("original app bytes"));
+    producer.close();
+    expect(await original.text()).toBe("original app bytes");
+  });
+
+  it("does not use a bootstrap token or request assets after the auth endpoint returns429", async () => {
+    const calls = [];
+    const adapter = { fetch: vi.fn(async (input) => {
+      const url = new URL(String(input)); calls.push(url.pathname);
+      return new globalThis.Response("rate limited", { status: 429, headers: { "Retry-After": "172800" } });
+    }) };
+    const { requestAsset } = installBridge(adapter, bridgeSource, { bootstrapToken: bearerToken });
+    expect(await requestAsset()).toMatchObject({ status: "rate_limited", http_status: 429, retry_after: "172800",
+      response_url: "https://chatgpt.com/api/auth/session" });
+    expect(calls).toEqual(["/api/auth/session"]);
+  });
+
+  it("refuses a clone chunk without waiting for the unfinished app branch", async () => {
+    const { dom } = installBridge({ fetch: vi.fn() });
+    let producer;
+    const original = new globalThis.Response(new globalThis.ReadableStream({ start(controller) { producer = controller; } }),
+      { headers: { "content-type": "application/json" } });
+    const runtimeRequest = dom.window.chrome.runtime.sendMessage;
+    dom.window.chrome.runtime.sendMessage = async (message) => message.type === "polylogue.asset.chunk"
+      ? { ok: false, error: "capture_staging_write_failed" } : runtimeRequest(message);
+    const capture = dom.window.polylogueAssetStream.stageResponse(original.clone(), "chatgpt", new dom.window.AbortController().signal);
+    const refused = expect(capture).rejects.toThrow("capture_staging_write_failed");
+    producer.enqueue(new TextEncoder().encode("original prefix "));
+    await refused;
+    producer.enqueue(new TextEncoder().encode("and suffix")); producer.close();
+    expect(await original.text()).toBe("original prefix and suffix");
+  });
+
+  it("cancels one pending auth read without failing another capture's asset acquisition", async () => {
+    const ordinary = syntheticEndpointAdapter();
+    let count = 0; let ready; let releaseSecond;
+    const started = new Promise((resolve) => { ready = resolve; });
+    const adapter = { fetch: vi.fn(async (input, options) => {
+      if (new URL(String(input)).pathname !== "/api/auth/session") return ordinary.fetch(input, options);
+      count += 1;
+      if (count === 1) return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
+      ready();
+      return new Promise((resolve) => { releaseSecond = () => resolve(jsonResponse({ accessToken: bearerToken, account: { id: chatGptAccountId } })); });
+    }) };
+    const { dom, posted, requestAsset } = installBridge(adapter);
+    const first = requestAsset(); const second = requestAsset();
+    await started;
+    const firstRequest = posted.find((message) => message.type === "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chatgpt.assetFetchRequest");
+    dom.window.dispatchEvent(new dom.window.MessageEvent("message", { source: dom.window, origin: dom.window.location.origin,
+      data: { type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chatgpt.cancelRequest", requestId: firstRequest.requestId } }));
+    expect(await first).toMatchObject({ status: "cancelled" });
+    releaseSecond();
+    expect(await second).toMatchObject({ status: "acquired", asset: { staged_asset: { id: expect.any(String) } } });
+    expect(count).toBe(2);
+  });
   it.each([
     {
       name: "missing access token",
@@ -296,7 +382,7 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
       },
     });
     expect(second.asset.sha256).toBe(first.asset.sha256);
-    expect(first.asset.base64).toBe(Buffer.from(assetBytes).toString("base64"));
+    expect(Buffer.from(await attachmentBytes(harness.dom.__captureRuntime.staging, first.asset))).toEqual(Buffer.from(assetBytes));
     const metadataCalls = adapter.calls.filter((call) => call.url.pathname.endsWith("/interpreter/download"));
     const signedCalls = adapter.calls.filter((call) => call.url.origin === "https://files.example.test");
     const authCalls = adapter.calls.filter((call) => call.url.pathname === "/api/auth/session");
@@ -354,40 +440,14 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
     expect(authorizationHeader(metadataCall.options)).toBe(`Bearer ${bearerToken}`);
   });
 
-  it("rejects a declared body over the per-request cap before publishing bytes", async () => {
+  it("acquires the actual complete asset despite a larger declared Content-Length", async () => {
     const harness = installBridge(syntheticEndpointAdapter({ declaredSize: 2048 }));
-
-    await expect(harness.requestAsset({ maxBytes: 1024 })).resolves.toMatchObject({
-      status: "too_large",
-      phase: "signed_bytes",
-      detail: "content_length_over_limit",
-      size_bytes: 2048,
-    });
+    const result = await harness.requestAsset();
+    expect(result.status).toBe("acquired");
+    expect(Buffer.from(await attachmentBytes(harness.dom.__captureRuntime.staging, result.asset))).toEqual(Buffer.from(assetBytes));
   });
 
-  it("reproduces the old unauthorized behavior when the production bearer dependency is removed", async () => {
-    const bearerRequest = '{ credentials: "include", cache: "no-store", headers: bearerHeaders(accessToken) }';
-    const cookieOnlyRequest = '{ credentials: "include", cache: "no-store", headers: {} }';
-    const unauthenticatedSource = bridgeSource.replace(bearerRequest, cookieOnlyRequest);
-    expect(unauthenticatedSource).not.toBe(bridgeSource);
-    const authenticated = installBridge(syntheticEndpointAdapter());
-    const unauthenticated = installBridge(syntheticEndpointAdapter(), unauthenticatedSource);
 
-    await expect(authenticated.requestAsset()).resolves.toMatchObject({ status: "acquired" });
-    await expect(unauthenticated.requestAsset()).resolves.toMatchObject({
-      status: "unauthorized",
-      phase: "metadata",
-      http_status: 401,
-    });
-  });
-});
-
-describe("ChatGPT bridge direct-URL asset kind (polylogue-83u.3, chatgpt-dom-v1 gap)", () => {
-  // chatgpt-dom-v1 has no backend-api mapping to resolve a file/sandbox id
-  // from -- the DOM chip's own href/src is the only evidence available. The
-  // "url" request kind skips the metadata round trip entirely and reuses the
-  // exact same fetch+budget+hash tail as sandbox/file, proving the DOM
-  // adapter's byte fetch is the SAME mechanism, not a second one.
   it("fetches bytes directly from a DOM-rendered https URL with no metadata round trip", async () => {
     const domUrl = "https://files.example.test/dom/photo.png";
     const domBytes = new TextEncoder().encode("dom rendered photo bytes\n");
@@ -401,7 +461,7 @@ describe("ChatGPT bridge direct-URL asset kind (polylogue-83u.3, chatgpt-dom-v1 
     });
     const harness = installBridge({ calls, fetch });
 
-    const outcome = await harness.requestAsset({ kind: "url", url: domUrl, name: "photo.png", maxBytes: 1024 });
+    const outcome = await harness.requestAsset({ kind: "url", url: domUrl, name: "photo.png" });
 
     expect(outcome).toMatchObject({
       status: "acquired",
@@ -413,7 +473,7 @@ describe("ChatGPT bridge direct-URL asset kind (polylogue-83u.3, chatgpt-dom-v1 
         name: "photo.png",
       },
     });
-    expect(outcome.asset.base64).toBe(Buffer.from(domBytes).toString("base64"));
+    expect(Buffer.from(await attachmentBytes(harness.dom.__captureRuntime.staging, outcome.asset))).toEqual(Buffer.from(domBytes));
     // No auth/metadata/backend-api round trip at all -- straight to the URL.
     expect(calls).toHaveLength(1);
     expect(calls[0].url.href).toBe(domUrl);
@@ -429,7 +489,7 @@ describe("ChatGPT bridge direct-URL asset kind (polylogue-83u.3, chatgpt-dom-v1 
     });
     const harness = installBridge({ fetch });
 
-    const outcome = await harness.requestAsset({ kind: "url", url: domUrl, maxBytes: 1024 });
+    const outcome = await harness.requestAsset({ kind: "url", url: domUrl });
 
     expect(outcome.status).toBe("acquired");
     expect(capturedOptions.credentials).toBe("omit");
@@ -445,7 +505,7 @@ describe("ChatGPT bridge direct-URL asset kind (polylogue-83u.3, chatgpt-dom-v1 
     });
     const harness = installBridge({ fetch });
 
-    const outcome = await harness.requestAsset({ kind: "url", url: sameOriginUrl, maxBytes: 1024 });
+    const outcome = await harness.requestAsset({ kind: "url", url: sameOriginUrl });
 
     expect(outcome.status).toBe("acquired");
     expect(capturedOptions.credentials).toBe("include");
@@ -456,42 +516,21 @@ describe("ChatGPT bridge direct-URL asset kind (polylogue-83u.3, chatgpt-dom-v1 
     const harness = installBridge({ fetch });
 
     await expect(
-      harness.requestAsset({ kind: "url", url: "http://insecure.example.test/x.png", maxBytes: 1024 }),
+      harness.requestAsset({ kind: "url", url: "http://insecure.example.test/x.png" }),
     ).resolves.toMatchObject({ status: "invalid_request", phase: "request", detail: "url_not_https" });
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("enforces the byte cap on a direct URL the same way as sandbox/file kinds", async () => {
-    const domUrl = "https://files.example.test/dom/huge.png";
-    const fetch = vi.fn(async () => byteResponse(new Uint8Array(2048), 200, 2048));
-    const harness = installBridge({ fetch });
-
-    await expect(
-      harness.requestAsset({ kind: "url", url: domUrl, maxBytes: 1024 }),
-    ).resolves.toMatchObject({ status: "too_large", phase: "signed_bytes", detail: "content_length_over_limit" });
-  });
-
-  // Codex P2 finding: a response with NO Content-Length (chunked transfer,
-  // common for CDN-served DOM assets unlike ChatGPT's own sandbox/file
-  // endpoints) previously bypassed the declared-length check entirely and
-  // was buffered whole via arrayBuffer() before the post-hoc size check --
-  // an oversized body would be fully downloaded regardless of the budget.
-  // The bounded streaming reader must reject it mid-stream instead.
-  it("bounds a direct URL download mid-stream when Content-Length is not declared", async () => {
-    const domUrl = "https://files.example.test/dom/chunked-huge.png";
-    // byteResponse() with no declaredSize omits Content-Length entirely.
-    const oversizedBody = new Uint8Array(2048);
-    const fetch = vi.fn(async () => byteResponse(oversizedBody));
-    const harness = installBridge({ fetch });
-
-    await expect(
-      harness.requestAsset({ kind: "url", url: domUrl, maxBytes: 1024 }),
-    ).resolves.toMatchObject({
-      status: "too_large",
-      phase: "signed_bytes",
-      detail: "downloaded_bytes_over_limit",
-    });
-  });
+  it.each([true, false])("streams a complete direct URL asset with declared Content-Length=%s", async (declared) => {
+    const domUrl = "https://files.example.test/dom/large.png";
+    const bytes = new Uint8Array(2 * 1024 * 1024); bytes.fill(17);
+    const harness = installBridge({ fetch: vi.fn(async () => byteResponse(bytes, 200, declared ? bytes.length : null)) });
+    const result = await harness.requestAsset({ kind: "url", url: domUrl });
+    expect(result.status).toBe("acquired");
+    expect(result.asset.size_bytes).toBe(bytes.length);
+    expect(result.asset.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+    expect(Buffer.from(await attachmentBytes(harness.dom.__captureRuntime.staging, result.asset))).toEqual(Buffer.from(bytes));
+  }, 30000);
 
   it("acquires a direct URL body streamed without a declared Content-Length", async () => {
     const domUrl = "https://files.example.test/dom/chunked-ok.png";
@@ -500,10 +539,10 @@ describe("ChatGPT bridge direct-URL asset kind (polylogue-83u.3, chatgpt-dom-v1 
     const fetch = vi.fn(async () => byteResponse(bodyBytes));
     const harness = installBridge({ fetch });
 
-    const outcome = await harness.requestAsset({ kind: "url", url: domUrl, maxBytes: 1024 });
+    const outcome = await harness.requestAsset({ kind: "url", url: domUrl });
 
     expect(outcome).toMatchObject({ status: "acquired", asset: { size_bytes: bodyBytes.byteLength, sha256: expectedSha256 } });
-    expect(outcome.asset.base64).toBe(Buffer.from(bodyBytes).toString("base64"));
+    expect(Buffer.from(await attachmentBytes(harness.dom.__captureRuntime.staging, outcome.asset))).toEqual(Buffer.from(bodyBytes));
   });
 });
 
@@ -518,23 +557,10 @@ describe("ChatGPT native coverage that replaced chatgpt-dom-v1", () => {
     // conversationIdForUrl gate) treated "no id in the URL" as "no
     // conversation on this page", so zero temporary chats ever landed.
     const ephemeralId = "temp-conv-ephemeral-1";
-    const harness = installFullCapture(syntheticEndpointAdapter(), { url: "https://chatgpt.com/?temporary-chat=true" });
+    const harness = installFullCapture(syntheticEndpointAdapter(), { url: "https://chatgpt.com/?temporary-chat=true", summary: { session_kind: "temporary" } });
 
-    // Simulate what chatgpt_bridge.js's window.fetch override posts when it
-    // intercepts the page's own render fetch -- that interception matches
-    // on path shape alone and does not care what the visible URL is.
-    harness.dom.window.dispatchEvent(
-      new harness.dom.window.MessageEvent("message", {
-        source: harness.dom.window,
-        origin: harness.dom.window.location.origin,
-        data: {
-          type: "polylogue.chatgpt.nativeCapture",
-          capture: {
-            ok: true,
-            status: 200,
-            contentType: "application/json",
-            url: `https://chatgpt.com/backend-api/conversation/${ephemeralId}`,
-            body: JSON.stringify({
+    const sourceUrl = `https://chatgpt.com/backend-api/conversation/${ephemeralId}`;
+    const bodyRef = await harness.dom.window.polylogueAssetStream.stageResponse(new globalThis.Response(JSON.stringify({
               id: ephemeralId,
               conversation_id: ephemeralId,
               is_temporary: true,
@@ -546,7 +572,23 @@ describe("ChatGPT native coverage that replaced chatgpt-dom-v1", () => {
                   message: { id: "message", author: { role: "assistant" }, content: { content_type: "text", parts: ["hello"] } },
                 },
               },
-            }),
+            }), { headers: { "content-type": "application/json" } }), "chatgpt", new globalThis.AbortController().signal, sourceUrl);
+
+    // Simulate what chatgpt_bridge.js's window.fetch override posts when it
+    // intercepts the page's own render fetch -- that interception matches
+    // on path shape alone and does not care what the visible URL is.
+    harness.dom.window.dispatchEvent(
+      new harness.dom.window.MessageEvent("message", {
+        source: harness.dom.window,
+        origin: harness.dom.window.location.origin,
+        data: {
+          type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chatgpt.nativeCapture",
+          capture: {
+            ok: true,
+            status: 200,
+            contentType: "application/json",
+            url: `https://chatgpt.com/backend-api/conversation/${ephemeralId}`,
+            bodyRef,
           },
         },
       }),
@@ -560,7 +602,7 @@ describe("ChatGPT native coverage that replaced chatgpt-dom-v1", () => {
         session: {
           provider_session_id: ephemeralId,
           session_kind: "temporary",
-          turns: [{ text: "hello" }],
+          turns: [],
         },
       },
     });
@@ -604,7 +646,7 @@ describe("ChatGPT native coverage that replaced chatgpt-dom-v1", () => {
 
     expect(result).toMatchObject({
       ok: true,
-      envelope: { session: { provider_session_id: freshId, turns: [{ text: "first turn" }] } },
+      envelope: { session: { provider_session_id: freshId, turns: [] } },
     });
   });
 });
@@ -612,7 +654,7 @@ describe("ChatGPT native coverage that replaced chatgpt-dom-v1", () => {
 describe("ChatGPT authenticated asset capture envelope", () => {
   it("captures an exact conversation and its output bytes from a reusable transport page", async () => {
     const adapter = syntheticEndpointAdapter();
-    const harness = installFullCapture(adapter, { url: "https://chatgpt.com/" });
+    const harness = installFullCapture(adapter, { url: "https://chatgpt.com/", plan: [sandboxPlan()] });
 
     const result = await harness.sendRuntimeMessage({
       type: "polylogue.capturePage",
@@ -620,20 +662,38 @@ describe("ChatGPT authenticated asset capture envelope", () => {
       providerSessionId: "conversation-1",
     });
 
-    expect(result).toMatchObject({
-      ok: true,
-      envelope: {
-        session: {
-          provider_session_id: "conversation-1",
-          attachments: [{
-            name: "kit.zip",
-            provider_meta: { content_sha256: expectedSha256 },
-          }],
-        },
-      },
-    });
-    expect(result.envelope.session.provider_meta.asset_acquisition).toMatchObject({ acquired: 1 });
+    expect(result).toMatchObject({ ok: true, envelope: { session: { provider_session_id: "conversation-1", turns: [] } } });
+    const receipt = harness.dom.__captureRuntime.nativeContract.receipts[0].result;
+    expect(receipt.outcome).toMatchObject({ acquired: 1 });
+    expect(receipt.attachments[0]).toMatchObject({ name: "kit.zip", provider_meta: { content_sha256: expectedSha256 } });
+    expect(Buffer.from(await attachmentBytes(harness.dom.__captureRuntime.staging, receipt.attachments[0]))).toEqual(Buffer.from(assetBytes));
     expect(harness.dom.window.location.pathname).toBe("/");
+  });
+
+  it.each(["wrong-native-id", "navigation"])("refuses displaced reusable transport evidence: %s", async (cause) => {
+    let release;
+    let entered;
+    const waiting = new Promise((resolve) => { entered = resolve; });
+    const gate = new Promise((resolve) => { release = resolve; });
+    const adapter = syntheticEndpointAdapter();
+    const fetch = async (input, options) => {
+      if (new URL(String(input)).pathname === "/backend-api/conversation/conversation-1") {
+        entered();
+        await gate;
+        const payload = conversationPayload();
+        if (cause === "wrong-native-id") payload.id = payload.conversation_id = "conversation-foreign";
+        return jsonResponse(payload);
+      }
+      return adapter.fetch(input, options);
+    };
+    const harness = installFullCapture({ fetch }, { url: "https://chatgpt.com/" });
+    const pending = harness.sendRuntimeMessage({ type: "polylogue.capturePage", providerSessionId: "conversation-1" });
+    await waiting;
+    if (cause === "navigation") harness.dom.reconfigure({ url: "https://chatgpt.com/c/conversation-foreign" });
+    release();
+    expect(await pending).toMatchObject({ ok: false, error: "native_capture_unavailable" });
+    expect(harness.runtimeMessages.filter((message) => message.type === "polylogue.capture")).toEqual([]);
+    expect(adapter.calls.some((call) => call.url.pathname.endsWith("/interpreter/download"))).toBe(false);
   });
 
   it("debounces full transcript freshness scans across streamed DOM mutations", async () => {
@@ -673,11 +733,14 @@ describe("ChatGPT authenticated asset capture envelope", () => {
   it("wakes capture only for the conversation the tab URL names, never a page-supplied one", async () => {
     const harness = installFullCapture(syntheticEndpointAdapter());
     for (const conversationId of ["conversation-1", "conversation-foreign"]) {
+      const sourceUrl = `https://chatgpt.com/backend-api/conversation/${conversationId}`;
+      const bodyRef = await harness.dom.window.polylogueAssetStream.stageResponse(new globalThis.Response(JSON.stringify({ conversation_id: conversationId, mapping: {}, update_time: 1781366460 }), { headers: { "content-type": "application/json" } }), "chatgpt", new globalThis.AbortController().signal, sourceUrl);
       harness.dom.window.postMessage({
-        type: "polylogue.chatgpt.nativeCapture",
+        type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chatgpt.nativeCapture",
         capture: {
           ok: true,
-          body: JSON.stringify({ conversation_id: conversationId, update_time: 1781366460 }),
+          bodyRef,
+          url: sourceUrl,
         },
       });
     }
@@ -690,13 +753,16 @@ describe("ChatGPT authenticated asset capture envelope", () => {
   // Anti-vacuity: require a URL-named id unconditionally and a temporary
   // chat's later turns never wake a recapture.
   it("wakes capture on a temporary-chat page only for a payload that declares itself temporary", async () => {
-    const harness = installFullCapture(syntheticEndpointAdapter(), { url: "https://chatgpt.com/?temporary-chat=true" });
+    const harness = installFullCapture(syntheticEndpointAdapter(), { url: "https://chatgpt.com/?temporary-chat=true", summary: { session_kind: "temporary" } });
     for (const [conversationId, isTemporary] of [["ephemeral-1", true], ["conversation-foreign", false]]) {
+      const sourceUrl = `https://chatgpt.com/backend-api/conversation/${conversationId}`;
+      const bodyRef = await harness.dom.window.polylogueAssetStream.stageResponse(new globalThis.Response(JSON.stringify({ conversation_id: conversationId, mapping: {}, is_temporary: isTemporary, update_time: 1781366460 }), { headers: { "content-type": "application/json" } }), "chatgpt", new globalThis.AbortController().signal, sourceUrl);
       harness.dom.window.postMessage({
-        type: "polylogue.chatgpt.nativeCapture",
+        type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chatgpt.nativeCapture",
         capture: {
           ok: true,
-          body: JSON.stringify({ conversation_id: conversationId, is_temporary: isTemporary, update_time: 1781366460 }),
+          bodyRef,
+          url: sourceUrl,
         },
       });
     }
@@ -809,13 +875,21 @@ describe("ChatGPT authenticated asset capture envelope", () => {
 
   it("reuses supplied native detail without a second conversation read", async () => {
     const adapter = syntheticEndpointAdapter();
-    const harness = installFullCapture(adapter, { url: "https://chatgpt.com/" });
+    const harness = installFullCapture(adapter, { url: "https://chatgpt.com/c/conversation-1", plan: [sandboxPlan()] });
 
+    const sourceUrl = "https://chatgpt.com/backend-api/conversation/conversation-1";
+    const payload = conversationPayload();
+    payload.mapping["assistant-node"].message.status = "finished_successfully";
+    const bodyRef = await harness.dom.window.polylogueAssetStream.stageResponse(
+      new globalThis.Response(JSON.stringify(payload), { headers: { "content-type": "application/json" } }),
+      "chatgpt", new globalThis.AbortController().signal, sourceUrl,
+    );
+    harness.dom.window.postMessage({ type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chatgpt.nativeCapture", capture: { ok: true, bodyRef, url: sourceUrl } });
     const result = await harness.sendRuntimeMessage({
       type: "polylogue.capturePage",
-      reason: "completion_monitor",
+      reason: "freshness_convergence",
+      providerUpdatedAt: "2026-06-13T00:01:00.000Z",
       providerSessionId: "conversation-1",
-      nativePayload: conversationPayload(),
     });
 
     expect(result).toMatchObject({
@@ -825,12 +899,12 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     expect(
       adapter.calls.filter((call) => call.url.pathname === "/backend-api/conversation/conversation-1"),
     ).toHaveLength(0);
-    expect(result.envelope.session.attachments).toHaveLength(1);
+    expect(harness.dom.__captureRuntime.nativeContract.receipts[0].result.attachments).toHaveLength(1);
   });
 
-  it("settles an unchanged terminal freshness claim from the intercepted payload", async () => {
+  it.each([false, true])("uses canonical follow-up summary %s to decide cached revision reuse", async (needsFollowUp) => {
     const adapter = syntheticEndpointAdapter();
-    const harness = installFullCapture(adapter, { url: "https://chatgpt.com/c/conversation-1" });
+    const harness = installFullCapture(adapter, { url: "https://chatgpt.com/c/conversation-1", summary: { needs_follow_up: needsFollowUp } });
     const cachedPayload = {
       ...conversationPayload(),
       update_time: 1781366460,
@@ -839,20 +913,23 @@ describe("ChatGPT authenticated asset capture envelope", () => {
           ...conversationPayload().mapping["assistant-node"],
           message: {
             ...conversationPayload().mapping["assistant-node"].message,
-            status: "finished_successfully",
+            status: needsFollowUp ? "in_progress" : "finished_successfully",
           },
         },
       },
     };
 
     harness.dom.window.postMessage({
-      type: "polylogue.chatgpt.nativeCapture",
+      type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chatgpt.nativeCapture",
       capture: {
         ok: true,
         status: 200,
         contentType: "application/json",
         url: "https://chatgpt.com/backend-api/conversation/conversation-1",
-        body: JSON.stringify(cachedPayload),
+        bodyRef: await harness.dom.window.polylogueAssetStream.stageResponse(
+          new globalThis.Response(JSON.stringify(cachedPayload), { headers: { "content-type": "application/json" } }),
+          "chatgpt", new globalThis.AbortController().signal, "https://chatgpt.com/backend-api/conversation/conversation-1",
+        ),
       },
     });
     await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 0));
@@ -865,7 +942,7 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     });
 
     expect(result).toMatchObject({ ok: true, envelope: { session: { provider_session_id: "conversation-1" } } });
-    expect(adapter.calls.filter((call) => call.url.pathname === "/backend-api/conversation/conversation-1")).toHaveLength(0);
+    expect(adapter.calls.filter((call) => call.url.pathname === "/backend-api/conversation/conversation-1")).toHaveLength(needsFollowUp ? 1 : 0);
   });
 
   it("fetches when freshness claims a revision newer than the intercepted payload", async () => {
@@ -886,13 +963,16 @@ describe("ChatGPT authenticated asset capture envelope", () => {
       },
     };
     harness.dom.window.postMessage({
-      type: "polylogue.chatgpt.nativeCapture",
+      type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chatgpt.nativeCapture",
       capture: {
         ok: true,
         status: 200,
         contentType: "application/json",
         url: "https://chatgpt.com/backend-api/conversation/conversation-1",
-        body: JSON.stringify(cachedPayload),
+        bodyRef: await harness.dom.window.polylogueAssetStream.stageResponse(
+          new globalThis.Response(JSON.stringify(cachedPayload), { headers: { "content-type": "application/json" } }),
+          "chatgpt", new globalThis.AbortController().signal, "https://chatgpt.com/backend-api/conversation/conversation-1",
+        ),
       },
     });
     await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 0));
@@ -923,7 +1003,6 @@ describe("ChatGPT authenticated asset capture envelope", () => {
       type: "polylogue.capturePage",
       reason: "freshness_convergence",
       providerSessionId: "conversation-1",
-      nativePayload: conversationPayload(),
       generationObservations: [observation],
     });
 
@@ -958,22 +1037,25 @@ describe("ChatGPT authenticated asset capture envelope", () => {
         source: harness.dom.window,
         origin: harness.dom.window.location.origin,
         data: {
-          type: "polylogue.chatgpt.nativeCapture",
+          type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chatgpt.nativeCapture",
           capture: {
             ok: true,
             status: 200,
             contentType: "application/json",
             url: "https://chatgpt.com/backend-api/conversation/conversation-1",
-            body: JSON.stringify(stalePayload),
+            bodyRef: await harness.dom.window.polylogueAssetStream.stageResponse(
+              new globalThis.Response(JSON.stringify(stalePayload), { headers: { "content-type": "application/json" } }),
+              "chatgpt", new globalThis.AbortController().signal, "https://chatgpt.com/backend-api/conversation/conversation-1",
+            ),
           },
         },
       }),
     );
 
-    const result = await harness.dom.window.polylogueCapture.capturePage();
+    const result = await harness.capturePage();
 
-    expect(result.envelope.session.title).toBe("Authenticated capture fixture");
-    expect(result.envelope.session.turns[0].provider_turn_id).toBe("assistant-message-1");
+    expect((await harness.dom.__captureRuntime.retainedNativeReplies(result.envelope)).title).toBe("Authenticated capture fixture");
+    expect((await harness.dom.__captureRuntime.retainedNativeReplies(result.envelope)).mapping["assistant-node"].message.id).toBe("assistant-message-1");
     expect(
       adapter.calls.filter((call) => call.url.pathname === "/backend-api/conversation/conversation-1"),
     ).toHaveLength(1);
@@ -981,21 +1063,20 @@ describe("ChatGPT authenticated asset capture envelope", () => {
 
   it("records stable attachment identity, bytes, size, and SHA receipt across repeat capture", async () => {
     const adapter = syntheticEndpointAdapter();
-    const harness = installFullCapture(adapter);
+    const harness = installFullCapture(adapter, { plan: [sandboxPlan()] });
 
-    const result = await harness.dom.window.polylogueCapture.capturePage();
-    const repeated = await harness.dom.window.polylogueCapture.capturePage();
+    const result = await harness.capturePage();
+    const repeated = await harness.capturePage();
 
     expect(result.ok).toBe(true);
     expect(repeated.ok).toBe(true);
     expect(repeated.envelope.session).toEqual(result.envelope.session);
-    const [attachment] = result.envelope.session.attachments;
+    const [attachment] = harness.dom.__captureRuntime.nativeContract.receipts[0].result.attachments;
     expect(attachment).toMatchObject({
       provider_attachment_id: "sandbox:assistant-message-1:/mnt/data/kit.zip",
       message_provider_id: "assistant-message-1",
       name: "kit.zip",
       size_bytes: assetBytes.byteLength,
-      inline_base64: Buffer.from(assetBytes).toString("base64"),
       provider_meta: {
         capture_source: "chatgpt_page_asset_fetch",
         asset_kind: "sandbox_file",
@@ -1003,17 +1084,10 @@ describe("ChatGPT authenticated asset capture envelope", () => {
         content_sha256: expectedSha256,
       },
     });
-    expect(result.envelope.session.provider_meta.asset_acquisition).toMatchObject({
+    expect(harness.dom.__captureRuntime.nativeContract.receipts[0].result.outcome).toMatchObject({
       attempted: 1,
       acquired: 1,
       status_counts: { acquired: 1 },
-      acquired_assets: [
-        {
-          provider_attachment_id: "sandbox:assistant-message-1:/mnt/data/kit.zip",
-          sha256: expectedSha256,
-          size_bytes: assetBytes.byteLength,
-        },
-      ],
       failed: [],
     });
     const captureMessages = harness.runtimeMessages.filter((message) => message.type === "polylogue.capture");
@@ -1025,7 +1099,7 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     expect(durablePayload).not.toContain("synthetic-signed-secret");
   });
 
-  it("attempts the selected branch's newest asset before stale off-branch assets trip the breaker", async () => {
+  it("attempts every asset and retains the selected branch bytes after independent stale-asset refusals", async () => {
     const targetPath = "/mnt/data/Polylogue-Demo-Packet-v2-Flagships-kit.zip";
     const stalePaths = ["/mnt/data/stale-1.zip", "/mnt/data/stale-2.zip", "/mnt/data/stale-3.zip"];
     const mapping = {};
@@ -1084,30 +1158,20 @@ describe("ChatGPT authenticated asset capture envelope", () => {
         throw new Error(`unexpected synthetic request: ${url.href}`);
       }),
     };
-    const harness = installFullCapture(adapter);
+    const plan = [...stalePaths.map((path, ordinal) => sandboxPlan(path, `old-message-${ordinal}`, `old-node-${ordinal}`, ordinal)), sandboxPlan(targetPath, "current-message", "current-node", stalePaths.length)];
+    const harness = installFullCapture(adapter, { plan });
 
-    const result = await harness.dom.window.polylogueCapture.capturePage();
+    const result = await harness.capturePage();
 
-    expect(result.envelope.session.provider_meta.asset_acquisition).toMatchObject({
-      attempted: 4,
-      acquired: 1,
-      skipped_circuit_breaker: 0,
-      status_counts: { acquired: 1, signed_url_expired: 3 },
-      acquired_assets: [
-        {
-          provider_attachment_id: `sandbox:current-message:${targetPath}`,
-          sha256: expectedSha256,
-          size_bytes: assetBytes.byteLength,
-        },
-      ],
-    });
-    expect(result.envelope.session.attachments[0]).toMatchObject({
-      provider_attachment_id: `sandbox:current-message:${targetPath}`,
-      provider_meta: { content_sha256: expectedSha256 },
-    });
+    expect(result.ok).toBe(true);
+    const receipts = harness.dom.__captureRuntime.nativeContract.receipts;
+    expect(receipts.map(({ result }) => result.outcome.acquired)).toEqual([0, 0, 0, 1]);
+    expect(receipts.map(({ result }) => result.outcome.failed[0]?.status || "acquired")).toEqual(["signed_url_expired", "signed_url_expired", "signed_url_expired", "acquired"]);
+    expect(receipts.at(-1).result.attachments[0]).toMatchObject({ provider_attachment_id: `sandbox:current-message:${targetPath}`, provider_meta: { content_sha256: expectedSha256 } });
+    expect(await harness.dom.__captureRuntime.retainedNativeReplies(result.envelope)).toEqual(payload);
     const metadataPaths = calls
       .filter((call) => call.url.pathname.endsWith("/interpreter/download"))
       .map((call) => call.url.searchParams.get("sandbox_path"));
-    expect(metadataPaths).toEqual([targetPath, ...stalePaths.slice().reverse()]);
+    expect(metadataPaths).toEqual([...stalePaths, targetPath]);
   });
 });

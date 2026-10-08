@@ -8,9 +8,11 @@ and ``ops scan-secrets`` left this module when they became
 ``maintenance.backup`` and ``maintenance.secret_scan``. One family remains a
 declared *offline* authority: demo seeding (``demo seed``, and ``demo
 receipts``/``demo tour`` through the same guarded ``seed_demo_archive``),
-which builds a synthetic archive in an empty or demo-owned root that no daemon
-serves. For it the requirement is not "route it through the daemon" but "own
-the archive exclusively, or refuse" -- design D8.
+which builds a synthetic archive in a scratch root that no daemon serves and
+that is never the configured archive. For it the requirement is not "route it
+through the daemon" but "own the scratch root exclusively, or refuse" --
+design D8. The configured archive itself has no offline writer: a demo row
+aimed at it is refused with ``daemon_required`` before anything is written.
 
 ``tests/unit/cli/test_cli_write_authority.py`` proves the boundary mechanism
 on one command. This module is the *coverage* question the acceptance asks:
@@ -20,7 +22,8 @@ arrive as a decision rather than as a crash?
 
 Two directions per row, and the second is what keeps the first honest:
 
-* Refused beside a resident daemon, naming the holder and a next action.
+* Refused beside a resident daemon on its scratch root, naming the holder
+  and a next action.
 * **Still a writer.** Offline, the same invocation is observed opening a
   writable archive tier through the production interception seam. Without
   this, a row whose command stopped writing -- or never wrote -- would keep
@@ -177,12 +180,21 @@ def resident_daemon(tmp_path: Path) -> Iterator[Callable[[Path], int]]:
                 process.stdout.close()
 
 
-def _prepare_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, needs: str) -> Path:
-    root = tmp_path / "archive"
-    root.mkdir()
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
-    monkeypatch.setenv("POLYLOGUE_DB_PATH", str(root / "index.db"))
+def _configure_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Name the configured archive; demo rows never write it."""
+    configured = tmp_path / "archive"
+    configured.mkdir()
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(configured))
+    monkeypatch.setenv("POLYLOGUE_DB_PATH", str(configured / "index.db"))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    return configured
+
+
+def _prepare_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, needs: str) -> Path:
+    """Configure the archive and return the separate scratch root a demo row seeds."""
+    _configure_archive(monkeypatch, tmp_path)
+    root = tmp_path / "demo-root"
+    root.mkdir()
     if needs == _NEEDS_TIERS:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -350,7 +362,77 @@ def test_machine_format_refusal_is_typed(
     details = payload["details"]
     assert details["archive_root"] == str(root), payload
     assert f"PID {resident_pid}" in str(details["resident_writer"]), payload
-    assert "stop it" in str(details["remedy"]), payload
+    assert "resident polylogued" in str(details["remedy"]), payload
+
+
+@pytest.mark.parametrize(
+    ("row_id", "build_argv", "needs", "machine_tail"),
+    _OFFLINE_WRITERS,
+    ids=[row[0] for row in _OFFLINE_WRITERS],
+)
+def test_demo_row_aimed_at_the_configured_archive_is_daemon_required(
+    row_id: str,
+    build_argv: Callable[[Path, Path], tuple[str, ...]],
+    needs: str,
+    machine_tail: tuple[str, ...],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No demo route seeds the configured archive, even while it is empty.
+
+    The reset hazard: before the reset the live root is empty, so the
+    content-based guard in ``polylogue.demo.seed`` sees a fresh root and
+    seeding it would write synthetic raws into the durable ``source.db``.
+
+    Anti-vacuity: drop the ``_require_scratch_target`` calls from
+    ``polylogue/cli/commands/demo.py`` and the row reaches the write boundary
+    instead; drop that boundary's configured-root refusal too and it seeds.
+    """
+    del needs
+    configured = _configure_archive(monkeypatch, tmp_path)
+    before = _tier_digest(configured)
+    capsys.readouterr()
+
+    exit_code = _invoke((*build_argv(configured, tmp_path), *machine_tail), monkeypatch)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code != 0, payload
+    assert payload["code"] == "daemon_required", (row_id, payload)
+    assert payload["details"]["archive_root"] == str(configured.resolve()), payload
+    assert _tier_digest(configured) == before
+    assert not list(configured.glob("*.db")), f"{row_id} created tiers in the configured archive"
+
+
+def test_cli_writer_against_configured_archive_without_daemon_is_daemon_required(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The write boundary itself refuses the configured archive with no daemon.
+
+    ``demo seed`` is driven past its own scratch-root check, so the refusal
+    observed here comes from the per-open boundary in
+    ``polylogue/cli/write_authority.py`` against a real in-process writer.
+
+    Anti-vacuity: restore an offline-owner branch that takes archive custody
+    for the configured root when no daemon is resident and this row seeds the
+    configured archive (exit 0, tiers created).
+    """
+    import polylogue.cli.commands.demo as demo_cli
+
+    configured = _configure_archive(monkeypatch, tmp_path)
+    monkeypatch.setattr(demo_cli, "_require_scratch_target", lambda target, *, purpose: target.resolve())
+    capsys.readouterr()
+
+    exit_code = _invoke(("demo", "seed", "--root", str(configured), "--format", "json"), monkeypatch)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code != 0, payload
+    assert payload["code"] == "daemon_required", payload
+    assert payload["details"]["archive_root"] == str(configured.resolve()), payload
+    assert "polylogued run" in payload["message"], payload
+    assert not list(configured.glob("*.db")), "the configured archive gained tiers offline"
 
 
 @pytest.mark.parametrize(

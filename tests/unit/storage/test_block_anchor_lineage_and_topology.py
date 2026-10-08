@@ -11,13 +11,15 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.block_anchor import BlockAnchor, resolve_block_anchor
 from polylogue.storage.derived.topology.derivation import TopologyNodeInput, compose_session_topology
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connection(path: Path | str) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -25,7 +27,7 @@ def _connection(path: Path | str) -> sqlite3.Connection:
 
 
 def _session(conn: sqlite3.Connection, native: str, texts: list[tuple[str, str]]) -> str:
-    return write_parsed_session_to_archive(
+    return write_fixture_index_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -78,16 +80,16 @@ def test_anchor_does_not_relocate_through_an_unclassified_edge(tmp_path: Path) -
         assert result.state == "missing"
 
 
-def test_anchor_relocation_reaches_an_ancestor_beyond_the_former_search_cap() -> None:
+def test_anchor_relocation_reaches_an_ancestor_beyond_the_former_search_cap(tmp_path: Path) -> None:
     """The anchor's own 512-node search cap hid a block every production read exposes.
 
     Production composition has no depth cap. With the block only in a root
     520 prefix-sharing links up, the capped neighbourhood never reached it and
     reported ``missing``; the relocation must name a session whose read
-    really contains the block. The 521-session chain lives in memory: its
+    really contains the block. The 521-session chain uses its declared Index:
     per-session commits, not the resolver, dominate the test's cost.
     """
-    with closing(_connection(":memory:")) as conn:
+    with closing(_connection(tmp_path / "index.db")) as conn:
         root = _session(conn, "depth-0", [("m", "root evidence")])
         original = _anchor(conn, root)
         parent = root

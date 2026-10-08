@@ -610,6 +610,7 @@ class SessionProfileDerivation:
         *,
         materializer_version: int,
         session_scope: Callable[[object], Sequence[str] | None],
+        archive_root: Path,
         page_size: int = 200,
         quiet_keys: Callable[[object], frozenset[str]] | None = None,
         quiet_key: Callable[[object, str], bool] | None = None,
@@ -619,6 +620,7 @@ class SessionProfileDerivation:
         self._write_connection = write_connection
         self._materializer_version = materializer_version
         self._session_scope = session_scope
+        self._archive_root = archive_root.resolve()
         self._page_size = page_size
         self._quiet_keys = quiet_keys
         self._quiet_key = quiet_key
@@ -853,7 +855,11 @@ class SessionProfileDerivation:
         """
         assert isinstance(replacement, SessionProfileReplacement)
         generation_binding = self._generation_binding
-        with write_lease(f"derivation.{self.domain}", max_hold_seconds=_PUBLISH_HOLD_BUDGET_S):
+        with write_lease(
+            f"derivation.{self.domain}",
+            max_hold_seconds=_PUBLISH_HOLD_BUDGET_S,
+            archive_root=self._archive_root,
+        ):
             if (
                 replacement.generation_binding is not None
                 and generation_binding is not None
@@ -908,3 +914,6 @@ class SessionProfileReplacement:
     generation_binding: str | None = None
     demand_revision: int = 0
     empty: bool = False
+
+    def close(self) -> None:
+        """The prepared insight record values own no physical resources."""

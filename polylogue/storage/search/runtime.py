@@ -49,7 +49,7 @@ def search_messages_impl(
         return SearchResult(hits=())
 
     sql, params = query_spec.sql, query_spec.params
-    with open_read_connection(db_path) as conn:
+    with open_read_connection(db_path, archive_root=archive_root) as conn:
         # FTS admission and the rows it admits read one snapshot; in autocommit
         # each inspection COUNT would see a different commit.
         owns_snapshot = not conn.in_transaction

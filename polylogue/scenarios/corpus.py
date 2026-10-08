@@ -188,7 +188,7 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "context_snapshot_rows",
         ),
         description="Claude Code tool-heavy session used by pytest triage and cost demos.",
-        source_paths=("claude-code/demo-00.jsonl",),
+        source_paths=("claude-code/-synthetic-project/demo-00.jsonl",),
         count=1,
         messages_min=6,
         messages_max=10,
@@ -221,8 +221,8 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "adapter reported no observation, distinct from ordinary conversational silence."
         ),
         source_paths=(
-            "browser-capture/chatgpt-raw-provider.json",
-            "browser-capture/chatgpt-dom-fallback.json",
+            "browser-capture/chatgpt/chatgpt-raw-provider.json",
+            "browser-capture/chatgpt/chatgpt-dom-fallback.json",
         ),
         synthetic=False,
     ),
@@ -238,7 +238,7 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
         ),
         source_paths=(
             "chatgpt/duplicate-source-export.json",
-            "browser-capture/duplicate-capture.json",
+            "browser-capture/chatgpt/duplicate-capture.json",
         ),
         synthetic=False,
     ),
@@ -248,12 +248,14 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
         provider="codex",
         construct_ids=("tool_use_blocks", "tool_result_blocks", "failed_tool_results"),
         description="Codex tool-heavy session for cross-harness action/outcome coverage.",
-        source_paths=("codex/demo-00.jsonl",),
+        source_paths=("codex/2026/01/01/rollout-demo-00.jsonl",),
         count=1,
         messages_min=6,
         messages_max=10,
         seed_offset=2,
         style="demo-tool-heavy",
+        # The provider-written rollout name is not the session identity.
+        session_native_ids=(DEMO_CODEX_SESSION_ID.removeprefix("codex-session:"),),
     ),
     DemoCorpusFamily(
         family_id="evidence-lab-receipts",
@@ -269,7 +271,7 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "A claim-versus-receipt case with a structural pytest failure, a later verified "
             "repair, and a prose-only anti-grep control."
         ),
-        source_paths=("codex/receipts.jsonl", "codex/anti-grep-control.jsonl"),
+        source_paths=("codex/2026/01/01/rollout-receipts.jsonl", "codex/2026/01/01/rollout-anti-grep-control.jsonl"),
         synthetic=False,
     ),
     DemoCorpusFamily(
@@ -295,7 +297,7 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "usage, proving the gemini-cli-session origin resolves through the real local-agent parser "
             "instead of only unit fixtures."
         ),
-        source_paths=("gemini-cli/demo-00.json",),
+        source_paths=("gemini-cli/synthetic/chats/session-demo-00.json",),
         synthetic=False,
     ),
     DemoCorpusFamily(
@@ -321,7 +323,7 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "a tool result, proving the hermes-session origin resolves through the real local-agent "
             "parser instead of only unit fixtures."
         ),
-        source_paths=("hermes/demo-00.json",),
+        source_paths=("hermes/sessions/session_demo-00.json",),
         synthetic=False,
     ),
     DemoCorpusFamily(
@@ -349,13 +351,13 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "proving compaction honesty must be checked against full session evidence."
         ),
         source_paths=(
-            "codex/lineage-parent.jsonl",
-            "codex/lineage-fork.jsonl",
-            "codex/lineage-subagent.jsonl",
-            "codex/terminal-error.jsonl",
-            "claude-code/lineage-compaction-parent.jsonl",
-            "claude-code/agent-acompact-demo.jsonl",
-            "claude-code/lineage-sidechain.jsonl",
+            "codex/2026/01/01/rollout-lineage-parent.jsonl",
+            "codex/2026/01/01/rollout-lineage-fork.jsonl",
+            "codex/2026/01/01/rollout-lineage-subagent.jsonl",
+            "codex/2026/01/01/rollout-terminal-error.jsonl",
+            "claude-code/-synthetic-project/lineage-compaction-parent.jsonl",
+            "claude-code/-synthetic-project/agent-acompact-demo.jsonl",
+            "claude-code/-synthetic-project/lineage-sidechain.jsonl",
         ),
         synthetic=False,
     ),
@@ -372,7 +374,7 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "Derived embedding-tier coverage over authored prose. The demo seeds deterministic synthetic vectors "
             "so embedding status/search surfaces are non-empty without contacting a provider."
         ),
-        source_paths=("claude-code/demo-00.jsonl", "embeddings.db"),
+        source_paths=("claude-code/-synthetic-project/demo-00.jsonl", "embeddings.db"),
         synthetic=False,
     ),
 )
@@ -901,7 +903,9 @@ def seed_demo_user_overlays(
 
     user_db_path = archive_root / "user.db"
     initialize_archive_database(user_db_path, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db_path)
+    from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+
+    conn = open_isolated_write_connection(user_db_path, purpose="demo User overlays", archive_root=archive_root)
     conn.row_factory = sqlite3.Row
     try:
         mark = upsert_mark(

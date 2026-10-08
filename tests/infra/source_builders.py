@@ -4,12 +4,47 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
+from collections.abc import Iterable, Iterator
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, TypeAlias
 
 from polylogue.config import Source
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
+from polylogue.sources.parsers.base import RawSessionData
+from polylogue.sources.retained_acquisition import SourceInputRecord
+
+if TYPE_CHECKING:
+    from polylogue.sources.live.batch import _CapturedZipEnumeration
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceInput, SealedSourceManifestRef
+
+
+@contextmanager
+def live_zip_capture(
+    archive_root: Path,
+) -> Iterator[tuple[ArchiveBlobPublisher, dict[Path, _CapturedZipEnumeration]]]:
+    """Supply the real publisher and parent-owned input spool lifetime."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+
+    source_path = archive_root / "source.db"
+    if not source_path.exists():
+        initialize_runtime_source_fixture(source_path)
+    publisher = ArchiveBlobPublisher(source_path, archive_root / "blob")
+    inputs: dict[Path, _CapturedZipEnumeration] = {}
+    try:
+        yield publisher, inputs
+    finally:
+        with ExitStack() as cleanup:
+            cleanup.callback(publisher.discard_pending)
+            for captured in inputs.values():
+                cleanup.callback(captured.close)
+
 
 JsonObject: TypeAlias = dict[str, object]
 JsonObjectList: TypeAlias = list[JsonObject]
@@ -430,3 +465,166 @@ class InboxBuilder:
 
     def get_file_path(self, filename: str) -> Path:
         return self.base_path / filename
+
+
+def acquired_payloads(records: Iterable[SourceInputRecord]) -> Iterator[RawSessionData]:
+    """Observe payloads in tests whose contract excludes acquisition controls."""
+    for record in records:
+        if record.data is not None:
+            yield record.data
+
+
+def captured_zip_coordinate(container: str, member: str) -> CapturedZipMemberCoordinate:
+    """A neutral immutable namespace receipt for coordinate-only law tests."""
+    return CapturedZipMemberCoordinate(
+        container,
+        container,
+        member,
+        0,
+        0,
+        MemberAddressingMode.WHOLE_MEMBER,
+        hashlib.sha256(b"synthetic-container").hexdigest(),
+        hashlib.sha256(b"synthetic-decoder").hexdigest(),
+    )
+
+
+def prepared_ingest_manifest(
+    archive_root: Path,
+    source_generation_id: str,
+    enumeration_fingerprint: str,
+    inputs: Iterable[FrozenSourceInput],
+    source_name: str | None = None,
+    *,
+    publisher_id: str,
+) -> SealedSourceManifestRef:
+    """Use the production staged denominator before constructing test plans."""
+    from polylogue.storage.sqlite.archive_tiers.source_items import prepare_source_manifest
+    from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+
+    with closing(
+        open_isolated_write_connection(
+            archive_root / "source.db",
+            purpose="synthetic source manifest preparation",
+            archive_root=archive_root,
+        )
+    ) as source:
+        with source:
+            source.execute("BEGIN IMMEDIATE")
+            return prepare_source_manifest(
+                source,
+                source_generation_id=source_generation_id,
+                publisher_id=publisher_id,
+                enumeration_fingerprint=enumeration_fingerprint,
+                inputs=inputs,
+                source_name=source_name,
+                sealed_at_ms=1,
+            )
+
+
+def observe_source_generation_receipt(
+    source: sqlite3.Connection, index: sqlite3.Connection, *, source_generation_id: str, active_generation: str
+) -> SimpleNamespace:
+    """Collect small fixture observations from the actual paged receipt/spool owners."""
+    import os
+    from contextlib import closing
+    from tempfile import mkstemp
+
+    from polylogue.operations.daemon_ingest import _spool_source_receipt
+    from polylogue.operations.ingest_inputs import spool_connection, unlink_spool
+    from polylogue.storage.source_generation_receipts import (
+        iter_source_item_raw_receipts,
+        source_generation_receipt_page,
+    )
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+
+    items = []
+    retired: list[SimpleNamespace] = []
+    cursor = None
+    marker_missing: set[str] = set()
+    while True:
+        page = source_generation_receipt_page(source, source_generation_id=source_generation_id, after=cursor)
+        if not page.items:
+            break
+        for item in page.items:
+            with closing(
+                iter_source_item_raw_receipts(
+                    source, index, source_generation_id=source_generation_id, source_item_id=item.source_item_id
+                )
+            ) as rows:
+                observed_raws = []
+                for raw in rows:
+                    logicals = tuple(
+                        SimpleNamespace(
+                            logical_source_key=logical.logical_source_key,
+                            expected_session_id=logical.expected_session_id,
+                            accepted_raw_id=logical.accepted_raw_id,
+                            application_ids=tuple(logical.application_ids),
+                            head_session_ids=logical.head_session_ids,
+                            session_ids=logical.session_ids,
+                            blockers=logical.blockers,
+                            complete=logical.complete,
+                        )
+                        for logical in raw.logicals
+                    )
+                    observed_raws.append(
+                        SimpleNamespace(
+                            raw_id=raw.raw_id,
+                            parsed_at_ms=raw.parsed_at_ms,
+                            parser_complete=raw.parser_complete,
+                            parser_blockers=raw.parser_blockers,
+                            logicals=logicals,
+                            complete=raw.parser_complete and all(logical.complete for logical in logicals),
+                        )
+                    )
+                raws = tuple(observed_raws)
+            marker_missing.update(
+                raw.raw_id for raw in raws if raw.complete and raw.logicals and raw.parsed_at_ms is None
+            )
+            items.append(
+                SimpleNamespace(
+                    source_item_id=item.source_item_id,
+                    logical_coordinate=item.logical_coordinate,
+                    enumeration_complete=item.enumeration_complete,
+                    blockers=item.blockers,
+                    raws=raws,
+                    complete=item.source_complete and all(raw.complete for raw in raws),
+                )
+            )
+            with closing(
+                source.execute(
+                    "SELECT record_coordinate FROM source_item_raw_members "
+                    "WHERE source_generation_id=? AND source_item_id=? AND raw_id IS NULL "
+                    "ORDER BY record_coordinate",
+                    (source_generation_id, item.source_item_id),
+                )
+            ) as rows:
+                retired.extend(SimpleNamespace(record_coordinate=str(row[0])) for row in rows)
+        cursor = page.next_cursor
+    descriptor, filename = mkstemp(prefix="polylogue-receipt-fixture-", suffix=".sqlite")
+    os.close(descriptor)
+    receipt_path = Path(filename)
+    try:
+        spool = _spool_source_receipt(source, index, source_generation_id, receipt_path)
+        with spool_connection(spool.path, read_only=True) as observed:
+            confirmed = tuple(
+                str(row[0]) for row in observed.execute("SELECT raw_id FROM raws WHERE complete=1 ORDER BY raw_id")
+            )
+            unresolved = tuple(
+                str(row[0]) for row in observed.execute("SELECT raw_id FROM raws WHERE complete=0 ORDER BY raw_id")
+            )
+        return SimpleNamespace(
+            complete=spool.complete,
+            enumeration_complete=spool.enumeration_complete,
+            active_generation=active_generation,
+            items=tuple(items),
+            retired_raw_ids=(),
+            retired_coordinates=tuple(retired),
+            confirmed_raw_ids=confirmed,
+            unresolved_raw_ids=unresolved,
+            source_marker_missing_raw_ids=tuple(sorted(marker_missing)),
+        )
+    finally:
+        # A failed Native close retains this exact artifact. An enclosing
+        # TemporaryDirectory finalizer would otherwise delete it on unwind.
+        if not retained_native_sql_owners_for_lifetime(receipt_path):
+            unlink_spool(receipt_path)

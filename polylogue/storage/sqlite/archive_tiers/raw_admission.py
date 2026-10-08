@@ -93,6 +93,7 @@ copy-forward) is gone with the repair strategy that was its only caller
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -104,9 +105,15 @@ from typing import Literal, TypeAlias
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
+from polylogue.core.raw_coordinates import (
+    CapturedZipMemberCoordinate,
+    captured_zip_member_raw_id,
+    zip_member_record_coordinate,
+)
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
 from polylogue.storage.artifacts.inspection import artifact_observation_id
+from polylogue.storage.sqlite.archive_tiers.source_items import CapturedSourceInputIdentity, SourceItemAdmission
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
     ArchiveSourceBlobRef,
@@ -181,6 +188,9 @@ class PendingPreParseRawAdmissionRequest:
     blob_hash: bytes
     blob_size: int
     acquired_at_ms: int
+    canonical_source_path: str
+    captured_profile_key: str | None = None
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None
     addressing_mode: str | None = None
     content_identity: str | None = None
     file_mtime_ms: int | None = None
@@ -188,6 +198,8 @@ class PendingPreParseRawAdmissionRequest:
     raw_id: str | None = None
     blob_publication_receipt_id: str | None = None
     policy_snapshot: ExcisionPolicySnapshot | None = None
+    source_item: SourceItemAdmission | None = None
+    artifact: ArchiveSourceArtifact | None = None
 
 
 RawAdmissionRequest: TypeAlias = PendingPreParseRawAdmissionRequest
@@ -289,30 +301,101 @@ def plan_raw_admission(request: RawAdmissionRequest) -> RawAdmissionPlan:
     )
 
 
+def _validate_captured_zip_observation(request: PendingPreParseRawAdmissionRequest, raw_id: str) -> None:
+    coordinate = request.captured_zip_coordinate
+    if coordinate is not None and (
+        request.source_path != coordinate.declared_member
+        or request.canonical_source_path != coordinate.canonical_member
+        or request.source_index != coordinate.source_index
+        or request.addressing_mode != coordinate.addressing_mode.value
+        or raw_id != captured_zip_member_raw_id(coordinate, request.blob_hash.hex())
+    ):
+        raise ValueError("raw admission differs from its captured ZIP coordinate")
+
+
 def execute_raw_admission_plan_sync(
+    conn: sqlite3.Connection, plan: RawAdmissionPlan, *, manage_transaction: bool = True
+) -> RawAdmissionResult:
+    """Join exact input membership to the same captured raw admission."""
+    member = plan.request.source_item
+    if member is None:
+        return _execute_captured_raw_admission(conn, plan, manage_transaction=manage_transaction)
+    if not manage_transaction and not conn.in_transaction:
+        raise ValueError("participating source-item admission requires a source transaction")
+    conn.execute("SAVEPOINT acquired_source_item")
+    try:
+        result = execute_source_item_admission(conn, plan, member)
+    except BaseException:
+        conn.execute("ROLLBACK TO acquired_source_item")
+        conn.execute("RELEASE acquired_source_item")
+        raise
+    conn.execute("RELEASE acquired_source_item")
+    if manage_transaction:
+        conn.commit()
+    return result
+
+
+def _execute_captured_raw_admission(
+    conn: sqlite3.Connection, plan: RawAdmissionPlan, *, manage_transaction: bool = True
+) -> RawAdmissionResult:
+    """Publish a raw observation and its captured member coordinate atomically."""
+    from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
+
+    if not manage_transaction and not conn.in_transaction:
+        raise ValueError("participating raw admission requires an existing source transaction")
+    coordinate = plan.request.captured_zip_coordinate
+    _validate_captured_zip_observation(plan.request, plan.raw_id)
+    conn.execute("SAVEPOINT captured_raw_admission")
+    try:
+        result = _execute_raw_admission_plan_sync(conn, plan, manage_transaction=False)
+        if coordinate is not None:
+            record_raw_container_coordinate(
+                conn,
+                result.raw_id,
+                coordinate_format="zip-v2",
+                entry_ordinal=coordinate.entry_ordinal,
+                split_index=coordinate.split_index,
+                addressing_mode=coordinate.addressing_mode.value,
+                content_identity=plan.request.content_identity,
+                captured_coordinate=coordinate,
+                manage_transaction=False,
+            )
+    except BaseException:
+        conn.execute("ROLLBACK TO captured_raw_admission")
+        conn.execute("RELEASE captured_raw_admission")
+        raise
+    conn.execute("RELEASE captured_raw_admission")
+    if manage_transaction:
+        conn.commit()
+    return result
+
+
+def _execute_raw_admission_plan_sync(
     conn: sqlite3.Connection, plan: RawAdmissionPlan, *, manage_transaction: bool = True
 ) -> RawAdmissionResult:
     """Apply a precomputed plan through the canonical synchronous writer."""
     if not manage_transaction and not conn.in_transaction:
         raise ValueError("participating raw admission requires an existing source transaction")
     request = plan.request
-    if _assert_existing_raw_observation_identity(
+    existing = _assert_existing_raw_observation_identity(
         conn,
         raw_id=plan.raw_id,
         origin=request.origin,
         native_id=request.native_id,
         source_path=request.source_path,
+        canonical_source_path=request.canonical_source_path,
+        captured_profile_key=request.captured_profile_key,
         source_index=request.source_index,
         blob_hash=request.blob_hash,
         blob_size=request.blob_size,
-    ):
-        _backfill_raw_file_mtime(conn, raw_id=plan.raw_id, file_mtime_ms=request.file_mtime_ms)
-        return RawAdmissionResult(arm=plan.arm, raw_id=plan.raw_id)
+    )
     admitted_raw_id = write_source_raw_session_blob_ref(
         conn,
         origin=request.origin,
         capture_mode=request.capture_mode,
         source_path=request.source_path,
+        canonical_source_path=request.canonical_source_path,
+        captured_profile_key=request.captured_profile_key,
         source_index=request.source_index,
         blob_hash=request.blob_hash,
         blob_size=request.blob_size,
@@ -321,24 +404,12 @@ def execute_raw_admission_plan_sync(
         native_id=request.native_id,
         raw_id=plan.raw_id,
         blob_publication_receipt_id=request.blob_publication_receipt_id,
-        revision=plan.revision,
+        artifact=request.artifact,
+        revision=None if existing or request.artifact is not None else plan.revision,
         manage_transaction=manage_transaction,
         policy_snapshot=request.policy_snapshot,
     )
     return RawAdmissionResult(arm=plan.arm, raw_id=admitted_raw_id)
-
-
-@dataclass(frozen=True, slots=True)
-class SourceItemAdmission:
-    """Exact frozen-input membership joined to one raw admission."""
-
-    source_generation_id: str
-    source_item_id: str
-    record_coordinate: str
-    entry_ordinal: int | None = None
-    split_index: int | None = None
-    addressing_mode: str | None = None
-    content_identity: str | None = None
 
 
 def execute_source_item_admission(
@@ -355,9 +426,47 @@ def execute_source_item_admission(
 
     if not conn.in_transaction:
         raise ValueError("source-item admission requires the caller's source transaction")
+    coordinate = plan.request.captured_zip_coordinate
+    if coordinate is not None and (
+        member.record_coordinate
+        != zip_member_record_coordinate(
+            entry_ordinal=coordinate.entry_ordinal,
+            split_index=coordinate.split_index,
+            addressing_mode=coordinate.addressing_mode,
+        )
+        or member.entry_ordinal != coordinate.entry_ordinal
+        or member.split_index != coordinate.split_index
+        or member.addressing_mode != coordinate.addressing_mode.value
+        or member.content_identity != plan.request.content_identity
+    ):
+        raise ValueError("source input membership differs from its captured ZIP coordinate")
+    if coordinate is not None:
+        accepted_input = conn.execute(
+            "SELECT blob_hash, source_path, captured_input_identity, enumeration_fingerprint FROM source_items "
+            "WHERE source_generation_id=? AND source_item_id=?",
+            (member.source_generation_id, member.source_item_id),
+        ).fetchone()
+        if accepted_input is None or accepted_input[2] is None:
+            raise ValueError("captured ZIP member requires its accepted input namespace")
+        identity = CapturedSourceInputIdentity.from_dict(json.loads(accepted_input[2]))
+        profile = identity.member_profile_identity(coordinate.member_name)
+        expected_namespace = None if profile is None else str(profile[0])
+        if (
+            accepted_input[0] != bytes.fromhex(coordinate.container_blob_hash)
+            or accepted_input[3] != coordinate.decoder_fingerprint
+            or accepted_input[1] != coordinate.declared_container
+            or identity.semantic_source_path != coordinate.declared_container
+            or identity.canonical_source_path != coordinate.canonical_container
+            or coordinate.profile_namespace != expected_namespace
+        ):
+            raise ValueError("ZIP raw differs from the exact accepted physical input")
     conn.execute("SAVEPOINT source_item_raw_admission")
     try:
         if member.entry_ordinal is not None:
+            if plan.request.captured_zip_coordinate is None:
+                from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
+
+                raise RetainedZipMembershipUnprovedError("ZIP source member requires its captured member receipt")
             overlap = conn.execute(
                 "SELECT 1 FROM source_item_member_dispositions "
                 "WHERE source_generation_id=? AND source_item_id=? AND entry_ordinal=?",
@@ -373,15 +482,20 @@ def execute_source_item_admission(
         if existing is not None and existing[0] is None:
             raise ValueError("source member raw was retired; readmission is forbidden")
         if existing is not None:
+            if existing[0] != plan.raw_id:
+                raise ValueError("accepted source member raw identity changed")
             retained = conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id=?", (existing[0],)).fetchone()
             if existing[1] != plan.request.blob_hash or retained is None or retained[0] != existing[1]:
                 raise ValueError("accepted source member content changed")
             # Parsing may have refined this raw's origin or revision authority.
             # Its immutable input edge proves admission; do not replay the
             # original pending-admission plan over those later domain facts.
+            admitted = _execute_captured_raw_admission(conn, plan, manage_transaction=False)
+            if admitted.raw_id != existing[0]:
+                raise ValueError("accepted source member raw identity changed")
             result = RawAdmissionResult(arm=RawAdmissionArm.SKIP_DUPLICATE, raw_id=str(existing[0]))
         else:
-            result = execute_raw_admission_plan_sync(conn, plan, manage_transaction=False)
+            result = _execute_captured_raw_admission(conn, plan, manage_transaction=False)
         record_source_item_raw_member(
             conn,
             source_generation_id=member.source_generation_id,
@@ -401,6 +515,7 @@ def execute_source_item_admission(
                 split_index=member.split_index,
                 addressing_mode=member.addressing_mode,
                 content_identity=member.content_identity,
+                captured_coordinate=plan.request.captured_zip_coordinate,
                 manage_transaction=False,
             )
         consume_blob_publication_receipt(conn, plan.request.blob_publication_receipt_id, plan.request.blob_hash)
@@ -437,6 +552,8 @@ def _assert_existing_raw_observation_identity(
     origin: Origin | str,
     native_id: str | None,
     source_path: str,
+    canonical_source_path: str,
+    captured_profile_key: str | None,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -460,14 +577,17 @@ def _assert_existing_raw_observation_identity(
     confident origins is fatal.
     """
     row = conn.execute(
-        "SELECT origin, native_id, source_path, source_index, blob_hash, blob_size FROM raw_sessions WHERE raw_id = ?",
+        "SELECT origin, native_id, source_path, source_index, blob_hash, blob_size, canonical_source_path FROM raw_sessions WHERE raw_id = ?",
         (raw_id,),
     ).fetchone()
     if row is None:
         return False
     stored_origin = row[0]
-    if tuple(row[1:]) != (native_id, source_path, source_index, blob_hash, blob_size):
+    if tuple(row[1:]) != (native_id, source_path, source_index, blob_hash, blob_size, canonical_source_path):
         raise ValueError(f"raw id is already bound to different acquisition evidence: {raw_id}")
+    from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_profile_identity
+
+    record_raw_profile_identity(conn, raw_id=raw_id, profile_key=captured_profile_key)
 
     incoming_origin = _enum_value(origin)
     if stored_origin == incoming_origin:
@@ -498,6 +618,8 @@ def admit_raw_observation(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
+    canonical_source_path: str,
+    captured_profile_key: str | None = None,
     source_index: int = 0,
     payload: bytes,
     acquired_at_ms: int,
@@ -581,6 +703,8 @@ def admit_raw_observation(
             origin=origin,
             native_id=native_id,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             blob_hash=blob_hash,
             blob_size=len(payload),
@@ -592,6 +716,8 @@ def admit_raw_observation(
             origin=origin,
             capture_mode=capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -620,6 +746,8 @@ def admit_raw_observation(
             origin=origin,
             capture_mode=capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -638,6 +766,8 @@ def admit_raw_observation(
             origin=origin,
             capture_mode=capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -658,6 +788,8 @@ def admit_raw_observation(
             origin=origin,
             capture_mode=capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -712,6 +844,8 @@ def admit_raw_observation(
             origin=origin,
             capture_mode=capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=resolved_payload,
             acquired_at_ms=acquired_at_ms,
@@ -748,6 +882,8 @@ def admit_raw_observation(
             origin=origin,
             capture_mode=capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=resolved_payload,
             acquired_at_ms=acquired_at_ms,
@@ -791,6 +927,8 @@ def admit_raw_observation(
         origin=origin,
         capture_mode=capture_mode,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         payload=resolved_payload,
         acquired_at_ms=acquired_at_ms,
@@ -824,6 +962,12 @@ def admit_raw_blob_observation(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
+    canonical_source_path: str,
+    captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    source_item: SourceItemAdmission | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -842,6 +986,12 @@ def admit_raw_blob_observation(
                 origin=origin,
                 capture_mode=capture_mode,
                 source_path=source_path,
+                canonical_source_path=canonical_source_path,
+                captured_profile_key=captured_profile_key,
+                captured_zip_coordinate=captured_zip_coordinate,
+                source_item=source_item,
+                addressing_mode=addressing_mode,
+                content_identity=content_identity,
                 source_index=source_index,
                 blob_hash=blob_hash,
                 blob_size=blob_size,
@@ -862,6 +1012,12 @@ def admit_raw_artifact_blob_observation(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
+    canonical_source_path: str,
+    captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    source_item: SourceItemAdmission | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -882,36 +1038,44 @@ def admit_raw_artifact_blob_observation(
         source_path=source_path,
         source_index=source_index,
     )
-    admitted_raw_id = write_source_raw_session_blob_ref(
+    result = execute_raw_admission_plan_sync(
         conn,
-        origin=origin,
-        capture_mode=capture_mode,
-        source_path=source_path,
-        source_index=source_index,
-        blob_hash=blob_hash,
-        blob_size=blob_size,
-        acquired_at_ms=acquired_at_ms,
-        file_mtime_ms=file_mtime_ms,
-        raw_id=raw_id,
-        blob_publication_receipt_id=blob_publication_receipt_id,
-        artifact=ArchiveSourceArtifact(
-            artifact_id=artifact_id,
-            origin=origin,
-            source_path=source_path,
-            artifact_kind=classification.cohort,
-            classification_reason=classification.reason,
-            support_status=ArtifactSupportStatus.UNKNOWN,
-            parse_as_session=False,
-            schema_eligible=classification.schema_eligible,
-            first_observed_at_ms=acquired_at_ms,
-            last_observed_at_ms=acquired_at_ms,
-            source_index=source_index,
+        plan_raw_admission(
+            PendingPreParseRawAdmissionRequest(
+                origin=origin,
+                capture_mode=capture_mode,
+                source_path=source_path,
+                canonical_source_path=canonical_source_path,
+                captured_profile_key=captured_profile_key,
+                captured_zip_coordinate=captured_zip_coordinate,
+                source_item=source_item,
+                addressing_mode=addressing_mode,
+                content_identity=content_identity,
+                source_index=source_index,
+                blob_hash=blob_hash,
+                blob_size=blob_size,
+                acquired_at_ms=acquired_at_ms,
+                file_mtime_ms=file_mtime_ms,
+                raw_id=raw_id,
+                blob_publication_receipt_id=blob_publication_receipt_id,
+                policy_snapshot=policy_snapshot,
+                artifact=ArchiveSourceArtifact(
+                    artifact_id=artifact_id,
+                    origin=origin,
+                    source_path=source_path,
+                    artifact_kind=classification.cohort,
+                    classification_reason=classification.reason,
+                    support_status=ArtifactSupportStatus.UNKNOWN,
+                    parse_as_session=False,
+                    schema_eligible=classification.schema_eligible,
+                    first_observed_at_ms=acquired_at_ms,
+                    last_observed_at_ms=acquired_at_ms,
+                    source_index=source_index,
+                ),
+            )
         ),
-        revision=None,
-        manage_transaction=True,
-        policy_snapshot=policy_snapshot,
     )
-    return RawAdmissionResult(arm=RawAdmissionArm.ARTIFACT, raw_id=admitted_raw_id, artifact_id=artifact_id)
+    return RawAdmissionResult(arm=RawAdmissionArm.ARTIFACT, raw_id=result.raw_id, artifact_id=artifact_id)
 
 
 def _admit_artifact(
@@ -920,6 +1084,8 @@ def _admit_artifact(
     origin: Origin | str,
     capture_mode: Provider | str | None,
     source_path: str,
+    canonical_source_path: str,
+    captured_profile_key: str | None,
     source_index: int,
     payload: bytes,
     acquired_at_ms: int,
@@ -942,6 +1108,8 @@ def _admit_artifact(
         origin=origin,
         capture_mode=capture_mode,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,

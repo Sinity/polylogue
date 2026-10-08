@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from builtins import BaseExceptionGroup
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -56,6 +57,7 @@ from polylogue.core.evidence_value import (
 from polylogue.core.refs import ObjectRef
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import WARNING, emit
+from polylogue.storage.io_phase_metrics import close_connection_cursor
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.storage.sqlite.model_usage_sql import MODEL_USAGE_CATALOG_SUM_SQL
@@ -63,6 +65,14 @@ from polylogue.storage.sqlite.model_usage_sql import MODEL_USAGE_CATALOG_SUM_SQL
 UsageReportDetail = Literal["headline", "full"]
 
 UsageProjectionState = Literal["complete", "incomplete"]
+
+
+class UsageRequestModelConflictError(ValueError):
+    """One provider request ID names more than one nonempty model."""
+
+    def __init__(self, request_id: str) -> None:
+        self.request_id = request_id
+        super().__init__("one Claude Code usage request ID names multiple models")
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,7 +476,7 @@ class UsageCounters:
     @classmethod
     def from_row(
         cls,
-        row: sqlite3.Row,
+        row: sqlite3.Row | Mapping[str, object],
         *,
         input_key: str,
         output_key: str,
@@ -2167,8 +2177,193 @@ def _pricing_lane_reports(
     return tuple(result)
 
 
+def provider_usage_request_events(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    start_position: int | None = None,
+    include_other_events: bool = False,
+) -> Generator[dict[str, object], None, None]:
+    """Select request snapshots while retaining unkeyed events independently.
+
+    Claude request lanes use the latest present counter, including zero.
+    Codex event windows and cumulative counters retain their physical grain.
+    """
+    cursor = conn.execute(
+        """
+        WITH message_usage_rows AS MATERIALIZED (
+            SELECT NULLIF(TRIM(request_id), '') AS request_key,
+                   model_name,
+                   position,
+                   last_input_tokens,
+                   last_output_tokens,
+                   last_cached_input_tokens,
+                   last_cache_write_tokens
+            FROM session_provider_usage_events
+            WHERE (SELECT origin FROM sessions WHERE session_id = ?) = 'claude-code-session'
+              AND session_id = ?
+              AND provider_event_type = 'message_usage'
+              AND (? IS NULL OR position >= ?)
+        ),
+        request_lane_positions AS (
+            SELECT request_key,
+                   COUNT(DISTINCT NULLIF(TRIM(model_name), '')) AS model_count,
+                   MIN(NULLIF(TRIM(model_name), '')) AS model_name,
+                   MAX(position) AS position,
+                   MAX(CASE WHEN last_input_tokens IS NOT NULL THEN position END) AS input_position,
+                   MAX(CASE WHEN last_output_tokens IS NOT NULL THEN position END) AS output_position,
+                   MAX(CASE WHEN last_cached_input_tokens IS NOT NULL THEN position END) AS cache_read_position,
+                   MAX(CASE WHEN last_cache_write_tokens IS NOT NULL THEN position END) AS cache_write_position
+            FROM message_usage_rows
+            WHERE request_key IS NOT NULL
+            GROUP BY request_key
+        ),
+        request_snapshots AS (
+            SELECT p.request_key,
+                   p.model_count,
+                   p.model_name,
+                   p.position,
+                   MAX(CASE WHEN e.position = p.input_position THEN e.last_input_tokens END) AS last_input_tokens,
+                   MAX(CASE WHEN e.position = p.output_position THEN e.last_output_tokens END) AS last_output_tokens,
+                   MAX(CASE WHEN e.position = p.cache_read_position THEN e.last_cached_input_tokens END) AS last_cached_input_tokens,
+                   MAX(CASE WHEN e.position = p.cache_write_position THEN e.last_cache_write_tokens END) AS last_cache_write_tokens
+            FROM request_lane_positions AS p
+            JOIN message_usage_rows AS e ON e.request_key = p.request_key
+            GROUP BY p.request_key, p.model_count, p.model_name, p.position
+        ),
+        event_rows AS (
+            SELECT ? AS session_id,
+                   provider_event_type,
+                   model_name,
+                   position,
+                   last_input_tokens,
+                   last_output_tokens,
+                   last_cached_input_tokens,
+                   last_cache_write_tokens,
+                   last_reasoning_output_tokens,
+                   last_total_tokens,
+                   total_input_tokens,
+                   total_output_tokens,
+                   total_cached_input_tokens,
+                   total_cache_write_tokens,
+                   total_reasoning_output_tokens,
+                   total_tokens,
+                   NULL AS request_key,
+                   0 AS model_conflict
+            FROM session_provider_usage_events
+            WHERE session_id = ?
+              AND (provider_event_type = 'token_count' OR (
+                  ? AND NOT (provider_event_type = 'message_usage'
+                      AND (SELECT origin FROM sessions WHERE session_id = ?) = 'claude-code-session')
+              ))
+              AND (? IS NULL OR position >= ?)
+
+            UNION ALL
+
+            SELECT ? AS session_id,
+                   'message_usage' AS provider_event_type,
+                   model_name,
+                   position,
+                   last_input_tokens,
+                   last_output_tokens,
+                   last_cached_input_tokens,
+                   last_cache_write_tokens,
+                   NULL AS last_reasoning_output_tokens,
+                   NULL AS last_total_tokens,
+                   NULL AS total_input_tokens,
+                   NULL AS total_output_tokens,
+                   NULL AS total_cached_input_tokens,
+                   NULL AS total_cache_write_tokens,
+                   NULL AS total_reasoning_output_tokens,
+                   NULL AS total_tokens,
+                   request_key,
+                   model_count > 1 AS model_conflict
+            FROM request_snapshots
+
+            UNION ALL
+
+            SELECT ? AS session_id,
+                   'message_usage' AS provider_event_type,
+                   model_name,
+                   position,
+                   last_input_tokens,
+                   last_output_tokens,
+                   last_cached_input_tokens,
+                   last_cache_write_tokens,
+                   NULL AS last_reasoning_output_tokens,
+                   NULL AS last_total_tokens,
+                   NULL AS total_input_tokens,
+                   NULL AS total_output_tokens,
+                   NULL AS total_cached_input_tokens,
+                   NULL AS total_cache_write_tokens,
+                   NULL AS total_reasoning_output_tokens,
+                   NULL AS total_tokens,
+                   request_key,
+                   0 AS model_conflict
+            FROM message_usage_rows
+            WHERE request_key IS NULL
+        )
+        SELECT *
+        FROM event_rows
+        ORDER BY position, provider_event_type
+        """,
+        (
+            session_id,
+            session_id,
+            start_position,
+            start_position,
+            session_id,
+            session_id,
+            include_other_events,
+            session_id,
+            start_position,
+            start_position,
+            session_id,
+            session_id,
+        ),
+    )
+    names = (
+        "session_id",
+        "provider_event_type",
+        "model_name",
+        "position",
+        "last_input_tokens",
+        "last_output_tokens",
+        "last_cached_input_tokens",
+        "last_cache_write_tokens",
+        "last_reasoning_output_tokens",
+        "last_total_tokens",
+        "total_input_tokens",
+        "total_output_tokens",
+        "total_cached_input_tokens",
+        "total_cache_write_tokens",
+        "total_reasoning_output_tokens",
+        "total_tokens",
+        "request_key",
+        "model_conflict",
+    )
+
+    primary: BaseException | None = None
+    try:
+        for row in cursor:
+            values = dict(zip(names, row, strict=True))
+            if values.pop("model_conflict"):
+                raise UsageRequestModelConflictError(str(values["request_key"] or ""))
+            values.pop("request_key")
+            yield values
+    except BaseException as failure:
+        primary = failure
+        raise
+    finally:
+        try:
+            close_connection_cursor(conn, cursor)
+        except BaseException as cleanup:
+            if primary is None or cleanup is primary:
+                raise
+            raise BaseExceptionGroup("Usage selection and cursor cleanup failed", [primary, cleanup]) from None
+
+
 def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[str, dict[str, object]]:
-    columns = _table_columns(conn, "session_provider_usage_events")
     origin_select = "? AS origin" if origin is not None else "s.origin AS origin"
     join_sessions = "" if origin is not None else "JOIN sessions s ON s.session_id = e.session_id"
     where_clause = _event_origin_where(origin)
@@ -2182,22 +2377,18 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
         "COALESCE(SUM(CASE WHEN e.provider_event_type = 'message_usage' THEN 1 ELSE 0 END), 0) AS message_usage_event_count",
         "COALESCE(SUM(CASE WHEN e.model_name IS NULL OR TRIM(e.model_name, ?) = '' THEN 1 ELSE 0 END), 0) AS missing_model_event_count",
     ]
-    last_cols = _counter_columns(columns, prefix="last")
-    total_cols = _counter_columns(columns, prefix="total")
+    last_cols = _counter_columns(prefix="last")
+    total_cols = _counter_columns(prefix="total")
     # A lane is reported by an event that carries one of its counters, even
     # an explicit zero; an event carrying only the other lane says nothing.
     for lane, cols in (("request", last_cols), ("cumulative", total_cols)):
-        present = " OR ".join(f"{expr} IS NOT NULL" for expr in cols.values() if expr != "0")
-        select_parts.append(
-            f"COALESCE(SUM(CASE WHEN {present or '0'} THEN 1 ELSE 0 END), 0) AS {lane}_counter_event_count"
-        )
+        present = " OR ".join(f"{expr} IS NOT NULL" for expr in cols.values())
+        select_parts.append(f"COALESCE(SUM(CASE WHEN {present} THEN 1 ELSE 0 END), 0) AS {lane}_counter_event_count")
     counter_exprs = (*last_cols.values(), *total_cols.values())
     zero_predicate = " AND ".join(f"COALESCE({expr}, 0) = 0" for expr in counter_exprs)
-    present_predicate = " OR ".join(f"{expr} IS NOT NULL" for expr in counter_exprs if expr != "0")
-    zero_predicate = f"({zero_predicate}) AND ({present_predicate or '0'})"
+    present_predicate = " OR ".join(f"{expr} IS NOT NULL" for expr in counter_exprs)
+    zero_predicate = f"({zero_predicate}) AND ({present_predicate})"
     select_parts.append(f"COALESCE(SUM(CASE WHEN {zero_predicate} THEN 1 ELSE 0 END), 0) AS zero_token_event_count")
-    for public_name, expr in last_cols.items():
-        select_parts.append(f"COALESCE(SUM({expr}), 0) AS {public_name}")
     try:
         rows = conn.execute(
             f"""
@@ -2225,21 +2416,13 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
             "message_usage_event_count": _int(row["message_usage_event_count"]),
             "missing_model_event_count": _int(row["missing_model_event_count"]),
             "zero_token_event_count": _int(row["zero_token_event_count"]),
-            "provider_request_usage": UsageCounters.from_row(
-                row,
-                input_key="input_tokens",
-                output_key="output_tokens",
-                cached_input_key="cached_input_tokens",
-                cache_write_key="cache_write_tokens",
-                reasoning_output_key="reasoning_output_tokens",
-                total_key="total_tokens",
-            ),
         }
+    _add_provider_request_usage(conn, origin, result)
     return result
 
 
 def _provider_event_stats_streaming(conn: sqlite3.Connection, origin: str | None) -> dict[str, dict[str, object]]:
-    """Exact fallback for legal counters whose aggregate exceeds SQLite INTEGER."""
+    """Stream physical diagnostics, sharing the exact request counter selector."""
 
     rows = conn.execute(
         """
@@ -2267,7 +2450,6 @@ def _provider_event_stats_streaming(conn: sqlite3.Connection, origin: str | None
     )
     counts_by_origin: dict[str, Counter[str]] = defaultdict(Counter)
     sessions_by_origin: dict[str, set[str]] = defaultdict(set)
-    last_totals_by_origin: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0, 0, 0, 0])
     for row in rows:
         origin_name = str(row["origin"])
         counts = counts_by_origin[origin_name]
@@ -2315,9 +2497,6 @@ def _provider_event_stats_streaming(conn: sqlite3.Connection, origin: str | None
             counts["cumulative_counter_event_count"] += 1
         if any(value is not None for value in raw_values) and not any((*last_values, *total_values)):
             counts["zero_token_event_count"] += 1
-        last_totals = last_totals_by_origin[origin_name]
-        for index, value in enumerate(last_values):
-            last_totals[index] += value
 
     result: dict[str, dict[str, object]] = {}
     for origin_name, counts in counts_by_origin.items():
@@ -2330,9 +2509,42 @@ def _provider_event_stats_streaming(conn: sqlite3.Connection, origin: str | None
             "message_usage_event_count": counts["message_usage_event_count"],
             "missing_model_event_count": counts["missing_model_event_count"],
             "zero_token_event_count": counts["zero_token_event_count"],
-            "provider_request_usage": UsageCounters(*last_totals_by_origin[origin_name]),
         }
+    _add_provider_request_usage(conn, origin, result)
     return result
+
+
+def _add_provider_request_usage(
+    conn: sqlite3.Connection,
+    origin: str | None,
+    stats: dict[str, dict[str, object]],
+) -> None:
+    """Sum selected request evidence with exact Python integer arithmetic."""
+    totals: dict[str, UsageCounters] = defaultdict(UsageCounters)
+    sessions = conn.execute(
+        "SELECT DISTINCT s.origin, e.session_id FROM session_provider_usage_events e "
+        "JOIN sessions s ON s.session_id = e.session_id WHERE (? IS NULL OR s.origin = ?)",
+        (origin, origin),
+    )
+    try:
+        for session in sessions:
+            origin_name = str(session["origin"])
+            for event in provider_usage_request_events(conn, str(session["session_id"]), include_other_events=True):
+                totals[origin_name] = totals[origin_name].plus(
+                    UsageCounters.from_row(
+                        event,
+                        input_key="last_input_tokens",
+                        output_key="last_output_tokens",
+                        cached_input_key="last_cached_input_tokens",
+                        cache_write_key="last_cache_write_tokens",
+                        reasoning_output_key="last_reasoning_output_tokens",
+                        total_key="last_total_tokens",
+                    )
+                )
+    finally:
+        close_connection_cursor(conn, sessions)
+    for origin_name, values in stats.items():
+        values["provider_request_usage"] = totals[origin_name]
 
 
 def _provider_cumulative_usage(conn: sqlite3.Connection, origin: str | None) -> dict[str, UsageCounters]:
@@ -2403,7 +2615,6 @@ def _sample_event_sessions(
 ) -> dict[str, tuple[str, ...]]:
     if limit is not None and limit <= 0:
         return {}
-    columns = _table_columns(conn, "session_provider_usage_events")
     predicates: list[str] = []
     predicate_args: list[str] = []
     if missing_model:
@@ -2413,14 +2624,14 @@ def _sample_event_sessions(
         predicates.append("(e.model_name IS NULL OR TRIM(e.model_name, ?) = '')")
         predicate_args.append(_MODEL_NAME_STRIP_CHARS)
     if zero_token:
-        last_cols = _counter_columns(columns, prefix="last")
-        total_cols = _counter_columns(columns, prefix="total")
+        last_cols = _counter_columns(prefix="last")
+        total_cols = _counter_columns(prefix="total")
         counter_exprs = (*last_cols.values(), *total_cols.values())
         predicates.append(
             "("
             + " AND ".join(f"COALESCE({expr}, 0) = 0" for expr in counter_exprs)
             + ") AND ("
-            + " OR ".join(f"{expr} IS NOT NULL" for expr in counter_exprs if expr != "0")
+            + " OR ".join(f"{expr} IS NOT NULL" for expr in counter_exprs)
             + ")"
         )
     if not predicates:
@@ -2442,8 +2653,8 @@ def _sample_event_sessions(
     return {key: tuple(value) for key, value in by_origin.items()}
 
 
-def _counter_columns(columns: set[str], *, prefix: str) -> dict[str, str]:
-    raw = {
+def _counter_columns(*, prefix: str) -> dict[str, str]:
+    return {
         "input_tokens": f"e.{prefix}_input_tokens",
         "output_tokens": f"e.{prefix}_output_tokens",
         "cached_input_tokens": f"e.{prefix}_cached_input_tokens",
@@ -2451,11 +2662,6 @@ def _counter_columns(columns: set[str], *, prefix: str) -> dict[str, str]:
         "reasoning_output_tokens": f"e.{prefix}_reasoning_output_tokens",
         "total_tokens": "e.total_tokens" if prefix == "total" else "e.last_total_tokens",
     }
-    result: dict[str, str] = {}
-    for public_name, expression in raw.items():
-        column_name = expression.split(".", 1)[1]
-        result[public_name] = expression if column_name in columns else "0"
-    return result
 
 
 def _origin_caveats(
@@ -2536,10 +2742,6 @@ def _event_origin_args(origin: str | None) -> tuple[str, ...]:
         return ()
     prefix = f"{origin}:"
     return (origin, prefix, f"{origin};")
-
-
-def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:
-    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({name})")}
 
 
 def _int(value: object) -> int:
@@ -3258,6 +3460,7 @@ __all__ = [
     "SessionUsageCost",
     "UsageProjectionModel",
     "UsageProjectionRollup",
+    "UsageRequestModelConflictError",
     "UsageProjectionState",
     "SESSION_USAGE_RECONCILED_COST_FAMILY",
     "SESSION_USAGE_RECONCILED_TOKENS_FAMILY",

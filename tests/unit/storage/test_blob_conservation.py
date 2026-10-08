@@ -9,6 +9,7 @@ than the fixtures handed to it.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shutil
@@ -18,15 +19,14 @@ from pathlib import Path
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
-from polylogue import Polylogue
 from polylogue.maintenance import blob_conservation
 from polylogue.maintenance.blob_conservation import check_blob_conservation
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_liveness import BlobLivenessProjection
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
+from tests.infra.live_batch import prepared_live_batch_processor
 
 _SEEDED_SESSION_ID = "11111111-2222-3333-4444-555555555555"
 
@@ -259,18 +259,15 @@ async def _seed_archive(workspace_env: dict[str, Path]) -> Path:
         + "\n",
         encoding="utf-8",
     )
-    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "index.db")
-    processor = LiveBatchProcessor(
-        archive,
-        (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
-        cursor=CursorStore(workspace_env["data_root"] / "cursor.db"),
+    # The live route publishes through the daemon's supplied owners: write
+    # coordinator, capture stage and retained Raw owner.
+    async with prepared_live_batch_processor(
+        workspace_env["archive_root"],
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
-    try:
+    ) as processor:
         metrics = await processor.ingest_files([transcript], emit_event=False)
         assert metrics.succeeded_file_count == 1
-    finally:
-        await archive.close()
     return transcript
 
 
@@ -294,14 +291,14 @@ async def test_blob_conservation_flags_orphan_blobs_and_dangling_references(
     """A file with no owning row and a reference with no provable bytes both fail."""
     transcript = await _seed_archive(workspace_env)
 
-    conserved = check_blob_conservation(_clone(workspace_env, "clone-clean"))
+    conserved = await asyncio.to_thread(check_blob_conservation, _clone(workspace_env, "clone-clean"))
     assert conserved.ok is True
     assert (conserved.orphan_blobs, conserved.dangling_references) == (0, 0)
     assert conserved.referenced_blobs == conserved.present_blobs == 1
 
     orphaned_root = _clone(workspace_env, "clone-orphan")
     orphan_hash, _size = BlobStore(orphaned_root / "blob").write_from_bytes(b"no row owns these bytes")
-    orphaned = check_blob_conservation(orphaned_root)
+    orphaned = await asyncio.to_thread(check_blob_conservation, orphaned_root)
     assert orphaned.ok is False
     assert orphaned.orphan_blobs == 1
     assert orphaned.orphan_sample == (orphan_hash,)
@@ -315,7 +312,7 @@ async def test_blob_conservation_flags_orphan_blobs_and_dangling_references(
     displaced = transcript.with_suffix(".displaced")
     transcript.rename(displaced)
     try:
-        dangling = check_blob_conservation(dangling_root)
+        dangling = await asyncio.to_thread(check_blob_conservation, dangling_root)
     finally:
         displaced.rename(transcript)
     assert dangling.ok is False
@@ -351,7 +348,10 @@ async def test_declared_operator_route_runs_the_real_seeded_check(
 
     from polylogue.cli.click_app import cli
 
-    result = CliRunner().invoke(
+    # The command takes synchronous archive custody; an operator runs it
+    # outside any event loop.
+    result = await asyncio.to_thread(
+        CliRunner().invoke,
         cli,
         ["ops", "maintenance", "blob-conservation", "--output-format", "json"],
         catch_exceptions=False,
@@ -377,7 +377,7 @@ async def test_blob_conservation_excuses_staged_and_recoverable_references(
     staging = BlobStore(staged_root / "blob").staging_root
     staging.mkdir(parents=True, exist_ok=True)
     (staging / "blob-in-flight").write_bytes(b"a publish that has not committed yet")
-    staged = check_blob_conservation(staged_root)
+    staged = await asyncio.to_thread(check_blob_conservation, staged_root)
     assert staged.ok is True
     assert staged.staged_in_flight == 1
     assert staged.invalid_namespace_entries == 0
@@ -389,7 +389,7 @@ async def test_blob_conservation_excuses_staged_and_recoverable_references(
     recoverable_root = _clone(workspace_env, "clone-recoverable")
     for blob in _canonical_blob_files(recoverable_root):
         blob.unlink()
-    recoverable = check_blob_conservation(recoverable_root)
+    recoverable = await asyncio.to_thread(check_blob_conservation, recoverable_root)
     assert recoverable.ok is True
     assert recoverable.recoverable_references == 1
     assert recoverable.dangling_references == 0

@@ -31,6 +31,7 @@ class MembershipDecision(PolylogueStrEnum):
     APPLIED = "applied"
     SUPERSEDED_EQUIVALENT = "superseded_equivalent"
     SUPERSEDED_PREFIX = "superseded_prefix"
+    SUPERSEDED_BY_WINNER = "superseded_by_winner"
     AMBIGUOUS = "ambiguous"
     DEFERRED = "deferred"
 
@@ -53,6 +54,10 @@ class MembershipRevision:
     projection: SessionRevisionProjection
     provider_updated_at: str | None = None
     observed_at_ms: int | None = None
+    #: Declared capture order of the retained bytes: (acquisition time of
+    #: their latest observation receipt, receipt order). Re-acquiring earlier
+    #: bytes makes them the latest capture again.
+    capture_order: tuple[int, int] | None = None
     browser_snapshot_fidelity: Literal["dom", "native"] | None = None
     provider_message_ids: Set[str | None] = frozenset()
     provider_attachment_ids: frozenset[str] = frozenset()
@@ -78,6 +83,9 @@ class MembershipClassification:
     #: attached to the session, retained as raw provenance only (never
     #: deleted, never silently discarded).
     ambiguous_raw_ids: tuple[str, ...]
+    #: Raws individually dominated by the accepted browser revision, without
+    #: asserting an order among those older observations.
+    superseded_raw_ids: tuple[str, ...] = ()
 
 
 def _identities(contents: Set[tuple[bytes, bytes]]) -> frozenset[bytes]:
@@ -655,6 +663,26 @@ def classify_membership_revisions(
             tuple(sorted(equivalents)),
             (),
         )
+    independent_winner = _unique_later_native_snapshot(representatives)
+    if independent_winner is not None:
+        equivalent_ids: list[str] = []
+        superseded_ids: list[str] = []
+        winner_ambiguous_ids: list[str] = []
+        for revision in revisions:
+            if revision.raw_id == independent_winner.raw_id:
+                continue
+            if _relation(revision.projection, independent_winner.projection) == "equal":
+                equivalent_ids.append(revision.raw_id)
+            elif _browser_snapshot_dominates(revision, independent_winner):
+                superseded_ids.append(revision.raw_id)
+            else:
+                winner_ambiguous_ids.append(revision.raw_id)
+        return MembershipClassification(
+            (independent_winner.raw_id,),
+            tuple(sorted(equivalent_ids)),
+            tuple(sorted(winner_ambiguous_ids)),
+            tuple(sorted(superseded_ids)),
+        )
     dom_authority = _dom_authority_when_native_is_unordered(representatives)
     if dom_authority is not None:
         accepted, ambiguous = dom_authority
@@ -698,13 +726,24 @@ def classify_membership_revisions(
             tuple(sorted((*equivalents, *browser_capture_raw_ids))),
             (),
         )
+    latest = _latest_direct_capture(representatives)
+    if latest is not None and existing_accepted_raw_id is None:
+        # Conflicting direct (non-browser) captures of one session are
+        # successive full revisions: the latest declared capture is the
+        # session's current state, whatever its evidence volume. The same
+        # no-existing-head guard as the fallback below applies.
+        return MembershipClassification(
+            (latest.raw_id,),
+            tuple(sorted(equivalents)),
+            tuple(sorted(item.raw_id for item in representatives if item.raw_id != latest.raw_id)),
+        )
     # Presence-guarantee fallback, guarded against ANY interference with an
     # already-established head -- see this function's own docstring for why
     # this is deliberately narrower than "only refuse when the raw_id
     # differs". Applying the fallback even when its pick happens to be the
     # SAME raw_id as the existing head is still unsafe: verified directly
     # during development (a real integration-test regression) that
-    # ``apply_raw_membership_classification`` re-accepting that raw_id
+    # ``apply_prepared_membership_index`` re-accepting that raw_id
     # through MEMBERSHIP governance downgrades a byte-governed head's own
     # ``accepted_frontier_kind``/generation metadata from "byte" to
     # "semantic", even though the pointed-to raw_id never changed -- a
@@ -722,6 +761,21 @@ def classify_membership_revisions(
         tuple(sorted(equivalents)),
         tuple(sorted(item.raw_id for item in representatives)),
     )
+
+
+def _latest_direct_capture(representatives: list[MembershipRevision]) -> MembershipRevision | None:
+    """The uniquely latest declared capture of an all-direct conflict, if any.
+
+    Applies only when every representative is a direct capture (no browser
+    snapshot) with a declared capture order, and one capture is strictly
+    latest. Otherwise the caller's existing rules decide.
+    """
+    if any(item.browser_snapshot_fidelity is not None or item.capture_order is None for item in representatives):
+        return None
+    ordered = sorted(representatives, key=lambda item: item.capture_order or (0, 0))
+    if len(ordered) > 1 and ordered[-1].capture_order == ordered[-2].capture_order:
+        return None
+    return ordered[-1]
 
 
 def _maximal_evidence_fallback(representatives: list[MembershipRevision]) -> MembershipRevision:
@@ -749,7 +803,7 @@ def _maximal_evidence_fallback(representatives: list[MembershipRevision]) -> Mem
     ``test_divergent_bundle_member_preserves_last_accepted_session`` and its
     sibling ``test_divergent_bundle_member_does_not_block_safe_members``
     exercise the DIFFERENT-raw_id case against a real, carefully-designed
-    invariant in ``archive.py``'s ``apply_raw_membership_classification``
+    invariant in ``apply_prepared_membership_index``
     write-back (polylogue-miwv, PR #3211): once a logical source has an
     accepted head, a later membership pass may not silently retire it in
     favor of an unrelated raw. A second, independently-discovered case ruled
@@ -757,7 +811,7 @@ def _maximal_evidence_fallback(representatives: list[MembershipRevision]) -> Mem
     raw_id through MEMBERSHIP governance still overwrites the head's own
     ``accepted_frontier_kind``/generation metadata (e.g. downgrading a
     byte-governed head to "semantic"), a real authority downgrade despite
-    the pointed-to raw_id never changing (``test_live_multi_session_divergence_reopens_raw_authority``).
+    the pointed-to raw_id never changing (``test_live_multi_session_divergence_keeps_accepted_head_as_debt``).
     """
     return max(representatives, key=lambda item: (_frontier(item.projection), item.raw_id))
 
@@ -800,6 +854,33 @@ def _provider_ordered_browser_snapshots(
         if not _browser_snapshot_dominates(older, newer):
             return None
     return ordered
+
+
+def _unique_later_native_snapshot(revisions: list[MembershipRevision]) -> MembershipRevision | None:
+    """Select one native snapshot that independently dominates every sibling.
+
+    Older snapshots need not form a total order among themselves. A unique
+    provider timestamp may settle each one directly when the newer native
+    snapshot preserves its provider message and attachment identities. This
+    uses the same timestamp and identity evidence as
+    ``_browser_snapshot_dominates``; it does not fall back to acquisition or
+    filesystem order.
+    """
+    if not revisions or any(item.browser_snapshot_fidelity != "native" for item in revisions):
+        return None
+    timestamped = [(parse_timestamp(item.provider_updated_at), item) for item in revisions]
+    if any(timestamp is None for timestamp, _item in timestamped):
+        return None
+    latest_timestamp = max(timestamp.timestamp() for timestamp, _item in timestamped if timestamp is not None)
+    latest = [
+        item for timestamp, item in timestamped if timestamp is not None and timestamp.timestamp() == latest_timestamp
+    ]
+    if len(latest) != 1:
+        return None
+    winner = latest[0]
+    if all(item is winner or _browser_snapshot_dominates(item, winner) for item in revisions):
+        return winner
+    return None
 
 
 def _direct_export_precedence(

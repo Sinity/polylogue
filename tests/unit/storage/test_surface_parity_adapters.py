@@ -28,6 +28,7 @@ from polylogue.api import Polylogue
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import seeds_off_event_loop
 from tests.infra.live_ingest import write_index_session
 from tests.infra.storage_records import SessionBuilder, _record_to_parsed_session, db_setup
 
@@ -89,6 +90,7 @@ def _origin_for_provider(provider: str | None) -> str | None:
     return origin_from_provider(Provider.from_string(provider)).value
 
 
+@seeds_off_event_loop
 def _seed(workspace_env: dict[str, Path]) -> tuple[Path, dict[str, str]]:
     """Seed the archive; return (index_db_path, {scenario_name: native_id})."""
     db_path = db_setup(workspace_env)

@@ -14,8 +14,8 @@ from typing import Any, cast
 import aiosqlite
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.derivation import DerivationFrame, DerivationReport, Outcome
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.operations.session_profile_convergence import make_session_profile_frame
@@ -27,6 +27,8 @@ from polylogue.storage.derived.session.usage_rollup import (
     SESSION_USAGE_ROLLUP_DOMAIN,
     session_usage_rollup_recipe_version,
 )
+from polylogue.storage.io_phase_metrics import connect_measured
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.convergence_harness import _seed_raw_source_session, seed_partial_convergence_archive
 
 
@@ -36,7 +38,7 @@ async def test_working_dir_edits_refresh_profile_through_composed_demand(tmp_pat
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
     session_id = recovered.target_session_id
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,
@@ -142,7 +144,7 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
     }
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,
@@ -229,7 +231,7 @@ async def test_promoted_generation_starts_a_bounded_profile_pass_from_new_demand
     monkeypatch.setattr(SessionProfileConvergenceOwner, "converge", recording_converge)
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,
@@ -275,17 +277,25 @@ async def test_periodic_sweep_reaches_more_than_one_budget_of_profiles_without_d
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
     source_path = tmp_path / "source.jsonl"
     source_path.write_text("{}\n")
-    with sqlite3.connect(recovered.index_db) as conn:
-        for number in range(129):
-            _seed_raw_source_session(conn, session_id=f"sweep-{number:03d}", source_path=source_path)
-        conn.execute("DELETE FROM session_profile_demand")
-        conn.commit()
-        expected = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-        assert expected > 128
-        assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 0
+
+    def seed() -> int:
+        conn = connect_measured(recovered.index_db)
+        try:
+            for number in range(129):
+                _seed_raw_source_session(conn, session_id=f"sweep-{number:03d}", source_path=source_path)
+            conn.execute("DELETE FROM session_profile_demand")
+            conn.commit()
+            count = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+            assert count > 128
+            assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 0
+            return count
+        finally:
+            conn.close()
+
+    expected = run_off_event_loop(seed)
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,
@@ -344,7 +354,7 @@ async def test_fresh_owner_resweeps_missing_profile_without_demand(tmp_path: Pat
         assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 0
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,
@@ -422,7 +432,7 @@ async def test_marker_lowering_sees_a_user_db_created_after_composition(tmp_path
     user_db.unlink()
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,
@@ -459,15 +469,23 @@ async def test_backlog_call_sweeps_every_domain_in_bounded_passes(tmp_path: Path
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
     source_path = tmp_path / "source.jsonl"
     source_path.write_text("{}\n")
-    with sqlite3.connect(recovered.index_db) as conn:
-        for number in range(129):
-            _seed_raw_source_session(conn, session_id=f"backlog-{number:03d}", source_path=source_path)
-        conn.execute("DELETE FROM session_profile_demand")
-        conn.commit()
-        expected = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+
+    def seed() -> int:
+        conn = connect_measured(recovered.index_db)
+        try:
+            for number in range(129):
+                _seed_raw_source_session(conn, session_id=f"backlog-{number:03d}", source_path=source_path)
+            conn.execute("DELETE FROM session_profile_demand")
+            conn.commit()
+            count = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+            return count
+        finally:
+            conn.close()
+
+    expected = run_off_event_loop(seed)
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,
@@ -536,7 +554,7 @@ async def test_a_persistently_pending_domain_does_not_starve_later_audit_domains
 
     monkeypatch.setattr(SessionProfileConvergenceOwner, "converge", fake_converge)
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,
@@ -577,7 +595,7 @@ async def test_unreadable_bootstrap_audit_returns_one_fault_and_retries_after_sc
     """Actual SQLite discovery failure cannot be retried inside one backlog call."""
     archive_root = tmp_path / "fresh"
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     try:
         composed = compose_session_profile_callback(
             archive_root,
@@ -646,7 +664,7 @@ async def test_faulted_or_unchanged_audit_retains_owed_domains_and_serves_siblin
 
     monkeypatch.setattr(SessionProfileConvergenceOwner, "converge", converge)
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,
@@ -727,7 +745,7 @@ async def test_rotating_unsettled_sweeps_reach_every_domain_tail_and_retry_the_p
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
     adapters = install_audit_derivations(monkeypatch, failure)
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,
@@ -775,7 +793,7 @@ async def test_new_generation_resets_unsettled_sweep_facts_and_restarts_the_pref
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
     adapters = install_audit_derivations(monkeypatch, "fault")
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,

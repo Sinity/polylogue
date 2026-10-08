@@ -1,9 +1,8 @@
 """Comprehensive ingest instrument: time, CPU, memory, I/O, SQLite, stages.
 
-This probe drives a real archive write path (the full ``ingest_one_shot_archive``
-pipeline for the corpus workload, or a single open ``ArchiveStore`` for the
-lineage workload — both using the WAL write profile) over a deterministic
-synthetic workload and captures, per run:
+This probe drives the real archive write path (the full ``ingest_one_shot_archive``
+pipeline, using the WAL write profile) over a deterministic synthetic corpus
+and captures, per run:
 
 * **wall-clock** — total + per-batch-ms distribution (min/max/mean/p90),
 * **stage totals** — the pipeline's ``ParseResult.stage_timings_s`` summed
@@ -27,7 +26,6 @@ Operators run::
 
     devtools bench ingest-throughput --json > run.json
     devtools bench ingest-throughput --batches 20 --seed 2391
-    devtools bench ingest-throughput --lineage          # fork-heavy workload
     devtools bench ingest-throughput --memory           # + tracemalloc (distorts timing)
 
 Wall-clock and resource numbers are host-variable: this probe has **no CI
@@ -76,11 +74,6 @@ _DEFAULT_SEED = 2391
 _DEFAULT_MESSAGES_MIN = 120
 _DEFAULT_MESSAGES_MAX = 320
 
-# Short divergent tail appended after the replayed parent prefix in the
-# lineage workload.  Kept small so each fork batch is dominated by the
-# inherited-prefix scan + signature memoization, not by fresh tail content.
-_LINEAGE_TAIL_MESSAGES = 4
-
 
 class _BatchOutcome(TypedDict):
     source: str
@@ -103,7 +96,6 @@ def _workload_receipt(
     provider: str,
     batches: int,
     seed: int,
-    lineage: bool,
     total_wall_s: float,
     cpu_seconds_total: float,
     peak_rss_mb: float,
@@ -146,21 +138,15 @@ def _workload_receipt(
     if "write_bytes" not in proc_io:
         unavailable.add("write_io_bytes")
     spec = WorkloadEnvelopeSpec(
-        workload_id="devtools:ingest-throughput:lineage" if lineage else "devtools:ingest-throughput:corpus",
+        workload_id="devtools:ingest-throughput:corpus",
         family_id="ingest-throughput",
         version=1,
         inputs=(
             WorkloadInputRef(
-                input_id=(
-                    f"lineage:codex:{batches}:{input_digest}"
-                    if lineage
-                    else f"synthetic:{provider}:{seed}:{batches}:{input_digest}"
-                ),
-                package_ref="codex" if lineage else provider,
-                seed=None if lineage else seed,
-                distribution_refs=(
-                    "ingest-throughput.synthetic-lineage-v1" if lineage else "ingest-throughput.synthetic-corpus-v1",
-                ),
+                input_id=f"synthetic:{provider}:{seed}:{batches}:{input_digest}",
+                package_ref=provider,
+                seed=seed,
+                distribution_refs=("ingest-throughput.synthetic-corpus-v1",),
             ),
         ),
         phases=("ingest",),
@@ -386,6 +372,22 @@ def _accumulate(target: dict[str, float], delta: dict[str, float]) -> None:
         target[key] = target.get(key, 0.0) + float(value)
 
 
+def _parsed_message_ids(parsed: Any, session_id: str, messages: Any | None = None) -> list[str]:
+    from polylogue.pipeline.ids import message_content_identities
+
+    selected_messages = parsed.messages if messages is None else messages
+    return sorted(
+        (
+            f"{session_id}:n:{message.provider_message_id.strip()}"
+            if message.provider_message_id.strip()
+            else f"{session_id}:c:{digest}.{occurrence}"
+        )
+        for message, (digest, occurrence) in zip(
+            selected_messages, message_content_identities(selected_messages), strict=True
+        )
+    )
+
+
 def _run_corpus_workload(
     archive_root: Path,
     *,
@@ -443,157 +445,6 @@ def _run_corpus_workload(
     return batch_reports, per_batch_ms, total_sessions, total_messages, stage_timings_s, outcome
 
 
-def _lineage_message(*, provider_message_id: str, position: int, text: str) -> Any:
-    from polylogue.archive.message.roles import Role
-    from polylogue.core.enums import BlockType
-    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage
-
-    role = Role.USER if position % 2 == 0 else Role.ASSISTANT
-    return ParsedMessage(
-        provider_message_id=provider_message_id,
-        role=role,
-        text=text,
-        position=position,
-        variant_index=0,
-        is_active_path=True,
-        is_active_leaf=False,
-        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
-    )
-
-
-def _build_lineage_sessions(*, batches: int, prefix_len: int) -> tuple[Any, list[Any]]:
-    """Build one parent + ``batches`` prefix-sharing fork children.
-
-    Each fork replays the parent's full prefix verbatim (identical content,
-    fresh provider ids — exactly what a real fork/resume does) and then adds a
-    short divergent tail.  This exercises lineage normalization (store tail
-    only) and the #2488 signature memoization across many forks of one parent.
-    """
-    from polylogue.archive.session.branch_type import BranchType
-    from polylogue.core.enums import Provider
-    from polylogue.sources.parsers.base import ParsedSession
-
-    parent_id = "lineage-parent"
-    # Deterministic prefix text shared by parent and every fork.
-    prefix_texts = [f"shared prefix message {i} for lineage parent {parent_id}" for i in range(prefix_len)]
-
-    parent = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id=parent_id,
-        title="lineage parent",
-        messages=[
-            _lineage_message(provider_message_id=f"p{i}", position=i, text=prefix_texts[i]) for i in range(prefix_len)
-        ],
-    )
-
-    forks: list[Any] = []
-    for b in range(batches):
-        messages = [
-            _lineage_message(provider_message_id=f"f{b}-{i}", position=i, text=prefix_texts[i])
-            for i in range(prefix_len)
-        ]
-        for j in range(_LINEAGE_TAIL_MESSAGES):
-            position = prefix_len + j
-            messages.append(
-                _lineage_message(
-                    provider_message_id=f"f{b}-t{j}",
-                    position=position,
-                    text=f"fork {b} divergent tail message {j}",
-                )
-            )
-        forks.append(
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id=f"lineage-fork-{b}",
-                title=f"lineage fork {b}",
-                parent_session_provider_id=parent_id,
-                branch_type=BranchType.FORK,
-                messages=messages,
-            )
-        )
-    return parent, forks
-
-
-def _parsed_message_ids(parsed: Any, session_id: str, messages: Any | None = None) -> list[str]:
-    from polylogue.pipeline.ids import message_content_identities
-
-    selected_messages = parsed.messages if messages is None else messages
-    return sorted(
-        (
-            f"{session_id}:n:{message.provider_message_id.strip()}"
-            if message.provider_message_id.strip()
-            else f"{session_id}:c:{digest}.{occurrence}"
-        )
-        for message, (digest, occurrence) in zip(
-            selected_messages, message_content_identities(selected_messages), strict=True
-        )
-    )
-
-
-def _run_lineage_workload(
-    archive_root: Path,
-    *,
-    batches: int,
-    prefix_len: int,
-) -> tuple[list[dict[str, Any]], list[float], int, int, dict[str, float]]:
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    parent, forks = _build_lineage_sessions(batches=batches, prefix_len=prefix_len)
-
-    batch_reports: list[dict[str, Any]] = []
-    per_batch_ms: list[float] = []
-    stage_timings_s: dict[str, float] = {}
-    total_sessions = 0
-    total_messages = 0
-    acquired_at_ms = 1_700_000_000_000
-
-    store = ArchiveStore.open_existing(archive_root, read_only=False)
-    try:
-        # Parent write is the lineage setup, not a timed fork batch, but its
-        # messages count toward the composed total.
-        parent_payload = json.dumps({"provider_session_id": parent.provider_session_id}).encode("utf-8")
-        store.write_raw_and_parsed(
-            parent,
-            payload=parent_payload,
-            source_path="synthetic://lineage/parent",
-            acquired_at_ms=acquired_at_ms,
-            stage_timings_s=stage_timings_s,
-        )
-        total_sessions += 1
-        total_messages += len(parent.messages)
-
-        for index, fork in enumerate(forks):
-            payload = json.dumps({"provider_session_id": fork.provider_session_id}).encode("utf-8")
-            batch_start = time.perf_counter()
-            store.write_raw_and_parsed(
-                fork,
-                payload=payload,
-                source_path=f"synthetic://lineage/fork-{index}",
-                acquired_at_ms=acquired_at_ms + index + 1,
-                stage_timings_s=stage_timings_s,
-            )
-            elapsed_ms = (time.perf_counter() - batch_start) * 1000.0
-            per_batch_ms.append(elapsed_ms)
-            total_sessions += 1
-            total_messages += len(fork.messages)
-            batch_reports.append(
-                {
-                    "batch_index": index,
-                    "sessions_ingested": 1,
-                    "messages_ingested": len(fork.messages),
-                    "batch_ms": round(elapsed_ms, 3),
-                }
-            )
-    finally:
-        store.close()
-    return batch_reports, per_batch_ms, total_sessions, total_messages, stage_timings_s
-
-
-# ---------------------------------------------------------------------------
-# Top-level measurement
-# ---------------------------------------------------------------------------
-
-
 def measure_ingest_throughput(
     *,
     provider: str = _DEFAULT_PROVIDER,
@@ -601,7 +452,6 @@ def measure_ingest_throughput(
     seed: int = _DEFAULT_SEED,
     messages_min: int = _DEFAULT_MESSAGES_MIN,
     messages_max: int = _DEFAULT_MESSAGES_MAX,
-    lineage: bool = False,
     memory: bool = False,
     workdir: Path | None = None,
 ) -> dict[str, Any]:
@@ -612,9 +462,7 @@ def measure_ingest_throughput(
     failed measurements retain it with their report evidence. The archive and
     blob store stay entirely inside that directory.
 
-    ``lineage=True`` replaces the single-session corpus with a fork-heavy
-    workload: one parent session and ``batches`` forks that each replay the
-    parent's full prefix then diverge.  ``memory=True`` adds ``tracemalloc``
+    ``memory=True`` adds ``tracemalloc``
     allocation profiling — its overhead distorts timings, so a ``--memory`` run
     is not time-comparable to a normal run.
 
@@ -624,16 +472,13 @@ def measure_ingest_throughput(
     """
     if batches < 1:
         raise ValueError("batches must be >= 1")
-    if lineage and provider != "codex":
-        raise ValueError("--lineage currently uses the codex provider")
-    if not lineage:
-        from polylogue.schemas.synthetic import SyntheticCorpus
+    from polylogue.schemas.synthetic import SyntheticCorpus
 
-        available = set(SyntheticCorpus.available_providers())
-        if provider not in available:
-            raise ValueError(f"provider {provider!r} not available; choose from {sorted(available)}")
-        if messages_min < 1 or messages_max < messages_min:
-            raise ValueError("message bounds must satisfy 1 <= messages_min <= messages_max")
+    available = set(SyntheticCorpus.available_providers())
+    if provider not in available:
+        raise ValueError(f"provider {provider!r} not available; choose from {sorted(available)}")
+    if messages_min < 1 or messages_max < messages_min:
+        raise ValueError("message bounds must satisfy 1 <= messages_min <= messages_max")
 
     owns_workdir = workdir is None
     base = Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="plg-ingest-tput-"))
@@ -678,52 +523,19 @@ def measure_ingest_throughput(
             "skipped_raw_count": 0,
             "budget_exhausted": 0,
         }
-        prefix_len = messages_max
-        if not lineage:
-            source_files, expected_rows = _build_fixture_files(
-                base,
-                provider=provider,
-                batches=batches,
-                seed=seed,
-                messages_min=messages_min,
-                messages_max=messages_max,
-            )
-            if len(source_files) < batches:
-                batches = len(source_files)
-            expected_sessions = len(expected_rows)
-            expected_messages = sum(int(row["messages"]) for row in expected_rows)
-            input_digest = _input_digest(source_files)
-        else:
-            lineage_parent, lineage_forks = _build_lineage_sessions(batches=batches, prefix_len=prefix_len)
-            expected_sessions = batches + 1
-            expected_messages = (batches + 1) * prefix_len + batches * _LINEAGE_TAIL_MESSAGES
-            from polylogue.core.sources import origin_from_provider
-
-            lineage_origin = origin_from_provider(provider).value
-            expected_rows = []
-            parent_session_id = f"{lineage_origin}:{lineage_parent.provider_session_id}"
-            parent_ids = _parsed_message_ids(lineage_parent, parent_session_id)
-            for session in [lineage_parent, *lineage_forks]:
-                session_id = f"{lineage_origin}:{session.provider_session_id}"
-                if session.parent_session_provider_id:
-                    # Lineage readback recomposes the parent's stored prefix;
-                    # child-local prefix IDs are deliberately not persisted.
-                    message_ids = parent_ids + _parsed_message_ids(session, session_id, session.messages[prefix_len:])
-                else:
-                    message_ids = parent_ids
-                expected_rows.append(
-                    {
-                        "session_id": session_id,
-                        "messages": len(session.messages),
-                        "message_ids": sorted(message_ids),
-                        "source_sha256": hashlib.sha256(
-                            json.dumps({"provider_session_id": session.provider_session_id}).encode("utf-8")
-                        ).hexdigest(),
-                    }
-                )
-            input_digest = hashlib.sha256(
-                f"lineage:codex:{batches}:{prefix_len}:{_LINEAGE_TAIL_MESSAGES}:messages_min={messages_min}:messages_max={messages_max}".encode()
-            ).hexdigest()
+        source_files, expected_rows = _build_fixture_files(
+            base,
+            provider=provider,
+            batches=batches,
+            seed=seed,
+            messages_min=messages_min,
+            messages_max=messages_max,
+        )
+        if len(source_files) < batches:
+            batches = len(source_files)
+        expected_sessions = len(expected_rows)
+        expected_messages = sum(int(row["messages"]) for row in expected_rows)
+        input_digest = _input_digest(source_files)
 
         index_db = archive_root / "index.db"
         index_wal = archive_root / "index.db-wal"
@@ -740,29 +552,20 @@ def measure_ingest_throughput(
         proc_io_before = _read_proc_io()
 
         wall_start = time.perf_counter()
-        if lineage:
-            (
-                batch_reports,
-                per_batch_ms,
-                total_sessions,
-                total_messages,
-                stage_timings_s,
-            ) = _run_lineage_workload(archive_root, batches=batches, prefix_len=prefix_len)
-        else:
-            (
-                batch_reports,
-                per_batch_ms,
-                total_sessions,
-                total_messages,
-                stage_timings_s,
-                outcome,
-            ) = _run_corpus_workload(
-                archive_root,
-                provider=provider,
-                source_files=source_files,
-                expected_rows=expected_rows,
-                batches=batches,
-            )
+        (
+            batch_reports,
+            per_batch_ms,
+            total_sessions,
+            total_messages,
+            stage_timings_s,
+            outcome,
+        ) = _run_corpus_workload(
+            archive_root,
+            provider=provider,
+            source_files=source_files,
+            expected_rows=expected_rows,
+            batches=batches,
+        )
         total_wall_s = time.perf_counter() - wall_start
 
         rusage_after = _rusage_snapshot()
@@ -903,7 +706,6 @@ def measure_ingest_throughput(
             "provider": provider,
             "batches": len(batch_reports),
             "seed": seed,
-            "lineage": lineage,
             "total_wall_s": total_wall_s,
             "cpu_seconds_total": cpu_seconds_total,
             "peak_rss_mb": peak_rss_mb,
@@ -922,7 +724,7 @@ def measure_ingest_throughput(
             "ok": complete,
             "report_version": REPORT_VERSION,
             "tool": "bench ingest-throughput",
-            "workload": "lineage" if lineage else "corpus",
+            "workload": "corpus",
             "provider": provider,
             "batches": len(batch_reports),
             "seed": seed,
@@ -966,7 +768,6 @@ def measure_ingest_throughput(
                 provider=provider,
                 batches=len(batch_reports),
                 seed=seed,
-                lineage=lineage,
                 total_wall_s=total_wall_s,
                 cpu_seconds_total=cpu_seconds_total,
                 peak_rss_mb=peak_rss_mb,
@@ -1031,11 +832,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=_DEFAULT_SEED, help="Deterministic corpus seed")
     parser.add_argument("--messages-min", type=int, default=_DEFAULT_MESSAGES_MIN, help="Min messages per session")
     parser.add_argument("--messages-max", type=int, default=_DEFAULT_MESSAGES_MAX, help="Max messages per session")
-    parser.add_argument(
-        "--lineage",
-        action="store_true",
-        help="Fork-heavy workload: one parent + N forks that replay its prefix (exercises lineage + #2488 memoization)",
-    )
     parser.add_argument(
         "--memory",
         action="store_true",
@@ -1116,7 +912,6 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             messages_min=args.messages_min,
             messages_max=args.messages_max,
-            lineage=args.lineage,
             memory=args.memory,
             workdir=args.workdir,
         )

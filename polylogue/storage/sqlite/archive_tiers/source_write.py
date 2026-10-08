@@ -8,25 +8,36 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Sequence
-from contextlib import nullcontext
+from collections.abc import Callable, Generator, Iterable, Sequence
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Literal, cast, get_args
+from typing import TYPE_CHECKING, Literal, Protocol, cast, get_args
 
-from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
+from polylogue.archive.revision_authority import (
+    RawRevisionAuthority,
+    RawRevisionEnvelope,
+    RawRevisionKind,
+    canonical_authority_logical_key,
+    raw_authority_parser_fingerprint,
+)
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import (
+    CapturedZipMemberCoordinate,
+    MemberAddressingMode,
+    captured_zip_coordinate_receipt,
+    read_captured_zip_coordinate_receipt,
+)
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_EVIDENCE_KINDS,
     terminal_carrier_overwrite_predicate,
 )
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.security.excision_policy import ExcisionPolicyError, ExcisionPolicySnapshot
+from polylogue.storage.io_phase_metrics import connection_cursor
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
-from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
+from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update, raw_state_parameter
 
 _TERMINAL_CARRIER_GUARD_SQL = f"\nWHERE NOT {terminal_carrier_overwrite_predicate()}\n"
 
@@ -105,11 +116,12 @@ def is_blob_hash_excised(conn: sqlite3.Connection, blob_hash: bytes, *, schema: 
         raise ValueError(f"unsupported source schema: {schema}")
     if not _table_exists(conn, "excised_content", schema=schema):
         return False
-    row = conn.execute(
+    with connection_cursor(
+        conn,
         f"SELECT 1 FROM {schema}.excised_content WHERE removed_hash = ? AND hash_kind = 'blob_hash' LIMIT 1",
         (blob_hash,),
-    ).fetchone()
-    return row is not None
+    ) as cursor:
+        return cursor.fetchone() is not None
 
 
 def _assert_excision_policy(
@@ -323,21 +335,23 @@ def record_raw_container_coordinate(
     split_index: int,
     addressing_mode: MemberAddressingMode | str | None,
     content_identity: str | None = None,
+    captured_coordinate: CapturedZipMemberCoordinate | None = None,
     manage_transaction: bool = True,
 ) -> None:
-    """Persist one content-independent container coordinate for a raw row.
+    """Persist the actual immutable acquired member namespace and reading.
 
-    The coordinate is a hint for reacquisition; ``addressing_mode`` is the
-    part that carries meaning on its own, because ``split_index`` 0 is both
-    the first element of a split member and the only slot a whole-member
-    document can occupy. ``None`` re-asserts a coordinate without claiming a
-    reading, which is what a caller that did not acquire the member knows.
+    A coordinate-less operational string cannot establish member identity.
+    Whole-member and split-element readings remain distinct even at slot zero.
     """
     if entry_ordinal < 0 or split_index < 0:
         raise ValueError("container entry ordinal and split index must be non-negative")
     coordinate_format_value = require_vocabulary(
         coordinate_format, _CONTAINER_COORDINATE_FORMATS, field="coordinate_format"
     )
+    if captured_coordinate is None:
+        from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
+
+        raise RetainedZipMembershipUnprovedError("ZIP coordinate publication requires its captured member receipt")
     if content_identity is not None:
         if len(content_identity) != 64:
             raise ValueError("content_identity must be a 64-character digest")
@@ -350,29 +364,25 @@ def record_raw_container_coordinate(
         if addressing_mode is not None
         else None
     )
+    receipt = captured_zip_coordinate_receipt(captured_coordinate)
+    if (
+        captured_coordinate.entry_ordinal != entry_ordinal
+        or captured_coordinate.split_index != split_index
+        or captured_coordinate.addressing_mode.value != mode
+    ):
+        raise ValueError("captured ZIP receipt differs from its durable address")
     with conn if manage_transaction else nullcontext():
         conn.execute(
             """
             INSERT OR IGNORE INTO raw_container_coordinates (
-                raw_id, coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                raw_id, coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity, captured_coordinate
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (raw_id, coordinate_format_value, entry_ordinal, split_index, mode, content_identity),
+            (raw_id, coordinate_format_value, entry_ordinal, split_index, mode, content_identity, receipt),
         )
-        if mode is not None:
-            # A row written before the mode existed carries the same
-            # coordinate and an unknown reading; adopt the observed mode
-            # rather than rejecting the row as changed.
-            conn.execute(
-                """
-                UPDATE raw_container_coordinates SET addressing_mode = ?
-                WHERE raw_id = ? AND addressing_mode IS NULL
-                """,
-                (mode, raw_id),
-            )
         stored = conn.execute(
             """
-            SELECT coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity
+            SELECT coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity, captured_coordinate
             FROM raw_container_coordinates
             WHERE raw_id = ?
             """,
@@ -382,7 +392,9 @@ def record_raw_container_coordinate(
         expected = (coordinate_format, entry_ordinal, split_index)
         if stored_tuple is None or stored_tuple[:3] != expected:
             raise ValueError(f"raw container coordinate changed for {raw_id}")
-        if mode is not None and stored_tuple[3] != mode:
+        if stored_tuple[5] != receipt:
+            raise ValueError(f"captured ZIP coordinate changed or missing for {raw_id}")
+        if stored_tuple[3] != mode:
             raise ValueError(f"raw container addressing mode changed for {raw_id}")
         if content_identity is not None and stored_tuple[4] not in {None, content_identity}:
             raise ValueError(f"raw container content identity changed for {raw_id}")
@@ -399,7 +411,7 @@ def record_raw_container_coordinate(
         ).fetchone()
         if raw_identity is None:
             raise ValueError(f"raw session missing for {raw_id}")
-        if mode is not None and raw_identity[0] not in {None, mode}:
+        if raw_identity[0] not in {None, mode}:
             raise ValueError(f"raw addressing mode changed for {raw_id}")
         if content_identity is not None and raw_identity[1] not in {None, content_identity}:
             raise ValueError(f"raw content identity changed for {raw_id}")
@@ -412,6 +424,12 @@ def record_raw_container_coordinate(
             """,
             (mode, content_identity, raw_id),
         )
+
+
+def read_raw_captured_zip_coordinate(conn: sqlite3.Connection, raw_id: str) -> CapturedZipMemberCoordinate | None:
+    """Read immutable acquired member evidence without reopening its namespace."""
+    with _ConnectionSourceProducer(conn)._statement(_RAW_CAPTURED_ZIP_COORDINATE_SQL, (raw_id,)) as rows:
+        return _raw_captured_zip_coordinate_from_row(rows.fetchone())
 
 
 def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> CaptureModeResolution:
@@ -511,6 +529,9 @@ def _assert_existing_raw_identity(
     origin: str,
     native_id: str | None,
     source_path: str,
+    canonical_source_path: str,
+    captured_profile_key: str | None,
+    new_profile_receipt: bool = False,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -522,7 +543,7 @@ def _assert_existing_raw_identity(
                logical_source_key, revision_kind, source_revision,
                predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
                append_start_offset, append_end_offset, acquisition_generation,
-               revision_authority
+               revision_authority, canonical_source_path
         FROM raw_sessions WHERE raw_id = ?
         """,
         (raw_id,),
@@ -537,7 +558,10 @@ def _assert_existing_raw_identity(
     # as evidence made those routes mutually exclusive over identical bytes. A
     # refinement away from ``unknown-export`` is admitted; two confident but
     # different origins remain a genuine contradiction.
-    if values[1:6] != (native_id, source_path, source_index, blob_hash, blob_size):
+    if (
+        values[1:6] != (native_id, source_path, source_index, blob_hash, blob_size)
+        or values[-1] != canonical_source_path
+    ):
         raise ValueError(f"raw id is already bound to different acquisition evidence: {raw_id}")
     stored_origin = values[0]
     unknown_origin = Origin.UNKNOWN_EXPORT.value
@@ -545,8 +569,44 @@ def _assert_existing_raw_identity(
         raise ValueError(
             f"raw id is already bound to a conflicting origin: {raw_id} (stored={stored_origin!r}, incoming={origin!r})"
         )
-    if revision is not None and values[6:] != _revision_values(revision):
+    if revision is not None and values[6:-1] != _revision_values(revision):
         raise ValueError(f"raw id is already bound to a different revision envelope: {raw_id}")
+    record_raw_profile_identity(
+        conn, raw_id=raw_id, profile_key=captured_profile_key, allow_new_receipt=new_profile_receipt
+    )
+
+
+def require_profile_identity_key(value: str) -> str:
+    """Validate the existing Hermes profile qualifier at its durable boundary."""
+    if len(value) != 12 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError("profile identity must be a 12-character lowercase hexadecimal qualifier")
+    return value
+
+
+def record_raw_profile_identity(
+    conn: sqlite3.Connection, *, raw_id: str, profile_key: str | None, allow_new_receipt: bool = False
+) -> None:
+    """Retain acquisition's qualifier without changing an existing raw receipt."""
+    if profile_key is None:
+        return
+    profile_key = require_profile_identity_key(profile_key)
+    existing = conn.execute(
+        "SELECT profile_key FROM raw_profile_identity_receipts WHERE raw_id = ?", (raw_id,)
+    ).fetchone()
+    if existing is not None and existing[0] != profile_key:
+        raise ValueError(f"raw id is already bound to a different profile identity: {raw_id}")
+    if existing is None and not allow_new_receipt:
+        raise ValueError(f"retained raw is missing its original profile identity receipt: {raw_id}")
+    conn.execute(
+        "INSERT INTO raw_profile_identity_receipts(raw_id, profile_key) VALUES (?, ?) ON CONFLICT(raw_id) DO NOTHING",
+        (raw_id, profile_key),
+    )
+
+
+def read_raw_profile_identity(conn: sqlite3.Connection, raw_id: str) -> str | None:
+    """Read only the retained receipt; absence never permits path discovery."""
+    with _ConnectionSourceProducer(conn)._statement(_RAW_PROFILE_IDENTITY_SQL, (raw_id,)) as rows:
+        return _raw_profile_identity_from_row(rows.fetchone())
 
 
 def _backfill_raw_file_mtime(conn: sqlite3.Connection, *, raw_id: str, file_mtime_ms: int | None) -> None:
@@ -565,22 +625,10 @@ def apply_source_raw_state_update(
     state: RawSessionStateUpdate,
     manage_transaction: bool = True,
 ) -> None:
-    """Apply one canonical typed raw-state mutation to ``source.db``."""
-    set_clauses, compiled_params = compile_raw_state_update(
-        state,
-        now_ms=int(datetime.now(UTC).timestamp() * 1000),
+    """Apply the canonical typed producer on its actual Source transaction."""
+    _apply_source_raw_state_update(
+        _ConnectionSourceProducer(conn), raw_id, state=state, manage_transaction=manage_transaction
     )
-    if not set_clauses:
-        return
-
-    params = (*compiled_params, raw_id)
-    with conn if manage_transaction else nullcontext():
-        cursor = conn.execute(
-            f"UPDATE raw_sessions SET {', '.join(set_clauses)} WHERE raw_id = ?",
-            params,
-        )
-        if cursor.rowcount != 1:
-            raise KeyError(raw_id)
 
 
 def refine_raw_origin(conn: sqlite3.Connection, *, raw_id: str, origin: Origin | str) -> None:
@@ -634,9 +682,13 @@ def _assert_additional_blob_refs_admissible(
 def write_source_blob_refs(
     conn: sqlite3.Connection,
     raw_id: str,
-    refs: tuple[ArchiveSourceBlobRef, ...],
+    refs: Callable[[], Iterable[ArchiveSourceBlobRef]],
 ) -> None:
-    """Attach already-published blobs to one retained raw record.
+    """Attach already-published blobs in the caller's Source transaction.
+
+    The repeatable cursor preflights and writes closed pages without retaining
+    every reference. The caller commits or rolls back the complete operation;
+    this helper never ends its transaction.
 
     Gated on the durable excision ledger like every other writer in this
     module (``write_source_raw_session``,
@@ -651,31 +703,18 @@ def write_source_blob_refs(
     The refusal is per reference and names the hash, so a caller reports
     which item it did not attach rather than dropping it silently.
     """
-    if not refs:
-        return
-    # Preflight the complete batch so invalid storage-local categories cannot
-    # leave earlier refs written in a caller-owned transaction.
-    for ref in refs:
-        require_vocabulary(ref.ref_type, _BLOB_REF_TYPES, field="ref_type")
-    with conn:
-        for ref in refs:
-            if is_blob_hash_excised(conn, ref.blob_hash):
-                raise ContentExcisedError(
-                    blob_hash=ref.blob_hash,
-                    source_path=ref.source_path or f"blob_ref:{ref.ref_type}",
-                )
-            _insert_blob_ref(
-                conn,
-                ArchiveSourceBlobRef(
-                    blob_hash=ref.blob_hash,
-                    raw_id=raw_id,
-                    ref_type=ref.ref_type,
-                    source_path=ref.source_path,
-                    size_bytes=ref.size_bytes,
-                    acquired_at_ms=ref.acquired_at_ms,
-                    publication_receipt_id=ref.publication_receipt_id,
-                ),
-            )
+    _write_source_blob_refs(_ConnectionSourceProducer(conn), raw_id, refs)
+
+
+def _require_canonical_source_path(canonical_source_path: object) -> None:
+    """Refuse a raw row without its frozen canonical source path.
+
+    Live selection and frontier admission match raws by the canonical path
+    acquisition froze; a row without one makes that authority unavailable for
+    the whole archive, so the write boundary refuses it instead.
+    """
+    if not isinstance(canonical_source_path, str) or not canonical_source_path:
+        raise ValueError("a retained raw requires the canonical source path acquisition froze")
 
 
 def write_source_raw_session(
@@ -684,6 +723,8 @@ def write_source_raw_session(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
+    canonical_source_path: str,
+    captured_profile_key: str | None = None,
     source_index: int,
     payload: bytes,
     acquired_at_ms: int,
@@ -714,6 +755,7 @@ def write_source_raw_session(
     passes ``manage_transaction=False`` and owns the surrounding commit and any
     rollback-on-error itself.
     """
+    _require_canonical_source_path(canonical_source_path)
     conn.execute("PRAGMA foreign_keys = ON")
     origin_value = require_vocabulary(origin, Origin, field="origin")
     if origin_value is None:
@@ -733,25 +775,17 @@ def write_source_raw_session(
     )
 
     with conn if manage_transaction else nullcontext():
-        conn.execute(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, capture_mode, native_id, source_path, canonical_source_path, source_index, blob_hash,
-                blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
-                validated_at_ms, validation_status, validation_error, validation_drift_count,
-                validation_mode, detection_warnings_json, logical_source_key, revision_kind,
-                source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
-                append_end_offset, acquisition_generation, revision_authority
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(raw_id) DO NOTHING
-            """,
-            (
+        raw_inserted = _insert_raw_session(
+            _ConnectionSourceProducer(conn),
+            resolved_raw_id,
+            columns=_RAW_SESSION_INSERT_COLUMNS,
+            values=(
                 resolved_raw_id,
                 origin_value,
                 require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None,
                 native_id,
                 source_path,
-                str(Path(source_path).resolve()),
+                canonical_source_path,
                 source_index,
                 blob_hash,
                 blob_size,
@@ -790,6 +824,9 @@ def write_source_raw_session(
             origin=origin_value,
             native_id=native_id,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            new_profile_receipt=raw_inserted,
             source_index=source_index,
             blob_hash=blob_hash,
             blob_size=blob_size,
@@ -980,68 +1017,144 @@ def write_source_hook_event_batch(
     _assert_excision_policy(carrier_blob_hash, source_path=carrier_source_path, policy_snapshot=policy_snapshot)
     if is_blob_hash_excised(conn, carrier_blob_hash):
         raise ContentExcisedError(blob_hash=carrier_blob_hash, source_path=carrier_source_path)
-    written = 0
+    from polylogue.storage.blob_publication import consume_blob_publication_receipt
+
+    coordinates = [hook_carrier_coordinate(carrier_relative_path, carried.byte_offset) for carried in events]
     with conn if manage_transaction else nullcontext():
-        for carried in events:
-            coordinate = hook_carrier_coordinate(carrier_relative_path, carried.byte_offset)
+        # Every read and write is one statement per page or per batch, not per
+        # event: Source statements are re-authorized at every prepare, so a
+        # per-event statement family made the authorizer the route's cost.
+        recorded_events = _recorded_hook_events(conn, [carried.event.hook_event_id for carried in events])
+        recorded_carriers = _recorded_hook_carriers(conn, carrier_source_id, coordinates)
+        event_rows: list[tuple[object, ...]] = []
+        ref_rows: list[tuple[object, ...]] = []
+        carrier_rows: list[tuple[object, ...]] = []
+        for carried, coordinate in zip(events, coordinates, strict=True):
+            event = carried.event
             # A carrier grows, so a later revision retains a superset of an
             # earlier one's bytes under a different blob hash. The event is the
             # same evidence either way, and its FIRST-observed carrier blob is
             # what the archive already recorded -- exactly the convention
             # source-tier v36 set when it added this relation. Re-materializing
             # therefore keeps the recorded blob rather than conflicting on it;
-            # a genuine disagreement about the event's own content still raises
-            # from _insert_hook_event.
-            observed_blob_hash = _first_observed_hook_blob_hash(
-                conn,
-                hook_event_id=carried.event.hook_event_id,
-                source_id=carrier_source_id,
-                relative_path=coordinate,
+            # a genuine disagreement about the event's own content still raises.
+            recorded_event = recorded_events.get(event.hook_event_id)
+            recorded_carrier = recorded_carriers.get(coordinate)
+            observed_blob_hash = (
+                recorded_event[6]
+                if recorded_event is not None and recorded_event[6] is not None
+                else (recorded_carrier[1] if recorded_carrier is not None else None)
             )
             blob_hash = observed_blob_hash or carrier_blob_hash
-            _insert_hook_event(conn, carried.event, blob_hash=blob_hash)
-            _insert_blob_ref(
-                conn,
-                ArchiveSourceBlobRef(
-                    blob_hash=blob_hash,
-                    raw_id=carried.event.hook_event_id,
-                    ref_type="hook_payload",
-                    source_path=carrier_source_path,
-                    size_bytes=carried.line_bytes,
-                    acquired_at_ms=acquired_at_ms,
-                    publication_receipt_id=blob_publication_receipt_id,
-                ),
+            payload_json = _json_dumps(event.payload)
+            incoming_event = (
+                require_vocabulary(event.origin, Origin, field="hook_event.origin"),
+                event.native_id,
+                event.session_native_id,
+                event.event_type,
+                payload_json,
+                event.observed_at_ms,
+                blob_hash,
             )
-            _insert_hook_event_carrier(
-                conn,
-                source_id=carrier_source_id,
-                relative_path=coordinate,
-                hook_event=carried.event,
-                blob_hash=blob_hash,
-                role=carrier_role_value,
-                admitted_at_ms=acquired_at_ms,
+            if recorded_event is not None:
+                if recorded_event != incoming_event:
+                    raise HookEventConflictError(f"hook event conflict for {event.hook_event_id}")
+            else:
+                recorded_events[event.hook_event_id] = incoming_event
+                event_rows.append((event.hook_event_id, *incoming_event[:3], event.source_path, *incoming_event[3:]))
+            ref_rows.append(
+                (
+                    blob_hash,
+                    event.hook_event_id,
+                    "hook_payload",
+                    carrier_source_path,
+                    carried.line_bytes,
+                    acquired_at_ms,
+                )
             )
-            written += 1
-    return written
+            incoming_carrier = (
+                event.hook_event_id,
+                blob_hash,
+                hashlib.sha256(payload_json.encode()).digest(),
+                carrier_role_value,
+            )
+            if recorded_carrier is not None:
+                if recorded_carrier != incoming_carrier:
+                    raise HookEventConflictError(f"hook carrier conflict for {carrier_source_id}:{coordinate}")
+            else:
+                recorded_carriers[coordinate] = incoming_carrier
+                carrier_rows.append((carrier_source_id, coordinate, *incoming_carrier, acquired_at_ms))
+        conn.executemany(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, session_native_id, source_path, event_type,
+                payload_json, observed_at_ms, blob_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            event_rows,
+        )
+        # Hook coordinates keep their first observation.
+        conn.executemany(
+            "INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            ref_rows,
+        )
+        for consumed_blob_hash in dict.fromkeys(row[0] for row in ref_rows):
+            consume_blob_publication_receipt(conn, blob_publication_receipt_id, cast(bytes, consumed_blob_hash))
+        conn.executemany(
+            "INSERT INTO hook_event_carriers "
+            "(source_id, relative_path, hook_event_id, blob_hash, payload_digest, carrier_role, admitted_at_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            carrier_rows,
+        )
+    return len(events)
 
 
-def _first_observed_hook_blob_hash(
-    conn: sqlite3.Connection,
-    *,
-    hook_event_id: str,
-    source_id: str,
-    relative_path: str,
-) -> bytes | None:
-    """The carrier blob this event was first recorded against, if it was."""
+#: Page size of one recorded-identity read; paging bounds the statement's
+#: variable count, never the batch it reads.
+_HOOK_IDENTITY_PAGE = 500
 
-    row = conn.execute("SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = ?", (hook_event_id,)).fetchone()
-    if row is not None and row[0] is not None:
-        return bytes(row[0])
-    carrier = conn.execute(
-        "SELECT blob_hash FROM hook_event_carriers WHERE source_id = ? AND relative_path = ?",
-        (source_id, relative_path),
-    ).fetchone()
-    return bytes(carrier[0]) if carrier is not None else None
+
+def _recorded_hook_events(conn: sqlite3.Connection, hook_event_ids: Sequence[str]) -> dict[str, tuple[object, ...]]:
+    """The recorded semantics of every listed hook event that already exists."""
+    recorded: dict[str, tuple[object, ...]] = {}
+    distinct = tuple(dict.fromkeys(hook_event_ids))
+    for offset in range(0, len(distinct), _HOOK_IDENTITY_PAGE):
+        page = distinct[offset : offset + _HOOK_IDENTITY_PAGE]
+        placeholders = ",".join("?" for _ in page)
+        for row in conn.execute(
+            "SELECT hook_event_id, origin, native_id, session_native_id, event_type, payload_json, "
+            f"observed_at_ms, blob_hash FROM raw_hook_events WHERE hook_event_id IN ({placeholders})",
+            page,
+        ):
+            recorded[str(row[0])] = (
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+                row[5],
+                row[6],
+                None if row[7] is None else bytes(row[7]),
+            )
+    return recorded
+
+
+def _recorded_hook_carriers(
+    conn: sqlite3.Connection, source_id: str, relative_paths: Sequence[str]
+) -> dict[str, tuple[object, ...]]:
+    """The recorded carrier coordinate of every listed path that already exists."""
+    recorded: dict[str, tuple[object, ...]] = {}
+    distinct = tuple(dict.fromkeys(relative_paths))
+    for offset in range(0, len(distinct), _HOOK_IDENTITY_PAGE):
+        page = distinct[offset : offset + _HOOK_IDENTITY_PAGE]
+        placeholders = ",".join("?" for _ in page)
+        for row in conn.execute(
+            "SELECT relative_path, hook_event_id, blob_hash, payload_digest, carrier_role FROM hook_event_carriers "
+            f"WHERE source_id = ? AND relative_path IN ({placeholders})",
+            (source_id, *page),
+        ):
+            recorded[str(row[0])] = (row[1], bytes(row[2]), bytes(row[3]), row[4])
+    return recorded
 
 
 def delete_source_hook_event(
@@ -1074,6 +1187,8 @@ def write_source_raw_session_blob_ref(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
+    canonical_source_path: str,
+    captured_profile_key: str | None = None,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -1094,6 +1209,7 @@ def write_source_raw_session_blob_ref(
     """
     if len(blob_hash) != 32:
         raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
+    _require_canonical_source_path(canonical_source_path)
     conn.execute("PRAGMA foreign_keys = ON")
     origin_value = require_vocabulary(origin, Origin, field="origin")
     if origin_value is None:
@@ -1110,23 +1226,17 @@ def write_source_raw_session_blob_ref(
         native_id,
     )
     with conn if manage_transaction else nullcontext():
-        conn.execute(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, capture_mode, native_id, source_path, canonical_source_path, source_index, blob_hash,
-                blob_size, acquired_at_ms, file_mtime_ms, logical_source_key, revision_kind,
-                source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
-                append_end_offset, acquisition_generation, revision_authority
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(raw_id) DO NOTHING
-            """,
-            (
+        raw_inserted = _insert_raw_session(
+            _ConnectionSourceProducer(conn),
+            resolved_raw_id,
+            columns=_RAW_SESSION_BLOB_REF_INSERT_COLUMNS,
+            values=(
                 resolved_raw_id,
                 origin_value,
                 require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None,
                 native_id,
                 source_path,
-                str(Path(source_path).resolve()),
+                canonical_source_path,
                 source_index,
                 blob_hash,
                 blob_size,
@@ -1153,6 +1263,9 @@ def write_source_raw_session_blob_ref(
             origin=origin_value,
             native_id=native_id,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            new_profile_receipt=raw_inserted,
             source_index=source_index,
             blob_hash=blob_hash,
             blob_size=blob_size,
@@ -1213,67 +1326,7 @@ def bind_source_raw_revision(
     caller-managed commit window (polylogue-amg1) -- the caller must call
     ``conn.commit()`` (or ``conn.rollback()`` on failure) itself.
     """
-    with conn if manage_transaction else nullcontext():
-        cursor = conn.execute(
-            """
-            UPDATE raw_sessions
-            SET logical_source_key = ?, revision_kind = ?, source_revision = ?,
-                predecessor_source_revision = ?, predecessor_raw_id = ?, baseline_raw_id = ?, append_start_offset = ?,
-                append_end_offset = ?, acquisition_generation = ?, revision_authority = ?
-            WHERE raw_id = ?
-              AND (
-                  (
-                      revision_kind = 'unknown'
-                      AND revision_authority = 'quarantined'
-                      AND logical_source_key IS NULL
-                      AND source_revision IS NULL
-                  )
-                  OR logical_source_key LIKE ?
-              )
-            """,
-            (
-                *_revision_values(revision),
-                raw_id,
-                f"{PENDING_RAW_LOGICAL_SOURCE_PREFIX}%",
-            ),
-        )
-        if cursor.rowcount != 1:
-            existing = conn.execute(
-                """
-                SELECT logical_source_key, revision_kind, source_revision,
-                       predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
-                       append_start_offset, append_end_offset, acquisition_generation,
-                       revision_authority
-                FROM raw_sessions WHERE raw_id = ?
-                """,
-                (raw_id,),
-            ).fetchone()
-            if existing is None:
-                raise ValueError(f"raw revision bind found no raw row: {raw_id}")
-            existing_values = tuple(existing)
-            if existing_values == _revision_values(revision) or _is_compatible_classification_refinement(
-                existing_values, revision
-            ):
-                return
-            field_names = (
-                "logical_source_key",
-                "revision_kind",
-                "source_revision",
-                "predecessor_source_revision",
-                "predecessor_raw_id",
-                "baseline_raw_id",
-                "append_start_offset",
-                "append_end_offset",
-                "acquisition_generation",
-                "revision_authority",
-            )
-            proposed_values = _revision_values(revision)
-            differing = ", ".join(
-                f"{name}: stored={stored!r} proposed={proposed!r}"
-                for name, stored, proposed in zip(field_names, existing_values, proposed_values, strict=True)
-                if stored != proposed
-            )
-            raise ValueError(f"raw revision is already authoritative and differs for {raw_id}: {differing}")
+    _bind_source_raw_revision(_ConnectionSourceProducer(conn), raw_id, revision, manage_transaction=manage_transaction)
 
 
 def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> ArchiveRawSessionEnvelope:
@@ -1474,86 +1527,11 @@ def list_hook_events(
 
 
 def _insert_blob_ref(conn: sqlite3.Connection, ref: ArchiveSourceBlobRef) -> None:
-    ref_type = require_vocabulary(ref.ref_type, _BLOB_REF_TYPES, field="ref_type")
-    if ref.raw_id is None or ref.size_bytes is None or ref.acquired_at_ms is None:
-        raise ValueError("raw_id, size_bytes, and acquired_at_ms are required for blob refs")
-    if ref_type == "hook_payload":
-        # The logical hook row and its first-observed coordinate are immutable;
-        # replaying the same event through another carrier must not rewrite
-        # this representative blob-ref coordinate either.
-        conn.execute(
-            """
-            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT DO NOTHING
-            """,
-            (ref.blob_hash, ref.raw_id, ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
-        )
-    else:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO blob_refs (
-                blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (ref.blob_hash, ref.raw_id, ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
-        )
-    from polylogue.storage.blob_publication import consume_blob_publication_receipt
-
-    consume_blob_publication_receipt(conn, ref.publication_receipt_id, ref.blob_hash)
+    _write_blob_ref(_ConnectionSourceProducer(conn), ref)
 
 
 def _insert_artifact(conn: sqlite3.Connection, raw_id: str, artifact: ArchiveSourceArtifact) -> None:
-    conn.execute(
-        """
-        INSERT INTO raw_artifacts (
-            artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
-            support_status, classification_reason, parse_as_session, schema_eligible,
-            malformed_jsonl_lines, decode_error, cohort_id, link_group_key, sidecar_agent_type,
-            first_observed_at_ms, last_observed_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(artifact_id) DO UPDATE SET
-            raw_id = excluded.raw_id,
-            origin = excluded.origin,
-            source_path = excluded.source_path,
-            source_index = excluded.source_index,
-            artifact_kind = excluded.artifact_kind,
-            support_status = excluded.support_status,
-            classification_reason = excluded.classification_reason,
-            parse_as_session = excluded.parse_as_session,
-            schema_eligible = excluded.schema_eligible,
-            malformed_jsonl_lines = excluded.malformed_jsonl_lines,
-            decode_error = excluded.decode_error,
-            cohort_id = excluded.cohort_id,
-            link_group_key = excluded.link_group_key,
-            sidecar_agent_type = excluded.sidecar_agent_type,
-            last_observed_at_ms = excluded.last_observed_at_ms
-        """
-        # A terminal failure carrier is the durable statement that these
-        # bytes will never become a session, and the raw-frontier gate reads
-        # it to settle the path. Re-observing the coordinate re-derives an
-        # ordinary path classification, which must not take the row back.
-        + _TERMINAL_CARRIER_GUARD_SQL,
-        (
-            artifact.artifact_id,
-            raw_id,
-            require_vocabulary(artifact.origin, Origin, field="artifact.origin"),
-            artifact.source_path,
-            artifact.source_index,
-            artifact.artifact_kind,
-            require_vocabulary(artifact.support_status, ArtifactSupportStatus, field="artifact.support_status"),
-            artifact.classification_reason,
-            int(artifact.parse_as_session),
-            int(artifact.schema_eligible),
-            artifact.malformed_jsonl_lines,
-            artifact.decode_error,
-            artifact.cohort_id,
-            artifact.link_group_key,
-            artifact.sidecar_agent_type,
-            artifact.first_observed_at_ms,
-            artifact.last_observed_at_ms,
-        ),
-    )
+    _write_artifact(_ConnectionSourceProducer(conn), raw_id, artifact)
 
 
 def upsert_raw_artifact(
@@ -1563,96 +1541,8 @@ def upsert_raw_artifact(
     *,
     manage_transaction: bool = True,
 ) -> None:
-    """Attach or refresh typed artifact evidence for an existing raw row.
-
-    Ordinary artifact observations retain one carrier per source coordinate.
-    Failure evidence is attempt-scoped, so each retained raw gets its own
-    carrier while repeated evidence for that raw and coordinate remains an
-    idempotent replacement.
-    """
-    failure_kind = _is_raw_failure_artifact_kind(artifact.artifact_kind)
-    coordinate_predicate = (
-        "a.raw_id = ? AND a.origin = ? AND a.source_path = ? AND a.source_index = ?"
-        if failure_kind
-        else "a.origin = ? AND a.source_path = ? AND a.source_index = ? AND a.artifact_kind NOT IN ("
-        + ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
-        + ")"
-    )
-    coordinate_params: tuple[object, ...]
-    if failure_kind:
-        coordinate_params = (
-            raw_id,
-            require_vocabulary(artifact.origin, Origin, field="artifact.origin"),
-            artifact.source_path,
-            artifact.source_index,
-        )
-    else:
-        coordinate_params = (
-            require_vocabulary(artifact.origin, Origin, field="artifact.origin"),
-            artifact.source_path,
-            artifact.source_index,
-            *sorted(RAW_FAILURE_EVIDENCE_KINDS),
-        )
-    with conn if manage_transaction else nullcontext():
-        existing = conn.execute(
-            f"""
-            SELECT a.artifact_id, a.raw_id
-            FROM raw_artifacts AS a
-            WHERE {coordinate_predicate}
-            """,
-            coordinate_params,
-        ).fetchone()
-        if existing is not None:
-            # One coordinate has one authority carrier. A delayed census of
-            # stale retained bytes must not replace a carrier observed later.
-            if str(existing[1]) != raw_id:
-                incoming_receipt = conn.execute(
-                    """
-                    SELECT acquired_at_ms, rowid FROM blob_refs
-                    WHERE ref_id = ? AND ref_type = 'raw_payload'
-                    ORDER BY rowid DESC LIMIT 1
-                    """,
-                    (raw_id,),
-                ).fetchone()
-                existing_receipt = conn.execute(
-                    """
-                    SELECT acquired_at_ms, rowid FROM blob_refs
-                    WHERE ref_id = ? AND ref_type = 'raw_payload'
-                    ORDER BY rowid DESC LIMIT 1
-                    """,
-                    (str(existing[1]),),
-                ).fetchone()
-                if (incoming_receipt is None) != (existing_receipt is None):
-                    raise RuntimeError(
-                        "cannot compare artifact observation order across incompatible raw-payload receipt coverage"
-                    )
-                if incoming_receipt is None:
-                    incoming_observation = conn.execute(
-                        "SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?",
-                        (raw_id,),
-                    ).fetchone()
-                    existing_observation = conn.execute(
-                        "SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?",
-                        (str(existing[1]),),
-                    ).fetchone()
-                else:
-                    incoming_observation = incoming_receipt
-                    existing_observation = existing_receipt
-                if incoming_observation is None:
-                    raise KeyError(raw_id)
-                if existing_observation is None:
-                    raise KeyError(str(existing[1]))
-                # Receipt insertion order decides; a wall-clock stamp can roll back.
-                existing_order = int(existing_observation[1])
-                incoming_order = int(incoming_observation[1])
-                if existing_order >= incoming_order:
-                    conn.execute(
-                        "UPDATE raw_artifacts SET first_observed_at_ms = MIN(first_observed_at_ms, ?) WHERE artifact_id = ?",
-                        (artifact.first_observed_at_ms, str(existing[0])),
-                    )
-                    return
-            artifact = replace(artifact, artifact_id=str(existing[0]))
-        _insert_artifact(conn, raw_id, artifact)
+    """Publish the ordinary artifact producer on its existing Source transaction."""
+    _upsert_raw_artifact(_ConnectionSourceProducer(conn), raw_id, artifact, manage_transaction=manage_transaction)
 
 
 def _insert_hook_event(
@@ -1807,3 +1697,829 @@ __all__ = [
     "write_source_raw_session",
     "write_source_raw_session_blob_ref",
 ]
+
+
+_RAW_CAPTURED_ZIP_COORDINATE_SQL = "SELECT captured_coordinate FROM raw_container_coordinates WHERE raw_id = ?"
+
+
+def _raw_captured_zip_coordinate_from_row(row: sqlite3.Row | None) -> CapturedZipMemberCoordinate | None:
+    if row is None:
+        return None
+    if row[0] is None:
+        from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
+
+        raise RetainedZipMembershipUnprovedError("retained ZIP input lacks its captured namespace/member receipt")
+    if not isinstance(row[0], str):
+        raise ValueError("captured ZIP coordinate receipt must be text")
+    return read_captured_zip_coordinate_receipt(row[0])
+
+
+_RAW_APPEND_LOGICAL_KEY_SQL = "SELECT logical_source_key FROM raw_sessions WHERE raw_id=? AND revision_kind='append'"
+
+
+def _raw_append_logical_key_from_row(row: sqlite3.Row | None) -> str | None:
+    return None if row is None or row[0] is None else str(row[0])
+
+
+def read_raw_append_logical_key(conn: sqlite3.Connection, raw_id: str) -> str | None:
+    """Read the retained append envelope's declared session key."""
+    with _ConnectionSourceProducer(conn)._statement(_RAW_APPEND_LOGICAL_KEY_SQL, (raw_id,)) as rows:
+        return _raw_append_logical_key_from_row(rows.fetchone())
+
+
+_RAW_PROFILE_IDENTITY_SQL = "SELECT profile_key FROM raw_profile_identity_receipts WHERE raw_id = ?"
+
+
+def _raw_profile_identity_from_row(row: sqlite3.Row | None) -> str | None:
+    return None if row is None else require_profile_identity_key(row[0])
+
+
+class SourceRawStateProducer(Protocol):
+    """The typed raw-state writer's literal and exact raw-PK effect boundary."""
+
+    def state_transaction(self, manage_transaction: bool) -> AbstractContextManager[object]: ...
+    def state_literal(self, value: object) -> tuple[str, tuple[object, ...]]: ...
+    def state_write(self, raw_id: str, sql: str, parameters: tuple[object, ...]) -> int: ...
+
+
+def _apply_source_raw_state_update(
+    producer: SourceRawStateProducer,
+    raw_id: str,
+    *,
+    state: RawSessionStateUpdate,
+    manage_transaction: bool = True,
+) -> None:
+    """Build identical typed SQL with the owning host's exact literal operands."""
+    set_clauses, compiled_params = compile_raw_state_update(
+        state,
+        now_ms=int(datetime.now(UTC).timestamp() * 1000),
+        literal=producer.state_literal,
+    )
+    if not set_clauses:
+        return
+    raw_expression, raw_parameters = producer.state_literal(raw_id)
+    with producer.state_transaction(manage_transaction):
+        changed = producer.state_write(
+            raw_id,
+            f"UPDATE raw_sessions SET {', '.join(set_clauses)} WHERE raw_id = {raw_expression}",
+            (*compiled_params, *raw_parameters),
+        )
+        if changed != 1:
+            raise KeyError(raw_id)
+
+
+def _write_source_blob_refs(
+    producer: SourceBlobReferenceProducer,
+    raw_id: str,
+    refs: Callable[[], Iterable[ArchiveSourceBlobRef]],
+) -> None:
+    """Share the canonical complete preflight and reference/receipt writes."""
+    # Preflight the complete batch so invalid storage-local categories cannot
+    # leave earlier refs written in a caller-owned transaction.
+    for ref in refs():
+        require_vocabulary(ref.ref_type, _BLOB_REF_TYPES, field="ref_type")
+        if ref.size_bytes is None or ref.acquired_at_ms is None:
+            raise ValueError("size_bytes and acquired_at_ms are required for blob refs")
+        if producer.blob_ref_is_excised(ref.blob_hash):
+            raise ContentExcisedError(
+                blob_hash=ref.blob_hash, source_path=ref.source_path or f"blob_ref:{ref.ref_type}"
+            )
+    for ref in refs():
+        if producer.blob_ref_is_excised(ref.blob_hash):
+            raise ContentExcisedError(
+                blob_hash=ref.blob_hash,
+                source_path=ref.source_path or f"blob_ref:{ref.ref_type}",
+            )
+        _write_blob_ref(
+            producer,
+            ArchiveSourceBlobRef(
+                blob_hash=ref.blob_hash,
+                raw_id=raw_id,
+                ref_type=ref.ref_type,
+                source_path=ref.source_path,
+                size_bytes=ref.size_bytes,
+                acquired_at_ms=ref.acquired_at_ms,
+                publication_receipt_id=ref.publication_receipt_id,
+            ),
+        )
+
+
+class SourceRawSessionInsertProducer(Protocol):
+    """The two canonical raw acquisition INSERTs and their exact operands."""
+
+    def raw_insert_literal(self, value: object) -> tuple[str, tuple[object, ...]]: ...
+    def raw_insert(
+        self,
+        raw_id: str,
+        sql: str,
+        parameters: tuple[object, ...],
+    ) -> AbstractContextManager[sqlite3.Cursor]: ...
+
+
+_RAW_SESSION_INSERT_COLUMNS = (
+    "raw_id",
+    "origin",
+    "capture_mode",
+    "native_id",
+    "source_path",
+    "canonical_source_path",
+    "source_index",
+    "blob_hash",
+    "blob_size",
+    "acquired_at_ms",
+    "file_mtime_ms",
+    "parsed_at_ms",
+    "parse_error",
+    "validated_at_ms",
+    "validation_status",
+    "validation_error",
+    "validation_drift_count",
+    "validation_mode",
+    "detection_warnings_json",
+    "logical_source_key",
+    "revision_kind",
+    "source_revision",
+    "predecessor_source_revision",
+    "predecessor_raw_id",
+    "baseline_raw_id",
+    "append_start_offset",
+    "append_end_offset",
+    "acquisition_generation",
+    "revision_authority",
+)
+
+_RAW_SESSION_BLOB_REF_INSERT_COLUMNS = (
+    "raw_id",
+    "origin",
+    "capture_mode",
+    "native_id",
+    "source_path",
+    "canonical_source_path",
+    "source_index",
+    "blob_hash",
+    "blob_size",
+    "acquired_at_ms",
+    "file_mtime_ms",
+    "logical_source_key",
+    "revision_kind",
+    "source_revision",
+    "predecessor_source_revision",
+    "predecessor_raw_id",
+    "baseline_raw_id",
+    "append_start_offset",
+    "append_end_offset",
+    "acquisition_generation",
+    "revision_authority",
+)
+
+
+def _insert_raw_session(
+    producer: SourceRawSessionInsertProducer,
+    raw_id: str,
+    *,
+    columns: tuple[str, ...],
+    values: tuple[object, ...],
+) -> bool:
+    if columns not in {_RAW_SESSION_INSERT_COLUMNS, _RAW_SESSION_BLOB_REF_INSERT_COLUMNS}:
+        raise ValueError("raw acquisition requires its canonical INSERT columns")
+    if len(values) != len(columns) or values[0] != raw_id:
+        raise ValueError("raw acquisition values must match its declared identity and columns")
+    operands = tuple(producer.raw_insert_literal(value) for value in values)
+    expressions = ", ".join(expression for expression, _parameters in operands)
+    parameters = tuple(parameter for _expression, params in operands for parameter in params)
+    # SQLite allocates this NULL operand ordinarily and during preparation;
+    # the original witness retains its exact root INSERT rowid for replay.
+    with producer.raw_insert(
+        raw_id,
+        f"INSERT INTO raw_sessions (rowid, {', '.join(columns)}) VALUES (?, {expressions}) "
+        "ON CONFLICT(raw_id) DO NOTHING",
+        (None, *parameters),
+    ) as cursor:
+        return cursor.rowcount == 1
+
+
+class RawRevisionBindingProducer(Protocol):
+    """The existing raw bind's two declared read/write families."""
+
+    def binding_transaction(self, *, manage_transaction: bool) -> AbstractContextManager[object]: ...
+
+    def binding_literal(self, value: object) -> tuple[str, tuple[object, ...]]: ...
+
+    def update_binding(
+        self,
+        raw_id: str,
+        sql: str,
+        parameters: tuple[object, ...],
+        *,
+        parser_singleton_witness: PreparedParserSingletonWitness | None = None,
+    ) -> int: ...
+
+    def read_binding(self, raw_id: str, sql: str, parameters: tuple[object, ...]) -> tuple[object, ...] | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _ConnectionSourceProducer:
+    connection: sqlite3.Connection
+
+    @contextmanager
+    def _statement(self, sql: str, parameters: tuple[object, ...] = ()) -> Generator[sqlite3.Cursor, None, None]:
+        with connection_cursor(self.connection, sql, parameters) as cursor:
+            yield cursor
+
+    def binding_transaction(self, *, manage_transaction: bool) -> AbstractContextManager[object]:
+        return self.connection if manage_transaction else nullcontext()
+
+    def binding_literal(self, value: object) -> tuple[str, tuple[object, ...]]:
+        return "?", (value,)
+
+    def update_binding(
+        self,
+        raw_id: str,
+        sql: str,
+        parameters: tuple[object, ...],
+        *,
+        parser_singleton_witness: PreparedParserSingletonWitness | None = None,
+    ) -> int:
+        if parser_singleton_witness is not None:
+            raise ValueError("a prepared singleton witness requires its original prepared Source producer")
+        with self._statement(sql, parameters) as cursor:
+            return cursor.rowcount
+
+    def read_binding(self, raw_id: str, sql: str, parameters: tuple[object, ...]) -> tuple[object, ...] | None:
+        with self._statement(sql, parameters) as cursor:
+            row = cursor.fetchone()
+        return None if row is None else tuple(row)
+
+    def membership_decision_write(
+        self,
+        raw_id: str,
+        logical_source_key: str,
+        sql: str,
+        parameters: tuple[object, ...],
+    ) -> None:
+        with self._statement(sql, parameters):
+            pass
+
+    def raw_insert_literal(self, value: object) -> tuple[str, tuple[object, ...]]:
+        return self.binding_literal(value)
+
+    def raw_insert(
+        self,
+        raw_id: str,
+        sql: str,
+        parameters: tuple[object, ...],
+    ) -> AbstractContextManager[sqlite3.Cursor]:
+        return self._statement(sql, parameters)
+
+    def state_transaction(self, manage_transaction: bool) -> AbstractContextManager[object]:
+        return self.binding_transaction(manage_transaction=manage_transaction)
+
+    def state_literal(self, value: object) -> tuple[str, tuple[object, ...]]:
+        return raw_state_parameter(value)
+
+    def state_write(self, raw_id: str, sql: str, parameters: tuple[object, ...]) -> int:
+        return self.update_binding(raw_id, sql, parameters)
+
+    def artifact_transaction(self, manage_transaction: bool) -> AbstractContextManager[object]:
+        return self.connection if manage_transaction else nullcontext()
+
+    def artifact_literal(self, value: object) -> tuple[str, tuple[object, ...]]:
+        return "?", (value,)
+
+    def artifact_coordinate_rows(
+        self,
+        raw_id: str,
+        artifact: ArchiveSourceArtifact,
+    ) -> AbstractContextManager[sqlite3.Cursor]:
+        sql, parameters = _artifact_coordinate_query(raw_id, artifact, columns="a.artifact_id, a.raw_id")
+        return self._statement(sql, parameters)
+
+    def artifact_observation_rows(
+        self,
+        raw_id: str,
+        *,
+        receipt: bool,
+    ) -> AbstractContextManager[sqlite3.Cursor]:
+        sql, parameters = _artifact_observation_query(raw_id, receipt=receipt)
+        return self._statement(sql, parameters)
+
+    def artifact_validation_failed(self, raw_id: str) -> bool:
+        with self._statement(_ARTIFACT_VALIDATION_STATUS_SQL, (raw_id,)) as rows:
+            row = rows.fetchone()
+        return row is not None and str(row[0] or "") == "failed"
+
+    def artifact_write(
+        self,
+        sql: str,
+        parameters: tuple[object, ...],
+        artifact_id: str,
+        *,
+        allocation: bool,
+    ) -> AbstractContextManager[sqlite3.Cursor]:
+        return self._statement(sql, parameters)
+
+    def blob_ref_is_excised(self, blob_hash: bytes) -> bool:
+        return is_blob_hash_excised(self.connection, blob_hash)
+
+    def blob_ref_literal(self, value: object) -> tuple[str, tuple[object, ...]]:
+        return self.binding_literal(value)
+
+    def blob_ref_write(
+        self,
+        ref: ArchiveSourceBlobRef,
+        sql: str,
+        parameters: tuple[object, ...],
+    ) -> AbstractContextManager[sqlite3.Cursor]:
+        return self._statement(sql, parameters)
+
+    def consume_reference_receipt(self, ref: ArchiveSourceBlobRef) -> None:
+        from polylogue.storage.blob_publication import consume_blob_publication_receipt
+
+        consume_blob_publication_receipt(self.connection, ref.publication_receipt_id, ref.blob_hash)
+
+
+_RAW_REVISION_BINDING_COLUMNS = (
+    "logical_source_key, revision_kind, source_revision, predecessor_source_revision, "
+    "predecessor_raw_id, baseline_raw_id, append_start_offset, append_end_offset, "
+    "acquisition_generation, revision_authority"
+)
+
+_RAW_REVISION_BINDING_SQL = f"SELECT {_RAW_REVISION_BINDING_COLUMNS} FROM raw_sessions WHERE raw_id=?"
+
+_RAW_SINGLETON_REVISION_BINDING_SQL = (
+    f"SELECT {_RAW_REVISION_BINDING_COLUMNS}, "
+    "EXISTS(SELECT 1 FROM raw_session_memberships WHERE raw_id=raw_sessions.raw_id) "
+    "FROM raw_sessions WHERE raw_id=?"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedParserSingletonRevision:
+    """The canonical singleton's predicted binding, before any Source write."""
+
+    raw_id: str
+    before_binding: tuple[object, ...]
+    revision: RawRevisionEnvelope
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedParserSingletonWitness:
+    """One original producer's already-prepared singleton identity operand."""
+
+    seal: PreparedIndexMutation
+    producer_identity: object
+    raw_id: str
+    blob_hash: bytes
+    parser_fingerprint: str
+    logical_source_key: str
+    before_binding: tuple[object, ...]
+    prepared_output: Sequence[ParsedSession]
+
+
+def _prepare_parser_singleton_revision(
+    producer: RawRevisionBindingProducer,
+    raw_id: str,
+    logical_source_key: str,
+) -> PreparedParserSingletonRevision | None:
+    """Refine a parser-proved singleton while preserving acquired FULL bytes.
+
+    Pending acquisition is already FULL. Its source revision and byte-chain
+    coordinates remain the actual acquired envelope, rather than being
+    replaced by the fallback identity used for an UNKNOWN raw.
+    """
+    if canonical_authority_logical_key(logical_source_key) != logical_source_key:
+        raise ValueError("parser singleton binding requires its canonical logical source key")
+    existing = producer.read_binding(raw_id, _RAW_SINGLETON_REVISION_BINDING_SQL, (raw_id,))
+    if existing is None:
+        raise ValueError(f"parser revision binding found no raw row: {raw_id}")
+    # Membership authority was prepared by its own canonical census. A
+    # receipt refresh must not promote that normalized raw back to FULL.
+    if bool(existing[10]):
+        return None
+    kind = RawRevisionKind(str(existing[1]))
+    pending = isinstance(existing[0], str) and existing[0].startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX)
+    if kind is RawRevisionKind.UNKNOWN:
+        if tuple(existing[:10]) != (None, "unknown", None, None, None, None, None, None, None, "quarantined"):
+            raise ValueError("parser singleton binding requires the original unclassified raw envelope")
+        revision = RawRevisionEnvelope(
+            logical_source_key=logical_source_key,
+            kind=RawRevisionKind.FULL,
+            source_revision=raw_id,
+            acquisition_generation=0,
+            authority=RawRevisionAuthority.QUARANTINED,
+        )
+    elif kind is RawRevisionKind.FULL and pending:
+        if not isinstance(existing[2], str):
+            raise ValueError("pending FULL parser input has no acquired source revision")
+        generation = existing[8]
+        if type(generation) is not int:
+            raise ValueError("pending FULL parser input has no canonical integer generation")
+        revision = RawRevisionEnvelope(
+            logical_source_key=logical_source_key,
+            kind=kind,
+            source_revision=existing[2],
+            predecessor_source_revision=cast(str | None, existing[3]),
+            predecessor_raw_id=cast(str | None, existing[4]),
+            baseline_raw_id=cast(str | None, existing[5]),
+            append_start_offset=cast(int | None, existing[6]),
+            append_end_offset=cast(int | None, existing[7]),
+            acquisition_generation=generation,
+            authority=RawRevisionAuthority(str(existing[9])),
+        )
+    else:
+        return None
+    return PreparedParserSingletonRevision(raw_id, tuple(existing[:10]), revision)
+
+
+def prepare_parser_singleton_witness(
+    seal: PreparedIndexMutation,
+    prepared: PreparedParserSingletonRevision,
+    *,
+    prepared_output: Sequence[ParsedSession],
+    parser_fingerprint: str,
+) -> PreparedParserSingletonWitness:
+    """Bind the actual prepared output to the pinned original Raw and phase."""
+    from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.sources.prepared_jsonl import PreparedSessionSequence
+
+    if not isinstance(prepared_output, PreparedSessionSequence):
+        raise ValueError("parser singleton witness requires the original prepared artifact output")
+    prepared_output.artifact.verify_files(full=False)
+    if prepared_output.artifact.error is not None:
+        raise ValueError("parser singleton witness cannot accept a failed prepared artifact")
+    if parser_fingerprint != raw_authority_parser_fingerprint():
+        raise ValueError("parser singleton witness requires the current parser fingerprint")
+    if len(prepared_output) != 1 or not isinstance(prepared_output[0], ParsedSession):
+        raise ValueError("parser singleton witness requires exactly one prepared session")
+    session = prepared_output[0]
+    observed_key = canonical_authority_logical_key(f"{session.source_name.value}:{session.provider_session_id}")
+    if observed_key != prepared.revision.logical_source_key:
+        raise ValueError("parser singleton witness does not match its prepared output")
+    producer_identity = seal.source_producer_identity
+    if producer_identity is None:
+        raise ValueError("parser singleton witness requires its active original producer")
+    with seal.original_rows(
+        "source",
+        f"SELECT {_RAW_REVISION_BINDING_COLUMNS}, blob_hash FROM raw_sessions WHERE raw_id=?",
+        (prepared.raw_id,),
+    ) as rows:
+        original = rows.fetchone()
+    if original is None or tuple(original[:10]) != prepared.before_binding:
+        raise ValueError("parser singleton witness does not match the original Raw binding")
+    blob_hash = original[10]
+    if not isinstance(blob_hash, bytes) or len(blob_hash) != 32:
+        raise ValueError("parser singleton witness requires its original acquired blob identity")
+    if prepared_output.artifact.blob_hash != blob_hash.hex():
+        raise ValueError("parser singleton witness output belongs to different acquired bytes")
+    return PreparedParserSingletonWitness(
+        seal,
+        producer_identity,
+        prepared.raw_id,
+        blob_hash,
+        parser_fingerprint,
+        observed_key,
+        prepared.before_binding,
+        prepared_output,
+    )
+
+
+def _bind_parser_singleton_revision(
+    producer: RawRevisionBindingProducer,
+    raw_id: str,
+    logical_source_key: str,
+    *,
+    witness: PreparedParserSingletonWitness,
+) -> bool:
+    """Apply the canonical prediction only with its exact prepared operand."""
+    prepared = _prepare_parser_singleton_revision(producer, raw_id, logical_source_key)
+    if prepared is None:
+        return False
+    if (
+        witness.raw_id != raw_id
+        or witness.before_binding != prepared.before_binding
+        or witness.logical_source_key != logical_source_key
+        or witness.parser_fingerprint != raw_authority_parser_fingerprint()
+        or witness.producer_identity is not witness.seal.source_producer_identity
+        or len(witness.prepared_output) != 1
+        or canonical_authority_logical_key(
+            f"{witness.prepared_output[0].source_name.value}:{witness.prepared_output[0].provider_session_id}"
+        )
+        != logical_source_key
+    ):
+        raise ValueError("parser singleton binding lacks its exact original prepared witness")
+    _bind_source_raw_revision(
+        producer,
+        raw_id,
+        prepared.revision,
+        manage_transaction=False,
+        parser_singleton_witness=witness,
+    )
+    return True
+
+
+def _bind_source_raw_revision(
+    producer: RawRevisionBindingProducer,
+    raw_id: str,
+    revision: RawRevisionEnvelope,
+    *,
+    manage_transaction: bool,
+    parser_singleton_witness: PreparedParserSingletonWitness | None = None,
+) -> None:
+    """Run the same canonical bind against its actual declared host."""
+    with producer.binding_transaction(manage_transaction=manage_transaction):
+        operands = tuple(
+            producer.binding_literal(value)
+            for value in (*_revision_values(revision), raw_id, f"{PENDING_RAW_LOGICAL_SOURCE_PREFIX}%")
+        )
+        (
+            logical_key,
+            kind,
+            source_revision,
+            predecessor_revision,
+            predecessor_raw,
+            baseline_raw,
+            append_start,
+            append_end,
+            generation,
+            authority,
+            raw_key,
+            pending_prefix,
+        ) = (expression for expression, _parameters in operands)
+        binding_options = (
+            {"parser_singleton_witness": parser_singleton_witness} if parser_singleton_witness is not None else {}
+        )
+        updated_row_count = producer.update_binding(
+            raw_id,
+            f"""
+            UPDATE raw_sessions
+            SET logical_source_key = {logical_key}, revision_kind = {kind}, source_revision = {source_revision},
+                predecessor_source_revision = {predecessor_revision}, predecessor_raw_id = {predecessor_raw},
+                baseline_raw_id = {baseline_raw}, append_start_offset = {append_start},
+                append_end_offset = {append_end}, acquisition_generation = {generation}, revision_authority = {authority}
+            WHERE raw_id = {raw_key}
+              AND (
+                  (
+                      revision_kind = 'unknown'
+                      AND revision_authority = 'quarantined'
+                      AND logical_source_key IS NULL
+                      AND source_revision IS NULL
+                  )
+                  OR logical_source_key LIKE {pending_prefix}
+              )
+            """,
+            tuple(parameter for _expression, parameters in operands for parameter in parameters),
+            **binding_options,
+        )
+        if updated_row_count != 1:
+            existing = producer.read_binding(raw_id, _RAW_REVISION_BINDING_SQL, (raw_id,))
+            if existing is None:
+                raise ValueError(f"raw revision bind found no raw row: {raw_id}")
+            existing_values = tuple(existing)
+            if existing_values == _revision_values(revision) or _is_compatible_classification_refinement(
+                existing_values, revision
+            ):
+                return
+            field_names = (
+                "logical_source_key",
+                "revision_kind",
+                "source_revision",
+                "predecessor_source_revision",
+                "predecessor_raw_id",
+                "baseline_raw_id",
+                "append_start_offset",
+                "append_end_offset",
+                "acquisition_generation",
+                "revision_authority",
+            )
+            proposed_values = _revision_values(revision)
+            differing = ", ".join(
+                f"{name}: stored={stored!r} proposed={proposed!r}"
+                for name, stored, proposed in zip(field_names, existing_values, proposed_values, strict=True)
+                if stored != proposed
+            )
+            raise ValueError(f"raw revision is already authoritative and differs for {raw_id}: {differing}")
+
+
+class SourceBlobReferenceProducer(Protocol):
+    def blob_ref_is_excised(self, blob_hash: bytes) -> bool: ...
+    def blob_ref_literal(self, value: object) -> tuple[str, tuple[object, ...]]: ...
+    def blob_ref_write(
+        self,
+        ref: ArchiveSourceBlobRef,
+        sql: str,
+        parameters: tuple[object, ...],
+    ) -> AbstractContextManager[sqlite3.Cursor]: ...
+    def consume_reference_receipt(self, ref: ArchiveSourceBlobRef) -> None: ...
+
+
+def _write_blob_ref(producer: SourceBlobReferenceProducer, ref: ArchiveSourceBlobRef) -> None:
+    """Retain the canonical reference and consume its exact publication receipt."""
+    ref_type = require_vocabulary(ref.ref_type, _BLOB_REF_TYPES, field="ref_type")
+    if ref.raw_id is None or ref.size_bytes is None or ref.acquired_at_ms is None:
+        raise ValueError("raw_id, size_bytes, and acquired_at_ms are required for blob refs")
+    operands = tuple(
+        producer.blob_ref_literal(value)
+        for value in (
+            ref.blob_hash,
+            ref.raw_id,
+            ref_type,
+            ref.source_path,
+            ref.size_bytes,
+            ref.acquired_at_ms,
+        )
+    )
+    expressions = ", ".join(expression for expression, _parameters in operands)
+    parameters = tuple(parameter for _expression, values in operands for parameter in values)
+    # Hook coordinates keep their first observation. Other references retain
+    # the existing physical REPLACE ordering used by raw receipt selection.
+    sql = (
+        "INSERT INTO blob_refs (rowid, blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
+        f"VALUES (?, {expressions}) ON CONFLICT DO NOTHING"
+        if ref_type == "hook_payload"
+        else "INSERT OR REPLACE INTO blob_refs (rowid, blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
+        f"VALUES (?, {expressions})"
+    )
+    with producer.blob_ref_write(ref, sql, (None, *parameters)):
+        pass
+    producer.consume_reference_receipt(ref)
+
+
+class SourceArtifactProducer(Protocol):
+    """The existing artifact producer's exact coordinate and observation inputs."""
+
+    def artifact_transaction(self, manage_transaction: bool) -> AbstractContextManager[object]: ...
+    def artifact_literal(self, value: object) -> tuple[str, tuple[object, ...]]: ...
+    def artifact_coordinate_rows(
+        self,
+        raw_id: str,
+        artifact: ArchiveSourceArtifact,
+    ) -> AbstractContextManager[sqlite3.Cursor]: ...
+    def artifact_observation_rows(
+        self,
+        raw_id: str,
+        *,
+        receipt: bool,
+    ) -> AbstractContextManager[sqlite3.Cursor]: ...
+    def artifact_validation_failed(self, raw_id: str) -> bool: ...
+    def artifact_write(
+        self,
+        sql: str,
+        parameters: tuple[object, ...],
+        artifact_id: str,
+        *,
+        allocation: bool,
+    ) -> AbstractContextManager[sqlite3.Cursor]: ...
+
+
+_ARTIFACT_VALIDATION_STATUS_SQL = "SELECT validation_status FROM raw_sessions WHERE raw_id=?"
+
+
+def _artifact_coordinate_query(
+    raw_id: str,
+    artifact: ArchiveSourceArtifact,
+    *,
+    columns: str,
+) -> tuple[str, tuple[object, ...]]:
+    # Both hosts select the identical complete matching coordinate family.
+    if columns not in {"a.rowid", "a.artifact_id, a.raw_id"}:
+        raise ValueError("artifact coordinate read requires its declared columns")
+    origin = require_vocabulary(artifact.origin, Origin, field="artifact.origin")
+    if _is_raw_failure_artifact_kind(artifact.artifact_kind):
+        predicate = "a.raw_id = ? AND a.origin = ? AND a.source_path = ? AND a.source_index = ?"
+        parameters: tuple[object, ...] = (raw_id, origin, artifact.source_path, artifact.source_index)
+    else:
+        predicate = "a.origin = ? AND a.source_path = ? AND a.source_index = ? AND a.artifact_kind NOT IN ("
+        predicate += ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS) + ")"
+        parameters = (origin, artifact.source_path, artifact.source_index, *sorted(RAW_FAILURE_EVIDENCE_KINDS))
+    return f"SELECT {columns} FROM raw_artifacts AS a WHERE {predicate}", parameters
+
+
+def _artifact_observation_query(raw_id: str, *, receipt: bool) -> tuple[str, tuple[object, ...]]:
+    return (
+        "SELECT acquired_at_ms, rowid FROM blob_refs "
+        "WHERE ref_id = ? AND ref_type = 'raw_payload' ORDER BY rowid DESC LIMIT 1"
+        if receipt
+        else "SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?",
+        (raw_id,),
+    )
+
+
+def _write_artifact(producer: SourceArtifactProducer, raw_id: str, artifact: ArchiveSourceArtifact) -> None:
+    values = (
+        artifact.artifact_id,
+        raw_id,
+        require_vocabulary(artifact.origin, Origin, field="artifact.origin"),
+        artifact.source_path,
+        artifact.source_index,
+        artifact.artifact_kind,
+        require_vocabulary(artifact.support_status, ArtifactSupportStatus, field="artifact.support_status"),
+        artifact.classification_reason,
+        int(artifact.parse_as_session),
+        int(artifact.schema_eligible),
+        artifact.malformed_jsonl_lines,
+        artifact.decode_error,
+        artifact.cohort_id,
+        artifact.link_group_key,
+        artifact.sidecar_agent_type,
+        artifact.first_observed_at_ms,
+        artifact.last_observed_at_ms,
+    )
+    literals = tuple(producer.artifact_literal(value) for value in values)
+    expressions = ", ".join(expression for expression, _parameters in literals)
+    parameters = (None, *(parameter for _expression, operands in literals for parameter in operands))
+    with producer.artifact_write(
+        f"""
+        INSERT INTO raw_artifacts (
+            rowid, artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+            support_status, classification_reason, parse_as_session, schema_eligible,
+            malformed_jsonl_lines, decode_error, cohort_id, link_group_key, sidecar_agent_type,
+            first_observed_at_ms, last_observed_at_ms
+        ) VALUES (?, {expressions})
+        ON CONFLICT(artifact_id) DO UPDATE SET
+            raw_id = excluded.raw_id,
+            origin = excluded.origin,
+            source_path = excluded.source_path,
+            source_index = excluded.source_index,
+            artifact_kind = excluded.artifact_kind,
+            support_status = excluded.support_status,
+            classification_reason = excluded.classification_reason,
+            parse_as_session = excluded.parse_as_session,
+            schema_eligible = excluded.schema_eligible,
+            malformed_jsonl_lines = excluded.malformed_jsonl_lines,
+            decode_error = excluded.decode_error,
+            cohort_id = excluded.cohort_id,
+            link_group_key = excluded.link_group_key,
+            sidecar_agent_type = excluded.sidecar_agent_type,
+            last_observed_at_ms = excluded.last_observed_at_ms
+        """
+        # A terminal failure carrier is the durable statement that these
+        # bytes will never become a session, and the raw-frontier gate reads
+        # it to settle the path. Re-observing the coordinate re-derives an
+        # ordinary path classification, which must not take the row back.
+        + _TERMINAL_CARRIER_GUARD_SQL,
+        parameters,
+        artifact.artifact_id,
+        allocation=True,
+    ):
+        pass
+
+
+def _upsert_raw_artifact(
+    producer: SourceArtifactProducer,
+    raw_id: str,
+    artifact: ArchiveSourceArtifact,
+    *,
+    manage_transaction: bool = True,
+) -> None:
+    """Use the canonical coordinate winner on ordinary or selected prepared state."""
+    with producer.artifact_transaction(manage_transaction):
+        with producer.artifact_coordinate_rows(raw_id, artifact) as artifact_rows:
+            existing = artifact_rows.fetchone()
+        if existing is not None:
+            # Original receipt insertion order remains the carrier authority.
+            if str(existing[1]) != raw_id:
+                with producer.artifact_observation_rows(raw_id, receipt=True) as rows:
+                    incoming_receipt = rows.fetchone()
+                with producer.artifact_observation_rows(str(existing[1]), receipt=True) as rows:
+                    existing_receipt = rows.fetchone()
+                if (incoming_receipt is None) != (existing_receipt is None):
+                    raise RuntimeError(
+                        "cannot compare artifact observation order across incompatible raw-payload receipt coverage"
+                    )
+                if incoming_receipt is None:
+                    with producer.artifact_observation_rows(raw_id, receipt=False) as rows:
+                        incoming_observation = rows.fetchone()
+                    with producer.artifact_observation_rows(str(existing[1]), receipt=False) as rows:
+                        existing_observation = rows.fetchone()
+                else:
+                    incoming_observation = incoming_receipt
+                    existing_observation = existing_receipt
+                if incoming_observation is None:
+                    raise KeyError(raw_id)
+                if existing_observation is None:
+                    raise KeyError(str(existing[1]))
+                if int(existing_observation[1]) >= int(incoming_observation[1]):
+                    timestamp_expression, timestamp_parameters = producer.artifact_literal(
+                        artifact.first_observed_at_ms
+                    )
+                    id_expression, id_parameters = producer.artifact_literal(str(existing[0]))
+                    with producer.artifact_write(
+                        "UPDATE raw_artifacts SET first_observed_at_ms = "
+                        f"MIN(first_observed_at_ms, {timestamp_expression}) WHERE artifact_id = {id_expression}",
+                        (*timestamp_parameters, *id_parameters),
+                        str(existing[0]),
+                        allocation=False,
+                    ):
+                        pass
+                    return
+            artifact = replace(artifact, artifact_id=str(existing[0]))
+        _write_artifact(producer, raw_id, artifact)
+
+
+if TYPE_CHECKING:
+    from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+if TYPE_CHECKING:
+    from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation

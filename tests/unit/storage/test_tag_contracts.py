@@ -6,17 +6,19 @@ session-scoped reads. Uses the async repository interface.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 
 import pytest
 
+from polylogue.operations.daemon_errors import DaemonOperationRejectedError
 from tests.infra.archive_scenarios import (
     ArchiveScenario,
     ScenarioMessage,
     repository_for_scenario_db,
     seed_workspace_scenarios,
 )
+from tests.infra.archive_templates import run_off_event_loop
 
 # ---------------------------------------------------------------------------
 # Tag lifecycle operation catalog
@@ -42,9 +44,11 @@ MULTI_SESSION_CASES: list[tuple[int, str]] = [
 
 
 TAG_VALIDATION_CASES: list[tuple[str, str, type[Exception], str]] = [
+    # An empty tag fails the operation's declared request schema before it is
+    # sent; the daemon's tag actuator refuses the rest before durable acceptance.
     ("", "empty string tag", ValueError, "add_tag rejects empty string"),
-    ("   ", "whitespace-only tag", ValueError, "add_tag rejects whitespace-only"),
-    ("x" * 201, "201-char tag exceeds limit", ValueError, "add_tag rejects >200 char tag"),
+    ("   ", "whitespace-only tag", DaemonOperationRejectedError, "add_tag rejects whitespace-only"),
+    ("x" * 201, "201-char tag exceeds limit", DaemonOperationRejectedError, "add_tag rejects >200 char tag"),
 ]
 
 
@@ -63,6 +67,28 @@ def _scenario(name: str, tags: list[str] | None = None) -> ArchiveScenario:
     )
 
 
+@pytest.fixture
+def owned_daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[Path], None]]:
+    """Serve a seeded scenario archive through the real resident operation stack.
+
+    Public tag and metadata mutations are daemon-owned: the facade submits the
+    declared operation over the archive's socket and refuses without one.
+    """
+    from contextlib import ExitStack
+
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from tests.infra.daemon_operations import running_daemon_operations
+
+    monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
+    with ExitStack() as stack:
+
+        def start(db_path: Path) -> None:
+            root = db_path.parent
+            stack.enter_context(running_daemon_operations(root, socket_path=daemon_socket_path(root)))
+
+        yield start
+
+
 # ---------------------------------------------------------------------------
 # Tag lifecycle CRUD tests
 # ---------------------------------------------------------------------------
@@ -76,10 +102,12 @@ async def test_tag_lifecycle_crud(
     expected: list[str],
     desc: str,
     workspace_env: Mapping[str, Path],
+    owned_daemon: Callable[[Path], None],
 ) -> None:
     """Catalog-driven tag lifecycle: add, duplicate, remove, bulk-add."""
     scenario = _scenario("tag-lifecycle", initial_tags if initial_tags else None)
-    db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
+    db_path, _ = run_off_event_loop(lambda: seed_workspace_scenarios(workspace_env, [scenario]))
+    owned_daemon(db_path)
     repo = repository_for_scenario_db(db_path)
     try:
         conv_id = scenario.native_session_id
@@ -112,10 +140,12 @@ async def test_tag_isolation_across_sessions(
     conv_count: int,
     desc: str,
     workspace_env: Mapping[str, Path],
+    owned_daemon: Callable[[Path], None],
 ) -> None:
     """Tags applied to one session do not leak to others."""
     scenarios = [_scenario(f"tag-isolation-{i}", ["shared"] if i == 0 else None) for i in range(conv_count)]
-    db_path, _ = seed_workspace_scenarios(workspace_env, scenarios)
+    db_path, _ = run_off_event_loop(lambda: seed_workspace_scenarios(workspace_env, scenarios))
+    owned_daemon(db_path)
     repo = repository_for_scenario_db(db_path)
     try:
         first_conv_id = scenarios[0].native_session_id
@@ -138,10 +168,12 @@ async def test_tag_validation_rejects_invalid_input(
     exc_type: type[Exception],
     desc: str,
     workspace_env: Mapping[str, Path],
+    owned_daemon: Callable[[Path], None],
 ) -> None:
     """add_tag rejects empty, whitespace-only, and over-length tags."""
     scenario = _scenario("tag-validation")
-    db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
+    db_path, _ = run_off_event_loop(lambda: seed_workspace_scenarios(workspace_env, [scenario]))
+    owned_daemon(db_path)
     repo = repository_for_scenario_db(db_path)
     try:
         with pytest.raises(exc_type):
@@ -156,7 +188,10 @@ async def test_tag_validation_rejects_invalid_input(
 
 
 @pytest.mark.asyncio()
-async def test_list_tags_ignores_json_metadata_only_tags(workspace_env: Mapping[str, Path]) -> None:
+async def test_list_tags_ignores_json_metadata_only_tags(
+    workspace_env: Mapping[str, Path],
+    owned_daemon: Callable[[Path], None],
+) -> None:
     """#1240: ``list_tags`` reads only the user tag tables.
 
     Tags written exclusively into the session's user metadata (as a JSON
@@ -170,7 +205,8 @@ async def test_list_tags_ignores_json_metadata_only_tags(workspace_env: Mapping[
         title="Legacy JSON tags",
         messages=(ScenarioMessage(role="user", text="x", message_id="m1"),),
     )
-    db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
+    db_path, _ = run_off_event_loop(lambda: seed_workspace_scenarios(workspace_env, [scenario]))
+    owned_daemon(db_path)
 
     repo = repository_for_scenario_db(db_path)
     try:
@@ -186,7 +222,10 @@ async def test_list_tags_ignores_json_metadata_only_tags(workspace_env: Mapping[
 
 
 @pytest.mark.asyncio()
-async def test_add_tag_does_not_dual_write_into_metadata_json(workspace_env: Mapping[str, Path]) -> None:
+async def test_add_tag_does_not_dual_write_into_metadata_json(
+    workspace_env: Mapping[str, Path],
+    owned_daemon: Callable[[Path], None],
+) -> None:
     """#1240: ``add_tag`` writes only to the M2M tables.
 
     The legacy dual-write into ``sessions.metadata['tags']`` was
@@ -198,7 +237,8 @@ async def test_add_tag_does_not_dual_write_into_metadata_json(workspace_env: Map
         title="Add-tag isolation",
         messages=(ScenarioMessage(role="user", text="x", message_id="m1"),),
     )
-    db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
+    db_path, _ = run_off_event_loop(lambda: seed_workspace_scenarios(workspace_env, [scenario]))
+    owned_daemon(db_path)
 
     repo = repository_for_scenario_db(db_path)
     try:

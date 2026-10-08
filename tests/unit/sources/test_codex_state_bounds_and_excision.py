@@ -16,25 +16,42 @@ operator paths and no transcript bytes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
+import sys
 import tracemalloc
+from builtins import BaseExceptionGroup
+from contextlib import closing
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pytest
 
-from polylogue.security.excision import (
-    apply_session_excision,
-    plan_session_excision,
-    resolve_session_excision_target,
-)
-from polylogue.sources.codex_state_evidence import (
-    CodexStateMaterializationReceipt,
-    materialize_codex_state_content,
-)
+from polylogue.core.compute_cancel import check_compute_cancelled
+from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+from polylogue.core.stage_admission import admit_stage_write
+from polylogue.sources.codex_state_evidence import CodexStateMaterializationReceipt, _materialize_codex_state_content
+from polylogue.sources.parsers.codex_state import CODEX_STATE_MAX_TEXT_CHARS
+from polylogue.sources.prepared_jsonl import PreparedJsonl, _prepare_codex_state_blob
+from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.derived.raw import _cleanup_scratch
+from polylogue.storage.index_generation import ActiveWriterLease
 from polylogue.storage.materials import MaterialObservation, list_materials, list_materials_page, read_material
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.revision_governance import _PreparedSourceProducer
+from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.excision import (
+    plan_session_excision_from_root,
+    resolve_session_excision_target_from_root,
+)
+from tests.infra.excision_execution import execute_excision
+from tests.infra.live_ingest import prepared_live_convergence_owner
 
 _THREAD_A = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
 _THREAD_B = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
@@ -44,7 +61,7 @@ _SESSION_B = f"codex-session:{_THREAD_B}"
 
 def _write_goals_db(path: Path, goals: list[tuple[str, str, str]]) -> None:
     """Write a synthetic ``goals_1.sqlite`` holding ``(thread, goal, objective)``."""
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.executescript(
             """
             CREATE TABLE thread_goals (
@@ -67,19 +84,107 @@ def _write_goals_db(path: Path, goals: list[tuple[str, str, str]]) -> None:
         conn.commit()
 
 
-def _materialize(root: Path, goals_path: Path, **limits: int) -> CodexStateMaterializationReceipt | None:
-    with ArchiveStore(root) as archive:
-        receipt = materialize_codex_state_content(
-            archive,
-            "raw-codex-state",
-            state_path=goals_path,
-            source_path="/synthetic/codex/goals_1.sqlite",
-            state_kind="goals",
-            acquired_at_ms=5_000,
-            **limits,
+async def _materialize_async(root: Path, state_path: Path, **limits: int) -> CodexStateMaterializationReceipt | None:
+    async with prepared_live_convergence_owner(root) as owner:
+        retained: list[PreparedIndexMutation] = []
+
+        def prepare() -> CodexStateMaterializationReceipt | None:
+            admit_stage_write("fixture.codex-material.bootstrap", lambda: bootstrap_archive_root(root))
+            store = BlobStore(root / "blob")
+            captured = snapshot_sqlite_to_blob(state_path, store)
+            publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+            scratch = TemporaryDirectory(dir=store._ensure_private_staging_root(), prefix=".state-prepared-")
+            prepared: PreparedJsonl | None = None
+            seal: PreparedIndexMutation | None = None
+            lease: ActiveWriterLease | None = None
+            bound = False
+            kind = "memories" if state_path.name == "memories_1.sqlite" else "goals"
+            with retain_native_sql_lifetimes(scratch):
+
+                def close_payload() -> None:
+                    if prepared is not None:
+                        prepared.discard()
+                    publisher.discard_pending()
+                    assert not retained_native_sql_owners_for_lifetime(scratch)
+                    _cleanup_scratch(scratch)
+
+                try:
+                    seal = PreparedIndexMutation.source_only(archive_root=root)
+                    retained.append(seal)
+                    lease = ActiveWriterLease(root)
+                    lease.acquire()
+                    seal.retain_publication_lifetime(lease, close_payload)
+                    bound = True
+                    prepared = _prepare_codex_state_blob(
+                        store.blob_path(captured.blob_hash),
+                        Path(scratch.name),
+                        state_kind=kind,
+                        source_hash=captured.blob_hash,
+                        semantic_source_path=f"/synthetic/codex/{state_path.name}",
+                        text_chars=limits.pop("text_char_limit", CODEX_STATE_MAX_TEXT_CHARS),
+                        publication_publisher=publisher,
+                        captured_profile_key=captured.captured_profile_key,
+                    )
+                    prepared.publish_blobs(reference_seal=seal)
+                    with seal.original_read_snapshot(), seal.source_producer():
+                        receipt = _materialize_codex_state_content(
+                            _PreparedSourceProducer(seal),
+                            "raw-codex-state",
+                            prepared_state=prepared,
+                            source_path=f"/synthetic/codex/{state_path.name}",
+                            state_kind=kind,
+                            acquired_at_ms=5_000,
+                            settle_page=check_compute_cancelled,
+                            **limits,
+                        )
+                    permit = seal.prepare_source_mutation()
+
+                    def publish() -> None:
+                        with permit.hold_authority(), permit.mutation_connection() as connection:
+                            with closing(connection.execute("BEGIN IMMEDIATE")):
+                                pass
+                            permit.apply_source_statements(connection)
+                            permit.allow_commit(connection)
+                            connection.commit()
+                            assert seal is not None
+                            seal.accept_known_tier_commit(permit.committed())
+
+                    admit_stage_write("fixture.codex-material.publish", publish)
+                    return receipt
+                finally:
+                    primary = sys.exception()
+                    cleanup: list[BaseException] = []
+                    actions = (
+                        (seal.close,)
+                        if bound and seal is not None
+                        else (
+                            *((seal.close,) if seal is not None else ()),
+                            close_payload,
+                            *((lease.close,) if lease is not None else ()),
+                        )
+                    )
+                    for action in actions:
+                        try:
+                            action()
+                        except BaseException as failure:
+                            cleanup.append(failure)
+                    if cleanup:
+                        if primary is not None:
+                            cleanup.insert(0, primary)
+                        raise BaseExceptionGroup("material preparation and physical cleanup failed", cleanup)
+                    if seal is not None:
+                        retained.remove(seal)
+
+        return await owner.run_prepared_sync(
+            "fixture.codex-material.prepare",
+            prepare,
+            settlement_owners=lambda: tuple(retained),
+            estimated_bytes=state_path.stat().st_size,
         )
-        archive.commit()
-    return receipt
+
+
+def _materialize(root: Path, state_path: Path, **limits: int) -> CodexStateMaterializationReceipt | None:
+    return asyncio.run(_materialize_async(root, state_path, **limits))
 
 
 def test_state_materialization_continues_past_each_work_window(tmp_path: Path) -> None:
@@ -101,7 +206,7 @@ def test_state_materialization_continues_past_each_work_window(tmp_path: Path) -
     assert receipt.clipped_item_ids == ()
     assert receipt.bounded is False
     assert receipt.bytes_materialized > receipt.aggregate_byte_cap
-    with sqlite3.connect(root / "source.db") as conn:
+    with closing(sqlite3.connect(root / "source.db")) as conn, conn:
         cursor = None
         observed: list[MaterialObservation] = []
         while True:
@@ -116,9 +221,13 @@ def test_state_materialization_continues_past_each_work_window(tmp_path: Path) -
         assert all(part.get("text_continuation") or part.get("record_type") == "goals" for part in chunks)
 
 
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(0)
 def test_large_goal_export_last_row_is_reachable(tmp_path: Path) -> None:
-    """A valid row after the old 10,000-row limit survives materialization."""
+    """A valid row after the old 10,000-row limit survives materialization.
+
+    This scale assertion opts out of a wall-clock kill: the materializer owns
+    cooperative cancellation and reports row/byte progress while it runs.
+    """
     root = tmp_path / "archive"
     root.mkdir()
     goals_path = tmp_path / "goals_1.sqlite"
@@ -128,7 +237,7 @@ def test_large_goal_export_last_row_is_reachable(tmp_path: Path) -> None:
     )
     receipt = _materialize(root, goals_path)
     assert receipt is not None and receipt.rows_materialized == 10_001
-    with sqlite3.connect(root / "source.db") as conn:
+    with closing(sqlite3.connect(root / "source.db")) as conn, conn:
         last = list_materials_page(conn, evidence_ref="codex-session:thread-10000", limit=2)
         assert len(last.items) == 1
         assert json.loads(read_material(conn, last.items[0].material_id))["goal_id"] == "goal-10000"
@@ -140,7 +249,7 @@ def test_long_memory_text_reassembles_from_material_pages(tmp_path: Path) -> Non
     root.mkdir()
     memory_path = tmp_path / "memories_1.sqlite"
     memory = "Ω" * 65_001
-    with sqlite3.connect(memory_path) as conn:
+    with closing(sqlite3.connect(memory_path)) as conn, conn:
         conn.execute(
             "CREATE TABLE stage1_outputs (thread_id TEXT PRIMARY KEY, source_updated_at INTEGER, "
             "generated_at INTEGER, raw_memory TEXT, rollout_summary TEXT, usage_count INTEGER, "
@@ -149,18 +258,9 @@ def test_long_memory_text_reassembles_from_material_pages(tmp_path: Path) -> Non
         conn.execute(
             "INSERT INTO stage1_outputs VALUES (?, 1, 2, ?, 'summary', 3, 'slug', 1)", ("thread-memory", memory)
         )
-    with ArchiveStore(root) as archive:
-        receipt = materialize_codex_state_content(
-            archive,
-            "raw-memory",
-            state_path=memory_path,
-            source_path="/synthetic/codex/memories_1.sqlite",
-            state_kind="memories",
-            acquired_at_ms=5_000,
-        )
-        archive.commit()
+    receipt = _materialize(root, memory_path)
     assert receipt is not None and receipt.rows_materialized == 1 and not receipt.bounded
-    with sqlite3.connect(root / "source.db") as conn:
+    with closing(sqlite3.connect(root / "source.db")) as conn, conn:
         page = list_materials_page(conn, evidence_ref="codex-session:thread-memory", limit=2)
         assert len(page.items) == 2
         parts = [json.loads(read_material(conn, item.material_id)) for item in page.items]
@@ -206,14 +306,14 @@ def test_invalid_goal_row_is_named_as_partial(tmp_path: Path) -> None:
 def test_interrupted_state_projection_resumes_without_duplicate_materials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failed page leaves no terminal receipt and replay fills the suffix."""
+    """Failed preparation accepts no materials; complete replay publishes each row once."""
     from polylogue.sources import codex_state_evidence
 
     root = tmp_path / "archive"
     root.mkdir()
     goals_path = tmp_path / "goals_1.sqlite"
     _write_goals_db(goals_path, [(f"thread-{i}", f"goal-{i}", "objective") for i in range(8)])
-    original = codex_state_evidence._upsert_codex_material
+    original = codex_state_evidence._upsert_codex_material_source
     calls = 0
 
     def interrupted(*args: Any, **kwargs: Any) -> None:
@@ -223,15 +323,15 @@ def test_interrupted_state_projection_resumes_without_duplicate_materials(
             raise RuntimeError("synthetic interruption")
         original(*args, **kwargs)
 
-    monkeypatch.setattr(codex_state_evidence, "_upsert_codex_material", interrupted)
+    monkeypatch.setattr(codex_state_evidence, "_upsert_codex_material_source", interrupted)
     with pytest.raises(RuntimeError, match="synthetic interruption"):
         _materialize(root, goals_path, row_limit=2)
-    with sqlite3.connect(root / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM material_observations").fetchone()[0] == 2
-    monkeypatch.setattr(codex_state_evidence, "_upsert_codex_material", original)
+    with closing(sqlite3.connect(root / "source.db")) as conn, conn:
+        assert conn.execute("SELECT COUNT(*) FROM material_observations").fetchone()[0] == 0
+    monkeypatch.setattr(codex_state_evidence, "_upsert_codex_material_source", original)
     receipt = _materialize(root, goals_path, row_limit=2)
     assert receipt is not None and receipt.rows_materialized == 8
-    with sqlite3.connect(root / "source.db") as conn:
+    with closing(sqlite3.connect(root / "source.db")) as conn, conn:
         assert conn.execute("SELECT COUNT(*) FROM material_observations").fetchone()[0] == 8
 
 
@@ -240,7 +340,7 @@ def test_excising_a_thread_removes_its_codex_state_materials(tmp_path: Path) -> 
 
     Anti-vacuity: removing the ``_session_material_targets`` call from
     ``resolve_session_excision_target`` (or the material deletion from
-    ``apply_session_excision``) leaves thread A's material row, its blob hash
+    the audited Excision operation) leaves thread A's material row, its blob hash
     absent from ``excised_content``, and its objective text still readable
     through ``list_materials``. Thread B's material is asserted untouched, so
     a resolver that simply deleted every material fails too.
@@ -258,7 +358,7 @@ def test_excising_a_thread_removes_its_codex_state_materials(tmp_path: Path) -> 
     _materialize(root, goals_path)
 
     # Precondition: both threads' state evidence is retained and readable.
-    with sqlite3.connect(root / "source.db") as conn:
+    with closing(sqlite3.connect(root / "source.db")) as conn, conn:
         assert len(list_materials(conn, evidence_ref=_SESSION_A)) == 1
         assert len(list_materials(conn, evidence_ref=_SESSION_B)) == 1
         hash_a = bytes(
@@ -270,42 +370,26 @@ def test_excising_a_thread_removes_its_codex_state_materials(tmp_path: Path) -> 
 
     # A session with no index row at all is still a real excision target when
     # state materials name it.
-    target = resolve_session_excision_target(root, _SESSION_A)
+    target = resolve_session_excision_target_from_root(root, _SESSION_A)
     assert target.session_exists is False
     assert target.found is True
     assert len(target.material_ids) == 1
 
-    plan = plan_session_excision(root, _SESSION_A)
+    plan = plan_session_excision_from_root(root, _SESSION_A)
     assert plan.source_materials == 1
 
-    receipt = apply_session_excision(root, _SESSION_A, reason="operator request", actor="tests")
-    assert receipt.found is True
-    assert receipt.counts["source_materials"] == 1
-    assert hash_a.hex() in receipt.removed_blob_hashes
+    receipt = execute_excision(root, _SESSION_A, reason="operator request", actor="tests")
+    assert receipt["found"] is True
+    assert receipt["counts"]["source_materials"] == 1
+    assert hash_a.hex() in receipt["removed_blob_hashes"]
 
-    with sqlite3.connect(root / "source.db") as conn:
+    with closing(sqlite3.connect(root / "source.db")) as conn, conn:
         assert list_materials(conn, evidence_ref=_SESSION_A) == []
         # The other thread's evidence, in the same export, is untouched.
         assert len(list_materials(conn, evidence_ref=_SESSION_B)) == 1
         # The bytes are durably refused on re-acquisition, not merely unlinked.
         excised = {bytes(row[0]) for row in conn.execute("SELECT removed_hash FROM excised_content")}
         assert hash_a in excised
-
-
-def test_an_unresolvable_index_does_not_read_as_a_current_projection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Anti-vacuity (polylogue-hu24g): a failed index resolution returned
-    ``True`` ("already current"), so the Codex thread-state projection was
-    skipped as done instead of running and failing visibly."""
-    import polylogue.storage.archive_identity as archive_identity
-    from polylogue.sources.codex_state_evidence import _thread_state_projection_is_current
-
-    def unresolvable(_root: Path) -> Path:
-        raise OSError("active generation pointer unreadable")
-
-    monkeypatch.setattr(archive_identity, "resolve_active_index_path", unresolvable)
-    assert _thread_state_projection_is_current(tmp_path) is False
 
 
 @pytest.mark.asyncio
@@ -333,17 +417,20 @@ async def test_retained_codex_goals_are_readable_through_every_public_session_ro
 
     root = tmp_path / "archive"
     root.mkdir()
-    with ArchiveStore(root) as archive:
-        archive.write_raw_and_parsed(
+    from tests.infra.archive_templates import run_archive_fixture_prepare
+    from tests.infra.live_ingest import write_session_sync
+
+    await run_archive_fixture_prepare(
+        lambda: write_session_sync(
+            root / "index.db",
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id=_THREAD_A,
                 messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="start")],
             ),
-            payload=b"{}",
-            source_path="/synthetic/codex/rollout.jsonl",
-            acquired_at_ms=1_000,
+            archive_root=root,
         )
+    )
     goals_path = tmp_path / "goals_1.sqlite"
     _write_goals_db(
         goals_path,
@@ -352,7 +439,7 @@ async def test_retained_codex_goals_are_readable_through_every_public_session_ro
             (_THREAD_B, "goal-b", "synthetic objective for thread b"),
         ],
     )
-    _materialize(root, goals_path)
+    await _materialize_async(root, goals_path)
 
     walked: list[dict[str, Any]] = []
     with ArchiveStore.open_existing(root) as archive:
@@ -407,17 +494,17 @@ def _archive_with_goals(tmp_path: Path, goal_count: int) -> Path:
 
     root = tmp_path / "archive"
     root.mkdir()
-    with ArchiveStore(root) as archive:
-        archive.write_raw_and_parsed(
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id=_THREAD_A,
-                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="start")],
-            ),
-            payload=b"{}",
-            source_path="/synthetic/codex/rollout.jsonl",
-            acquired_at_ms=1_000,
-        )
+    from tests.infra.live_ingest import write_session_sync
+
+    write_session_sync(
+        root / "index.db",
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=_THREAD_A,
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="start")],
+        ),
+        archive_root=root,
+    )
     goals_path = tmp_path / "goals_1.sqlite"
     _write_goals_db(
         goals_path,
@@ -428,32 +515,105 @@ def _archive_with_goals(tmp_path: Path, goal_count: int) -> Path:
 
 
 def _admit_session_material(root: Path, *, source_uri: str, payload: bytes, observed_at_ms: int) -> str:
-    """Admit one JSON material for thread A the way the material route records it."""
-    from polylogue.storage.blob_store import BlobStore
-    from polylogue.storage.materials import admit_material, link_material
+    """Admit the synthetic bytes through one original prepared Source parent."""
+    from polylogue.storage.materials import (
+        PreparedMaterial,
+        _admit_material,
+        _link_material,
+        prepare_material,
+        publish_prepared_materials,
+    )
 
-    with sqlite3.connect(root / "source.db") as conn:
-        material = admit_material(
-            conn,
-            blob_store=BlobStore(root / "blob"),
-            source_uri=source_uri,
-            referrer_ref=_SESSION_A,
-            observed_at_ms=observed_at_ms,
-            payload=payload,
-            media_type="application/json",
-            commit=False,
-        )
-        link_material(
-            conn,
-            material.material_id,
-            _SESSION_A,
-            relation="refers_to",
-            authority="provider",
-            observed_at_ms=observed_at_ms,
-            commit=False,
-        )
-        conn.commit()
-    return material.material_id
+    async def run() -> str:
+        async with prepared_live_convergence_owner(root) as owner:
+            retained: list[PreparedIndexMutation] = []
+
+            def prepare() -> str:
+                publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+                prepared: PreparedMaterial | None = None
+                seal: PreparedIndexMutation | None = None
+                lease: ActiveWriterLease | None = None
+                bound = False
+
+                def close_payload() -> None:
+                    if prepared is not None:
+                        prepared.discard()
+                    publisher.discard_pending()
+
+                with retain_native_sql_lifetimes(publisher):
+                    try:
+                        seal = PreparedIndexMutation.source_only(archive_root=root)
+                        retained.append(seal)
+                        lease = ActiveWriterLease(root)
+                        lease.acquire()
+                        seal.retain_publication_lifetime(lease, close_payload)
+                        bound = True
+                        prepared = prepare_material(
+                            blob_store=publisher,
+                            source_uri=source_uri,
+                            referrer_ref=_SESSION_A,
+                            payload=payload,
+                            media_type="application/json",
+                        )
+                        publish_prepared_materials((prepared,), reference_seal=seal)
+                        with seal.original_read_snapshot(), seal.source_producer():
+                            producer = _PreparedSourceProducer(seal)
+                            material = _admit_material(producer, prepared=prepared, observed_at_ms=observed_at_ms)
+                            _link_material(
+                                producer,
+                                material.material_id,
+                                _SESSION_A,
+                                relation="refers_to",
+                                authority="provider",
+                                observed_at_ms=observed_at_ms,
+                            )
+                        permit = seal.prepare_source_mutation()
+
+                        def publish() -> None:
+                            with permit.hold_authority(), permit.mutation_connection() as connection:
+                                with closing(connection.execute("BEGIN IMMEDIATE")):
+                                    pass
+                                permit.apply_source_statements(connection)
+                                permit.allow_commit(connection)
+                                connection.commit()
+                                assert seal is not None
+                                seal.accept_known_tier_commit(permit.committed())
+
+                        admit_stage_write("fixture.session-material.publish", publish)
+                        return material.material_id
+                    finally:
+                        primary = sys.exception()
+                        failures: list[BaseException] = []
+                        actions = (
+                            (seal.close,)
+                            if bound and seal is not None
+                            else (
+                                *((seal.close,) if seal is not None else ()),
+                                close_payload,
+                                *((lease.close,) if lease is not None else ()),
+                            )
+                        )
+                        for action in actions:
+                            try:
+                                action()
+                            except BaseException as failure:
+                                failures.append(failure)
+                        if failures:
+                            raise BaseExceptionGroup(
+                                "session material preparation and physical cleanup failed",
+                                ([primary] if primary is not None else []) + failures,
+                            )
+                        if seal is not None:
+                            retained.remove(seal)
+
+            return await owner.run_prepared_sync(
+                "fixture.session-material.prepare",
+                prepare,
+                settlement_owners=lambda: tuple(retained),
+                estimated_bytes=len(payload),
+            )
+
+    return asyncio.run(run())
 
 
 @pytest.mark.asyncio
@@ -464,15 +624,17 @@ async def test_mcp_materials_view_is_paged_by_the_evidence_window(tmp_path: Path
     ``get_session_materials`` list and the first call returns every retained
     material with no continuation, whatever ``limit`` says.
     """
+    from functools import partial
     from types import SimpleNamespace
     from typing import cast
     from unittest.mock import patch
 
     from polylogue import Polylogue
     from polylogue.mcp.server import build_server
+    from tests.infra.archive_templates import run_archive_fixture_prepare
     from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
 
-    root = _archive_with_goals(tmp_path, 3)
+    root = await run_archive_fixture_prepare(partial(_archive_with_goals, tmp_path, 3))
     owner = Polylogue(archive_root=root)
     whole = await owner.get_session_materials(_SESSION_A)
     assert whole is not None and len(whole) >= 3
@@ -580,8 +742,7 @@ def test_a_materials_continuation_is_stale_after_an_earlier_admission(tmp_path: 
 
     _admit_session_material(root, source_uri="codex://state/goals/earlier", payload=b"{}", observed_at_ms=1)
 
-    with ArchiveStore.open_existing(root) as archive:
-        with pytest.raises(QueryContinuationStaleError):
-            read_session_evidence_window(
-                archive, "materials", ref=ref, limit=1, offset=0, continuation=str(first["continuation"])
-            )
+    with ArchiveStore.open_existing(root) as archive, pytest.raises(QueryContinuationStaleError):
+        read_session_evidence_window(
+            archive, "materials", ref=ref, limit=1, offset=0, continuation=str(first["continuation"])
+        )

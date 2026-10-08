@@ -19,11 +19,13 @@ from polylogue.storage.derived.session.rebuild import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.sqlite.connection import open_connection, open_read_connection
+from tests.infra.archive_templates import run_off_event_loop, seeds_off_event_loop
 from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import make_message, make_session, store_records
 
 
+@seeds_off_event_loop
 def _current_index_db(tmp_path: Path, name: str) -> Path:
     archive_root = tmp_path / name
     initialize_active_archive_root(archive_root)
@@ -39,7 +41,7 @@ def _inspect_one(db_path: Path, session_id: str) -> str:
     from polylogue.storage.derived.session.derivation import inspect_session_profiles
     from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 
-    with open_connection(db_path) as conn:
+    with open_read_connection(db_path) as conn:
         return inspect_session_profiles(
             conn,
             [session_id],
@@ -130,28 +132,32 @@ async def test_rebuild_materializes_logical_session_identity(
     tmp_path: Path,
 ) -> None:
     db_path = _current_index_db(tmp_path, "logical-session")
-    with open_connection(db_path) as conn:
-        for session_id, parent_id in (("root", None), ("continuation", "root"), ("fork", "continuation")):
-            store_records(
-                session=make_session(
-                    session_id,
-                    source_name="claude-code",
-                    title=session_id,
-                    parent_session_id=parent_id,
-                    updated_at="2026-05-25T10:00:00+00:00",
-                ),
-                messages=[
-                    make_message(
-                        f"{session_id}:msg-1",
+
+    def _seed_0() -> None:
+        with open_connection(db_path) as index_conn:
+            for session_id, parent_id in (("root", None), ("continuation", "root"), ("fork", "continuation")):
+                store_records(
+                    session=make_session(
                         session_id,
-                        text=f"{session_id} logical identity test",
-                        timestamp="2026-05-25T10:00:00+00:00",
-                    )
-                ],
-                attachments=[],
-                conn=conn,
-            )
-        conn.commit()
+                        source_name="claude-code",
+                        title=session_id,
+                        parent_session_id=parent_id,
+                        updated_at="2026-05-25T10:00:00+00:00",
+                    ),
+                    messages=[
+                        make_message(
+                            f"{session_id}:msg-1",
+                            session_id,
+                            text=f"{session_id} logical identity test",
+                            timestamp="2026-05-25T10:00:00+00:00",
+                        )
+                    ],
+                    attachments=[],
+                    conn=index_conn,
+                )
+            index_conn.commit()
+
+    run_off_event_loop(_seed_0)
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
@@ -167,15 +173,15 @@ async def test_rebuild_materializes_logical_session_identity(
         )
         await conn.commit()
 
-    with open_connection(db_path) as conn:
-        profile_rows = conn.execute(
+    with open_read_connection(db_path) as index_conn:
+        profile_rows = index_conn.execute(
             """
             SELECT session_id, logical_session_id
             FROM session_profiles
             ORDER BY session_id
             """
         ).fetchall()
-        tag_rollup = conn.execute(
+        tag_rollup = index_conn.execute(
             """
             SELECT session_count, logical_session_count, logical_session_ids_json
             FROM session_tag_rollups
@@ -261,41 +267,45 @@ async def test_rebuild_counts_session_event_compactions(
     tmp_path: Path,
 ) -> None:
     db_path = _current_index_db(tmp_path, "refresh-session-events")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session("conv-session-event", source_name="codex", title="Compaction Test"),
-            messages=[
-                make_message(
-                    "conv-session-event:msg-1",
-                    "conv-session-event",
-                    text="Continue after compaction",
-                )
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        conn.execute(
-            """
-            INSERT INTO session_events (
-                session_id,
-                source_message_id,
-                position,
-                event_type,
-                payload_json,
-                occurred_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "codex-session:conv-session-event",
-                None,
-                0,
-                "compaction",
-                # The retired ``summary`` column was a render of this payload key.
-                json.dumps({"summary": "Earlier context"}),
-                1775037900000,
-            ),
-        )
-        conn.commit()
+
+    def _seed_1() -> None:
+        with open_connection(db_path) as index_conn:
+            store_records(
+                session=make_session("conv-session-event", source_name="codex", title="Compaction Test"),
+                messages=[
+                    make_message(
+                        "conv-session-event:msg-1",
+                        "conv-session-event",
+                        text="Continue after compaction",
+                    )
+                ],
+                attachments=[],
+                conn=index_conn,
+            )
+            index_conn.execute(
+                """
+                INSERT INTO session_events (
+                    session_id,
+                    source_message_id,
+                    position,
+                    event_type,
+                    payload_json,
+                    occurred_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "codex-session:conv-session-event",
+                    None,
+                    0,
+                    "compaction",
+                    # The retired ``summary`` column was a render of this payload key.
+                    json.dumps({"summary": "Earlier context"}),
+                    1775037900000,
+                ),
+            )
+            index_conn.commit()
+
+    run_off_event_loop(_seed_1)
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
@@ -308,8 +318,8 @@ async def test_rebuild_counts_session_event_compactions(
         await conn.commit()
 
     assert counts.profiles == 1
-    with open_connection(db_path) as conn:
-        row = conn.execute(
+    with open_read_connection(db_path) as index_conn:
+        row = index_conn.execute(
             "SELECT evidence_payload_json FROM session_profiles WHERE session_id = ?",
             ("codex-session:conv-session-event",),
         ).fetchone()
@@ -323,33 +333,37 @@ async def test_rebuild_uses_session_events_for_terminal_state(
     tmp_path: Path,
 ) -> None:
     db_path = _current_index_db(tmp_path, "refresh-provider-terminal")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session(
-                "conv-provider-terminal",
-                source_name="codex",
-                title="Terminal Test",
-                updated_at="2026-04-01T10:05:30+00:00",
-            ),
-            messages=[
-                make_message(
-                    "conv-provider-terminal:msg-1",
+
+    def _seed_2() -> None:
+        with open_connection(db_path) as index_conn:
+            store_records(
+                session=make_session(
                     "conv-provider-terminal",
-                    text="Run the command",
-                    blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "bash",
-                            "tool_id": "call-1",
-                            "tool_input": {"command": "sleep 30"},
-                        }
-                    ],
-                )
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
+                    source_name="codex",
+                    title="Terminal Test",
+                    updated_at="2026-04-01T10:05:30+00:00",
+                ),
+                messages=[
+                    make_message(
+                        "conv-provider-terminal:msg-1",
+                        "conv-provider-terminal",
+                        text="Run the command",
+                        blocks=[
+                            {
+                                "type": "tool_use",
+                                "tool_name": "bash",
+                                "tool_id": "call-1",
+                                "tool_input": {"command": "sleep 30"},
+                            }
+                        ],
+                    )
+                ],
+                attachments=[],
+                conn=index_conn,
+            )
+            index_conn.commit()
+
+    run_off_event_loop(_seed_2)
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
@@ -361,13 +375,13 @@ async def test_rebuild_uses_session_events_for_terminal_state(
         )
         await conn.commit()
 
-    with open_connection(db_path) as conn:
-        row = conn.execute(
+    with open_read_connection(db_path) as index_conn:
+        row = index_conn.execute(
             "SELECT terminal_state, terminal_state_method, evidence_payload_json"
             " FROM session_profiles WHERE session_id = ?",
             ("codex-session:conv-provider-terminal",),
         ).fetchone()
-        latency_row = conn.execute(
+        latency_row = index_conn.execute(
             "SELECT stuck_tool_count FROM session_latency_profiles WHERE session_id = ?",
             ("codex-session:conv-provider-terminal",),
         ).fetchone()
@@ -394,46 +408,50 @@ async def test_rebuild_persists_terminal_state_method_for_action_outcome(
     ``"action_outcome"`` -- distinct from the ``"pending_tool_blocks"``/
     ``"pending_tool_events"`` methods covered above."""
     db_path = _current_index_db(tmp_path, "refresh-action-outcome-terminal")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session(
-                "conv-action-outcome",
-                source_name="claude-code",
-                title="Action outcome terminal",
-                updated_at="2026-04-01T10:05:30+00:00",
-            ),
-            messages=[
-                make_message(
-                    "conv-action-outcome:msg-1",
+
+    def _seed_3() -> None:
+        with open_connection(db_path) as index_conn:
+            store_records(
+                session=make_session(
                     "conv-action-outcome",
-                    role="assistant",
-                    text="Running the build.",
-                    blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "bash",
-                            "tool_id": "call-1",
-                            "tool_input": {"command": "./build.sh"},
-                        },
-                        {
-                            "type": "tool_result",
-                            "tool_id": "call-1",
-                            "text": "exit 2",
-                            "tool_result_is_error": 1,
-                        },
-                    ],
+                    source_name="claude-code",
+                    title="Action outcome terminal",
+                    updated_at="2026-04-01T10:05:30+00:00",
                 ),
-                make_message(
-                    "conv-action-outcome:msg-2",
-                    "conv-action-outcome",
-                    role="assistant",
-                    text="All done.",
-                ),
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
+                messages=[
+                    make_message(
+                        "conv-action-outcome:msg-1",
+                        "conv-action-outcome",
+                        role="assistant",
+                        text="Running the build.",
+                        blocks=[
+                            {
+                                "type": "tool_use",
+                                "tool_name": "bash",
+                                "tool_id": "call-1",
+                                "tool_input": {"command": "./build.sh"},
+                            },
+                            {
+                                "type": "tool_result",
+                                "tool_id": "call-1",
+                                "text": "exit 2",
+                                "tool_result_is_error": 1,
+                            },
+                        ],
+                    ),
+                    make_message(
+                        "conv-action-outcome:msg-2",
+                        "conv-action-outcome",
+                        role="assistant",
+                        text="All done.",
+                    ),
+                ],
+                attachments=[],
+                conn=index_conn,
+            )
+            index_conn.commit()
+
+    run_off_event_loop(_seed_3)
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
@@ -445,8 +463,8 @@ async def test_rebuild_persists_terminal_state_method_for_action_outcome(
         )
         await conn.commit()
 
-    with open_connection(db_path) as conn:
-        row = conn.execute(
+    with open_read_connection(db_path) as index_conn:
+        row = index_conn.execute(
             "SELECT terminal_state, terminal_state_method FROM session_profiles WHERE session_id = ?",
             ("claude-code-session:conv-action-outcome",),
         ).fetchone()
@@ -560,66 +578,70 @@ async def test_targeted_session_insight_rebuild_async_refreshes_only_affected_gr
     block closes, with no caller-side ``commit()`` in between.
     """
     db_path = tmp_path / "refresh-async-targeted.db"
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session(
-                "conv-chatgpt-a",
-                source_name="chatgpt",
-                title="ChatGPT A",
-                created_at="2026-04-02T10:00:00+00:00",
-                updated_at="2026-04-02T10:05:00+00:00",
-            ),
-            messages=[
-                make_message(
-                    "conv-chatgpt-a:msg-1",
+
+    def _seed_0() -> None:
+        with open_connection(db_path) as conn:
+            store_records(
+                session=make_session(
                     "conv-chatgpt-a",
-                    text="ChatGPT A message",
-                    timestamp="2026-04-02T10:00:00+00:00",
-                )
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        store_records(
-            session=make_session(
-                "conv-claude-a",
-                source_name="claude-ai",
-                title="Claude A",
-                created_at="2026-04-03T09:00:00+00:00",
-                updated_at="2026-04-03T09:05:00+00:00",
-            ),
-            messages=[
-                make_message(
-                    "conv-claude-a:msg-1",
+                    source_name="chatgpt",
+                    title="ChatGPT A",
+                    created_at="2026-04-02T10:00:00+00:00",
+                    updated_at="2026-04-02T10:05:00+00:00",
+                ),
+                messages=[
+                    make_message(
+                        "conv-chatgpt-a:msg-1",
+                        "conv-chatgpt-a",
+                        text="ChatGPT A message",
+                        timestamp="2026-04-02T10:00:00+00:00",
+                    )
+                ],
+                attachments=[],
+                conn=conn,
+            )
+            store_records(
+                session=make_session(
                     "conv-claude-a",
-                    text="Claude A message",
-                    timestamp="2026-04-03T09:00:00+00:00",
-                )
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        rebuild_session_insights_sync(conn)
-        store_records(
-            session=make_session(
-                "conv-chatgpt-b",
-                source_name="chatgpt",
-                title="ChatGPT B",
-                created_at="2026-04-02T11:00:00+00:00",
-                updated_at="2026-04-02T11:05:00+00:00",
-            ),
-            messages=[
-                make_message(
-                    "conv-chatgpt-b:msg-1",
+                    source_name="claude-ai",
+                    title="Claude A",
+                    created_at="2026-04-03T09:00:00+00:00",
+                    updated_at="2026-04-03T09:05:00+00:00",
+                ),
+                messages=[
+                    make_message(
+                        "conv-claude-a:msg-1",
+                        "conv-claude-a",
+                        text="Claude A message",
+                        timestamp="2026-04-03T09:00:00+00:00",
+                    )
+                ],
+                attachments=[],
+                conn=conn,
+            )
+            rebuild_session_insights_sync(conn)
+            store_records(
+                session=make_session(
                     "conv-chatgpt-b",
-                    text="ChatGPT B message",
-                    timestamp="2026-04-02T11:00:00+00:00",
-                )
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
+                    source_name="chatgpt",
+                    title="ChatGPT B",
+                    created_at="2026-04-02T11:00:00+00:00",
+                    updated_at="2026-04-02T11:05:00+00:00",
+                ),
+                messages=[
+                    make_message(
+                        "conv-chatgpt-b:msg-1",
+                        "conv-chatgpt-b",
+                        text="ChatGPT B message",
+                        timestamp="2026-04-02T11:00:00+00:00",
+                    )
+                ],
+                attachments=[],
+                conn=conn,
+            )
+            conn.commit()
+
+    run_off_event_loop(_seed_0)
 
     async with aiosqlite.connect(db_path) as async_conn:
         async_conn.row_factory = sqlite3.Row
@@ -630,7 +652,7 @@ async def test_targeted_session_insight_rebuild_async_refreshes_only_affected_gr
         # No caller-side commit here -- the function must commit its own work
         # internally (the second half of this bead's AC).
 
-    with open_connection(db_path) as conn:
+    with open_read_connection(db_path) as conn:
         tag_rows = conn.execute(
             """
             SELECT source_name, bucket_day, session_count, search_text
@@ -1083,6 +1105,8 @@ def test_session_insight_load_includes_compaction_session_events_for_profile_cla
                 1775037900000,
             ),
         )
+        # A write connection may not close over an uncommitted transaction.
+        conn.commit()
         batch = load_sync_batch(conn, ["codex-session:conv-session-event-load"])
         hydrated = batch.session_events_by_session["codex-session:conv-session-event-load"]
 
@@ -1250,25 +1274,29 @@ async def test_async_large_session_rebuild_uses_bounded_degraded_profile(
     db_path = tmp_path / "large-session-degraded-async.db"
     native = "conv-large-bounded-async"
     session_id = _sid(native, "codex-session")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session(native, source_name="codex", title="Large async bounded profile"),
-            messages=[
-                make_message(f"{native}:msg-1", native, text="first prompt"),
-                make_message(f"{native}:msg-2", native, role="assistant", text="answer"),
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        conn.execute(
-            """
-            UPDATE sessions
-            SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?
-            WHERE session_id = ?
-            """,
-            (50, 1234, 7, 3, session_id),
-        )
-        conn.commit()
+
+    def _seed_1() -> None:
+        with open_connection(db_path) as conn:
+            store_records(
+                session=make_session(native, source_name="codex", title="Large async bounded profile"),
+                messages=[
+                    make_message(f"{native}:msg-1", native, text="first prompt"),
+                    make_message(f"{native}:msg-2", native, role="assistant", text="answer"),
+                ],
+                attachments=[],
+                conn=conn,
+            )
+            conn.execute(
+                """
+                UPDATE sessions
+                SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?
+                WHERE session_id = ?
+                """,
+                (50, 1234, 7, 3, session_id),
+            )
+            conn.commit()
+
+    run_off_event_loop(_seed_1)
 
     monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 10)
 
@@ -1417,7 +1445,7 @@ def test_full_rebuild_commits_incrementally_and_prunes_orphans(tmp_path: Path) -
     live_ids = [_sid(native) for native in live_natives]
     orphan_id = _sid(orphan_native)
 
-    with open_connection(db_path) as conn:
+    with open_read_connection(db_path) as conn:
         baseline = {
             str(row["session_id"]) for row in conn.execute("SELECT session_id FROM session_profiles").fetchall()
         }
@@ -1436,7 +1464,7 @@ def test_full_rebuild_commits_incrementally_and_prunes_orphans(tmp_path: Path) -
         raw.execute("DELETE FROM sessions WHERE session_id = ?", (orphan_id,))
         raw.commit()
 
-    with open_connection(db_path) as conn:
+    with open_read_connection(db_path) as conn:
         assert (
             conn.execute(
                 "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?",
@@ -1477,7 +1505,7 @@ def test_full_rebuild_commits_incrementally_and_prunes_orphans(tmp_path: Path) -
     # single end-of-rebuild commit would instead leave this [0, 0, 0].
     assert committed_v2_counts == [0, 1, 2]
 
-    with open_connection(db_path) as conn:
+    with open_read_connection(db_path) as conn:
         final = {
             str(row["session_id"]): str(row["title"])
             for row in conn.execute("SELECT session_id, title FROM session_profiles").fetchall()
@@ -1593,7 +1621,7 @@ def test_full_rebuild_restores_thread_spine_membership_and_markers(tmp_path: Pat
 
     root_id = _sid("conv-root", "claude-code-session")
     child_id = _sid("conv-child", "claude-code-session")
-    with open_connection(db_path) as conn:
+    with open_read_connection(db_path) as conn:
         members = {
             str(row["session_id"])
             for row in conn.execute(
@@ -1622,24 +1650,28 @@ async def test_rebuild_preserves_thread_roots_for_children(
     tmp_path: Path,
 ) -> None:
     db_path = _current_index_db(tmp_path, "refresh-thread")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session("conv-root", title="Root"),
-            messages=[make_message("conv-root:msg-1", "conv-root", text="Root message")],
-            attachments=[],
-            conn=conn,
-        )
-        store_records(
-            session=make_session(
-                "conv-child",
-                title="Child",
-                parent_session_id="conv-root",
-            ),
-            messages=[make_message("conv-child:msg-1", "conv-child", text="Child message")],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
+
+    def _seed_4() -> None:
+        with open_connection(db_path) as index_conn:
+            store_records(
+                session=make_session("conv-root", title="Root"),
+                messages=[make_message("conv-root:msg-1", "conv-root", text="Root message")],
+                attachments=[],
+                conn=index_conn,
+            )
+            store_records(
+                session=make_session(
+                    "conv-child",
+                    title="Child",
+                    parent_session_id="conv-root",
+                ),
+                messages=[make_message("conv-child:msg-1", "conv-child", text="Child message")],
+                attachments=[],
+                conn=index_conn,
+            )
+            index_conn.commit()
+
+    run_off_event_loop(_seed_4)
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
@@ -1653,9 +1685,11 @@ async def test_rebuild_preserves_thread_roots_for_children(
 
     assert counts.profiles == 2
 
-    with open_connection(db_path) as conn:
+    with open_read_connection(db_path) as index_conn:
         roots = dict(
-            conn.execute("SELECT session_id, logical_session_id FROM session_profiles ORDER BY session_id").fetchall()
+            index_conn.execute(
+                "SELECT session_id, logical_session_id FROM session_profiles ORDER BY session_id"
+            ).fetchall()
         )
 
     # The child's profile must carry the topology root as its logical identity,
@@ -1725,65 +1759,69 @@ async def test_session_tag_rollups_are_derived_for_multiple_groups(
     tmp_path: Path,
 ) -> None:
     db_path = _current_index_db(tmp_path, "refresh-provider-day-groups")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session(
-                "conv-chatgpt-a",
-                source_name="chatgpt",
-                title="ChatGPT A",
-                created_at="2026-04-02T10:00:00+00:00",
-                updated_at="2026-04-02T10:05:00+00:00",
-            ),
-            messages=[
-                make_message(
-                    "conv-chatgpt-a:msg-1",
+
+    def _seed_5() -> None:
+        with open_connection(db_path) as index_conn:
+            store_records(
+                session=make_session(
                     "conv-chatgpt-a",
-                    text="ChatGPT A message",
-                    timestamp="2026-04-02T10:00:00+00:00",
-                )
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        store_records(
-            session=make_session(
-                "conv-chatgpt-b",
-                source_name="chatgpt",
-                title="ChatGPT B",
-                created_at="2026-04-02T11:00:00+00:00",
-                updated_at="2026-04-02T11:05:00+00:00",
-            ),
-            messages=[
-                make_message(
-                    "conv-chatgpt-b:msg-1",
+                    source_name="chatgpt",
+                    title="ChatGPT A",
+                    created_at="2026-04-02T10:00:00+00:00",
+                    updated_at="2026-04-02T10:05:00+00:00",
+                ),
+                messages=[
+                    make_message(
+                        "conv-chatgpt-a:msg-1",
+                        "conv-chatgpt-a",
+                        text="ChatGPT A message",
+                        timestamp="2026-04-02T10:00:00+00:00",
+                    )
+                ],
+                attachments=[],
+                conn=index_conn,
+            )
+            store_records(
+                session=make_session(
                     "conv-chatgpt-b",
-                    text="ChatGPT B message",
-                    timestamp="2026-04-02T11:00:00+00:00",
-                )
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        store_records(
-            session=make_session(
-                "conv-claude-a",
-                source_name="claude-ai",
-                title="Claude A",
-                created_at="2026-04-03T09:00:00+00:00",
-                updated_at="2026-04-03T09:05:00+00:00",
-            ),
-            messages=[
-                make_message(
-                    "conv-claude-a:msg-1",
+                    source_name="chatgpt",
+                    title="ChatGPT B",
+                    created_at="2026-04-02T11:00:00+00:00",
+                    updated_at="2026-04-02T11:05:00+00:00",
+                ),
+                messages=[
+                    make_message(
+                        "conv-chatgpt-b:msg-1",
+                        "conv-chatgpt-b",
+                        text="ChatGPT B message",
+                        timestamp="2026-04-02T11:00:00+00:00",
+                    )
+                ],
+                attachments=[],
+                conn=index_conn,
+            )
+            store_records(
+                session=make_session(
                     "conv-claude-a",
-                    text="Claude A message",
-                    timestamp="2026-04-03T09:00:00+00:00",
-                )
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
+                    source_name="claude-ai",
+                    title="Claude A",
+                    created_at="2026-04-03T09:00:00+00:00",
+                    updated_at="2026-04-03T09:05:00+00:00",
+                ),
+                messages=[
+                    make_message(
+                        "conv-claude-a:msg-1",
+                        "conv-claude-a",
+                        text="Claude A message",
+                        timestamp="2026-04-03T09:00:00+00:00",
+                    )
+                ],
+                attachments=[],
+                conn=index_conn,
+            )
+            index_conn.commit()
+
+    run_off_event_loop(_seed_5)
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
@@ -1799,8 +1837,8 @@ async def test_session_tag_rollups_are_derived_for_multiple_groups(
         )
         await conn.commit()
 
-    with open_connection(db_path) as conn:
-        tag_rows = conn.execute(
+    with open_read_connection(db_path) as index_conn:
+        tag_rows = index_conn.execute(
             """
             SELECT source_name, bucket_day, session_count
             FROM session_tag_rollups
@@ -2014,17 +2052,21 @@ async def test_rebuild_publishes_a_partition_convergence_reads_as_valid(
     ``rebuild_session_insights_async`` and this reads ``stale``.
     """
     db_path = _current_index_db(tmp_path, "refresh-binding-bulk")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session("conv-binding", title="Binding Test"),
-            messages=[
-                make_message("conv-binding:msg-1", "conv-binding", text="first"),
-                make_message("conv-binding:msg-2", "conv-binding", role="assistant", text="second"),
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
+
+    def _seed_6() -> None:
+        with open_connection(db_path) as index_conn:
+            store_records(
+                session=make_session("conv-binding", title="Binding Test"),
+                messages=[
+                    make_message("conv-binding:msg-1", "conv-binding", text="first"),
+                    make_message("conv-binding:msg-2", "conv-binding", role="assistant", text="second"),
+                ],
+                attachments=[],
+                conn=index_conn,
+            )
+            index_conn.commit()
+
+    run_off_event_loop(_seed_6)
 
     session_id = _sid("conv-binding")
     backend = SQLiteBackend(db_path=db_path)
@@ -2053,17 +2095,21 @@ async def test_rebuild_binding_goes_stale_when_an_input_value_moves(
     constant instead fails the *first* read, so it does not discriminate here.)
     """
     db_path = _current_index_db(tmp_path, "refresh-binding-moves")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session("conv-binding-move", title="Binding Test"),
-            messages=[
-                make_message("conv-binding-move:msg-1", "conv-binding-move", text="first"),
-                make_message("conv-binding-move:msg-2", "conv-binding-move", role="assistant", text="second"),
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
+
+    def _seed_7() -> None:
+        with open_connection(db_path) as index_conn:
+            store_records(
+                session=make_session("conv-binding-move", title="Binding Test"),
+                messages=[
+                    make_message("conv-binding-move:msg-1", "conv-binding-move", text="first"),
+                    make_message("conv-binding-move:msg-2", "conv-binding-move", role="assistant", text="second"),
+                ],
+                attachments=[],
+                conn=index_conn,
+            )
+            index_conn.commit()
+
+    run_off_event_loop(_seed_7)
 
     session_id = _sid("conv-binding-move")
     backend = SQLiteBackend(db_path=db_path)
@@ -2073,12 +2119,15 @@ async def test_rebuild_binding_goes_stale_when_an_input_value_moves(
 
     assert _inspect_one(db_path, session_id) == "valid"
 
-    with open_connection(db_path) as conn:
-        conn.execute(
-            "UPDATE messages SET role = 'user' WHERE session_id = ? AND role = 'assistant'",
-            (session_id,),
-        )
-        conn.commit()
+    def _seed_0() -> None:
+        with open_connection(db_path) as index_conn:
+            index_conn.execute(
+                "UPDATE messages SET role = 'user' WHERE session_id = ? AND role = 'assistant'",
+                (session_id,),
+            )
+            index_conn.commit()
+
+    run_off_event_loop(_seed_0)
 
     assert _inspect_one(db_path, session_id) == "stale"
 
@@ -2097,14 +2146,18 @@ async def test_async_rebuild_publishes_bundle_repo_observations(
 
     db_path = _current_index_db(tmp_path, "async-repo-observations")
     session_id = _sid("async-repo-observations")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session("async-repo-observations", title="Repo observation"),
-            messages=[make_message("async-repo-observations:msg-1", "async-repo-observations", text="hello")],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
+
+    def _seed_8() -> None:
+        with open_connection(db_path) as conn:
+            store_records(
+                session=make_session("async-repo-observations", title="Repo observation"),
+                messages=[make_message("async-repo-observations:msg-1", "async-repo-observations", text="hello")],
+                attachments=[],
+                conn=conn,
+            )
+            conn.commit()
+
+    run_off_event_loop(_seed_8)
 
     from collections.abc import Callable, Iterable, Mapping
 
@@ -2140,7 +2193,7 @@ async def test_async_rebuild_publishes_bundle_repo_observations(
         await rebuild_mod.rebuild_session_insights_async(async_conn, session_ids=[session_id])
         await async_conn.commit()
 
-    with open_connection(db_path) as conn:
+    with open_read_connection(db_path) as conn:
         rows = conn.execute(
             "SELECT root_path, branch_name FROM session_repos WHERE session_id = ?",
             (session_id,),

@@ -1,55 +1,21 @@
-"""Binary-payload parse-route parity between ingest and rebuild (polylogue-zoc3).
-
-``ingest_record`` (``pipeline/services/ingest_worker.py``, the live daemon
-ingest worker's per-raw entry point) decoded every raw as text/JSON before
-any provider dispatch, so a Hermes raw whose payload is SQLite database
-bytes (``~/.hermes/verification_evidence.db``) failed with ``"decode: str
-is not valid UTF-8: surrogates not allowed: line 1 column 1"`` even though
-the rebuild path (``sources.revision_backfill._parse_retained_raw`` /
-``_parse_one``, used by historical backfill and the census/replay machinery)
-parses the identical raw bytes fine via ``looks_like_sqlite_bytes`` plus the
-same structural ``looks_like_*_path`` probes the parser modules expose.
-
-The fix threads the same binary-capable detection
-(``polylogue.archive.raw_payload.decode._hermes_sqlite_marker_payload``,
-built from the same ``hermes_state``/``hermes_verification`` helper
-functions ``_parse_one`` already calls) through
-``build_raw_payload_envelope`` -- the function ``ingest_record`` calls to
-decode every raw -- so both routes agree.
-
-Anti-vacuity: reverting the ``_hermes_sqlite_marker_payload`` routing in
-``polylogue/archive/raw_payload/decode.py`` (i.e. restoring the old
-state.db-only ``_looks_like_hermes_state_db`` check) makes
-``test_verification_evidence_db_parses_identically_through_ingest_and_rebuild_routes``
-fail on the ingest side with exactly the live error string:
-``decode: str is not valid UTF-8: surrogates not allowed: line 1 column 1``.
-"""
+"""Hermes logical SQLite exports replay through the retained Raw owner."""
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from polylogue.core.enums import Provider
-from polylogue.pipeline.services.ingest_worker import ingest_record
+from polylogue.core.provider_identity import captured_hermes_profile_key
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.sources.sqlite_export import logical_export_bytes
 from polylogue.sources.sqlite_snapshot import member_export_scope
-from polylogue.storage.blob_store import BlobStore, reset_blob_store
-from polylogue.storage.runtime import RawSessionRecord
-
-
-@pytest.fixture
-def blob_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[BlobStore]:
-    root = tmp_path / "blobs"
-    store = BlobStore(root)
-    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: root)
-    reset_blob_store()
-    yield store
-    reset_blob_store()
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+from tests.infra.retained_replay import replay_retained_components
 
 
 def _write_verification_evidence_db(path: Path) -> None:
@@ -138,29 +104,28 @@ def _retained_blob(db_path: Path) -> tuple[bytes, Path]:
     return content, blob_path
 
 
-def _record(store: BlobStore, content: bytes, *, source_path: str) -> RawSessionRecord:
-    raw_id, blob_size = store.write_from_bytes(content)
-    return RawSessionRecord(
-        raw_id=raw_id,
-        source_name="hermes",
-        source_path=source_path,
-        payload_provider=Provider.HERMES,
-        source_index=None,
-        blob_size=blob_size,
-        acquired_at="2026-01-01T00:00:00+00:00",
-        file_mtime=None,
-    )
+def _retained_replay(tmp_path: Path, content: bytes, source_path: Path, profile_dir: Path) -> Path:
+    archive_root = tmp_path / "archive"
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
+
+    def acquire() -> None:
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            archive.write_raw_payload(
+                provider=Provider.HERMES,
+                payload=content,
+                source_path=str(source_path),
+                canonical_source_path=str(source_path),
+                captured_profile_key=captured_hermes_profile_key(profile_dir),
+                acquired_at_ms=1,
+            )
+            archive.commit()
+
+    run_off_event_loop(acquire)
+    replay_retained_components(archive_root)
+    return archive_root
 
 
-def test_verification_evidence_db_parses_identically_through_ingest_and_rebuild_routes(
-    blob_store: BlobStore, tmp_path: Path
-) -> None:
-    """A raw parseable through the rebuild route is also parseable through ingest_record.
-
-    Compares produced session ``provider_session_id``s (the contract-test
-    shape the bead calls for), including the profile-qualified suffix, so a
-    regression in either route's profile-root threading also fails this test.
-    """
+def test_verification_evidence_db_replays_as_a_profile_qualified_session(tmp_path: Path) -> None:
     profile_dir = tmp_path / ".hermes"
     profile_dir.mkdir(parents=True)
     db_path = profile_dir / "verification_evidence.db"
@@ -175,19 +140,17 @@ def test_verification_evidence_db_parses_identically_through_ingest_and_rebuild_
         str(db_path),
         payload_path=retained_path,
         archive_root=tmp_path,
+        profile_identity=captured_hermes_profile_key(profile_dir),
+        sidecar_resolver=None,
     )
     rebuild_ids = {session.provider_session_id for session in rebuild_sessions}
     assert rebuild_ids, "fixture must produce at least one session on the rebuild route"
 
-    # Ingest route: the live daemon worker's per-raw entry point.
-    record = _record(blob_store, content, source_path=str(db_path))
-    result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
-
-    assert result.error is None, result.error
-    ingest_ids = {payload.parsed_session.provider_session_id for payload in result.sessions}
-
-    assert ingest_ids == rebuild_ids
-    assert ingest_ids == {"verification:verify-session-redacted-1@profile-" + _profile_key(profile_dir)}
+    archive_root = _retained_replay(tmp_path, content, db_path, profile_dir)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        replay_ids = {str(row[0]) for row in conn.execute("SELECT native_id FROM sessions")}
+    assert replay_ids == rebuild_ids
+    assert replay_ids == {"verification:verify-session-redacted-1@profile-" + _profile_key(profile_dir)}
 
 
 def _profile_key(profile_dir: Path) -> str:
@@ -245,7 +208,7 @@ def _write_hermes_state_db(path: Path, *, wal_mode: bool = False) -> None:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
-def test_state_db_still_parses_identically_through_both_routes(blob_store: BlobStore, tmp_path: Path) -> None:
+def test_state_db_replays_through_retained_route(tmp_path: Path) -> None:
     """Regression guard: the pre-existing state.db marker route must keep working
     after generalizing the SQLite marker helper to also recognize verification_evidence.db.
     """
@@ -262,59 +225,45 @@ def test_state_db_still_parses_identically_through_both_routes(blob_store: BlobS
         str(db_path),
         payload_path=retained_path,
         archive_root=tmp_path,
+        profile_identity=captured_hermes_profile_key(profile_dir),
+        sidecar_resolver=None,
     )
     rebuild_ids = {session.provider_session_id.split("@", 1)[0] for session in rebuild_sessions}
 
-    record = _record(blob_store, content, source_path=str(db_path))
-    result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
-
-    assert result.error is None, result.error
-    ingest_ids = {payload.parsed_session.provider_session_id.split("@", 1)[0] for payload in result.sessions}
-
-    assert ingest_ids == rebuild_ids
-    assert "hermes-root" in ingest_ids
+    archive_root = _retained_replay(tmp_path, content, db_path, profile_dir)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        replay_ids = {str(row[0]).split("@", 1)[0] for row in conn.execute("SELECT native_id FROM sessions")}
+    assert replay_ids == rebuild_ids
+    assert "hermes-root" in replay_ids
 
 
-def test_ingest_record_keeps_wal_sqlite_blob_namespace_pristine(blob_store: BlobStore, tmp_path: Path) -> None:
+def test_retained_replay_keeps_wal_sqlite_blob_namespace_pristine(tmp_path: Path) -> None:
     """The real retained-blob decode route never creates SQLite sidecars.
 
     A WAL-mode SQLite header makes a plain ``mode=ro`` connection create
     ``-wal`` and ``-shm`` beside the immutable blob. The live
-    ``ingest_record`` path must carry the immutable marker through both the
-    structural probe and final Hermes parser, leaving ``verify_all`` with one
-    canonical blob and no invalid namespace entries.
-
-    Anti-vacuity: drop ``sqlite_immutable`` from the retained-blob decode call
-    in ``pipeline/services/ingest_worker.py`` and ``verify_all`` reports the
-    ``-wal``/``-shm`` entries this asserts are absent.
+    The retained route must use immutable SQLite reads, leaving one canonical
+    blob and no invalid namespace entries.
     """
     profile_dir = tmp_path / ".hermes"
     profile_dir.mkdir(parents=True)
     db_path = profile_dir / "state.db"
     _write_hermes_state_db(db_path, wal_mode=True)
-    record = _record(blob_store, _retained_bytes(db_path), source_path=str(db_path))
+    archive_root = _retained_replay(tmp_path, _retained_bytes(db_path), db_path, profile_dir)
+    verified = BlobStore(archive_root / "blob").verify_all()
 
-    result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
-    verified = blob_store.verify_all()
-
-    assert result.error is None, result.error
-    assert len(result.sessions) == 1
+    assert verified.checked == 1
     assert verified.passed
     assert verified.checked == 1
     assert verified.failures == ()
 
 
-def test_ingest_refuses_a_hermes_page_image_the_replay_route_refuses(blob_store: BlobStore, tmp_path: Path) -> None:
+def test_retained_route_refuses_a_hermes_page_image(tmp_path: Path) -> None:
     """Both routes refuse a historical SQLite page image for a declared member.
 
     A page image cannot be proven against the live database and re-snapshots on
     every commit, so it is not the retained material for ``state.db``. The
-    replay route raises; ingest must not quietly admit the same bytes as a
-    Hermes session, or a reindex would mint a second source authority.
-
-    Anti-vacuity: remove the ``is_declared_logical_export`` gate from
-    ``_hermes_sqlite_marker_payload`` and ingest parses this page image into one
-    session while the replay route still refuses it.
+    The retained route must not admit the page image as a Hermes session.
     """
     profile_dir = tmp_path / ".hermes"
     profile_dir.mkdir(parents=True)
@@ -329,9 +278,10 @@ def test_ingest_refuses_a_hermes_page_image_the_replay_route_refuses(blob_store:
             str(db_path),
             payload_path=db_path,
             archive_root=tmp_path,
+            profile_identity=captured_hermes_profile_key(profile_dir),
+            sidecar_resolver=None,
         )
 
-    record = _record(blob_store, page_image, source_path=str(db_path))
-    result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
-
-    assert not [payload.parsed_session for payload in result.sessions]
+    archive_root = _retained_replay(tmp_path, page_image, db_path, profile_dir)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)

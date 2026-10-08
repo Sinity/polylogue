@@ -31,13 +31,16 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONValue
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.audit_continuity import CanonicalAuditLiteral
 
 LifecycleMode = Literal["mirror", "primary"]
 LifecycleState = Literal["pending", "acknowledged", "confirmed", "rejected"]
@@ -375,6 +378,9 @@ def apply_primary_invalidation_if_confirmed(
     archive_root: Path,
     conn_user: sqlite3.Connection,
     assertion_id: str,
+    *,
+    input_demand: Callable[[int], None],
+    result_sink: Callable[[Mapping[str, object], CanonicalAuditLiteral], None],
 ) -> LifecycleInvalidationOutcome:
     """Invalidate the local replica for a primary-mode request -- confirmed only.
 
@@ -382,9 +388,32 @@ def apply_primary_invalidation_if_confirmed(
     unknown, or mirror-mode) request returns ``success=False`` with an
     explicit reason and never touches the archive. Only a request whose
     durable state is exactly ``confirmed`` proceeds to
-    :func:`polylogue.security.excision.apply_session_excision`.
+    the audited Excision operation.
+
+    The caller is the Excision's operation owner: ``input_demand`` is its
+    original creator byte-demand admission and ``result_sink`` its result
+    delivery owner, exactly as :class:`SessionExcisionArgs` requires.
     """
-    row = read_lifecycle_request(conn_user, assertion_id)
+    user_path = next((str(item[2]) for item in conn_user.execute("PRAGMA database_list") if item[1] == "main"), "")
+    if not user_path or Path(user_path).resolve(strict=True) != (archive_root / "user.db").resolve(strict=True):
+        return LifecycleInvalidationOutcome(success=False, reason="request_archive_mismatch")
+    from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+
+    # Caller snapshots may be stale or contain an uncommitted confirmation.
+    # Preparation reads committed authority off the writer gate. Apply checks
+    # the exact row again under its physical exclusion before any effects.
+    with readonly_connection_context(archive_root / "user.db") as durable_user:
+        row = read_lifecycle_request(durable_user, assertion_id)
+    return _apply_confirmed_primary_row(archive_root, row, input_demand=input_demand, result_sink=result_sink)
+
+
+def _apply_confirmed_primary_row(
+    archive_root: Path,
+    row: LifecycleRequestRow | None,
+    *,
+    input_demand: Callable[[int], None],
+    result_sink: Callable[[Mapping[str, object], CanonicalAuditLiteral], None],
+) -> LifecycleInvalidationOutcome:
     if row is None:
         return LifecycleInvalidationOutcome(success=False, reason="unknown_request")
     if row.mode != "primary":
@@ -394,27 +423,49 @@ def apply_primary_invalidation_if_confirmed(
     if row.state != "confirmed":
         return LifecycleInvalidationOutcome(success=False, reason="pending_confirmation")
 
-    from polylogue.security.excision import (
-        ExcisionBlobReferenceUnknownError,
-        LineageDependentsError,
-        apply_session_excision,
-    )
+    from polylogue.operations.bindings import runtime_operation_binding
+    from polylogue.operations.mutation_actuators import SessionExcisionActuator, SessionExcisionArgs
+    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
+    from polylogue.security.excision import ExcisionBlobReferenceUnknownError, LineageDependentsError
+    from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+    from polylogue.storage.sqlite.write_lease import write_lease
 
     session_id = row.target_ref.removeprefix("session:")
+    args = SessionExcisionArgs(
+        archive_root=archive_root,
+        session_id=session_id,
+        reason=row.reason,
+        actor=row.actor,
+        cascade_lineage=False,
+        input_demand=input_demand,
+        result_sink=result_sink,
+    )
+    binding = runtime_operation_binding(SessionExcisionActuator())
+    # The confirmed primary request supplies exactly this excision capability;
+    # it grants no broader archive administration or lineage cascade. The
+    # product applies it on the durable request's behalf (``internal``), so
+    # the public API facade gains no Excision surface.
+    principal = MutationPrincipal(
+        row.actor, frozenset({"archive.excise_session"}), "internal", "confirmed-primary-lifecycle"
+    )
+    executor = OperationExecutor.for_archive_root(archive_root)
     try:
-        receipt = apply_session_excision(archive_root, session_id, reason=row.reason, actor=row.actor)
+        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=archive_root)
+        authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
+        with write_lease("lifecycle.confirmed-primary-excision", archive_root=archive_root):
+            with readonly_connection_context(archive_root / "user.db") as durable_user:
+                current = read_lifecycle_request(durable_user, row.assertion_id)
+            if current != row:
+                return LifecycleInvalidationOutcome(success=False, reason="request_changed")
+            receipt = executor.execute_bound(binding, preview, authorization, args)
     except LineageDependentsError:
-        # The confirmed target is a prefix-sharing lineage parent: invalidate
-        # only via an explicit, out-of-band `--cascade-lineage` decision, not
-        # silently as a side effect of a Sinex confirmation landing. Surface
-        # this as a clean failure outcome rather than letting the exception
-        # propagate out of a lifecycle-drive call site.
         return LifecycleInvalidationOutcome(success=False, reason="lineage_dependents_unresolved")
     except ExcisionBlobReferenceUnknownError:
-        # Whether another session still references a blob could not be
-        # decided; the excision rolled back and the request stays confirmed.
         return LifecycleInvalidationOutcome(success=False, reason="blob_references_undecided")
-    if not receipt.found:
+    if receipt.status == "blocked":
+        refusal = receipt.domain_receipt.get("refusal_kind")
+        return LifecycleInvalidationOutcome(success=False, reason=str(refusal), receipt=receipt)
+    if receipt.status not in {"applied", "already_satisfied"}:
         return LifecycleInvalidationOutcome(success=False, reason="target_not_found", receipt=receipt)
     return LifecycleInvalidationOutcome(success=True, receipt=receipt)
 

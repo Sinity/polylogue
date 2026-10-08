@@ -7,6 +7,8 @@ import errno
 import hashlib
 import json
 import sqlite3
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,17 @@ from polylogue.sources.source_acquisition_components import (
 )
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite import SQLiteBackend
+
+
+@asynccontextmanager
+async def _admitted_acquisition(backend: SQLiteBackend, archive_root: Path) -> AsyncIterator[AcquisitionService]:
+    """Acquisition publishes through the daemon's admitted writer, like configured catch-up."""
+    from polylogue.daemon.drive_catchup import DriveCatchupExecution
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+        yield AcquisitionService(backend, execution=execution)
 
 
 def _write_session(path: Path) -> None:
@@ -68,13 +81,15 @@ async def test_failed_raw_persist_withholds_the_source_cursor(
 
     backend = SQLiteBackend(db_path=workspace_env["archive_root"] / "index.db")
     try:
-        first = await AcquisitionService(backend).acquire_sources([source])
+        async with _admitted_acquisition(backend, workspace_env["archive_root"]) as _service:
+            first = await _service.acquire_sources([source])
         assert first.errors == 1
         assert first.acquired == 0
         known = await SessionRepository(backend=backend).get_known_source_cursors()
         assert str(source_path) not in known
 
-        second = await AcquisitionService(backend).acquire_sources([source])
+        async with _admitted_acquisition(backend, workspace_env["archive_root"]) as _service:
+            second = await _service.acquire_sources([source])
         assert second.errors == 0
         assert second.acquired == 1
     finally:
@@ -142,11 +157,13 @@ async def test_acquisition_outcome_is_the_committed_raw_receipt(
 
     backend = SQLiteBackend(db_path=workspace_env["archive_root"] / "index.db")
     try:
-        failed = await AcquisitionService(backend).acquire_sources([source])
+        async with _admitted_acquisition(backend, workspace_env["archive_root"]) as _service:
+            failed = await _service.acquire_sources([source])
         assert (failed.errors, failed.acquired) == (1, 0)
         assert _raw_payload_receipts(workspace_env["archive_root"], source_path) == []
 
-        restarted = await AcquisitionService(backend).acquire_sources([source])
+        async with _admitted_acquisition(backend, workspace_env["archive_root"]) as _service:
+            restarted = await _service.acquire_sources([source])
         assert (restarted.errors, restarted.acquired) == (0, 1)
         assert _raw_payload_receipts(workspace_env["archive_root"], source_path) == [artifact]
         known = await SessionRepository(backend=backend).get_known_source_cursors()
@@ -188,6 +205,15 @@ def test_a_colon_named_failure_does_not_withhold_its_prefix_sibling(tmp_path: Pa
         service._persist_source_cursors(
             ConfigSource(name="claude-code", path=source_dir),
             cursor_state=cursor_state,  # type: ignore[arg-type]
+            observations={
+                str(path): (
+                    str(path.resolve()),
+                    (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns),
+                    None,
+                )
+                for path in (plain, colon)
+                for st in (path.stat(),)
+            },
         )
     )
     assert str(plain) in saved
@@ -218,6 +244,14 @@ def test_a_failure_naming_no_resolved_file_withholds_every_cursor(tmp_path: Path
         service._persist_source_cursors(
             ConfigSource(name="claude-code", path=source_dir),
             cursor_state={"failed_files": [{"path": "/elsewhere/original/state.db", "error": "OSError"}]},
+            observations={
+                str(staged): (
+                    str(staged.resolve()),
+                    (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns),
+                    None,
+                )
+                for st in (staged.stat(),)
+            },
         )
     )
     assert saved == []

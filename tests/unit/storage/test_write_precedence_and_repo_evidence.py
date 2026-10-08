@@ -4,19 +4,23 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     UNTRUSTED_FUTURE_FRESHNESS_TOLERANCE_MS,
     should_skip_stale_replace,
 )
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
+from tests.infra.archive_templates import bootstrapped_tier_path
+from tests.infra.index_writer import write_fixture_index_session
 
 _NOW_MS = 1_760_000_000_000
 
@@ -67,16 +71,15 @@ def test_commit_evidence_survives_a_checkout_this_machine_cannot_resolve(tmp_pat
         git_branch="feature/offline",
         messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
     )
-    conn = sqlite3.connect(tmp_path / "index.db")
+    conn = connect_measured(bootstrapped_tier_path(tmp_path / "index.db"))
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        initialize_archive_tier(conn, ArchiveTier.INDEX)
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepare_session_rows(session),
+            prepared_rows=prepare_session_rows(session),
         )
         rows = list(conn.execute("SELECT * FROM session_commits WHERE session_id = ?", (session_id,)))
         assert len(rows) == 1
@@ -87,5 +90,32 @@ def test_commit_evidence_survives_a_checkout_this_machine_cannot_resolve(tmp_pat
         assert evidence["unresolved_working_directories"] == [str(unrooted)]
         # No repository was invented for it.
         assert list(conn.execute("SELECT repo_id FROM repos")) == []
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("subdirectory", [False, True])
+def test_writer_preserves_literal_repo_root_ending_blank(tmp_path: Path, subdirectory: bool) -> None:
+    root = tmp_path / "project copy "
+    neighbor = tmp_path / "project copy"
+    for repo in (root, neighbor):
+        subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    cwd = root / "src" if subdirectory else root
+    cwd.mkdir(exist_ok=True)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="literal-cwd",
+        working_directories=[str(cwd)],
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="neutral")],
+    )
+    conn = connect_measured(bootstrapped_tier_path(tmp_path / "index.db"))
+    try:
+        write_fixture_index_session(
+            conn, session, content_hash=str(session_content_hash(session)), prepared_rows=prepare_session_rows(session)
+        )
+        assert conn.execute("SELECT root_path FROM repos").fetchall() == [(str(root),)]
+        assert conn.execute("SELECT root_path FROM repo_checkouts").fetchall() == [(str(root),)]
+        assert conn.execute("SELECT path FROM session_working_dirs").fetchall() == [(str(cwd),)]
+        assert session.working_directories == [str(cwd)]
     finally:
         conn.close()

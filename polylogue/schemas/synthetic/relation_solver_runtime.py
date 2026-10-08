@@ -266,6 +266,26 @@ class RelationConstraintSolverRuntimeMixin:
                 result.add(keeper)
         return result
 
+    def exclude_container_conflicts(
+        self,
+        parent_path: str,
+        field_names: set[str],
+        container_names: frozenset[str],
+    ) -> set[str]:
+        """Drop fields observed never to co-occur with a container the caller fills.
+
+        The route renders its messages into one container itself. A field the
+        schema's exclusion evidence separates from that container belongs to
+        another observed shape (a capture envelope beside an export), and a
+        document carrying both is read by the parser through one shape and
+        checked through the other.
+        """
+        result = set(field_names)
+        for group in self.mutual_exclusions_by_parent.get(parent_path, ()):
+            if group.field_names & container_names:
+                result -= group.field_names - container_names
+        return result
+
     def generate_string_with_length(
         self,
         path: str,

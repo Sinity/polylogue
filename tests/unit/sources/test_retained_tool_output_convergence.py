@@ -23,6 +23,7 @@ Synthetic fixtures only: invented tool output, invented paths.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shutil
@@ -35,12 +36,17 @@ import pytest
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
 from polylogue.core.enums import BlockType
+from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.hooks import append_hook_event
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.revision_backfill import parse_retained_raw_sessions
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.sources.revision_backfill import parse_retained_raw_sessions, prepare_retained_jsonl_artifact
+from polylogue.sources.source_layout import export_drop_layout
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.raw_owner_routes import ingest_files_with_owners, live_owner_set
+from tests.infra.retained_jsonl import prepared_source_fixture
 
 _SESSION_ID = "5c3d1e40-0000-4000-8000-00000000aaaa"
 _PARENT_NEEDLE = "zz_parent_full_output_needle"
@@ -96,6 +102,21 @@ def _tool_exchange(prefix: str, session_id: str, tool_use_id: str, result_text: 
 def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+
+def _write_tool_response_hook(
+    archive_root: Path, *, session_native_id: str, tool_use_id: str, text: str, event_id: str
+) -> None:
+    event_digest = hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:32]
+    append_hook_event(
+        event_type="PostToolUse",
+        session_id=session_native_id,
+        provider="claude-code",
+        timestamp="2026-07-20T10:01:00Z",
+        payload={"tool_use_id": tool_use_id, "tool_name": "Bash", "tool_response": {"result": text}},
+        root=archive_root / "hooks",
+        event_id=event_digest,
+    )
 
 
 def _claude_tree(root: Path, *, orphan: bool = True) -> dict[str, Path]:
@@ -220,7 +241,7 @@ def _processor(
     sources: tuple[WatchSource, ...],
 ) -> tuple[Polylogue, CursorStore, LiveBatchProcessor]:
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "index.db")
-    cursor = CursorStore(workspace_env["data_root"] / "cursor.db")
+    cursor = CursorStore(workspace_env["data_root"] / "cursor.db", ops_db_path=workspace_env["archive_root"] / "ops.db")
     processor = LiveBatchProcessor(
         archive,
         sources,
@@ -256,16 +277,21 @@ def _sidecar_events(session: ParsedSession, event_type: str) -> list[dict[str, o
     return [dict(event.payload) for event in session.session_events if event.event_type == event_type]
 
 
-def _derive_after_tree_removal(archive_root: Path, raw_id: str, tree_root: Path) -> list[ParsedSession]:
-    """Delete the whole source tree, then derive from retained bytes alone.
+def _parse_retained(archive_root: Path, *raw_ids: str) -> list[list[ParsedSession]]:
+    """Parse retained raws on the prepared Source fixture, off any running loop."""
 
-    ``parse_retained_raw_sessions`` opens the blob publisher for write (see
-    ``revision_governance.raw_revision_descriptor``), so the store cannot be
-    read-only even though this derivation only reads.
-    """
+    def parse() -> list[list[ParsedSession]]:
+        with prepared_source_fixture(archive_root) as store:
+            return [list(parse_retained_raw_sessions(store, raw_id)) for raw_id in raw_ids]
+
+    return run_off_event_loop(parse)
+
+
+def _derive_after_tree_removal(archive_root: Path, raw_id: str, tree_root: Path) -> list[ParsedSession]:
+    """Delete the whole source tree, then derive from retained bytes alone."""
     shutil.rmtree(tree_root)
     assert not tree_root.exists()
-    with ArchiveStore(archive_root, initialize=False, read_only=False) as store:
+    with prepared_source_fixture(archive_root) as store:
         return parse_retained_raw_sessions(store, raw_id)
 
 
@@ -286,10 +312,11 @@ async def test_claude_full_tool_text_survives_the_loss_of_its_source_tree(
     root.mkdir(parents=True)
     tree = _claude_tree(root)
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
     )
     try:
-        await processor.ingest_files(
+        await ingest_files_with_owners(
+            processor,
             [
                 tree["parent_sidecar"],
                 tree["subagent_sidecar"],
@@ -303,7 +330,7 @@ async def test_claude_full_tool_text_survives_the_loss_of_its_source_tree(
     finally:
         await archive.close()
 
-    [derived] = _derive_after_tree_removal(workspace_env["archive_root"], raw_id, root)
+    [derived] = run_off_event_loop(lambda: _derive_after_tree_removal(workspace_env["archive_root"], raw_id, root))
 
     [text] = _tool_result_texts(derived)
     assert _PARENT_NEEDLE in text
@@ -314,6 +341,112 @@ async def test_claude_full_tool_text_survives_the_loss_of_its_source_tree(
     assert matched == {"toolu_parent"}, "ownership must not drift onto the subagent's call"
     debt = {(event["filename"], event["reason"]) for event in events if event["acquisition_status"] == "debt"}
     assert debt == {("orphan999.txt", "no_owning_tool_result_block")}
+
+
+@pytest.mark.asyncio
+async def test_retained_preparation_recovers_hook_result_before_publication(
+    workspace_env: dict[str, Path],
+) -> None:
+    """The prepared Source window supplies missing tool output before hashing."""
+    root = workspace_env["data_root"] / "projects"
+    root.mkdir(parents=True)
+    tree = _claude_tree(root, orphan=False)
+    archive, _cursor, processor = _processor(
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
+    )
+    try:
+        await ingest_files_with_owners(processor, [tree["parent"]], emit_event=False)
+        raw_id = _raw_id_for(workspace_env["archive_root"], tree["parent"])
+    finally:
+        await archive.close()
+
+    def write_hooks() -> None:
+        _write_tool_response_hook(
+            workspace_env["archive_root"],
+            session_native_id=_SESSION_ID,
+            tool_use_id="toolu_parent",
+            text="zz_hook_recovery_probe " + "r" * 1000,
+            event_id="matching",
+        )
+        _write_tool_response_hook(
+            workspace_env["archive_root"],
+            session_native_id=_SESSION_ID,
+            tool_use_id="toolu_other",
+            text="zz_wrong_tool_must_not_leak " + "x" * 1000,
+            event_id="wrong-tool",
+        )
+        _write_tool_response_hook(
+            workspace_env["archive_root"],
+            session_native_id="other-synthetic-session",
+            tool_use_id="toolu_parent",
+            text="zz_wrong_session_must_not_leak " + "y" * 1000,
+            event_id="wrong-session",
+        )
+
+    run_off_event_loop(write_hooks)
+    from tests.infra.hook_carriers import materialize_hook_carriers
+
+    run_off_event_loop(lambda: materialize_hook_carriers(workspace_env["archive_root"]))
+    shutil.rmtree(root)
+    assert not root.exists()
+
+    def prepare() -> tuple[list[str], list[dict[str, object]], str, str]:
+        directory = workspace_env["data_root"] / "prepared-hook-replay"
+        directory.mkdir(parents=True, exist_ok=True)
+        with prepared_source_fixture(workspace_env["archive_root"]) as reader:
+            artifact = prepare_retained_jsonl_artifact(reader, raw_id, directory=directory)
+            try:
+                sessions = list(artifact.iter_sessions())
+                assert len(sessions) == 1
+                session = sessions[0]
+                return (
+                    _tool_result_texts(session),
+                    _sidecar_events(session, "hook_tool_response_recovery"),
+                    str(session.content_hash),
+                    str(session_content_hash(session)),
+                )
+            finally:
+                artifact.discard()
+
+    texts, events, prepared_hash, recomputed_hash = run_off_event_loop(prepare)
+    [text] = texts
+    assert "zz_hook_recovery_probe" in text
+    assert "zz_wrong_tool_must_not_leak" not in text
+    assert "zz_wrong_session_must_not_leak" not in text
+    [event] = events
+    assert event["acquisition_status"] == "matched"
+    assert event["tool_use_id"] == "toolu_parent"
+    assert event["hook_event_id"]
+    assert event["recovery_complete"] is True
+    assert prepared_hash == recomputed_hash
+
+    # A later Source-only hook publication makes the existing Raw owner see
+    # this session as stale through its enrichment binding. This exercises the
+    # ordinary owner-wake route that runs after carrier publication and needs
+    # no Index reverse lookup or process-local callback memory.
+    async def replay_late_hook_evidence() -> None:
+        from polylogue.operations.raw_observation_derivation import raw_observation_inspection_frame
+        from polylogue.storage.derived.raw import RawObservationInspection
+
+        inspection = RawObservationInspection(workspace_env["archive_root"])
+        frame = raw_observation_inspection_frame(workspace_env["archive_root"])
+        candidates, _cursor = inspection.required_page(frame, cursor=None, limit=128)
+        assert raw_id in candidates
+        states = inspection.inspect(frame, (raw_id,))
+        assert states[raw_id] == "stale", states
+        async with live_owner_set(workspace_env["archive_root"]) as owners:
+            report = await owners.raw_owner.ingest_retained_raw_ids((raw_id,))
+            report.require_complete()
+
+    run_off_event_loop(lambda: asyncio.run(replay_late_hook_evidence()))
+    with sqlite3.connect(f"file:{workspace_env['archive_root'] / 'index.db'}?mode=ro", uri=True) as conn:
+        rows = conn.execute(
+            """SELECT b.text FROM sessions s
+            JOIN messages m ON m.session_id=s.session_id
+            JOIN blocks b ON b.message_id=m.message_id
+            WHERE b.block_type='tool_result'"""
+        ).fetchall()
+        assert any("zz_hook_recovery_probe" in str(row[0]) for row in rows), rows
 
 
 @pytest.mark.asyncio
@@ -330,10 +463,11 @@ async def test_claude_subagent_scope_keeps_ownership_after_the_tree_is_gone(
     root.mkdir(parents=True)
     tree = _claude_tree(root)
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
     )
     try:
-        await processor.ingest_files(
+        await ingest_files_with_owners(
+            processor,
             [
                 tree["parent_sidecar"],
                 tree["subagent_sidecar"],
@@ -349,9 +483,7 @@ async def test_claude_subagent_scope_keeps_ownership_after_the_tree_is_gone(
         await archive.close()
 
     shutil.rmtree(root)
-    with ArchiveStore(workspace_env["archive_root"], initialize=False, read_only=False) as store:
-        [parent] = parse_retained_raw_sessions(store, parent_raw)
-        [subagent] = parse_retained_raw_sessions(store, subagent_raw)
+    [[parent], [subagent]] = _parse_retained(workspace_env["archive_root"], parent_raw, subagent_raw)
 
     parent_events = _sidecar_events(parent, "claude_tool_result_sidecar")
     subagent_events = _sidecar_events(subagent, "claude_tool_result_sidecar")
@@ -387,13 +519,14 @@ async def test_missing_expected_sidecar_stays_explicit_and_a_late_one_reconverge
     root.mkdir(parents=True)
     tree = _claude_tree(root, orphan=False)
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
     )
     try:
         # The parent's own sidecar is never acquired: its scope is observed
         # (the subagent's file is), but the file the parent's preview points
         # at is not retained.
-        await processor.ingest_files(
+        await ingest_files_with_owners(
+            processor,
             [tree["subagent_sidecar"], tree["parent"], tree["subagent"]],
             emit_event=False,
         )
@@ -401,8 +534,7 @@ async def test_missing_expected_sidecar_stays_explicit_and_a_late_one_reconverge
     finally:
         await archive.close()
 
-    with ArchiveStore(workspace_env["archive_root"], initialize=False, read_only=False) as store:
-        [before] = parse_retained_raw_sessions(store, parent_raw)
+    [[before]] = _parse_retained(workspace_env["archive_root"], parent_raw)
 
     absent = [
         event
@@ -415,14 +547,14 @@ async def test_missing_expected_sidecar_stays_explicit_and_a_late_one_reconverge
 
     # The sidecar arrives late and is acquired on its own.
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
     )
     try:
-        await processor.ingest_files([tree["parent_sidecar"]], emit_event=False)
+        await ingest_files_with_owners(processor, [tree["parent_sidecar"]], emit_event=False)
     finally:
         await archive.close()
 
-    [after] = _derive_after_tree_removal(workspace_env["archive_root"], parent_raw, root)
+    [after] = run_off_event_loop(lambda: _derive_after_tree_removal(workspace_env["archive_root"], parent_raw, root))
 
     [recovered] = _tool_result_texts(after)
     assert _PARENT_NEEDLE in recovered
@@ -446,15 +578,15 @@ async def test_gemini_full_tool_output_survives_the_loss_of_its_source_tree(
     root.mkdir(parents=True)
     tree = _gemini_tree(root)
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="gemini-cli", root=root, suffixes=(".json",)),)
+        workspace_env, (WatchSource(name="gemini-cli", root=root, layout=export_drop_layout((".json",))),)
     )
     try:
-        await processor.ingest_files([tree["sidecar"], tree["snapshot"]], emit_event=False)
+        await ingest_files_with_owners(processor, [tree["sidecar"], tree["snapshot"]], emit_event=False)
         raw_id = _raw_id_for(workspace_env["archive_root"], tree["snapshot"])
     finally:
         await archive.close()
 
-    [derived] = _derive_after_tree_removal(workspace_env["archive_root"], raw_id, root)
+    [derived] = run_off_event_loop(lambda: _derive_after_tree_removal(workspace_env["archive_root"], raw_id, root))
 
     [text] = _tool_result_texts(derived)
     assert _GEMINI_NEEDLE in text
@@ -480,10 +612,11 @@ async def test_retained_resolution_is_what_carries_the_full_text(
     root.mkdir(parents=True)
     tree = _claude_tree(root, orphan=False)
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
     )
     try:
-        await processor.ingest_files(
+        await ingest_files_with_owners(
+            processor,
             [tree["parent_sidecar"], tree["subagent_sidecar"], tree["parent"], tree["subagent"]],
             emit_event=False,
         )
@@ -495,8 +628,7 @@ async def test_retained_resolution_is_what_carries_the_full_text(
     with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
         conn.execute("DELETE FROM raw_sessions WHERE source_path = ?", (str(tree["parent_sidecar"]),))
 
-    with ArchiveStore(workspace_env["archive_root"], initialize=False, read_only=False) as store:
-        [derived] = parse_retained_raw_sessions(store, raw_id)
+    [[derived]] = _parse_retained(workspace_env["archive_root"], raw_id)
 
     [text] = _tool_result_texts(derived)
     assert _PARENT_NEEDLE not in text
@@ -527,10 +659,11 @@ async def test_original_sidecar_bytes_stay_recoverable_beside_normalized_text(
     original_bytes = tree["parent_sidecar"].read_bytes()
 
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
     )
     try:
-        await processor.ingest_files(
+        await ingest_files_with_owners(
+            processor,
             [tree["parent_sidecar"], tree["subagent_sidecar"], tree["parent"], tree["subagent"]],
             emit_event=False,
         )

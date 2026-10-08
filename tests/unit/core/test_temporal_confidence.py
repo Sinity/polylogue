@@ -107,14 +107,19 @@ def test_timeless_profile_record_round_trips_as_unknown_time(
     from polylogue.api import Polylogue
     from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import run_off_event_loop
 
     async def read_record() -> SessionProfileRecord | None:
         # Insight maintenance is now daemon-owned behind sealed accepted
         # machine parts.  This focused projection test supplies the materialized
         # input through the storage primitive and exercises only the public read
         # projection under test.
-        with ArchiveStore.open_existing(db_path.parent, read_only=False) as archive_store:
-            rebuild_session_insights_sync(archive_store._conn)
+        def rebuild() -> None:
+            with ArchiveStore.open_existing(db_path.parent, read_only=False) as archive_store:
+                rebuild_session_insights_sync(archive_store._conn)
+
+        # The writable store takes a synchronous write lease; run it off the loop.
+        run_off_event_loop(rebuild)
         archive = Polylogue(archive_root=db_path.parent, db_path=db_path)
         try:
             return await archive.get_session_profile_record(session.native_session_id())

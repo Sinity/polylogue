@@ -12,16 +12,20 @@ from __future__ import annotations
 import asyncio
 import shutil
 from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from tests.infra.archive_templates import clone_archive_template
 from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.query_census import (
+    IMMUTABLE_TIERS,
     ArchiveSnapshot,
     CensusConcurrencyError,
     CensusObservation,
     CensusSnapshotError,
+    _file_digest,
     reflink_archive_snapshot,
     run_workload_census,
 )
@@ -43,13 +47,29 @@ from tests.infra.query_differential import (
     evaluate_query_laws,
     surface_bench,
 )
+from tests.infra.workload_artifacts import seal_fixture_tree
 
 pytestmark = pytest.mark.timeout(600)
 
 
 @pytest.fixture(scope="module")
-def query_law_corpus(tmp_path_factory: pytest.TempPathFactory) -> QueryCorpus:
-    return build_query_corpus_sync(tmp_path_factory.mktemp("query-law-archive"))
+def query_law_template(tmp_path_factory: pytest.TempPathFactory) -> QueryCorpus:
+    """The corpus built once and sealed in place, so it can be cloned.
+
+    Population clones require a sealed source whose durable history binding
+    is its own, so the corpus is sealed where it was built rather than copied.
+    """
+    corpus = build_query_corpus_sync(tmp_path_factory.mktemp("query-law-template"))
+    seal_fixture_tree(corpus.archive_root)
+    return corpus
+
+
+@pytest.fixture(scope="module")
+def query_law_corpus(query_law_template: QueryCorpus, tmp_path_factory: pytest.TempPathFactory) -> QueryCorpus:
+    """A writable population clone of the sealed corpus for the law daemon."""
+    destination = tmp_path_factory.mktemp("query-law-archive") / "archive"
+    clone_archive_template(query_law_template.archive_root, destination)
+    return replace(query_law_template, archive_root=destination)
 
 
 def _evaluate(corpus: QueryCorpus, *, probes: Sequence[object] = UNIT_PROBES) -> LawRun:
@@ -174,10 +194,19 @@ def test_query_law_unmutated_run_is_green_for_the_same_probes(
 
 @pytest.fixture
 def census_snapshot(
-    query_law_corpus: QueryCorpus, tmp_path_factory: pytest.TempPathFactory
+    query_law_template: QueryCorpus, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[ArchiveSnapshot]:
+    # The census starts a daemon on its copy, so the copy is a population
+    # clone of the sealed corpus with its own destination authority (a raw
+    # byte copy keeps the source's durable identity and is refused).
     destination = tmp_path_factory.mktemp("query-law-census") / "copy"
-    snapshot = reflink_archive_snapshot(query_law_corpus.archive_root, destination)
+    method = clone_archive_template(query_law_template.archive_root, destination)
+    snapshot = ArchiveSnapshot(
+        source=query_law_template.archive_root.resolve(),
+        root=destination.resolve(),
+        reflinked=method == "reflink",
+        digests={name: _file_digest(destination / name) for name in IMMUTABLE_TIERS},
+    )
     yield snapshot
     shutil.rmtree(snapshot.root, ignore_errors=True)
 
@@ -283,8 +312,14 @@ def test_query_law_census_receipt_carries_exact_resource_evidence(
         assert result.observed is None
 
 
-def test_query_law_census_records_response_bytes_for_every_surface(query_law_corpus: QueryCorpus) -> None:
-    """Response size is measured per surface, not assumed equal across them."""
+def test_query_law_census_records_response_bytes_for_every_surface(
+    query_law_corpus: QueryCorpus, query_law_daemon: None
+) -> None:
+    """Response size is measured per surface, not assumed equal across them.
+
+    The CLI surface reads through the resident daemon, as every other law
+    that walks all surfaces does.
+    """
 
     async def _run() -> dict[str, int]:
         async with surface_bench(query_law_corpus.archive_root) as bench:

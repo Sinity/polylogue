@@ -31,7 +31,7 @@ from contextlib import contextmanager
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import quote
@@ -45,13 +45,14 @@ from polylogue.archive.query.transaction import QueryContinuationStaleError
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
 
 pytestmark = pytest.mark.xdist_group("web-reader")
 
 
-def _write_needle_message(archive_root: Path, native_id: str, text: str) -> None:
+def _write_needle_message_sync(archive_root: Path, native_id: str, text: str) -> None:
     with ArchiveStore(archive_root) as archive_db:
         write_index_session(
             archive_db,
@@ -71,7 +72,12 @@ def _write_needle_message(archive_root: Path, native_id: str, text: str) -> None
         )
 
 
-def _write_agg_message(archive_root: Path, native_id: str, role: Role, text: str) -> None:
+def _write_needle_message(*args: Any, **kwargs: Any) -> None:
+    """Seed off the event loop: a synchronous write lease may not block it."""
+    return run_off_event_loop(lambda: _write_needle_message_sync(*args, **kwargs))
+
+
+def _write_agg_message_sync(archive_root: Path, native_id: str, role: Role, text: str) -> None:
     """Seed one message whose derived ``word_count`` the aggregate reduces."""
 
     with ArchiveStore(archive_root) as archive_db:
@@ -91,6 +97,11 @@ def _write_agg_message(archive_root: Path, native_id: str, role: Role, text: str
                 ],
             ),
         )
+
+
+def _write_agg_message(*args: Any, **kwargs: Any) -> None:
+    """Seed off the event loop: a synchronous write lease may not block it."""
+    return run_off_event_loop(lambda: _write_agg_message_sync(*args, **kwargs))
 
 
 @contextmanager
@@ -380,7 +391,7 @@ async def test_continuation_stale_epoch_rejected_identically_across_http_api_mcp
 # ---------------------------------------------------------------------------
 
 
-def _write_window_session(archive_root: Path, native_id: str, count: int) -> str:
+def _write_window_session_sync(archive_root: Path, native_id: str, count: int) -> str:
     with ArchiveStore(archive_root) as archive_db:
         return write_index_session(
             archive_db,
@@ -402,7 +413,12 @@ def _write_window_session(archive_root: Path, native_id: str, count: int) -> str
         )
 
 
-def _cli_messages_json(archive_root: Path, session_id: str, *, args: list[str]) -> tuple[int, str]:
+def _write_window_session(*args: Any, **kwargs: Any) -> str:
+    """Seed off the event loop: a synchronous write lease may not block it."""
+    return run_off_event_loop(lambda: _write_window_session_sync(*args, **kwargs))
+
+
+def _cli_messages_json_sync(archive_root: Path, session_id: str, *, args: list[str]) -> tuple[int, str]:
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
@@ -418,6 +434,11 @@ def _cli_messages_json(archive_root: Path, session_id: str, *, args: list[str]) 
     if result.exception is not None and not isinstance(result.exception, SystemExit):
         raise result.exception
     return result.exit_code, result.output
+
+
+def _cli_messages_json(archive_root: Path, session_id: str, *, args: list[str]) -> tuple[int, str]:
+    """Run the CLI round trip off the event loop: its daemon stack bootstraps under a sync lease."""
+    return run_off_event_loop(lambda: _cli_messages_json_sync(archive_root, session_id, args=args))
 
 
 async def test_transcript_window_continuation_resumes_identically_across_surfaces(

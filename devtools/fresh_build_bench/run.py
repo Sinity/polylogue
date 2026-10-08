@@ -26,6 +26,7 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -52,6 +53,7 @@ REQUIRED_READINESS_DOMAINS: Final = frozenset(
 )
 _CLOCK_TICKS: Final = os.sysconf("SC_CLK_TCK")
 _PAGE_SIZE: Final = os.sysconf("SC_PAGE_SIZE")
+_WORK_PROGRESS_READ_CHUNK_BYTES: Final = 64 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +234,10 @@ class Observation:
     cursor_next_retry_at: str | None = None
     useful_progress_at_s: float | None = None
     activity_at_s: float | None = None
+    #: Advancing ``daemon.work.progress`` events seen so far: long work
+    #: (preparing a large source) that changes no archive row until it
+    #: publishes, but reports the messages and bytes it has processed.
+    work_progress: int = 0
     promoted_index: str | None = None
     readiness: dict[str, bool] = field(default_factory=dict)
     error: str | None = None
@@ -381,7 +387,10 @@ def _useful_progress(previous: Observation | None, current: Observation) -> bool
     if previous is None:
         return False
     return (
-        any(getattr(current, key) > getattr(previous, key) for key in ("cursor_rows", "cursor_complete", "raw_rows"))
+        any(
+            getattr(current, key) > getattr(previous, key)
+            for key in ("cursor_rows", "cursor_complete", "raw_rows", "work_progress")
+        )
         or current.raw_rows - current.raw_pending - current.raw_failed
         > previous.raw_rows - previous.raw_pending - previous.raw_failed
         or any(getattr(current, key) < getattr(previous, key) for key in ("memberships_pending", "open_debt"))
@@ -390,6 +399,93 @@ def _useful_progress(previous: Observation | None, current: Observation) -> bool
         and current.promoted_index != previous.promoted_index
         or any(ready and not previous.readiness.get(domain, False) for domain, ready in current.readiness.items())
     )
+
+
+class WorkProgressTail:
+    """Count advancing ``daemon.work.progress`` events appended to the event log.
+
+    Reads only the bytes appended since the previous call. Counter high-water
+    marks are scoped by productive identity in a private SQLite file, so a
+    retry that resets its local counters cannot masquerade as new work and a
+    long run does not retain one Python object per source recipe.
+    """
+
+    def __init__(self, events: Path, *, state_root: Path | None = None) -> None:
+        self._events = events
+        self._offset = 0
+        self._pending = b""
+        self._state_directory = tempfile.TemporaryDirectory(prefix="polylogue-work-progress-", dir=state_root)
+        self._connection = sqlite3.connect(Path(self._state_directory.name) / "high-water.sqlite3")
+        self._connection.execute("PRAGMA cache_size = -256")
+        self._connection.execute("PRAGMA journal_mode = OFF")
+        self._connection.execute("PRAGMA synchronous = OFF")
+        self._connection.execute(
+            """CREATE TABLE productive_high_water (
+                phase TEXT NOT NULL,
+                productive_id TEXT NOT NULL,
+                messages INTEGER NOT NULL,
+                bytes INTEGER NOT NULL,
+                PRIMARY KEY (phase, productive_id)
+            ) WITHOUT ROWID"""
+        )
+        self.advancing = 0
+        self._closed = False
+
+    def close(self) -> None:
+        """Close and remove the private high-water store."""
+        if self._closed:
+            return
+        self._closed = True
+        self._connection.close()
+        self._state_directory.cleanup()
+
+    def _consume_line(self, line: bytes) -> None:
+        if b"daemon.work.progress" not in line:
+            return
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return
+        if event.get("event") != "daemon.work.progress":
+            return
+        phase = str(event.get("phase"))
+        productive_id = event.get("productive_id")
+        unit_id = event.get("unit_id")
+        if not isinstance(productive_id, str) or not productive_id or not isinstance(unit_id, str) or not unit_id:
+            return
+        counters = (int(event.get("messages") or 0), int(event.get("bytes") or 0))
+        row = self._connection.execute(
+            "SELECT messages, bytes FROM productive_high_water WHERE phase = ? AND productive_id = ?",
+            (phase, productive_id),
+        ).fetchone()
+        previous = (0, 0) if row is None else (int(row[0]), int(row[1]))
+        if counters[0] >= previous[0] and counters[1] >= previous[1] and counters != previous:
+            self._connection.execute(
+                """INSERT INTO productive_high_water (phase, productive_id, messages, bytes)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (phase, productive_id) DO UPDATE SET
+                    messages = excluded.messages,
+                    bytes = excluded.bytes""",
+                (phase, productive_id, counters[0], counters[1]),
+            )
+            self.advancing += 1
+
+    def poll(self) -> int:
+        if self._closed:
+            return self.advancing
+        try:
+            with self._events.open("rb") as handle:
+                handle.seek(self._offset)
+                while chunk := handle.read(_WORK_PROGRESS_READ_CHUNK_BYTES):
+                    self._offset += len(chunk)
+                    lines = (self._pending + chunk).split(b"\n")
+                    self._pending = lines.pop()
+                    with self._connection:
+                        for line in lines:
+                            self._consume_line(line)
+        except OSError:
+            return self.advancing
+        return self.advancing
 
 
 def _retryable_observation_error(exc: BaseException) -> bool:
@@ -545,13 +641,6 @@ def candidate_identity(candidate: Path) -> dict[str, Any]:
         # build must not compare equal to itself.
         "tracked_diff_sha256": digest.hexdigest() if dirty else None,
     }
-
-
-def _file_size(path: Path) -> int | None:
-    try:
-        return path.stat().st_size
-    except OSError:
-        return None
 
 
 def candidate_stamp(candidate: Path) -> dict[str, tuple[int, ...]]:
@@ -710,12 +799,50 @@ def _prepare_paths(config: RunConfig) -> dict[str, Path]:
                 if staged.exists():
                     raise ValueError(f"two corpus exports share the name {file.name!r}; rename one")
                 shutil.copyfile(file, staged)
+    # Hook carriers and legacy pending envelopes live under the archive root,
+    # so stage their sealed corpus copy into this run's isolated archive before
+    # the daemon starts. No live operator spool is ever opened by the daemon.
+    hook_spool = paths["home"] / ".polylogue-hook-spool"
+    if hook_spool.is_dir():
+        shutil.copytree(hook_spool, paths["archive"] / "hooks", copy_function=shutil.copy2)
     config_path = paths["xdg"] / "config" / "polylogue" / "polylogue.toml"
     config_path.parent.mkdir(parents=True)
     # Embeddings are external API work and stay off.
     config_path.write_text("[embedding]\nenabled = false\n", encoding="utf-8")
     paths["config"] = config_path
     return paths
+
+
+def _archive_write_stamp(archive: Path) -> tuple[tuple[str, int, int], ...]:
+    """Size and mtime of owned databases and write sidecars, for shutdown progress.
+
+    ``-shm`` files are left out: readers update their read marks there.
+    Inspect only tier anchors and direct generation members: walking blobs or
+    capture payloads every shutdown poll would perturb the measured workload.
+    """
+    from polylogue.storage.archive_identity import GENERATIONS_DIRNAME, TIER_FILENAMES
+
+    databases = [archive / filename for _, filename in TIER_FILENAMES]
+    # Both lifecycle owners place their database immediately below each
+    # generation directory, including inactive and retiring generations.
+    for dirname, filename in (
+        (GENERATIONS_DIRNAME, "index.db"),
+        (".embeddings-generations", "embeddings.db"),
+    ):
+        try:
+            members = tuple((archive / dirname).iterdir())
+        except OSError:
+            continue
+        databases.extend(member / filename for member in members)
+
+    stamp: list[tuple[str, int, int]] = []
+    for path in sorted(Path(str(database) + suffix) for database in databases for suffix in ("", "-wal", "-journal")):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        stamp.append((str(path.relative_to(archive)), stat.st_size, stat.st_mtime_ns))
+    return tuple(stamp)
 
 
 def _stop(
@@ -760,6 +887,7 @@ def _stop(
 def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> dict[str, Any]:
     manifest = load_manifest(config.corpus)
     paths = _prepare_paths(config)
+    hook_preparation = _prepare_hook_spool(paths, progress=progress)
     # Stamped before the identity is read, so an edit between the two is
     # still a changed stamp at the end.
     candidate_files = candidate_stamp(config.candidate)
@@ -787,6 +915,7 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
             daemon_env=daemon_env,
             interrupted=interrupted,
             progress=progress,
+            hook_preparation=hook_preparation,
         )
     finally:
         for sig, handler in previous_handlers.items():
@@ -805,6 +934,7 @@ def _measure_and_write_receipt(
     daemon_env: dict[str, str],
     interrupted: list[int],
     progress: Callable[[str], None],
+    hook_preparation: dict[str, Any] | None,
 ) -> dict[str, Any]:
     from devtools.fresh_build_bench.report import build_receipt
 
@@ -830,6 +960,8 @@ def _measure_and_write_receipt(
     last_progress_at = 0.0
     last_useful_progress_at: float | None = None
     last_activity_at: float | None = None
+    work_progress = WorkProgressTail(paths["events"])
+    final_work_progress = 0
     # Wall minus monotonic elapsed, sampled every poll: a step that is
     # restored before the end still displaced the milestones logged meanwhile.
     clock_steps: list[float] = [0.0]
@@ -847,6 +979,7 @@ def _measure_and_write_receipt(
             observation = observe(
                 paths["archive"], started, readiness_max_age_s=min(_READINESS_POLL_S, config.stall_timeout_s / 2)
             )
+            observation.work_progress = work_progress.poll()
             observations.append(observation)
             clock_steps.append((time.time() - started_wall) - (time.monotonic() - started))
             if observation.error is not None and not observation.error_retryable:
@@ -907,20 +1040,29 @@ def _measure_and_write_receipt(
                 )
             time.sleep(config.poll_s)
     finally:
-        exit_code, shutdown_s = _stop(
-            process,
-            stall_s=config.stall_timeout_s,
-            # I/O and the event log move while shutdown drains or
-            # checkpoints; CPU is left out, since the injected stack sampler
-            # keeps it moving even when the daemon is hung.
-            progress=lambda: (
-                sampler.samples[-1][3:] if sampler.samples else None,
-                _file_size(paths["events"]),
-            ),
-            interrupted=interrupted,
-        )
-        sampler.finish()
-        log_stream.close()
+        try:
+            exit_code, shutdown_s = _stop(
+                process,
+                stall_s=config.stall_timeout_s,
+                # A draining or checkpointing shutdown moves the archive's
+                # database and WAL files. Process CPU, read I/O, thread counts and
+                # the event log are left out: the stack sampler, status readers
+                # and periodic skip events keep those moving in a hung daemon, so
+                # a stalled run was never terminated.
+                progress=lambda: _archive_write_stamp(paths["archive"]),
+                interrupted=interrupted,
+            )
+        finally:
+            try:
+                sampler.finish()
+            finally:
+                try:
+                    log_stream.close()
+                finally:
+                    try:
+                        final_work_progress = work_progress.poll()
+                    finally:
+                        work_progress.close()
     if interrupted:
         # A cancellation after the loop settled (during shutdown, or before
         # the fingerprint) still skips post-processing; the receipt says so.
@@ -928,6 +1070,7 @@ def _measure_and_write_receipt(
     finished = time.monotonic()
     finished_wall = time.time()
     final = observe(paths["archive"], started)
+    final.work_progress = final_work_progress
     final.useful_progress_at_s = last_useful_progress_at
     final.activity_at_s = last_activity_at
     # The watcher may have read a file edited after the launch-time check.
@@ -970,11 +1113,40 @@ def _measure_and_write_receipt(
         clock_step_s=max([*clock_steps, (finished_wall - started_wall) - (finished - started)], key=abs),
         cancelled=lambda: bool(interrupted),
     )
+    if hook_preparation is not None:
+        receipt["hook_preparation"] = hook_preparation
+        receipt["hook_end_to_end_s"] = float(receipt["timing_s"]["wall"]) + hook_preparation["compaction_s"]
     # Atomic: a receipt is either absent or complete.
     staging = paths["receipt"].with_name(paths["receipt"].name + ".tmp")
     staging.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(staging, paths["receipt"])
     return receipt
+
+
+def _prepare_hook_spool(paths: dict[str, Path], *, progress: Callable[[str], None] = print) -> dict[str, Any] | None:
+    """Run the production legacy-spool compactor in the isolated archive."""
+    root = paths["archive"] / "hooks"
+    pending = root / "pending"
+    if not pending.is_dir():
+        return None
+    from polylogue.sources.hook_producer import compact_legacy_spool
+
+    started = time.monotonic()
+    result = compact_legacy_spool(root)
+    compaction_s = time.monotonic() - started
+    summary = {"compaction_s": compaction_s, "result": result}
+    refused = result.get("refused", {})
+    refused_count = (
+        sum(value for value in refused.values() if isinstance(value, int)) if isinstance(refused, dict) else 0
+    )
+    progress(
+        "hook spool compaction "
+        f"seconds={compaction_s:.3f} "
+        f"scanned={result.get('scanned', 0)} "
+        f"folded={result.get('folded', 0)} "
+        f"refused={refused_count}"
+    )
+    return summary
 
 
 __all__ = ["Observation", "RunConfig", "TreeSampler", "observe", "run_build"]

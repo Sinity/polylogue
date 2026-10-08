@@ -49,9 +49,10 @@ from __future__ import annotations
 import codecs
 import json as _stdlib_json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import suppress
 from decimal import Decimal
+from itertools import islice
 from typing import TypeAlias, TypeGuard, cast
 
 # Unconditional on purpose: see the module docstring. A missing msgspec is a
@@ -177,40 +178,66 @@ def json_document_or_none(value: object) -> JSONDocument | None:
 
 
 def _lower_json_value(value: object) -> object:
-    """Lower Decimal and validate in one pass; ``_NOT_JSON`` on a bad node.
-
-    Identity-preserving: a subtree needing no change is returned as itself, so
-    the common case allocates nothing.
-    """
-    if value is None or isinstance(value, (str, bool, int, float)):
-        return value
-    if isinstance(value, Decimal):
-        return int(value) if value == value.to_integral_value() else float(value)
-    if isinstance(value, list):
-        items: list[object] | None = None
-        for index, item in enumerate(value):
-            lowered = _lower_json_value(item)
-            if lowered is _NOT_JSON:
+    """Validate and lower without recursion, preserving unchanged subtree identity."""
+    frames: list[
+        tuple[
+            list[object] | dict[str, object],
+            Iterator[tuple[object, object]],
+            list[object] | dict[str, object] | None,
+            int,
+            object,
+            object,
+        ]
+    ] = []
+    active: set[int] = set()
+    pending = value
+    lowered: object
+    while True:
+        if pending is None or isinstance(pending, (str, bool, int, float)):
+            lowered = pending
+        elif isinstance(pending, Decimal):
+            lowered = int(pending) if pending == pending.to_integral_value() else float(pending)
+        elif isinstance(pending, (list, dict)):
+            if id(pending) in active:
+                raise ValueError("cyclic payload cannot be lowered as source JSON")
+            if isinstance(pending, dict) and any(not isinstance(key, str) for key in pending):
                 return _NOT_JSON
-            if items is None and lowered is not item:
-                items = list(value[:index])
-            if items is not None:
-                items.append(lowered)
-        return items if items is not None else value
-    if isinstance(value, dict):
-        mapping: dict[str, object] | None = None
-        for key, item in value.items():
-            if not isinstance(key, str):
-                return _NOT_JSON
-            lowered = _lower_json_value(item)
-            if lowered is _NOT_JSON:
-                return _NOT_JSON
-            if mapping is None and lowered is not item:
-                mapping = dict(list(value.items())[: list(value).index(key)])
-            if mapping is not None:
-                mapping[key] = lowered
-        return mapping if mapping is not None else value
-    return _NOT_JSON
+            original = cast(list[object] | dict[str, object], pending)
+            iterator = cast(
+                Iterator[tuple[object, object]],
+                iter(original.items()) if isinstance(original, dict) else iter(enumerate(original)),
+            )
+            try:
+                key, item = next(iterator)
+            except StopIteration:
+                lowered = original
+            else:
+                active.add(id(original))
+                frames.append((original, iterator, None, 0, key, item))
+                pending = item
+                continue
+        else:
+            return _NOT_JSON
+        while frames:
+            original, iterator, prefix, index, key, item = frames[-1]
+            if prefix is None and lowered is not item:
+                prefix = list(original[:index]) if isinstance(original, list) else dict(islice(original.items(), index))
+            if isinstance(prefix, list):
+                prefix.append(lowered)
+            elif isinstance(prefix, dict):
+                prefix[cast(str, key)] = lowered
+            try:
+                key, item = next(iterator)
+            except StopIteration:
+                frames.pop()
+                active.remove(id(original))
+                lowered = prefix if prefix is not None else original
+            else:
+                frames[-1] = (original, iterator, prefix, index + 1, key, item)
+                pending = item
+                break
+        else:
+            return lowered
 
 
 # The type vocabulary JSON itself defines (plus `tuple`, which every backend

@@ -319,3 +319,42 @@ def test_episode_context_preserves_composed_message_boundaries_and_result_anchor
         assert episode.result_output == "result"
         assert episode.result_state == "outcome_success"
         assert not archive._conn.in_transaction
+
+
+def test_observed_event_evidence_subqueries_read_materialized_results(tmp_path: Path) -> None:
+    """Per-use evidence lookups must not re-derive the association windows.
+
+    Inlining ``association_results`` into the correlated evidence and search
+    subqueries re-runs the windowed association once per paired use, which is
+    quadratic in a session's tool results: a Codex archive with tens of
+    thousands of tool calls held the status and health readers for minutes.
+    """
+    events = [
+        event
+        for index in range(40)
+        for event in ((f"u{index}", "use", f"t{index}", None), (f"r{index}", "result", f"t{index}", False))
+    ]
+    with ArchiveStore(tmp_path / "archive") as archive:
+        write_index_session(archive, action_stream("plan", events))
+        plan = archive._conn.execute(
+            "EXPLAIN QUERY PLAN " + observed_event_relation_sql(source_where="1") + " SELECT * FROM observed_events"
+        ).fetchall()
+    children: dict[int, list[tuple[int, str]]] = {}
+    for node, parent, _unused, detail in plan:
+        children.setdefault(parent, []).append((node, detail))
+
+    def subtree(node: int) -> list[str]:
+        # A MATERIALIZE child runs once per statement, not per correlated row.
+        return [
+            detail
+            for child, detail in children.get(node, [])
+            if not detail.startswith("MATERIALIZE")
+            for detail in (detail, *subtree(child))
+        ]
+
+    correlated = [node for node, _parent, _unused, detail in plan if detail.startswith("CORRELATED")]
+    assert len(correlated) == 2
+    for node in correlated:
+        details = subtree(node)
+        assert not [detail for detail in details if "association_numbered" in detail], details
+        assert [detail for detail in details if detail.startswith("SEARCH tr ")], details

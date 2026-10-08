@@ -147,16 +147,15 @@ def test_raw_frontier_readiness_check_errors_on_missing_source_evidence(tmp_path
 def test_public_readiness_route_blocks_cursor_ahead_source_selection(tmp_path: Path) -> None:
     """The real readiness report must carry the cursor violation to convergence state."""
 
+    import asyncio
+
     from polylogue.config import Config
     from polylogue.readiness import run_archive_readiness
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.OPS):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
-        else:
-            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+    bootstrap_archive_root(tmp_path)
     source_path = tmp_path / "session.jsonl"
     unmaterialized_path = tmp_path / "unmaterialized.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
@@ -222,6 +221,18 @@ def test_public_readiness_route_blocks_cursor_ahead_source_selection(tmp_path: P
         )
         conn.commit()
 
+    # Readiness reads the published frontier inspection; run the canonical
+    # inspection the daemon's frontier stage performs before reading it.
+    async def inspect() -> None:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+            await owner.run_convergence_sync(
+                "test.frontier",
+                inspect_prepared_raw_authority_frontier,
+                tmp_path,
+                input_demand=owner._compute_adapter.amend_current_input_demand,
+            )
+
+    asyncio.run(inspect())
     report = run_archive_readiness(
         Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=tmp_path / "index.db")
     )

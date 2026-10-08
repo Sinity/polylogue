@@ -26,8 +26,11 @@ import click
 from polylogue.api import Polylogue
 from polylogue.browser_capture.receiver import resolve_receiver_auth_token
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
+from polylogue.core.compute import BoundedComputeAdapter, publish_compute_adapter, reset_compute_adapter
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.degraded import DegradedReason, set_degraded
 from polylogue.core.durable_fs import atomic_create
+from polylogue.core.enums import ValidationMode
 from polylogue.core.json import dumps
 from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
 from polylogue.core.stage_admission import (
@@ -38,7 +41,6 @@ from polylogue.core.stage_admission import (
 from polylogue.daemon.api_auth import API_ALLOW_NO_AUTH_ENV
 from polylogue.daemon.api_auth import resolve_api_auth_token as resolve_api_auth_token
 from polylogue.daemon.event_bus import IngestCommitted, daemon_event_bus
-from polylogue.daemon.execution import publish_daemon_compute_adapter, reset_daemon_compute_adapter
 from polylogue.daemon.health import (
     HealthSeverity,
     HealthTier,
@@ -51,6 +53,7 @@ from polylogue.daemon.health import (
 from polylogue.daemon.intake import AdmissionOutcome, AdmissionResult, FairIntakeDispatcher, IntakeClassSpec
 from polylogue.daemon.lineage_startup import LineageStartupCensus
 from polylogue.daemon.lineage_startup import census_lineage_startup_sync as _census_lineage_startup_sync
+from polylogue.daemon.notification_backends import NotificationBackend
 from polylogue.daemon.periodic import daemon_periodic_runner, watcher_registered_gate
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
 from polylogue.daemon.services import (
@@ -80,6 +83,7 @@ from polylogue.logging import (
     shutdown_events,
     span,
 )
+from polylogue.operations.drive_readiness import DriveCatchupReport, DriveCatchupState
 from polylogue.operations.embedding_lifecycle import (
     ensure_embedding_lifecycle_startup as _ensure_embedding_lifecycle_startup_sync,
 )
@@ -122,6 +126,7 @@ if TYPE_CHECKING:
     from polylogue.daemon.intake_adapters import ColdBuildGeneration
     from polylogue.daemon.lifecycle import DaemonLifecycle
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
     from polylogue.daemon.session_profile_composition import ComposedSessionProfiles, SessionProfileCallback
     from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion
     from polylogue.sources.live.cursor import CursorStore
@@ -638,7 +643,10 @@ async def _periodic_status_snapshot_refresh() -> None:
 
 async def _run_drive_source_catchup_once(
     session_profile_callback: SessionProfileCallback | None,
-) -> int:
+    *,
+    raw_owner: RawObservationConvergenceOwner | None,
+    compute_owner: BoundedComputeAdapter,
+) -> DriveCatchupReport:
     """Acquire and parse configured Drive sources once.
 
     The live watcher only observes filesystem roots. Google Drive sources are
@@ -660,25 +668,48 @@ async def _run_drive_source_catchup_once(
             reason="no_drive_sources_configured",
             loop="drive source catch-up",
         )
-        return 0
+        return DriveCatchupReport(
+            DriveCatchupState.COMPLETE, enumerated_count=0, acquired_count=0, materialization_pending=0
+        )
 
+    from polylogue.operations.drive_readiness import (
+        drive_readiness_observation,
+        inspect_current_drive_readiness,
+        reobserve_drive_readiness,
+    )
+
+    observation = drive_readiness_observation(config.archive_root)
+    resume = observation.resume_materialization
+    if not resume:
+        observation.close()
     services = build_runtime_services(config=config, db_path=config.db_path)
     try:
         with span("daemon.drive_catchup.pass", loop="drive source catch-up") as pass_span:
             repository = services.get_repository()
-            execution = DriveCatchupExecution(daemon_write_coordinator())
+            execution = DriveCatchupExecution(daemon_write_coordinator(), compute_adapter=compute_owner)
             parser = ParsingService(
                 repository=repository,
                 archive_root=config.archive_root,
                 config=config,
                 execution=execution,
+                retained_runner=raw_owner.ingest_retained_raw_ids if raw_owner is not None else None,
             )
             result = await parser.ingest_sources(
                 sources=sources,
                 stage="all",
-                parse_records=True,
+                parse_records=raw_owner is not None,
                 max_pass_seconds=_DRIVE_CATCHUP_MAX_PASS_SECONDS,
+                skip_acquire=resume,
             )
+            if not resume:
+                observation.witnesses.update(result.acquire_result.drive_witnesses)
+            else:
+                # Recheck currency after a parse checkpoint without reacquiring
+                # unchanged bytes or throwing away the retained membership.
+                def reobserve() -> None:
+                    reobserve_drive_readiness(observation, config.drive_config)
+
+                await execution.prepare(reobserve)
             session_ids = tuple(sorted(result.parse_result.processed_ids))
             if session_ids and session_profile_callback is not None:
                 try:
@@ -693,7 +724,6 @@ async def _run_drive_source_catchup_once(
                         error_type=type(exc).__name__,
                         error_detail=str(exc),
                     )
-            budget_exceeded = bool(result.parse_result.time_budget_exceeded)
             errors = int(result.acquire_result.errors)
             counts: dict[str, object] = {
                 "sources": len(sources),
@@ -703,24 +733,44 @@ async def _run_drive_source_catchup_once(
                 "errors": errors,
                 "budget_ms": round(_DRIVE_CATCHUP_MAX_PASS_SECONDS * 1000, 3),
             }
-            if budget_exceeded:
-                pass_span.degraded("time_budget_exceeded", **counts)
-            elif errors:
-                pass_span.degraded("acquire_errors", **counts)
-            else:
+
+            report = await execution.prepare(
+                lambda: inspect_current_drive_readiness(
+                    config.archive_root,
+                    sources,
+                    observation.witnesses,
+                    changed_count=len(session_ids),
+                    raw_owner_available=raw_owner is not None,
+                )
+            )
+            if report.state is DriveCatchupState.COMPLETE:
                 pass_span.ok(**counts)
-            return len(session_ids)
+            else:
+                pass_span.degraded("drive_" + report.state.value, **counts)
+            observation.resume_materialization = (
+                report.state is DriveCatchupState.PENDING
+                and "drive_listing_changed" not in report.gaps
+                and "drive_raw_not_retained" not in report.gaps
+            )
+            return report
     finally:
         await services.close()
 
 
 async def _run_drive_source_catchup_safely(
     session_profile_callback: SessionProfileCallback | None,
-) -> int:
+    *,
+    raw_owner: RawObservationConvergenceOwner | None,
+    compute_owner: BoundedComputeAdapter,
+) -> DriveCatchupReport:
     """Run Drive catch-up without letting remote-source failures kill daemon."""
+    from polylogue.core.compute import DaemonOperationCancelled
+
     try:
-        return await _run_drive_source_catchup_once(session_profile_callback)
-    except asyncio.CancelledError:
+        return await _run_drive_source_catchup_once(
+            session_profile_callback, raw_owner=raw_owner, compute_owner=compute_owner
+        )
+    except (asyncio.CancelledError, DaemonOperationCancelled):
         raise
     except Exception as exc:
         emit(
@@ -731,7 +781,7 @@ async def _run_drive_source_catchup_safely(
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
-        return 0
+        return DriveCatchupReport(DriveCatchupState.RETRYABLE, gaps=(f"drive_catchup_failed:{type(exc).__name__}",))
 
 
 async def _periodic_heartbeat(*, sources: tuple[WatchSource, ...] = ()) -> None:
@@ -1078,11 +1128,29 @@ async def _run_convergence_debt_pass(db: Path) -> None:
             # Sinex transport) and walks it. Neither may happen under the
             # writer lease (polylogue-ssplv): each stage bridges its own short
             # write back through the admission bound here.
-            repaired = await asyncio.to_thread(
-                _run_with_stage_admission,
-                _daemon_stage_write_admission(),
-                partial(_drain_convergence_debt_backlog, db),
+            from polylogue.core.compute import compute_adapter
+
+            adapter = compute_adapter()
+            submitted = adapter.submit(
+                propagate(
+                    partial(
+                        _run_with_stage_admission,
+                        _daemon_stage_write_admission(),
+                        partial(_drain_convergence_debt_backlog, db, compute_adapter=adapter),
+                    )
+                ),
+                admission_class="incremental-background",
+                exclusive_bytes=True,
+                estimated_bytes=0,
             )
+            operation = asyncio.wrap_future(submitted.future)
+            try:
+                repaired = await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                submitted.cancellation.cancel()
+                with contextlib.suppress(BaseException):
+                    await asyncio.shield(operation)
+                raise
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
                 pass_span.degraded(
@@ -1240,6 +1308,8 @@ def _derivation_admission(report: DerivationReport, key: str, *, subject: str) -
 
     outcomes = tuple(outcome for outcome in report.outcomes if outcome.key.key in (key, "*"))
     failed = next((outcome for outcome in outcomes if outcome.outcome is Outcome.FAILED), None)
+    if failed is not None and failed.key.key == key and failed.terminal_refusal is not None:
+        return AdmissionResult(AdmissionOutcome.EXCLUDED, reason=failed.error or failed.terminal_refusal.value)
     if failed is not None or (report.done == 0 and report.failed > 0):
         return AdmissionResult(
             AdmissionOutcome.RETRYABLE,
@@ -1341,17 +1411,20 @@ def _browser_capture_spool_has_pending_files() -> bool:
 
 
 def _daemon_stage_write_admission() -> StageWriteAdmission:
-    """Admission that hands one stage's write section to the daemon writer.
+    """Admission that holds the daemon writer for one stage's write section.
 
-    The ``None`` timeout is deliberate: the coordinator owns the worker thread
-    until the transaction really returns, so a caller-side timeout can never
-    admit a second archive writer for the same partition.
+    The section runs on the stage's own thread under a delegated lease, as raw
+    observation publication does: a write section may use SQLite connections
+    the stage opened for its observation, and a connection never crosses
+    threads.
     """
-    coordinator = daemon_write_coordinator()
-    loop = asyncio.get_running_loop()
+    from polylogue.core.write_lease import adopt_write_lease
+
+    bridge = DaemonWriteThreadBridge(daemon_write_coordinator(), asyncio.get_running_loop())
 
     def admission(actor: str, work: Callable[[], Any]) -> Any:
-        return asyncio.run_coroutine_threadsafe(coordinator.run_sync(actor, work), loop).result()
+        with bridge.hold(actor) as delegation, adopt_write_lease(delegation):
+            return work()
 
     return admission
 
@@ -1365,6 +1438,7 @@ def _run_with_stage_admission(admission: StageWriteAdmission, work: Callable[[],
 def _drain_convergence_debt_backlog(
     db: Path,
     *,
+    compute_adapter: BoundedComputeAdapter,
     limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT,
     budget_s: float = _CONVERGENCE_DEBT_DRAIN_BUDGET_SECONDS,
 ) -> int:
@@ -1378,18 +1452,23 @@ def _drain_convergence_debt_backlog(
     deadline = time.monotonic() + budget_s
     total = 0
     while True:
-        retried, candidates = _drain_convergence_debt_page(db, limit=limit)
+        check_compute_cancelled()
+        retried, candidates = _drain_convergence_debt_page(db, limit=limit, compute_adapter=compute_adapter)
         total += retried
         if retried == 0 or candidates < limit or time.monotonic() >= deadline:
             return total
 
 
-def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT) -> int:
+def _drain_convergence_debt_once(
+    db: Path, *, compute_adapter: BoundedComputeAdapter, limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT
+) -> int:
     """Retry one page of due derived convergence debt; return the rows retried."""
-    return _drain_convergence_debt_page(db, limit=limit)[0]
+    return _drain_convergence_debt_page(db, limit=limit, compute_adapter=compute_adapter)[0]
 
 
-def _drain_convergence_debt_page(db: Path, *, limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT) -> tuple[int, int]:
+def _drain_convergence_debt_page(
+    db: Path, *, compute_adapter: BoundedComputeAdapter, limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT
+) -> tuple[int, int]:
     """Retry due derived convergence debt without rereading source payloads.
 
     Debt identity is stage-scoped. A retry therefore runs only the recorded
@@ -1429,7 +1508,7 @@ def _drain_convergence_debt_page(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
     if not candidate_debt:
         return 0, len(page)
 
-    default_stages = make_default_convergence_stages(db)
+    default_stages = make_default_convergence_stages(db, compute_adapter=compute_adapter)
     stages_by_name = {stage.name: stage for stage in default_stages}
     # This stage replays only recorded debt. Putting it in the ordinary
     # convergence list would rescan hook evidence for every session pass.
@@ -1462,6 +1541,7 @@ def _drain_convergence_debt_page(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
     retryable_debt = tuple(due_debt)
     if retryable_debt:
         for stage_name in dict.fromkeys(debt.stage for debt in retryable_debt):
+            check_compute_cancelled()
             selected_stages = default_stages if stage_name == "convergence" else (stages_by_name[stage_name],)
             stage_debt = tuple(debt for debt in retryable_debt if debt.stage == stage_name)
             paths = tuple(
@@ -1482,7 +1562,10 @@ def _drain_convergence_debt_page(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
             session_states, _session_timings = converger.converge_sessions(session_ids)
             if subject_independent and paths:
                 representative = path_states.get(paths[0])
-                if representative is not None and bool(getattr(representative, "converged", False)):
+                from polylogue.sources.live.convergence_debt import stage_state_value
+
+                measured_stages = getattr(representative, "stages", None)
+                if isinstance(measured_stages, dict) and stage_state_value(measured_stages.get(stage_name)) == "done":
                     converged_whole_archive[stage_name] = run_started_ms
                 path_states = (
                     {Path(debt.subject_id): representative for debt in stage_debt if debt.subject_type == "source_path"}
@@ -1496,6 +1579,7 @@ def _drain_convergence_debt_page(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
                 ((stage_name, "session_id", session_id), state) for session_id, state in session_states.items()
             )
 
+    check_compute_cancelled()
     retried = admit_stage_write(
         "maintenance.convergence_debt.ledger",
         partial(_record_convergence_debt_retries, cursor, due_debt, subject_states, converged_whole_archive),
@@ -1510,7 +1594,7 @@ def _record_convergence_debt_retries(
     converged_whole_archive: Mapping[str, int] | None = None,
 ) -> int:
     """Update the ops debt ledger for one drained pass. The only write here."""
-    from polylogue.sources.live.convergence_debt import is_deferred_stage_state
+    from polylogue.sources.live.convergence_debt import is_deferred_stage_state, stage_state_value
 
     retried = 0
     # Stages settled here by one archive-wide clear. Their rows are owned by
@@ -1559,7 +1643,14 @@ def _record_convergence_debt_retries(
             )
             continue
         retried += 1
-        if bool(getattr(state, "converged", False)):
+        stages_map = getattr(state, "stages", None)
+        stages_map = stages_map if isinstance(stages_map, dict) else {}
+        settled = (
+            bool(stages_map) and all(stage_state_value(value) == "done" for value in stages_map.values())
+            if debt.stage == "convergence"
+            else stage_state_value(stages_map.get(debt.stage)) == "done"
+        )
+        if settled:
             cursor.clear_convergence_debt(
                 stage=debt.stage,
                 subject_type=debt.subject_type,
@@ -1569,8 +1660,6 @@ def _record_convergence_debt_retries(
 
         last_error = getattr(state, "last_error", None)
         retry_error = last_error if isinstance(last_error, str) and last_error else "retry did not converge"
-        stages_map = getattr(state, "stages", None)
-        stages_map = stages_map if isinstance(stages_map, dict) else {}
         if debt.stage != "convergence":
             cursor.record_convergence_debt(
                 stage=debt.stage,
@@ -1585,13 +1674,13 @@ def _record_convergence_debt_retries(
         # Generic rows predate stage-scoped retry identity. Preserve the old
         # migration behavior by replacing only that generic row with the exact
         # stages that remain pending; other stage rows for the subject survive.
-        failed_stages = _failed_convergence_stage_names(stages_map) or ("convergence",)
+        pending_stages = _pending_convergence_stage_names(stages_map) or ("convergence",)
         cursor.clear_convergence_debt(
             stage=debt.stage,
             subject_type=debt.subject_type,
             subject_id=debt.subject_id,
         )
-        for stage in failed_stages:
+        for stage in pending_stages:
             cursor.record_convergence_debt(
                 stage=stage,
                 subject_type=debt.subject_type,
@@ -1616,38 +1705,43 @@ def _debt_retry_due(debt: object, *, now: datetime) -> bool:
     return retry_at <= now
 
 
-def _failed_convergence_stage_names(stages: object) -> tuple[str, ...]:
+def _pending_convergence_stage_names(stages: object) -> tuple[str, ...]:
     if not isinstance(stages, dict):
         return ()
-    failed: list[str] = []
+    pending: list[str] = []
     for stage_name, stage_state in stages.items():
         state_value = getattr(stage_state, "value", stage_state)
-        if state_value not in {"done", "skipped"}:
-            failed.append(str(stage_name))
-    return tuple(failed)
+        if state_value != "done":
+            pending.append(str(stage_name))
+    return tuple(pending)
 
 
-async def _periodic_health_check(*, sources: tuple[WatchSource, ...] | None = None) -> None:
+async def _periodic_health_check(
+    *, backend: NotificationBackend, sources: tuple[WatchSource, ...] | None = None
+) -> None:
     """Run periodic health checks with config-driven notification backend.
 
     Health check tiers and interval are read from PolylogueConfig.
     Notifications are sent through the configured notification backend.
     """
 
+    from polylogue.daemon.notifications import send_notifications
+
     async def once() -> None:
         from polylogue.config import load_polylogue_config
         from polylogue.daemon.health import check_health
-        from polylogue.daemon.notifications import send_notifications
 
         cfg = load_polylogue_config()
-        health = await daemon_write_coordinator().run_sync(
-            "maintenance.health_check",
-            check_health,
-            tiers=resolve_health_tiers(cfg.health_check_tiers),
-            sources=sources,
+        # The checks are reads on their own read-only connections, so they run
+        # off the writer; the cursor-lag sample is the one durable write, and
+        # it bridges to the writer through the admission bound here.
+        health = await asyncio.to_thread(
+            _run_with_stage_admission,
+            _daemon_stage_write_admission(),
+            partial(check_health, tiers=resolve_health_tiers(cfg.health_check_tiers), sources=sources),
         )
         if health.overall_status != "ok":
-            send_notifications(health.alerts, config=cfg.raw)
+            send_notifications(health.alerts, backend=backend, config=cfg.raw)
 
     await daemon_periodic_runner().run(
         "health_check",
@@ -1900,7 +1994,11 @@ async def _shutdown_writer_coordinator_with_rebuild_exclusion(
 
 
 def compose_ingest_owner(
-    archive_root: Path, write_bridge: DaemonWriteThreadBridge
+    archive_root: Path,
+    write_bridge: DaemonWriteThreadBridge,
+    *,
+    compute_adapter: BoundedComputeAdapter,
+    validation_mode: ValidationMode,
 ) -> tuple[DaemonOperationRuntime, ComposedSessionProfiles]:
     """The ingest owner of a daemon that serves no API: its operation runtime.
 
@@ -1908,20 +2006,27 @@ def compose_ingest_owner(
     and re-drives accepted ingests exactly as the API server's runtime does;
     the caller starts the re-drive and shuts the runtime down.
     """
-    from polylogue.daemon.execution import daemon_compute_adapter
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
     from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 
     profiles = compose_session_profile_callback(
         archive_root,
-        compute_adapter=daemon_compute_adapter(),
+        compute_adapter=compute_adapter,
         write_bridge=write_bridge,
         now=time.time,
     )
     runtime = DaemonOperationRuntime(
         archive_root,
         write_bridge=write_bridge,
-        execution_kernel=daemon_compute_adapter(),
+        execution_kernel=compute_adapter,
+        raw_observation_owner=RawObservationConvergenceOwner(
+            archive_root,
+            compute_adapter=compute_adapter,
+            write_bridge=write_bridge,
+            write_coordinator=write_bridge.coordinator,
+            validation_mode=validation_mode,
+        ),
         owner_loop=write_bridge.owner_loop,
         session_maintenance=profiles.maintenance,
     )
@@ -1979,7 +2084,7 @@ async def run_daemon_services(
     those routes can run, and the daemon must prevent a rebuild from starting
     until its writer coordinator has drained.
     """
-    from polylogue.core.write_lease import arm_write_lease_enforcement, install_archive_write_guard
+    from polylogue.core.write_lease import arm_write_lease_enforcement
     from polylogue.daemon.events import EVENT_SUBSCRIBERS
     from polylogue.maintenance.raw_authority import archive_writer_rebuild_exclusion
     from polylogue.paths import archive_root
@@ -1991,11 +2096,6 @@ async def run_daemon_services(
     with (
         archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion,
         arm_write_lease_enforcement(process_wide=True),
-        # Arming alone only covers the declared write-mode factories. The guard
-        # makes the boundary total at ``sqlite3.connect`` itself, so a writer
-        # that reaches an archive tier without a factory is refused rather than
-        # contending through the busy timeout (polylogue-8qm4k).
-        install_archive_write_guard(),
         arm_recurring_checkpoint_owner(),
         # This process serves every SSE subscriber, so it alone knows every
         # live cursor and is the only one that prunes the event ledger.
@@ -2030,33 +2130,9 @@ async def _observe_faulted_baseline_cancellable(
     generation: ColdBuildGeneration, sources: tuple[WatchSource, ...]
 ) -> Any:
     """Keep a source scan off the writer without joining it at loop shutdown."""
-    loop = asyncio.get_running_loop()
-    completed: asyncio.Future[Any] = loop.create_future()
-    cancel = threading.Event()
+    from polylogue.daemon.discovery_progress import run_source_observation
 
-    def deliver(result: Any = None, error: BaseException | None = None) -> None:
-        if completed.done():
-            return
-        if error is not None:
-            completed.set_exception(error)
-        else:
-            completed.set_result(result)
-
-    def observe() -> None:
-        try:
-            result = generation.observe_faulted_baseline(sources, cancel=cancel)
-        except BaseException as exc:
-            with contextlib.suppress(RuntimeError):
-                loop.call_soon_threadsafe(deliver, None, exc)
-        else:
-            with contextlib.suppress(RuntimeError):
-                loop.call_soon_threadsafe(deliver, result)
-
-    threading.Thread(target=observe, name="cold-source-observation", daemon=True).start()
-    try:
-        return await completed
-    finally:
-        cancel.set()
+    return await run_source_observation(lambda cancel: generation.observe_faulted_baseline(sources, cancel=cancel))
 
 
 async def _run_daemon_services_under_active_writer_lease(
@@ -2097,6 +2173,9 @@ async def _run_daemon_services_under_active_writer_lease(
     global _daemon_lifecycle, _pidfile_path
     _process_start.started_at_wall()
     archive_root_path = Path(archive_root())
+    from polylogue.operations.drive_readiness import reset_drive_readiness_observation
+
+    reset_drive_readiness_observation(archive_root_path)
     # The ownership proof is descriptor-backed and therefore requires an
     # existing root. A daemon is also the production first-run entry point, so
     # create an otherwise absent configured root before identity/ownership
@@ -2193,94 +2272,120 @@ async def _run_daemon_services_under_active_writer_lease(
     )
 
     archive_owner = acquire_durable_archive_ownership(archive_root_path, owner_id=f"daemon:{os.getpid()}")
-    try:
-        # Startup durable-change-train reconciliation opens the durable tiers
-        # ``mode=rw`` and migrates them. Exclusive archive ownership already
-        # excludes another *process*; the lease is what puts this writer inside
-        # the daemon's own single-writer boundary rather than beside it, so it
-        # is one authority and not a declared bypass (polylogue-8qm4k).
-        with write_lease(
-            "daemon.durable_change_train.startup",
-            archive_root=archive_root_path,
-        ):
-            try:
-                recovered_train_paths = reconcile_durable_change_trains_on_startup(archive_root_path)
-            except DurableChangeTrainError as exc:
-                # A typed refusal, not a crash: the archive cannot be admitted
-                # by this runtime, so nothing else may start (polylogue-w6nrl).
-                emit(
-                    "daemon.startup.refused",
-                    level=ERROR,
-                    outcome="refused",
-                    reason="durable_change_train_admission",
-                    error_detail=str(exc),
-                )
-                raise
-        if recovered_train_paths:
-            emit(
-                "daemon.change_train.reconciled",
-                level=WARNING,
-                outcome="degraded",
-                reason="interrupted_change_trains_recovered_at_startup",
-                files=len(recovered_train_paths),
-                error_detail=", ".join(str(path) for path in recovered_train_paths),
-            )
-        # Declared durable migrations are ordinary lifecycle: apply them now,
-        # under the same exclusive ownership, before anything serves.
-        from polylogue.daemon.durable_migrations import apply_declared_durable_migrations
-        from polylogue.operations.durable_change_train import initialize_fresh_archive_on_startup
+    from polylogue.core.compute import compute_adapter
+    from polylogue.core.write_lease import adopt_write_lease
+    from polylogue.storage.sqlite.connection_profile import retained_native_settlement_owners_on_current_thread
 
-        initialize_fresh_archive_on_startup(
-            archive_root_path,
-            archive_owner=archive_owner,
-            write_lease=lambda actor: write_lease(actor, archive_root=archive_root_path),
-        )
+    write_coordinator = daemon_write_coordinator()
+    startup_kernel = compute_adapter()
+    startup_bridge = DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop())
 
-        applied_migrations = apply_declared_durable_migrations(
-            archive_root_path,
-            archive_owner=archive_owner,
-            write_lease=lambda actor: write_lease(actor, archive_root=archive_root_path),
-        )
-        for migration in applied_migrations:
-            emit(
-                "daemon.durable_migration.applied",
-                level=WARNING,
-                outcome="ok",
-                reason="declared_durable_migration_applied_at_open",
-                tier=migration.tier.value,
-                error_detail=(
-                    f"v{migration.current_version} -> v{migration.target_version}"
-                    f"{' behind a verified backup' if migration.requires_backup else ''}"
-                ),
-            )
-        # A reset of index.db/ops.db staged by the previous daemon lands here:
-        # this process holds exclusive ownership and has opened no tier yet,
-        # so no connection can be left on an unlinked file. Bootstrap then
-        # recreates the deleted tiers and the empty index cold-builds.
-        from polylogue.operations.mutation_replay import apply_staged_archive_resets
-
-        if not durable_tier_schema_mismatch():
-            with write_lease("daemon.archive_reset.startup", archive_root=archive_root_path):
-                applied_resets = apply_staged_archive_resets(archive_root_path)
-            from polylogue.operations.mutation_replay import reconverge_disposable_ops_on_startup
-            from polylogue.operations.reset_safety import archive_tiers_closed
-
-            with (
-                write_lease("daemon.ops_reconvergence.startup", archive_root=archive_root_path),
-                archive_tiers_closed(archive_root_path),
+    def prepare_startup_tiers() -> None:
+        startup_kernel.require_current_creator()
+        with startup_bridge.hold("daemon.archive_admission.startup") as delegation, adopt_write_lease(delegation):
+            # Startup durable-change-train reconciliation opens the durable tiers
+            # ``mode=rw`` and migrates them. Exclusive archive ownership already
+            # excludes another *process*; the lease is what puts this writer inside
+            # the daemon's own single-writer boundary rather than beside it, so it
+            # is one authority and not a declared bypass (polylogue-8qm4k).
+            with write_lease(
+                "daemon.durable_change_train.startup",
+                archive_root=archive_root_path,
             ):
-                ops_reconverged = reconverge_disposable_ops_on_startup(archive_root_path, archive_owner=archive_owner)
-            if ops_reconverged:
-                emit("daemon.ops_reconverged", level=WARNING, outcome="ok", reason="derived_schema_skew", tier="ops")
-            if applied_resets:
+                try:
+                    recovered_train_paths = reconcile_durable_change_trains_on_startup(archive_root_path)
+                except DurableChangeTrainError as exc:
+                    # A typed refusal, not a crash: the archive cannot be admitted
+                    # by this runtime, so nothing else may start (polylogue-w6nrl).
+                    emit(
+                        "daemon.startup.refused",
+                        level=ERROR,
+                        outcome="refused",
+                        reason="durable_change_train_admission",
+                        error_detail=str(exc),
+                    )
+                    raise
+            if recovered_train_paths:
                 emit(
-                    "daemon.archive_reset.applied",
+                    "daemon.change_train.reconciled",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="interrupted_change_trains_recovered_at_startup",
+                    files=len(recovered_train_paths),
+                    error_detail=", ".join(str(path) for path in recovered_train_paths),
+                )
+            # Declared durable migrations are ordinary lifecycle: apply them now,
+            # under the same exclusive ownership, before anything serves.
+            from polylogue.daemon.durable_migrations import apply_declared_durable_migrations
+            from polylogue.operations.durable_change_train import initialize_fresh_archive_on_startup
+
+            initialize_fresh_archive_on_startup(
+                archive_root_path,
+                archive_owner=archive_owner,
+                write_lease=lambda actor: write_lease(actor, archive_root=archive_root_path),
+            )
+
+            applied_migrations = apply_declared_durable_migrations(
+                archive_root_path,
+                archive_owner=archive_owner,
+                write_lease=lambda actor: write_lease(actor, archive_root=archive_root_path),
+            )
+            for migration in applied_migrations:
+                emit(
+                    "daemon.durable_migration.applied",
                     level=WARNING,
                     outcome="ok",
-                    reason="staged_reset_applied_before_tiers_open",
-                    rows=len(applied_resets),
-                    error_detail=", ".join(applied_resets),
+                    reason="declared_durable_migration_applied_at_open",
+                    tier=migration.tier.value,
+                    error_detail=(
+                        f"v{migration.current_version} -> v{migration.target_version}"
+                        f"{' behind a verified backup' if migration.requires_backup else ''}"
+                    ),
                 )
+            # A reset of index.db/ops.db staged by the previous daemon lands here:
+            # this process holds exclusive ownership and has opened no tier yet,
+            # so no connection can be left on an unlinked file. Bootstrap then
+            # recreates the deleted tiers and the empty index cold-builds.
+            from polylogue.operations.mutation_replay import apply_staged_archive_resets
+
+            if not durable_tier_schema_mismatch():
+                with write_lease("daemon.archive_reset.startup", archive_root=archive_root_path):
+                    applied_resets = apply_staged_archive_resets(archive_root_path)
+                from polylogue.operations.mutation_replay import reconverge_disposable_ops_on_startup
+                from polylogue.operations.reset_safety import archive_tiers_closed
+
+                with (
+                    write_lease("daemon.ops_reconvergence.startup", archive_root=archive_root_path),
+                    archive_tiers_closed(archive_root_path),
+                ):
+                    ops_reconverged = reconverge_disposable_ops_on_startup(
+                        archive_root_path, archive_owner=archive_owner
+                    )
+                if ops_reconverged:
+                    emit(
+                        "daemon.ops_reconverged", level=WARNING, outcome="ok", reason="derived_schema_skew", tier="ops"
+                    )
+                if applied_resets:
+                    emit(
+                        "daemon.archive_reset.applied",
+                        level=WARNING,
+                        outcome="ok",
+                        reason="staged_reset_applied_before_tiers_open",
+                        rows=len(applied_resets),
+                        error_detail=", ".join(applied_resets),
+                    )
+
+    try:
+        await write_coordinator.run_prepared_sync(
+            "daemon.archive_admission.startup",
+            prepare_startup_tiers,
+            submit_worker=lambda worker: (
+                startup_kernel.submit(
+                    propagate(worker), admission_class="control", estimated_bytes=0, exclusive_bytes=True
+                ).future
+            ),
+            settlement_owners=retained_native_settlement_owners_on_current_thread,
+        )
     except BaseException:
         archive_owner.release()
         raise
@@ -2409,7 +2514,6 @@ async def _run_daemon_services_under_active_writer_lease(
     _pidfile_path = pidfile
     from polylogue.daemon.lifecycle import DaemonLifecycle, install_signal_handlers, restore_signal_handlers
 
-    write_coordinator: DaemonWriteCoordinator = daemon_write_coordinator()
     try:
         _daemon_lifecycle = await write_coordinator.run_sync(
             "daemon.lifecycle.start",
@@ -2443,10 +2547,13 @@ async def _run_daemon_services_under_active_writer_lease(
                 )
             )
         else:
-            from polylogue.operations.mutation_replay import recover_interrupted_operations
+            from polylogue.core.compute import compute_adapter
+            from polylogue.daemon.http import _recover_startup_with_compute
 
-            await write_coordinator.run_sync(
-                "daemon.operation_recovery.startup", recover_interrupted_operations, archive_root_path
+            await _recover_startup_with_compute(
+                DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                compute_adapter(),
+                archive_root_path,
             )
         previous_signal_handlers = install_signal_handlers(_daemon_lifecycle)
     except BaseException:
@@ -2543,15 +2650,18 @@ async def _run_daemon_services_under_active_writer_lease(
         capabilities.add(ServiceCapability.API)
     if browser_port is not None:
         capabilities.add(ServiceCapability.BROWSER_HOST)
+    from polylogue.config import load_polylogue_config
+
+    runtime_config = load_polylogue_config()
+    validation_mode = ValidationMode.from_string(runtime_config.schema_validation)
     embedding_config = None
     if schema_blocked:
         capabilities.add(ServiceCapability.SCHEMA_BLOCKED)
     else:
         capabilities.add(ServiceCapability.DERIVED_WRITES)
-        from polylogue.config import load_polylogue_config
         from polylogue.daemon.embedding_backlog import embedding_convergence_unavailable_reason
 
-        embedding_config = load_polylogue_config()
+        embedding_config = runtime_config
         if embedding_convergence_unavailable_reason(embedding_config) is None:
             capabilities.add(ServiceCapability.EMBEDDINGS)
 
@@ -2584,9 +2694,12 @@ async def _run_daemon_services_under_active_writer_lease(
 
     supervisor.start("lifecycle_heartbeat", _periodic_lifecycle_heartbeat)
     supervisor.start("termination_reconciliation", _reconcile_ended_daemon_runs)
+    from polylogue.daemon.notifications import ConfiguredNotificationBackend
+
+    notifications = ConfiguredNotificationBackend()
     supervisor.start(
         "health_check",
-        lambda: _periodic_health_check(sources=sources if enable_watch else ()),
+        lambda: _periodic_health_check(backend=notifications, sources=sources if enable_watch else ()),
     )
     supervisor.start("schema_preflight_recheck", _periodic_schema_preflight_recheck)
 
@@ -2603,6 +2716,7 @@ async def _run_daemon_services_under_active_writer_lease(
     converger: DaemonConverger | None = None
     session_profile_callback: SessionProfileCallback | None = None
     embedding_callback: EmbeddingConvergenceOwner | None = None
+    raw_observation_owner: RawObservationConvergenceOwner | None = None
     watcher_registered_gate_event: asyncio.Event | None = None
     raw_intake_wakeup = asyncio.Event()
     cleanup_task: asyncio.Task[object] | None = None
@@ -2675,6 +2789,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 await write_coordinator.run_sync(
                     "daemon.operation_journals.startup", prepare_operation_journals, archive_root_path
                 )
+            from polylogue.core.compute import compute_adapter
             from polylogue.daemon.http import (
                 DaemonAPIHandler,
                 DaemonAPIHTTPServer,
@@ -2688,11 +2803,12 @@ async def _run_daemon_services_under_active_writer_lease(
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                 archive_root=archive_root_path,
                 watch_sources=sources if enable_watch else (),
+                execution_kernel=startup_kernel,
             )
             # Daemon-internal lease-free work shares the capacity the API
             # server already owns rather than standing up a second pool
             # (polylogue-c0l7n).
-            publish_daemon_compute_adapter(api_server.execution_kernel)
+            publish_compute_adapter(api_server.execution_kernel)
             # The re-drive's claim phase runs on this loop; the listeners
             # serve only after it claimed every interrupted accepted ingest.
             await api_server.operation_runtime.accepted_ingest_redrive_claimed()
@@ -2766,7 +2882,10 @@ async def _run_daemon_services_under_active_writer_lease(
             # ingests that startup recovery left for it are re-driven by a
             # watcher-only daemon too.
             ingest_owner_runtime, owner_session_profiles = compose_ingest_owner(
-                archive_root_path, DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop())
+                archive_root_path,
+                DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                compute_adapter=startup_kernel,
+                validation_mode=validation_mode,
             )
             ingest_owner_runtime.start_accepted_ingest_redrive()
             await ingest_owner_runtime.accepted_ingest_redrive_claimed()
@@ -2797,9 +2916,9 @@ async def _run_daemon_services_under_active_writer_lease(
                 daemon_compute = api_server.execution_kernel
                 session_profile_callback = api_server.session_profile_callback
             else:
-                from polylogue.daemon.execution import daemon_compute_adapter
+                from polylogue.core.compute import compute_adapter
 
-                daemon_compute = daemon_compute_adapter()
+                daemon_compute = startup_kernel
                 session_profile_callback = owner_session_profiles or compose_session_profile_callback(
                     archive_root_path,
                     compute_adapter=daemon_compute,
@@ -2807,7 +2926,6 @@ async def _run_daemon_services_under_active_writer_lease(
                     now=time.time,
                 )
             from polylogue.daemon.embedding_owner import ComposedEmbeddingConvergence, compose_embedding_convergence
-            from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
             from polylogue.operations.embedding_derivation import embedding_session_ids_for_paths
 
             embedding_convergence: ComposedEmbeddingConvergence = (
@@ -2836,11 +2954,10 @@ async def _run_daemon_services_under_active_writer_lease(
                 return (await embedding_convergence(ids)).converged
 
             embedding_callback = converge_ingest_embeddings
-            raw_observation_owner = RawObservationConvergenceOwner(
-                archive_root_path,
-                compute_adapter=daemon_compute,
-                write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
-            )
+            resident_runtime = api_server.operation_runtime if api_server is not None else ingest_owner_runtime
+            if resident_runtime is None:
+                raise RuntimeError("live ingestion requires its supplied resident operation owner")
+            raw_observation_owner = resident_runtime.raw_observation_owner
             from polylogue.daemon.intake_adapters import RawMaterializationDiscovery
 
             raw_intake_discovery = RawMaterializationDiscovery(
@@ -2972,7 +3089,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     continue
                 supervisor.start(service_name, service_factory)
             _db = _active_index_db_path()
-            converger = DaemonConverger(stages=make_default_convergence_stages(_db))
+            converger = DaemonConverger(stages=make_default_convergence_stages(_db, compute_adapter=daemon_compute))
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
                     "component_started",
@@ -2998,7 +3115,8 @@ async def _run_daemon_services_under_active_writer_lease(
         try:
             if not watcher_creation_blocked and intake_scheduled:
                 async with Polylogue() as polylogue:
-                    from polylogue.archive.query.execution_control import QueryExecutionContext
+                    from polylogue.core.compute import compute_adapter
+                    from polylogue.daemon.drive_catchup import DriveCatchupExecution
                     from polylogue.daemon.intake_adapters import (
                         ColdBuildGeneration,
                         ColdBuildSettlement,
@@ -3011,7 +3129,15 @@ async def _run_daemon_services_under_active_writer_lease(
                         promote_cold_build_covering_active_index,
                         register_cold_build_generation,
                     )
-                    from polylogue.operations.operation_context import open_operation_read
+
+                    promotion_compute = api_server.execution_kernel if api_server is not None else compute_adapter()
+
+                    cold_build_promotion_execution = DriveCatchupExecution(
+                        write_coordinator,
+                        compute_adapter=promotion_compute,
+                    )
+
+                    from polylogue.operations.canonical_archive_ingest import live_sqlite_capture_stage
 
                     watcher = LiveWatcher(
                         polylogue,
@@ -3019,14 +3145,18 @@ async def _run_daemon_services_under_active_writer_lease(
                         converger=converger,
                         event_emitter=functools.partial(_emit_live_batch_event, archive_root_path=archive_root_path),
                         write_coordinator=write_coordinator,
-                        read_snapshot=lambda root: open_operation_read(
-                            root,
-                            execution_context=QueryExecutionContext.create(
-                                query_text="live-existing-session-preparation", workload_class="scan"
-                            ),
-                        ),
+                        sqlite_capture_stage=live_sqlite_capture_stage(promotion_compute),
                         embedding_owner=embedding_callback,
                         session_profile_callback=session_profile_callback,
+                        append_runner=raw_observation_owner.ingest_append_plans
+                        if raw_observation_owner is not None
+                        else None,
+                        convergence_runner=(
+                            raw_observation_owner.run_convergence_sync if raw_observation_owner is not None else None
+                        ),
+                        retained_runner=(
+                            raw_observation_owner.ingest_retained_raw_ids if raw_observation_owner is not None else None
+                        ),
                         intake_wakeup=raw_intake_wakeup,
                     )
                     watcher_holder.append(watcher)
@@ -3040,12 +3170,16 @@ async def _run_daemon_services_under_active_writer_lease(
                     ) -> Any:
                         return await write_coordinator.run_sync(actor, function, *args, **kwargs)
 
-                    async def run_remote_intake() -> int:
+                    async def run_remote_intake() -> DriveCatchupReport:
                         if session_profile_callback is None:
                             # Derived schema skew blocks profile publication,
                             # but source acquisition remains durable and safe.
-                            return await _run_drive_source_catchup_safely(None)
-                        return await _run_drive_source_catchup_safely(session_profile_callback)
+                            return await _run_drive_source_catchup_safely(
+                                None, raw_owner=raw_observation_owner, compute_owner=daemon_compute
+                            )
+                        return await _run_drive_source_catchup_safely(
+                            session_profile_callback, raw_owner=raw_observation_owner, compute_owner=daemon_compute
+                        )
 
                     async def discover_raw_intake(limit: int) -> tuple[tuple[str, int], ...]:
                         submitted = daemon_compute.submit(
@@ -3060,6 +3194,8 @@ async def _run_daemon_services_under_active_writer_lease(
                         return await asyncio.wrap_future(submitted.future)
 
                     async def admit_raw_intake(raw_id: str) -> AdmissionResult:
+                        if raw_observation_owner is None:
+                            raise RuntimeError("raw intake requires the supplied observation owner")
                         report = await raw_observation_owner.converge_raw_id(raw_id)
                         result = _derivation_admission(report, raw_id, subject="raw observation")
                         if result.outcome is AdmissionOutcome.ADMITTED:
@@ -3082,21 +3218,32 @@ async def _run_daemon_services_under_active_writer_lease(
                     async def admit_hook_events(raw_id: str) -> AdmissionResult:
                         """Materialize exactly one acquired carrier's events.
 
-                        The domain publishes under its own writer lease, so
-                        this must not run inside the daemon's. The kernel's
-                        own verdicts decide the outcome: a refusal that a
+                        Hook carrier discovery and derivation stay on the
+                        compute pool; its short publication uses the daemon's
+                        ordinary writer bridge. The kernel's verdicts decide
+                        the outcome: a refusal that a
                         later pass could resolve is retryable, a carrier that
                         is already materialized is a duplicate.
                         """
 
+                        from polylogue.core.stage_admission import stage_write_admission
+                        from polylogue.daemon.convergence import _DerivationAdmission
                         from polylogue.operations.hook_event_derivation import converge_hook_carriers
 
-                        submitted = daemon_compute.submit(
-                            propagate(
-                                functools.partial(converge_hook_carriers, archive_root_path, raw_ids=(raw_id,), limit=1)
-                            ),
-                            admission_class="incremental-background",
+                        loop = asyncio.get_running_loop()
+                        admission = _DerivationAdmission(
+                            DaemonWriteThreadBridge(write_coordinator, loop),
+                            loop_thread_id=threading.get_ident(),
                         )
+                        with stage_write_admission(admission.stage_write):
+                            submitted = daemon_compute.submit(
+                                propagate(
+                                    functools.partial(
+                                        converge_hook_carriers, archive_root_path, raw_ids=(raw_id,), limit=1
+                                    )
+                                ),
+                                admission_class="incremental-background",
+                            )
                         report = await asyncio.wrap_future(submitted.future)
                         return _derivation_admission(report, raw_id, subject="hook event")
 
@@ -3170,25 +3317,42 @@ async def _run_daemon_services_under_active_writer_lease(
                         ColdBuildGeneration.reconcile_interrupted_promotions,
                         archive_root_path,
                     )
-                    active_generation_empty = await write_coordinator.run_sync(
-                        "daemon.cold_build.probe",
-                        active_index_generation_is_empty,
-                        archive_root_path,
-                    )
-                    cold_build_requested = cold_build_index or active_generation_empty
+                    if schema_blocked:
+                        # The probe is a writable open, which admits the
+                        # active Index's derived identity first: a stale one
+                        # raises SchemaSkew. Raw materialization is parked in
+                        # this mode, so a cold build could not fill anyway;
+                        # the daemon stays up and status reports the skew
+                        # with its rebuild route.
+                        emit(
+                            "daemon.cold_build.withheld",
+                            level=WARNING,
+                            outcome="refused",
+                            reason="schema_blocked",
+                            requested=cold_build_index,
+                        )
+                        cold_build_requested = False
+                    else:
+                        active_generation_empty = await write_coordinator.run_sync(
+                            "daemon.cold_build.probe",
+                            active_index_generation_is_empty,
+                            archive_root_path,
+                        )
+                        cold_build_requested = cold_build_index or active_generation_empty
                     if cold_build_requested:
                         from polylogue.daemon.discovery_progress import run_cold_build_preparation
 
-                        # Baseline enumeration and hashing happen inside this
-                        # one writer call, before any intake page exists;
-                        # status reports its phase and counts meanwhile.
+                        # Baseline enumeration, classification and hashing
+                        # read sources off the writer; only binding the
+                        # observation into a generation is a writer call.
+                        # Status reports the phase and counts meanwhile.
                         cold_build = await run_cold_build_preparation(
                             write_coordinator,
                             "daemon.cold_build.begin",
+                            partial(ColdBuildGeneration.observe_source_baseline, sources),
                             ColdBuildGeneration.begin,
                             archive_root_path,
-                            reason="explicit cold build" if cold_build_index else "empty active index generation",
-                            sources=sources,
+                            reason="explicit_cold_build" if cold_build_index else "empty_active_index_generation",
                         )
                         register_cold_build_generation(cold_build)
                         from polylogue.daemon.catchup_status import set_cold_build_progress_provider
@@ -3236,9 +3400,16 @@ async def _run_daemon_services_under_active_writer_lease(
                                     # generation serves from a retained raw is
                                     # refused, not promoted (polylogue-5hcbg).
                                     await write_coordinator.run_sync(
+                                        "daemon.cold_build.prepare_candidate",
+                                        generation.prepare_promotion_candidate,
+                                    )
+                                    await cold_build_promotion_execution.publish_prepared_sync(
                                         "daemon.cold_build.promote",
-                                        promote_cold_build_covering_active_index,
-                                        generation,
+                                        generation.prepare_promotion_proof,
+                                        functools.partial(
+                                            promote_cold_build_covering_active_index,
+                                            generation,
+                                        ),
                                     )
                                     promoted = True
                                 else:
@@ -3631,7 +3802,9 @@ async def _run_daemon_services_under_active_writer_lease(
             # shared fallback; either way this run published it, so this run
             # joins its workers. Every service and the writer have stopped, so
             # nothing new is admitted; a worker still running is named.
-            surviving_compute = reset_daemon_compute_adapter(join_timeout_s=_COMPUTE_JOIN_TIMEOUT_S)
+            surviving_compute = reset_compute_adapter(join_timeout_s=_COMPUTE_JOIN_TIMEOUT_S)
+            if not surviving_compute:
+                reset_drive_readiness_observation(archive_root_path)
             if surviving_compute:
                 emit(
                     "daemon.shutdown.compute_threads_orphaned",

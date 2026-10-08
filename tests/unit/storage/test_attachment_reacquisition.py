@@ -23,9 +23,10 @@ import pytest
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.claude import parse_ai
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import write_fixture_index_session
 
 SESSION_UUID = "reacquisition-session"
 FILE_UUID = "upload-only-file"
@@ -61,7 +62,7 @@ def _capture(*, extracted_content: str | None) -> dict[str, object]:
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -98,7 +99,7 @@ def test_upload_only_reference_gains_bytes_at_a_stable_identity(
     conn = _connect(tmp_path / "index.db")
 
     before = parse_ai(_capture(extracted_content=None), "fallback")
-    write_parsed_session_to_archive(conn, before, preacquired_attachment_blobs=_preacquired(store, before))
+    write_fixture_index_session(conn, before, preacquired_attachment_blobs=_preacquired(store, before))
 
     unfetched = _attachment_state(conn)
     assert unfetched["acquisition_status"] == "unfetched"
@@ -108,7 +109,7 @@ def test_upload_only_reference_gains_bytes_at_a_stable_identity(
     assert _ref_count(conn) == 1
 
     after = parse_ai(_capture(extracted_content=PAYLOAD), "fallback")
-    write_parsed_session_to_archive(conn, after, preacquired_attachment_blobs=_preacquired(store, after))
+    write_fixture_index_session(conn, after, preacquired_attachment_blobs=_preacquired(store, after))
 
     acquired = _attachment_state(conn)
     assert str(acquired["attachment_id"]) == identity
@@ -126,7 +127,7 @@ def test_replaying_the_acquired_revision_changes_nothing(tmp_path: Path, monkeyp
 
     for _ in range(2):
         session = parse_ai(_capture(extracted_content=PAYLOAD), "fallback")
-        write_parsed_session_to_archive(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
+        write_fixture_index_session(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
 
     acquired = _attachment_state(conn)
     assert acquired["acquisition_status"] == "acquired"
@@ -156,7 +157,7 @@ def test_metadata_replay_keeps_acquired_attachment_size(
     first, second = (metadata, acquired) if metadata_first else (acquired, metadata)
     try:
         for session in (first, second, metadata, metadata):
-            write_parsed_session_to_archive(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
+            write_fixture_index_session(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
         retained = _attachment_state(conn)
         digest = hashlib.sha256(PAYLOAD_BYTES).digest()
         assert conn.execute("SELECT count(*) FROM attachments").fetchone()[0] == 1

@@ -25,16 +25,14 @@ import importlib
 import json
 import sqlite3
 from pathlib import Path
-from typing import cast
 
 import pytest
 
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.maintenance.declarations import MAINTENANCE_COMMAND_DECLARATIONS
-from polylogue.operations.raw_observation_derivation import converge_raw_observations
 from polylogue.storage import raw_reconciler as raw_reconciler_mod
-from polylogue.storage.raw_reconciler import RawAuthorityFrontierState, inspect_raw_authority_frontier
+from polylogue.storage.raw_reconciler import RawAuthorityFrontierState
 from polylogue.storage.sqlite.archive_tiers import raw_admission, source_write
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -44,6 +42,9 @@ from tests.infra.archive_templates import bootstrap_archive_root
 RETIRED_MODULES = ("polylogue.storage.raw_convergence",)
 
 RETIRED_RECONCILER_SYMBOLS = (
+    "RawAuthorityFrontierCensus",
+    "inspect_raw_authority_frontier",
+    "_reconcile_frontier_obligations",
     # The actuator taxonomy and its executability gate: every member named a
     # remedy, and no dispatcher existed to run one.
     "RawAuthorityActuator",
@@ -80,9 +81,9 @@ RETIRED_SOURCE_WRITERS = ("ReconstructedRawRow", "insert_reconstructed_raw_row")
 RETAINED_RECONCILER_SYMBOLS = (
     "RawAuthorityFrontierState",
     "RawAuthorityFrontierItem",
-    "RawAuthorityFrontierCensus",
-    "inspect_raw_authority_frontier",
-    "_reconcile_frontier_obligations",
+    "_classify_frontier_row",
+    "_verify_blob_bytes",
+    "_frontier_blocker_identity",
 )
 
 _PRODUCT_ROOTS = ("polylogue",)
@@ -103,6 +104,7 @@ def _write_codex_raw(root: Path, *, native_id: str, source_path: str) -> str:
             provider=Provider.CODEX,
             payload=payload,
             source_path=source_path,
+            canonical_source_path=source_path,
             acquired_at_ms=1,
         )
 
@@ -219,58 +221,50 @@ def test_maintenance_surface_offers_no_generic_repair_command() -> None:
     assert {"blob-gc", "verify-archive", "raw-authority-frontier"} <= declared
 
 
-def test_frontier_census_reports_a_blocked_head_without_promising_a_remedy(tmp_path: Path) -> None:
-    """Production route: one seeded archive, one quarantined accepted head.
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_frontier_census_reports_a_blocked_head_without_promising_a_remedy(tmp_path: Path) -> None:
+    from contextlib import closing
+    from dataclasses import asdict
 
-    The census must still name the obligation, count it, and publish a durable
-    ``raw_authority_blockers`` row -- and its payload must carry no executable
-    plan count and no actuator on any item or stored plan. That pair is the
-    whole outcome of this bead at the read surface: the refusal survives, the
-    promise does not.
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    Anti-vacuity: reinstating ``executable_plan_count`` on
-    ``RawAuthorityFrontierCensus.to_dict`` or ``"actuator"`` in ``_item``'s
-    evidence payload turns the payload assertions red; dropping the
-    ``revision_authority == 'quarantined'`` branch from ``_classify_frontier``
-    turns the state and blocker assertions red.
-    """
-    bootstrap_archive_root(tmp_path)
-    raw_id = _write_codex_raw(tmp_path, native_id="blocked-head", source_path="blocked.jsonl")
-    report = converge_raw_observations(tmp_path, source_roots=(), limit=128)
-    assert report.failed == 0 and report.pending == 0
+    def acquire() -> str:
+        bootstrap_archive_root(tmp_path)
+        return _write_codex_raw(tmp_path, native_id="blocked-head", source_path="blocked.jsonl")
 
-    with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        source_conn.execute(
-            "UPDATE raw_sessions SET revision_authority = 'quarantined' WHERE raw_id = ?",
-            (raw_id,),
+    raw_id = await run_archive_fixture_write(tmp_path, acquire)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
+        assert sum(len(receipt.written_session_ids) for receipt in receipts) == 1
+
+        def quarantine() -> None:
+            with closing(sqlite3.connect(tmp_path / "source.db")) as conn, conn:
+                conn.execute("UPDATE raw_sessions SET revision_authority='quarantined' WHERE raw_id=?", (raw_id,))
+
+        await run_archive_fixture_write(tmp_path, quarantine)
+        outcome = await owner.run_convergence_sync(
+            "fixture.frontier.blocked",
+            inspect_prepared_raw_authority_frontier,
+            tmp_path,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+            check_physical_dependencies=True,
         )
-        source_conn.commit()
-
-    census = inspect_raw_authority_frontier(_config(tmp_path))
-    item = next(entry for entry in census.items if entry.raw_id == raw_id)
-    assert item.state is RawAuthorityFrontierState.UNRESOLVED_PROVENANCE
-
-    payload = cast(dict[str, object], census.to_dict())
-    assert "executable_plan_count" not in payload
-    assert payload["plan_count"] == 1
-    for entry in cast(list[dict[str, object]], payload["items"]):
-        assert "actuator" not in entry
-        assert "strategy_witness" not in entry
-
-    with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        row = source_conn.execute(
-            """
-            SELECT expected_json, observed_json, resolved_at_ms
-            FROM raw_authority_blockers
-            WHERE json_extract(expected_json, '$.plan_id') = ?
-            """,
-            (item.plan_id,),
-        ).fetchone()
-    assert row is not None
-    assert row[2] is None
-    expected = cast(dict[str, object], json.loads(str(row[0])))
-    assert "actuator" not in cast(dict[str, object], expected["authority_witness"])
-    assert "actuator" not in cast(dict[str, object], json.loads(str(row[1])))
+    assert not outcome.healthy and outcome.blocking_head_checks == 1
+    payload = asdict(outcome)
+    assert "executable_plan_count" not in payload and "actuator" not in payload
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source_conn:
+        rows = source_conn.execute(
+            "SELECT expected_json,observed_json,resolved_at_ms FROM raw_authority_blockers WHERE resolved_at_ms IS NULL"
+        ).fetchall()
+    assert len(rows) == 1 and rows[0][2] is None
+    expected, observed = json.loads(rows[0][0]), json.loads(rows[0][1])
+    assert expected["input_raw_ids"] == [raw_id]
+    assert observed["state"] == "unresolved_provenance"
+    assert "actuator" not in expected["authority_witness"]
+    assert "actuator" not in observed and "strategy_witness" not in expected["authority_witness"]
 
 
 def test_no_product_module_is_named_as_a_repair_substrate() -> None:

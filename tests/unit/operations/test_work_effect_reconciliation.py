@@ -28,6 +28,7 @@ from polylogue.operations.work_evidence_writes import (
     work_evidence_graph_digest,
 )
 from polylogue.storage.repository import SessionRepository
+from tests.infra.archive_templates import bootstrapped_tier_path
 
 _EVIDENCE = ObjectRef(kind="artifact", object_id="raw:test-evidence")
 _SNAPSHOT = ObjectRef(kind="context-snapshot", object_id="snapshot:op-test")
@@ -193,7 +194,9 @@ async def test_checked_replace_replay_after_commit_is_no_effect(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_unknown_graph_id_raises_typed_error(tmp_path: Path) -> None:
-    async with SessionRepository(db_path=tmp_path / "index.db") as repository:
+    # A read never initializes the archive it reads; the lookup runs against
+    # an empty, bootstrapped archive so the typed "not found" is what answers.
+    async with SessionRepository(db_path=bootstrapped_tier_path(tmp_path / "index.db")) as repository:
         with pytest.raises(WorkEvidenceGraphNotFoundError):
             await reconcile_graph_repository_effects(
                 repository,

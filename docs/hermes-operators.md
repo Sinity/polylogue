@@ -43,11 +43,16 @@ the same variable.
 ## Watched source classes
 
 `polylogued run` includes a single `WatchSource` scoped to the resolved
-Hermes root, admitting four file suffixes — `.json`, `.jsonl`, `.db`,
-`.sqlite`, `.sqlite3` (`polylogue/sources/live/watcher.py:1204-1214`,
-`default_sources()`). Admission is filename/suffix-based; **routing** to the
-right parser is shape-based, checked in this tightness order
-(`polylogue/sources/dispatch.py:160-171`):
+Hermes root. Discovery admits only the positions the declared Hermes layout
+names (`polylogue/sources/source_layout.py`): `state.db` and
+`verification_evidence.db` at the root, session snapshots under `sessions/`
+(and `sessions/saved/`), request dumps under `sessions/`, ATIF documents under
+`observability/nemo-relay/atif/`, the ATOF stream under
+`observability/nemo-relay/atof/`, and the same set inside each
+`profiles/<name>/` home. Everything else under the root (credentials, caches,
+skills, the `hermes-agent` checkout) is an excluded entry and is never walked
+or parsed. **Routing** an admitted file to the right parser is shape-based,
+checked in this tightness order (`polylogue/sources/dispatch.py:160-171`):
 
 | Artifact | Shape check | Parser | Acquisition method |
 | --- | --- | --- | --- |
@@ -56,6 +61,13 @@ right parser is shape-based, checked in this tightness order
 | ATIF document (`*.json`) | Top-level `schema_version` prefixed `"ATIF"`, plus `session_id`/`steps` (`hermes_spans.looks_like_atif_payload`) | `polylogue/sources/parsers/hermes_spans.py` | `json_fallback`-shaped, but a real file read (see fidelity below) |
 | ATOF stream (`*.jsonl`) | Each line an `atof_version`/`kind`(scope\|mark)/`category` event (`hermes_spans.looks_like_atof_payload`) | `polylogue/sources/parsers/hermes_spans.py:parse_atof_stream` | `jsonl_stream` |
 | Legacy JSON snapshot fallback | Loose dict shape, no `state.db`/ATIF/ATOF match | `polylogue/sources/parsers/local_agent.py` | `json_fallback` — much lower fidelity, see below |
+
+A SQLite file under another name (a copied `backup.db`) is outside the declared
+layout, so the watcher never admits it. On retained replay or an explicit
+import it is recognized by the same schema signature as `state.db` or
+`verification_evidence.db`; it carries no member binding, and a database with
+neither signature is an unsupported source class (`recognize_source_class` in
+`polylogue/sources/origin_specs.py`).
 
 `Origin.HERMES_SESSION = "hermes-session"` (`polylogue/core/enums.py:48`) is
 the one public origin token all five of these normalize to; the underlying

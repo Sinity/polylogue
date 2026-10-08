@@ -227,6 +227,7 @@ def write_lineage_graph(archive: ArchiveStore, graph: LineageGraph) -> None:
                 forked_from_id=node.parent_native_id,
             ),
             source_path=f"{node.native_id}.jsonl",
+            canonical_source_path=f"{node.native_id}.jsonl",
             acquired_at_ms=1 + acquisition,
         )
 

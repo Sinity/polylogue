@@ -127,6 +127,9 @@ class EmbeddingMessageReplacement:
     empty: bool = False
     retained_output: EmbeddingStoredOutput | None = None
 
+    def close(self) -> None:
+        """The computed vector values own no physical resources."""
+
 
 _REQUIRED_KEY_PREFIX = "message:"
 _EXCESS_KEY_PREFIX = "orphan:"
@@ -163,14 +166,7 @@ def _message_input(
 
     if not table_exists(conn, "messages") or not table_exists(conn, "sessions"):
         return None
-    with contextlib.closing(conn.execute("PRAGMA table_info(messages)")) as cursor:
-        message_columns = {str(row[1]) for row in cursor}
-    if "content_hash" not in message_columns:
-        return None
-    if table_exists(conn, "blocks"):
-        prose = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
-    else:
-        prose = "m.text" if "text" in message_columns else "NULL"
+    prose = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
     with contextlib.closing(
         conn.execute(
             f"""

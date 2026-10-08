@@ -20,23 +20,25 @@ from polylogue.scenarios import (
 
 
 def test_demo_seed_and_verify_json_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    archive_root = tmp_path / "archive"
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    archive_root = tmp_path / "demo-archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     runner = CliRunner()
 
-    seed = runner.invoke(cli, ["demo", "seed", "--with-overlays", "--format", "json"])
+    seed = runner.invoke(cli, ["demo", "seed", "--root", str(archive_root), "--with-overlays", "--format", "json"])
     assert seed.exit_code == 0, seed.output
-    seed_payload = json.loads(seed.output)
+    seed_payload = json.loads(seed.stdout)
     assert seed_payload["session_count"] == len(DEMO_SESSION_IDS)
     assert seed_payload["message_count"] >= 35
     assert seed_payload["overlays_seeded"] is True
     assert seed_payload["construct_coverage"]
     assert all(row["ok"] for row in seed_payload["construct_coverage"])
 
-    verify = runner.invoke(cli, ["demo", "verify", "--require-overlays", "--format", "json"])
+    verify = runner.invoke(
+        cli, ["demo", "verify", "--root", str(archive_root), "--require-overlays", "--format", "json"]
+    )
     assert verify.exit_code == 0, verify.output
-    verify_payload = json.loads(verify.output)
+    verify_payload = json.loads(verify.stdout)
     assert verify_payload["ok"] is True
     assert DEMO_CLAUDE_CODE_SESSION_ID in verify_payload["query_hits"]
     assert verify_payload["absolute_path_leaks"] == []
@@ -48,17 +50,17 @@ def test_demo_receipts_compares_claim_with_structural_outcomes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    archive_root = tmp_path / "archive"
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    archive_root = tmp_path / "demo-archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     runner = CliRunner()
 
-    seed = runner.invoke(cli, ["demo", "seed", "--format", "json"])
+    seed = runner.invoke(cli, ["demo", "seed", "--root", str(archive_root), "--format", "json"])
     assert seed.exit_code == 0, seed.output
 
-    result = runner.invoke(cli, ["demo", "receipts", "--format", "json"])
+    result = runner.invoke(cli, ["demo", "receipts", "--root", str(archive_root), "--format", "json"])
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
 
     assert payload["session_ref"] == f"session:{DEMO_CODEX_RECEIPTS_SESSION_ID}"
     assert payload["verdict"] == "contradicted_at_claim_time_then_repaired"
@@ -84,16 +86,20 @@ def test_demo_receipts_is_self_contained_without_configured_archive(
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()
+    scratch_root = tmp_path / "receipts-archive"
 
-    result = runner.invoke(cli, ["demo", "receipts", "--format", "json"])
+    result = runner.invoke(
+        cli,
+        ["demo", "receipts", "--root", str(scratch_root), "--seed", "--format", "json"],
+    )
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["seeded_for_command"] is True
     assert payload["verdict"] == "contradicted_at_claim_time_then_repaired"
-    assert Path(payload["archive_root"]) == tmp_path / "polylogue-receipts-demo" / "archive"
-    assert (tmp_path / "polylogue-receipts-demo" / "archive" / "index.db").exists()
+    assert Path(payload["archive_root"]) == scratch_root
+    assert (scratch_root / "index.db").exists()
 
 
 def test_demo_receipts_plain_output_redacts_self_contained_archive_path(
@@ -104,8 +110,9 @@ def test_demo_receipts_plain_output_redacts_self_contained_archive_path(
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()
+    scratch_root = tmp_path / "receipts-archive"
 
-    result = runner.invoke(cli, ["demo", "receipts", "--compact"])
+    result = runner.invoke(cli, ["demo", "receipts", "--root", str(scratch_root), "--seed", "--compact"])
 
     assert result.exit_code == 0, result.output
     assert "archive: <demo-archive>" in result.output
@@ -115,23 +122,24 @@ def test_demo_receipts_plain_output_redacts_self_contained_archive_path(
     assert str(tmp_path.resolve()) not in result.output
 
 
-def test_demo_receipts_uses_configured_archive_without_reseeding(
+def test_demo_receipts_refuses_the_configured_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     archive = tmp_path / "archive"
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     runner = CliRunner()
-    seed = runner.invoke(cli, ["demo", "seed", "--format", "json"])
+    seed = runner.invoke(cli, ["demo", "seed", "--root", str(archive), "--format", "json"])
     assert seed.exit_code == 0, seed.output
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
     index_mtime = (archive / "index.db").stat().st_mtime_ns
 
-    result = runner.invoke(cli, ["demo", "receipts", "--format", "json"])
+    result = runner.invoke(cli, ["demo", "receipts", "--root", str(archive), "--format", "json"])
 
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["seeded_for_command"] is False
+    assert result.exit_code != 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["code"] == "daemon_required"
+    assert payload["details"]["archive_root"] == str(archive.resolve())
     assert (archive / "index.db").stat().st_mtime_ns == index_mtime
 
 
@@ -140,7 +148,7 @@ def test_demo_script_prints_copy_pastable_commands(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["demo", "script", "--root", str(tmp_path / "archive")])
 
     assert result.exit_code == 0, result.output
-    assert "POLYLOGUE_ARCHIVE_ROOT" in result.output
+    assert "POLYLOGUE_DEMO_ROOT" in result.output
     assert "polylogue demo tour" in result.output
     assert "polylogue demo seed" in result.output
     assert "polylogue demo verify" in result.output
@@ -170,11 +178,13 @@ def test_demo_script_seed_and_verify_commands_are_executable(
             demo_commands.append(shlex.split(expanded)[1:])
 
     assert [command[:2] for command in demo_commands] == [["demo", "tour"], ["demo", "seed"], ["demo", "verify"]]
-    assert exports["POLYLOGUE_ARCHIVE_ROOT"] == str(archive_root)
+    assert exports["POLYLOGUE_DEMO_ROOT"] == str(archive_root)
+    # The script seeds a scratch root; it never names it as the configured archive.
+    assert "POLYLOGUE_ARCHIVE_ROOT" not in exports
 
     seed = runner.invoke(cli, demo_commands[1])
     assert seed.exit_code == 0, seed.output
-    seed_payload = json.loads(seed.output)
+    seed_payload = json.loads(seed.stdout)
     assert seed_payload["session_count"] == len(DEMO_SESSION_IDS)
     assert seed_payload["message_count"] >= 35
     assert seed_payload["overlays_seeded"] is True
@@ -182,7 +192,7 @@ def test_demo_script_seed_and_verify_commands_are_executable(
 
     verify = runner.invoke(cli, demo_commands[2])
     assert verify.exit_code == 0, verify.output
-    verify_payload = json.loads(verify.output)
+    verify_payload = json.loads(verify.stdout)
     assert verify_payload["ok"] is True
     assert verify_payload["overlays_present"] is True
     assert DEMO_CLAUDE_CODE_SESSION_ID in verify_payload["query_hits"]
@@ -202,6 +212,8 @@ def test_demo_tour_writes_report_transcript_and_recording(
         [
             "demo",
             "tour",
+            "--root",
+            str(tmp_path / "tour" / "archive"),
             "--out-dir",
             str(tmp_path / "tour"),
             "--format",
@@ -210,7 +222,7 @@ def test_demo_tour_writes_report_transcript_and_recording(
     )
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["first_result_s"] <= 30
     assert payload["total_duration_s"] <= 420
@@ -249,7 +261,7 @@ def test_demo_tour_writes_report_transcript_and_recording(
     recording_text = recording.read_text(encoding="utf-8")
     # The tape must reproduce the run it sits next to: commands reference the
     # actual out-dir basename, never a machine-local absolute path.
-    assert "polylogue demo tour --out-dir tour" in recording_text
+    assert "polylogue demo tour --root tour/archive --out-dir tour" in recording_text
     assert "cat tour/transcript.txt" in recording_text
     assert "cat tour/report.md" in recording_text
     assert str(tmp_path) not in recording_text
@@ -300,7 +312,10 @@ def test_demo_tour_plain_output_reports_artifacts(tmp_path: Path) -> None:
     )
 
     with patch("polylogue.cli.commands.demo.run_demo_tour", return_value=tour_result) as run:
-        result = runner.invoke(cli, ["demo", "tour", "--out-dir", str(tmp_path / "tour")])
+        result = runner.invoke(
+            cli,
+            ["demo", "tour", "--root", str(tmp_path / "tour-archive"), "--out-dir", str(tmp_path / "tour")],
+        )
 
     assert result.exit_code == 0, result.output
     assert "Polylogue demo tour: passed" in result.output
@@ -309,52 +324,100 @@ def test_demo_tour_plain_output_reports_artifacts(tmp_path: Path) -> None:
     run.assert_called_once()
 
 
-def test_demo_seed_blank_archive_root_env_still_triggers_collision_guard(
+def test_demo_seed_requires_an_explicit_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``demo seed`` never falls back to ``archive_root()``.
+
+    Before the reset the live root is empty, so the content guard would have
+    admitted it and the seed would have written synthetic raws into the
+    durable ``source.db``. Anti-vacuity: default ``--root`` to
+    ``archive_root()`` again and this seeds the fallback archive.
+    """
+    fallback_archive_root = tmp_path / "xdg-data" / "polylogue"
+    monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+    result = CliRunner().invoke(cli, ["demo", "seed", "--format", "json"])
+
+    assert result.exit_code == 2, result.output
+    assert "--root" in result.output
+    assert not list(fallback_archive_root.glob("*.db"))
+
+
+@pytest.mark.parametrize("command", ["receipts", "tour"])
+def test_demo_receipts_and_tour_require_an_explicit_root(
+    command: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """POLYLOGUE_ARCHIVE_ROOT="" must not disarm the default-root collision guard.
-
-    Guards polylogue-dl6af gap 3: ``polylogue.paths.archive_root()`` itself
-    treats an empty or whitespace-only ``POLYLOGUE_ARCHIVE_ROOT`` as unset
-    and falls back to the ambient ``polylogue.toml``/XDG default, but the
-    CLI's own "was an explicit root given" check previously asked only
-    whether the env var was a *member* of ``os.environ`` -- true even for an
-    empty string. That let ``POLYLOGUE_ARCHIVE_ROOT="" polylogue demo seed``
-    believe it had received an explicit override (disarming the
-    polylogue-o3a1t collision guard) while the resolved root actually fell
-    through to the live fallback archive -- exactly the collision the guard
-    exists to catch.
-
-    ANTI-VACUITY: the production code exercised is
-    ``polylogue.cli.commands.demo._root_is_explicit`` via a real ``polylogue
-    demo seed`` CLI invocation with ``POLYLOGUE_ARCHIVE_ROOT=""`` and no
-    ``--root``. Reverting that function to
-    ``root is not None or "POLYLOGUE_ARCHIVE_ROOT" in os.environ`` makes this
-    test fail: the seed would succeed (exit 0) instead of raising, and
-    synthetic demo content would land in the real fallback archive.
-    """
-
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-    from tests.infra.storage_records import SessionBuilder
-
-    # No --root, no POLYLOGUE_ARCHIVE_ROOT override: this is exactly where
-    # archive_root()'s own XDG default resolution lands, matching the
-    # _clear_polylogue_env autouse fixture's XDG_DATA_HOME.
-    fallback_archive_root = tmp_path / "xdg-data" / "polylogue"
-    initialize_active_archive_root(fallback_archive_root)
-    SessionBuilder(fallback_archive_root / "index.db", "real-session").provider("claude-code").save()
-
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "")
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
 
-    result = runner.invoke(cli, ["demo", "seed", "--format", "json"])
+    result = CliRunner().invoke(cli, ["demo", command, "--format", "json"])
 
-    assert result.exit_code != 0
-    assert "existing real archive" in result.output
-    assert not (fallback_archive_root / "demo-fixture-world-source").exists()
-    assert not (fallback_archive_root / "demo-archive-ownership.json").exists()
+    assert result.exit_code == 2, result.output
+    assert "--root" in result.output
+    assert not list(tmp_path.rglob("*.db"))
+
+
+@pytest.mark.parametrize("relation", ["same", "inside", "containing"])
+def test_demo_seed_refuses_roots_overlapping_the_configured_archive(
+    relation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty configured archive is still not a scratch root.
+
+    Anti-vacuity: drop ``_require_scratch_target`` from ``_seed_demo_archive``
+    and the empty configured archive gains demo tiers (or the CLI write
+    boundary refuses with an untyped crash instead of this decision).
+    """
+    configured = tmp_path / "home" / "archive"
+    configured.mkdir(parents=True)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(configured))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    target = {"same": configured, "inside": configured / "demo", "containing": configured.parent}[relation]
+
+    result = CliRunner().invoke(cli, ["demo", "seed", "--root", str(target), "--format", "json"])
+
+    assert result.exit_code != 0, result.output
+    assert "polylogued run" in result.output
+    assert not list(configured.rglob("*.db"))
+    assert not list(configured.parent.glob("*.db"))
+
+
+def test_demo_tour_refuses_an_out_dir_holding_the_configured_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``tour --force`` deletes its out-dir first, so that dir is checked before anything runs.
+
+    Anti-vacuity: drop the out-dir check from ``tour_command`` and the
+    configured archive's marker file is deleted by the tour's ``rmtree``.
+    """
+    configured = tmp_path / "tour" / "archive"
+    configured.mkdir(parents=True)
+    marker = configured / "keep.txt"
+    marker.write_text("live", encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(configured))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "demo",
+            "tour",
+            "--root",
+            str(tmp_path / "scratch-archive"),
+            "--out-dir",
+            str(tmp_path / "tour"),
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code != 0, result.output
+    assert marker.exists()
+    assert marker.read_text(encoding="utf-8") == "live"
 
 
 def test_demo_seed_force_does_not_bypass_real_archive_daemon(tmp_path: Path) -> None:

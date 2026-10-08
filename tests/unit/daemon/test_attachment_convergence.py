@@ -6,24 +6,32 @@ import hashlib
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from typing import IO, cast
+from typing import IO, Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 
 from polylogue.core.enums import Provider, Role
 from polylogue.core.types import AttachmentUploadOrigin
-from polylogue.operations.attachment_convergence import converge_drive_attachments
+from polylogue.operations.attachment_convergence import AttachmentConvergenceResult, converge_drive_attachments
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.drive.gateway import DriveServiceGateway
 from polylogue.sources.drive.source_client import DriveSourceClient
 from polylogue.sources.drive.types import DriveNotFoundError, DriveRetryPolicy
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.drive_mocks import drive_http_error
+from tests.infra.index_writer import write_fixture_index_session
+
+
+def _converge(index: sqlite3.Connection, source: sqlite3.Connection, **kwargs: Any) -> AttachmentConvergenceResult:
+    """A standalone convergence pass: its write sections run under the caller's lease."""
+    with write_lease("test.attachment-convergence", archive_root=kwargs["archive_root"]):
+        return converge_drive_attachments(index, source, **kwargs)
 
 
 def _into(fetch: Callable[[str], bytes]) -> Callable[[str, IO[bytes]], None]:
@@ -56,7 +64,8 @@ def _session(
 
 
 def _open_index(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    # Index capture binds its seal to the connection's original measured creator.
+    conn = connect_measured(path, uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -84,9 +93,9 @@ def test_polylogue_ck5v_legacy_route_attachment_is_backfilled_and_bounded(tmp_pa
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
     session = _session("legacy-zip", file_id="drive-file-1")
-    write_parsed_session_to_archive(index, session, raw_id="legacy-zip-raw")
+    write_fixture_index_session(index, session, raw_id="legacy-zip-raw")
     negative = _session("negative-paste", upload_origin="paste", file_id="paste-file-1")
-    write_parsed_session_to_archive(index, negative, raw_id="negative-paste-raw")
+    write_fixture_index_session(index, negative, raw_id="negative-paste-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
@@ -105,7 +114,7 @@ def test_polylogue_ck5v_legacy_route_attachment_is_backfilled_and_bounded(tmp_pa
         for row in index.execute("SELECT attachment_id, blob_hash, acquisition_status FROM attachments")
     }
 
-    result = converge_drive_attachments(
+    result = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -179,7 +188,7 @@ def test_attachment_convergence_keeps_retryable_provider_failure_as_debt(tmp_pat
     """Transient provider failures remain unfetched and retryable."""
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("retry", file_id="temporarily-busy"), raw_id="retry-raw")
+    write_fixture_index_session(index, _session("retry", file_id="temporarily-busy"), raw_id="retry-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
@@ -191,7 +200,7 @@ def test_attachment_convergence_keeps_retryable_provider_failure_as_debt(tmp_pat
         calls.append(file_id)
         raise TimeoutError("provider timeout")
 
-    result = converge_drive_attachments(
+    result = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -223,7 +232,7 @@ def test_attachment_download_streams_to_disk_and_has_no_size_cap(tmp_path: Path)
     """
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("large", file_id="large-file"), raw_id="large-raw")
+    write_fixture_index_session(index, _session("large", file_id="large-file"), raw_id="large-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
@@ -240,7 +249,7 @@ def test_attachment_download_streams_to_disk_and_has_no_size_cap(tmp_path: Path)
             handle.write(chunk)
             digest.update(chunk)
 
-    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=stream)
+    result = _converge(index, source, archive_root=tmp_path, download_into=stream)
 
     row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
     assert result.acquired == 1
@@ -256,8 +265,8 @@ def test_attachment_download_streams_to_disk_and_has_no_size_cap(tmp_path: Path)
 def test_attachment_convergence_records_debt_for_the_next_bounded_window(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("legacy-one", file_id="drive-file-1"), raw_id="raw-1")
-    write_parsed_session_to_archive(index, _session("legacy-two", file_id="drive-file-2"), raw_id="raw-2")
+    write_fixture_index_session(index, _session("legacy-one", file_id="drive-file-1"), raw_id="raw-1")
+    write_fixture_index_session(index, _session("legacy-two", file_id="drive-file-2"), raw_id="raw-2")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
@@ -269,7 +278,7 @@ def test_attachment_convergence_records_debt_for_the_next_bounded_window(tmp_pat
         calls.append(file_id)
         return file_id.encode()
 
-    result = converge_drive_attachments(
+    result = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -293,8 +302,8 @@ def test_attachment_convergence_records_debt_for_the_next_bounded_window(tmp_pat
 def test_shared_attachment_fetches_once_but_records_each_raw_ref(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("shared-one", file_id="shared-file"), raw_id="raw-1")
-    write_parsed_session_to_archive(index, _session("shared-two", file_id="shared-file"), raw_id="raw-2")
+    write_fixture_index_session(index, _session("shared-one", file_id="shared-file"), raw_id="raw-1")
+    write_fixture_index_session(index, _session("shared-two", file_id="shared-file"), raw_id="raw-2")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
@@ -306,7 +315,7 @@ def test_shared_attachment_fetches_once_but_records_each_raw_ref(tmp_path: Path)
         calls.append(file_id)
         return b"shared attachment bytes"
 
-    result = converge_drive_attachments(
+    result = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -326,7 +335,7 @@ def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_pa
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
     session = _session("gone", file_id="deleted-file")
-    write_parsed_session_to_archive(index, session, raw_id="gone-raw")
+    write_fixture_index_session(index, session, raw_id="gone-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
@@ -338,7 +347,7 @@ def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_pa
         calls.append(file_id)
         raise DriveNotFoundError("deleted")
 
-    result = converge_drive_attachments(
+    result = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -351,7 +360,7 @@ def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_pa
     assert row["acquisition_status"] == "unavailable"
     assert row["blob_hash"] is None
     assert row["byte_count"] == 0
-    retry = converge_drive_attachments(
+    retry = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -391,8 +400,8 @@ def test_rate_limited_403_keeps_the_attachment_owed_until_the_quota_resets(
     """
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("throttled", file_id="drive-throttled"), raw_id="throttled-raw")
-    write_parsed_session_to_archive(index, _session("denied", file_id="drive-denied"), raw_id="denied-raw")
+    write_fixture_index_session(index, _session("throttled", file_id="drive-throttled"), raw_id="throttled-raw")
+    write_fixture_index_session(index, _session("denied", file_id="drive-denied"), raw_id="denied-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
@@ -407,7 +416,7 @@ def test_rate_limited_403_keeps_the_attachment_owed_until_the_quota_resets(
         attempts.append(file_id)
         raise throttled if file_id == "drive-throttled" else denied
 
-    first = converge_drive_attachments(
+    first = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -439,7 +448,7 @@ def test_rate_limited_403_keeps_the_attachment_owed_until_the_quota_resets(
         attempts.append(file_id)
         handle.write(payload)
 
-    second = converge_drive_attachments(
+    second = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -462,8 +471,8 @@ def _carried_forward_attachment(index: sqlite3.Connection) -> None:
     reference while ``sessions.raw_id`` moves to B.
     """
     with_attachment = _session("carried", file_id="drive-carried")
-    write_parsed_session_to_archive(index, with_attachment, raw_id="raw-a")
-    write_parsed_session_to_archive(index, with_attachment.model_copy(update={"attachments": []}), raw_id="raw-b")
+    write_fixture_index_session(index, with_attachment, raw_id="raw-a")
+    write_fixture_index_session(index, with_attachment.model_copy(update={"attachments": []}), raw_id="raw-b")
     index.commit()
     assert index.execute("SELECT raw_id FROM sessions").fetchone()[0] == "raw-b"
     assert [tuple(row) for row in index.execute("SELECT supplying_raw_id FROM attachment_refs")] == [("raw-a",)]
@@ -485,9 +494,7 @@ def test_carried_forward_attachment_bytes_are_attributed_to_the_raw_that_held_it
     _retain_raws(source, "raw-a", "raw-b")
 
     payload = b"attachment bytes raw A referenced"
-    result = converge_drive_attachments(
-        index, source, archive_root=tmp_path, download_into=_into(lambda _file_id: payload)
-    )
+    result = _converge(index, source, archive_root=tmp_path, download_into=_into(lambda _file_id: payload))
 
     assert result.acquired == 1
     assert result.complete
@@ -523,7 +530,7 @@ def test_an_unretained_supplier_is_never_replaced_by_the_sessions_current_raw(tm
         calls.append(file_id)
         return b"never fetched"
 
-    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=_into(fetch))
+    result = _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
 
     assert calls == []
     assert result.inspected == 0
@@ -557,7 +564,7 @@ def test_a_supplier_retired_during_the_download_gets_no_durable_ref(tmp_path: Pa
         return write_index, write_source
 
     payload = b"downloaded while raw A was retired"
-    result = converge_drive_attachments(
+    result = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -588,7 +595,7 @@ def test_surviving_blob_is_rebound_without_a_provider_request(tmp_path: Path) ->
     """
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("survivor", file_id="drive-file-1"), raw_id="survivor-raw")
+    write_fixture_index_session(index, _session("survivor", file_id="drive-file-1"), raw_id="survivor-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
@@ -596,7 +603,7 @@ def test_surviving_blob_is_rebound_without_a_provider_request(tmp_path: Path) ->
     _retain_raws(source, "survivor-raw")
 
     payload = b"bytes that outlive the derived tier"
-    first = converge_drive_attachments(
+    first = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -621,7 +628,7 @@ def test_surviving_blob_is_rebound_without_a_provider_request(tmp_path: Path) ->
         attempted.append(file_id)
         raise AssertionError(f"surviving blob must not be re-downloaded: {file_id}")
 
-    second = converge_drive_attachments(
+    second = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -662,7 +669,7 @@ def test_contradicted_survivor_is_not_rebound(tmp_path: Path) -> None:
     """
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("decayed", file_id="drive-file-1"), raw_id="decayed-raw")
+    write_fixture_index_session(index, _session("decayed", file_id="drive-file-1"), raw_id="decayed-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
@@ -670,7 +677,7 @@ def test_contradicted_survivor_is_not_rebound(tmp_path: Path) -> None:
     _retain_raws(source, "decayed-raw")
 
     payload = b"bytes the archive published once"
-    first = converge_drive_attachments(
+    first = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -695,7 +702,7 @@ def test_contradicted_survivor_is_not_rebound(tmp_path: Path) -> None:
         attempted.append(file_id)
         raise DriveNotFoundError(file_id)
 
-    result = converge_drive_attachments(
+    result = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -735,7 +742,7 @@ def test_a_contradicted_destination_blocks_the_acquired_outcome(tmp_path: Path) 
     """
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("decayed", file_id="drive-file-1"), raw_id="decayed-raw")
+    write_fixture_index_session(index, _session("decayed", file_id="drive-file-1"), raw_id="decayed-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
@@ -743,12 +750,7 @@ def test_a_contradicted_destination_blocks_the_acquired_outcome(tmp_path: Path) 
     _retain_raws(source, "decayed-raw")
 
     payload = b"bytes the archive published once"
-    assert (
-        converge_drive_attachments(
-            index, source, archive_root=tmp_path, download_into=_into(lambda _f: payload)
-        ).acquired
-        == 1
-    )
+    assert _converge(index, source, archive_root=tmp_path, download_into=_into(lambda _f: payload)).acquired == 1
 
     store = BlobStore(tmp_path / "blob")
     blob_hash = hashlib.sha256(payload).hexdigest()
@@ -760,7 +762,7 @@ def test_a_contradicted_destination_blocks_the_acquired_outcome(tmp_path: Path) 
     # Drive still serves the original payload: the republished bytes hash to
     # the contradicted destination, which is the collision that made the
     # dedupe silently discard them.
-    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=_into(lambda _f: payload))
+    result = _converge(index, source, archive_root=tmp_path, download_into=_into(lambda _f: payload))
 
     row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
     assert result.acquired == 0
@@ -814,7 +816,7 @@ def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path
     """
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(
+    write_fixture_index_session(
         index,
         _multi_attachment_session("two-docs", ("drive-file-a", "drive-file-b")),
         raw_id="two-docs-raw",
@@ -829,7 +831,7 @@ def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path
         "drive-file-a": b"first retained document",
         "drive-file-b": b"first retained document" if equal_content else b"second retained document",
     }
-    first = converge_drive_attachments(
+    first = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -842,7 +844,7 @@ def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path
     index.close()
     (tmp_path / "index.db").unlink()
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(
+    write_fixture_index_session(
         index, _multi_attachment_session("two-docs", ("drive-file-a", "drive-file-b")), raw_id="two-docs-raw"
     )
     index.commit()
@@ -853,7 +855,7 @@ def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path
         attempted.append(file_id)
         raise DriveNotFoundError(file_id)
 
-    second = converge_drive_attachments(
+    second = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -908,9 +910,9 @@ def test_contested_provider_identity_is_refused_not_downloaded_under_a_lexical_w
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
     contested = _session("contested", file_id="drive-file-contested-a")
-    write_parsed_session_to_archive(index, contested, raw_id="contested-raw")
+    write_fixture_index_session(index, contested, raw_id="contested-raw")
     resolvable = _session("resolvable", file_id="drive-file-resolvable")
-    write_parsed_session_to_archive(index, resolvable, raw_id="resolvable-raw")
+    write_fixture_index_session(index, resolvable, raw_id="resolvable-raw")
 
     ref_id = index.execute("SELECT r.ref_id FROM attachment_refs AS r WHERE r.session_id LIKE '%contested'").fetchone()[
         "ref_id"
@@ -934,7 +936,7 @@ def test_contested_provider_identity_is_refused_not_downloaded_under_a_lexical_w
         calls.append(file_id)
         return b"bytes for %s" % file_id.encode()
 
-    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=_into(fetch))
+    result = _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
 
     assert calls == ["drive-file-resolvable"]
     assert result.unresolved_identity == 1
@@ -968,9 +970,9 @@ def _seed_contested(tmp_path: Path, *, with_resolvable: bool) -> tuple[sqlite3.C
     """One reference with two 'file' ids of one kind, optionally beside a resolvable one."""
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("contested", file_id="drive-file-contested-a"), raw_id="c-raw")
+    write_fixture_index_session(index, _session("contested", file_id="drive-file-contested-a"), raw_id="c-raw")
     if with_resolvable:
-        write_parsed_session_to_archive(index, _session("resolvable", file_id="drive-file-resolvable"), raw_id="r-raw")
+        write_fixture_index_session(index, _session("resolvable", file_id="drive-file-resolvable"), raw_id="r-raw")
     ref_id = str(
         index.execute("SELECT r.ref_id FROM attachment_refs AS r WHERE r.session_id LIKE '%contested'").fetchone()[
             "ref_id"
@@ -1010,7 +1012,13 @@ def _run_passes(tmp_path: Path, passes: int) -> type[_CountingDriveClient]:
         tmp_path / "index.db", archive_root=tmp_path, client_factory=client, limit=10
     )
     converger = DaemonConverger(stages=(stage,))
-    with stage_write_admission(lambda _actor, work: work()):
+
+    def admit(actor: str, work: Callable[[], object]) -> object:
+        # As the daemon's admission does: the stage's write section runs under the lease.
+        with write_lease(actor, archive_root=tmp_path):
+            return work()
+
+    with stage_write_admission(admit):
         for _ in range(passes):
             converger.converge_batch((tmp_path / "source-batch.jsonl",))
     return client
@@ -1054,10 +1062,10 @@ def test_contested_only_identity_is_not_complete_and_never_re_executes(tmp_path:
     component = _ordinary_attachment_status(tmp_path)
     assert component["state"] == "degraded"
     assert component["scope"] == "owed_drive_references"
-    assert component["counts"] == {"unresolved_identity": 1}
+    assert cast(dict[str, int], component["counts"])["unresolved_identity"] == 1
 
     source = sqlite3.connect(tmp_path / "source.db")
-    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=_into(lambda _id: b""))
+    result = _converge(index, source, archive_root=tmp_path, download_into=_into(lambda _id: b""))
     assert result.unresolved_identity == 1
     assert not result.transport_pending
     assert not result.complete
@@ -1084,10 +1092,10 @@ def test_mixed_set_fetches_resolvable_work_once_and_stays_incomplete(tmp_path: P
     assert client.constructed == 1
     component = _ordinary_attachment_status(tmp_path)
     assert component["state"] == "degraded"
-    assert component["counts"] == {"unresolved_identity": 1}
+    assert cast(dict[str, int], component["counts"])["unresolved_identity"] == 1
 
     source = sqlite3.connect(tmp_path / "source.db")
-    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=_into(lambda _id: b""))
+    result = _converge(index, source, archive_root=tmp_path, download_into=_into(lambda _id: b""))
     assert result.unresolved_identity == 1
     assert result.inspected == 0
     assert not result.complete
@@ -1099,7 +1107,7 @@ def test_terminal_absence_stays_distinct_from_contested_identity(tmp_path: Path)
     """A provider 404 is terminal ``unavailable`` and completes the obligation; contested identity does not."""
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("gone", file_id="drive-file-gone"), raw_id="g-raw")
+    write_fixture_index_session(index, _session("gone", file_id="drive-file-gone"), raw_id="g-raw")
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
     initialize_archive_tier(source, ArchiveTier.SOURCE)
@@ -1108,7 +1116,7 @@ def test_terminal_absence_stays_distinct_from_contested_identity(tmp_path: Path)
     def missing(file_id: str, _handle: IO[bytes]) -> None:
         raise DriveNotFoundError(file_id)
 
-    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=missing)
+    result = _converge(index, source, archive_root=tmp_path, download_into=missing)
     assert result.terminal == 1
     assert result.unresolved_identity == 0
     assert result.complete
@@ -1138,7 +1146,7 @@ def test_ordinary_attachment_status_distinguishes_zero_from_unavailable(
     if disposition == "unavailable":
         from polylogue.operations.daemon_status import _attachment_component
 
-        component = cast(dict[str, object], _attachment_component(index).to_dict())
+        component = cast(dict[str, object], _attachment_component(index, None).to_dict())
         index.close()
         from polylogue.core.errors import SchemaVersionMismatchError
 
@@ -1147,5 +1155,15 @@ def test_ordinary_attachment_status_distinguishes_zero_from_unavailable(
     else:
         index.close()
         component = _ordinary_attachment_status(tmp_path)
-    assert component["state"] == ("unknown" if disposition == "unavailable" else "ready")
-    assert component["counts"] == ({} if disposition == "unavailable" else {"unresolved_identity": 0})
+    assert component["state"] == (
+        "unknown" if disposition == "unavailable" else "degraded" if disposition == "resolved" else "ready"
+    )
+    assert (
+        component["counts"] == {}
+        if disposition == "unavailable"
+        else cast(dict[str, int], component["counts"])["unresolved_identity"] == 0
+    )
+    if disposition == "resolved":
+        assert cast(dict[str, int], component["counts"])["allowed_unfetched"] == 1
+    if disposition == "terminal":
+        assert cast(dict[str, int], component["counts"])["terminal_unavailable"] == 1

@@ -20,7 +20,7 @@ from polylogue.coordination.envelope import (
     build_coordination_envelope,
 )
 from polylogue.coordination.payloads import AgentCoordinationPayload
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER, archive_ddl_for_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -105,6 +105,7 @@ def _seed_coordination_archive(index: Path) -> None:
             );
             """
         )
+        _add_missing_index_columns(conn)
         conn.execute(
             """
             INSERT INTO sessions
@@ -168,6 +169,29 @@ def _seed_coordination_archive(index: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _add_missing_index_columns(conn: sqlite3.Connection) -> None:
+    """Give each hand-built table every column the real Index DDL declares.
+
+    The seed keeps its own minimal constraints, but the readers it exercises
+    select real Index columns (``messages.role``, ``blocks.
+    tool_result_outcome_unknown_reason`` ...). Deriving the column set from
+    ``archive_ddl_for_tier`` keeps the fixture from going stale each time the
+    Index gains a column a coordination reader projects.
+    """
+    reference = sqlite3.connect(":memory:")
+    try:
+        reference.executescript(archive_ddl_for_tier(ArchiveTier.INDEX))
+        tables = [str(row[0]) for row in conn.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")]
+        for table in tables:
+            present = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+            for row in reference.execute(f"PRAGMA table_info({table})"):
+                name, declared_type = str(row[1]), str(row[2])
+                if name not in present:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declared_type}")
+    finally:
+        reference.close()
 
 
 class FakeRunner:
@@ -546,6 +570,30 @@ def _coordination_tree(
     return index, lambda: build_coordination_envelope(
         cwd=root, runner=FakeRunner(root, beads_rows=None), limit=limit, detail=True
     )
+
+
+def test_combined_relation_sql_keeps_one_recursive_with(tmp_path: Path) -> None:
+    """Runs joined to observed events compile as one ``WITH RECURSIVE`` clause.
+
+    Anti-vacuity: strip only ``WITH `` from each fragment again and the
+    observed-event fragment's ``RECURSIVE`` lands behind a comma; SQLite then
+    refuses the statement, which degraded every subagent-exchange lookup.
+    """
+    from polylogue.storage.sqlite.run_projection_relations import observed_event_relation_sql, run_relation_sql
+
+    index = tmp_path / "index.db"
+    _seed_coordination_archive(index)
+    merged = envelope._combined_relation_sql(run_relation_sql(), observed_event_relation_sql(source_where="1"))
+
+    assert merged.startswith("WITH RECURSIVE ")
+    conn = sqlite3.connect(index)
+    try:
+        (count,) = conn.execute(
+            merged + "SELECT COUNT(*) FROM runs r LEFT JOIN observed_events e ON e.run_ref = r.run_ref"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert count >= 1
 
 
 def test_coordination_tree_edges_come_only_from_session_links(

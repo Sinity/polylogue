@@ -22,8 +22,8 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.codex import _tool_input_from_arguments, is_supported_session_stream, parse_stream
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import db_setup
 
 
@@ -107,7 +107,7 @@ class TestSessionStreamContract:
         assert len(sessions[0].messages) == 1
 
     def test_real_wire_stream_parses_and_passes_materialization_evidence_gate(self) -> None:
-        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+        from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_stream_payload
 
         payload = [
             {"type": "session_meta", "payload": {"id": "real-stream"}},
@@ -126,7 +126,7 @@ class TestSessionStreamContract:
 
         assert [session.provider_session_id for session in sessions] == ["real-stream"]
         assert (
-            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/real-stream.jsonl")
+            admit_parsed_sessions_for_publication(sessions, provider="codex", source_path="/tmp/real-stream.jsonl")
             == sessions
         )
 
@@ -151,7 +151,7 @@ class TestSessionStreamContract:
         assert sessions[0].messages[0].provider_message_id == "legacy-user"
 
     def test_legacy_direct_stream_uses_fallback_identity_and_passes_contract(self) -> None:
-        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+        from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_stream_payload
 
         payload = [
             {
@@ -176,12 +176,12 @@ class TestSessionStreamContract:
         assert [session.provider_session_id for session in sessions] == ["legacy-fallback"]
         assert len(sessions[0].messages) == 2
         assert (
-            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/legacy.jsonl")
+            admit_parsed_sessions_for_publication(sessions, provider="codex", source_path="/tmp/legacy.jsonl")
             == sessions
         )
 
     def test_bare_session_headers_fail_parser_contract_and_materialization_gate(self) -> None:
-        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+        from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_stream_payload
 
         payload = [{"type": "session_meta"}, {"type": "session_meta"}]
 
@@ -190,12 +190,12 @@ class TestSessionStreamContract:
 
         assert sessions[0].messages == []
         assert (
-            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/bare-headers.jsonl")
+            admit_parsed_sessions_for_publication(sessions, provider="codex", source_path="/tmp/bare-headers.jsonl")
             == []
         )
 
     def test_mixed_envelope_and_direct_stream_fails_admission_and_evidence_gate(self) -> None:
-        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+        from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_stream_payload
 
         payload = [
             {"type": "session_meta", "payload": {"id": "mixed-stream"}},
@@ -220,7 +220,7 @@ class TestSessionStreamContract:
 
         assert sessions[0].messages
         assert (
-            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/mixed.jsonl")
+            admit_parsed_sessions_for_publication(sessions, provider="codex", source_path="/tmp/mixed.jsonl")
             == sessions
         )
 
@@ -819,7 +819,7 @@ class TestMessageParsing:
         assert [message.parent_message_position for message in result.messages] == [None, None, None]
 
         with open_connection(db_setup(workspace_env)) as conn:
-            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            write_fixture_index_session(conn, result, content_hash=session_content_hash(result))
             rows = conn.execute(
                 "SELECT message_id, native_id, parent_message_id FROM messages ORDER BY position"
             ).fetchall()
@@ -1705,7 +1705,7 @@ class TestGitContextAndInstructions:
         result = parse(payload, "codex-whale-image")
 
         with open_connection(db_setup(workspace_env)) as conn:
-            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            write_fixture_index_session(conn, result, content_hash=session_content_hash(result))
             leaked_blocks = conn.execute(
                 "SELECT count(*) AS n FROM blocks WHERE search_text LIKE '%data:image/png;base64%'"
             ).fetchone()["n"]
@@ -1953,7 +1953,14 @@ class TestEdgeCases:
         ]
         assert len(result.messages) == 2
         assert [message.position for message in result.messages] == [0, 1]
-        assert result.active_leaf_message_provider_id == "call_1"
+        # The call keeps its own id; the output repeats only call_id and so
+        # takes the side-qualified native id, and its event names it.
+        assert [message.provider_message_id for message in result.messages] == ["fc_1", "call_1::output"]
+        assert [event.source_message_provider_id for event in result.session_events[:2]] == [
+            "fc_1",
+            "call_1::output",
+        ]
+        assert result.active_leaf_message_provider_id == "call_1::output"
         assert result.messages[0].message_type is MessageType.TOOL_USE
         assert result.messages[0].blocks[0].type == "tool_use"
         assert result.messages[0].blocks[0].tool_name == "exec_command"
@@ -2282,7 +2289,7 @@ class TestUnreadFieldTriage:
         )
 
         with open_connection(db_setup(workspace_env)) as conn:
-            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            write_fixture_index_session(conn, result, content_hash=session_content_hash(result))
             stored_instructions = conn.execute("SELECT instructions_text FROM sessions").fetchone()[0]
             event_rows = conn.execute(
                 "SELECT payload_json, boundary_message_id FROM session_events "
@@ -3211,7 +3218,7 @@ class TestReplacementHistoryConservation:
         assert contexts[0]["occurrences"] == 2
 
         with open_connection(db_setup(workspace_env)) as conn:
-            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            write_fixture_index_session(conn, result, content_hash=session_content_hash(result))
             rows = conn.execute(
                 "SELECT payload_json FROM session_events WHERE event_type = 'codex_replacement_context'"
             ).fetchall()
@@ -3234,7 +3241,7 @@ class TestReplacementHistoryConservation:
         )
 
         with open_connection(db_setup(workspace_env)) as conn:
-            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            write_fixture_index_session(conn, result, content_hash=session_content_hash(result))
             rows = conn.execute(
                 "SELECT payload_json FROM session_events "
                 "WHERE event_type = 'codex_replacement_context' ORDER BY position"
@@ -3928,9 +3935,7 @@ def test_codex_empty_tool_output_survives_parser_and_reopened_index(
             ) as index:
                 index.row_factory = sqlite3.Row
                 with index:
-                    session_id = write_parsed_session_to_archive(
-                        index, parsed, content_hash=session_content_hash(parsed)
-                    )
+                    session_id = write_fixture_index_session(index, parsed, content_hash=session_content_hash(parsed))
         with closing(sqlite3.connect(index_path)) as index:
             stored = index.execute(
                 "SELECT tool_id,text,tool_outcome FROM blocks WHERE session_id=? AND block_type='tool_result'",
@@ -4011,9 +4016,7 @@ def test_codex_mcp_application_verdict_survives_parser_and_reopened_index(
             ) as index:
                 index.row_factory = sqlite3.Row
                 with index:
-                    session_id = write_parsed_session_to_archive(
-                        index, parsed, content_hash=session_content_hash(parsed)
-                    )
+                    session_id = write_fixture_index_session(index, parsed, content_hash=session_content_hash(parsed))
         with closing(sqlite3.connect(index_path)) as index:
             rows = index.execute(
                 "SELECT tool_id,text,tool_result_is_error,tool_outcome FROM blocks "
@@ -4040,3 +4043,259 @@ def test_codex_structured_output_representation_distinguishes_falsy_values_from_
     from polylogue.sources.parsers.codex import _codex_tool_output_text
 
     assert _codex_tool_output_text(value) == expected
+
+
+# =============================================================================
+# Legacy top-level response records, retained context and realtime markers
+# =============================================================================
+
+_CODEX_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "codex"
+
+
+def _codex_fixture(name: str) -> list[object]:
+    return [json.loads(line) for line in (_CODEX_FIXTURES / name).read_text().splitlines() if line.strip()]
+
+
+def _wrap_legacy_response_records(records: list[object]) -> list[object]:
+    """The same stream with each unwrapped response record inside a response_item."""
+    wrapped: list[object] = []
+    for record in records:
+        if isinstance(record, dict) and record.get("type") in {"function_call", "function_call_output", "reasoning"}:
+            wrapped.append({"type": "response_item", "payload": record})
+        else:
+            wrapped.append(record)
+    return wrapped
+
+
+def test_legacy_top_level_response_records_lower_exactly_like_wrapped_ones() -> None:
+    """Unwrapping a 2025 function_call/output/reasoning record must not change the session.
+
+    Red if the parser stops routing an unwrapped record through the
+    response-item lowering (the records would surface as unknown outer
+    records and the tool, reasoning and outcome evidence would differ).
+    """
+    legacy = _codex_fixture("legacy-response-records.jsonl")
+    wrapped = _wrap_legacy_response_records(legacy)
+    assert wrapped != legacy
+
+    legacy_session = parse(legacy, "legacy-fallback")
+    wrapped_session = parse(wrapped, "legacy-fallback")
+
+    assert legacy_session.messages == wrapped_session.messages
+    assert legacy_session.session_events == wrapped_session.session_events
+    assert session_content_hash(legacy_session) == session_content_hash(wrapped_session)
+    assert legacy_session.unit_accounting is not None
+    assert not legacy_session.unit_accounting.outcomes
+    assert all(event.event_type != "codex_unknown_outer_record" for event in legacy_session.session_events)
+
+    blocks = [
+        (block.type, block.tool_id, block.is_error, block.exit_code)
+        for message in legacy_session.messages
+        for block in message.blocks
+    ]
+    assert (BlockType.TOOL_USE, "call_sample_ok", None, None) in blocks
+    assert (BlockType.TOOL_RESULT, "call_sample_ok", False, 0) in blocks
+    assert (BlockType.TOOL_USE, "call_sample_fail", None, None) in blocks
+    assert (BlockType.TOOL_RESULT, "call_sample_fail", True, 1) in blocks
+    thinking = [
+        block.text
+        for message in legacy_session.messages
+        for block in message.blocks
+        if block.type is BlockType.THINKING
+    ]
+    assert thinking == ["Listing the directory first."]
+    assert [message.role for message in legacy_session.messages] == [
+        Role.USER,
+        Role.ASSISTANT,
+        Role.ASSISTANT,
+        Role.TOOL,
+        Role.ASSISTANT,
+        Role.TOOL,
+        Role.ASSISTANT,
+    ]
+
+    streamed = parse_stream(iter(legacy), "legacy-fallback")
+    assert streamed.messages == legacy_session.messages
+    assert streamed.session_events == legacy_session.session_events
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["legacy", "wrapped"])
+def test_legacy_response_tool_outcomes_survive_the_index_write(tmp_path: Path, wrapped: bool) -> None:
+    """Both generations publish the same tool calls and outcomes through the index writer.
+
+    Red if an unwrapped output stops carrying its exit-code evidence (the
+    failed call would no longer store ``error``), or if an id-less call and
+    its output collide on one message id at the write.
+    """
+    import sqlite3
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import open_connection as open_owned_connection
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    records = _codex_fixture("legacy-response-records.jsonl")
+    parsed = parse(_wrap_legacy_response_records(records) if wrapped else records, "legacy-fallback")
+    index_path = tmp_path / "index.db"
+    with write_lease("Codex legacy response fixture", archive_root=tmp_path):
+        initialize_active_archive_root(tmp_path)
+        with closing(open_owned_connection(index_path, tier=ArchiveTier.INDEX, archive_root=tmp_path)) as index:
+            index.row_factory = sqlite3.Row
+            with index:
+                session_id = write_fixture_index_session(index, parsed, content_hash=session_content_hash(parsed))
+    with closing(sqlite3.connect(index_path)) as index:
+        results = index.execute(
+            "SELECT tool_id, tool_outcome FROM blocks WHERE session_id=? AND block_type='tool_result' ORDER BY tool_id",
+            (session_id,),
+        ).fetchall()
+        uses = index.execute(
+            "SELECT tool_id FROM blocks WHERE session_id=? AND block_type='tool_use' ORDER BY tool_id", (session_id,)
+        ).fetchall()
+    assert results == [("call_sample_fail", "error"), ("call_sample_ok", "ok")]
+    assert uses == [("call_sample_fail",), ("call_sample_ok",)]
+
+
+def test_verified_answer_and_realtime_markers_become_session_events() -> None:
+    """retained_context/verified_answer keeps its question/answer pairs; realtime markers keep their ids.
+
+    Red if either envelope stops being lowered: the records would arrive as
+    ``codex_unknown_outer_record`` events and the ledger would not be clean.
+    """
+    session = parse(_codex_fixture("retained-context-and-realtime.jsonl"), "retained-fallback")
+
+    assert session.unit_accounting is not None
+    assert not session.unit_accounting.outcomes
+    by_type = {event.event_type: event for event in session.session_events}
+    assert "codex_unknown_outer_record" not in by_type
+
+    answer = by_type["verified_answer"]
+    assert answer.source_message_provider_id == "call_sample_question"
+    assert answer.timestamp is not None
+    assert answer.payload["call_id"] == "call_sample_question"
+    assert answer.payload["turn_id"] == "turn-sample-1"
+    assert answer.payload["acceptance_order"] == 1
+    assert answer.payload["questions"] == [{"question": "Which colour should the banner use?", "answer": "Green"}]
+
+    started = by_type["realtime_session_started"]
+    closed = by_type["realtime_session_closed"]
+    assert started.payload["realtime_session_id"] == closed.payload["realtime_session_id"] == "realtime-session-sample"
+    assert started.payload["id"] == "realtime-marker-1"
+    assert closed.payload["outcome"] == "ended"
+    assert "outcome" not in started.payload
+
+    # The surrounding tool call still pairs with its output.
+    tool_ids = {(block.type, block.tool_id) for message in session.messages for block in message.blocks}
+    assert (BlockType.TOOL_USE, "call_sample_question") in tool_ids
+    assert (BlockType.TOOL_RESULT, "call_sample_question") in tool_ids
+
+
+def test_undeclared_payload_type_under_a_declared_envelope_stays_visible() -> None:
+    from polylogue.sources.parsers.base_models import AdmissionDisposition, AdmissionUnit, AdmissionUnknownReason
+
+    records = _codex_fixture("retained-context-and-realtime.jsonl")
+    records.insert(3, {"type": "retained_context", "payload": {"type": "future_retained_kind", "value": 1}})
+    session = parse(records, "retained-fallback")
+
+    assert session.unit_accounting is not None
+    outcomes = session.unit_accounting.outcomes
+    assert [(o.unit, o.ordinal, o.key, o.disposition, o.reason) for o in outcomes] == [
+        (
+            AdmissionUnit.OUTER_RECORD,
+            3,
+            "retained_context:future_retained_kind",
+            AdmissionDisposition.TYPED_UNKNOWN,
+            AdmissionUnknownReason.UNRECOGNIZED_TYPE,
+        )
+    ]
+    unknown = [event for event in session.session_events if event.event_type == "codex_unknown_outer_record"]
+    assert len(unknown) == 1
+    assert unknown[0].payload["wire_type"] == "retained_context"
+
+
+@pytest.mark.parametrize("fixture", ["legacy-response-records.jsonl", "retained-context-and-realtime.jsonl"])
+def test_new_record_shapes_are_supported_session_streams(fixture: str) -> None:
+    from polylogue.sources.parsers.codex import is_supported_outer_record
+
+    records = _codex_fixture(fixture)
+    assert all(is_supported_outer_record(record) for record in records)
+    assert is_supported_session_stream(records)
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"type": "future_outer_kind", "payload": {"type": "anything"}},
+        {"type": "future_outer_kind"},
+        # A legacy response type is supported only unwrapped; an envelope of
+        # that name is not a shape the parser knows.
+        {"type": "function_call", "payload": {"type": "function_call", "call_id": "c"}},
+    ],
+)
+def test_unknown_outer_records_still_refuse_the_stream(record: dict[str, object]) -> None:
+    from polylogue.sources.parsers.codex import is_supported_outer_record
+
+    assert not is_supported_outer_record(record)
+    for fixture in ("legacy-response-records.jsonl", "retained-context-and-realtime.jsonl"):
+        records = _codex_fixture(fixture)
+        records.insert(2, record)
+        assert not is_supported_session_stream(records)
+
+
+_TOOL_RESULT_HEADER_EXPECTATIONS: dict[str, tuple[bool | None, int | None]] = {
+    # Unified-exec envelope behind a one-line ``Command:`` preamble.
+    "call_command_ok": (False, 0),
+    "call_command_fail": (True, 2),
+    # A command rendered over several lines: the line after ``Command:`` is
+    # not the envelope, so nothing is read.
+    "call_command_multiline": (None, None),
+    # A still-attached session has no outcome yet.
+    "call_stdin_running": (None, None),
+    # Freeform ``Exit code:`` header (apply_patch, shell_command).
+    "call_patch_fail": (True, 1),
+    "call_shell_ok": (False, 0),
+    # The code-mode exec status item states no exit code; the script's
+    # commands carry their own outcomes, so the transport stays unknown.
+    "call_script_ok": (None, None),
+    "call_script_fail": (None, None),
+    # The same words not at the anchored position carry no outcome.
+    "call_prose_decoy": (None, None),
+    "call_script_decoy": (None, None),
+}
+
+
+def test_cli_written_result_headers_resolve_tool_outcomes() -> None:
+    """Each CLI-written header resolves exactly its declared verdict and nothing else.
+
+    Red if the ``Command:`` preamble or the freeform ``Exit code:`` header stops
+    being read, or if either starts matching a decoy that is not the anchored,
+    complete header.
+    """
+    session = parse(_codex_fixture("tool-result-headers.jsonl"), "headers-fallback")
+    results = {
+        block.tool_id: (block.is_error, block.exit_code)
+        for message in session.messages
+        for block in message.blocks
+        if block.type is BlockType.TOOL_RESULT
+    }
+    assert results == _TOOL_RESULT_HEADER_EXPECTATIONS
+
+
+def test_cli_written_result_headers_reach_the_written_tool_outcome() -> None:
+    from polylogue.core.enums import Origin, ToolOutcome
+    from polylogue.sources.tool_outcomes import derive_tool_outcomes
+
+    session = parse(_codex_fixture("tool-result-headers.jsonl"), "headers-fallback")
+    derived = derive_tool_outcomes(session.messages, session.session_events, origin=Origin.CODEX_SESSION)
+    assert isinstance(derived, list)
+    outcomes = {
+        block.tool_id: block.tool_outcome
+        for message in derived
+        for block in message.blocks
+        if block.type is BlockType.TOOL_RESULT
+    }
+    expected = {
+        tool_id: ToolOutcome.UNKNOWN if is_error is None else ToolOutcome.ERROR if is_error else ToolOutcome.OK
+        for tool_id, (is_error, _exit_code) in _TOOL_RESULT_HEADER_EXPECTATIONS.items()
+    }
+    assert outcomes == expected

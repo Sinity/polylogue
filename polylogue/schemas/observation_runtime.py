@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, replace
 from itertools import islice
 from pathlib import Path
@@ -330,12 +330,12 @@ def _coarse_type(value: object) -> str:
     return type(value).__name__
 
 
-def _structural_child_keys(keys: Iterable[object]) -> tuple[str, ...]:
-    normalized = tuple(str(key) for key in keys)
-    collapse_all = should_collapse_observed_keys(normalized)
+def _structural_child_keys(keys: Collection[object]) -> tuple[str, ...]:
+    collapse_all = should_collapse_observed_keys(keys)
     stable: set[str] = set()
     has_dynamic = False
-    for key in normalized:
+    for raw_key in keys:
+        key = str(raw_key)
         if collapse_all or is_dynamic_key(key):
             has_dynamic = True
         else:
@@ -359,6 +359,10 @@ def _nested_list_object_keys(value: object) -> tuple[str, ...]:
     for item in value[:_MAX_NESTED_PROFILE_TOKENS]:
         if not isinstance(item, dict):
             continue
+        from polylogue.schemas.observation_spill import SpilledObject
+
+        if isinstance(item, SpilledObject) and len(item) >= _MAX_NESTED_PROFILE_TOKENS:
+            return _structural_child_keys(item.key_union(keys))
         keys.update(str(key) for key in item)
         if len(keys) >= _MAX_NESTED_PROFILE_TOKENS:
             break
@@ -375,7 +379,10 @@ def _append_tokens(tokens: list[str], values: Iterable[str]) -> None:
 
 def _document_profile_tokens(sample: SchemaSample) -> tuple[str, ...]:
     tokens: list[str] = []
-    for key, value in sorted(sample.items()):
+    from polylogue.schemas.shape_fingerprint import ordered_keys
+
+    for key in ordered_keys(sample):
+        value = sample[key]
         value_type = _coarse_type(value)
         _append_tokens(
             tokens,
@@ -402,12 +409,15 @@ def _record_profile_tokens(
     *,
     record_type_key: str | None,
 ) -> tuple[str, ...]:
+    from polylogue.schemas.observation_spill import SpilledObject
+
+    spilled = bool(samples) and isinstance(samples[0], SpilledObject)
     bucket_keys: dict[str, set[str]] = {}
     bucket_value_types: dict[str, dict[str, set[str]]] = {}
     # ``islice`` bounds consumption directly; ``samples[:512]`` would resolve
     # slice bounds via ``len(samples)`` first, forcing a full rescan of a lazy
     # full-corpus record stream just to take its first 512 records.
-    for sample in islice(samples, 512):
+    for sample in () if spilled else islice(samples, 512):
         bucket = record_bucket_key(sample, record_type_key)
         keys = bucket_keys.setdefault(bucket, set())
         value_types = bucket_value_types.setdefault(bucket, {})
@@ -415,12 +425,30 @@ def _record_profile_tokens(
         for key, value in sample.items():
             value_types.setdefault(str(key), set()).add(_coarse_type(value))
 
+    from polylogue.schemas.observation_spill import SpilledObject
+
+    # Sample count is bounded by the established provider/profile semantics.
+    # Its individual field sets still need disk storage for large records.
+    if samples and isinstance(samples[0], SpilledObject):
+        groups = samples[0].record_profile_groups(
+            islice(samples, 512),
+            record_type_key=record_type_key,
+            coarse_type=_coarse_type,
+        )
+    else:
+        groups = (
+            (
+                bucket,
+                ((key, tuple(sorted(bucket_value_types.get(bucket, {}).get(key, ())))) for key in sorted(keys)[:24]),
+            )
+            for bucket, keys in sorted(bucket_keys.items())
+        )
     tokens: list[str] = []
-    for bucket, keys in sorted(bucket_keys.items()):
+    for bucket, fields in groups:
         _append_tokens(tokens, (f"bucket:{bucket}",))
-        for key in sorted(keys)[:24]:
+        for key, kinds in fields:
             _append_tokens(tokens, (f"field:{bucket}:{key}",))
-            for value_type in sorted(bucket_value_types.get(bucket, {}).get(key, ())):
+            for value_type in kinds:
                 _append_tokens(tokens, (f"type:{bucket}:{key}:{value_type}",))
             if len(tokens) >= _MAX_PROFILE_TOKENS:
                 break

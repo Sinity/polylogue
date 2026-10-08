@@ -35,17 +35,17 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.topology.edge import TopologyEdgeStatus
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope, write_parsed_session_to_archive
+from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 from polylogue.storage.sqlite.queries.message_query_reads import get_messages
+from tests.infra.archive_templates import bootstrapped_tier_path, run_off_event_loop
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
 
 
@@ -74,67 +74,82 @@ def _link_row(conn: sqlite3.Connection, src_session_id: str) -> sqlite3.Row:
 @pytest.mark.asyncio
 async def test_cross_ingest_cycle_quarantines_the_closing_edge_without_losing_prefix(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
-    conn = _connect(db)
 
-    # 1. A lands first with no parent -- it is its own root.
-    session_a_v1 = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="A",
-        title="A",
-        messages=[_msg("a0", Role.USER, "start", 0)],
-    )
-    a_id = write_parsed_session_to_archive(conn, session_a_v1)
-    assert conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (a_id,)).fetchone()[0] is None
+    # The fixture writer takes the synchronous write lease, which may not block
+    # this law's event loop: the sync writes and their checks run off it.
+    def _write_and_check() -> tuple[str, str, list[str], dict[str, object]]:
+        conn = _connect(db)
 
-    # 2. B lands claiming A as its parent. A already exists, so this resolves
-    # immediately and B.parent_session_id is projected to A.
-    session_b = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="B",
-        title="B",
-        parent_session_provider_id="A",
-        messages=[_msg("b0", Role.USER, "child of A", 0)],
-    )
-    b_id = write_parsed_session_to_archive(conn, session_b)
-    assert conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (b_id,)).fetchone()[0] == a_id
+        # 1. A lands first with no parent -- it is its own root.
+        session_a_v1 = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="A",
+            title="A",
+            messages=[_msg("a0", Role.USER, "start", 0)],
+        )
+        a_id = write_fixture_index_session(conn, session_a_v1)
+        assert (
+            conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (a_id,)).fetchone()[0] is None
+        )
 
-    # 3. A is re-ingested (a corrupted/scrambled export re-asserting lineage)
-    # now claiming B as ITS parent -- closing a two-node cycle A -> B -> A.
-    session_a_v2 = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="A",
-        title="A",
-        parent_session_provider_id="B",
-        messages=[
-            _msg("a-copy-b0", Role.USER, "child of A", 0),
-            _msg("a1", Role.ASSISTANT, "revised", 1),
-        ],
-    )
-    write_parsed_session_to_archive(conn, session_a_v2, force_replace=True)
+        # 2. B lands claiming A as its parent. A already exists, so this resolves
+        # immediately and B.parent_session_id is projected to A.
+        session_b = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="B",
+            title="B",
+            parent_session_provider_id="A",
+            messages=[_msg("b0", Role.USER, "child of A", 0)],
+        )
+        b_id = write_fixture_index_session(conn, session_b)
+        assert (
+            conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (b_id,)).fetchone()[0] == a_id
+        )
 
-    # The closing edge (A -> B) must be quarantined, not silently resolved.
-    link = _link_row(conn, a_id)
-    assert link["status"] == TopologyEdgeStatus.QUARANTINED.value
-    assert link["resolved_dst_session_id"] is None
-    evidence = json.loads(link["evidence_json"])
-    assert evidence["reason"] == "cycle_rejected"
-    assert a_id in evidence["cycle_path"]
-    assert b_id in evidence["cycle_path"]
+        # 3. A is re-ingested (a corrupted/scrambled export re-asserting lineage)
+        # now claiming B as ITS parent -- closing a two-node cycle A -> B -> A.
+        session_a_v2 = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="A",
+            title="A",
+            parent_session_provider_id="B",
+            messages=[
+                _msg("a-copy-b0", Role.USER, "child of A", 0),
+                _msg("a1", Role.ASSISTANT, "revised", 1),
+            ],
+        )
+        write_fixture_index_session(conn, session_a_v2, force_replace=True)
 
-    # Anti-vacuity: the first A message exactly matches B's full stored
-    # transcript. Without the pre-normalization cycle check, the writer slices
-    # it as an inherited prefix before quarantining A -> B, and both production
-    # readers then serve only the second message.
-    own_message_ids = [
-        str(row[0])
-        for row in conn.execute(
-            "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position, variant_index",
-            (a_id,),
-        ).fetchall()
-    ]
-    assert len(own_message_ids) == 2
-    quarantined_envelope = read_archive_session_envelope(conn, a_id)
-    assert [message.message_id for message in quarantined_envelope.messages] == own_message_ids
+        # The closing edge (A -> B) must be quarantined, not silently resolved.
+        link = _link_row(conn, a_id)
+        assert link["status"] == TopologyEdgeStatus.QUARANTINED.value
+        assert link["resolved_dst_session_id"] is None
+        evidence = json.loads(link["evidence_json"])
+        assert evidence["reason"] == "cycle_rejected"
+        assert a_id in evidence["cycle_path"]
+        assert b_id in evidence["cycle_path"]
+
+        # Anti-vacuity: the first A message exactly matches B's full stored
+        # transcript. Without the pre-normalization cycle check, the writer slices
+        # it as an inherited prefix before quarantining A -> B, and both production
+        # readers then serve only the second message.
+        own_message_ids = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+                (a_id,),
+            ).fetchall()
+        ]
+        assert len(own_message_ids) == 2
+        quarantined_envelope = read_archive_session_envelope(conn, a_id)
+        assert [message.message_id for message in quarantined_envelope.messages] == own_message_ids
+        link_row = dict(link)
+        conn.close()
+        return a_id, b_id, own_message_ids, link_row
+
+    a_id, b_id, own_message_ids, link = run_off_event_loop(_write_and_check)
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
     async with aiosqlite.connect(db) as reader:
         reader.row_factory = sqlite3.Row
         async_messages = await get_messages(reader, a_id)
@@ -243,7 +258,7 @@ def test_self_referential_edge_quarantines_without_touching_projection(tmp_path:
         title="self-loop",
         messages=[_msg("s0", Role.USER, "start", 0)],
     )
-    session_id = write_parsed_session_to_archive(conn, session_v1)
+    session_id = write_fixture_index_session(conn, session_v1)
 
     session_v2 = ParsedSession(
         source_name=Provider.CODEX,
@@ -252,7 +267,7 @@ def test_self_referential_edge_quarantines_without_touching_projection(tmp_path:
         parent_session_provider_id="self-loop",
         messages=[_msg("s0", Role.USER, "start", 0), _msg("s1", Role.ASSISTANT, "claims itself as parent", 1)],
     )
-    write_parsed_session_to_archive(conn, session_v2, force_replace=True)
+    write_fixture_index_session(conn, session_v2, force_replace=True)
 
     link = _link_row(conn, session_id)
     assert link["status"] == TopologyEdgeStatus.QUARANTINED.value
@@ -292,7 +307,7 @@ def test_child_first_mutual_parent_pair_quarantines_the_closing_edge(tmp_path: P
         parent_session_provider_id="mutual-B",
         messages=[_msg("a0", Role.USER, "a body", 0)],
     )
-    a_id = write_parsed_session_to_archive(conn, session_a)
+    a_id = write_fixture_index_session(conn, session_a)
     assert _link_row(conn, a_id)["resolved_dst_session_id"] is None
     assert conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (a_id,)).fetchone()[0] is None
 
@@ -305,7 +320,7 @@ def test_child_first_mutual_parent_pair_quarantines_the_closing_edge(tmp_path: P
         parent_session_provider_id="mutual-A",
         messages=[_msg("b0", Role.USER, "b body", 0)],
     )
-    b_id = write_parsed_session_to_archive(conn, session_b)
+    b_id = write_fixture_index_session(conn, session_b)
 
     closing = _link_row(conn, a_id)
     assert closing["status"] == TopologyEdgeStatus.QUARANTINED.value
@@ -362,14 +377,14 @@ def test_a_walk_stopped_by_a_foreign_loop_is_not_recorded_as_a_cycle_and_keeps_p
         title="deep parent",
         messages=[_msg("p0", Role.USER, "copied parent prefix", 0)],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_fixture_index_session(conn, parent)
     child_v1 = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="deep-child",
         title="deep child",
         messages=[_msg("c0", Role.USER, "original child", 0)],
     )
-    child_id = write_parsed_session_to_archive(conn, child_v1)
+    child_id = write_fixture_index_session(conn, child_v1)
 
     for position in range(1024, 0, -1):
         native_id = f"deep-{position}"
@@ -390,6 +405,8 @@ def test_a_walk_stopped_by_a_foreign_loop_is_not_recorded_as_a_cycle_and_keeps_p
         "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
         ("codex-session:deep-1", parent_id),
     )
+    # The fixture writer opens its own Index mutation scope before BEGIN.
+    conn.commit()
 
     child_v2 = ParsedSession(
         source_name=Provider.CODEX,
@@ -401,7 +418,7 @@ def test_a_walk_stopped_by_a_foreign_loop_is_not_recorded_as_a_cycle_and_keeps_p
             _msg("c1", Role.ASSISTANT, "child tail", 1),
         ],
     )
-    write_parsed_session_to_archive(conn, child_v2, force_replace=True)
+    write_fixture_index_session(conn, child_v2, force_replace=True)
 
     link = _link_row(conn, child_id)
     evidence = json.loads(link["evidence_json"])
@@ -442,7 +459,7 @@ def test_quarantined_alternate_parent_does_not_invalidate_resolved_projection(tm
         title="A",
         messages=[_msg("a0", Role.USER, "root A", 0)],
     )
-    a_id = write_parsed_session_to_archive(conn, session_a)
+    a_id = write_fixture_index_session(conn, session_a)
     session_b_v1 = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="multi-B",
@@ -450,7 +467,7 @@ def test_quarantined_alternate_parent_does_not_invalidate_resolved_projection(tm
         parent_session_provider_id="multi-A",
         messages=[_msg("b0", Role.USER, "B follows A", 0)],
     )
-    b_id = write_parsed_session_to_archive(conn, session_b_v1)
+    b_id = write_fixture_index_session(conn, session_b_v1)
     session_c = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="multi-C",
@@ -458,7 +475,7 @@ def test_quarantined_alternate_parent_does_not_invalidate_resolved_projection(tm
         parent_session_provider_id="multi-B",
         messages=[_msg("c0", Role.USER, "C follows B", 0)],
     )
-    write_parsed_session_to_archive(conn, session_c)
+    write_fixture_index_session(conn, session_c)
 
     session_b_v2 = ParsedSession(
         source_name=Provider.CODEX,
@@ -467,7 +484,7 @@ def test_quarantined_alternate_parent_does_not_invalidate_resolved_projection(tm
         parent_session_provider_id="multi-C",
         messages=[_msg("b1", Role.USER, "B asserts unsafe alternate C", 0)],
     )
-    write_parsed_session_to_archive(conn, session_b_v2, merge_append=True)
+    write_fixture_index_session(conn, session_b_v2, merge_append=True)
 
     links = conn.execute(
         "SELECT dst_native_id, status FROM session_links WHERE src_session_id = ? ORDER BY dst_native_id",
@@ -495,7 +512,7 @@ def test_diamond_dag_is_not_mistaken_for_a_cycle(tmp_path: Path) -> None:
         title="D",
         messages=[_msg("d0", Role.USER, "root", 0)],
     )
-    d_id = write_parsed_session_to_archive(conn, session_d)
+    d_id = write_fixture_index_session(conn, session_d)
 
     session_b = ParsedSession(
         source_name=Provider.CODEX,
@@ -504,7 +521,7 @@ def test_diamond_dag_is_not_mistaken_for_a_cycle(tmp_path: Path) -> None:
         parent_session_provider_id="D",
         messages=[_msg("b0", Role.USER, "child of D", 0)],
     )
-    b_id = write_parsed_session_to_archive(conn, session_b)
+    b_id = write_fixture_index_session(conn, session_b)
 
     session_c = ParsedSession(
         source_name=Provider.CODEX,
@@ -513,7 +530,7 @@ def test_diamond_dag_is_not_mistaken_for_a_cycle(tmp_path: Path) -> None:
         parent_session_provider_id="D",
         messages=[_msg("c0", Role.USER, "also child of D", 0)],
     )
-    c_id = write_parsed_session_to_archive(conn, session_c)
+    c_id = write_fixture_index_session(conn, session_c)
 
     for child_id in (b_id, c_id):
         link = _link_row(conn, child_id)

@@ -33,6 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from polylogue.surfaces.payloads import AssertionCandidateQueueHealthPayload
+from tests.infra.archive_templates import run_off_event_loop
 
 _DAY_MS = 24 * 60 * 60 * 1000
 
@@ -46,9 +47,14 @@ def _config(root: Path) -> Config:
     )
 
 
-def _initialize(root: Path) -> Config:
+def _initialize_on_writer(root: Path) -> Config:
     initialize_active_archive_root(root)
     return _config(root)
+
+
+def _initialize(root: Path) -> Config:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _initialize_on_writer(root))
 
 
 def test_empty_queue_is_unverified_without_producer_and_scheduler_evidence(tmp_path: Path) -> None:

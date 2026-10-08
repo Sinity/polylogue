@@ -17,11 +17,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Generic, TypeAlias, TypeVar
-
-T = TypeVar("T")
-T_co = TypeVar("T_co", covariant=True)
-R = TypeVar("R")
 
 __all__ = [
     "Degraded",
@@ -36,10 +31,10 @@ __all__ = [
 
 
 @dataclass(frozen=True, slots=True)
-class Measured(Generic[T_co]):
+class Measured[T]:
     """The store answered and the answer is ``value``."""
 
-    value: T_co
+    value: T
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,18 +54,18 @@ class Unavailable:
 
 
 @dataclass(frozen=True, slots=True)
-class Degraded(Generic[T_co]):
+class Degraded[T]:
     """The store answered partially; ``value`` is that partial answer."""
 
-    value: T_co
+    value: T
     reason: str
     detail: str | None = None
 
 
-Evidence: TypeAlias = Measured[T] | Empty | Unavailable | Degraded[T]
+type Evidence[T] = Measured[T] | Empty | Unavailable | Degraded[T]
 
 
-def resolve(
+def resolve[T, R](
     evidence: Evidence[T],
     *,
     measured: Callable[[T], R],
@@ -101,7 +96,7 @@ def evidence_state(evidence: Evidence[object]) -> str:
     )
 
 
-def measured_or_none(evidence: Evidence[T]) -> T | None:
+def measured_or_none[T](evidence: Evidence[T]) -> T | None:
     """Yield the value only where ``None`` is itself a reported absence.
 
     The one escape hatch, and it is not a default: every non-value case

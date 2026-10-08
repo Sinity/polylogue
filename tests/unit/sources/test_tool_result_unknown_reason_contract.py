@@ -29,7 +29,7 @@ from polylogue.core.enums import BlockType, Origin, Provider, ToolOutcome, ToolR
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.dispatch import detect_provider
 from polylogue.sources.origin_specs import origin_specs, tool_outcome_unknown_reasons_for_origin
-from polylogue.sources.parsers.antigravity import looks_like_trajectory_db_path, parse_trajectory_db
+from polylogue.sources.parsers.antigravity import looks_like_trajectory_db_path
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
@@ -39,6 +39,7 @@ from polylogue.sources.parsers.codex import looks_like as codex_looks_like
 from polylogue.sources.parsers.codex import parse as parse_codex
 from polylogue.sources.parsers.drive import looks_like as drive_looks_like
 from polylogue.sources.parsers.drive import parse_chunked_prompt
+from polylogue.sources.parsers.grok import parse_native_response_stream
 from polylogue.sources.parsers.local_agent import (
     looks_like_gemini_cli,
     looks_like_hermes,
@@ -46,12 +47,12 @@ from polylogue.sources.parsers.local_agent import (
     parse_hermes,
 )
 from polylogue.sources.parsers.otel_genai import parse as parse_otel_genai
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import (
-    read_archive_session_envelope,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+from tests.infra.antigravity_parser import parse_trajectory_db
+from tests.infra.index_writer import write_fixture_index_session
 
 NOT_REPORTED = ToolResultUnknownReason.NOT_REPORTED.value
 DISTRUSTED = ToolResultUnknownReason.DISTRUSTED.value
@@ -63,7 +64,10 @@ _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    # Each Index gets its own archive root: the fixture writer owns exactly
+    # one active Index per root.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -106,7 +110,24 @@ def _action_states(conn: sqlite3.Connection, session_id: str) -> list[tuple[str 
 
 
 def _write(conn: sqlite3.Connection, session: ParsedSession) -> str:
-    return write_parsed_session_to_archive(conn, session)
+    return write_fixture_index_session(conn, session)
+
+
+def _grok_outcome(error: object = None, *, reported: bool = False) -> ParsedSession:
+    result: dict[str, object] = {"text": "original tool reply"}
+    if reported:
+        result["is_error"] = error
+    return parse_native_response_stream(
+        {"conversationId": "grok-outcome"},
+        [
+            {
+                "responseId": "response",
+                "sender": "assistant",
+                "toolResponses": [{"toolId": "call", "toolName": "search", "input": {}, **result}],
+            }
+        ],
+        "grok-outcome",
+    )
 
 
 # --------------------------------------------------------------------------
@@ -424,6 +445,20 @@ _ROUTES: tuple[tuple[str, Provider, Callable[[Path], ParsedSession], Triple, str
         "codex-unsupported-exit-code-type",
         Provider.CODEX,
         lambda _root: parse_codex(_codex_records('{"exit_code": "0"}'), "codex-outcome"),
+        (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
+        "outcome_unknown",
+    ),
+    (
+        "grok-absent-report",
+        Provider.GROK,
+        lambda _root: _grok_outcome(),
+        (ToolOutcome.UNKNOWN.value, None, NOT_REPORTED),
+        "outcome_unknown",
+    ),
+    (
+        "grok-unsupported-error-shape",
+        Provider.GROK,
+        lambda _root: _grok_outcome("maybe", reported=True),
         (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
         "outcome_unknown",
     ),
@@ -903,8 +938,8 @@ def test_clean_and_incremental_ingestion_produce_identical_triples(tmp_path: Pat
     independently pairs the fresh outcome with a stale ``is_error`` and the
     second read stops matching the first.
     """
-    clean = _connect(tmp_path / "clean.db")
-    incremental = _connect(tmp_path / "incremental.db")
+    clean = _connect(tmp_path / "clean" / "index.db")
+    incremental = _connect(tmp_path / "incremental" / "index.db")
     try:
         clean_id = _write(clean, _codex_session("plain output"))
         _write(incremental, _codex_session("plain output"))

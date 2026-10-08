@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, PassCursor, converge
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.sources import revision_backfill
@@ -30,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.write import rebuild_archive_messages_fts
 from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 from tests.infra.growth_budgets import GrowthObservation
+from tests.infra.prepared_replay import run_on_convergence_owner
 from tests.infra.sqlite_work_counter import mutating_statements, sqlite_work_counter
 
 _COMMENTED_REFRESHES = {
@@ -55,11 +57,18 @@ _COMMENTED_REFRESHES = {
 def _run(
     root: Path, *, limit: int, raw_ids: tuple[str, ...] = (), cursor: PassCursor | None = None
 ) -> DerivationReport:
-    return converge(
-        DerivationRegistry((RawObservationDerivation(root),)),
-        raw_observation_frame(root, raw_ids=raw_ids),
-        budget=Budget(page=limit, discovery=limit, inspection=2 * limit, compute=limit, publication=limit),
-        cursor=cursor,
+    return run_on_convergence_owner(
+        root,
+        "test.rebuild.converge",
+        lambda compute: converge(
+            DerivationRegistry((RawObservationDerivation(root, compute_adapter=compute),)),
+            raw_observation_frame(root, raw_ids=raw_ids),
+            budget=Budget(page=limit, discovery=limit, inspection=2 * limit, compute=limit, publication=limit),
+            # Each publication enters the owner's writer admission, as the
+            # daemon's derivation publisher does; preparation stays outside it.
+            publisher=admit_stage_write,
+            cursor=cursor,
+        ),
     )
 
 
@@ -108,6 +117,7 @@ def _seed_raw_archive(root: Path, count: int, *, prefix: str = "session") -> lis
                     provider=Provider.CODEX,
                     payload=_tool_call_payload(native_id),
                     source_path=f"{native_id}.jsonl",
+                    canonical_source_path=f"{native_id}.jsonl",
                     acquired_at_ms=index + 1,
                 )
             )
@@ -141,6 +151,7 @@ def _run_component_measurement(
                     provider=Provider.CODEX,
                     payload=_tool_call_payload(native_id),
                     source_path=f"{native_id}.jsonl",
+                    canonical_source_path=f"{native_id}.jsonl",
                     acquired_at_ms=archive_size + index + 1,
                 )
             )
@@ -619,16 +630,19 @@ def test_bounded_replay_work_is_batch_bounded_independent_of_backlog(
         root = tmp_path / f"batch-{archive_size}"
         _seed_raw_archive(root, archive_size, prefix="batch")
         selected_work = 0
-        original_backfill = revision_backfill.backfill_historical_revision_evidence
+        original_backfill = revision_backfill.apply_prepared_revision_replay
 
         def counted_backfill(*args: Any, _original: Any = original_backfill, **kwargs: Any) -> Any:
             nonlocal selected_work
             result = _original(*args, **kwargs)
-            selected_work += result.scanned
+            # The census commits in place during preparation, so the replay
+            # scans no census rows; its selected work is the logical sources
+            # it replays.
+            selected_work += result.replayed_logical_sources
             return result
 
         with monkeypatch.context() as mutation:
-            mutation.setattr(revision_backfill, "backfill_historical_revision_evidence", counted_backfill)
+            mutation.setattr(revision_backfill, "apply_prepared_revision_replay", counted_backfill)
             result = _run(root, limit=batch_size)
 
         assert result.done == batch_size
@@ -660,7 +674,7 @@ def test_mixed_hot_cold_large_small_components_all_receive_a_turn(
         )
         conn.commit()
 
-    original_backfill = revision_backfill.backfill_historical_revision_evidence
+    original_backfill = revision_backfill.apply_prepared_revision_replay
     attempted = Counter[str]()
 
     def fail_hot_component(*args: Any, **kwargs: Any) -> Any:
@@ -672,7 +686,7 @@ def test_mixed_hot_cold_large_small_components_all_receive_a_turn(
         return original_backfill(*args, **kwargs)
 
     with monkeypatch.context() as mutation:
-        mutation.setattr(revision_backfill, "backfill_historical_revision_evidence", fail_hot_component)
+        mutation.setattr(revision_backfill, "apply_prepared_revision_replay", fail_hot_component)
         cursor = None
         for _ in range(4):
             result = _run(root, limit=1, cursor=cursor)

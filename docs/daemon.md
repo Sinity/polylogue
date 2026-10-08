@@ -49,7 +49,19 @@ browser-capture spool, and hook-event carriers. Examples include:
 
 Every origin is acquired only from its canonical location: the provider
 tool's own directory, the hook spools and browser-capture spool under the
-archive root, and the archive inbox. There are no custom watch roots and no
+archive root, and the archive inbox. Each watch source declares its layout
+relative to its root (`polylogue/sources/source_layout.py`): the exact depth
+and position of every artifact kind, such as
+`<project>/<session>/subagents/agent-<id>.jsonl` under `~/.claude/projects`.
+Discovery descends only into directories that layout reaches and admits only
+files at a declared position. Anything else under a root, including a copy of
+the provider tree nested inside it (an agent worktree under
+`.claude/worktrees/`), is reported once as an `outside_declared_layout`
+excluded entry and is never walked or parsed. The live inotify watch follows the
+same layouts: it is installed only on directories a layout reaches and is
+re-armed when a new reachable directory (a fresh session's `subagents/`) appears.
+Antigravity's CLI trajectory stores are watched at
+`~/.gemini/antigravity-cli/conversations/<id>.db`. There are no custom watch roots and no
 way to narrow the watch set. A tool whose logs live elsewhere is followed by
 a symlink at its canonical path. Account exports (ChatGPT, Claude, Gemini) are
 imported deliberately with `polylogue import <path>`, which stages them in the
@@ -345,7 +357,7 @@ Every request the daemon executes carries an admission class:
 `interactive-read` for reads, `control` for routes holding the writer lease,
 `incremental-background` and `bulk-candidate` for work behind the interactive
 surface. One bounded scheduler admits them all
-(`polylogue/daemon/execution.py`).
+(`polylogue/core/compute.py`).
 
 Each class holds a reserve of work units and worker slots that no other class
 may take, so bulk work cannot consume the capacity an interactive read or a
@@ -755,31 +767,50 @@ convergence debt, cursor commits) that are not individually admitted, and
 process-wide lease enforcement refuses an unadmitted write. Convergence,
 embedding and session-profile work already runs outside it.
 
-The hold's declared bound is read at item boundaries (before each file is
-acquired, between archive records), never inside one. Past the bound the pass
-takes no new file: work already acquired or committed is finished and its
-cursor recorded, the unit reports the spent hold, and the files it did not
-reach stay backlog with no failure count. A file whose own acquisition or
-write outlasts the bound therefore lands in one pass instead of being
-re-acquired and refused on every pass. Only a hold already spent before the
-pass acquired anything ends the unit with `WriteHoldBudgetError`.
+Writer hold thresholds are telemetry. A slow acquired item finishes and
+publishes its cursor even after its actor threshold passes. An explicit
+`max_pass_seconds` schedules later items as backlog at item boundaries;
+it does not turn completed acquisition or append work into failure.
 
 Hook capture rides the same route: producers append to per-process NDJSON
 carriers, which are ordinary files in their own `hook_carrier` intake class.
 
-JSON and JSONL files are prepared off the writer hold by the watcher's parse
-stage (`polylogue/sources/live/parse_prefetch.py`). A worker copies the file
-into its attempt scratch first and samples the provider, finds the JSONL
-frontier and parses from that copy, so the carrier's digest and its provider
-describe one revision; the writer accepts a carrier only when its own capture
-hashes the same. When a JSON document the stage prepared has no carrier for
-its captured bytes (the file changed after preparation, or preparation was
-deferred), the writer does not decode the capture to classify it: it releases
-that capture, reports `live.ingest.json_capture_deferred`, and defers the path
-to a later pass whose preparation matches what it captures. A complete JSONL
-record that does not decode is refused for every provider: the raw is retained
-with `terminal_corrupt_input` evidence (`terminal_unknown_json_decode` for an
-unknown provider) instead of being skipped on the way to the cursor frontier.
+JSON and JSONL files are captured first and prepared afterwards. The
+writer's full-ingest pass (`polylogue/sources/live/batch.py`) retains each
+file's bytes and records its raw row; it does not parse them. After that
+writer has returned, the batch hands the acquired raw IDs to the daemon's
+raw-observation owner (`RawObservationConvergenceOwner.ingest_retained_raw_ids`
+in `polylogue/daemon/raw_observation_owner.py`, with its archive work in
+`polylogue/operations/raw_observation_owner.py`). In acquire-only degraded
+mode, where live ingest must not read derived tiers, the pass stops after
+capture.
+
+The owner opens the selected destination (the active index, or the cold-build
+generation) and then prepares each raw, together with the Claude Code sidecar
+owners it implies, on a bounded compute worker from the retained bytes, never
+from the live file. Each raw publishes through one admitted writer stage.
+Preparation and publication see the same retained revision, so a file that
+changes after capture is a new raw on a later pass. A raw that first needs
+Source census or classification publishes that phase and is prepared again;
+a phase that leaves its original inputs unchanged is a retryable error, not a
+loop. A complete JSONL record or JSON document that does not decode is refused
+with terminal evidence: `terminal_corrupt_input`, or
+`terminal_unknown_json_decode` for an unknown provider
+(`terminal_decode_evidence` in `polylogue/sources/prepared_jsonl.py`). Live
+intake and retained replay apply that same rule. An unterminated JSONL tail is
+excluded from the parsed prefix rather than refused.
+
+Any other failure while preparing one raw is that raw's retryable outcome and
+does not stop the page (`retained_replay_operation` in
+`polylogue/operations/raw_observation_owner.py`). The replay returns a
+`RetainedReplayOutcome`: the receipts of the raws that published and one
+`RetainedRawRetryableFailure` per failed raw. A preparation that fails while
+censusing the page's identity-opaque siblings is prepared again with a frame of
+that raw alone, so one sibling's fault cannot block the others. The live batch
+fails only the failed raw's path, so its cursor retries it next pass, and emits
+`live.ingest.retained_preparation_failed`. Cancellation, compute backpressure,
+a missing writer, SQLite errors, storage faults and failed cleanup still stop
+the page.
 
 An archive storage fault -- a full disk or quota, an I/O error, a corrupt
 database page, a read-only mount, or attachment bytes a parse worker published
@@ -864,30 +895,28 @@ See `polylogue/config.py` (`judgment_automation_enabled`/`_interval_s`/
 `_batch_limit`/`_policy`) and [configuration.md](configuration.md) for the
 full key reference.
 
-### Free-Threaded (3.14t) Parse Parallelism
+### Shared pure compute
 
-Retained-raw census parse (`stream_retained_raws` in
-`polylogue/sources/revision_backfill.py`) dispatches `census_parse_worker`
-onto a bounded `ThreadPoolExecutor` only when the caller asks for more than
-one worker and `parallel_threads_effective()`
-(`polylogue/pipeline/services/process_pool.py`) reports a genuinely
-free-threaded interpreter (`sys._is_gil_enabled()` is false). On a standard
-GIL build it parses sequentially — polylogue-7mtf's control run measured
-GIL-build parse threads at 0.93x-0.96x (no win, pure lock overhead) while
-inflating a *concurrent* SQLite writer thread's commit latency ~5000x, so
-threads must never engage under the GIL. `polylogued.service` runs on the
-free-threaded `polylogue-freethreaded` (`python3.14t`) package build in
-production.
+CPython 3.14t is the production runtime. Pure parsing, source evidence
+collection, validation, retained preparation and insight calculation use the
+process-wide `BoundedComputeAdapter` in `polylogue/core/compute.py`. Every
+submitted unit declares its admission class and estimated bytes; the same
+scheduler reserves capacity for control, interactive reads and background
+work. Caller window settings narrow outstanding units without creating
+another executor. Nested pure units run synchronously under their parent's
+reservation, including on a one-worker adapter.
 
-**Measured evidence** (`tests/benchmarks/test_parse_stage_thread_scaling.py`,
-run against a synthetic 240-raw/~80KB-avg Codex corpus on this host's
-free-threaded `python3.14t` build): sequential parse 0.19s vs
-thread-parallel parse (16 workers) 0.031s — **6.13x** wall-clock speedup,
-consistent with polylogue-7mtf's own 3.9x-9.6x (w=4..16) control-run range.
-Re-run with `pytest tests/benchmarks/test_parse_stage_thread_scaling.py
---benchmark-enable -p no:xdist -v -s` against
-`POLYLOGUE_ARCHIVE_ROOT` pointed at a scratch directory (never the live
-archive) to reproduce.
+Cancellation is cooperative at record and byte-chunk boundaries. An accepted
+unit keeps its physical future and reservation until its work and native SQL
+cleanup settle on the creating worker. A failed native close remains visible
+in the adapter's settlement inventory; explicit retry or shutdown requests
+cleanup on that worker. Caller scratch remains owned until this drain ends.
+Elapsed stall reports do not turn slow valid work into a parse failure.
+
+The separate archive read adapter owns already-admitted SQLite I/O and its
+native handles. Observation, transport and control workers retain their
+specific I/O duties. Runtime capacity measurements are tracked separately
+from these ownership and admission contracts.
 
 ### SQLite memory budget
 

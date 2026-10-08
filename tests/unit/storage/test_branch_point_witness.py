@@ -17,25 +17,33 @@ materializing on every relocation cannot pass.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, Provider, WebConstructType
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import (
+    ParsedContentBlock,
+    ParsedFileEdit,
+    ParsedMessage,
+    ParsedSession,
+    ParsedWebConstruct,
+)
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     count_dangling_prefix_branch_points,
     read_archive_session_envelope,
-    write_parsed_session_to_archive,
 )
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -71,6 +79,69 @@ def _session(session_id: str, pairs: list[tuple[str, str]], *, parent: str | Non
     )
 
 
+def _witness_session(
+    session_id: str,
+    *,
+    extra_kind: str,
+    extra_value: str,
+    parent: str | None = None,
+) -> ParsedSession:
+    """Build the same branch transcript while changing one hashed block field."""
+    if extra_kind == "metadata":
+        block = ParsedContentBlock(type=BlockType.TEXT, text="m1", metadata={"revision": extra_value})
+    elif extra_kind == "file_edit":
+        block = ParsedContentBlock(
+            type=BlockType.TOOL_RESULT,
+            text="m1",
+            tool_id="edit-1",
+            is_error=False,
+            file_edit=ParsedFileEdit(file_path="/tmp/witness.py", old_string=extra_value, new_string="after"),
+        )
+    elif extra_kind == "web_constructs":
+        block = ParsedContentBlock(
+            type=BlockType.TEXT,
+            text="m1",
+            web_constructs=[ParsedWebConstruct(construct_type=WebConstructType.CONTENT_REFERENCE, url=extra_value)],
+        )
+    else:
+        raise AssertionError(extra_kind)
+    return ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=session_id,
+        title=session_id,
+        parent_session_provider_id=parent,
+        branch_type=BranchType.FORK if parent is not None else None,
+        messages=[
+            _message("m0", "m0", 0),
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                text="m1",
+                position=1,
+                variant_index=0,
+                is_active_path=True,
+                is_active_leaf=False,
+                blocks=[block],
+            ),
+            _message("x", "x", 2),
+        ]
+        if parent is not None
+        else [
+            _message("m0", "m0", 0),
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                text="m1",
+                position=1,
+                variant_index=0,
+                is_active_path=True,
+                is_active_leaf=False,
+                blocks=[block],
+            ),
+        ],
+    )
+
+
 def _edge(conn: sqlite3.Connection, child_id: str) -> tuple[str, bytes]:
     row = conn.execute(
         "SELECT branch_point_message_id, branch_point_content_address FROM session_links WHERE src_session_id = ?",
@@ -89,6 +160,48 @@ def _composed(conn: sqlite3.Connection, session_id: str) -> tuple[list[str | Non
 
 
 class TestBranchPointWitness:
+    def test_exact_hashed_block_fields_invalidate_the_branch_witness(self, tmp_path: Path) -> None:
+        """Metadata, edits, and web constructs all participate in the witness."""
+        for extra_kind in ("metadata", "file_edit", "web_constructs"):
+            root = tmp_path / extra_kind
+            root.mkdir()
+            db = root / "index.db"
+            conn = _connect(db)
+            try:
+                parent = _witness_session("parent", extra_kind=extra_kind, extra_value="before")
+                child = _witness_session("child", extra_kind=extra_kind, extra_value="before", parent="parent")
+                write_fixture_index_session(conn, parent)
+                child_id = write_fixture_index_session(conn, child)
+                conn.commit()
+                assert _composed(conn, child_id) == (["m0", "m1", "x"], True, None)
+
+                write_fixture_index_session(
+                    conn,
+                    _witness_session("parent", extra_kind=extra_kind, extra_value="after"),
+                )
+                conn.commit()
+
+                edge = conn.execute(
+                    "SELECT inheritance FROM session_links WHERE src_session_id = ?", (child_id,)
+                ).fetchone()
+                assert edge is not None and edge[0] == "spawned-fresh"
+                composed = read_archive_session_envelope(conn, child_id)
+                branch_message = composed.messages[1]
+                block = branch_message.blocks[0]
+                row = conn.execute(
+                    "SELECT semantic_extra_json FROM blocks WHERE block_id = ?", (block.block_id,)
+                ).fetchone()
+                assert row is not None and row[0] is not None
+                extras = json.loads(row[0])
+                if extra_kind == "metadata":
+                    assert extras["metadata"] == {"revision": "before"}
+                elif extra_kind == "file_edit":
+                    assert extras["file_edit"]["old_string"] == "before"
+                else:
+                    assert extras["web_constructs"][0]["url"] == "before"
+            finally:
+                conn.close()
+
     def test_witness_mismatch_keeps_the_childs_own_content(self, tmp_path: Path) -> None:
         """A same-id, different-content candidate is not this child's branch point.
 
@@ -101,9 +214,9 @@ class TestBranchPointWitness:
         cursor = CursorStore(db)
         conn = _connect(db)
         try:
-            write_parsed_session_to_archive(conn, _session("gp", [("m0", "m0"), ("m1", "other-m1")]))
-            write_parsed_session_to_archive(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")]))
-            child_id = write_parsed_session_to_archive(
+            write_fixture_index_session(conn, _session("gp", [("m0", "m0"), ("m1", "other-m1")]))
+            write_fixture_index_session(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")]))
+            child_id = write_fixture_index_session(
                 conn, _session("child", [("m0", "m0"), ("m1", "m1"), ("x", "x")], parent="parent")
             )
             conn.commit()
@@ -111,7 +224,7 @@ class TestBranchPointWitness:
             assert anchored_id == "codex-session:parent:n:m1"
             assert _composed(conn, child_id) == (["m0", "m1", "x"], True, None)
 
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn, _session("parent", [("m0", "m0"), ("m1", "other-m1"), ("m2", "m2")], parent="gp")
             )
             conn.commit()
@@ -138,14 +251,14 @@ class TestBranchPointWitness:
         cursor = CursorStore(db)
         conn = _connect(db)
         try:
-            write_parsed_session_to_archive(conn, _session("gp", [("m0", "m0"), ("m1", "m1")]))
-            write_parsed_session_to_archive(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")]))
-            child_id = write_parsed_session_to_archive(
+            write_fixture_index_session(conn, _session("gp", [("m0", "m0"), ("m1", "m1")]))
+            write_fixture_index_session(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")]))
+            child_id = write_fixture_index_session(
                 conn, _session("child", [("m0", "m0"), ("m1", "m1"), ("x", "x")], parent="parent")
             )
             conn.commit()
 
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")], parent="gp")
             )
             conn.commit()
@@ -157,3 +270,38 @@ class TestBranchPointWitness:
             assert _composed(conn, child_id) == (["m0", "m1", "x"], True, None)
         finally:
             conn.close()
+
+
+def test_initial_child_semantic_difference_is_never_discarded_as_a_parent_prefix(tmp_path: Path) -> None:
+    """A complete witness must authorize alignment before any child row is dropped."""
+    from polylogue.core.enums import Origin
+    from polylogue.pipeline.ids import message_semantic_content_address
+    from polylogue.sources.tool_outcomes import derive_tool_outcomes
+
+    for kind in ("metadata", "file_edit", "web_constructs"):
+        root = tmp_path / kind
+        root.mkdir()
+        connection = _connect(root / "index.db")
+        try:
+            parent = _witness_session("parent", extra_kind=kind, extra_value="parent")
+            child = _witness_session("child", extra_kind=kind, extra_value="child", parent="parent")
+            write_fixture_index_session(connection, parent)
+            child_id = write_fixture_index_session(connection, child)
+            connection.commit()
+            edge = connection.execute(
+                "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?", (child_id,)
+            ).fetchone()
+            assert edge[0] == "codex-session:parent:n:m0"
+            row = connection.execute(
+                "SELECT content_address FROM messages WHERE session_id = ? AND native_id = 'm1'", (child_id,)
+            ).fetchone()
+            # The writer stores the witness of the canonically normalized
+            # message (derived tool outcomes included), the same operand the
+            # parent's rows and the child's alignment use.
+            stored_child = derive_tool_outcomes(child.messages, child.session_events, origin=Origin.CODEX_SESSION)
+            stored_parent = derive_tool_outcomes(parent.messages, parent.session_events, origin=Origin.CODEX_SESSION)
+            assert bytes(row[0]) == message_semantic_content_address(stored_child[1])
+            assert bytes(row[0]) != message_semantic_content_address(stored_parent[1])
+            assert _composed(connection, child_id) == (["m0", "m1", "x"], True, None)
+        finally:
+            connection.close()

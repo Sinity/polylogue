@@ -486,6 +486,40 @@ class TestConfiguredSources:
         assert "claude-code-todos" in names
         assert "claude-code" not in names  # sibling ~/.claude/projects/ was never created
 
+    def test_claude_prompt_history_is_an_exact_discovered_source(self, tmp_path: Path) -> None:
+        from polylogue.config import get_sources, resolve_runtime_config
+
+        home = tmp_path / "home"
+        history = home / ".claude" / "history.jsonl"
+        history.parent.mkdir(parents=True)
+        history.write_text('{"display":"neutral prompt","sessionId":"neutral"}\n')
+        runtime = resolve_runtime_config(
+            environment={
+                "HOME": str(home),
+                "XDG_DATA_HOME": str(tmp_path / "data"),
+                "XDG_STATE_HOME": str(tmp_path / "state"),
+                "XDG_CONFIG_HOME": str(tmp_path / "config"),
+            }
+        )
+        assert runtime.source_paths.claude_code_history == history
+        discovered = {source.name: source.path for source in get_sources(runtime)}
+        assert discovered["claude-code-history"] == history
+        assert "claude-code" not in discovered
+        history.unlink()
+        assert "claude-code-history" not in {
+            source.name
+            for source in get_sources(
+                resolve_runtime_config(
+                    environment={
+                        "HOME": str(home),
+                        "XDG_DATA_HOME": str(tmp_path / "data"),
+                        "XDG_STATE_HOME": str(tmp_path / "state"),
+                        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+                    }
+                )
+            )
+        }
+
     def test_get_sources_includes_drive_source_when_credentials_exist(
         self,
         monkeypatch: pytest.MonkeyPatch,

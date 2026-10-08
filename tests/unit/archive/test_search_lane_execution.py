@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 
@@ -21,8 +21,10 @@ from polylogue.archive.query.execution_control import (
     QueryWorkBudgetExceededError,
 )
 from polylogue.archive.query.plan import SessionQueryPlan
+from polylogue.archive.query.search_contract import LaneFailure
 from polylogue.archive.query.search_hits import project_search_hits
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.cli.query_output import format_search_envelope
 from polylogue.config import Config, Source
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
@@ -132,6 +134,23 @@ async def test_actions_lane_count_counts_only_sessions_its_search_returns(lane_a
     assert await count_archive(plan, archive_root=root, config=None) == 2
     dialogue = replace(plan, retrieval_lane="dialogue")
     assert await count_archive(dialogue, archive_root=root, config=None) == 3
+
+
+@pytest.mark.asyncio
+async def test_post_filtered_count_streams_candidates_without_materializing_result_pages(
+    lane_archive: LaneArchive, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.archive.query.archive_execution as execution
+
+    root, _config, _ids = lane_archive
+
+    def refuse_materialized_list(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("count must stream its candidate batches")
+
+    monkeypatch.setattr(execution, "list_archive", refuse_materialized_list)
+    monkeypatch.setattr(execution, "list_summaries_archive", refuse_materialized_list)
+    plan = SessionQueryPlan(negative_terms=("ordinary conversation",), limit=1)
+    assert await count_archive(plan, archive_root=root, config=None) == 2
 
 
 def test_spec_count_counts_only_sessions_its_actions_search_returns(lane_archive: LaneArchive) -> None:
@@ -310,6 +329,425 @@ async def test_degraded_hybrid_api_cursor_keeps_request_lane(
     assert second.hits and second.hits[0].session.id != first.hits[0].session.id
     assert second.executed_lanes == ("text", "action")
     assert second.unavailable_lanes == ("vector",)
+
+
+@pytest.mark.parametrize("reverse", (False, True))
+@pytest.mark.asyncio
+async def test_hybrid_explicit_date_cursor_follows_selected_order(
+    lane_archive: LaneArchive, reverse: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Date order may oppose RRF order, including on reverse pages."""
+    root, _config, ids = lane_archive
+    # Relevance is action-one, action-two, dialogue. Date order is deliberately
+    # dialogue, action-one, action-two; reverse flips only the requested order.
+    with closing(sqlite3.connect(root / "index.db")) as connection:
+        for name, updated in (("dialogue", 300), ("action-one", 200), ("action-two", 100)):
+            connection.execute(
+                "UPDATE sessions SET updated_at_ms = ? WHERE session_id = ?",
+                (1_700_000_000_000 + updated * 1000, ids[name]),
+            )
+        connection.commit()
+    monkeypatch.setattr("polylogue.storage.search_providers.create_vector_provider", lambda *a, **k: None)
+    spec = SessionQuerySpec.from_params(
+        {"query": ("needle",), "retrieval_lane": "hybrid", "sort": "date", "reverse": reverse, "limit": 1},
+        strict=True,
+    )
+    names = ("dialogue", "action-one", "action-two") if not reverse else ("action-two", "action-one", "dialogue")
+    expected = [ids[name] for name in names]
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as facade:
+        page = await build_search_envelope_for_spec(facade, spec)
+        actual = [str(page.hits[0].session.id)]
+        while page.next_cursor is not None:
+            page = await build_search_envelope_for_spec(facade, replace(spec, cursor=page.next_cursor))
+            actual.extend(str(hit.session.id) for hit in page.hits)
+    assert actual == expected
+
+
+@pytest.mark.parametrize("reverse", (False, True))
+@pytest.mark.parametrize("query_text", (False, True))
+def test_random_post_filter_consumes_one_controlled_permutation(
+    lane_archive: LaneArchive, reverse: bool, query_text: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One random traversal sees every candidate once, even for one survivor."""
+    from polylogue.archive.query.archive_execution import _archive_summaries
+
+    root, config, ids = lane_archive
+    with open_operation_read(root) as pinned:
+        archive = pinned.archive
+        names = ("dialogue", "action-one", "action-two") if not reverse else ("action-two", "action-one", "dialogue")
+        expected_order = [ids[name] for name in names]
+        observed: list[str] = []
+        plan = SessionQueryPlan(sort="random", query_terms=("needle",) if query_text else ())
+        if query_text:
+            identities = archive.iter_session_identities(query="needle", limit=None, sort="date")
+            identity_by_id = {identity.session_id: identity for identity in identities}
+            controlled_identities = [identity_by_id[session_id] for session_id in expected_order]
+
+            def one_permutation(*_args: object, **_kwargs: object) -> Iterator[object]:
+                for identity in controlled_identities:
+                    observed.append(identity.session_id)
+                    yield identity
+
+            monkeypatch.setattr(archive, "iter_session_identities", one_permutation)
+        else:
+            all_rows = list(archive.iter_summaries(limit=None, offset=0, sort="date"))
+            summary_by_id = {row.session_id: row for row in all_rows}
+            controlled_summaries = [summary_by_id[session_id] for session_id in expected_order]
+
+            def one_permutation(*_args: object, **_kwargs: object) -> Iterator[object]:
+                for row in controlled_summaries:
+                    observed.append(row.session_id)
+                    yield row
+
+            monkeypatch.setattr(archive, "iter_summaries", one_permutation)
+
+        def reject_offset_pages(*_args: object, **_kwargs: object) -> list[object]:
+            raise AssertionError("random post-filter traversal must not issue fresh random OFFSET pages")
+
+        monkeypatch.setattr(archive, "list_summaries", reject_offset_pages)
+        monkeypatch.setattr(archive, "search_summaries", reject_offset_pages)
+        rows = _archive_summaries(
+            plan,
+            archive,
+            config=config,
+            archive_root=root,
+            default_limit=1,
+            complete=True,
+            keep=lambda batch: [row for row in batch if row.session_id == ids["action-one"]],
+        )
+    assert observed == expected_order
+    assert [row.session_id for row in rows] == [ids["action-one"]]
+
+
+def test_random_post_filter_streams_session_grain_candidates_across_batches(
+    lane_archive: LaneArchive, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Duplicate block hits collapse before paging; rejected sessions stream across batches."""
+    from polylogue.archive.query.archive_execution import _archive_summaries
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionIdentity
+
+    root, config, _ids = lane_archive
+    first = SessionBuilder(root / "index.db", "many-blocks").provider("codex").title("many blocks")
+    for index in range(501):
+        first.add_message(f"many-{index}", role="user", text="spillmarker")
+    first.save()
+    first_id = first.native_session_id()
+    second = SessionBuilder(root / "index.db", "last-block").provider("codex").title("last block")
+    second.add_message("one", role="user", text="spillmarker")
+    second.save()
+    second_id = second.native_session_id()
+
+    with open_operation_read(root) as pinned:
+        archive = pinned.archive
+        block_hits = list(archive.iter_search_summaries("spillmarker", limit=None, sort="date"))
+        assert sum(hit.session_id == first_id for hit in block_hits) == 501
+        assert sum(hit.session_id == second_id for hit in block_hits) == 1
+        actual_candidates = list(archive.iter_session_identities(query="spillmarker", limit=None, sort="date"))
+        assert {identity.session_id for identity in actual_candidates} == {first_id, second_id}
+
+        controlled = [
+            ArchiveSessionIdentity(session_id=f"codex-session:spill-{index:03d}", origin="codex-session")
+            for index in range(501)
+        ]
+        candidate_order = [identity.session_id for identity in controlled]
+        accepted_id = candidate_order[-1]
+        consumed: list[str] = []
+        base_summary = archive.read_summary(first_id)
+        read_summary = archive.read_summary
+
+        def one_random_permutation(*_args: object, **_kwargs: object) -> Iterator[object]:
+            for identity in controlled:
+                consumed.append(identity.session_id)
+                yield identity
+
+        def read_synthetic_summary(session_id: str) -> object:
+            if session_id.startswith("codex-session:spill-"):
+                return replace(base_summary, session_id=session_id)
+            return read_summary(session_id)
+
+        def reject_block_hit_stream(*_args: object, **_kwargs: object) -> Iterator[object]:
+            raise AssertionError("random post-filter search must stream unique session identities")
+            yield
+
+        monkeypatch.setattr(archive, "iter_session_identities", one_random_permutation)
+        monkeypatch.setattr(archive, "read_summary", read_synthetic_summary)
+        monkeypatch.setattr(archive, "iter_search_summaries", reject_block_hit_stream)
+        plan = SessionQueryPlan(sort="random", query_terms=("spillmarker",), negative_terms=("unused",), limit=2)
+        rows = _archive_summaries(
+            plan,
+            archive,
+            config=config,
+            archive_root=root,
+            default_limit=1,
+            keep=lambda batch: [row for row in batch if row.session_id == accepted_id],
+        )
+
+    assert consumed == candidate_order
+    assert [row.session_id for row in rows] == [accepted_id]
+
+
+@pytest.mark.asyncio
+async def test_session_list_page_and_total_share_one_snapshot(
+    lane_archive: LaneArchive, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concurrent delete after page selection cannot make its total disagree."""
+    from polylogue.archive.query import archive_execution
+
+    root, _config, ids = lane_archive
+    real_list = archive_execution._list_summaries_in_archive
+
+    def list_then_delete(plan: object, archive: object, **kwargs: object) -> list[SessionSummary]:
+        summaries = real_list(plan, archive, **kwargs)  # type: ignore[arg-type]
+        with closing(sqlite3.connect(root / "index.db")) as writer:
+            writer.execute("DELETE FROM sessions WHERE session_id = ?", (ids["dialogue"],))
+            writer.commit()
+        return summaries
+
+    monkeypatch.setattr(archive_execution, "_list_summaries_in_archive", list_then_delete)
+    spec = SessionQuerySpec.from_params({"limit": 10}, strict=True)
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as facade:
+        summaries, total = await facade.list_session_summaries_with_count(spec)
+        current_total = await facade.count_sessions()
+    assert len(summaries) == 3
+    assert total == 3
+    assert current_total == 2
+
+
+@pytest.mark.asyncio
+async def test_session_list_total_counts_content_filtered_scope_on_pinned_read(
+    lane_archive: LaneArchive,
+) -> None:
+    """A one-row page total still applies content filters to the whole scope."""
+    root, _config, _ids = lane_archive
+    excluded = SessionBuilder(root / "index.db", "excluded-content").provider("codex").title("excluded content")
+    excluded.add_message("secret", role="user", text="exclude this candidate")
+    excluded.save()
+    excluded_id = excluded.native_session_id()
+    spec = SessionQuerySpec.from_params({"exclude_text": ("exclude this candidate",), "limit": 1}, strict=True)
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as facade:
+        summaries, total = await facade.list_session_summaries_with_count(spec)
+    assert len(summaries) == 1
+    assert all(summary.id != excluded_id for summary in summaries)
+    assert total == 3
+
+
+@pytest.mark.parametrize("sort", ("messages", "tokens", "words", "longest"))
+@pytest.mark.parametrize("reverse", (False, True))
+def test_ranked_hybrid_numeric_sort_matches_full_session_metrics(
+    lane_archive: LaneArchive, sort: Literal["messages", "tokens", "words", "longest"], reverse: bool
+) -> None:
+    """Ranked summary ordering uses transcript metrics, even without vectors."""
+    from polylogue.archive.hydration import archive_envelope_to_session
+    from polylogue.archive.query.sorting import sort_sessions
+
+    root, _config, ids = lane_archive
+    with closing(sqlite3.connect(root / "index.db")) as connection:
+        for name, token_count in (("dialogue", 30), ("action-one", 5), ("action-two", 5)):
+            connection.execute("UPDATE messages SET input_tokens = ? WHERE session_id = ?", (token_count, ids[name]))
+        connection.commit()
+    long_session = (
+        SessionBuilder(root / "index.db", "many-old").provider("codex").updated_at("2020-01-01T00:00:00+00:00")
+    )
+    for ordinal in range(7):
+        long_session.add_message(f"long-{ordinal}", text="needle " + "word " * 20, input_tokens=100)
+    long_session_id = long_session.native_session_id()
+    long_session.save()
+    plan = SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid", sort=sort, reverse=reverse)
+    with open_operation_read(root) as pinned:
+        all_sessions = [
+            archive_envelope_to_session(pinned.archive.read_session(session_id))
+            for session_id in (*ids.values(), long_session_id)
+        ]
+        for session in all_sessions:
+            messages = list(session.messages)
+            measured = any(
+                message.input_tokens is not None
+                or message.output_tokens is not None
+                or message.cache_read_tokens is not None
+                or message.cache_write_tokens is not None
+                for message in messages
+            )
+            tokens = sum(
+                (message.input_tokens or 0)
+                + (message.output_tokens or 0)
+                + (message.cache_read_tokens or 0)
+                + (message.cache_write_tokens or 0)
+                for message in messages
+            )
+            actual_metrics = pinned.archive.read_session_sort_metrics(str(session.id), sort="words")
+            expected_metrics = (
+                len(messages),
+                sum(message.word_count for message in messages),
+                max((message.word_count for message in messages), default=0),
+                measured,
+                tokens,
+            )
+            assert actual_metrics == expected_metrics, (session.id, actual_metrics, expected_metrics)
+        expected = [str(session.id) for session in sort_sessions(plan, all_sessions)]
+        result = archive_search_hits(
+            plan,
+            archive_root=root,
+            config=None,
+            archive=pinned.archive,
+            vector_failure=LaneFailure("vector", "unavailable", "test", "synthetic lexical-only case"),
+        )
+    assert [hit.session_id for hit, _summary in result.hits] == expected
+    assert result.execution.executed_lanes == ("text", "action")
+
+
+@pytest.mark.parametrize("reverse", (False, True))
+def test_ranked_numeric_sort_uses_composed_lineage_messages(lane_archive: LaneArchive, reverse: bool) -> None:
+    """A child's inherited prefix contributes to its ranked message count."""
+    from polylogue.archive.hydration import archive_envelope_to_session
+    from tests.infra.storage_records import SessionBuilder
+
+    root, _config, _ids = lane_archive
+    index = root / "index.db"
+    parent = SessionBuilder(index, "lineage-root").provider("codex").updated_at("2020-01-01T00:00:00+00:00")
+    for ordinal in range(5):
+        parent.add_message(f"parent-{ordinal}", text=f"inherited prefix {ordinal}")
+    parent.save()
+    child = (
+        SessionBuilder(index, "lineage-child")
+        .provider("codex")
+        .parent_session("ext-lineage-root")
+        .branch_type("continuation")
+        .updated_at("2021-01-01T00:00:00+00:00")
+    )
+    # Replaying the same native prefix is how the writer records a
+    # prefix-sharing edge and stores only the divergent tail.
+    for ordinal in range(5):
+        child.add_message(f"parent-{ordinal}", text=f"inherited prefix {ordinal}")
+    child.add_message("child-tail", text="needle child tail")
+    child_id = child.native_session_id()
+    child.save()
+    small_child = (
+        SessionBuilder(index, "lineage-small")
+        .provider("codex")
+        .parent_session("ext-lineage-root")
+        .branch_type("continuation")
+        .updated_at("2022-01-01T00:00:00+00:00")
+        .add_message("parent-0", text="inherited prefix 0")
+        .add_message("small-tail", text="needle small tail")
+    )
+    small_child_id = small_child.native_session_id()
+    small_child.save()
+    plan = SessionQueryPlan(
+        query_terms=("needle",), retrieval_lane="hybrid", sort="messages", reverse=reverse, root=False
+    )
+    with open_operation_read(root) as pinned:
+        composed = archive_envelope_to_session(pinned.archive.read_session(child_id))
+        messages = list(composed.messages)
+        assert len(messages) == 6
+        assert pinned.archive.read_session_sort_metrics(child_id, sort="words") == (
+            len(messages),
+            sum(message.word_count for message in messages),
+            max((message.word_count for message in messages), default=0),
+            any(
+                message.input_tokens is not None
+                or message.output_tokens is not None
+                or message.cache_read_tokens is not None
+                or message.cache_write_tokens is not None
+                for message in messages
+            ),
+            sum(
+                (message.input_tokens or 0)
+                + (message.output_tokens or 0)
+                + (message.cache_read_tokens or 0)
+                + (message.cache_write_tokens or 0)
+                for message in messages
+            ),
+        )
+        small_composed = archive_envelope_to_session(pinned.archive.read_session(small_child_id))
+        assert len(small_composed.messages) == 2
+        result = archive_search_hits(
+            plan,
+            archive_root=root,
+            config=None,
+            archive=pinned.archive,
+            vector_failure=LaneFailure("vector", "unavailable", "test", "synthetic lexical-only case"),
+        )
+    ordered = [hit.session_id for hit, _summary in result.hits]
+    assert ordered == ([child_id, small_child_id] if not reverse else [small_child_id, child_id]), ordered
+
+
+def test_ranked_word_sort_streams_chunk_boundaries_and_honors_cancellation(
+    lane_archive: LaneArchive, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ranked production route counts chunk-spanning words and cancels mid-block."""
+    from polylogue.archive.hydration import archive_envelope_to_session
+    from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext
+    from polylogue.archive.query.sorting import sort_sessions
+    from polylogue.storage.sqlite.archive_tiers.archive import SORT_METRIC_TEXT_CHUNK
+
+    root, _config, ids = lane_archive
+    long_word = "x" * (SORT_METRIC_TEXT_CHUNK + 7)
+    whale = (
+        SessionBuilder(root / "index.db", "chunk-boundary")
+        .provider("codex")
+        .updated_at("2020-01-01T00:00:00+00:00")
+        .add_message("large-block", text=f"needle {long_word} y")
+    )
+    whale_id = whale.native_session_id()
+    whale.save()
+    plan = SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid", sort="words")
+
+    with open_operation_read(root) as pinned:
+        actual_metrics = pinned.archive.read_session_sort_metrics(whale_id, sort="words")
+        assert actual_metrics[1:3] == (3, 3)
+        all_sessions = [
+            archive_envelope_to_session(pinned.archive.read_session(session_id))
+            for session_id in (*ids.values(), whale_id)
+        ]
+        expected = [str(session.id) for session in sort_sessions(plan, all_sessions)]
+        result = archive_search_hits(
+            plan,
+            archive_root=root,
+            config=None,
+            archive=pinned.archive,
+            vector_failure=LaneFailure("vector", "unavailable", "test", "synthetic lexical-only case"),
+        )
+    assert [hit.session_id for hit, _summary in result.hits] == expected
+
+    context = QueryExecutionContext(call_id="sort-metric-cancel", query_ref="synthetic-large-block")
+    checkpoints_inside_target_metrics = 0
+    with pytest.raises(QueryCancelledError):
+        with open_operation_read(root, execution_context=context) as pinned:
+            archive = pinned.archive
+            original_check = archive.check_operation_read
+            original_metrics = archive.read_session_sort_metrics
+            metric_session_active = False
+
+            def monitored_check() -> None:
+                nonlocal checkpoints_inside_target_metrics
+                original_check()
+                if metric_session_active:
+                    checkpoints_inside_target_metrics += 1
+                    if checkpoints_inside_target_metrics == 2:
+                        context.cancel()
+
+            def monitored_metrics(
+                session_id: str, *, sort: Literal["messages", "words", "longest", "tokens"]
+            ) -> tuple[int, int, int, bool, int]:
+                nonlocal metric_session_active
+                if session_id != whale_id:
+                    return original_metrics(session_id, sort=sort)
+                metric_session_active = True
+                try:
+                    return original_metrics(session_id, sort=sort)
+                finally:
+                    metric_session_active = False
+
+            monkeypatch.setattr(archive, "check_operation_read", monitored_check)
+            monkeypatch.setattr(archive, "read_session_sort_metrics", monitored_metrics)
+            archive_search_hits(
+                plan,
+                archive_root=root,
+                config=None,
+                archive=archive,
+                vector_failure=LaneFailure("vector", "unavailable", "test", "synthetic lexical-only case"),
+            )
+    assert checkpoints_inside_target_metrics >= 2
 
 
 def test_degraded_hybrid_daemon_cursor_keeps_request_lane(lane_archive: LaneArchive) -> None:

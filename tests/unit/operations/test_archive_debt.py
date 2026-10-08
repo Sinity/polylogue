@@ -16,11 +16,12 @@ from polylogue.operations import archive_debt as module
 from polylogue.operations.archive_debt import archive_debt_list
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
-    initialize_archive_database,
     initialize_archive_tier,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _write_tier_version(path: Path, version: int) -> None:
@@ -34,8 +35,7 @@ def _write_tier_version(path: Path, version: int) -> None:
 
 
 def _write_current_tier_files(root: Path) -> None:
-    for spec in ARCHIVE_TIER_SPECS.values():
-        initialize_archive_database(root / spec.filename, spec.tier)
+    bootstrap_archive_root(root)
 
 
 def test_archive_debt_reports_missing_required_tiers(tmp_path: Path) -> None:
@@ -326,6 +326,9 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
     source_file.write_text("{}", encoding="utf-8")
 
     with sqlite3.connect(source_db) as conn:
+        # This projection fixture declares the stored coordinate operand too;
+        # loose files have no container receipt.
+        conn.execute("CREATE TABLE raw_container_coordinates (raw_id TEXT PRIMARY KEY, captured_coordinate TEXT)")
         conn.execute(
             """
             CREATE TABLE raw_sessions (
@@ -702,16 +705,22 @@ def test_archive_debt_marks_oversized_stream_raw_materialization_actionable(tmp_
 def _seed_codex_model_usage(index_db: Path, *, input_tokens: int) -> None:
     from polylogue.core.enums import Provider
     from polylogue.sources.parsers.base import ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+    from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+    from polylogue.storage.sqlite.write_lease import write_lease
 
-    with closing(sqlite3.connect(index_db)) as conn:
+    with (
+        write_lease("fixture.codex-usage", archive_root=index_db.parent),
+        closing(
+            open_isolated_write_connection(index_db, purpose="fixture codex usage", archive_root=index_db.parent)
+        ) as conn,
+    ):
         session = ParsedSession(
             source_name=Provider.CODEX,
             provider_session_id="s1",
             messages=[],
             models_used=["gpt-5-codex"],
         )
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.execute(
             "UPDATE session_model_usage SET input_tokens = ? WHERE session_id = ? AND model_name = ?",
             (input_tokens, "codex-session:s1", "gpt-5-codex"),

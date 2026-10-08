@@ -105,6 +105,10 @@ def _fields() -> dict[str, FieldKind]:
         # the ``ingest_attempts`` row key; joins an ingest page's events to its
         # ops-tier attempt row and ``daemon_stage_events``.
         "attempt_id",
+        # Invocation and retry-stable recipe identity for daemon.work.progress.
+        # These are opaque IDs, never source paths or transcript contents.
+        "unit_id",
+        "productive_id",
     )
 
     # -- subject identity ------------------------------------------------
@@ -125,6 +129,7 @@ def _fields() -> dict[str, FieldKind]:
         "cursor_id",
         "tool_id",
         "generation_id",
+        "predecessor",  # previous generation ID, nullable for the first publication
         # the process-scoped holder of an index generation (``cold-build:<pid>``);
         # promotion checks it, so a generation event without it cannot be
         # attributed to the daemon that owns the candidate.
@@ -313,6 +318,7 @@ def _fields() -> dict[str, FieldKind]:
         "held",
         "enabled",
         "available",
+        "bound",  # FTS readiness binding publication result
         "more_pending",
         # Cold-build decisions carried by live.ingest.cold_build_shape_engaged.
         "fresh_build",

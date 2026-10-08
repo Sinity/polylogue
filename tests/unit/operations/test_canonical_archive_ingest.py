@@ -14,6 +14,7 @@ import polylogue.sources.source_root_admission as source_root_admission
 from polylogue.config import Source
 from polylogue.maintenance.source_conservation import SourceConservationReport, audit_source_conservation
 from polylogue.operations.canonical_archive_ingest import _ingest_selected_paths, ingest_one_shot_archive
+from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary, parse_markdown_export
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.storage.blob_store import BlobStore
@@ -36,10 +37,7 @@ def _install_antigravity_export_stub(monkeypatch: pytest.MonkeyPatch, roots: lis
             pb_path = source.path / "conversations" / f"{cascade_id}.pb"
             if admit_path is not None and not admit_path(pb_path):
                 continue
-            session = parse_markdown_export(
-                f"### User Input\n\nQuestion from {cascade_id}.\n\n### Planner Response\n\nAnswer.\n",
-                AntigravitySessionSummary(cascade_id=cascade_id),
-            )
+            session = _synthetic_session(cascade_id)
             raw = source_parsing._antigravity_raw_snapshot(
                 pb_path,
                 source_sha256=sha256(pb_path.read_bytes()).hexdigest(),
@@ -49,7 +47,26 @@ def _install_antigravity_export_stub(monkeypatch: pytest.MonkeyPatch, roots: lis
             )
             yield raw, session
 
+    def replay_export(
+        root: Path,
+        *,
+        client: object | None = None,
+        only_cascade_ids: frozenset[str] | None = None,
+    ) -> Iterable[ParsedSession]:
+        # Retained replay re-parses through the parser module's own export seam;
+        # it must reproduce the same synthetic conversion as live intake.
+        for cascade_id in sorted(only_cascade_ids or ()):
+            yield _synthetic_session(cascade_id)
+
     monkeypatch.setattr(source_parsing, "iter_antigravity_language_server_sessions", export)
+    monkeypatch.setattr(antigravity, "iter_language_server_exports", replay_export)
+
+
+def _synthetic_session(cascade_id: str) -> ParsedSession:
+    return parse_markdown_export(
+        f"### User Input\n\nQuestion from {cascade_id}.\n\n### Planner Response\n\nAnswer.\n",
+        AntigravitySessionSummary(cascade_id=cascade_id),
+    )
 
 
 def _source_conservation(archive_root: Path) -> SourceConservationReport:
@@ -513,21 +530,21 @@ async def test_one_shot_ingest_settles_a_source_that_produced_no_sessions() -> N
 
 
 @pytest.mark.asyncio
-async def test_one_shot_teardown_settles_the_writer_before_stopping_the_parse_stage(
+async def test_one_shot_teardown_settles_the_writer_before_stopping_the_capture_stage(
     tmp_path: Path,
     one_shot_workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A cancelled caller must not invalidate an admitted writer's carrier.
 
-    The writer consumes its preparation through ``LiveParseStage.pop_path``;
-    stopping the stage first can terminate workers and discard that result
-    while the writer still owns the archive. Anti-vacuity: restoring the old
-    ``parse_stage.shutdown()`` -> coordinator-idle order reverses ``events``.
+    An admitted writer may still consume the capture stage's prepared SQLite
+    captures; stopping the stage first can discard them while the writer still
+    owns the archive. Anti-vacuity: restoring a ``sqlite_capture_stage.shutdown()``
+    -> coordinator-idle order reverses ``events``.
     """
     import polylogue.operations.canonical_archive_ingest as canonical
     from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.parse_prefetch import LiveParseStage
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 
     source_path = tmp_path / "external-source" / "session.jsonl"
     source_path.parent.mkdir()
@@ -537,13 +554,13 @@ async def test_one_shot_teardown_settles_the_writer_before_stopping_the_parse_st
     )
     events: list[str] = []
     original_idle = canonical._wait_for_coordinator_idle
-    original_shutdown = LiveParseStage.shutdown
+    original_shutdown = LiveSQLiteCaptureStage.shutdown
 
     async def wait_idle(coordinator: object) -> None:
         await original_idle(coordinator)  # type: ignore[arg-type]
         events.append("writer_settled")
 
-    def shutdown(self: LiveParseStage) -> None:
+    def shutdown(self: LiveSQLiteCaptureStage) -> None:
         events.append("stage_shutdown")
         original_shutdown(self)
 
@@ -551,7 +568,7 @@ async def test_one_shot_teardown_settles_the_writer_before_stopping_the_parse_st
         raise RuntimeError("caller cancelled after writer admission")
 
     monkeypatch.setattr(canonical, "_wait_for_coordinator_idle", wait_idle)
-    monkeypatch.setattr(LiveParseStage, "shutdown", shutdown)
+    monkeypatch.setattr(LiveSQLiteCaptureStage, "shutdown", shutdown)
     monkeypatch.setattr(LiveBatchProcessor, "ingest_files", cancelled_ingest)
 
     with pytest.raises(RuntimeError, match="caller cancelled"):
@@ -565,7 +582,7 @@ async def test_one_shot_teardown_settles_the_writer_before_stopping_the_parse_st
 
 
 @pytest.mark.asyncio
-async def test_one_shot_teardown_stops_the_parse_stage_when_the_settle_wait_fails(
+async def test_one_shot_teardown_stops_the_capture_stage_when_the_settle_wait_fails(
     tmp_path: Path,
     one_shot_workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -578,7 +595,7 @@ async def test_one_shot_teardown_stops_the_parse_stage_when_the_settle_wait_fail
     """
     import polylogue.operations.canonical_archive_ingest as canonical
     from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.parse_prefetch import LiveParseStage
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 
     source_path = tmp_path / "external-source" / "session.jsonl"
     source_path.parent.mkdir()
@@ -587,7 +604,7 @@ async def test_one_shot_teardown_stops_the_parse_stage_when_the_settle_wait_fail
         encoding="utf-8",
     )
     events: list[str] = []
-    original_shutdown = LiveParseStage.shutdown
+    original_shutdown = LiveSQLiteCaptureStage.shutdown
     from polylogue import Polylogue
 
     original_close = Polylogue.close
@@ -595,7 +612,7 @@ async def test_one_shot_teardown_stops_the_parse_stage_when_the_settle_wait_fail
     async def failing_wait(coordinator: object) -> None:
         raise RuntimeError("settle wait interrupted")
 
-    def shutdown(self: LiveParseStage) -> None:
+    def shutdown(self: LiveSQLiteCaptureStage) -> None:
         events.append("stage_shutdown")
         original_shutdown(self)
 
@@ -607,7 +624,7 @@ async def test_one_shot_teardown_stops_the_parse_stage_when_the_settle_wait_fail
         raise RuntimeError("caller cancelled after writer admission")
 
     monkeypatch.setattr(canonical, "_wait_for_coordinator_idle", failing_wait)
-    monkeypatch.setattr(LiveParseStage, "shutdown", shutdown)
+    monkeypatch.setattr(LiveSQLiteCaptureStage, "shutdown", shutdown)
     monkeypatch.setattr(Polylogue, "close", close)
     monkeypatch.setattr(LiveBatchProcessor, "ingest_files", cancelled_ingest)
 

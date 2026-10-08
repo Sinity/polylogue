@@ -20,9 +20,10 @@ from polylogue.archive.codex_title_census import (
 )
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role, TitleSource
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.agent_thread_state import read_thread_titles
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import close_fixture_index_connection, write_fixture_index_session
 from tests.infra.thread_state import seed_thread_titles
 
 
@@ -63,11 +64,11 @@ def _write(
         title_source=title_source,
         messages=messages or [],
     )
-    write_parsed_session_to_archive(conn, session)
+    write_fixture_index_session(conn, session)
 
 
 def _seed_corpus(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     try:
         # 1. Resolved via provider thread name / authored history.
@@ -100,7 +101,7 @@ def _seed_corpus(db_path: Path) -> None:
         )
         conn.commit()
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
 def test_census_classifies_resolved_and_every_unresolved_reason(tmp_path: Path) -> None:

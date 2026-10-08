@@ -11,13 +11,14 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Literal, TypeAlias
 
-from polylogue.context.compiler import (
+from polylogue.archive.context_models import (
     ContextImage,
     ContextSnapshotRecord,
     canonical_context_image_json,
     context_image_sha256,
 )
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text
+from polylogue.storage.io_phase_metrics import connection_cursor
 
 ContextDeliveryWriteOutcome: TypeAlias = Literal["recorded", "idempotent"]
 
@@ -153,7 +154,8 @@ def write_context_delivery(
         return replace(existing, outcome="idempotent")
 
     timestamp = _now_ms() if delivered_at_ms is None else delivered_at_ms
-    conn.execute(
+    with connection_cursor(
+        conn,
         """
         INSERT INTO context_deliveries (
             snapshot_ref, recipient_ref, run_ref, boundary, inheritance_mode,
@@ -179,7 +181,8 @@ def write_context_delivery(
             actor,
             timestamp,
         ),
-    )
+    ):
+        pass
     envelope = read_context_delivery(conn, snapshot_ref)
     if envelope is None:
         raise RuntimeError("context delivery insert did not round-trip")
@@ -188,7 +191,8 @@ def write_context_delivery(
 
 def read_context_delivery(conn: sqlite3.Connection, snapshot_ref: str) -> ArchiveContextDeliveryEnvelope | None:
     normalized = _normalized_ref(snapshot_ref, field="snapshot_ref", kinds=frozenset({"context-snapshot"}))
-    row = conn.execute(
+    with connection_cursor(
+        conn,
         """
         SELECT snapshot_ref, recipient_ref, run_ref, boundary, inheritance_mode,
                context_image_json, context_image_sha256, segment_refs_json,
@@ -197,7 +201,8 @@ def read_context_delivery(conn: sqlite3.Connection, snapshot_ref: str) -> Archiv
         FROM context_deliveries WHERE snapshot_ref = ?
         """,
         (normalized,),
-    ).fetchone()
+    ) as cursor:
+        row = cursor.fetchone()
     if row is None:
         return None
     try:
@@ -253,15 +258,18 @@ def list_context_deliveries(
     clause = " WHERE " + " AND ".join(where) if where else ""
     owned_snapshot = not conn.in_transaction
     if owned_snapshot:
-        conn.execute("BEGIN")
+        with connection_cursor(conn, "BEGIN"):
+            pass
     try:
-        total = int(conn.execute(f"SELECT COUNT(*) FROM context_deliveries{clause}", params).fetchone()[0])
+        with connection_cursor(conn, f"SELECT COUNT(*) FROM context_deliveries{clause}", params) as cursor:
+            total = int(cursor.fetchone()[0])
         query = f"""SELECT snapshot_ref, recipient_ref, run_ref, boundary, inheritance_mode,
                           context_image_sha256, segment_refs_json, assertion_refs_json,
                           caveats_json, delivered_by_ref, delivered_at_ms
                    FROM context_deliveries{clause}
                    ORDER BY delivered_at_ms DESC, snapshot_ref LIMIT ? OFFSET ?"""
-        rows = conn.execute(query, [*params, limit, offset]).fetchall()
+        with connection_cursor(conn, query, [*params, limit, offset]) as cursor:
+            rows = cursor.fetchall()
         summaries = tuple(
             ArchiveContextDeliverySummary(
                 snapshot_ref=str(row[0]),

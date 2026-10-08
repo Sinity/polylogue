@@ -9,7 +9,7 @@ import pytest
 
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Origin
-from polylogue.operations.read_view_chronicle import _chronicle_edges, execute_chronicle_read
+from polylogue.operations.read_view_chronicle import chronicle_edges, execute_chronicle_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.builders import make_conv, make_msg
 
@@ -64,7 +64,7 @@ def test_chronicle_edges_reads_composed_pages_and_counts_only_authored_dialogue(
         lambda message, *, origin: message,
     )
 
-    first, last, total = _chronicle_edges(
+    first, last, total = chronicle_edges(
         cast(ArchiveStore, archive), "origin:session", 1, origin=Origin.from_string("codex")
     )
 
@@ -121,7 +121,7 @@ def test_chronicle_operation_applies_exclude_text_before_offset_and_limit(monkey
             messages=[SimpleNamespace(text=texts[envelope.session_id])],
         ),
     )
-    monkeypatch.setattr(read_view_chronicle, "_chronicle_edges", lambda *args, **kwargs: ([], [], 0))
+    monkeypatch.setattr(read_view_chronicle, "chronicle_edges", lambda *args, **kwargs: ([], [], 0))
     archive.read_session.side_effect = lambda session_id: SimpleNamespace(session_id=session_id)
 
     result = execute_chronicle_read(
@@ -186,6 +186,13 @@ def test_a_complete_chronicle_count_sort_is_admitted_as_scan_work(params: dict[s
     assert read_is_archive_scan("cli.query", {"params": params}) is False
 
 
+@pytest.mark.parametrize("mode", ["count", "stats", "stats_by"])
+def test_aggregate_selection_uses_scan_admission_even_with_small_page_limit(mode: str) -> None:
+    from polylogue.operations.daemon_reads import read_is_archive_scan
+
+    assert read_is_archive_scan("query.aggregate", {"mode": mode, "params": {"limit": 1}})
+
+
 def test_a_chronicle_count_sort_hydrates_each_candidate_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """A count-sorted chronicle page reads every candidate once, not twice.
 
@@ -217,7 +224,7 @@ def test_a_chronicle_count_sort_hydrates_each_candidate_once(monkeypatch: pytest
             messages=[make_msg(id=f"m{i}", text="x") for i in range(int(envelope.session_id.rsplit(":", 1)[1]) + 1)],
         ),
     )
-    monkeypatch.setattr(read_view_chronicle, "_chronicle_edges", lambda *args, **kwargs: ([], [], 0))
+    monkeypatch.setattr(read_view_chronicle, "chronicle_edges", lambda *args, **kwargs: ([], [], 0))
     archive.read_session.side_effect = lambda session_id: SimpleNamespace(session_id=session_id)
 
     result = execute_chronicle_read({"params": {"sort": "messages", "limit": 1}}, archive=archive, vector_provider=None)
@@ -262,7 +269,7 @@ def test_a_sampled_chronicle_count_sort_samples_every_candidate(monkeypatch: pyt
             messages=[make_msg(id=f"m{i}", text="x") for i in range(int(envelope.session_id.rsplit(":", 1)[1]) + 1)],
         ),
     )
-    monkeypatch.setattr(read_view_chronicle, "_chronicle_edges", lambda *args, **kwargs: ([], [], 0))
+    monkeypatch.setattr(read_view_chronicle, "chronicle_edges", lambda *args, **kwargs: ([], [], 0))
     archive.read_session.side_effect = lambda session_id: SimpleNamespace(session_id=session_id)
     offered: list[int] = []
     original = SessionQueryPlan._finalize

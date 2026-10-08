@@ -167,21 +167,29 @@ def is_missing_table_error(exc: sqlite3.OperationalError) -> bool:
 
     ``no such module: vec0`` was once folded in here and turned an unloadable
     extension into a measured zero; it is classified by
-    :func:`is_unmeasurable_coverage_error` instead.
-
-    ``no such column`` deliberately stays here. These readers use it as
-    optional-feature detection against older derived shapes (for example
-    ``embedding_status.message_count_embedded``), where the relation is present
-    and the absent column genuinely means the feature is not recorded.
+    :func:`is_unmeasurable_coverage_error` instead. ``no such column`` is not
+    absence either: the relation is present in a shape this reader cannot
+    read, which :func:`is_unreadable_relation_error` classifies.
     """
 
     message = str(exc).lower()
-    return (
-        "no such table" in message
-        or "no such column" in message
-        or "does not exist" in message
-        or "table not found" in message
-    )
+    return "no such table" in message or "does not exist" in message or "table not found" in message
+
+
+#: The typed reason a readiness reader reports when a relation it reads is
+#: present but not in the shape it reads.
+READINESS_RELATION_UNAVAILABLE = "readiness_relation_unavailable"
+
+
+def is_unreadable_relation_error(exc: sqlite3.OperationalError) -> bool:
+    """True when a present relation lacks a column the reader requires.
+
+    Fresh archives carry one schema, so a missing column is never an older
+    optional shape that means "not recorded"; it means the reader cannot
+    measure, and is reported as ``readiness_relation_unavailable``.
+    """
+
+    return "no such column" in str(exc).lower()
 
 
 def is_unmeasurable_coverage_error(exc: sqlite3.OperationalError) -> bool:
@@ -200,6 +208,8 @@ def _classify_optional_error(exc: sqlite3.OperationalError) -> None:
 
     if is_unmeasurable_coverage_error(exc):
         raise EmbeddingCoverageUnmeasurableError(str(exc)) from exc
+    if is_unreadable_relation_error(exc):
+        raise EmbeddingCoverageUnmeasurableError(f"{READINESS_RELATION_UNAVAILABLE}: {exc}") from exc
     if is_missing_table_error(exc):
         return
     raise exc

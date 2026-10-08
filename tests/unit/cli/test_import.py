@@ -126,13 +126,15 @@ def test_import_command_stages_local_path_before_daemon_request(
         )
 
     assert result.exit_code == 0, result.output
-    staged = import_staging_root(workspace_env["archive_root"]) / source.name
-    assert staged.read_text() == source.read_text()
+    staged = Path(str(submit.payload["path"]))
+    assert staged.parent == import_staging_root(workspace_env["archive_root"])
+    assert (staged / source.name).read_text() == source.read_text()
 
     assert submit.calls[-1][0] == "ingest"
     assert submit.payload == {
         "path": str(staged),
         "source_path": str(source.resolve()),
+        "source_name": source.name,
         "idempotency_key": None,
     }
     assert submit.payload["path"] != str(source)
@@ -177,7 +179,8 @@ def test_staged_import_is_read_by_no_watch_root_or_configured_source(
 
     staged = Path(str(submit.payload["path"])).resolve()
     assert staged.parent == import_staging_root(workspace_env["archive_root"]).resolve()
-    assert staged.is_file()
+    assert staged.is_dir()
+    assert (staged / source.name).is_file()
     assert submit.payload["source_path"] == str(source.resolve())
     roots = {
         **{f"watch:{watched.name}": watched.root for watched in daemon_watch_sources()},
@@ -211,10 +214,10 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
-    from polylogue.config import Source
+    from polylogue.core.enums import Provider
     from polylogue.sources.parsers import hermes_state
-    from polylogue.sources.source_parsing import iter_source_sessions_with_raw
-    from polylogue.sources.sqlite_snapshot import original_sqlite_source_path
+    from polylogue.sources.sqlite_inspection import inspect_sqlite_source
+    from tests.infra.source_staging import single_staged_binding
 
     source = tmp_path / "state.db"
     with sqlite3.connect(source) as conn:
@@ -265,339 +268,153 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
 
     submit = _RecordingSubmit()
 
-    def admissible(_path: Path) -> Any:
-        from polylogue.sources.import_preflight import ImportPreflightResult, ImportPreflightStatus
-
-        return ImportPreflightResult(
-            status=ImportPreflightStatus.SUPPORTED,
-            source_path=str(_path),
-            candidate_count=1,
-            supported_count=1,
-        )
+    def admissible(_path: Path, accumulator: Any, *, label: str, source_binding: Any, check_stop: Any) -> None:
+        # Admission policy is isolated here; the real manifest owner must
+        # still prove the original coordinate and staged database revision.
+        inspection = inspect_sqlite_source(_path, source_binding=source_binding, check_stop=check_stop)
+        assert inspection.domain == "hermes_state_db"
+        accumulator.supported(label, Provider.HERMES)
 
     try:
         with (
             _patch_submit(submit),
-            patch("polylogue.sources.import_preflight.preflight_import_source", new=admissible),
+            patch("polylogue.sources.import_preflight._preflight_sqlite", new=admissible),
         ):
             result = CliRunner().invoke(cli, ["import", str(source)])
     finally:
         writer.close()
 
     assert result.exit_code == 0, result.output
-    staged = import_staging_root(workspace_env["archive_root"]) / "state.db"
-    with sqlite3.connect(staged) as conn:
+    staged = Path(str(submit.payload["path"]))
+    with sqlite3.connect(staged / source.name) as conn:
         assert conn.execute("SELECT title FROM sessions WHERE id = 'h1'").fetchone()[0] == "Hermes"
         assert conn.execute("SELECT content FROM messages ORDER BY id DESC LIMIT 1").fetchone()[0] == "WAL turn"
-    assert original_sqlite_source_path(staged) == source.resolve()
+    with single_staged_binding(staged) as binding:
+        assert binding.source_path == source.resolve()
+        inspection = inspect_sqlite_source(binding.physical_path, source_binding=binding)
     assert submit.payload == {
         "path": str(staged),
         "source_path": str(source.resolve()),
+        "source_name": source.name,
         "idempotency_key": None,
     }
 
     direct = hermes_state.parse_state_db(source, profile_root=source.parent)[0]
-    [(raw, imported)] = list(
-        iter_source_sessions_with_raw(
-            Source(name="inbox", path=staged),
-            capture_raw=True,
-            blob_root=tmp_path / "blobs",
-        )
-    )
-    assert raw is not None and raw.source_path == str(source.resolve())
-    assert imported.provider_session_id == direct.provider_session_id
+    assert inspection.produced["session_refs"] == [f"session:hermes:{direct.provider_session_id}"]
+    assert inspection.produced["messages"] == 2
 
 
-def test_stage_for_daemon_removes_stale_sqlite_provenance(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+def test_directory_restage_creates_an_independent_exact_generation(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
     from polylogue.cli.commands.import_command import _stage_for_daemon
-    from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
+    from tests.infra.source_staging import staged_members
 
-    first_root = tmp_path / "hermes"
-    first_root.mkdir()
-    first = first_root / "state.db"
-    with sqlite3.connect(first) as conn:
-        conn.execute("CREATE TABLE evidence(value TEXT)")
+    source = tmp_path / "export"
+    (source / "nested").mkdir(parents=True)
+    (source / "conversations.json").write_text('{"first": true}')
+    (source / "nested" / "stale.json").write_text('{"stale": true}')
+    first = _stage_for_daemon(source)
+    (source / "nested" / "stale.json").unlink()
+    (source / "conversations.json").write_text('{"second": true}')
+    second = _stage_for_daemon(source)
 
-    staged = import_staging_root(workspace_env["archive_root"]) / "state.db"
-    stage_sqlite_snapshot(first, staged)
-    metadata_path = sqlite_staging_metadata_path(staged)
-    assert metadata_path.exists()
-
-    replacement_root = tmp_path / "replacement"
-    replacement_root.mkdir()
-    replacement = replacement_root / "state.db"
-    replacement.write_bytes(b"not a Hermes database")
-
-    assert _stage_for_daemon(replacement, replace_existing=True) == staged
-    assert staged.read_bytes() == replacement.read_bytes()
-    assert not metadata_path.exists()
+    assert first != second
+    assert (first / "conversations.json").read_text() == '{"first": true}'
+    assert (first / "nested" / "stale.json").is_file()
+    assert (second / "conversations.json").read_text() == '{"second": true}'
+    _, members = staged_members(second)
+    assert [member["relative_path"] for member in members] == ["conversations.json"]
+    assert not (second / "nested" / "stale.json").exists()
 
 
-def test_stage_for_daemon_reflinks_and_restages_idempotently(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-    """Staging clones by reflink, and re-staging the same export replaces it.
+def test_staging_preserves_payload_names_and_outside_receipt(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    from polylogue.cli.commands.import_command import _stage_for_daemon
+    from polylogue.sources.source_staging import staging_metadata_path
+    from tests.infra.source_staging import staged_members
 
-    Anti-vacuity: stage with ``shutil.copy2`` again and ``reflink_into`` is
-    never asked; replace the destination before the copy completes and the
-    restage leaves temporary siblings or a partial entry.
-    """
-    from polylogue.cli.commands import import_command
-
-    export = tmp_path / "exports"
-    export.mkdir()
-    (export / "conversations.json").write_text('{"a": 1}')
-    (export / "nested").mkdir()
-    (export / "nested" / "one.json").write_text('{"b": 2}')
-    single = tmp_path / "chatgpt-data.zip"
-    single.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
-
-    cloned: list[int] = []
-
-    def record_reflink(source_fd: int, destination_fd: int) -> bool:
-        cloned.append(source_fd)
-        return False
-
-    with patch("polylogue.core.durable_fs.reflink_into", side_effect=record_reflink):
-        staged_dir = import_command._stage_for_daemon(export)
-        staged_file = import_command._stage_for_daemon(single)
-        again_dir = import_command._stage_for_daemon(export)
-        again_file = import_command._stage_for_daemon(single)
-
-    assert (staged_dir, staged_file) == (again_dir, again_file)
-    assert (staged_dir / "nested" / "one.json").read_text() == '{"b": 2}'
-    assert staged_file.read_bytes() == single.read_bytes()
-    assert len(cloned) == 6
-    assert not [path for path in staged_dir.rglob(".*") if path.is_file()]
+    source = tmp_path / "export"
+    source.mkdir()
+    names = [".receipt-control", "input-control.polylogue-import", "x" * 250 + ".json"]
+    for index, name in enumerate(names):
+        (source / name).write_bytes(f"payload-{index}".encode())
+    staged = _stage_for_daemon(source)
+    receipt, members = staged_members(staged)
+    assert {member["relative_path"] for member in members} == set(names)
+    assert receipt["header"]["source_name"] == source.name
+    assert staging_metadata_path(staged).parent == staged.parent
+    for index, name in enumerate(names):
+        assert (staged / name).read_bytes() == f"payload-{index}".encode()
 
 
-def test_directory_restage_holds_exactly_the_new_trees_members(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-    """03.F045: a staged directory is an exact copy of the tree being imported.
-
-    The ingest operation keys every staged member under the caller's
-    ``source_path``. A member left over from an earlier same-named import
-    would be acquired as part of this one, under a path where the caller has
-    no such file.
-
-    Anti-vacuity: copy over the earlier staged tree (``copytree`` with
-    ``dirs_exist_ok`` into the destination) and ``stale.json`` survives.
-    """
-    from polylogue.cli.commands import import_command
-
-    first = tmp_path / "first" / "export"
-    (first / "nested").mkdir(parents=True)
-    (first / "conversations.json").write_text('{"first": true}')
-    (first / "nested" / "stale.json").write_text('{"stale": true}')
-    second = tmp_path / "second" / "export"
-    second.mkdir(parents=True)
-    (second / "conversations.json").write_text('{"second": true}')
-
-    staged = import_command._stage_for_daemon(first)
-    assert import_command._stage_for_daemon(second) == staged
-
-    assert sorted(str(path.relative_to(staged)) for path in staged.rglob("*")) == ["conversations.json"]
-    assert (staged / "conversations.json").read_text() == '{"second": true}'
-    assert [path.name for path in staged.parent.iterdir()] == ["export"]
-
-
-def test_failed_restage_keeps_the_earlier_import(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-    """A restage that cannot read its source leaves the earlier staged copy.
-
-    Anti-vacuity: remove the destination before the new copy is complete and
-    the earlier import's bytes are gone after the failed restage.
-    """
-    from polylogue.cli.commands import import_command
+def test_failed_restage_keeps_prior_bytes_and_authenticated_receipt(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    from polylogue.cli.commands.import_command import _stage_for_daemon
+    from polylogue.sources import source_staging
+    from tests.infra.source_staging import single_staged_binding
 
     source = tmp_path / "export.json"
     source.write_text('{"first": true}')
-    staged = import_command._stage_for_daemon(source)
+    first = _stage_for_daemon(source)
+    before = set(first.parent.iterdir())
     source.write_text('{"second": true}')
-
-    # A deterministic mid-copy read failure; permission bits would not stop
-    # a restage running as root.
-    def failing_copy(*_args: object, **_kwargs: object) -> None:
-        raise OSError(errno.EIO, "injected read failure")
-
-    with (
-        patch("polylogue.core.durable_fs.reflink_into", return_value=False),
-        patch("polylogue.core.durable_fs.shutil.copyfileobj", side_effect=failing_copy),
-        pytest.raises(SystemExit),
-    ):
-        import_command._stage_for_daemon(source)
-
-    assert staged.read_text() == '{"first": true}'
-    assert [path.name for path in staged.parent.iterdir()] == [staged.name]
+    with patch.object(source_staging, "copy_bound_input", side_effect=OSError(errno.EIO, "copy failed")):
+        with pytest.raises(SystemExit):
+            _stage_for_daemon(source)
+    assert set(first.parent.iterdir()) == before
+    assert (first / source.name).read_text() == '{"first": true}'
+    with single_staged_binding(first) as binding:
+        assert binding.source_path == source.resolve()
 
 
-def test_failed_restage_keeps_the_earlier_snapshot_provenance(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-    """A failed restage over a staged snapshot keeps its provenance sidecar.
+def test_directory_staging_cancellation_cleans_only_its_generation(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    from polylogue.sources import source_staging
 
-    Anti-vacuity: unlink the sidecar before the copy and never restore it,
-    and the preserved snapshot loses its original source path.
-    """
-    from polylogue.cli.commands import import_command
-    from polylogue.sources.sqlite_snapshot import (
-        original_sqlite_source_path,
-        sqlite_staging_metadata_path,
-        stage_sqlite_snapshot,
-    )
+    source = tmp_path / "export"
+    source.mkdir()
+    (source / "one.json").write_bytes(b"first")
+    root = import_staging_root(workspace_env["archive_root"])
+    first = source_staging.stage_source_input(source, root, check_stop=lambda: None)
+    before = set(root.iterdir())
+    real_copy = source_staging.copy_bound_input
+    completed = False
 
-    first_root = tmp_path / "hermes"
-    first_root.mkdir()
-    first = first_root / "state.db"
-    with sqlite3.connect(first) as conn:
-        conn.execute("CREATE TABLE evidence(value TEXT)")
-    staged = import_staging_root(workspace_env["archive_root"]) / "state.db"
-    stage_sqlite_snapshot(first, staged)
-    earlier = staged.read_bytes()
+    class CancelledError(Exception):
+        pass
 
-    replacement_root = tmp_path / "replacement"
-    replacement_root.mkdir()
-    replacement = replacement_root / "state.db"
-    replacement.write_bytes(b"not a Hermes database")
+    def check_stop() -> None:
+        if completed:
+            raise CancelledError
 
-    def failing_copy(*_args: object, **_kwargs: object) -> None:
-        raise OSError(errno.EIO, "injected read failure")
+    def copy_then_cancel(*args: Any, **kwargs: Any) -> Any:
+        nonlocal completed
+        result = real_copy(*args, **kwargs)
+        completed = True
+        return result
 
-    with (
-        patch("polylogue.core.durable_fs.reflink_into", return_value=False),
-        patch("polylogue.core.durable_fs.shutil.copyfileobj", side_effect=failing_copy),
-        pytest.raises(SystemExit),
-    ):
-        import_command._stage_for_daemon(replacement)
-
-    assert staged.read_bytes() == earlier
-    assert sqlite_staging_metadata_path(staged).exists()
-    assert original_sqlite_source_path(staged) == first.resolve()
-
-
-def test_restage_keeps_snapshot_provenance_for_the_whole_copy(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-    """The earlier snapshot's sidecar exists while its replacement is copied.
-
-    Anti-vacuity: unlink the sidecar before the copy starts and the copy
-    observes the still-visible old database without its provenance.
-    """
-    import shutil
-
-    from polylogue.cli.commands import import_command
-    from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
-
-    first_root = tmp_path / "hermes"
-    first_root.mkdir()
-    first = first_root / "state.db"
-    with sqlite3.connect(first) as conn:
-        conn.execute("CREATE TABLE evidence(value TEXT)")
-    staged = import_staging_root(workspace_env["archive_root"]) / "state.db"
-    stage_sqlite_snapshot(first, staged)
-    metadata_path = sqlite_staging_metadata_path(staged)
-
-    replacement_root = tmp_path / "replacement"
-    replacement_root.mkdir()
-    replacement = replacement_root / "state.db"
-    replacement.write_bytes(b"not a Hermes database")
-
-    during_copy: list[bool] = []
-    real_copy = shutil.copyfileobj
-
-    def observing_copy(source: object, target: object, *args: object) -> None:
-        during_copy.append(metadata_path.exists())
-        real_copy(source, target, *args)  # type: ignore[arg-type]
-
-    with (
-        patch("polylogue.core.durable_fs.reflink_into", return_value=False),
-        patch("polylogue.core.durable_fs.shutil.copyfileobj", side_effect=observing_copy),
-    ):
-        assert import_command._stage_for_daemon(replacement) == staged
-
-    assert during_copy == [True]
-    assert staged.read_bytes() == replacement.read_bytes()
-    assert not metadata_path.exists()
-
-
-def test_failed_directory_restage_restores_read_only_modes(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-    """A directory restage that fails leaves the earlier staged tree as it was.
-
-    Anti-vacuity: build the restage inside the earlier staged tree, making
-    its directories owner-writable to do so, and the staged ``0555``
-    directory is ``0755`` after the failure.
-    """
-    import os
-    import stat
-
-    from polylogue.cli.commands import import_command
-
-    export = tmp_path / "export"
-    locked = export / "locked"
-    locked.mkdir(parents=True)
-    (locked / "member.json").write_text('{"first": true}')
-    locked.chmod(0o555)
-    staged_locked = import_staging_root(workspace_env["archive_root"]) / "export" / "locked"
-    try:
-        staged = import_command._stage_for_daemon(export)
-        assert stat.S_IMODE(os.stat(staged / "locked").st_mode) == 0o555
-
-        def failing_copytree(*_args: object, **_kwargs: object) -> None:
-            raise OSError(errno.EACCES, "injected source scan failure")
-
-        with (
-            patch("polylogue.cli.commands.import_command.shutil.copytree", side_effect=failing_copytree),
-            pytest.raises(SystemExit),
-        ):
-            import_command._stage_for_daemon(export)
-
-        assert stat.S_IMODE(os.stat(staged_locked).st_mode) == 0o555
-    finally:
-        locked.chmod(0o755)
-        if staged_locked.exists():
-            staged_locked.chmod(0o755)
-
-
-def test_restage_publishes_into_a_read_only_staged_directory(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-    """An export with a ``0555`` directory can be staged again.
-
-    Anti-vacuity: remove the retired staged tree without making it
-    owner-writable first and the restage fails with ``EACCES`` (for a
-    non-root user).
-    """
-    import os
-    import stat
-
-    from polylogue.cli.commands import import_command
-
-    export = tmp_path / "export"
-    locked = export / "locked"
-    locked.mkdir(parents=True)
-    member = locked / "member.json"
-    member.write_text('{"first": true}')
-    locked.chmod(0o555)
-    try:
-        staged = import_command._stage_for_daemon(export)
-        locked.chmod(0o755)
-        member.write_text('{"second": true}')
-        locked.chmod(0o555)
-        assert import_command._stage_for_daemon(export) == staged
-        assert (staged / "locked" / "member.json").read_text() == '{"second": true}'
-        assert stat.S_IMODE(os.stat(staged / "locked").st_mode) == 0o555
-    finally:
-        locked.chmod(0o755)
-        staged_locked = import_staging_root(workspace_env["archive_root"]) / "export" / "locked"
-        if staged_locked.exists():
-            staged_locked.chmod(0o755)
+    with patch.object(source_staging, "copy_bound_input", side_effect=copy_then_cancel):
+        with pytest.raises(CancelledError):
+            source_staging.stage_source_input(source, root, check_stop=check_stop)
+    assert set(root.iterdir()) == before
+    assert (first / "one.json").read_bytes() == b"first"
+    assert (source / "one.json").read_bytes() == b"first"
 
 
 def test_staging_refuses_a_fifo_without_opening_it(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-    """A named pipe in an export directory is refused, never opened.
-
-    Anti-vacuity: drop the regular-file check in ``clone_or_copy_replace``
-    and opening the writerless FIFO blocks this test forever.
-    """
     import os
 
-    from polylogue.core.durable_fs import clone_or_copy_replace
+    from polylogue.sources.source_staging import stage_source_input
 
     fifo = tmp_path / "pipe"
     os.mkfifo(fifo)
-
-    with pytest.raises(OSError, match="not a regular file"):
-        clone_or_copy_replace(fifo, tmp_path / "staged" / "pipe")
+    root = import_staging_root(workspace_env["archive_root"])
+    with pytest.raises(OSError) as refusal:
+        stage_source_input(fifo, root, check_stop=lambda: None)
+    assert refusal.value.errno == errno.ESTALE
+    assert list(root.iterdir()) == []
 
 
 def test_import_command_uses_daemon_url_env_by_default(
@@ -630,7 +447,7 @@ def test_import_command_uses_daemon_url_env_by_default(
     socket_path = str(daemon_socket_path(workspace_env["archive_root"]))
     assert f"Daemon:       {socket_path}" in result.output
     assert "http://127.0.0.1:9876" not in result.output
-    assert (import_staging_root(workspace_env["archive_root"]) / source.name).is_file()
+    assert (Path(str(submit.payload["path"])) / source.name).is_file()
 
 
 def test_import_demo_materializes_fixture_world_before_daemon_request(
@@ -653,7 +470,7 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
 
     assert result.exit_code == 0, result.output
     source_root = workspace_env["archive_root"] / "demo-fixture-world-source"
-    staged = import_staging_root(workspace_env["archive_root"]) / "demo-fixture-world-source"
+    staged = Path(str(submit.payload["path"]))
     assert sorted(path.name for path in source_root.iterdir()) == [
         "antigravity",
         "browser-capture",
@@ -676,11 +493,12 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
         "gemini-cli",
         "hermes",
     ]
-    assert len(tuple(staged.rglob("demo-*.json*"))) == 7
+    assert len(tuple(staged.rglob("*demo-00.json*"))) == 7
 
     assert submit.payload == {
         "path": str(staged),
         "source_path": str(source_root.resolve()),
+        "source_name": source_root.name,
         "idempotency_key": None,
     }
     assert str(staged) in result.output
@@ -712,7 +530,8 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
     events: list[str] = []
 
     def fake_submit(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
-        del config, payload
+        del config
+        captured["staged_path"] = payload["path"]
         assert operation == "ingest"
         events.append("daemon")
         return _accepted_envelope("import-demo-fixture-world")
@@ -758,11 +577,12 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
 
     assert result.exit_code == 0, result.output
     assert captured == {
+        "staged_path": captured["staged_path"],
         "timeout_s": 12.5,
         "augment_payload": {"with_overlays": False},
     }
     assert events == ["daemon", "wait-base", "augment-daemon", "verify"]
-    staged = import_staging_root(workspace_env["archive_root"]) / "demo-fixture-world-source"
+    staged = Path(captured["staged_path"])
     assert str(staged) in result.output
     assert "Demo archive verified" in result.output
     assert "sessions=19 messages=31" in result.output
@@ -1052,8 +872,11 @@ def test_import_surfaces_refused_operation_with_staged_path(
 
     source = _write_supported_source(tmp_path / "source.jsonl")
 
+    captured: dict[str, object] = {}
+
     def refused(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
-        del config, operation, payload
+        del config, operation
+        captured.update(payload)
         raise OperationFailedError("invalid_request", "staged entry could not be resolved")
 
     runner = CliRunner()
@@ -1061,7 +884,7 @@ def test_import_surfaces_refused_operation_with_staged_path(
         result = runner.invoke(cli, ["import", str(source)])
 
     assert result.exit_code != 0
-    staged = import_staging_root(workspace_env["archive_root"]) / source.name
+    staged = Path(str(captured["path"]))
     combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
     assert "invalid_request" in combined
     assert "staged entry could not be resolved" in combined
@@ -1084,8 +907,11 @@ def test_import_refuses_indeterminate_submission(
 
     source = _write_supported_source(tmp_path / "source.jsonl")
 
+    captured: dict[str, object] = {}
+
     def indeterminate(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
-        del config, operation, payload
+        del config, operation
+        captured.update(payload)
         raise OperationIndeterminateError("ingest requires receipt recovery for request abc")
 
     runner = CliRunner()
@@ -1093,7 +919,7 @@ def test_import_refuses_indeterminate_submission(
         result = runner.invoke(cli, ["import", str(source)])
 
     assert result.exit_code != 0
-    staged = import_staging_root(workspace_env["archive_root"]) / source.name
+    staged = Path(str(captured["path"]))
     combined = result.output + (result.stderr if result.stderr_bytes else "")
     assert "no receipt came back" in combined
     assert "rather than re-running this command" in combined
@@ -1131,7 +957,11 @@ def test_import_refuses_inadmissible_source_before_submitting(
     combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
     assert "unsupported_import_source" in combined
     assert "no parseable polylogue export shape" in combined
-    assert str(import_staging_root(workspace_env["archive_root"]) / source.name).lower() in combined
+    # Each slot directory has one outside receipt beside it; count the slots.
+    slots = [slot for slot in import_staging_root(workspace_env["archive_root"]).glob("input-*") if slot.is_dir()]
+    assert len(slots) == 1
+    assert str(slots[0]).lower() in combined
+    assert (slots[0] / source.name).read_bytes() == source.read_bytes()
 
 
 def test_import_refuses_envelope_without_durable_acceptance(

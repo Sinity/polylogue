@@ -2,8 +2,7 @@
 
 Writer module: index.
 
-Raw revision/membership governance (the twin-write ``raw-membership-classification``
-contract spanning index and source) moved to
+Raw revision/membership governance (spanning index and source) moved to
 ``polylogue.storage.sqlite.archive_tiers.revision_governance`` (polylogue-1r9c);
 ``delete_sessions`` is this module's remaining direct writer, index-only
 (user-tier overlays are deliberately left in place, see its docstring).
@@ -11,19 +10,35 @@ contract spanning index and source) moved to
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import itertools
 import json
+import os
 import sqlite3
+import threading
 import time
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import Future
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import AbstractContextManager, ExitStack, closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import partial, wraps
+from io import Reader
 from pathlib import Path
 from types import TracebackType
-from typing import IO, Any, BinaryIO, Literal, NoReturn, TypedDict, cast
+from typing import IO, TYPE_CHECKING, Any, BinaryIO, Concatenate, Literal, NoReturn, ParamSpec, TypedDict, TypeVar, cast
+
+from .source_items import SourceItemAdmission
+
+if TYPE_CHECKING:
+    from polylogue.storage.index_generation import ActiveWriterLease, IndexGeneration
+    from polylogue.storage.sqlite.reference_seal import (
+        IndexMutationDestination,
+        IndexMutationScope,
+        PreparedIndexMutation,
+    )
+    from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody, WriteLease
 
 from polylogue.analysis.affordance_usage import (
     clean_patterns as _clean_affordance_patterns,
@@ -91,7 +106,7 @@ from polylogue.archive.query.predicate import (
     QueryPredicate,
     QuerySequencePredicate,
 )
-from polylogue.archive.query.spec import split_csv
+from polylogue.archive.query.spec import split_csv, split_repo_names
 from polylogue.archive.revision_authority import (
     WORK_EVENT_RAW_ID_PREFIX,
     RawRevisionEnvelope,
@@ -112,7 +127,6 @@ from polylogue.archive.semantic.pricing import (
     model_cohort_key,
 )
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, credits_to_usd
-from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
@@ -125,20 +139,21 @@ from polylogue.core.errors import (
 )
 from polylogue.core.identity_law import attachment_acquisition_coordinate
 from polylogue.core.json import require_json_value
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.protocols import ProgressCallback
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.sql_settlement import current_native_sql_lifetimes
 from polylogue.core.sqlite_introspection import relation_exists as _relation_exists
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.types import SessionId
 from polylogue.logging import get_logger
-from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.security.excision_policy import build_excision_policy_snapshot
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_publication import ArchiveBlobPublisher, PreparedBlobPublicationClaim
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 from polylogue.storage.derived.session.records import SessionProfileRecord
-from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.derived.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.derived.topology.derivation import (
     TopologyNodeInput,
@@ -150,7 +165,7 @@ from polylogue.storage.fts.sql import (
     delete_session_rows_sql,
 )
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
-from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.io_phase_metrics import connect_measured, connection_cursor
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers import archive_query_reads as _archive_query_reads
@@ -190,31 +205,25 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     ActiveByteRevisionChainError,
     ArchiveRawParsedWriteResult,
     MembershipReplayConflictError,
+    PreparedRevisionAdoption,
+    PreparedRevisionReplayOutcome,
     _authorize_full_snapshot_fold,
     _flush_pending_raw_parse_states,
-    _index_parsed_for_retained_raw,
     _promote_contiguous_append_evidence,
-    _raw_parse_failure_state,
-    _raw_parse_success_state,
     _raw_revision_authority,
     _raw_revision_candidates,
     _raw_revision_matches_segments,
     _raw_revision_payload_digest_and_size,
     _raw_revision_source_path_has_divergent_evidence,
-    _write_parsed_precedence_result,
-    admit_raw_and_parsed_result,
     admit_raw_artifact_blob_ref,
     admit_raw_artifact_payload,
-    apply_raw_membership_classification,
+    admit_work_event_raw,
     apply_raw_revision_replay,
     bind_raw_revision,
     blob_path_for_hash,
     classify_raw_revision_cohort_for_frozen_candidate,
-    classify_raw_revision_cohort_for_live_watch,
-    classify_raw_revision_cohort_for_live_watch_in_transaction,
     classify_raw_revision_cohort_for_rebuild_repair,
     classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
-    classify_untyped_full_revision_groups,
     convertible_full_revision_raw_ids,
     defer_raw_revision_adoption,
     expand_raw_membership_selection,
@@ -222,6 +231,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     finalize_raw_parse_state,
     mark_raw_parse_failed,
     mark_raw_parse_succeeded,
+    open_raw_container_material,
     open_raw_revision_material,
     pending_raw_revision_logical_keys,
     promote_reconstructed_legacy_append_revisions,
@@ -246,18 +256,11 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_revision_observation_order,
     raw_revision_observed_at_ms,
     raw_revision_rebuild_logical_keys,
-    raw_revision_replay_adoptable,
     raw_revision_replay_plan,
     record_raw_failure_evidence,
     release_provisional_full_revisions,
-    replace_raw_membership_census,
-    write_parsed_for_retained_raw,
-    write_parsed_for_retained_raw_result,
-    write_raw_and_parsed,
-    write_raw_and_parsed_result,
     write_raw_blob_ref,
     write_raw_payload,
-    write_work_event_raw_and_parsed_result,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
@@ -268,6 +271,8 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     deterministic_raw_session_id,
     is_blob_hash_excised,
     list_hook_events,
+    read_raw_captured_zip_coordinate,
+    read_raw_profile_identity,
     record_raw_container_coordinate,
     write_source_hook_event,
     write_source_hook_event_batch,
@@ -318,10 +323,9 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
-    PreparedRows,
-    PreparedSessionShardRows,
+    PreparedSessionRows,
     PreparedSessionWrite,
-    bind_session_shard,
+    _composed_transcript_plan,
     locate_composed_message,
     read_archive_session_envelope,
     read_archive_session_page,
@@ -329,28 +333,30 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     search_archive_blocks,
     session_attachment_ids,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, open_session_shard
-from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_shard as attach_session_shard
 from polylogue.storage.sqlite.connection_profile import (
     BULK_BUILD_WRITE_CONNECTION_PROFILE,
     READ_CONNECTION_PROFILE,
     WRITE_CONNECTION_PROFILE,
+    NativeSQLCustodyOwner,
+    _close_failed_native_construction,
     attach_readonly_database,
+    execute_pragma_statement,
     open_connection,
     open_readonly_connection,
     open_source_tier_write_connection,
+    readonly_connection_context,
     readonly_temp_staging,
     write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.model_usage_sql import MODEL_USAGE_CATALOG_SUM_SQL, model_usage_cost_estimated_sql
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
-from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.query_watch import (
     clear_query_watch,
     register_query_watch,
     validate_watch_definition,
 )
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+from polylogue.storage.sqlite.session_identity import resolve_session_id_in_index, session_id_prefix_bounds
 from polylogue.storage.sqlite.write_lease import require_write_lease
 from polylogue.storage.usage import SessionUsageCost, session_usage_costs_for_connection
 
@@ -580,14 +586,11 @@ class _SourceTierOnlyIndexConnection:
     instead of writing through a stale-schema handle.
     """
 
-    def __init__(self, mode: str = "source-tier acquisition") -> None:
-        self._mode = mode
-
     def __getattr__(self, name: str) -> Any:
         if name == "close":
             return lambda: None
         raise RuntimeError(
-            f"index tier is unavailable in {self._mode} mode "
+            "index tier is unavailable in source-tier acquisition mode "
             f"(attempted connection attribute {name!r}); only raw source-tier "
             "access is permitted while the derived tier is unavailable"
         )
@@ -610,26 +613,34 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
             "inactive candidate generations may read frozen blobs but may not publish or replace blob bytes"
         )
 
-    def _queue(self, prepared: PreparedBlob) -> NoReturn:
-        del prepared
+    def _queue(self, prepared: PreparedBlob, claim: PreparedBlobPublicationClaim | None = None) -> NoReturn:
+        del prepared, claim
         self._refuse()
 
-    def prepare_from_path(self, source: Path, *, heartbeat: Heartbeat | None = None) -> NoReturn:
-        del source, heartbeat
+    def prepare_from_path(
+        self, source: Path, *, heartbeat: Heartbeat | None = None, staging_directory: Path | None = None
+    ) -> NoReturn:
+        del source, heartbeat, staging_directory
         self._refuse()
 
-    def prepare_from_fileobj(self, source: IO[bytes], *, heartbeat: Heartbeat | None = None) -> NoReturn:
-        del source, heartbeat
+    def prepare_from_fileobj(
+        self, source: Reader[bytes], *, heartbeat: Heartbeat | None = None, staging_directory: Path | None = None
+    ) -> NoReturn:
+        del source, heartbeat, staging_directory
         self._refuse()
 
-    def prepare_from_bytes(self, data: bytes) -> NoReturn:
-        del data
+    def prepare_from_bytes(self, data: bytes, *, staging_directory: Path | None = None) -> NoReturn:
+        del data, staging_directory
         self._refuse()
 
     def prepare_from_writer(
-        self, write: Callable[[IO[bytes]], None], *, heartbeat: Heartbeat | None = None
+        self,
+        write: Callable[[IO[bytes]], None],
+        *,
+        heartbeat: Heartbeat | None = None,
+        staging_directory: Path | None = None,
     ) -> NoReturn:
-        del write, heartbeat
+        del write, heartbeat, staging_directory
         self._refuse()
 
     def allocate_staging_path(self, *, prefix: str, suffix: str = "") -> NoReturn:
@@ -685,7 +696,7 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
             )
         return blob_hash, size_bytes
 
-    def flush(self) -> tuple[()]:
+    def flush(self, *, reference_seal: PreparedIndexMutation | None = None) -> tuple[()]:
         return ()
 
     def discard_pending(self) -> None:
@@ -695,6 +706,7 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
 #: Rows ``iter_summaries``/``iter_search_summaries`` fetch per batch from their
 #: single cursor. A memory bound only: ``limit=None`` streams the whole scope.
 SUMMARY_FETCH_BATCH = 500
+SORT_METRIC_TEXT_CHUNK = 8192
 
 #: Rows ``iter_session_cost_insights`` fetches and prices per batch from its
 #: single cursor. A memory bound only: the whole matched scope is streamed.
@@ -719,6 +731,110 @@ def _assert_active_cold_build_index_only(index_path: Path, *, durable_paths: tup
         )
 
 
+_MutationArgs = ParamSpec("_MutationArgs")
+_MutationResult = TypeVar("_MutationResult")
+
+
+def _archive_mutator(
+    method: Callable[Concatenate[ArchiveStore, _MutationArgs], _MutationResult],
+) -> Callable[Concatenate[ArchiveStore, _MutationArgs], _MutationResult]:
+    """Acquire physical archive custody before an ArchiveStore write route."""
+
+    @wraps(method)
+    def wrapped(self: ArchiveStore, /, *args: _MutationArgs.args, **kwargs: _MutationArgs.kwargs) -> _MutationResult:
+        self._require_writable(method.__name__, cleanup=method.__name__ == "rollback")
+        self._enter_mutation_lease(settlement=method.__name__ in {"commit", "rollback"})
+        try:
+            result = method(self, *args, **kwargs)
+        except BaseException as exc:
+            if not self._has_pending_write_sql():
+                self._release_mutation_lease((type(exc), exc, exc.__traceback__))
+            raise
+        else:
+            if not self._has_pending_write_sql():
+                self._release_mutation_lease(None)
+            return result
+
+    return wrapped
+
+
+class ArchiveStoreSettlementError(RuntimeError):
+    """Cleanup could not settle SQL; the original owner can retry this Store."""
+
+    def __init__(self, store: ArchiveStore, failure: BaseException) -> None:
+        super().__init__("archive SQL cleanup remains unsettled; retry close on its original owner")
+        self.store = store
+        self.failure = failure
+
+
+def stage_index_session_deletions(
+    conn: sqlite3.Connection, mutation_scope: IndexMutationScope, session_ids: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Stage exact session cleanup in the caller's original Index transaction.
+
+    The caller owns admission, original reference proof and final commit. This
+    producer never opens a connection, prepares a new seal or commits SQL.
+    """
+    mutation_scope.require_new_work(conn)
+    if not conn.in_transaction:
+        raise RuntimeError("session deletion staging requires the original Index transaction")
+    deleted_session_ids: list[str] = []
+    for session_id in session_ids:
+        mutation_scope.note_deleted_session(session_id)
+        mutation_scope.note_lineage_change(session_id)
+        # Must run before the blocks rows are removed below.
+        with connection_cursor(conn, delete_session_rows_sql(1), (session_id,)):
+            pass
+        with connection_cursor(conn, delete_session_identity_rows_sql(1), (session_id,)):
+            pass
+    with connection_cursor(conn, "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')"):
+        pass
+    with connection_cursor(
+        conn, "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)", (FTS_BULK_SESSION_WRITE_GUARD,)
+    ):
+        pass
+    primary: BaseException | None = None
+    try:
+        for session_id in session_ids:
+            mutation_scope.require_new_work(conn)
+            with connection_cursor(conn, "DELETE FROM action_pairs WHERE session_id = ?", (session_id,)):
+                pass
+            with connection_cursor(conn, "DELETE FROM delegation_facts WHERE parent_session_id = ?", (session_id,)):
+                pass
+            # These revision projections deliberately have no sessions foreign
+            # key. Retire only this selected session's accepted head and
+            # application history in the same owned deletion transaction.
+            with connection_cursor(conn, "DELETE FROM raw_revision_heads WHERE session_id = ?", (session_id,)):
+                pass
+            with connection_cursor(conn, "DELETE FROM raw_revision_applications WHERE session_id = ?", (session_id,)):
+                pass
+            # attachment_refs cascades from sessions. Capture exact candidates
+            # before that cascade, then refresh only those same attachments.
+            orphan_candidates = session_attachment_ids(conn, session_id)
+            with connection_cursor(conn, "DELETE FROM sessions WHERE session_id = ?", (session_id,)) as cursor:
+                removed = int(cursor.rowcount)
+            refresh_and_sweep_attachment_rows(conn, orphan_candidates)
+            if removed > 0:
+                deleted_session_ids.append(session_id)
+    except BaseException as failure:
+        primary = failure
+        raise
+    finally:
+        cleanup_failures: list[BaseException] = []
+        for guard in ("session-write", FTS_BULK_SESSION_WRITE_GUARD):
+            try:
+                with connection_cursor(conn, "DELETE FROM derived_refresh_guard WHERE guard_name = ?", (guard,)):
+                    pass
+            except BaseException as cleanup:
+                cleanup_failures.append(cleanup)
+        if cleanup_failures:
+            failures = ([primary] if primary is not None else []) + cleanup_failures
+            if len(failures) == 1:
+                raise failures[0]
+            raise BaseExceptionGroup("Index session deletion and guard retirement failed", failures) from primary
+    return tuple(deleted_session_ids)
+
+
 class ArchiveStore:
     """Minimal archive-root façade for archive source/index/user tiers."""
 
@@ -726,7 +842,7 @@ class ArchiveStore:
         self,
         archive_root: Path,
         *,
-        initialize: bool = True,
+        initialize: bool | None = None,
         read_only: bool = False,
         read_timeout: float = 5.0,
         owned_inactive_generation: tuple[str, str] | None = None,
@@ -734,6 +850,7 @@ class ArchiveStore:
         frozen_index_path: Path | None = None,
         opened_index_fd: int | None = None,
         validate_index_layout: bool = True,
+        owned_read_generation: IndexGeneration | None = None,
         defer_secondary_indexes: bool = False,
         active_cold_build: bool = False,
         durable_writer: bool = False,
@@ -741,6 +858,10 @@ class ArchiveStore:
         from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
         assert_population_admitted(archive_root)
+        if initialize is None:
+            initialize = not read_only
+        elif initialize and read_only:
+            raise ReadOnlyArchiveError("read-only archive evidence cannot initialize an archive")
         if not validate_index_layout and not read_only:
             raise ValueError("index-layout validation may only be waived for read-only archive access")
         if source_tier_acquisition and read_only:
@@ -755,10 +876,37 @@ class ArchiveStore:
             raise ValueError("durable_writer requires an owned inactive writable generation")
         if active_cold_build and (read_only or owned_inactive_generation is not None or source_tier_acquisition):
             raise ValueError("the active cold-build shape requires a plain writable active-generation open")
+        if owned_read_generation is not None:
+            if not read_only or frozen_index_path is None:
+                raise ValueError("an owned build reader requires its actual frozen Index path")
+            if Path(owned_read_generation.archive_root).resolve(strict=True) != archive_root.resolve(
+                strict=True
+            ) or Path(owned_read_generation.index_path).resolve(strict=True) != frozen_index_path.resolve(strict=True):
+                raise ValueError("owned build reader differs from its original generation")
+        self._owned_read_generation = owned_read_generation
         self._active_cold_build_requested = active_cold_build
         self._active_cold_build_engaged = False
+        self._writer_owner_pid = os.getpid()
+        self._sqlite_owner_thread = threading.current_thread()
+        try:
+            self._sqlite_owner_task = asyncio.current_task()
+        except RuntimeError:
+            self._sqlite_owner_task = None
+        self._settlement_callbacks: list[Callable[[], None]] = []
+        self._owned_index_connection: sqlite3.Connection | None = None
+        self._source_conn: sqlite3.Connection | None = None
+        self._operation_vector_connection: sqlite3.Connection | None = None
+        self._user_write_connections: list[sqlite3.Connection] = []
+        self._blob_publisher: ArchiveBlobPublisher | None = None
+        self._replay_publisher_slot: ExitStack | None = None
+        self._replay_publisher_lock_file: BinaryIO | None = None
+        self._retained_writes_in_progress = 0
+        self._sql_custody: ArchiveWriteCustody | None = None
+        self._archive_custody_identity: tuple[int, int] | None = None
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
+        self._index_mutation_destination: IndexMutationDestination | None = None
+        self._pending_index_mutation_scope: IndexMutationScope | None = None
         self._frozen_index_path = frozen_index_path
         self._opened_index_fd = opened_index_fd
         self._pinned_read = frozen_index_path is not None
@@ -778,7 +926,8 @@ class ArchiveStore:
         # root rather than the candidate path so daemon cold-build opens are
         # accepted only by the owner of the real archive.
         self._write_lease_archive_root = archive_root
-        self._active_writer_lease = None
+        self._active_writer_lease: ActiveWriterLease | None = None
+        self._pending_archive_mutation_lease_context: AbstractContextManager[WriteLease] | None = None
         self._deferred_secondary_indexes: tuple[str, ...] = ()
         self._generation_empty_at_open = False
         if not read_only:
@@ -787,7 +936,10 @@ class ArchiveStore:
 
             if owned_inactive_generation is None:
                 from polylogue.storage.index_generation import ActiveWriterLease
+                from polylogue.storage.sqlite.write_lease import require_write_lease
 
+                require_write_lease("storage.archive_store", archive_root=archive_root)
+                archive_root.mkdir(parents=True, exist_ok=True)
                 self._active_writer_lease = ActiveWriterLease(archive_root)
                 self._active_writer_lease.acquire()
                 if not source_tier_acquisition:
@@ -820,6 +972,10 @@ class ArchiveStore:
                     **json.loads((archive_root / "generation.json").read_text(encoding="utf-8"))
                 )
                 declared_archive_root = Path(generation.archive_root).resolve(strict=True)
+                self._write_lease_archive_root = declared_archive_root
+                from polylogue.storage.sqlite.write_lease import require_write_lease
+
+                require_write_lease("storage.archive_store", archive_root=declared_archive_root)
                 authoritative_generation = IndexGenerationStore.for_archive_root(
                     declared_archive_root,
                     repair_anchor=False,
@@ -831,6 +987,9 @@ class ArchiveStore:
                     or Path(generation.index_path).parent.resolve(strict=True) != archive_root.resolve(strict=True)
                 ):
                     raise RuntimeError("inactive index generation ownership validation failed")
+                from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
+
+                self._index_mutation_destination = IndexMutationDestination.owned_inactive(authoritative_generation)
                 for filename in _GENERATION_READ_THROUGH_MEMBERS:
                     expected = declared_archive_root / filename
                     candidate = archive_root / filename
@@ -861,7 +1020,17 @@ class ArchiveStore:
                         self._active_writer_lease.close()
                         self._active_writer_lease = None
                         raise
+        if not read_only:
+            # The caller's mutation owner holds physical custody before this
+            # writable handle opens. The handle itself is persistent, but its
+            # existence does not retain the archive-wide writer gate.
+            from polylogue.storage.sqlite.write_lease import require_write_lease
+
+            require_write_lease("storage.archive_store", archive_root=self._write_lease_archive_root)
+        construction_complete = False
         try:
+            if not read_only:
+                self._enter_mutation_lease()
             self._initialize_store(
                 archive_root,
                 validate_index_layout=validate_index_layout,
@@ -906,14 +1075,87 @@ class ArchiveStore:
                 self._conn.commit()
             if active_cold_build:
                 self._engage_active_cold_build()
-        except Exception:
-            conn = getattr(self, "_conn", None)
-            if conn is not None:
-                conn.close()
-            if self._active_writer_lease is not None:
-                self._active_writer_lease.close()
-                self._active_writer_lease = None
+            construction_complete = True
+        except BaseException as primary:
+            try:
+                self.close()
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup(
+                    "Archive construction and cleanup failed", [primary, cleanup_error]
+                ) from primary
             raise
+        finally:
+            if (
+                not read_only
+                and not self._has_pending_write_sql()
+                and (construction_complete or (self._all_sql_handles_closed()))
+            ):
+                self._release_mutation_lease(None)
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        connection = self._owned_index_connection
+        if connection is None:
+            raise RuntimeError("ArchiveStore has no live Index connection")
+        return connection
+
+    @_conn.setter
+    def _conn(self, connection: sqlite3.Connection | None) -> None:
+        self._owned_index_connection = connection
+        if connection is not None and not isinstance(connection, _SourceTierOnlyIndexConnection):
+            self._retain_native_connection(connection)
+
+    def _retain_native_connection(self, connection: sqlite3.Connection) -> None:
+        from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, native_sql_children
+
+        if not any(owner._connection_identity == id(connection) for owner in native_sql_children(self)):
+            NativeSQLCustodyOwner(connection, terminal_parent=self)
+
+    def _close_native_connection(self, connection: sqlite3.Connection) -> None:
+        from polylogue.storage.sqlite.connection_profile import close_parent_native_connection
+
+        close_parent_native_connection(self, connection)
+
+    def _open_read_connection(
+        self, path: Path, *, timeout: float = 30.0, validate_schema: bool = True
+    ) -> sqlite3.Connection:
+        connection = open_readonly_connection(path, timeout=timeout, validate_schema=validate_schema)
+        self._retain_native_connection(connection)
+        return connection
+
+    def _close_owned_read_connection(self, connection: sqlite3.Connection) -> None:
+        self._close_native_connection(connection)
+        from polylogue.storage.sqlite.connection_profile import native_sql_children
+
+        for owner in native_sql_children(self):
+            if owner._connection_identity == id(connection):
+                owner.retire_terminal_parent(self)
+
+    @contextmanager
+    def _owned_read_connection(
+        self, path: Path, *, timeout: float = 30.0, validate_schema: bool = True
+    ) -> Iterator[sqlite3.Connection]:
+        connection = self._open_read_connection(path, timeout=timeout, validate_schema=validate_schema)
+        try:
+            yield connection
+        finally:
+            self._close_owned_read_connection(connection)
+
+    @property
+    def operation_vector_connection(self) -> sqlite3.Connection | None:
+        return self._operation_vector_connection
+
+    @operation_vector_connection.setter
+    def operation_vector_connection(self, connection: sqlite3.Connection | None) -> None:
+        if connection is not None:
+            self._retain_native_connection(connection)
+        self._operation_vector_connection = connection
+
+    def close_operation_vector_connection(self) -> None:
+        connection = self.operation_vector_connection
+        if connection is not None:
+            self._close_owned_read_connection(connection)
+            self._operation_vector_connection = None
 
     def _initialize_store(
         self,
@@ -932,10 +1174,14 @@ class ArchiveStore:
 
         assert_population_admitted(archive_root)
         self.archive_root = archive_root
+        self._sqlite_owner_thread = threading.current_thread()
+        try:
+            self._sqlite_owner_task = asyncio.current_task()
+        except RuntimeError:
+            self._sqlite_owner_task = None
         from polylogue.storage.archive_identity import ArchiveIdentity
 
         self.operation_identity: ArchiveIdentity | None = None
-        self.operation_vector_connection: sqlite3.Connection | None = None
         self._operation_read_guard: tuple[Callable[[], int], int] | None = None
         #: True between ``begin_read_snapshot()`` and ``end_read_snapshot()``.
         #: Read paths that would otherwise end a stale transaction must leave
@@ -953,8 +1199,6 @@ class ArchiveStore:
         # Attribute type declarations shared by every open mode (the
         # source-tier acquisition branch below returns early, so inference
         # from a single assignment site would otherwise mistype these).
-        self._source_conn: sqlite3.Connection | None = None
-        self._blob_publisher: ArchiveBlobPublisher | None = None
         # This archive's own CAS for read-side availability. One instance for
         # the store's lifetime, so its read-verification memo spans reads.
         self._read_blob_store = BlobStore(archive_root / "blob")
@@ -964,7 +1208,6 @@ class ArchiveStore:
         #: Excision takes the slot exclusively before it resolves anything,
         #: so it cannot remove a session between this replay's checks and
         #: its commit, only before or after the whole write.
-        self._replay_publisher_slot: ExitStack | None = None
         #: Retained writes in progress; a commit inside one (a batched
         #: replay commits its prior cohorts before a flush) keeps the slot.
         self._retained_writes_in_progress = 0
@@ -980,7 +1223,7 @@ class ArchiveStore:
                 path = archive_root / spec.filename
                 if not path.exists():
                     raise RuntimeError(f"source-tier acquisition refused: durable tier {spec.filename} is missing")
-                with closing(open_readonly_connection(path, timeout=read_timeout, validate_schema=False)) as vconn:
+                with self._owned_read_connection(path, timeout=read_timeout, validate_schema=False) as vconn:
                     current = int(vconn.execute("PRAGMA user_version").fetchone()[0])
                 if current != spec.version:
                     from polylogue.core.errors import SchemaSkew
@@ -1006,8 +1249,6 @@ class ArchiveStore:
             from polylogue.storage.archive_identity import resolve_active_index_path
 
             self.index_db_path = resolve_active_index_path(archive_root)
-        if initialize:
-            initialize_active_archive_root(archive_root)
         if read_only:
             # ``assert_readable_archive_layout`` below is this route's version
             # refusal: it names the generation and the lifecycle action the
@@ -1039,6 +1280,8 @@ class ArchiveStore:
                 ) from exc
             pragma_statements: tuple[str, ...] = ()
         else:
+            if initialize:
+                initialize_active_archive_root(archive_root)
             require_write_lease(
                 f"ArchiveStore(index={self.index_db_path})",
                 archive_root=self._write_lease_archive_root,
@@ -1046,11 +1289,7 @@ class ArchiveStore:
             self._conn = (
                 connect_measured(f"file:{self.index_db_path}?mode=rw", uri=True)
                 if self._inactive_candidate_durable_read_only
-                # URI filenames are inert for a plain path -- SQLite only
-                # parses one when it starts with ``file:`` -- and the flag is
-                # what lets this connection ATTACH a stage-A shard read-only
-                # (polylogue-bp12n.6, ``archive_tiers/write_shard.py``).
-                else connect_measured(self.index_db_path, uri=True)
+                else connect_measured(self.index_db_path)
             )
             from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported
 
@@ -1085,7 +1324,7 @@ class ArchiveStore:
 
         self._conn.create_collation("polylogue_result_number", compare_result_number)
         for statement in pragma_statements:
-            self._conn.execute(statement)
+            execute_pragma_statement(self._conn, statement)
         if read_only and validate_index_layout:
             from polylogue.storage.sqlite.schema import assert_readable_archive_layout
 
@@ -1093,7 +1332,11 @@ class ArchiveStore:
             generation_id = (
                 resolved_index.parent.name if resolved_index.parent.parent.name == ".index-generations" else None
             )
-            assert_readable_archive_layout(self._conn, generation_id=generation_id)
+            assert_readable_archive_layout(
+                self._conn,
+                generation_id=generation_id,
+                owned_inactive_generation=self._owned_read_generation,
+            )
         if not read_only and not self._pinned_read and not skip_runtime_index_ensure:
             # Fresh-bootstrap and same-version reopen both skip runtime-index
             # ensure elsewhere (initialize_archive_tier only replays DDL once,
@@ -1114,10 +1357,217 @@ class ArchiveStore:
             self._blob_publisher = publisher_type(self.source_db_path, self.archive_root / "blob")
         self._attach_user_tier_if_present()
 
-    def _require_writable(self, operation: str) -> None:
+    def _require_sql_owner(self, *, cleanup: bool = False) -> None:
+        if self._writer_owner_pid != os.getpid():
+            raise RuntimeError("a forked process cannot use an inherited archive store")
+        try:
+            current_task = asyncio.current_task()
+        except RuntimeError:
+            current_task = None
+        if threading.current_thread() is not self._sqlite_owner_thread or (
+            current_task is not self._sqlite_owner_task
+            and not (cleanup and self._sqlite_owner_task is not None and self._sqlite_owner_task.done())
+        ):
+            # sqlite3 connections are thread-affine. Refuse before dropping
+            # handles or releasing the archive gate so their owning thread can
+            # still settle every transaction.
+            raise RuntimeError("ArchiveStore must use its SQLite handles on their owning thread")
+
+        if not cleanup:
+            pending = self._pending_index_mutation_scope
+            if pending is not None and not pending._active and not pending.settled:
+                raise ArchiveStoreSettlementError(
+                    self, RuntimeError("failed Index scope requires original-owner cleanup")
+                )
+            from polylogue.storage.sqlite.connection_profile import native_sql_children
+
+            if any(
+                (owner.close_required or owner._parent_cleanup_requested) and not owner._settled
+                for owner in native_sql_children(self)
+            ):
+                raise ArchiveStoreSettlementError(self, RuntimeError("archive SQL close remains unsettled"))
+
+    def _require_writable(self, operation: str, *, cleanup: bool = False) -> None:
         """Reject mutations before they can open or use a writable tier."""
+        self._require_sql_owner(cleanup=cleanup)
         if self._read_only:
             raise ReadOnlyArchiveError(f"read-only archive evidence cannot {operation}")
+
+    def _enter_mutation_lease(self, *, settlement: bool = False) -> None:
+        """Enter the existing archive gate unless an outer owner already holds it."""
+        from polylogue.storage.sqlite.write_lease import current_write_lease, require_write_lease, write_lease
+
+        if not settlement:
+            from polylogue.core.compute_cancel import compute_cancel_requested
+
+            if compute_cancel_requested():
+                raise asyncio.CancelledError("archive mutation cancelled before admission")
+        if self._inactive_candidate_durable_read_only:
+            destination = self._index_mutation_destination
+            if destination is None:
+                raise RuntimeError("inactive Index writer has no admitted generation destination")
+            destination.validate()
+            return
+        active = current_write_lease()
+        if active is not None:
+            lease = require_write_lease("ArchiveStore mutation", archive_root=self._write_lease_archive_root)
+            if lease is None or lease.custody is None:
+                raise RuntimeError("archive mutation admission has no physical custody")
+            self._retain_sql_custody(lease.custody)
+            return
+        if self._pending_archive_mutation_lease_context is not None:
+            require_write_lease("ArchiveStore transaction continuation", archive_root=self._write_lease_archive_root)
+            return
+        if self._sql_custody is not None:
+            if not settlement:
+                from polylogue.storage.sqlite.write_lease import UnleasedWriteError
+
+                raise UnleasedWriteError("retained archive SQL must settle before new mutation admission")
+        else:
+            require_write_lease("ArchiveStore mutation admission", archive_root=self._write_lease_archive_root)
+        context = write_lease(
+            "storage.archive_store.mutation",
+            archive_root=self._write_lease_archive_root,
+            _custody=self._sql_custody,
+            _sql_owner=self if self._sql_custody is not None else None,
+        )
+        lease = context.__enter__()
+        try:
+            if lease.custody is None:
+                raise RuntimeError("archive mutation admission has no physical custody")
+            self._retain_sql_custody(lease.custody)
+        except BaseException as exc:
+            context.__exit__(type(exc), exc, exc.__traceback__)
+            raise
+        self._pending_archive_mutation_lease_context = context
+        return
+
+    @contextmanager
+    def index_mutation_scope(
+        self, *, prepared_seal: PreparedIndexMutation | None = None
+    ) -> Iterator[IndexMutationScope]:
+        """Own one commit window, or borrow its exact already active scope."""
+        from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, current_index_mutation_scope
+
+        self._require_writable("own an Index mutation transaction")
+        current = current_index_mutation_scope()
+        if current is not None:
+            current.require_connection(self._conn)
+            yield current
+            return
+        if self._pending_index_mutation_scope is not None:
+            raise RuntimeError("the prior Index mutation scope must settle before another transaction")
+        destination = self._index_mutation_destination
+        scope: IndexMutationScope | None = None
+        try:
+            with ExitStack() as stack:
+                if destination is not None:
+                    if prepared_seal is not None:
+                        if prepared_seal.destination != destination:
+                            raise RuntimeError("inactive Index preparation must name this exact owned destination")
+                        scope = stack.enter_context(prepared_seal.mutation_scope(self._conn))
+                    else:
+                        scope = stack.enter_context(destination.mutation_scope(self._conn))
+                else:
+                    seal = prepared_seal
+                    if seal is None:
+                        seal = stack.enter_context(
+                            PreparedIndexMutation(self.index_db_path, archive_root=self._write_lease_archive_root)
+                        )
+                    self._enter_mutation_lease()
+                    scope = stack.enter_context(seal.mutation_scope(self._conn))
+                self._pending_index_mutation_scope = scope
+                yield scope
+                if scope._active:
+                    self.commit()
+        except BaseException as primary:
+            try:
+                # The mutation-scope context already attempted its Index and
+                # User children. Settle the other tiers without retrying that
+                # failed child during the same terminal call.
+                pending = self._pending_index_mutation_scope or scope
+                if pending is None or not pending._archive_cleanup_started:
+                    self._rollback_archive_writes(settle_index=False)
+            except BaseException as rollback_error:
+                raise BaseExceptionGroup(
+                    "Index mutation and archive rollback failed", [primary, rollback_error]
+                ) from primary
+            raise
+        finally:
+            if self._pending_index_mutation_scope is not None and self._pending_index_mutation_scope.settled:
+                self._pending_index_mutation_scope = None
+            if not self._has_pending_write_sql():
+                self._release_mutation_lease(None)
+
+    def _retain_sql_custody(self, custody: ArchiveWriteCustody) -> None:
+        from polylogue.storage.sqlite.write_lease import UnleasedWriteError
+
+        if self._archive_custody_identity is None:
+            self._archive_custody_identity = custody.directory_identity
+        elif self._archive_custody_identity != custody.directory_identity:
+            raise UnleasedWriteError("archive directory was replaced while this Store retained SQLite handles")
+        if self._sql_custody is not None and self._sql_custody is not custody:
+            raise RuntimeError("archive SQL cannot move between unsettled custody owners")
+        custody.retain_sql_owner(self)
+        self._sql_custody = custody
+
+    def _has_pending_write_sql(self) -> bool:
+        """Retain actual transactions and temporary writers until close settles."""
+        from polylogue.storage.sqlite.connection_profile import native_sql_children
+
+        owners = {owner._connection_identity: owner for owner in native_sql_children(self)}
+
+        def in_transaction(connection: sqlite3.Connection | None) -> bool:
+            if connection is None or isinstance(connection, _SourceTierOnlyIndexConnection):
+                return False
+            owner = owners.get(id(connection))
+            if owner is not None and owner.connection is None:
+                # SQL closed, but its parent still owns artifact/leaf cleanup.
+                # Querying the retired Python handle would hide that actual
+                # settlement state behind "closed database" driver errors.
+                return False
+            return connection.in_transaction
+
+        return bool(
+            (self._pending_index_mutation_scope is not None and not self._pending_index_mutation_scope.settled)
+            or in_transaction(self._owned_index_connection)
+            or in_transaction(self._source_conn)
+            or in_transaction(self.operation_vector_connection)
+            or self._user_write_connections
+        )
+
+    def _all_sql_handles_closed(self) -> bool:
+        return (
+            self._owned_index_connection is None
+            and self._source_conn is None
+            and self.operation_vector_connection is None
+        )
+
+    def _release_mutation_lease(
+        self, exc_info: tuple[type[BaseException], BaseException, TracebackType | None] | None
+    ) -> None:
+        context = self._pending_archive_mutation_lease_context
+        failures: list[BaseException] = []
+        if context is not None:
+            try:
+                context.__exit__(*(exc_info if exc_info is not None else (None, None, None)))
+            except BaseException as error:
+                failures.append(error)
+            else:
+                self._pending_archive_mutation_lease_context = None
+        custody = self._sql_custody
+        if custody is not None:
+            try:
+                custody.release_sql_owner(self)
+            except BaseException as error:
+                # release_sql_owner may have retired its logical reference
+                # before descriptor close failed. Its same-custody retry branch
+                # owns the still-retained physical binding.
+                failures.append(error)
+            else:
+                self._sql_custody = None
+        if failures:
+            raise failures[0] if len(failures) == 1 else BaseExceptionGroup("Archive lease settlement failed", failures)
 
     @property
     def active_cold_build_engaged(self) -> bool:
@@ -1140,11 +1590,28 @@ class ArchiveStore:
             # The emptiness proof is what licenses synchronous=OFF and
             # foreign_keys=OFF; without it this is an ordinary live write.
             for statement in write_connection_pragma_statements(WRITE_CONNECTION_PROFILE):
-                self._conn.execute(statement)
+                execute_pragma_statement(self._conn, statement)
             self._active_cold_build_engaged = False
             return
         self._active_cold_build_engaged = True
 
+    @_archive_mutator
+    def rebuild_session_insights(
+        self,
+        *,
+        session_ids: Sequence[str] | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> SessionInsightCounts:
+        """Own every materializer commit on this Store's actual connection."""
+        from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
+
+        return rebuild_session_insights_sync(
+            self._conn,
+            session_ids=session_ids,
+            progress_callback=progress_callback,
+        )
+
+    @_archive_mutator
     def finish_active_cold_build(self) -> tuple[int, int, int] | None:
         """Release the active cold-build shape at the end of a pass.
 
@@ -1198,6 +1665,7 @@ class ArchiveStore:
         self._active_cold_build_engaged = False
         return checkpoint_result
 
+    @_archive_mutator
     def restore_deferred_secondary_indexes(self) -> None:
         """Recreate deferred reader indexes before publishing a generation."""
         self._require_writable("restore deferred secondary indexes")
@@ -1245,6 +1713,21 @@ class ArchiveStore:
             frozen_index_path=index_path,
             opened_index_fd=opened_main_fd,
             validate_index_layout=validate_index_layout,
+        )
+
+    @classmethod
+    def open_owned_inactive_read(cls, generation: IndexGeneration) -> ArchiveStore:
+        """Read an original owned build before its reader indexes are restored."""
+        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
+
+        destination = IndexMutationDestination.owned_inactive(generation)
+        destination.validate()
+        return cls(
+            Path(generation.archive_root),
+            initialize=False,
+            read_only=True,
+            frozen_index_path=destination.index_path,
+            owned_read_generation=generation,
         )
 
     @classmethod
@@ -1334,6 +1817,7 @@ class ArchiveStore:
         """Whether index writes land in an owned, never-yet-promoted generation."""
         return self._owned_inactive_generation is not None
 
+    @_archive_mutator
     def run_generation_readiness_pass(self) -> None:
         """Make an owned cold-built generation publishable.
 
@@ -1463,15 +1947,48 @@ class ArchiveStore:
     def end_read_snapshot(self) -> None:
         """Release the owned read snapshot without ever committing read work."""
 
-        self._read_snapshot_owned = False
-        if self._conn.in_transaction:
-            self._conn.rollback()
-        if self._source_conn is not None and self._source_conn.in_transaction:
-            self._source_conn.rollback()
-        if self.operation_vector_connection is not None:
-            self.operation_vector_connection.rollback()
-            self.operation_vector_connection.close()
-            self.operation_vector_connection = None
+        first_error: BaseException | None = None
+        index_settled = False
+        try:
+            self._conn.set_progress_handler(None, 0)
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            index_settled = True
+        except BaseException as exc:
+            first_error = exc
+        if self._source_conn is not None:
+            try:
+                self._source_conn.set_progress_handler(None, 0)
+                if self._source_conn.in_transaction:
+                    self._source_conn.rollback()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        connection = self.operation_vector_connection
+        if connection is not None:
+            try:
+                connection.set_progress_handler(None, 0)
+                if connection.in_transaction:
+                    connection.rollback()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+            try:
+                self.close_operation_vector_connection()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+            else:
+                self.operation_vector_connection = None
+        if index_settled:
+            self._read_snapshot_owned = False
+        if self._operation_read_guard is not None:
+            guard, opcodes = self._operation_read_guard
+            for connection in (self._owned_index_connection, self._source_conn):
+                if connection is not None:
+                    connection.set_progress_handler(guard, opcodes)
+        if first_error is not None:
+            raise first_error
 
     def interrupt_reads(self) -> None:
         """Interrupt any statement active on the index read connection.
@@ -1527,6 +2044,7 @@ class ArchiveStore:
                     self.source_db_path, archive_root=self._write_lease_archive_root
                 )
             self._source_conn = conn
+            self._retain_native_connection(conn)
             self.configure_operation_read_connection(conn)
         return self._source_conn
 
@@ -1539,8 +2057,19 @@ class ArchiveStore:
             )
         if initialize:
             initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        return open_connection(self.user_db_path, archive_root=self._write_lease_archive_root)
+        connection = open_connection(self.user_db_path, archive_root=self._write_lease_archive_root)
+        self._user_write_connections.append(connection)
+        self._retain_native_connection(connection)
+        return connection
 
+    def _close_user_connection(self, connection: sqlite3.Connection) -> None:
+        """Retire a User handle only after its actual close succeeds."""
+        self._close_owned_read_connection(connection)
+        self._user_write_connections[:] = [
+            retained for retained in self._user_write_connections if retained is not connection
+        ]
+
+    @_archive_mutator
     def commit(self) -> None:
         """Commit index.db and any source transaction left by other callers.
 
@@ -1548,16 +2077,27 @@ class ArchiveStore:
         publication receipts; bulk cadence applies to the derived index.
         """
         self._require_writable("commit archive writes")
-        if self._source_tier_acquisition:
+        try:
+            if self._source_tier_acquisition:
+                if self._source_conn is not None:
+                    self._source_conn.commit()
+                return
+            from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
+
+            scope = current_index_mutation_scope()
+            if scope is not None:
+                scope.require_connection(self._conn)
+                scope.commit()
+            else:
+                self._conn.commit()
+            self._consume_index_blob_receipts()
+            self._flush_pending_raw_parse_states()
             if self._source_conn is not None:
                 self._source_conn.commit()
-            return
-        self._conn.commit()
-        self._consume_index_blob_receipts()
-        self._flush_pending_raw_parse_states()
-        if self._source_conn is not None:
-            self._source_conn.commit()
-        self._release_replay_publisher_slot()
+            self._release_replay_publisher_slot()
+        finally:
+            if not self._has_pending_write_sql():
+                self._release_mutation_lease(None)
 
     def _hold_replay_publisher_slot(self) -> None:
         if self._replay_publisher_slot is not None:
@@ -1565,15 +2105,25 @@ class ArchiveStore:
         from polylogue.storage.blob_publication import _archive_blob_publisher_slot
 
         slot = ExitStack()
-        slot.enter_context(_archive_blob_publisher_slot(self.source_db_path))
+        self._replay_publisher_lock_file = slot.enter_context(_archive_blob_publisher_slot(self.source_db_path))
         self._replay_publisher_slot = slot
 
     def _release_replay_publisher_slot(self) -> None:
         if self._retained_writes_in_progress:
             return
-        slot, self._replay_publisher_slot = self._replay_publisher_slot, None
+        slot = self._replay_publisher_slot
         if slot is not None:
             slot.close()
+        lock_file = self._replay_publisher_lock_file
+        if lock_file is not None:
+            # ExitStack pops callbacks even when native close raises. Keep the
+            # exact file, not only the exhausted stack, for creator retry.
+            if not lock_file.closed:
+                lock_file.close()
+            if not lock_file.closed:
+                raise RuntimeError("replay publisher's actual file remains open after close")
+        self._replay_publisher_lock_file = None
+        self._replay_publisher_slot = None
 
     @contextmanager
     def _retained_replay_exclusion(self, *, manage_transaction: bool) -> Iterator[None]:
@@ -1591,80 +2141,174 @@ class ArchiveStore:
             if manage_transaction:
                 self._release_replay_publisher_slot()
 
+    @_archive_mutator
     def rollback(self) -> None:
         """Roll back the index.db and (if open) source.db write connections.
 
         Used by a bulk caller to discard an uncommitted, half-applied batch when
         a write raises, before propagating the error.
         """
+        self._rollback_archive_writes(settle_index=True)
+
+    def _rollback_archive_writes(self, *, settle_index: bool) -> None:
+        self._require_sql_owner(cleanup=True)
+        failures: list[BaseException] = []
+
+        def settle(action: Callable[[], object]) -> bool:
+            try:
+                action()
+                return True
+            except BaseException as error:
+                failures.append(error)
+                return False
+
+        from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
+
+        scope = current_index_mutation_scope() or self._pending_index_mutation_scope
+        if scope is not None:
+            scope.require_cleanup_connection(self._conn)
+            scope._archive_cleanup_started = True
+        for connection in (
+            self._owned_index_connection if settle_index else None,
+            self._source_conn,
+            self.operation_vector_connection,
+            *self._user_write_connections,
+        ):
+            if connection is not None:
+                settle(partial(connection.set_progress_handler, None, 0))
+        for connection in tuple(self._user_write_connections):
+            settle(connection.rollback)
         if self._source_tier_acquisition:
             if self._source_conn is not None:
-                self._source_conn.rollback()
-            return
-        self._conn.rollback()
-        self._pending_index_blob_receipts.clear()
-        self._pending_raw_parse_states.clear()
-        if self._source_conn is not None:
-            self._source_conn.rollback()
-        self._release_replay_publisher_slot()
+                settle(self._source_conn.rollback)
+        else:
+            index_settled = (
+                settle(scope.close if scope is not None else self._conn.rollback)
+                if settle_index
+                else (scope.settled if scope is not None else not self._conn.in_transaction)
+            )
+            if index_settled:
+                self._pending_index_blob_receipts.clear()
+                self._pending_raw_parse_states.clear()
+            if self._source_conn is not None:
+                settle(self._source_conn.rollback)
+            if self.operation_vector_connection is not None:
+                settle(self.operation_vector_connection.rollback)
+            if scope is not None:
+                scope._archive_cleanup_failed = bool(failures)
+                if scope.settled:
+                    self._pending_index_mutation_scope = None
+            if not self._has_pending_write_sql():
+                settle(self._release_replay_publisher_slot)
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise BaseExceptionGroup("Archive rollback failed", failures)
+
+    def retain_settlement_callback(self, callback: Callable[[], None]) -> None:
+        """Complete a read receipt only after every owned SQL handle settles."""
+        self._require_sql_owner()
+        if self._owned_index_connection is None:
+            raise RuntimeError("settlement callback requires its existing live ArchiveStore")
+        self._settlement_callbacks.append(callback)
 
     def close(self) -> None:
+        self._require_sql_owner(cleanup=True)
+        from polylogue.storage.sqlite.connection_profile import request_native_sql_parent_cleanup
+
+        request_native_sql_parent_cleanup(self)
+        failures: list[BaseException] = []
+        attempted_connections: set[int] = set()
+
+        def settle(action: Callable[[], object]) -> bool:
+            try:
+                action()
+                return True
+            except BaseException as exc:
+                failures.append(exc)
+                return False
+
+        def settle_connection(connection: sqlite3.Connection) -> bool:
+            if isinstance(connection, _SourceTierOnlyIndexConnection):
+                return True
+            attempted_connections.add(id(connection))
+            return settle(lambda: self._close_native_connection(connection))
+
+        # Finish every handle before releasing physical custody. One failed
+        # close must not strand a later SQL connection or let another writer
+        # enter while its transaction is still live.
+        pending_scope = self._pending_index_mutation_scope
+        if pending_scope is not None and pending_scope._user_owner is not None:
+            attempted_connections.add(pending_scope._user_owner._connection_identity)
+        scope_settled = pending_scope is None or settle(pending_scope.close)
+        if scope_settled:
+            self._pending_index_mutation_scope = None
+        for connection in tuple(self._user_write_connections):
+            if settle_connection(connection):
+                self._user_write_connections[:] = [
+                    retained for retained in self._user_write_connections if retained is not connection
+                ]
         if self.operation_vector_connection is not None:
-            self.operation_vector_connection.close()
-            self.operation_vector_connection = None
+            connection = self.operation_vector_connection
+            if settle_connection(connection):
+                self.operation_vector_connection = None
         if self._blob_publisher is not None:
-            self._blob_publisher.discard_pending()
-        self._release_replay_publisher_slot()
-        # Deferral is never restored at close. Index deferral is only ever
-        # granted to an OWNED INACTIVE generation, which no reader can open:
-        # there is nothing to protect, and a close-time restore made a
-        # multi-pass cold build (polylogue-b7dkb) pay one full CREATE INDEX
-        # pass per intake page -- the exact cost the deferral removes. The
-        # generation is either made ready (``run_generation_readiness_pass``,
-        # or ``restore_deferred_secondary_indexes`` at the offline replay's
-        # boundary) or discarded.
+            settle(self._blob_publisher.discard_pending)
         if self._source_conn is not None:
-            self._source_conn.close()
-            self._source_conn = None
-        self._conn.close()
-        if self._active_writer_lease is not None:
-            self._active_writer_lease.close()
-            self._active_writer_lease = None
+            connection = self._source_conn
+            if settle_connection(connection):
+                self._source_conn = None
+        if self._owned_index_connection is not None and scope_settled:
+            connection = self._owned_index_connection
+            if settle_connection(connection):
+                self._owned_index_connection = None
+        from polylogue.storage.sqlite.connection_profile import native_sql_children, retire_native_sql_parent
 
-    @contextmanager
-    def attached_session_shard(
-        self, shard_path: Path | None, *, required: bool = False
-    ) -> Iterator[Mapping[str, PreparedSessionShardRows]]:
-        """Mount a stage-A shard read-only for the body and yield its bindings.
+        for owner in native_sql_children(self):
+            if (
+                not owner._settled
+                and owner._connection_identity not in attempted_connections
+                and (scope_settled or owner._connection_identity != id(self._owned_index_connection))
+            ):
+                settle(owner.close)
+        transactions_settled = not self._has_pending_write_sql()
+        handles_closed = (
+            all(owner._settled for owner in native_sql_children(self))
+            and self.operation_vector_connection is None
+            and self._source_conn is None
+            and self._owned_index_connection is None
+            and not self._user_write_connections
+        )
+        if handles_closed and self._active_writer_lease is not None:
+            lease = self._active_writer_lease
+            if settle(lease.close):
+                self._active_writer_lease = None
+        if transactions_settled and handles_closed and not failures:
+            settle(self._release_replay_publisher_slot)
+        if transactions_settled and handles_closed and not failures:
+            settle(lambda: self._release_mutation_lease(None))
+        physical_settled = (
+            self._active_writer_lease is None
+            and self._pending_archive_mutation_lease_context is None
+            and self._sql_custody is None
+            and self._replay_publisher_slot is None
+            and self._replay_publisher_lock_file is None
+        )
+        if handles_closed and physical_settled and not failures:
+            for callback in tuple(self._settlement_callbacks):
+                if settle(callback):
+                    self._settlement_callbacks.remove(callback)
+        callbacks_settled = not self._settlement_callbacks
+        if handles_closed and callbacks_settled and physical_settled:
+            settle(lambda: retire_native_sql_parent(self))
+        if failures:
+            failure = failures[0] if len(failures) == 1 else BaseExceptionGroup("Archive close failed", failures)
+            if not handles_closed or not physical_settled or not callbacks_settled:
+                raise ArchiveStoreSettlementError(self, failure) from failure
+            raise failure
 
-        ``None``, a missing file, or a shard this build refuses all yield an
-        empty mapping: the caller then writes with no prepared rows, which is
-        the unchanged inline path. ``required=True`` is for a caller that has
-        explicitly selected the sealed-shard route: it propagates refusal so
-        that route cannot silently become an inline write.
-        """
-        if shard_path is None:
-            if required:
-                raise ShardRefusedError("a required session shard is absent")
-            yield {}
-            return
-        self._require_writable("attach a session shard")
-        try:
-            shard = open_session_shard(shard_path)
-            attachment = attach_session_shard(self._conn, shard)
-            schema = attachment.__enter__()
-        except (ShardRefusedError, OSError, sqlite3.DatabaseError) as exc:
-            if required:
-                raise ShardRefusedError(f"required session shard refused: {exc}") from exc
-            logger.warning("index write: %s; building this session's rows inline", exc)
-            yield {}
-            return
-        try:
-            yield bind_session_shard(schema, shard)
-        finally:
-            attachment.__exit__(None, None, None)
-
-    def append_work_event(
+    @_archive_mutator
+    def admit_work_event(
         self,
         *,
         session_id: str,
@@ -1674,22 +2318,50 @@ class ArchiveStore:
         summary: str,
         timestamp: str | None = None,
     ) -> dict[str, object]:
-        """Append one agent event through the normal raw and parsed ingest seam."""
-        from polylogue.coordination.work_events import validate_work_event_id, validate_work_event_type
-        from polylogue.core.sources import provider_from_origin
+        """Acquire one typed event; its supplied retained owner publishes the Index."""
+        from polylogue.coordination.work_events import (
+            WorkEventProvenanceRefusedError,
+            validate_work_event_id,
+            validate_work_event_type,
+        )
+        from polylogue.core.sources import origin_provider_fiber
         from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
 
         event_id = validate_work_event_id(event_id)
         event_type = validate_work_event_type(event_type)
         resolved = self.resolve_session_id(session_id)
         existing = self._conn.execute(
-            "SELECT native_id, origin FROM sessions WHERE session_id = ?",
+            "SELECT native_id, origin, raw_id FROM sessions WHERE session_id = ?",
             (resolved,),
         ).fetchone()
         if existing is None:
             raise KeyError(f"session not found: {resolved}")
         native_id, origin = str(existing[0]), str(existing[1])
-        provider = provider_from_origin(Origin.from_string(origin))
+        fiber = origin_provider_fiber(Origin.from_string(origin))
+        if len(fiber) == 1:
+            provider = fiber[0]
+        else:
+            target_raw_id = existing[2]
+            if not isinstance(target_raw_id, str):
+                raise WorkEventProvenanceRefusedError(resolved, "target has no retained acquisition")
+            source = self._ensure_source_conn()
+            target_source = source.execute(
+                "SELECT origin FROM raw_sessions WHERE raw_id=?", (target_raw_id,)
+            ).fetchone()
+            if target_source is None or target_source[0] != origin:
+                raise WorkEventProvenanceRefusedError(resolved, "target acquisition has another origin")
+            # Read the canonical observations, not the first-observation cache.
+            # Two rows prove ambiguity; no full observation collection is needed.
+            modes = source.execute(
+                "SELECT capture_mode FROM raw_capture_observations WHERE raw_id=? "
+                "ORDER BY first_observed_at_ms,capture_mode LIMIT 2",
+                (target_raw_id,),
+            ).fetchall()
+            if len(modes) != 1:
+                raise WorkEventProvenanceRefusedError(resolved, "target acquisition mode is absent or ambiguous")
+            provider = Provider.from_string(str(modes[0][0]))
+            if provider not in fiber:
+                raise WorkEventProvenanceRefusedError(resolved, "target acquisition mode has another origin")
         event_payload = {**payload, "event_id": event_id, "summary": summary}
         event = ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=event_payload)
         # The event carries no header. The writer recognizes the work-event
@@ -1716,7 +2388,7 @@ class ArchiveStore:
         ).encode("utf-8")
         raw_id = WORK_EVENT_RAW_ID_PREFIX + hashlib.sha256((resolved + "\0" + event_id).encode()).hexdigest()
         self._require_writable("write source.db and index.db evidence")
-        result = write_work_event_raw_and_parsed_result(
+        admitted_raw_id = admit_work_event_raw(
             self,
             session,
             payload=raw_payload,
@@ -1725,10 +2397,10 @@ class ArchiveStore:
         )
         return {
             "event_id": event_id,
-            "session_id": result.session_id,
+            "session_id": resolved,
             "event_type": event_type,
             "summary": summary,
-            "content_changed": result.content_changed,
+            "raw_id": admitted_raw_id,
         }
 
     def _consume_index_blob_receipts(self) -> None:
@@ -1844,69 +2516,7 @@ class ArchiveStore:
             )
         return acquired, tuple(refs)
 
-    def _write_parsed_precedence_result(
-        self,
-        session: ParsedSession,
-        *,
-        raw_id: str,
-        source_index: int,
-        stage_timings_s: dict[str, float] | None,
-        stage_timing_prefix: str,
-        manage_transaction: bool,
-        preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
-        revision_authoritative: bool = False,
-        bulk_fts: bool = False,
-        bulk_build: bool = False,
-        defer_fts_rebuild: bool = False,
-    ) -> ArchiveRawParsedWriteResult:
-        return _write_parsed_precedence_result(
-            self,
-            session,
-            raw_id=raw_id,
-            source_index=source_index,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            preacquired_attachment_blobs=preacquired_attachment_blobs,
-            revision_authoritative=revision_authoritative,
-            bulk_fts=bulk_fts,
-            bulk_build=bulk_build,
-            defer_fts_rebuild=defer_fts_rebuild,
-        )
-
-    def write_raw_and_parsed(
-        self,
-        session: ParsedSession,
-        *,
-        payload: bytes,
-        source_path: str,
-        acquired_at_ms: int,
-        file_mtime_ms: int | None = None,
-        source_index: int = 0,
-        raw_id: str | None = None,
-        stage_timings_s: dict[str, float] | None = None,
-        stage_timing_prefix: str = "append",
-        manage_transaction: bool = True,
-        blob_publication_receipt_id: str | None = None,
-        finalize_raw_parse: bool = True,
-    ) -> tuple[str, str]:
-        self._require_writable("write source.db and index.db")
-        return write_raw_and_parsed(
-            self,
-            session,
-            payload=payload,
-            source_path=source_path,
-            acquired_at_ms=acquired_at_ms,
-            file_mtime_ms=file_mtime_ms,
-            source_index=source_index,
-            raw_id=raw_id,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            blob_publication_receipt_id=blob_publication_receipt_id,
-            finalize_raw_parse=finalize_raw_parse,
-        )
-
+    @_archive_mutator
     def write_raw_payload(
         self,
         *,
@@ -1914,6 +2524,12 @@ class ArchiveStore:
         capture_mode: Provider | None = None,
         payload: bytes,
         source_path: str,
+        canonical_source_path: str,
+        captured_profile_key: str | None = None,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+        source_item: SourceItemAdmission | None = None,
+        addressing_mode: str | None = None,
+        content_identity: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         source_index: int = 0,
@@ -1930,6 +2546,12 @@ class ArchiveStore:
             capture_mode=capture_mode,
             payload=payload,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             source_index=source_index,
@@ -1943,6 +2565,7 @@ class ArchiveStore:
     def raw_native_id(self, raw_id: str) -> str | None:
         return raw_native_id(self, raw_id)
 
+    @_archive_mutator
     def write_hook_event(
         self,
         *,
@@ -1994,6 +2617,7 @@ class ArchiveStore:
             policy_snapshot=policy_snapshot,
         )
 
+    @_archive_mutator
     def write_hook_events_from_carrier(
         self,
         *,
@@ -2028,6 +2652,7 @@ class ArchiveStore:
             policy_snapshot=build_excision_policy_snapshot(self.archive_root),
         )
 
+    @_archive_mutator
     def delete_hook_event(self, hook_event_id: str) -> bool:
         """Delete a hook event and its source-tier payload reference."""
         self._require_writable("delete source.db hook evidence")
@@ -2037,6 +2662,7 @@ class ArchiveStore:
         """Classify all durable hook payload evidence without mutating it."""
         return census_hook_event_authority(self._ensure_source_conn())
 
+    @_archive_mutator
     def write_raw_blob_ref(
         self,
         *,
@@ -2045,6 +2671,12 @@ class ArchiveStore:
         blob_hash_hex: str,
         blob_size: int,
         source_path: str,
+        canonical_source_path: str,
+        captured_profile_key: str | None = None,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+        source_item: SourceItemAdmission | None = None,
+        addressing_mode: str | None = None,
+        content_identity: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         source_index: int = 0,
@@ -2061,6 +2693,12 @@ class ArchiveStore:
             blob_hash_hex=blob_hash_hex,
             blob_size=blob_size,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             source_index=source_index,
@@ -2070,6 +2708,7 @@ class ArchiveStore:
             post_parse=post_parse,
         )
 
+    @_archive_mutator
     def record_raw_container_coordinate(
         self,
         raw_id: str,
@@ -2079,6 +2718,7 @@ class ArchiveStore:
         split_index: int,
         addressing_mode: MemberAddressingMode | str | None,
         content_identity: str | None = None,
+        captured_coordinate: CapturedZipMemberCoordinate,
     ) -> None:
         self._require_writable("record source.db container coordinate")
         record_raw_container_coordinate(
@@ -2089,14 +2729,22 @@ class ArchiveStore:
             split_index=split_index,
             addressing_mode=addressing_mode,
             content_identity=content_identity,
+            captured_coordinate=captured_coordinate,
         )
 
+    @_archive_mutator
     def admit_raw_artifact_payload(
         self,
         *,
         provider: Provider,
         payload: bytes,
         source_path: str,
+        canonical_source_path: str,
+        captured_profile_key: str | None = None,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+        source_item: SourceItemAdmission | None = None,
+        addressing_mode: str | None = None,
+        content_identity: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         classification: ArtifactClassification,
@@ -2114,6 +2762,12 @@ class ArchiveStore:
             provider=provider,
             payload=payload,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             classification=classification,
@@ -2122,6 +2776,7 @@ class ArchiveStore:
             blob_publication_receipt_id=blob_publication_receipt_id,
         )
 
+    @_archive_mutator
     def admit_raw_artifact_blob_ref(
         self,
         *,
@@ -2129,6 +2784,12 @@ class ArchiveStore:
         blob_hash_hex: str,
         blob_size: int,
         source_path: str,
+        canonical_source_path: str,
+        captured_profile_key: str | None = None,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+        source_item: SourceItemAdmission | None = None,
+        addressing_mode: str | None = None,
+        content_identity: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         classification: ArtifactClassification,
@@ -2144,6 +2805,12 @@ class ArchiveStore:
             blob_hash_hex=blob_hash_hex,
             blob_size=blob_size,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             classification=classification,
@@ -2152,70 +2819,12 @@ class ArchiveStore:
             blob_publication_receipt_id=blob_publication_receipt_id,
         )
 
-    def write_parsed_for_retained_raw(
-        self,
-        session: ParsedSession,
-        *,
-        raw_id: str,
-        source_path: str,
-        acquired_at_ms: int,
-        source_index: int = 0,
-        stage_timings_s: dict[str, float] | None = None,
-        stage_timing_prefix: str = "append",
-        manage_transaction: bool = True,
-        finalize_raw_parse: bool = True,
-        revision_authoritative: bool = False,
-    ) -> tuple[str, str]:
-        self._require_writable("write retained source.db and index.db evidence")
-        with self._retained_replay_exclusion(manage_transaction=manage_transaction):
-            return write_parsed_for_retained_raw(
-                self,
-                session,
-                raw_id=raw_id,
-                source_path=source_path,
-                acquired_at_ms=acquired_at_ms,
-                source_index=source_index,
-                stage_timings_s=stage_timings_s,
-                stage_timing_prefix=stage_timing_prefix,
-                manage_transaction=manage_transaction,
-                finalize_raw_parse=finalize_raw_parse,
-                revision_authoritative=revision_authoritative,
-            )
-
-    def write_parsed_for_retained_raw_result(
-        self,
-        session: ParsedSession,
-        *,
-        raw_id: str,
-        source_path: str,
-        acquired_at_ms: int,
-        source_index: int = 0,
-        stage_timings_s: dict[str, float] | None = None,
-        stage_timing_prefix: str = "append",
-        manage_transaction: bool = True,
-        finalize_raw_parse: bool = True,
-        revision_authoritative: bool = False,
-    ) -> ArchiveRawParsedWriteResult:
-        self._require_writable("write retained source.db and index.db evidence")
-        with self._retained_replay_exclusion(manage_transaction=manage_transaction):
-            return write_parsed_for_retained_raw_result(
-                self,
-                session,
-                raw_id=raw_id,
-                source_path=source_path,
-                acquired_at_ms=acquired_at_ms,
-                source_index=source_index,
-                stage_timings_s=stage_timings_s,
-                stage_timing_prefix=stage_timing_prefix,
-                manage_transaction=manage_transaction,
-                finalize_raw_parse=finalize_raw_parse,
-                revision_authoritative=revision_authoritative,
-            )
-
+    @_archive_mutator
     def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True) -> None:
         self._require_writable("bind source.db revision")
         return bind_raw_revision(self, raw_id, revision, manage_transaction=manage_transaction)
 
+    @_archive_mutator
     def promote_reconstructed_legacy_append_revisions(
         self,
         revisions: Sequence[tuple[str, RawRevisionEnvelope]],
@@ -2237,6 +2846,7 @@ class ArchiveStore:
             observed_at_ms=observed_at_ms,
         )
 
+    @_archive_mutator
     def release_provisional_full_revisions(self, raw_ids: Sequence[str]) -> None:
         self._require_writable("release source.db revisions")
         return release_provisional_full_revisions(self, raw_ids)
@@ -2261,6 +2871,7 @@ class ArchiveStore:
     def _raw_revision_source_path_has_divergent_evidence(self, logical_source_key: str) -> bool:
         return _raw_revision_source_path_has_divergent_evidence(self, logical_source_key)
 
+    @_archive_mutator
     def classify_raw_revision_cohort_for_rebuild_repair(
         self,
         logical_source_key: str,
@@ -2268,6 +2879,7 @@ class ArchiveStore:
         self._require_writable("classify source.db revision authority")
         return classify_raw_revision_cohort_for_rebuild_repair(self, logical_source_key)
 
+    @_archive_mutator
     def classify_raw_revision_cohort_for_rebuild_repair_in_transaction(
         self, logical_source_key: str
     ) -> RevisionReplayPlan:
@@ -2276,20 +2888,6 @@ class ArchiveStore:
 
     def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
         return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
-
-    def classify_raw_revision_cohort_for_live_watch(
-        self,
-        logical_source_key: str,
-    ) -> RevisionReplayPlan:
-        self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_live_watch(self, logical_source_key)
-
-    def classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key: str) -> RevisionReplayPlan:
-        self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key)
-
-    def classify_untyped_full_revision_groups(self, raw_ids: Sequence[str]) -> dict[str, tuple[str, ...]]:
-        return classify_untyped_full_revision_groups(self, raw_ids)
 
     @staticmethod
     def _promote_contiguous_append_evidence(conn: sqlite3.Connection, logical_source_key: str) -> None:
@@ -2318,6 +2916,14 @@ class ArchiveStore:
     def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
         return raw_revision_descriptor(self, raw_id)
 
+    def raw_captured_zip_coordinate(self, raw_id: str) -> CapturedZipMemberCoordinate | None:
+        """Read the exact accepted container/member receipt without filesystem discovery."""
+        return read_raw_captured_zip_coordinate(self._ensure_source_conn(), raw_id)
+
+    def raw_profile_identity(self, raw_id: str) -> str | None:
+        """Return acquisition's retained profile qualifier without filesystem lookup."""
+        return read_raw_profile_identity(self._ensure_source_conn(), raw_id)
+
     @contextmanager
     def open_raw_revision_material(self, raw_id: str) -> Iterator[tuple[Provider, BinaryIO, str, RawRevisionKind]]:
         with open_raw_revision_material(self, raw_id) as _governance_result:
@@ -2325,6 +2931,14 @@ class ArchiveStore:
 
     def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
         return raw_revision_material(self, raw_id)
+
+    @contextmanager
+    def open_raw_container_material(self, raw_id: str) -> Iterator[BinaryIO | None]:
+        coordinate = self.raw_captured_zip_coordinate(raw_id)
+        if coordinate is None:
+            raise ValueError(f"raw has no captured ZIP container: {raw_id}")
+        with open_raw_container_material(self, coordinate) as container:
+            yield container
 
     def blob_path_for_hash(self, blob_hash: str) -> Path | None:
         return blob_path_for_hash(self, blob_hash)
@@ -2348,31 +2962,6 @@ class ArchiveStore:
 
     def raw_payload_sizes(self, raw_ids: Sequence[str]) -> dict[str, int]:
         return raw_payload_sizes(self, raw_ids)
-
-    def replace_raw_membership_census(
-        self,
-        raw_id: str,
-        sessions: Sequence[ParsedSession] | None,
-        *,
-        parser_fingerprint: str,
-        censused_at_ms: int,
-        detail: str = "",
-        retire_full_revision_governance: bool = False,
-        projections: Sequence[SessionRevisionProjection] | None = None,
-        manage_transaction: bool = True,
-    ) -> None:
-        self._require_writable("replace source.db membership census")
-        return replace_raw_membership_census(
-            self,
-            raw_id,
-            sessions,
-            parser_fingerprint=parser_fingerprint,
-            censused_at_ms=censused_at_ms,
-            detail=detail,
-            retire_full_revision_governance=retire_full_revision_governance,
-            projections=projections,
-            manage_transaction=manage_transaction,
-        )
 
     def convertible_full_revision_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
         return convertible_full_revision_raw_ids(self, logical_source_key)
@@ -2435,23 +3024,21 @@ class ArchiveStore:
     def raw_membership_decision_pending(self, raw_id: str) -> bool:
         return raw_membership_decision_pending(self, raw_id)
 
-    def raw_revision_replay_adoptable(self, sessions: Sequence[ParsedSession]) -> bool:
-        return raw_revision_replay_adoptable(self, sessions)
-
+    @_archive_mutator
     def defer_raw_revision_adoption(
         self,
-        logical_source_key: str,
-        raw_ids: Sequence[str],
-        sessions: Sequence[ParsedSession],
+        prepared: PreparedRevisionAdoption,
     ) -> None:
-        self._require_writable("defer source.db revision adoption")
-        return defer_raw_revision_adoption(self, logical_source_key, raw_ids, sessions)
+        self._require_writable("defer Index revision adoption")
+        return defer_raw_revision_adoption(self, prepared)
 
+    @_archive_mutator
     def apply_raw_revision_replay(
         self,
         plan: RevisionReplayPlan,
         parsed_by_raw_id: dict[str, ParsedSession],
         *,
+        prepared_outcome: PreparedRevisionReplayOutcome,
         acquired_at_ms: int,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "revision_replay",
@@ -2460,16 +3047,16 @@ class ArchiveStore:
         bulk_build: bool = False,
         fresh_build: bool = False,
         fresh_build_batch: set[str] | None = None,
-        skip_already_applied: bool = False,
-        prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
+        prepared_by_raw_id: dict[str, PreparedSessionRows] | None = None,
         prepared_required_raw_ids: frozenset[str] = frozenset(),
-        preacquired_attachment_blobs_by_raw_id: Mapping[str, dict[Any, tuple[bytes | None, int, str]]] | None = None,
-        preacquired_attachment_refs_by_raw_id: Mapping[str, tuple[ArchiveSourceBlobRef, ...]] | None = None,
+        preacquired_attachment_blobs_by_raw_id: Mapping[str, Mapping[object, tuple[bytes | None, int, str]]]
+        | None = None,
         prepared_aggregate_session: ParsedSession | None = None,
-        prepared_pending_session: ParsedSession | None = None,
-        prepared_aggregate_rows: PreparedRows | None = None,
+        preacquired_aggregate_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
+        prepared_aggregate_rows: PreparedSessionRows | None = None,
         prepared_write: PreparedSessionWrite | None = None,
         prepared_aggregate_content_hash: bytes | None = None,
+        write_result: Callable[[ArchiveRawParsedWriteResult], None] | None = None,
     ) -> tuple[str, tuple[str, ...]]:
         self._require_writable("apply source.db revision replay")
         with self._retained_replay_exclusion(manage_transaction=manage_transaction):
@@ -2477,6 +3064,7 @@ class ArchiveStore:
                 self,
                 plan,
                 parsed_by_raw_id,
+                prepared_outcome=prepared_outcome,
                 acquired_at_ms=acquired_at_ms,
                 stage_timings_s=stage_timings_s,
                 stage_timing_prefix=stage_timing_prefix,
@@ -2485,66 +3073,23 @@ class ArchiveStore:
                 bulk_build=bulk_build,
                 fresh_build=fresh_build,
                 fresh_build_batch=fresh_build_batch,
-                skip_already_applied=skip_already_applied,
                 prepared_by_raw_id=prepared_by_raw_id,
                 prepared_required_raw_ids=prepared_required_raw_ids,
                 preacquired_attachment_blobs_by_raw_id=preacquired_attachment_blobs_by_raw_id,
-                preacquired_attachment_refs_by_raw_id=preacquired_attachment_refs_by_raw_id,
                 prepared_aggregate_session=prepared_aggregate_session,
-                prepared_pending_session=prepared_pending_session,
+                preacquired_aggregate_attachment_blobs=preacquired_aggregate_attachment_blobs,
                 prepared_aggregate_rows=prepared_aggregate_rows,
                 prepared_write=prepared_write,
                 prepared_aggregate_content_hash=prepared_aggregate_content_hash,
+                write_result=write_result,
             )
 
-    def apply_raw_membership_classification(
-        self,
-        logical_source_key: str,
-        classification: MembershipClassification,
-        parsed_by_raw_id: dict[str, ParsedSession],
-        projections_by_raw_id: dict[str, SessionRevisionProjection],
-        *,
-        acquired_at_ms: int,
-        stage_timings_s: dict[str, float] | None = None,
-        stage_timing_prefix: str = "membership_replay",
-        manage_transaction: bool = True,
-        bulk_fts: bool = False,
-        bulk_build: bool = False,
-        fresh_build: bool = False,
-        fresh_build_batch: set[str] | None = None,
-        preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
-        preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
-        prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
-        prepared_required_raw_ids: frozenset[str] = frozenset(),
-        prepared_write: PreparedSessionWrite | None = None,
-    ) -> str | None:
-        self._require_writable("apply source.db membership classification")
-        with self._retained_replay_exclusion(manage_transaction=manage_transaction):
-            return apply_raw_membership_classification(
-                self,
-                logical_source_key,
-                classification,
-                parsed_by_raw_id,
-                projections_by_raw_id,
-                acquired_at_ms=acquired_at_ms,
-                stage_timings_s=stage_timings_s,
-                stage_timing_prefix=stage_timing_prefix,
-                manage_transaction=manage_transaction,
-                bulk_fts=bulk_fts,
-                bulk_build=bulk_build,
-                fresh_build=fresh_build,
-                fresh_build_batch=fresh_build_batch,
-                preacquired_attachment_blobs=preacquired_attachment_blobs,
-                preacquired_attachment_refs=preacquired_attachment_refs,
-                prepared_by_raw_id=prepared_by_raw_id,
-                prepared_required_raw_ids=prepared_required_raw_ids,
-                prepared_write=prepared_write,
-            )
-
+    @_archive_mutator
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:
         self._require_writable("finalize source.db parse state")
         return finalize_raw_parse_state(self, raw_id, state=state)
 
+    @_archive_mutator
     def mark_raw_parse_failed(
         self,
         raw_id: str,
@@ -2562,6 +3107,7 @@ class ArchiveStore:
             preserve_existing_failure_evidence=preserve_existing_failure_evidence,
         )
 
+    @_archive_mutator
     def record_raw_failure_evidence(
         self,
         raw_id: str,
@@ -2583,6 +3129,7 @@ class ArchiveStore:
             kind=kind,
         )
 
+    @_archive_mutator
     def mark_raw_parse_succeeded(self, raw_id: str, *, provider: Provider) -> None:
         self._require_writable("mark source.db parse success")
         return mark_raw_parse_succeeded(self, raw_id, provider=provider)
@@ -2590,126 +3137,89 @@ class ArchiveStore:
     def _flush_pending_raw_parse_states(self) -> None:
         return _flush_pending_raw_parse_states(self)
 
-    def _index_parsed_for_retained_raw(
-        self,
-        session: ParsedSession,
-        *,
-        raw_id: str,
-        source_index: int,
-        stage_timings_s: dict[str, float] | None,
-        stage_timing_prefix: str,
-        manage_transaction: bool,
-        preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]],
-        finalize_raw_parse: bool,
-        revision_authoritative: bool = False,
-        bulk_fts: bool = False,
-        bulk_build: bool = False,
-        defer_fts_rebuild: bool = False,
-    ) -> ArchiveRawParsedWriteResult:
-        return _index_parsed_for_retained_raw(
-            self,
-            session,
-            raw_id=raw_id,
-            source_index=source_index,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            preacquired_attachment_blobs=preacquired_attachment_blobs,
-            finalize_raw_parse=finalize_raw_parse,
-            revision_authoritative=revision_authoritative,
-            bulk_fts=bulk_fts,
-            bulk_build=bulk_build,
-            defer_fts_rebuild=defer_fts_rebuild,
-        )
-
-    @staticmethod
-    def _raw_parse_success_state(provider: Provider) -> RawSessionStateUpdate:
-        return _raw_parse_success_state(provider)
-
-    @staticmethod
-    def _raw_parse_failure_state(provider: Provider, exc: BaseException) -> RawSessionStateUpdate:
-        return _raw_parse_failure_state(provider, exc)
-
-    def write_raw_and_parsed_result(
-        self,
-        session: ParsedSession,
-        *,
-        payload: bytes,
-        source_path: str,
-        acquired_at_ms: int,
-        file_mtime_ms: int | None = None,
-        source_index: int = 0,
-        raw_id: str | None = None,
-        stage_timings_s: dict[str, float] | None = None,
-        stage_timing_prefix: str = "append",
-        manage_transaction: bool = True,
-        blob_publication_receipt_id: str | None = None,
-        finalize_raw_parse: bool = True,
-    ) -> ArchiveRawParsedWriteResult:
-        self._require_writable("write source.db and index.db evidence")
-        return write_raw_and_parsed_result(
-            self,
-            session,
-            payload=payload,
-            source_path=source_path,
-            acquired_at_ms=acquired_at_ms,
-            file_mtime_ms=file_mtime_ms,
-            source_index=source_index,
-            raw_id=raw_id,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            blob_publication_receipt_id=blob_publication_receipt_id,
-            finalize_raw_parse=finalize_raw_parse,
-        )
-
-    def admit_raw_and_parsed_result(
-        self,
-        session: ParsedSession,
-        *,
-        payload: bytes,
-        source_path: str,
-        acquired_at_ms: int,
-        file_mtime_ms: int | None = None,
-        logical_source_key: str,
-        source_index: int = 0,
-        raw_id: str | None = None,
-        shared_raw: bool = False,
-        stage_timings_s: dict[str, float] | None = None,
-        stage_timing_prefix: str = "append",
-        manage_transaction: bool = True,
-        blob_publication_receipt_id: str | None = None,
-        finalize_raw_parse: bool = True,
-    ) -> ArchiveRawParsedWriteResult:
-        """Write raw bytes through the raw-admission chokepoint, then index.
-
-        See :func:`polylogue.storage.sqlite.archive_tiers.revision_governance.admit_raw_and_parsed_result`.
-        Restricted to first-observation callers (no prior head exists for
-        ``logical_source_key``); use :meth:`write_raw_and_parsed_result` for
-        callers with revision-chain/dedup semantics of their own.
-        """
-        self._require_writable("admit source.db and index.db evidence")
-        return admit_raw_and_parsed_result(
-            self,
-            session,
-            payload=payload,
-            source_path=source_path,
-            acquired_at_ms=acquired_at_ms,
-            file_mtime_ms=file_mtime_ms,
-            logical_source_key=logical_source_key,
-            source_index=source_index,
-            raw_id=raw_id,
-            shared_raw=shared_raw,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            blob_publication_receipt_id=blob_publication_receipt_id,
-            finalize_raw_parse=finalize_raw_parse,
-        )
-
     def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
         """Read a session envelope from index.db."""
         return read_archive_session_envelope(self._conn, session_id, blob_store=self._read_blob_store)
+
+    def read_session_sort_metrics(
+        self, session_id: str, *, sort: Literal["messages", "words", "longest", "tokens"]
+    ) -> tuple[int, int, int, bool, int]:
+        """Aggregate composed numeric sort metrics without hydrating messages.
+
+        The transcript plan is the same lineage segment plan used by session
+        reads. Token columns are streamed for token ordering; block text is
+        streamed only for word ordering and counted without materializing a
+        list of words. Inherited prefixes are included in either case.
+        """
+        plan = _composed_transcript_plan(self._conn, session_id)
+        if sort == "messages":
+            return plan.total_message_count, 0, 0, False, 0
+        words = 0
+        longest = 0
+        measured_tokens = False
+        tokens = 0
+        for segment in plan.segments:
+            bound = ""
+            params: tuple[object, ...] = (segment.session_id,)
+            if segment.upto_position is not None and segment.upto_variant_index is not None:
+                bound = " AND (m.position, m.variant_index) <= (?, ?)"
+                params = (*params, segment.upto_position, segment.upto_variant_index)
+            with closing(self._conn.cursor()) as cursor:
+                cursor.execute(
+                    "SELECT m.position AS message_position, m.variant_index AS message_variant, "
+                    + ("b.text AS block_text, " if sort in {"words", "longest"} else "")
+                    + "m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_write_tokens "
+                    + "FROM messages m "
+                    + (
+                        "LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id "
+                        if sort in {"words", "longest"}
+                        else ""
+                    )
+                    + f"WHERE m.session_id = ?{bound} "
+                    + (
+                        "ORDER BY m.position, m.variant_index, b.position"
+                        if sort in {"words", "longest"}
+                        else "ORDER BY m.position, m.variant_index"
+                    ),
+                    params,
+                )
+                current_message: tuple[int, int] | None = None
+                message_words = 0
+                while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+                    self.check_operation_read()
+                    for row in rows:
+                        message_key = (int(row["message_position"]), int(row["message_variant"]))
+                        if message_key != current_message:
+                            if current_message is not None:
+                                words += message_words
+                                longest = max(longest, message_words)
+                            current_message = message_key
+                            message_words = 0
+                            values = tuple(
+                                row[name]
+                                for name in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+                            )
+                            measured_tokens = measured_tokens or any(value is not None for value in values)
+                            tokens += sum(int(value or 0) for value in values)
+                        if sort in {"words", "longest"}:
+                            block_text = row["block_text"]
+                            if block_text:
+                                in_word = False
+                                text = str(block_text)
+                                for offset in range(0, len(text), SORT_METRIC_TEXT_CHUNK):
+                                    self.check_operation_read()
+                                    chunk_end = min(offset + SORT_METRIC_TEXT_CHUNK, len(text))
+                                    for index in range(offset, chunk_end):
+                                        character = text[index]
+                                        if character.isspace():
+                                            in_word = False
+                                        elif not in_word:
+                                            message_words += 1
+                                            in_word = True
+                if current_message is not None:
+                    words += message_words
+                    longest = max(longest, message_words)
+        return plan.total_message_count, words, longest, measured_tokens, tokens
 
     def read_compact_lineage(
         self,
@@ -2934,7 +3444,7 @@ class ArchiveStore:
         if raw_row is None or raw_row["raw_id"] is None or not self.source_db_path.exists():
             return [], 0
         raw_id = str(raw_row["raw_id"])
-        source_conn = open_readonly_connection(self.source_db_path, validate_schema=False)
+        source_conn = self._open_read_connection(self.source_db_path, validate_schema=False)
         source_conn.row_factory = sqlite3.Row
         try:
             total = int(
@@ -2952,7 +3462,7 @@ class ArchiveStore:
                 (raw_id, max(limit, 0), max(offset, 0)),
             ).fetchall()
         finally:
-            source_conn.close()
+            self._close_owned_read_connection(source_conn)
         return [
             {
                 "raw_id": str(row["raw_id"]),
@@ -2990,12 +3500,12 @@ class ArchiveStore:
             return None
         origin = str(row["origin"])
         native_id = str(row["native_id"])
-        source_conn = open_readonly_connection(self.source_db_path, validate_schema=False)
+        source_conn = self._open_read_connection(self.source_db_path, validate_schema=False)
         source_conn.row_factory = sqlite3.Row
         try:
             events = list_hook_events(source_conn, origin=origin, session_native_id=native_id)
         finally:
-            source_conn.close()
+            self._close_owned_read_connection(source_conn)
         by_event_type: dict[str, int] = {}
         for event in events:
             by_event_type[event.event_type] = by_event_type.get(event.event_type, 0) + 1
@@ -3122,12 +3632,12 @@ class ArchiveStore:
         if row is None:
             return None
         session_rows = self._conn.execute(
-            """
+            f"""
             SELECT s.session_id, s.parent_session_id, s.origin, s.title,
                    s.message_count, s.word_count, s.tool_use_count,
                    s.created_at_ms, s.updated_at_ms, s.git_repository_url,
                    s.git_branch, sp.first_message_at, sp.last_message_at,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd))
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL})
                       FROM session_model_usage u WHERE u.session_id = s.session_id)
                      AS profile_total_cost_usd
             FROM thread_sessions ts
@@ -3352,7 +3862,7 @@ class ArchiveStore:
             SELECT s.origin AS source_name,
                    u.model_name AS model_name,
                    COUNT(DISTINCT u.session_id) AS session_count,
-                   COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), CASE WHEN (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN MAX(s.reported_cost_usd) ELSE 0.0 END, 0.0) AS stored_cost_usd,
+                   COALESCE(SUM(u.provider_cost_usd), {MODEL_USAGE_CATALOG_SUM_SQL}, CASE WHEN (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN MAX(s.reported_cost_usd) ELSE 0.0 END, 0.0) AS stored_cost_usd,
                    COALESCE(SUM(u.cost_credits), 0.0) AS stored_credits,
                    COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
@@ -3708,7 +4218,7 @@ class ArchiveStore:
                    s.origin AS source_name,
                    COALESCE(u.model_name, '') AS model_name,
                    COUNT(DISTINCT u.session_id) AS session_count,
-                   COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), 0.0) AS stored_cost_usd,
+                   COALESCE(SUM(u.provider_cost_usd), {MODEL_USAGE_CATALOG_SUM_SQL}, 0.0) AS stored_cost_usd,
                    COALESCE(SUM(u.cost_credits), 0.0) AS stored_credits,
                    COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
@@ -3953,7 +4463,7 @@ class ArchiveStore:
             where.append("s.origin = ?")
             params.append(origin)
         scope, scope_params = _session_filter_clause(
-            "s", tags=split_csv(tag), repo_names=split_csv(repo), tags_relation=self._tags_relation, prefix=""
+            "s", tags=split_csv(tag), repo_names=split_repo_names(repo), tags_relation=self._tags_relation, prefix=""
         )
         if scope:
             where.append(scope)
@@ -4184,7 +4694,7 @@ class ArchiveStore:
             where.append(f"sp.{search_column} LIKE ?")
             params.append(f"%{query}%")
         scope, scope_params = _session_filter_clause(
-            "s", tags=split_csv(tag), repo_names=split_csv(repo), tags_relation=self._tags_relation, prefix=""
+            "s", tags=split_csv(tag), repo_names=split_repo_names(repo), tags_relation=self._tags_relation, prefix=""
         )
         if scope:
             where.append(scope)
@@ -4291,88 +4801,7 @@ class ArchiveStore:
 
     def resolve_session_id(self, token: str) -> str:
         """Resolve an exact or prefix session id token."""
-        exact = self._conn.execute(
-            "SELECT session_id FROM sessions WHERE session_id = ?",
-            (token,),
-        ).fetchone()
-        if exact is not None:
-            return str(exact["session_id"])
-        if ":" in token:
-            provider_token, native_id = token.split(":", 1)
-            origin_id = f"{origin_from_provider(Provider.from_string(provider_token)).value}:{native_id}"
-            exact = self._conn.execute(
-                "SELECT session_id FROM sessions WHERE session_id = ?",
-                (origin_id,),
-            ).fetchone()
-            if exact is not None:
-                return str(exact["session_id"])
-        lower_bound, upper_bound = session_id_prefix_bounds(token)
-        where = "session_id >= ?"
-        params: list[str] = [lower_bound]
-        if upper_bound is not None:
-            where = f"{where} AND session_id < ?"
-            params.append(upper_bound)
-        rows = self._conn.execute(
-            f"""
-            SELECT session_id
-            FROM sessions
-            WHERE {where}
-            ORDER BY session_id
-            LIMIT 2
-            """,
-            tuple(params),
-        ).fetchall()
-        if not rows:
-            # Suffix fallback: a bare native id (e.g. the UUID that appears as
-            # the session's source filename, ``1944721d-...``), full or a
-            # prefix of it, resolves to the stored ``<origin>:<native_id>``.
-            # Try the EXACT native id first (no trailing ``%``): in an
-            # archive with sibling native ids where one is a prefix of
-            # another (``abc`` and ``abcd``), an exact lookup for ``abc``
-            # must still return only the ``abc`` row, not raise ambiguous
-            # just because ``abcd`` also matches the widened prefix pattern
-            # below (#2626 review). Only fall through to the prefix-widened
-            # (trailing ``%``) match -- which allows a truncated prefix to
-            # resolve, #7q16 -- when the exact lookup finds nothing. The
-            # leading ``:`` anchors both patterns to right after the origin
-            # separator so neither can match mid-native-id. Provider native
-            # ids are globally unique, so a single match is unambiguous;
-            # multiple matches raise just like the prefix path rather than
-            # guessing.
-            if ":" not in token:
-                like_token = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                exact_suffix_rows = self._conn.execute(
-                    """
-                    SELECT session_id
-                    FROM sessions
-                    WHERE session_id LIKE '%:' || ? ESCAPE '\\'
-                    ORDER BY session_id
-                    LIMIT 2
-                    """,
-                    (like_token,),
-                ).fetchall()
-                if len(exact_suffix_rows) == 1:
-                    return str(exact_suffix_rows[0]["session_id"])
-                if len(exact_suffix_rows) > 1:
-                    raise ValueError(f"session id suffix {token!r} is ambiguous")
-                suffix_rows = self._conn.execute(
-                    """
-                    SELECT session_id
-                    FROM sessions
-                    WHERE session_id LIKE '%:' || ? || '%' ESCAPE '\\'
-                    ORDER BY session_id
-                    LIMIT 2
-                    """,
-                    (like_token,),
-                ).fetchall()
-                if len(suffix_rows) == 1:
-                    return str(suffix_rows[0]["session_id"])
-                if len(suffix_rows) > 1:
-                    raise ValueError(f"session id prefix {token!r} is ambiguous")
-            raise KeyError(token)
-        if len(rows) > 1:
-            raise ValueError(f"session id prefix {token!r} is ambiguous")
-        return str(rows[0]["session_id"])
+        return resolve_session_id_in_index(self._conn, token)
 
     def resolve_exact_session_ids(
         self,
@@ -4441,6 +4870,7 @@ class ArchiveStore:
             return IndexStatus(exists=False, count=0)
         return IndexStatus(exists=True, count=_count_scalar(self._conn, "SELECT COUNT(*) FROM messages_fts"))
 
+    @_archive_mutator
     def add_user_tags(
         self,
         session_ids: tuple[str, ...],
@@ -4486,7 +4916,7 @@ class ArchiveStore:
                 user_conn.rollback()
                 raise
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         self._attach_user_tier_if_present()
         if changed:
             from polylogue.storage.search.cache import invalidate_search_cache
@@ -4494,6 +4924,7 @@ class ArchiveStore:
             invalidate_search_cache()
         return changed
 
+    @_archive_mutator
     def remove_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
         """Mark user tag assertions deleted and return deleted row count."""
         self._require_writable("delete user.db tags")
@@ -4524,7 +4955,7 @@ class ArchiveStore:
                 user_conn.rollback()
                 raise
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         self._attach_user_tier_if_present()
         if removed:
             from polylogue.storage.search.cache import invalidate_search_cache
@@ -4675,7 +5106,12 @@ class ArchiveStore:
         return self._read_insights().list_tool_usage_insights(query)
 
     def list_tool_episode_insights(self, query: ToolEpisodeQuery | None = None) -> list[ToolEpisodeInsight]:
-        return self._read_insights().list_tool_episode_insights(query)
+        reader = self._read_insights()
+        result = reader.list_tool_episode_insights(query)
+        self.operation_degraded_components = tuple(
+            dict.fromkeys((*self.operation_degraded_components, *reader.degraded_components))
+        )
+        return result
 
     def list_command_shape_usage(self, query: CommandShapeUsageQuery | None = None) -> list[CommandShapeUsage]:
         """Report normalized command-shape usage from canonical actions."""
@@ -5099,6 +5535,7 @@ class ArchiveStore:
             offset=offset,
         )
 
+    @_archive_mutator
     def set_user_metadata(self, session_ids: tuple[str, ...], pairs: tuple[tuple[str, object], ...]) -> int:
         """Set human-owned metadata as archive user.db assertions."""
         user_conn = self._open_user_write_connection(initialize=True)
@@ -5140,7 +5577,7 @@ class ArchiveStore:
                 user_conn.rollback()
                 raise
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         return changed
 
     def read_user_metadata(self, session_id: str) -> dict[str, object]:
@@ -5148,12 +5585,12 @@ class ArchiveStore:
         resolved_session_id = self.resolve_session_id(session_id)
         if not self.user_db_path.exists():
             return {}
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             rows = list_assertions_for_target(user_conn, f"session:{resolved_session_id}", kind=AssertionKind.METADATA)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         decoded: dict[str, object] = {}
         for assertion in rows:
             if assertion.status == "deleted" or assertion.key is None:
@@ -5161,6 +5598,7 @@ class ArchiveStore:
             decoded[str(assertion.key)] = assertion.value
         return decoded
 
+    @_archive_mutator
     def delete_user_metadata(self, session_id: str, key: str) -> int:
         """Mark one user metadata assertion deleted."""
         (resolved_session_id,) = self.require_stored_session_ids((session_id,))
@@ -5188,8 +5626,9 @@ class ArchiveStore:
                 user_conn.rollback()
                 raise
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def add_mark(
         self,
         target_type: str,
@@ -5215,8 +5654,9 @@ class ArchiveStore:
                 )
             return not exists
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def remove_mark(self, target_type: str, target_id: str, mark_type: str) -> bool:
         """Remove one user mark from archive user.db."""
         if not self.user_db_path.exists():
@@ -5230,7 +5670,7 @@ class ArchiveStore:
                     "deleted",
                 )
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def list_marks(
         self,
@@ -5243,11 +5683,11 @@ class ArchiveStore:
         """List user marks from archive user.db."""
         if not self.user_db_path.exists():
             return []
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.MARK)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         selected: list[tuple[ArchiveAssertionEnvelope, str, str]] = []
         for assertion in assertions:
             found_target_type, found_target_id = _split_user_target_ref(assertion.target_ref)
@@ -5276,6 +5716,7 @@ class ArchiveStore:
             )
         return out
 
+    @_archive_mutator
     def save_annotation(
         self,
         annotation_id: str,
@@ -5303,8 +5744,9 @@ class ArchiveStore:
                 )
             return not exists
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def save_annotation_schema(
         self,
         schema: AnnotationSchema,
@@ -5323,7 +5765,7 @@ class ArchiveStore:
                     registered_at_ms=registered_at_ms if registered_at_ms is not None else int(time.time() * 1000),
                 )
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_annotation_schema(
         self,
@@ -5334,25 +5776,26 @@ class ArchiveStore:
 
         if not self.user_db_path.exists():
             return None
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             return read_durable_annotation_schema(user_conn, schema_id, version)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def list_annotation_schemas(self) -> tuple[DurableAnnotationSchema, ...]:
         """List durable annotation schema definitions in identity order."""
 
         if not self.user_db_path.exists():
             return ()
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             return list_durable_annotation_schemas(user_conn)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def save_annotation_batch(self, batch: AnnotationBatch) -> AnnotationBatch:
         """Persist one immutable annotation-batch provenance container."""
 
@@ -5362,19 +5805,19 @@ class ArchiveStore:
             with user_conn:
                 return persist_annotation_batch(user_conn, batch)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_annotation_batch(self, batch_id: str) -> AnnotationBatch | None:
         """Read one durable annotation batch by id."""
 
         if not self.user_db_path.exists():
             return None
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             return read_annotation_batch(user_conn, batch_id)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_annotation_batch_page(self, batch_id: str, *, limit: int, offset: int) -> AnnotationBatchReadPage | None:
         """Read exact batch evidence from the original pinned User snapshot."""
@@ -5399,7 +5842,7 @@ class ArchiveStore:
 
         if not self.user_db_path.exists():
             return ()
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             return _list_annotation_batches(
@@ -5410,7 +5853,7 @@ class ArchiveStore:
                 limit=limit,
             )
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_annotation(self, annotation_id: str) -> dict[str, str] | None:
         """Read one annotation from archive user.db."""
@@ -5435,11 +5878,11 @@ class ArchiveStore:
         """
         if not self.user_db_path.exists():
             return []
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.ANNOTATION)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         selected: list[tuple[ArchiveAssertionEnvelope, str, str]] = []
         for assertion in assertions:
             found_annotation_id = str(assertion.key or "")
@@ -5471,6 +5914,7 @@ class ArchiveStore:
             )
         return out
 
+    @_archive_mutator
     def delete_annotation(self, annotation_id: str) -> bool:
         """Delete one annotation from archive user.db."""
         if not self.user_db_path.exists():
@@ -5480,8 +5924,9 @@ class ArchiveStore:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_annotation(annotation_id), "deleted")
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def save_view(self, view_id: str, name: str, query_json: str, *, watch: bool = False) -> bool:
         """Create or update one saved view in archive user.db.
 
@@ -5540,7 +5985,7 @@ class ArchiveStore:
                     clear_query_watch(user_conn, name=previous_name, now_ms=envelope.updated_at_ms)
             return not exists
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_view(self, view_id: str) -> dict[str, str] | None:
         """Get one saved view by id from archive user.db."""
@@ -5558,11 +6003,11 @@ class ArchiveStore:
         del where, params
         if not self.user_db_path.exists():
             return []
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.SAVED_QUERY)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         return [
             {
                 "view_id": _id_from_target_ref(assertion.target_ref, "saved_view:"),
@@ -5577,6 +6022,7 @@ class ArchiveStore:
             for assertion in assertions
         ]
 
+    @_archive_mutator
     def delete_view(self, view_id: str) -> bool:
         """Delete one saved view from archive user.db, watch binding included.
 
@@ -5608,8 +6054,9 @@ class ArchiveStore:
                     clear_query_watch(user_conn, name=watched_name, now_ms=deleted_at_ms)
             return deleted
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def save_recall_pack(
         self,
         pack_id: str,
@@ -5631,7 +6078,7 @@ class ArchiveStore:
                 upsert_recall_pack(user_conn, label, payload, recall_pack_id=pack_id)
             return not exists
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_recall_pack(self, pack_id: str) -> dict[str, str] | None:
         """Get one recall pack by id from archive user.db."""
@@ -5645,11 +6092,11 @@ class ArchiveStore:
         del where, params
         if not self.user_db_path.exists():
             return []
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.RECALL_PACK)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         out: list[dict[str, str]] = []
         for assertion in assertions:
             payload = assertion.value if isinstance(assertion.value, dict) else {}
@@ -5667,6 +6114,7 @@ class ArchiveStore:
             )
         return out
 
+    @_archive_mutator
     def delete_recall_pack(self, pack_id: str) -> bool:
         """Delete one recall pack from archive user.db."""
         if not self.user_db_path.exists():
@@ -5676,8 +6124,9 @@ class ArchiveStore:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_recall_pack(pack_id), "deleted")
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def save_workspace(
         self,
         *,
@@ -5707,7 +6156,7 @@ class ArchiveStore:
                 upsert_workspace(user_conn, name, settings, workspace_id=workspace_id)
             return not exists
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_workspace(self, workspace_id: str) -> dict[str, str] | None:
         """Get one workspace by id from archive user.db."""
@@ -5725,11 +6174,11 @@ class ArchiveStore:
         del where, params
         if not self.user_db_path.exists():
             return []
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.WORKSPACE_NOTE)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         out: list[dict[str, str]] = []
         for assertion in assertions:
             settings = assertion.value if isinstance(assertion.value, dict) else {}
@@ -5749,6 +6198,7 @@ class ArchiveStore:
             )
         return out
 
+    @_archive_mutator
     def delete_workspace(self, workspace_id: str) -> bool:
         """Delete one workspace from archive user.db."""
         if not self.user_db_path.exists():
@@ -5758,8 +6208,9 @@ class ArchiveStore:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_workspace(workspace_id), "deleted")
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def record_correction(
         self,
         session_id: str,
@@ -5787,7 +6238,7 @@ class ArchiveStore:
                     author_kind=author_kind,
                 )
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         listed = self.list_corrections(session_id=resolved_session_id, kind=correction_kind.value)
         if not listed:
             raise KeyError((resolved_session_id, correction_kind.value))
@@ -5799,11 +6250,11 @@ class ArchiveStore:
             return []
         resolved_session_id = self.resolve_session_id(session_id) if session_id else None
         correction_kind = parse_correction_kind(kind).value if kind is not None else None
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.CORRECTION)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         out: list[LearningCorrection] = []
         for assertion in assertions:
             target_type, target_id = _split_user_target_ref(assertion.target_ref)
@@ -5821,6 +6272,7 @@ class ArchiveStore:
             )
         return out
 
+    @_archive_mutator
     def delete_correction(self, session_id: str, kind: str) -> bool:
         """Delete one learning correction from archive user.db."""
         (resolved_session_id,) = self.require_stored_session_ids((session_id,))
@@ -5833,8 +6285,9 @@ class ArchiveStore:
                 correction_id = correction_id_for("insight", resolved_session_id, correction_kind.value)
                 return mark_assertion_status(user_conn, assertion_id_for_correction(correction_id), "deleted")
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def clear_corrections(self, session_id: str) -> int:
         """Delete all learning corrections for one archive session."""
         (resolved_session_id,) = self.require_stored_session_ids((session_id,))
@@ -5854,8 +6307,9 @@ class ArchiveStore:
                         deleted_count += 1
                 return deleted_count
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def post_blackboard_note(
         self,
         body: str,
@@ -5887,7 +6341,7 @@ class ArchiveStore:
             user_conn.commit()
             return envelope
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def list_blackboard_notes(self, *, limit: int | None = None) -> list[ArchiveBlackboardNoteEnvelope]:
         """List blackboard notes from archive user.db, newest first.
@@ -5898,12 +6352,13 @@ class ArchiveStore:
         """
         if not self.user_db_path.exists():
             return []
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             return list_archive_blackboard_note_envelopes(user_conn, limit=limit)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def delete_sessions(
         self,
         session_ids: tuple[str, ...],
@@ -5916,8 +6371,8 @@ class ArchiveStore:
         before anything is deleted. The caller resolved its selection once, at
         preview, and a re-resolution here could only widen it.
 
-        User-tier overlays are intentionally left in ``user.db``; the user
-        overlay orphan checker owns follow-up visibility for those durable rows.
+        User-tier overlays remain in ``user.db``. The mutation scope refuses
+        deletion before commit if it would orphan a resolved durable reference.
 
         polylogue-meoz: a plain per-session ``DELETE FROM sessions`` detonates
         the per-row derived-refresh triggers -- ``blocks_action_pairs_ad``
@@ -5972,6 +6427,7 @@ class ArchiveStore:
         if not resolved_session_ids:
             return 0
         conn = connect_measured(self.index_db_path)
+        owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=current_native_sql_lifetimes())
         deleted = 0
         deleted_session_ids: list[str] = []
         try:
@@ -5986,54 +6442,39 @@ class ArchiveStore:
             from polylogue.storage.fts.fts_lifecycle import ensure_fts_triggers_sync
 
             ensure_fts_triggers_sync(conn)
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                for session_id in resolved_session_ids:
-                    # Must run before the blocks rows are removed below.
-                    conn.execute(delete_session_rows_sql(1), (session_id,))
-                    conn.execute(delete_session_identity_rows_sql(1), (session_id,))
-                conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
-                conn.execute(
-                    "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
-                    (FTS_BULK_SESSION_WRITE_GUARD,),
-                )
+            from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+            seal = PreparedIndexMutation(self.index_db_path, archive_root=self._write_lease_archive_root)
+            with seal, seal.mutation_scope(conn) as mutation_scope:
+                from polylogue.storage.sqlite.write_lease import permitted_session_removals
+
+                if set(resolved_session_ids).issubset(
+                    permitted_session_removals(archive_root=self._write_lease_archive_root)
+                ):
+                    mutation_scope.authorize_session_removal(resolved_session_ids)
                 try:
-                    for session_id in resolved_session_ids:
-                        conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
-                        conn.execute("DELETE FROM delegation_facts WHERE parent_session_id = ?", (session_id,))
-                        # attachment_refs cascades from sessions, so the refs
-                        # vanish with no Python code observing it. Their
-                        # attachments rows would survive with a stale ref_count
-                        # and no reachable ref -- what archive verification
-                        # reports as an error. Read the ids before the delete;
-                        # after it there is nothing left to join through.
-                        orphan_candidates = session_attachment_ids(conn, session_id)
-                        cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                        refresh_and_sweep_attachment_rows(conn, orphan_candidates)
-                        if int(cursor.rowcount) > 0:
-                            deleted += int(cursor.rowcount)
-                            deleted_session_ids.append(session_id)
-                finally:
-                    conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
-                    conn.execute(
-                        "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
-                        (FTS_BULK_SESSION_WRITE_GUARD,),
+                    deleted_session_ids = list(
+                        stage_index_session_deletions(conn, mutation_scope, resolved_session_ids)
                     )
-                ArchiveWriteGateway(self.index_db_path).commit_write_sync(
-                    write_operation,
-                    {
-                        "_connection": conn,
-                        "changed_session_ids": tuple(deleted_session_ids),
-                        # Explicit pre-delete cleanup above is the only safe
-                        # FTS repair once the external-content rows are gone.
-                        "repair_message_fts": False,
-                    },
-                )
-            except BaseException:
-                conn.rollback()
-                raise
-        finally:
-            conn.close()
+                    deleted = len(deleted_session_ids)
+                    ArchiveWriteGateway(self.index_db_path).commit_write_sync(
+                        write_operation,
+                        {
+                            "_connection": conn,
+                            "changed_session_ids": tuple(deleted_session_ids),
+                            # Explicit pre-delete cleanup above is the only safe
+                            # FTS repair once the external-content rows are gone.
+                            "repair_message_fts": False,
+                        },
+                    )
+                except BaseException:
+                    conn.rollback()
+                    raise
+        except BaseException as primary:
+            _close_failed_native_construction(owner, primary)
+            raise
+        else:
+            owner.close()
         return deleted
 
     def _attach_user_tier_if_present(self) -> None:
@@ -6062,6 +6503,24 @@ class ArchiveStore:
             guidance="restore or initialize the durable user tier at this path, then retry the query; "
             "the reader will not create a replacement or search another archive root",
         )
+
+    def require_attached_user_tier(self) -> None:
+        """Validate the operation's existing User handle without opening a path."""
+        try:
+            attached = next((row for row in self._conn.execute("PRAGMA database_list") if row[1] == "user_tier"), None)
+            if attached is None:
+                raise self._user_tier_unavailable(reason="user tier is not attached to the operation snapshot")
+            if Path(str(attached[2])).absolute() != self.user_db_path.absolute():
+                raise self._user_tier_unavailable(reason="attached user tier belongs to a different archive root")
+            version = int(self._conn.execute("PRAGMA user_tier.user_version").fetchone()[0])
+            if version != archive_tier_spec(ArchiveTier.USER).version:
+                raise self._user_tier_unavailable(reason=f"attached user tier has unsupported schema version {version}")
+            if not _table_exists(self._conn, "assertions", schema="user_tier"):
+                raise self._user_tier_unavailable(reason="attached user tier lacks the assertions table")
+        except ArchiveTierUnavailableError:
+            raise
+        except (sqlite3.Error, OSError) as exc:
+            raise self._user_tier_unavailable(reason=f"cannot read attached user authority ({exc})") from exc
 
     def require_user_tier(self) -> None:
         """Validate the durable user tier before an assertion read executes SQL."""
@@ -6331,7 +6790,7 @@ class ArchiveStore:
         """Return retryable operation debt without using it as readiness truth."""
         if not self.ops_db_path.exists():
             return ()
-        conn = open_readonly_connection(self.ops_db_path, validate_schema=False)
+        conn = self._open_read_connection(self.ops_db_path, validate_schema=False)
         try:
             present = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'"
@@ -6342,7 +6801,7 @@ class ArchiveStore:
                 "SELECT DISTINCT stage FROM convergence_debt WHERE status IN ('failed', 'deferred') ORDER BY stage"
             ).fetchall()
         finally:
-            conn.close()
+            self._close_owned_read_connection(conn)
         return tuple(str(row[0]) for row in rows)
 
     def _insight_readiness_entry(
@@ -8128,7 +8587,12 @@ class ArchiveStore:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        try:
+            self.close()
+        except BaseException as close_error:
+            if exc is None:
+                raise
+            raise BaseExceptionGroup("Archive operation and Store cleanup failed", [exc, close_error]) from exc
 
 
 def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSessionSummary:
@@ -9213,12 +9677,6 @@ def _archive_profile_rows_debt(conn: sqlite3.Connection) -> ArchiveDebtInsight:
       sessions(session_id) ON DELETE CASCADE``, so every write profile that
       enforces foreign keys makes the orphan uninsertable and cascades the
       parent delete.
-    * The one production route that deliberately drops enforcement -- the bulk
-      ingest window's ``PRAGMA foreign_keys = OFF`` in
-      ``pipeline/services/ingest_batch/_core.py`` -- runs
-      ``_foreign_key_violations_for_sessions`` over a plan derived from the
-      live schema before it commits, and raises ``sqlite3.IntegrityError``
-      rather than committing a violation that window admitted.
     * A full session-insight rebuild additionally prunes per-session insight
       rows whose session is gone (``_delete_orphan_session_insights_sync`` in
       ``storage/derived/session/rebuild.py``), so even a hypothetical orphan
@@ -9270,7 +9728,7 @@ def _archive_source_raw_link_debt(
     # expired query deadline could not stop these scans.  ``configure_connection``
     # is ArchiveStore.configure_operation_read_connection -- the hook that
     # already exists to extend the current read budget to a sibling handle.
-    with closing(open_readonly_connection(index_db_path)) as conn:
+    with readonly_connection_context(index_db_path) as conn:
         if configure_connection is not None:
             configure_connection(conn)
         raw_links = _count_scalar(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
@@ -9325,7 +9783,7 @@ def _archive_user_overlay_debt(
     # avoids ATTACH/DETACH racing the long-lived ArchiveStore connection's
     # own transaction, and inherits the caller's read budget rather than
     # running outside every cancellation boundary.
-    with closing(open_readonly_connection(index_db_path)) as conn:
+    with readonly_connection_context(index_db_path) as conn:
         if configure_connection is not None:
             configure_connection(conn)
         attach_readonly_database(conn, user_db_path, alias="user_debt")

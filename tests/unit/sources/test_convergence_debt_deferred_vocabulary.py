@@ -10,6 +10,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -65,10 +66,10 @@ def test_convergence_debt_lookups_follow_the_active_index_generation(tmp_path: P
     cursor = CursorStore(tmp_path / "ops.db")
     debt = ConvergenceDebt(path=source_path, stage="fts", error="deferred", deferred=True)
 
-    record_convergence_outcomes(cursor, ((source_path, (debt,)),), archive_root=tmp_path)
+    record_convergence_outcomes(cursor, ((source_path, (debt,)),))
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         session_debts = conn.execute(
-            "SELECT target_id FROM convergence_debt WHERE target_type = 'session_id'"
+            "SELECT target_id FROM convergence_debt WHERE target_type = 'source_path'"
         ).fetchall()
         assert (
             convergence_debt_source_path(
@@ -80,7 +81,7 @@ def test_convergence_debt_lookups_follow_the_active_index_generation(tmp_path: P
             == source_path
         )
 
-    assert session_debts == [("codex-session:active",)]
+    assert session_debts == [(str(source_path),)]
 
 
 def test_is_deferred_stage_state_true_only_for_pending() -> None:
@@ -388,3 +389,100 @@ def test_convergence_debt_status_transition_preserves_attempts_and_deadline(
             (subject_id,),
         ).fetchone()
     assert row == ("deferred" if next_deferred else "failed", 1, exact_deadline)
+
+
+def test_file_stage_pass_preserves_uninspected_session_debt(tmp_path: Path) -> None:
+    """The production live convergence path cannot turn file DONE into child DONE."""
+    from polylogue.operations.lineage_prefix_recompose import make_lineage_prefix_recompose_stage
+    from polylogue.sources.live.batch import LiveBatchProcessor
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_runtime_source_fixture(source_db)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    path = tmp_path / "session.jsonl"
+    path.write_text("{}", encoding="utf-8")
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('raw-child', 'codex-session', 'child', ?, 0, ?, 2, 1)""",
+            (str(path), bytes(32)),
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES ('child', 'codex-session', 'raw-child', 'child', ?)""",
+            (bytes(32),),
+        )
+
+    cursor = CursorStore(index_db)
+    cursor.initialize()
+    for stage in ("lineage_prefix_recompose", "hook_paste_enrichment", "independent_stage"):
+        cursor.record_convergence_debt(stage=stage, subject_type="session_id", subject_id="child", error="owed")
+    from polylogue.core.compute import BoundedComputeAdapter
+
+    compute = BoundedComputeAdapter(max_workers=1)
+    try:
+        lineage = make_lineage_prefix_recompose_stage(tmp_path / "index.db", compute_adapter=compute)
+        processor = LiveBatchProcessor(
+            SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)),
+            (),
+            cursor=cursor,
+            parser_fingerprint="test-parser",
+            converger=DaemonConverger([lineage]),
+        )
+        completed, _elapsed, _timings, debts, settlements = processor._converge_paths([path])
+        processor._record_convergence_outcomes(((path, debts),), settlements)
+    finally:
+        compute.shutdown(wait=True)
+    assert completed == {path}
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = conn.execute(
+            "SELECT stage FROM convergence_debt WHERE target_type='session_id' AND target_id='child'"
+        ).fetchall()
+    assert {row[0] for row in rows} == {"lineage_prefix_recompose", "hook_paste_enrichment", "independent_stage"}
+
+
+def test_completed_session_stage_settles_only_its_evaluated_subject(tmp_path: Path) -> None:
+    from polylogue.sources.live.convergence_outcome import settled_convergence_stages
+
+    cursor = CursorStore(tmp_path / "index.db")
+    cursor.initialize()
+    for subject in ("child", "sibling"):
+        for stage in ("complete", "failed", "uninspected"):
+            cursor.record_convergence_debt(stage=stage, subject_type="session_id", subject_id=subject, error="owed")
+    stages = [
+        ConvergenceStage(
+            name="complete",
+            description="session owner",
+            check=lambda _path: False,
+            execute=lambda _path: True,
+            check_sessions=lambda ids: set(ids),
+            execute_sessions=lambda _ids: True,
+            writer_admission="bridged",
+        ),
+        ConvergenceStage(
+            name="failed",
+            description="session owner",
+            check=lambda _path: False,
+            execute=lambda _path: True,
+            check_sessions=lambda ids: set(ids),
+            execute_sessions=lambda _ids: False,
+            writer_admission="bridged",
+        ),
+        ConvergenceStage(
+            name="uninspected", description="file only", check=lambda _path: False, execute=lambda _path: True
+        ),
+    ]
+    states, _ = DaemonConverger(stages).converge_sessions(["child"])
+    record_convergence_outcomes(cursor, (), settlements=settled_convergence_stages(states["child"]))
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = set(conn.execute("SELECT target_id, stage FROM convergence_debt"))
+    assert rows == {
+        ("child", "failed"),
+        ("child", "uninspected"),
+        ("sibling", "complete"),
+        ("sibling", "failed"),
+        ("sibling", "uninspected"),
+    }

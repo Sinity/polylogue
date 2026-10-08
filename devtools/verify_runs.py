@@ -1032,15 +1032,6 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 step["evidence_error"] = {
                     key: evidence_error[key] for key in ("phase", "type") if key in evidence_error
                 }
-            # A step that went green only because its failures passed alone is
-            # not the same evidence as a step that never failed. The receipt
-            # names the flakes so a reader can tell the two apart.
-            rerun = raw.get("rerun")
-            if isinstance(rerun, Mapping):
-                flaky = [str(nodeid) for nodeid in rerun.get("flaky") or ()]
-                if flaky:
-                    step["flaky"] = flaky
-                    step["flaky_count"] = len(flaky)
             steps.append({key: value for key, value in step.items() if value is not None})
     tree_unknown = entry.get("worktree_capture_source") == "unavailable"
     result: dict[str, Any] = {
@@ -1088,7 +1079,6 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 "terminal_union_count",
                 "terminal_green",
                 "complete_corpus_covered",
-                "flaky",
                 "outcomes",
             )
             if key in aggregate

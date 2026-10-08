@@ -8,7 +8,9 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.convergence_harness import (
+    ConvergenceArchive,
     build_converged_archive,
     rich_convergence_sources,
 )
@@ -18,7 +20,14 @@ _STALL_ERROR = "derived stage stalled for the debt-surface fixture"
 
 @pytest.mark.asyncio
 async def test_insight_readiness_ignores_poisoned_operation_debt(tmp_path: Path) -> None:
-    archive = build_converged_archive(tmp_path / "archive", rich_convergence_sources())
+    root = tmp_path / "archive"
+    root.mkdir()
+
+    def build() -> ConvergenceArchive:
+        # Fixture ingest takes the synchronous writer lease itself; it must not block the loop.
+        return build_converged_archive(root, rich_convergence_sources())
+
+    archive = run_off_event_loop(build)
     index_db = archive.root / "index.db"
     ops_db = archive.root / "ops.db"
 

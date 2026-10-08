@@ -23,6 +23,7 @@ from polylogue.operations.session_contracts import SessionRead
 from polylogue.operations.session_reads import execute_session_operation
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 
 
@@ -75,7 +76,7 @@ async def test_owner_resume_reads_under_the_tokens_filters(tmp_path: Path) -> No
     would be the assistant turn at unfiltered offset 1, with a total of six."""
 
     root = tmp_path / "archive"
-    session_id = _seed(root)
+    session_id = run_off_event_loop(lambda: _seed(root))
     async with Polylogue(archive_root=root) as api:
         first = await execute_session_operation(
             api, SessionRead(ref=f"session:{session_id}", message_role=(Role.USER,), limit=1)
@@ -96,7 +97,7 @@ async def test_generic_messages_read_refuses_a_filtered_owner_token(tmp_path: Pa
     filters and serves unfiltered rows at a filtered token's offset."""
 
     root = tmp_path / "archive"
-    session_id = _seed(root)
+    session_id = run_off_event_loop(lambda: _seed(root))
     async with Polylogue(archive_root=root) as api:
         first = await execute_session_operation(
             api, SessionRead(ref=f"session:{session_id}", message_role=(Role.USER,), limit=1)
@@ -113,7 +114,7 @@ async def test_a_smaller_resume_limit_narrows_the_page_on_both_routes(tmp_path: 
     transport's serialized default limit as a request to widen the token."""
 
     root = tmp_path / "archive"
-    session_id = _seed(root)
+    session_id = run_off_event_loop(lambda: _seed(root))
     ref = f"session:{session_id}"
     async with Polylogue(archive_root=root) as api:
         owner_first = await execute_session_operation(api, SessionRead(ref=ref, limit=2))

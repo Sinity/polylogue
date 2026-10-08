@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -11,6 +12,7 @@ from polylogue.archive.query.predicate import QueryPredicate
 from polylogue.archive.query.transaction import run_archive_read, run_archive_read_sync
 from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 
 
 def _assertion_predicate() -> QueryPredicate:
@@ -19,11 +21,16 @@ def _assertion_predicate() -> QueryPredicate:
     return source.predicate
 
 
-def _archive_without_user_tier(root: Path) -> Path:
+def _archive_without_user_tier_sync(root: Path) -> Path:
     with ArchiveStore(root):
         pass
     (root / "user.db").unlink()
     return root
+
+
+def _archive_without_user_tier(*args: Any, **kwargs: Any) -> Path:
+    """Run setup off the event loop: a synchronous write lease may not block it."""
+    return run_off_event_loop(lambda: _archive_without_user_tier_sync(*args, **kwargs))
 
 
 def test_assertion_rows_and_counts_fail_before_sql_when_user_tier_is_missing(tmp_path: Path) -> None:

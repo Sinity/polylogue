@@ -138,6 +138,7 @@ _REQUIRED_TABLES = {
     "embedding_status",
     "embedding_derivation_state",
     "embedding_failures",
+    "excision_embedding_completions",
 }
 
 
@@ -388,8 +389,10 @@ class EmbeddingGenerationStore:
         if self._link_identity(self.active_path, label="embedding active pointer") != pointer_identity:
             raise EmbeddingGenerationError("embedding active pointer changed during checkpoint")
 
-    @staticmethod
-    def _checkpoint_database(path: Path, *, label: str) -> None:
+    def _checkpoint_database(self, path: Path, *, label: str) -> None:
+        from polylogue.storage.sqlite.write_lease import require_write_lease
+
+        require_write_lease(f"EmbeddingGenerationStore checkpoint({label})", archive_root=self.archive_root)
         try:
             with sqlite_connection(path, timeout=30.0) as conn:
                 row = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")

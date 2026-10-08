@@ -11,7 +11,6 @@ import shutil
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -32,13 +31,11 @@ from polylogue.maintenance.archive_verification import (
     passes_strict_acceptance,
     verify_archive,
 )
-from polylogue.pipeline.services.ingest_batch import _persist_batch_raw_state_updates, _RawIngestOutcome
-from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.repository import SessionRepository
-from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
     initialize_active_archive_root,
@@ -50,14 +47,15 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.claude_vintage_live_proof import (
     CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
     CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
     CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
 )
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.thread_state import seed_spawn_edges
 from tests.infra.workload_artifacts import SeededArchiveArtifact
 
@@ -67,7 +65,7 @@ ARCHIVE_VERIFICATION_CHECK_NAMES = archive_verification_names_for_route("live-ar
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(path)
+    return connect_measured(path)
 
 
 def _add_historical_supersession_receipts(conn: sqlite3.Connection) -> None:
@@ -600,12 +598,14 @@ async def test_head_typed_by_another_ledger_is_not_reported_as_untyped(tmp_path:
     boundary must retain ``validation_status = 'failed'`` on that raw before
     the operator-facing coverage route runs. I1 then asks the one durable
     typing ladder and reports the ``validation_rejected`` escape class instead
-    of claiming the logical source has no typed state.
+    of claiming the logical source has no typed state. The disposition is
+    persisted through the repository write the production validation flow
+    uses (``validation_flow`` -> ``mark_raw_validated``).
 
     Anti-vacuity: clearing the boundary's durable validation disposition
     restores the pre-fix shape and makes I1 red again.
     """
-    _seed_coherent_archive(tmp_path)
+    run_off_event_loop(lambda: _seed_coherent_archive(tmp_path))
     source_path = tmp_path / "source.db"
     source_conn = _connect(source_path)
     try:
@@ -613,6 +613,7 @@ async def test_head_typed_by_another_ledger_is_not_reported_as_untyped(tmp_path:
             source_conn,
             origin=Origin.CODEX_SESSION,
             source_path="validation-rejected.jsonl",
+            canonical_source_path="validation-rejected.jsonl",
             source_index=11,
             payload=b"schema-invalid-but-retained",
             acquired_at_ms=100,
@@ -623,29 +624,13 @@ async def test_head_typed_by_another_ledger_is_not_reported_as_untyped(tmp_path:
         source_conn.close()
 
     repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
-    outcome = _RawIngestOutcome(
-        raw_id=raw_id,
-        payload_provider="codex",
-        validation_status="failed",
-        validation_error="strict schema validation rejected the raw",
-        parse_error=None,
-        error="strict schema validation rejected the raw",
-        had_sessions=False,
-        outcome_code="validation_rejected",
-        retryable=False,
-        evidence_ref="schema_validation_strict",
-        remediation="repair the source schema",
-        diagnostic="missing required session field",
-    )
     try:
-        await _persist_batch_raw_state_updates(
-            SimpleNamespace(repository=repository),
-            repository.backend,
-            outcomes={raw_id: outcome},
-            succeeded_raw_ids=set(),
-            skipped_raw_ids=set(),
-            failed_raw_ids={raw_id: outcome.error or "worker failure"},
-            validation_mode="strict",
+        await repository.mark_raw_validated(
+            raw_id,
+            status="failed",
+            error="strict schema validation rejected the raw",
+            provider="codex",
+            mode="strict",
         )
     finally:
         await repository.close()
@@ -1640,7 +1625,7 @@ def test_unowned_attachment_evidence_keeps_closure_and_coverage_clean(tmp_path: 
                 )
             ],
         )
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.commit()
         unowned = conn.execute(
             "SELECT acquisition_status, ref_count FROM attachments WHERE display_name = 'note.txt'"
@@ -1970,7 +1955,8 @@ def test_reindex_acceptance_rejects_missing_semantic_stamp_column(tmp_path: Path
     check = _check(report, "session-fingerprint-stamps")
     assert report.blocking
     assert check.status is OutcomeStatus.ERROR
-    assert "missing fingerprint column(s): parser_fingerprint" in check.summary
+    assert check.count == 1
+    assert check.evidence["error"]
 
 
 def test_reindex_acceptance_rejects_stale_semantic_stamps(tmp_path: Path) -> None:
@@ -2807,7 +2793,6 @@ def test_full_rebuild_candidate_profile_covers_cross_tier_acceptance_and_canary_
 
 
 def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
     conn = _connect(tmp_path / "index.db")
     try:
@@ -2866,20 +2851,21 @@ _CLOSURE_PAYLOAD = {
 }
 
 
-def _closure_tier_conn(path: Path, tier: ArchiveTier) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+def _closure_tier_conn(path: Path) -> sqlite3.Connection:
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, tier)
     return conn
 
 
 def _closure_fixture(tmp_path: Path) -> tuple[Path, sqlite3.Connection, sqlite3.Connection]:
     """An archive whose acquired attachment blob has lost its ``attachment_refs`` row."""
     root = tmp_path
+    # The canonical bootstrap writes the format marker the fixture writer requires.
+    bootstrap_archive_root(root)
     blob_store = BlobStore(root / "blob")
-    source = _closure_tier_conn(root / "source.db", ArchiveTier.SOURCE)
-    index = _closure_tier_conn(root / "index.db", ArchiveTier.INDEX)
+    source = _closure_tier_conn(root / "source.db")
+    index = _closure_tier_conn(root / "index.db")
     payload = json.dumps(_CLOSURE_PAYLOAD).encode()
     blob_hash, blob_size = blob_store.write_from_bytes(payload)
     source.execute(
@@ -2888,25 +2874,34 @@ def _closure_fixture(tmp_path: Path) -> tuple[Path, sqlite3.Connection, sqlite3.
         ("raw-closure", "conversations.json", bytes.fromhex(blob_hash), blob_size),
     )
     source.commit()
-    record = RawSessionRecord(
-        raw_id="raw-closure",
-        source_name=Provider.CLAUDE_AI.value,
-        payload_provider=Provider.CLAUDE_AI,
-        source_path="conversations.json",
-        source_index=0,
-        blob_size=blob_size,
-        blob_hash=blob_hash,
-        acquired_at="2026-01-01T00:00:00+00:00",
+    attachment = ParsedAttachment(
+        provider_attachment_id="closure-attachment-1",
+        message_provider_id="m0",
+        name="notes.md",
+        mime_type="text/markdown",
+        size_bytes=11,
+        inline_bytes=b"hello notes",
     )
-    parsed = ingest_record(record, str(root), "advisory", blob_root_str=str(blob_store.root))
-    assert parsed.error is None
-    session = parsed.sessions[0]
-    attachment = session.parsed_session.attachments[0]
+    parsed = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="closure-session-1",
+        title="Closure test",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m0",
+                role=Role.USER,
+                text="here is a file",
+                position=0,
+            )
+        ],
+        attachments=[attachment],
+    )
     attachment_hash, attachment_size = blob_store.write_from_bytes(attachment.inline_bytes or b"")
-    write_parsed_session_to_archive(
+    write_fixture_index_session(
         index,
-        session.parsed_session,
-        raw_id=record.raw_id,
+        parsed,
+        raw_id="raw-closure",
+        source_conn=source,
         preacquired_attachment_blobs={id(attachment): (bytes.fromhex(attachment_hash), attachment_size, "acquired")},
     )
     attachment_id = str(index.execute("SELECT attachment_id FROM attachments").fetchone()[0])

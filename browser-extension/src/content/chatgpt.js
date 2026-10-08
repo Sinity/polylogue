@@ -1,6 +1,6 @@
 (function () {
-  if (window.__polylogueChatgptCaptureInstalled) return;
-  window.__polylogueChatgptCaptureInstalled = true;
+  if (window.__polylogueChatgptCaptureInstalled === 2) return;
+  window.__polylogueChatgptCaptureInstalled = 2;
 
   // In-page Layer 1 (polylogue-ys30): capture-status dot + save action mounted
   // next to each detected message. Reused across every capture trigger below
@@ -13,25 +13,79 @@
   const nativeCaptureMessage = "polylogue.chatgpt.nativeCapture";
   const nativeFetchRequestMessage = "polylogue.chatgpt.nativeFetchRequest";
   const nativeFetchResponseMessage = "polylogue.chatgpt.nativeFetchResponse";
-  const nativeFetchTimeoutMs = 8000;
-  const nativeCaptures = [];
+  let nativeCapture = null;
+  let nativeHeader = null;
+  let nativeHeaderPromise = Promise.resolve();
   const nativeFetchResponses = new Map();
-  const nativeAttemptDiagnostics = [];
   const freshnessHintTimers = new Map();
   const pendingFreshnessObservations = new Map();
   const lifecycleObservationHistory = new Map();
   const lifecycleRuntime = new Map();
   let domFreshnessScanTimer = null;
+  let freshnessObserver = null;
+  let scheduleDomFreshnessScan = null;
+  let freshnessSuspended = false;
   let lastDomFreshnessSignature = null;
 
-  function rememberNativeAttempt(diagnostic) {
-    nativeAttemptDiagnostics.push({
-      attempted_at: new Date().toISOString(),
-      ...diagnostic
-    });
-    if (nativeAttemptDiagnostics.length > 6) {
-      nativeAttemptDiagnostics.splice(0, nativeAttemptDiagnostics.length - 6);
+  const nativeProgressStages = new Set(["throttle", "pending_header", "restore", "staging", "provider_auth", "provider_response", "body", "header", "canonical", "publication"]);
+  function rememberNativeAttempt(diagnostic, diagnostics) {
+    if (!diagnostics || diagnostics.cancelled) return;
+    diagnostics.entries.push(Object.hasOwn(diagnostic, "state") ? diagnostic : { attempted_at: new Date().toISOString(), ...diagnostic });
+    if (diagnostics.entries.length > 6) {
+      const dropped = diagnostics.entries.length - 6;
+      diagnostics.entries.splice(0, dropped);
+      diagnostics.dropped += dropped;
     }
+  }
+  function nativeProgress(diagnostics, stage, state) {
+    rememberNativeAttempt({ stage, state }, diagnostics);
+  }
+  const backgroundProgressStages = new Set(["normalize_admission", "native_prepare", "native_assets", "native_finalize"]);
+  function nativeProgressSnapshot(diagnostics) {
+    return diagnostics.entries.filter((entry) => ["BEGIN", "END"].includes(entry.state) &&
+      ((Object.keys(entry).length === 2 && nativeProgressStages.has(entry.stage)) ||
+       (Object.keys(entry).length === 3 && entry.source === "background_debug_log" && backgroundProgressStages.has(entry.stage)))).map((entry) => ({ ...entry }));
+  }
+
+  function observeNativePreparation(rawRef, nativeRequestId, signal, diagnostics) {
+    // This is the already-created MAIN fetch request, not a staging UUID or
+    // invocation authority. Missing correlation leaves diagnostics unknown.
+    if (typeof nativeRequestId !== "string" || !/^polylogue-native-fetch-\d+-[a-z0-9]+$/.test(nativeRequestId)) return () => {};
+    let admitted = false; let stopped = false;
+    const equal = (a, b) => ["at", "stage", "phase", "state", "acquisition_ref", "native_request_id"].every(key => a?.[key] === b?.[key]);
+    const changed = (changes, area) => {
+      if (stopped || signal.aborted || area !== "local") return;
+      const change = changes?.polylogueDebugLog;
+      if (!Array.isArray(change?.newValue)) return;
+      const prior = Array.isArray(change.oldValue) ? change.oldValue : [];
+      for (const row of [...change.newValue].reverse()) {
+        if (!row || Object.keys(row).length !== 6 || row.stage !== "native_preparation_progress" ||
+            row.acquisition_ref !== rawRef?.id || row.native_request_id !== nativeRequestId ||
+            !backgroundProgressStages.has(row.phase) || !["BEGIN", "END"].includes(row.state) || prior.some(old => equal(old, row))) continue;
+        if (row.phase === "normalize_admission" && row.state === "BEGIN") {
+          // Repeated admission for the same request is ambiguous. Retained
+          // oldValue rows do not count as another observed admission.
+          if (admitted) {
+            diagnostics.entries = diagnostics.entries.filter(entry => entry.source !== "background_debug_log");
+            stop(); return;
+          }
+          admitted = true;
+        }
+        if (!admitted) continue;
+        rememberNativeAttempt({ stage: row.phase, state: row.state, source: "background_debug_log" }, diagnostics);
+      }
+    };
+    const stop = () => {
+      if (stopped) return; stopped = true;
+      try { chrome.storage?.onChanged?.removeListener(changed); } catch { /* Unavailable diagnostics cannot mask capture. */ }
+      signal.removeEventListener("abort", stop);
+    };
+    try {
+      chrome.storage?.onChanged?.addListener(changed);
+      signal.addEventListener("abort", stop, { once: true });
+    } catch { stop(); }
+    if (signal.aborted) stop();
+    return stop;
   }
 
   function conversationIdFromUrl(url = window.location.href) {
@@ -65,17 +119,18 @@
     providerUpdatedAt = null,
     generationObservation = null,
   ) {
+    if (freshnessSuspended) return;
     if (!nativeId || !/^[A-Za-z0-9_-]{1,256}$/.test(nativeId)) return;
     if (generationObservation) {
       const pending = pendingFreshnessObservations.get(nativeId) || [];
       const byId = new Map(pending.map((observation) => [observation.observation_id, observation]));
       byId.set(generationObservation.observation_id, generationObservation);
-      pendingFreshnessObservations.set(nativeId, [...byId.values()].slice(-24));
+      pendingFreshnessObservations.set(nativeId, [...byId.values()]);
 
       const history = lifecycleObservationHistory.get(nativeId) || [];
       const historyById = new Map(history.map((observation) => [observation.observation_id, observation]));
       historyById.set(generationObservation.observation_id, generationObservation);
-      lifecycleObservationHistory.set(nativeId, [...historyById.values()].slice(-64));
+      lifecycleObservationHistory.set(nativeId, [...historyById.values()]);
     }
     const existingTimer = freshnessHintTimers.get(nativeId);
     if (existingTimer) clearTimeout(existingTimer);
@@ -211,41 +266,35 @@
     return observation;
   }
 
-  function nativeCaptureIdentity(capture) {
-    if (!capture?.ok || typeof capture.body !== "string") return null;
-    try {
-      const payload = JSON.parse(capture.body);
-      const nativeId = String(payload.conversation_id || payload.id || "");
-      if (!/^[A-Za-z0-9_-]{1,256}$/.test(nativeId)) return null;
-      const updatedAt = typeof payload.update_time === "number"
-        ? new Date(payload.update_time < 10_000_000_000 ? payload.update_time * 1000 : payload.update_time).toISOString()
-        : typeof payload.update_time === "string" ? payload.update_time : null;
-      return { nativeId, updatedAt, temporary: payload.is_temporary === true };
-    } catch {
-      return null;
+  async function rememberNativeCapture(capture, requestedConversationId = null) {
+    if (!capture?.ok || !capture.bodyRef) return null;
+    if (requestedConversationId) {
+      const source = new URL(capture.url, window.location.origin);
+      const expectedPath = `/backend-api/conversation/${encodeURIComponent(requestedConversationId)}`;
+      const visibleId = conversationIdFromUrl();
+      if (source.origin !== window.location.origin || source.pathname !== expectedPath ||
+          (visibleId && visibleId !== requestedConversationId)) return null;
     }
+    const result = await window.polylogueAssetStream.nativeHeaders("chatgpt", capture);
+    capture = { ...result.capture, invocationRef: capture.invocationRef || null, nativeRequestId: capture.nativeRequestId };
+    const headers = result.headers;
+    const nativeId = String(headers.conversation_id || headers.id || "");
+    const bound = requestedConversationId || conversationIdFromUrl();
+    if ((bound && nativeId !== bound) || (!bound && (!isTemporaryChatUrl() || headers.is_temporary !== true))) return null;
+    const selected = result.cache;
+    if (window.polylogueCapture.cacheCaptureIsNewer(nativeCapture, selected.capture)) { nativeCapture = { ...selected.capture, invocationRef: capture.invocationRef || null }; nativeHeader = selected.headers; }
+    return { capture, headers };
   }
-
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
-    const data = event.data || {};
+    const data = window.polylogueAssetStream.readPageMessage(event);
+    if (!data) return;
     if (data.type !== nativeCaptureMessage || !data.capture) return;
-    nativeCaptures.push(data.capture);
-    if (nativeCaptures.length > 8) nativeCaptures.splice(0, nativeCaptures.length - 8);
-    const identity = nativeCaptureIdentity(data.capture);
-    // A MAIN-world message is page data: page scripts can post it too. It may
-    // wake a capture only for the conversation this tab's URL already names,
-    // never supply that identity itself (polylogue-l6v61 / qut1). A temporary
-    // chat's URL names no conversation, so there the wake is admitted by the
-    // same predicate parseNativeCapture uses: a temporary-chat page and a
-    // payload that declares itself temporary.
-    const urlBoundId = conversationIdFromUrl();
-    const boundToThisTab = urlBoundId
-      ? identity?.nativeId === urlBoundId
-      : isTemporaryChatUrl() && identity?.temporary === true;
-    if (identity && data.capture.source !== "polylogue_native_fetch" && boundToThisTab) {
-      queueFreshnessHint("provider_native_observed", identity.nativeId, 3000, identity.updatedAt);
-    }
+    nativeHeaderPromise = rememberNativeCapture(data.capture).then((revision) => {
+      if (revision && data.capture.source !== "polylogue_native_fetch") {
+        queueFreshnessHint("provider_native_observed", String(revision.headers.conversation_id || revision.headers.id), 3000, revision.headers.update_time);
+      }
+    }).catch(() => undefined);
   });
 
   navigator.serviceWorker?.addEventListener?.("message", (event) => {
@@ -257,194 +306,29 @@
 
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
-    const data = event.data || {};
+    const data = window.polylogueAssetStream.readPageMessage(event);
+    if (!data) return;
     if (data.type !== nativeFetchResponseMessage || !data.requestId) return;
     const pending = nativeFetchResponses.get(data.requestId);
     if (!pending) return;
+    if (Object.hasOwn(data, "progress")) {
+      const progress = data.progress;
+      if (Object.keys(event.data).length === 3 && progress && typeof progress === "object" &&
+          Object.keys(progress).length === 2 && ["staging", "provider_auth", "provider_response", "body"].includes(progress.stage) &&
+          ["BEGIN", "END"].includes(progress.state)) {
+        nativeProgress(pending.diagnostics, progress.stage, progress.state);
+      }
+      return;
+    }
     nativeFetchResponses.delete(data.requestId);
-    pending.resolve({ capture: data.capture || null, error: data.error || null });
+    pending.resolve({ capture: data.capture || null, error: data.error || null, requestId: data.requestId });
   });
 
-  function extractContentText(content) {
-    const parts = content && content.parts;
-    if (Array.isArray(parts)) {
-      const textParts = [];
-      for (const part of parts) {
-        if (typeof part === "string" && part) textParts.push(part);
-        if (part && typeof part === "object" && typeof part.text === "string" && part.text) {
-          textParts.push(part.text);
-        }
-      }
-      if (textParts.length) return textParts.join("\n");
-    }
-    if (typeof content?.text === "string" && content.text) return content.text;
-    if (typeof content?.result === "string" && content.result) return content.result;
-    if (Array.isArray(content?.thoughts)) {
-      const thoughts = content.thoughts.flatMap((thought) => {
-        if (typeof thought?.content === "string" && thought.content) return [thought.content];
-        if (typeof thought?.summary === "string" && thought.summary) return [thought.summary];
-        return [];
-      });
-      if (thoughts.length) return thoughts.join("\n");
-    }
-    return "";
-  }
-
-  function timestampFromSeconds(value) {
-    if (typeof value !== "number" || !Number.isFinite(value)) return null;
-    return new Date(value * 1000).toISOString();
-  }
-
-  function timeoutError(label) {
-    const error = new Error(`${label}_timeout_after_${nativeFetchTimeoutMs}ms`);
-    error.name = "PolylogueTimeoutError";
-    return error;
-  }
-
-  function withTimeout(promise, label) {
-    let timer = 0;
-    const timeout = new Promise((_resolve, reject) => {
-      timer = window.setTimeout(() => reject(timeoutError(label)), nativeFetchTimeoutMs);
-    });
-    return Promise.race([promise, timeout]).finally(() => {
-      if (timer) window.clearTimeout(timer);
-    });
-  }
-
-  function roleFromRaw(raw) {
-    if (raw === "user" || raw === "assistant" || raw === "system" || raw === "tool") return raw;
-    if (raw === "function" || raw === "tool_use" || raw === "tool_result") return "tool";
-    return "unknown";
-  }
-
-  // polylogue-ah21: project this mapping node's own content_type/recipient
-  // evidence into typed BrowserCaptureBlock entries instead of leaving tool
-  // call/result turns as opaque prose. rawProviderPayload (the full mapping)
-  // is what the parser trusts when present, so this is mainly defense in
-  // depth for whatever falls back to these turns -- but it also means a
-  // captured turn is never the ONLY place this evidence could have lived.
-  // tool_id pairing is constructed from mapping-tree identity: a call node's
-  // own id is its tool_id, and its result's tool_id is the call node's id
-  // (the result's parent), so a call and its result always pair 1:1.
-  function nativeTurnBlocks({ contentType, recipient, text, ownId, parentId }) {
-    if (recipient && text) {
-      let parsedInput = null;
-      try {
-        const candidate = JSON.parse(text);
-        if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) parsedInput = candidate;
-      } catch {
-        parsedInput = null;
-      }
-      if (parsedInput) {
-        return [{ type: "tool_use", tool_name: recipient, tool_id: ownId, tool_input: parsedInput, metadata: { content_type: contentType } }];
-      }
-    }
-    if (contentType === "code") {
-      return [{ type: "tool_use", tool_name: "code_interpreter", tool_id: ownId, tool_input: { code: text }, metadata: { content_type: contentType } }];
-    }
-    if (contentType === "execution_output") {
-      return [{ type: "tool_result", tool_id: parentId, text, metadata: { content_type: contentType } }];
-    }
-    if (contentType === "thoughts" || contentType === "reasoning_recap") {
-      return [{ type: "thinking", text, metadata: { content_type: contentType } }];
-    }
-    return [];
-  }
-
-  function collectNativeTurns(payload) {
-    const mapping = payload && payload.mapping;
-    if (!mapping || typeof mapping !== "object") return [];
-    const turns = [];
-    for (const [nodeId, node] of Object.entries(mapping)) {
-      const message = node && node.message;
-      const content = message && message.content;
-      if (!message || !content) continue;
-      const text = extractContentText(content);
-      const role = roleFromRaw(message.author && message.author.role);
-      const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
-      const hasAttachmentEvidence =
-        (Array.isArray(metadata.attachments) && metadata.attachments.length > 0)
-        || (Array.isArray(content.parts) && content.parts.some((part) =>
-          part && typeof part === "object" && (
-            typeof part.asset_pointer === "string" || typeof part.file_id === "string"
-          )
-        ));
-      if (!text && !hasAttachmentEvidence) continue;
-      const providerTurnId = String(message.id || node.id || nodeId);
-      const parentTurnId = node.parent ? String(node.parent) : null;
-      const contentType = content.content_type || "text";
-      turns.push({
-        provider_turn_id: providerTurnId,
-        role,
-        text,
-        timestamp: timestampFromSeconds(message.create_time),
-        parent_turn_id: parentTurnId,
-        blocks: nativeTurnBlocks({
-          contentType,
-          recipient: message.recipient || null,
-          text,
-          ownId: providerTurnId,
-          parentId: parentTurnId
-        }),
-        provider_meta: {
-          node_id: nodeId,
-          content_type: contentType,
-          status: message.status || null,
-          model_slug: metadata.model_slug || null,
-          capture_source: "chatgpt_backend_api"
-        },
-        identity_observation: window.polylogueCapture.identityObservation({
-          provider: "chatgpt",
-          conversationId: payload?.conversation_id || payload?.id || conversationIdFromUrl(),
-          messageId: message.id ? String(message.id) : null,
-          parentMessageId: node.parent ? String(node.parent) : null,
-          text,
-          adapterName: nativeAdapterName,
-          adapterVersion: chrome.runtime.getManifest().version,
-          fidelity: message.id ? "native" : "unknown",
-          degradedReason: message.id ? null : "missing_message_id",
-        })
-      });
-    }
-    return turns;
-  }
-
-  function parseNativeCapture(capture, expectedConversationId = conversationIdFromUrl()) {
-    if (!capture || !capture.ok || typeof capture.body !== "string") return null;
-    if (expectedConversationId) {
-      if (!String(capture.url || "").includes(`/conversation/${expectedConversationId}`)) return null;
-      try {
-        const payload = JSON.parse(capture.body);
-        if (!payload || typeof payload !== "object" || !payload.mapping) return null;
-        const payloadConversationId = payload.conversation_id || payload.id;
-        if (payloadConversationId && String(payloadConversationId) !== expectedConversationId) return null;
-        return payload;
-      } catch {
-        return null;
-      }
-    }
-    // No URL-derived id to match against. The only legitimate case is a
-    // temporary chat (see isTemporaryChatUrl) -- accept the intercepted
-    // capture only if this page is a temporary chat AND the payload itself
-    // agrees it is temporary, so an unrelated stale capture from a prior
-    // page on this tab can never be misattributed.
-    if (!isTemporaryChatUrl()) return null;
-    try {
-      const payload = JSON.parse(capture.body);
-      if (!payload || typeof payload !== "object" || !payload.mapping) return null;
-      if (payload.is_temporary !== true) return null;
-      return payload;
-    } catch {
-      return null;
-    }
-  }
-
   function latestNativePayload(expectedConversationId = conversationIdFromUrl()) {
-    for (let index = nativeCaptures.length - 1; index >= 0; index -= 1) {
-      const payload = parseNativeCapture(nativeCaptures[index], expectedConversationId);
-      if (payload) return payload;
-    }
-    return null;
+    const nativeId = nativeHeader?.conversation_id || nativeHeader?.id;
+    if (!nativeCapture || (expectedConversationId && nativeId !== expectedConversationId)) return null;
+    if (!expectedConversationId && (!isTemporaryChatUrl() || nativeHeader?.is_temporary !== true)) return null;
+    return nativeHeader;
   }
 
   function nativePayloadUpdatedAt(payload) {
@@ -459,17 +343,9 @@
     return null;
   }
 
-  function nativePayloadNeedsFollowUp(payload) {
-    const mapping = payload?.mapping;
-    const current = mapping && payload?.current_node ? mapping[payload.current_node]?.message : null;
-    if (!current) return true;
-    if (current.author?.role !== "assistant") return true;
-    return !["finished_successfully", "finished", "complete", "completed"].includes(current.status);
-  }
-
-  function cachedFreshTerminalPayload(expectedConversationId, minimumUpdatedAt = null) {
+  async function cachedFreshTerminalPayload(expectedConversationId, minimumUpdatedAt, signal, attribution) {
     const payload = latestNativePayload(expectedConversationId);
-    if (!payload || nativePayloadNeedsFollowUp(payload)) return null;
+    if (!payload) return null;
     // Without a provider revision hint, the cache cannot distinguish an
     // unchanged terminal response from a stale page-load response (or prove
     // that the next provider read would not return a 429). Keep the ordinary
@@ -479,67 +355,48 @@
     const minimumMs = nativePayloadUpdatedAt({ update_time: minimumUpdatedAt });
     const cachedMs = nativePayloadUpdatedAt(payload);
     if (!Number.isFinite(minimumMs) || !Number.isFinite(cachedMs) || cachedMs < minimumMs) return null;
-    return payload;
+    const candidate = nativeCapture;
+    const summary = await window.polylogueAssetStream.nativeEnvelope({ provider: "chatgpt", capture: candidate, nativeId: expectedConversationId, signal, attribution, summaryOnly: true });
+    if (typeof summary?.needs_follow_up !== "boolean") throw new Error("native_capture_summary_invalid");
+    return summary.needs_follow_up === false ? { capture: candidate, headers: payload } : null;
   }
 
-  async function requestNativeCaptureFromPage(conversationId) {
+  async function requestNativeCaptureFromPage(conversationId, signal, invocationRef = null, diagnostics = null) {
     const requestId = `polylogue-native-fetch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const responsePromise = new Promise((resolve) => {
-      const timeout = window.setTimeout(() => {
-        nativeFetchResponses.delete(requestId);
-        resolve({ capture: null, error: "timeout" });
-      }, nativeFetchTimeoutMs);
-      nativeFetchResponses.set(requestId, {
-        resolve(value) {
-          window.clearTimeout(timeout);
-          resolve(value);
-        }
-      });
+      nativeFetchResponses.set(requestId, { resolve, diagnostics });
     });
-    window.postMessage(
+    window.polylogueAssetStream.pageMessage(
       {
         type: nativeFetchRequestMessage,
         requestId,
-        conversationId
+        conversationId,
+        invocationRef
       },
-      window.location.origin
+      chrome.runtime.id
     );
-    return responsePromise;
-  }
-
-  // Mirror of MAX_PROVIDER_COOLDOWN_MS in src/capture/provider_cooldown.js --
-  // that module owns the value and its justification. Content scripts are
-  // classic (non-module) scripts in the manifest and cannot import it, so
-  // tests/content/chatgpt.test.js asserts this literal still matches.
-  const maxProviderCooldownMs = 24 * 60 * 60 * 1000;
-
-  // `value` here is page-controlled: the MAIN-world bridge response is just a
-  // window message any page script can forge, so an unbounded Retry-After from
-  // here becomes a persisted, monotonic, restart-surviving provider cooldown.
-  function clampRetryAfterMs(requestedMs) {
-    if (!Number.isFinite(requestedMs) || requestedMs <= maxProviderCooldownMs) return requestedMs;
-    // A clamp must be observable: native_attempts is the diagnostic channel this
-    // content script already reports upward with every capture result.
-    rememberNativeAttempt({
-      stage: "provider_retry_after_clamped",
-      accepted: false,
-      outcome: "rate_limited",
-      requested_ms: requestedMs,
-      applied_ms: maxProviderCooldownMs,
-    });
-    return maxProviderCooldownMs;
+    const onAbort = () => {
+      window.polylogueAssetStream.pageMessage({ type: "polylogue.chatgpt.cancelRequest", requestId }, chrome.runtime.id);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    return responsePromise.finally(() => signal.removeEventListener("abort", onAbort));
   }
 
   function retryAfterMilliseconds(value) {
     if (typeof value !== "string" || !value.trim()) return null;
     const seconds = Number(value);
-    if (Number.isFinite(seconds) && seconds >= 0) return clampRetryAfterMs(Math.ceil(seconds * 1000));
-    const deadline = Date.parse(value || "");
-    return Number.isFinite(deadline) ? clampRetryAfterMs(Math.max(0, deadline - Date.now())) : null;
+    const deadline = Date.parse(value);
+    const delay = Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds * 1000)
+      : Number.isFinite(deadline) ? Math.max(0, deadline - Date.now()) : null;
+    if (delay !== null && (!Number.isFinite(delay) || !Number.isFinite(new Date(Date.now() + delay).getTime()))) {
+      const error = new Error("provider_retry_after_unrepresentable"); error.code = "provider_retry_after_unrepresentable"; throw error;
+    }
+    return delay;
   }
 
-  function rateLimitedNativeFetch(retryAfter) {
-    return { payload: null, rateLimited: true, retryAfterMs: retryAfterMilliseconds(retryAfter) };
+  function rateLimitedNativeFetch(capture, requestId) {
+    return { payload: null, rateLimited: true, retryAfterMs: retryAfterMilliseconds(capture.retryAfter), providerResponse: { status: capture.status, url: capture.url }, requestId };
   }
 
   async function providerThrottle() {
@@ -550,11 +407,12 @@
     }
   }
 
-  async function recordProviderRateLimit(retryAfterMs) {
+  async function recordProviderRateLimit(retryAfterMs, providerResponse, requestId) {
     try {
       return await chrome.runtime.sendMessage({
         type: "polylogue.providerRateLimited",
         provider: "chatgpt",
+        provider_response: providerResponse, request_id: requestId,
         retry_after_seconds: retryAfterMs === null ? null : Math.ceil(retryAfterMs / 1000),
       });
     } catch {
@@ -562,85 +420,6 @@
     }
   }
 
-  async function fetchNativePayloadFromContentScript(conversationId) {
-    try {
-      const controller = new globalThis.AbortController();
-      const timeoutId = window.setTimeout(() => controller.abort(timeoutError("content_script_fetch")), nativeFetchTimeoutMs);
-      let response;
-      try {
-        response = await fetch(`/backend-api/conversation/${encodeURIComponent(conversationId)}`, {
-          credentials: "include",
-          cache: "no-store",
-          signal: controller.signal
-        });
-      } finally {
-        window.clearTimeout(timeoutId);
-      }
-      const contentType = response.headers.get("content-type") || "";
-      if (response.status === 429) {
-        rememberNativeAttempt({
-          stage: "content_script_fetch",
-          ok: false,
-          status: response.status,
-          content_type: contentType,
-          accepted: false,
-          outcome: "rate_limited",
-        });
-        return rateLimitedNativeFetch(response.headers.get("retry-after"));
-      }
-      if (!response.ok || !contentType.includes("application/json")) {
-        rememberNativeAttempt({
-          stage: "content_script_fetch",
-          ok: response.ok,
-          status: response.status,
-          content_type: contentType,
-          accepted: false
-        });
-        return { payload: null, retryAfterMs: null };
-      }
-      const payload = await withTimeout(response.clone().json(), "content_script_json");
-      if (!payload || typeof payload !== "object" || !payload.mapping) {
-        rememberNativeAttempt({
-          stage: "content_script_fetch",
-          ok: response.ok,
-          status: response.status,
-          content_type: contentType,
-          accepted: false,
-          reason: "missing_mapping"
-        });
-        return { payload: null, retryAfterMs: null };
-      }
-      const payloadConversationId = payload.conversation_id || payload.id;
-      if (payloadConversationId && String(payloadConversationId) !== conversationId) {
-        rememberNativeAttempt({
-          stage: "content_script_fetch",
-          ok: response.ok,
-          status: response.status,
-          content_type: contentType,
-          accepted: false,
-          reason: "conversation_id_mismatch"
-        });
-        return { payload: null, retryAfterMs: null };
-      }
-      rememberNativeAttempt({
-        stage: "content_script_fetch",
-        ok: response.ok,
-        status: response.status,
-        content_type: contentType,
-        accepted: true
-      });
-      return { payload, retryAfterMs: null };
-    } catch (error) {
-      rememberNativeAttempt({
-        stage: "content_script_fetch",
-        accepted: false,
-        error: String(error && error.message ? error.message : error)
-      });
-      return { payload: null, retryAfterMs: null };
-    }
-  }
-
-  const freshConversationWaitTimeoutMs = 6000;
   const freshConversationWaitIntervalMs = 300;
 
   // ChatGPT does not update the URL to /c/<id> until the backend accepts the
@@ -652,61 +431,45 @@
   // one was a degraded 3-turn shadow of a conversation the native path
   // picked up moments later with the full turn history). Wait for the SPA
   // router to publish the id instead of falling back to a DOM scrape.
-  async function waitForConversationId(timeoutMs = freshConversationWaitTimeoutMs) {
-    const deadline = Date.now() + timeoutMs;
+  async function waitForConversationId(signal) {
     let id = conversationIdFromUrl();
-    while (!id && Date.now() < deadline) {
-      await new Promise((resolve) => window.setTimeout(resolve, freshConversationWaitIntervalMs));
+    while (!id) {
+      signal.throwIfAborted();
+      await new Promise((resolve, reject) => {
+        const onAbort = () => { window.clearTimeout(timer); reject(signal.reason); };
+        const timer = window.setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, freshConversationWaitIntervalMs);
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
       id = conversationIdFromUrl();
     }
     return id;
   }
 
-  async function fetchNativePayloadOnDemand(
-    requestedConversationId = null,
-    { preferCachedTerminal = false, minimumUpdatedAt = null } = {},
-  ) {
-    let conversationId = requestedConversationId || conversationIdFromUrl();
-    // A temporary chat never gets a /c/<id> URL, so waiting for one would
-    // just burn the whole timeout for nothing -- fall straight through to
-    // the already-intercepted-capture path (latestNativePayload, called by
-    // capture() right after this returns null) instead.
-    if (!conversationId && !requestedConversationId && !isTemporaryChatUrl()) {
-      conversationId = await waitForConversationId();
-    }
-    if (!conversationId) return { payload: null, retryAfterMs: null };
-    if (!/^[A-Za-z0-9_-]{1,256}$/.test(conversationId)) return { payload: null, retryAfterMs: null };
+  async function fetchNativePayloadOnDemand(requestedConversationId = null, { preferCachedTerminal = false, minimumUpdatedAt = null, signal, invocationRef = null, attribution = {}, diagnostics = null } = {}) {
+    nativeProgress(diagnostics, "pending_header", "BEGIN");
+    await window.polylogueAssetStream.settleNativeHeaders(nativeHeaderPromise, signal);
+    nativeProgress(diagnostics, "pending_header", "END");
+    let nativeId = requestedConversationId || conversationIdFromUrl();
+    if (!nativeId && !isTemporaryChatUrl()) nativeId = await waitForConversationId(signal);
+    if (!nativeId) return { capture: nativeCapture, headers: nativeHeader, retryAfterMs: null };
+    nativeProgress(diagnostics, "restore", "BEGIN");
+    const restored = await window.polylogueAssetStream.restoreNative("chatgpt", nativeId, signal, invocationRef);
+    nativeProgress(diagnostics, "restore", "END");
+    if (restored) { nativeCapture = { ...restored, invocationRef }; nativeHeader = restored.headers; }
     if (preferCachedTerminal) {
-      const cached = cachedFreshTerminalPayload(conversationId, minimumUpdatedAt);
-      if (cached) return { payload: cached, retryAfterMs: null, cached: true };
+      const cached = await cachedFreshTerminalPayload(nativeId, minimumUpdatedAt, signal, attribution);
+      if (cached) return { capture: cached.capture, headers: cached.headers, retryAfterMs: null, cached: true };
     }
-    const pageResult = await requestNativeCaptureFromPage(conversationId);
-    const pageCapture = pageResult && pageResult.capture;
-    const pagePayload = parseNativeCapture(pageCapture, conversationId);
-    rememberNativeAttempt({
-      stage: "page_bridge_fetch",
-      ok: pageCapture?.ok ?? null,
-      status: pageCapture?.status ?? null,
-      content_type: pageCapture?.contentType || null,
-      body_bytes: typeof pageCapture?.body === "string" ? pageCapture.body.length : 0,
-      accepted: Boolean(pagePayload),
-      error: pageResult?.error || null
-    });
-    if (pagePayload) return { payload: pagePayload, retryAfterMs: null };
-    if (pageCapture?.status === 429) return rateLimitedNativeFetch(pageCapture.retryAfter);
-    return fetchNativePayloadFromContentScript(conversationId);
-  }
-
-  function modelFromNativePayload(payload) {
-    const mapping = payload && payload.mapping;
-    if (!mapping || typeof mapping !== "object") return null;
-    for (const node of Object.values(mapping)) {
-      const metadata = node?.message?.metadata;
-      if (metadata && typeof metadata.model_slug === "string" && metadata.model_slug) {
-        return metadata.model_slug;
-      }
-    }
-    return null;
+    const result = await requestNativeCaptureFromPage(nativeId, signal, invocationRef, diagnostics);
+    const acquired = result?.capture ? { ...result.capture, invocationRef, nativeRequestId: result.requestId } : null;
+    if (acquired?.status === 429) return rateLimitedNativeFetch(acquired, result.requestId);
+    signal.throwIfAborted();
+    nativeProgress(diagnostics, "header", "BEGIN");
+    const revision = await rememberNativeCapture(acquired, nativeId);
+    nativeProgress(diagnostics, "header", "END");
+    rememberNativeAttempt({ stage: "page_bridge_fetch", ok: acquired?.ok ?? null, status: acquired?.status ?? null,
+      accepted: Boolean(revision), error: result?.error || acquired?.error || null }, diagnostics);
+    return revision ? { ...revision, retryAfterMs: null } : { capture: null, retryAfterMs: null };
   }
 
   // --- Assistant-produced asset acquisition (sandbox + file-service) ------
@@ -718,222 +481,79 @@
   // the capture itself — per-asset outcomes are disclosed in provider_meta.
   const assetFetchRequestMessage = "polylogue.chatgpt.assetFetchRequest";
   const assetFetchResponseMessage = "polylogue.chatgpt.assetFetchResponse";
-  const assetFetchTimeoutMs = 9000;
-  const assetMaxBytesPerFile = 25 * 1024 * 1024;
-  const assetMaxBytesTotal = 75 * 1024 * 1024;
-  // Wall-clock budget for the WHOLE acquisition pass and a per-kind circuit
-  // breaker: a conversation can reference dozens of sandbox files, and once
-  // the sandbox container is gone every one of them fails the same way --
-  // without these bounds a capture could stall for minutes on dead links.
-  // Must fit inside the 35s capturePage message timeout raced by popup and
-  // background (CAPTURE_MESSAGE_TIMEOUT_MS) with headroom for the
-  // conversation fetch itself. Dead links answer fast; anything slower is
-  // skipped and disclosed -- a later re-capture backfills idempotently.
-  const assetTotalTimeBudgetMs = 10000;
-  const assetConsecutiveFailureLimit = 3;
   const assetResponses = new Map();
-  const sandboxLinkPattern = /sandbox:(\/mnt\/data\/[^\s)\]"'>]+)/g;
 
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
-    const data = event.data || {};
+    const data = window.polylogueAssetStream.readPageMessage(event);
+    if (!data) return;
     if (data.type !== assetFetchResponseMessage || !data.requestId) return;
     const pending = assetResponses.get(data.requestId);
     if (!pending) return;
     assetResponses.delete(data.requestId);
     if (data.outcome && typeof data.outcome === "object") {
       pending.resolve(data.outcome);
-    } else if (data.asset) {
-      pending.resolve({ status: "acquired", phase: "legacy_bridge", asset: data.asset });
     } else {
-      pending.resolve({ status: "request_failed", phase: "legacy_bridge", detail: "legacy_bridge_error" });
+      pending.resolve({ status: "request_failed", detail: "bridge_response_missing" });
     }
   });
 
-  function requestAssetFromPage(request) {
+  function requestAssetFromPage(request, signal, acquisition) {
     const requestId = `polylogue-asset-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const responsePromise = new Promise((resolve) => {
-      const timeout = window.setTimeout(() => {
-        assetResponses.delete(requestId);
-        resolve({ status: "request_failed", phase: "content_bridge", detail: "response_timeout" });
-      }, assetFetchTimeoutMs);
-      assetResponses.set(requestId, {
-        resolve(value) {
-          window.clearTimeout(timeout);
-          resolve(value);
-        }
-      });
-    });
-    window.postMessage({ type: assetFetchRequestMessage, requestId, request }, window.location.origin);
-    return responsePromise;
+    return window.polylogueAssetStream.request({ provider: "chatgpt", requestId, signal, purpose: { acquisition }, start: () => {
+      const responsePromise = new Promise((resolve) => assetResponses.set(requestId, { resolve }));
+      const onAbort = () => window.polylogueAssetStream.pageMessage({ type: "polylogue.chatgpt.cancelRequest", requestId }, chrome.runtime.id);
+      signal.addEventListener("abort", onAbort, { once: true });
+      window.polylogueAssetStream.pageMessage({ type: assetFetchRequestMessage, requestId, request }, chrome.runtime.id);
+      if (signal.aborted) onAbort();
+      return responsePromise.finally(() => signal.removeEventListener("abort", onAbort));
+    } });
   }
 
-  function sandboxPathsFromText(text) {
-    const paths = [];
-    for (const match of String(text).matchAll(sandboxLinkPattern)) {
-      const path = match[1].replace(/[.,;:!?*`]+$/, "");
-      if (path !== "/mnt/data/" && !paths.includes(path)) paths.push(path);
-    }
-    return paths;
-  }
-
-  function collectAssetDescriptors(payload) {
-    const mapping = payload && payload.mapping;
-    if (!mapping || typeof mapping !== "object") return [];
-    const descriptors = [];
-    const seen = new Set();
-    const add = (descriptor) => {
-      if (descriptor.provider_attachment_id && !seen.has(descriptor.provider_attachment_id)) {
-        seen.add(descriptor.provider_attachment_id);
-        descriptors.push(descriptor);
-      }
-    };
-    // ChatGPT's mapping insertion order is not conversation order. In a
-    // branched conversation it can put old, expired interpreter assets before
-    // the selected branch's newest deliverable. Because acquisition is
-    // deliberately bounded by a failure breaker and a wall-clock budget, that
-    // incidental order can prevent the current node's live asset from ever
-    // being attempted. Walk the selected lineage newest-first, then cover the
-    // remaining branches newest-first as best-effort backfill.
-    const orderedNodeIds = [];
-    const orderedNodeIdSet = new Set();
-    let lineageNodeId = typeof payload.current_node === "string" ? payload.current_node : null;
-    while (lineageNodeId && !orderedNodeIdSet.has(lineageNodeId)) {
-      const node = mapping[lineageNodeId];
-      if (!node) break;
-      orderedNodeIds.push(lineageNodeId);
-      orderedNodeIdSet.add(lineageNodeId);
-      lineageNodeId = typeof node.parent === "string" ? node.parent : null;
-    }
-    const remainingNodeIds = Object.keys(mapping)
-      .filter((nodeId) => !orderedNodeIdSet.has(nodeId))
-      .sort((left, right) => {
-        const leftTime = Number(mapping[left]?.message?.create_time) || 0;
-        const rightTime = Number(mapping[right]?.message?.create_time) || 0;
-        return rightTime - leftTime;
-      });
-
-    for (const nodeId of [...orderedNodeIds, ...remainingNodeIds]) {
-      const node = mapping[nodeId];
-      const message = node && node.message;
-      if (!message) continue;
-      const messageId = String(message.id || node.id || nodeId);
-      const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
-      for (const attachment of Array.isArray(metadata.attachments) ? metadata.attachments : []) {
-        if (attachment && attachment.id) {
-          add({
-            kind: "file",
-            fileId: String(attachment.id),
-            provider_attachment_id: String(attachment.id),
-            message_provider_id: messageId,
-            name: attachment.name ? String(attachment.name) : null,
-            mime_type: attachment.mime_type ? String(attachment.mime_type) : null
-          });
-        }
-      }
-      const content = message.content;
-      const parts = content && Array.isArray(content.parts) ? content.parts : [];
-      const role = message.author && message.author.role;
-      for (const part of parts) {
-        if (part && typeof part === "object" && typeof part.asset_pointer === "string" && part.asset_pointer) {
-          const pointer = part.asset_pointer;
-          const pointerPath = pointer.includes("://") ? pointer.split("://").at(-1) : pointer;
-          const fileIdMatch = pointerPath.match(/file[-_][A-Za-z0-9]+/);
-          if (fileIdMatch) {
-            const contentType = String(part.content_type || "");
-            const attachmentKind = contentType === "image_asset_pointer"
-              ? "file_service_image"
-              : contentType === "audio_asset_pointer"
-                || contentType === "audio_transcription"
-                || contentType === "real_time_user_audio_video_asset_pointer"
-                ? "file_service_audio"
-                : "file_service_file";
-            add({
-              kind: "file",
-              fileId: fileIdMatch[0],
-              provider_attachment_id: pointer,
-              message_provider_id: messageId,
-              name: part.name ? String(part.name) : null,
-              mime_type: part.mime_type ? String(part.mime_type) : null,
-              attachment_kind: attachmentKind
-            });
-          }
-        }
-        if (typeof part === "string" && role === "assistant") {
-          for (const path of sandboxPathsFromText(part)) {
-            add({
-              kind: "sandbox",
-              sandboxPath: path,
-              provider_attachment_id: `sandbox:${messageId}:${path}`,
-              message_provider_id: messageId,
-              name: path.replace(/\/+$/, "").split("/").at(-1) || null,
-              mime_type: null,
-              attachment_kind: "sandbox_file"
-            });
-          }
-        }
-      }
-    }
-    return descriptors;
-  }
-
-  async function acquireAssets(payload, conversationId) {
-    const descriptors = collectAssetDescriptors(payload);
+  async function acquireAssets(descriptors, conversationId, signal, rawRef, recordKey, attachmentOrdinal) {
     const outcome = {
       attempted: descriptors.length,
       acquired: 0,
       failed: [],
       acquired_assets: [],
       status_counts: {},
-      skipped_over_budget: 0,
-      skipped_time_budget: 0,
-      skipped_circuit_breaker: 0
     };
     const attachments = [];
-    let totalBytes = 0;
-    const startedAt = Date.now();
-    const consecutiveFailuresByKind = { sandbox: 0, file: 0 };
     for (const descriptor of descriptors) {
-      if (totalBytes >= assetMaxBytesTotal) {
-        outcome.skipped_over_budget += 1;
-        continue;
-      }
-      if (Date.now() - startedAt >= assetTotalTimeBudgetMs) {
-        outcome.skipped_time_budget += 1;
-        continue;
-      }
-      if (consecutiveFailuresByKind[descriptor.kind] >= assetConsecutiveFailureLimit) {
-        // e.g. the sandbox container is dead: every sandbox link fails
-        // identically, so stop burning the time budget on the rest.
-        outcome.skipped_circuit_breaker += 1;
-        continue;
-      }
+      signal.throwIfAborted();
       const request = {
-        kind: descriptor.kind,
+        kind: descriptor.url?.startsWith("sandbox:") ? "sandbox" : "file",
         conversationId,
         messageId: descriptor.message_provider_id,
-        sandboxPath: descriptor.sandboxPath || null,
-        fileId: descriptor.fileId || null,
-        maxBytes: Math.min(assetMaxBytesPerFile, assetMaxBytesTotal - totalBytes)
+        sandboxPath: descriptor.url?.startsWith("sandbox:") ? descriptor.url.slice("sandbox:".length) : null,
+        fileId: descriptor.provider_meta?.provider_file_id || null,
       };
-      const result = await requestAssetFromPage(request);
+      let result;
+      try {
+        result = request.kind === "file" && !request.fileId
+          ? { status: "no_resolvable_source" }
+          : await requestAssetFromPage(request, signal, { raw_id: rawRef, native_id: conversationId, record_key: recordKey, attachment_id: descriptor.provider_attachment_id, attachment_ordinal: attachmentOrdinal });
+      }
+      catch (error) {
+        signal.throwIfAborted();
+        result = { status: error.outcome === "rate_limited" ? "rate_limited" : "request_failed", detail: typeof error.code === "string" ? error.code : (error.message || "request_failed") };
+      }
+      signal.throwIfAborted();
       const status = typeof result.status === "string" ? result.status : "request_failed";
       const contentSha256 = result.asset && result.asset.sha256;
       const acquiredIsValid =
         status === "acquired" &&
         result.asset &&
-        result.asset.base64 &&
+        result.asset.staged_asset &&
         typeof contentSha256 === "string" &&
         /^[0-9a-f]{64}$/.test(contentSha256);
       const recordedStatus = acquiredIsValid ? "acquired" : status === "acquired" ? "invalid_response" : status;
       outcome.status_counts[recordedStatus] = (outcome.status_counts[recordedStatus] || 0) + 1;
       if (acquiredIsValid) {
-        totalBytes += result.asset.size_bytes || 0;
-        consecutiveFailuresByKind[descriptor.kind] = 0;
         outcome.acquired += 1;
         outcome.acquired_assets.push({
           provider_attachment_id: descriptor.provider_attachment_id,
-          attachment_kind: descriptor.attachment_kind || descriptor.kind,
+          attachment_kind: descriptor.attachment_kind,
           sha256: contentSha256,
           size_bytes: result.asset.size_bytes || 0
         });
@@ -944,19 +564,18 @@
           name: result.asset.name || descriptor.name,
           mime_type: result.asset.mime_type || descriptor.mime_type,
           size_bytes: result.asset.size_bytes || null,
-          inline_base64: result.asset.base64,
+          staged_asset: result.asset.staged_asset,
           provider_meta: {
             capture_source: "chatgpt_page_asset_fetch",
-            asset_kind: descriptor.attachment_kind || descriptor.kind,
-            sandbox_path: descriptor.sandboxPath || null,
+            asset_kind: descriptor.attachment_kind,
+            sandbox_path: request.sandboxPath,
             content_sha256: contentSha256
           }
         });
       } else {
-        consecutiveFailuresByKind[descriptor.kind] += 1;
         outcome.failed.push({
           provider_attachment_id: descriptor.provider_attachment_id,
-          attachment_kind: descriptor.attachment_kind || descriptor.kind,
+          attachment_kind: descriptor.attachment_kind,
           status: recordedStatus,
           error: recordedStatus,
           phase: result.phase || null,
@@ -968,178 +587,118 @@
     return { attachments, outcome };
   }
 
-  function buildNativeEnvelope(
-    payload,
-    assetAcquisition = null,
-    requestedConversationId = null,
-    generationObservations = [],
-  ) {
-    const turns = collectNativeTurns(payload);
-    if (!turns.length) return null;
-    return window.polylogueCapture.buildEnvelope({
-      provider: "chatgpt",
-      adapterName: nativeAdapterName,
-      turns,
-      providerSessionId: String(payload.conversation_id || payload.id || requestedConversationId || conversationIdFromUrl()),
-      sessionKind: payload.is_temporary === true ? "temporary" : null,
-      title: typeof payload.title === "string" && payload.title ? payload.title : null,
-      createdAt: timestampFromSeconds(payload.create_time),
-      updatedAt: timestampFromSeconds(payload.update_time),
-      model: modelFromNativePayload(payload),
-      providerMeta: {
-        capture_source: "chatgpt_backend_api",
-        current_node: payload.current_node || null,
-        mapping_node_count: payload.mapping ? Object.keys(payload.mapping).length : 0,
-        is_temporary: payload.is_temporary === true,
-        session_kind: payload.is_temporary === true ? "temporary" : null,
-        asset_acquisition: assetAcquisition ? assetAcquisition.outcome : null,
-        generation_observations: generationObservations,
-      },
-      rawProviderPayload: payload,
-      attachments: assetAcquisition ? assetAcquisition.attachments : []
-    });
-  }
-
-  async function capture(
-    reason = null,
-    requestedConversationId = null,
-    deferReceiver = false,
-    nativePayloadOverride = null,
-    generationObservationsOverride = [],
-    providerUpdatedAt = null,
-  ) {
+  async function performCapture(reason = null, requestedConversationId = null, deferReceiver = false,
+    generationObservationsOverride = [], providerUpdatedAt = null, invocationRef = null, signal, diagnostics) {
+    signal.throwIfAborted();
+    nativeProgress(diagnostics, "throttle", "BEGIN");
     const throttle = await providerThrottle();
-    if (throttle?.outcome === "provider_throttle_authority_unavailable") {
-      return { ok: false, error: "provider_throttle_authority_unavailable" };
-    }
-    if (throttle?.outcome === "rate_limited") {
-      return {
-        ok: false,
-        error: "rate_limited",
-        outcome: "rate_limited",
-        retry_after_seconds: throttle.retry_after_seconds ?? null,
-      };
-    }
-    if (throttle?.ok !== true) {
-      return { ok: false, error: "provider_throttle_authority_unavailable" };
-    }
-    // Explicit captures ask ChatGPT for current native detail, while terminal
-    // freshness claims may settle from an intercepted payload already observed
-    // on the page. A non-terminal or revision-stale cache still takes the
-    // provider path, so a running conversation and genuinely newer revision
-    // cannot be hidden by the convergence optimization.
-    let nativePayload = nativePayloadOverride;
-    if (nativePayload !== null) {
-      if (!nativePayload || typeof nativePayload !== "object" || !nativePayload.mapping) {
-        throw new Error("provided_native_payload_invalid");
+    nativeProgress(diagnostics, "throttle", "END");
+    if (throttle?.ok !== true) return { ok: false, error: throttle?.outcome || "provider_throttle_authority_unavailable",
+      outcome: throttle?.outcome, retry_after_seconds: throttle?.retry_after_seconds ?? null };
+    const selectedId = requestedConversationId || conversationIdFromUrl();
+    const observationsFor = (id) => {
+      const observations = new Map();
+      for (const observation of [...(lifecycleObservationHistory.get(id) || []), ...(Array.isArray(generationObservationsOverride) ? generationObservationsOverride : [])]) {
+        if (observation?.observation_id) observations.set(observation.observation_id, observation);
       }
-      const suppliedId = nativePayload.conversation_id || nativePayload.id;
-      if (requestedConversationId && suppliedId && String(suppliedId) !== requestedConversationId) {
-        throw new Error("provided_native_payload_identity_mismatch");
-      }
-    } else {
-      const nativeFetch = await fetchNativePayloadOnDemand(requestedConversationId, {
-        preferCachedTerminal: reason === "freshness_convergence",
-        minimumUpdatedAt: providerUpdatedAt,
-      });
-      if (nativeFetch.rateLimited) {
-        const recorded = await recordProviderRateLimit(nativeFetch.retryAfterMs);
-        if (!recorded?.ok) return { ok: false, error: "provider_throttle_authority_unavailable" };
-        return {
-          ok: false,
-          error: "rate_limited",
-          outcome: "rate_limited",
-          retry_after_seconds: nativeFetch.retryAfterMs === null
-            ? null
-            : Math.ceil(nativeFetch.retryAfterMs / 1000),
-          // Carries the provider_retry_after_clamped diagnostic upward, so a
-          // clamped (i.e. forged or broken) Retry-After is visible to the caller
-          // rather than silently rewritten.
-          native_attempts: nativeAttemptDiagnostics.slice(-6),
-        };
-      }
-      nativePayload = nativeFetch.payload || latestNativePayload(requestedConversationId || conversationIdFromUrl());
+      return { generation_observations: [...observations.values()] };
+    };
+    const attribution = observationsFor(selectedId);
+    const acquired = await fetchNativePayloadOnDemand(requestedConversationId, {
+      preferCachedTerminal: reason === "freshness_convergence", minimumUpdatedAt: providerUpdatedAt, signal, invocationRef, attribution, diagnostics });
+    if (acquired.rateLimited) {
+      const recorded = await recordProviderRateLimit(acquired.retryAfterMs, acquired.providerResponse, acquired.requestId);
+      if (!recorded?.ok) return { ok: false, error: "provider_throttle_authority_unavailable" };
+      return { ok: false, error: "rate_limited", outcome: "rate_limited", retry_after_seconds: acquired.retryAfterMs === null ? null : Math.ceil(acquired.retryAfterMs / 1000), native_attempts: diagnostics.entries.slice(), native_attempts_dropped: diagnostics.dropped };
     }
-    let assetAcquisition = null;
-    if (nativePayload) {
-      try {
-        assetAcquisition = await acquireAssets(
-          nativePayload,
-          String(nativePayload.conversation_id || nativePayload.id || requestedConversationId || conversationIdFromUrl())
-        );
-      } catch {
-        assetAcquisition = {
-          attachments: [],
-          outcome: {
-            attempted: 0,
-            acquired: 0,
-            acquired_assets: [],
-            status_counts: { request_failed: 1 },
-            failed: [
-              {
-                provider_attachment_id: null,
-                status: "request_failed",
-                error: "request_failed",
-                detail: "asset_acquisition_failed"
-              }
-            ],
-            skipped_over_budget: 0,
-            skipped_time_budget: 0,
-            skipped_circuit_breaker: 0
-          }
-        };
-      }
-    }
-    const nativeId = String(
-      nativePayload?.conversation_id
-      || nativePayload?.id
-      || requestedConversationId
-      || conversationIdFromUrl()
-      || "",
-    );
-    const generationObservations = [
-      ...(lifecycleObservationHistory.get(nativeId) || []),
-      ...(Array.isArray(generationObservationsOverride) ? generationObservationsOverride : []),
-    ].reduce((byId, observation) => {
-      if (observation?.observation_id) byId.set(observation.observation_id, observation);
-      return byId;
-    }, new Map());
-    const normalizedGenerationObservations = [...generationObservations.values()].slice(-64);
-    const finalEnvelope = nativePayload
-      ? buildNativeEnvelope(
-        nativePayload,
-        assetAcquisition,
-        requestedConversationId,
-        normalizedGenerationObservations,
-      )
-      : null;
-    if (!finalEnvelope) {
-      return {
-        ok: false,
-        error: "native_capture_unavailable",
-        native_attempts: nativeAttemptDiagnostics.slice(-6),
-      };
-    }
+    const source = acquired.capture;
+    if (!source) return { ok: false, error: "native_capture_unavailable", native_attempts: diagnostics.entries.slice(), native_attempts_dropped: diagnostics.dropped };
+    const nativeId = String(acquired.headers?.conversation_id || acquired.headers?.id || requestedConversationId || conversationIdFromUrl() || "");
+    nativeProgress(diagnostics, "canonical", "BEGIN");
+    const stopPreparationProgress = observeNativePreparation(source.bodyRef, source.nativeRequestId, signal, diagnostics);
+    let finalEnvelope;
+    try {
+      finalEnvelope = await window.polylogueAssetStream.nativeEnvelope({ provider: "chatgpt", capture: source, nativeId, signal,
+        attribution: nativeId === selectedId ? attribution : observationsFor(nativeId) });
+    } finally { stopPreparationProgress(); }
+    nativeProgress(diagnostics, "canonical", "END");
+    signal.throwIfAborted();
     if (deferReceiver) return { ok: true, envelope: finalEnvelope, deferred: true };
-    const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason);
+    nativeProgress(diagnostics, "publication", "BEGIN");
+    const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason, signal);
+    nativeProgress(diagnostics, "publication", "END");
     if (!captureResult?.ok) {
       messageLayer?.reportOutcome({ ok: false });
-      return {
-        ok: false,
-        envelope: finalEnvelope,
-        captureResult,
-        error: captureResult?.error || "capture_rejected",
-        timelineRecorded: true,
-      };
+      return { ok: false, envelope: finalEnvelope, captureResult, error: captureResult?.error || "capture_rejected", timelineRecorded: true };
     }
-    const archiveState = await window.polylogueCapture.refreshArchiveState(
-      "chatgpt",
-      finalEnvelope.session.provider_session_id
-    );
+    const archiveState = await window.polylogueCapture.refreshArchiveState("chatgpt", finalEnvelope.session.provider_session_id);
     messageLayer?.reportOutcome({ ok: true, acceptedIdentities: captureResult.accepted_identities });
     return { ok: true, envelope: finalEnvelope, captureResult, archiveState };
   }
 
+  const recordOperations = new Set();
+  function acquireRecord(message) {
+    const controller = new AbortController();
+    const operation = { controller, captureRef: message.capture_ref, promise: null };
+    operation.promise = acquireAssets(message.attachments, message.nativeId, controller.signal, message.capture_ref, message.recordKey, message.attachmentOrdinal)
+      .then((acquisition) => ({ ok: true, acquisition }))
+      .catch((error) => ({ ok: false, error: controller.signal.aborted ? "capture_cancelled" : String(error.message || error) }))
+      .finally(() => recordOperations.delete(operation));
+    recordOperations.add(operation);
+    return operation.promise;
+  }
+  async function cancelRecord(captureRef) {
+    const owned = [...recordOperations].filter((operation) => operation.captureRef === captureRef);
+    for (const operation of owned) operation.controller.abort(new globalThis.DOMException("capture_cancelled", "AbortError"));
+    await Promise.allSettled(owned.map((operation) => operation.promise));
+    return { ok: true, outcome: "cancelled" };
+  }
+
+  const captureOperations = new Set();
+  function capture(...args) {
+    const controller = new AbortController();
+    const diagnostics = { entries: [], dropped: 0, cancelled: false };
+    const stopProgress = () => { diagnostics.cancelled = true; };
+    controller.signal.addEventListener("abort", stopProgress, { once: true });
+    const operation = { controller, invocationRef: args[5] || null, promise: null };
+    operation.promise = performCapture(...Array.from({ length: 6 }, (_, index) => args[index]), controller.signal, diagnostics)
+      .then((result) => ({ ...result, native_progress: nativeProgressSnapshot(diagnostics) }))
+      .catch((error) => {
+        if (controller.signal.aborted) return { ok: false, error: "capture_cancelled", outcome: "cancelled", native_progress: nativeProgressSnapshot(diagnostics) };
+        throw error;
+      }).finally(() => { controller.signal.removeEventListener("abort", stopProgress); captureOperations.delete(operation); });
+    operation.promise.nativeProgress = () => nativeProgressSnapshot(diagnostics);
+    captureOperations.add(operation);
+    return operation.promise;
+  }
+  async function cancelCapture(invocationRef = null) {
+    const owned = [...captureOperations].filter((operation) => !invocationRef ||
+      (operation.invocationRef?.id === invocationRef.id && operation.invocationRef?.token === invocationRef.token));
+    for (const operation of owned) operation.controller.abort(new globalThis.DOMException("capture_cancelled", "AbortError"));
+    const closing = owned.filter((operation) => operation.invocationRef).map((operation) =>
+      chrome.runtime.sendMessage({ type: "polylogue.closeNativeInvocation", invocation_ref: operation.invocationRef }));
+    await Promise.allSettled(closing);
+    await Promise.allSettled(owned.map((operation) => operation.promise));
+    return { ok: true, outcome: "cancelled", drained: owned.length };
+  }
+  window.addEventListener("pagehide", () => {
+    freshnessSuspended = true;
+    freshnessObserver?.disconnect();
+    if (domFreshnessScanTimer !== null) clearTimeout(domFreshnessScanTimer);
+    domFreshnessScanTimer = null;
+    for (const timer of freshnessHintTimers.values()) clearTimeout(timer);
+    freshnessHintTimers.clear();
+    void cancelCapture();
+  });
+  window.addEventListener("pageshow", () => {
+    freshnessSuspended = false;
+    for (const nativeId of pendingFreshnessObservations.keys()) {
+      queueFreshnessHint("provider_document_restored", nativeId);
+    }
+    freshnessObserver?.observe(document.documentElement, { childList: true, characterData: true, subtree: true });
+    scheduleDomFreshnessScan?.();
+  });
+  window.polylogueCapture.cancelCapture = cancelCapture;
   window.polylogueCapture.capturePage = capture;
   if (window.polylogueMessageLayer) {
     messageLayer = window.polylogueMessageLayer.mount({
@@ -1172,7 +731,8 @@
       .join("|");
     lastDomFreshnessSignature = domFreshnessSignature();
     observeGenerationLifecycle("initial_scan");
-    const freshnessObserver = new MutationObserver(() => {
+    scheduleDomFreshnessScan = () => {
+      if (freshnessSuspended) return;
       observeGenerationLifecycle("dom_mutation");
       if (domFreshnessScanTimer) clearTimeout(domFreshnessScanTimer);
       domFreshnessScanTimer = setTimeout(() => {
@@ -1185,7 +745,8 @@
           queueFreshnessHint("provider_dom_changed", conversationIdFromUrl(), 5000);
         }
       }, 750);
-    });
+    };
+    freshnessObserver = new MutationObserver(scheduleDomFreshnessScan);
     const observeFreshness = () => freshnessObserver.observe(document.documentElement, {
       childList: true,
       characterData: true,
@@ -1203,6 +764,12 @@
     });
   }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === "polylogue.acquireRecordAssets") { acquireRecord(message).then(sendResponse); return true; }
+    if (message.type === "polylogue.cancelRecordAssets") { cancelRecord(message.capture_ref).then(sendResponse); return true; }
+    if (message.type === "polylogue.cancelCapture") {
+      cancelCapture(message.invocationRef || null).then(sendResponse);
+      return true;
+    }
     if (message.type === "polylogue.captureIdentity") {
       const payload = message.expectedUrl === window.location.href ? latestNativePayload() : null;
       const id = payload?.conversation_id || payload?.id;
@@ -1210,16 +777,16 @@
       return true;
     }
     if (message.type !== "polylogue.capturePage") return false;
-    capture(
+    const operation = capture(
       message.reason || null,
       message.providerSessionId || null,
       message.deferReceiver === true,
-      message.nativePayload ?? null,
       message.generationObservations ?? [],
       message.providerUpdatedAt || null,
-    )
-      .then(sendResponse)
-      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+      message.invocationRef || null,
+    );
+    operation.then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error), native_progress: operation.nativeProgress() }));
     return true;
   });
 })();

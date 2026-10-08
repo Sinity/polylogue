@@ -6,16 +6,17 @@ import functools
 import hashlib
 import json as _json
 import sqlite3
+import sys
 import threading
 import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 import aiosqlite
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from polylogue.storage.derived.session.repo_observations import RepoObservation
@@ -26,15 +27,16 @@ from polylogue.analysis.archive_models import (
     SessionInferencePayload,
 )
 from polylogue.analysis.fallback import FallbackReason
+from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.semantic.cost_records import ModelUsageTotals, SessionCostSummary
 from polylogue.archive.session.domain_models import Session
 from polylogue.archive.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
+from polylogue.core.compute import compute_adapter
 from polylogue.core.enums import Origin
 from polylogue.core.memory import release_process_memory
 from polylogue.core.protocols import ProgressCallback
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import ContentHash, SessionId
-from polylogue.pipeline.services.process_pool import parallel_threads_effective, resolve_parse_worker_count
 from polylogue.storage.derived.session.input_binding import (
     encode_input_binding_row,
     session_input_bindings,
@@ -848,64 +850,45 @@ def build_session_insight_records(
 
 _InsightComputeResult = TypeVar("_InsightComputeResult")
 
-_INSIGHT_COMPUTE_WORKERS_ENV_VAR = "POLYLOGUE_INSIGHT_COMPUTE_WORKERS"
 
+def _insight_input_bytes(session: Session, usage: list[ModelUsageTotals] | None) -> int:
+    """Account for the retained eager input graph without serializing a copy.
 
-def _insight_compute_workers(job_count: int) -> int:
-    """Bounded worker count for per-session insight compute fan-out.
-
-    Reuses the same CPU-count-clamped default as parse-pool dispatch
-    (``resolve_parse_worker_count``) under a distinct env var, since the
-    underlying question -- "how many CPU-bound workers is reasonable here"
-    -- is identical.
+    This is resident input weight, not a prediction of peak worker memory.
+    Shared references count once within a job; independent jobs are charged
+    separately. Models are inspected through stored fields, without evaluating
+    computed properties or opening storage handles.
     """
-    return min(job_count, resolve_parse_worker_count(env_var=_INSIGHT_COMPUTE_WORKERS_ENV_VAR))
+    pending: list[object] = [session, usage]
+    seen: set[int] = set()
+    total = 0
+    while pending:
+        value = pending.pop()
+        identity = id(value)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        total += sys.getsizeof(value)
+        if isinstance(value, (BaseModel, MessageCollection)):
+            pending.append(vars(value))
+        elif isinstance(value, dict):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            pending.extend(value)
+    return total
 
 
 def compute_session_insight_bundles(
-    jobs: Sequence[Callable[[], _InsightComputeResult]],
+    jobs: Sequence[tuple[Callable[[], _InsightComputeResult], int]],
 ) -> list[_InsightComputeResult]:
-    """Run each independent per-session insight-compute job, in ``jobs`` order.
+    """Compute weighted pure hydrated-session bundles in publication order.
 
-    Generic in its result type rather than pinned to
-    ``SessionInsightRecordBundle``: this is a plain job-runner with no
-    knowledge of what a job computes, which keeps it directly unit-testable
-    with trivial jobs (see ``tests/unit/storage/
-    test_session_insight_parallel_fanout.py``) without constructing full
-    bundle objects.
-
-    Fan-out is gated on ``parallel_threads_effective()`` -- see
-    ``polylogue.pipeline.services.process_pool`` for why: a standard GIL
-    build gets zero speedup from CPU-bound threads and risks starving a
-    concurrent SQLite writer thread, so a ``ThreadPoolExecutor`` only
-    engages under a genuinely free-threaded interpreter (3.14t). Below that,
-    or for zero/one jobs, every job runs sequentially on the calling thread
-    -- byte-identical to the pre-fan-out behavior.
-
-    Each job is expected to be pure Python compute over an already-hydrated
-    ``Session`` (see ``build_session_insight_record_bundles`` and
-    ``storage/derived/session/refresh.py``): no SQLite connection, no
-    shared mutable state, so results are safe to compute concurrently. A
-    caller-supplied ``stage_timing_add`` sink is the one shared piece of
-    mutable state jobs may still touch; callers that pass one MUST make its
-    write path thread-safe (``rebuild_session_insights_sync`` does this with
-    a lock) since it is invoked from worker threads whenever fan-out is
-    active.
-
-    Results are returned in ``jobs`` order regardless of completion order,
-    so callers can zip them back onto per-session bookkeeping
-    deterministically, and the single writer always applies per-session
-    writes in a fixed, reproducible order independent of which path (or how
-    many workers) computed them.
+    The process's shared adapter owns admission and worker capacity. A nested
+    derivation uses its existing reservation instead of creating another pool;
+    a failed job drains accepted siblings before their inputs can be released.
     """
-    if len(jobs) <= 1 or not parallel_threads_effective():
-        return [job() for job in jobs]
-    with ThreadPoolExecutor(
-        max_workers=_insight_compute_workers(len(jobs)),
-        thread_name_prefix="insight-compute",
-    ) as pool:
-        futures = [pool.submit(job) for job in jobs]
-        return [future.result() for future in futures]
+    return list(compute_adapter().map(lambda job: job[0](), jobs, estimated_bytes=lambda job: job[1]))
 
 
 def build_session_insight_record_bundles(
@@ -922,14 +905,17 @@ def build_session_insight_record_bundles(
     model_usage = model_usage_by_session or {}
     content_hashes = input_content_hash_by_session or {}
     jobs = [
-        functools.partial(
-            build_session_insight_records,
-            session,
-            compaction_count=compaction_counts.get(str(session.id)),
-            logical_session_id=logical_ids.get(str(session.id)),
-            model_usage=model_usage.get(str(session.id)),
-            input_content_hash=content_hashes.get(str(session.id)),
-            stage_timing_add=stage_timing_add,
+        (
+            functools.partial(
+                build_session_insight_records,
+                session,
+                compaction_count=compaction_counts.get(str(session.id)),
+                logical_session_id=logical_ids.get(str(session.id)),
+                model_usage=model_usage.get(str(session.id)),
+                input_content_hash=content_hashes.get(str(session.id)),
+                stage_timing_add=stage_timing_add,
+            ),
+            _insight_input_bytes(session, model_usage.get(str(session.id))),
         )
         for session in sessions
     ]
@@ -1756,7 +1742,7 @@ def rebuild_session_insights_sync(
     # ``stage_timing_add`` and invoked from every per-session compute job
     # (build_session_insight_records fires it ~8x per session). When
     # ``compute_session_insight_bundles`` fans those jobs out across a
-    # ThreadPoolExecutor (parallel_threads_effective()), multiple worker
+    # shared bounded compute adapter, multiple worker
     # threads race on the exact same read-modify-write of
     # ``stage_timings_s[key]``; without a lock that race silently drops
     # increments (undercounting stage timings, not a crash). The lock is
@@ -2004,9 +1990,15 @@ def rebuild_session_insights_sync(
     )
 
 
-def _resolve_archive_rebuild_session_ids(archive: Any, session_ids: Sequence[str] | None) -> tuple[str, ...]:
-    if session_ids is None:
-        return tuple(summary.session_id for summary in archive.list_summaries(limit=1_000_000))
+class _ArchiveInsightWriter(Protocol):
+    def resolve_session_id(self, token: str) -> str: ...
+
+    def rebuild_session_insights(
+        self, *, session_ids: Sequence[str] | None = None, progress_callback: ProgressCallback | None = None
+    ) -> SessionInsightCounts: ...
+
+
+def _resolve_archive_rebuild_session_ids(archive: _ArchiveInsightWriter, session_ids: Sequence[str]) -> tuple[str, ...]:
     resolved: list[str] = []
     for session_id in session_ids:
         with suppress(KeyError):
@@ -2015,29 +2007,22 @@ def _resolve_archive_rebuild_session_ids(archive: Any, session_ids: Sequence[str
 
 
 def rebuild_archive_session_insights(
-    archive: Any,
+    archive: _ArchiveInsightWriter,
     *,
     session_ids: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> SessionInsightCounts:
-    """Rebuild durable session insights via the canonical materializer.
+    """Rebuild session insights through the ArchiveStore mutation owner.
 
-    This is a thin adapter over :func:`rebuild_session_insights_sync` — the
-    single rebuild stack shared with daemon convergence (#1743 P13). It
-    resolves any session-id aliases against the archive, then delegates the
-    whole rebuild of the per-session insight rows and their materialization
-    markers. Thread and tag summaries are query-time views.
-    to the canonical path, which commits internally.
-
-    :mod:`polylogue.api` (the async facade) calls this primitive downward
-    instead of duplicating it or reaching across ring boundaries for a
-    private symbol (polylogue-exb).
+    Resolve session aliases before entering the Store's write scope. The Store
+    owns physical custody across the canonical materializer's internal commits;
+    this adapter never writes through a private connection. Thread and tag
+    summaries remain query-time views.
     """
     resolved_ids = _resolve_archive_rebuild_session_ids(archive, session_ids) if session_ids is not None else None
     if session_ids is not None and not resolved_ids:
         return SessionInsightCounts()
-    return rebuild_session_insights_sync(
-        archive._conn,
+    return archive.rebuild_session_insights(
         session_ids=resolved_ids,
         progress_callback=progress_callback,
     )

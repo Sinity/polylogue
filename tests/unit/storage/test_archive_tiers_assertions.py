@@ -44,12 +44,12 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_pathology_finding,
     assertion_id_for_promoted_candidate,
     assertion_id_for_transform_candidate,
+    iter_assertions_for_export,
     judge_assertion_candidate,
     judge_assertion_candidates,
     list_assertion_candidate_reviews,
     list_assertion_candidates,
     list_assertion_claims,
-    list_assertions_for_export,
     list_assertions_for_target,
     mark_assertion_status,
     read_assertion_envelope,
@@ -60,7 +60,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 )
 from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE, open_connection
 from tests.infra.identity import archive_message_id
-from tests.infra.user_tier import connect_user_tier
+from tests.infra.user_tier import connect_measured_user_tier
 
 
 def _connect_index(path: Path) -> sqlite3.Connection:
@@ -112,7 +112,7 @@ def test_durable_user_tier_carries_every_assertion_status_forward(tmp_path: Path
     statuses = tuple(AssertionStatus)
     assert len(statuses) == 8
 
-    conn = connect_user_tier(db_path)
+    conn = connect_measured_user_tier(db_path)
     try:
         for index, status in enumerate(statuses):
             upsert_assertion(
@@ -129,7 +129,7 @@ def test_durable_user_tier_carries_every_assertion_status_forward(tmp_path: Path
         # Assertion writers hand the transaction back to their caller's
         # unit-of-work boundary (``_immediate_user_write_transaction``).
         conn.commit()
-        before = {row.assertion_id: row.status for row in list_assertions_for_export(conn)}
+        before = {row.assertion_id: row.status for row in list(iter_assertions_for_export(conn))}
         epoch_before = int(conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton = 1").fetchone()[0])
         indexes_before = {name for name in _sqlite_objects(conn, "index") if name.startswith("idx_assertions_")}
         triggers_before = {name for name in _sqlite_objects(conn, "trigger") if "assertions" in name}
@@ -141,9 +141,9 @@ def test_durable_user_tier_carries_every_assertion_status_forward(tmp_path: Path
     assert triggers_before
 
     # The fresh floor runs the user-tier DDL again over the durable database.
-    conn = connect_user_tier(db_path)
+    conn = connect_measured_user_tier(db_path)
     try:
-        after = {row.assertion_id: row.status for row in list_assertions_for_export(conn)}
+        after = {row.assertion_id: row.status for row in list(iter_assertions_for_export(conn))}
         assert {name for name in _sqlite_objects(conn, "index") if name.startswith("idx_assertions_")} == indexes_before
         assert {name for name in _sqlite_objects(conn, "trigger") if "assertions" in name} == triggers_before
 
@@ -229,7 +229,7 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def test_fresh_user_tier_creates_assertions_table(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         assert _table_exists(conn, "assertions")
         assert _table_exists(conn, "user_settings")
@@ -256,7 +256,7 @@ def test_overlay_writers_enable_foreign_keys_before_first_transaction(tmp_path: 
     upsert_assertion chokepoint applies it before any transaction begins,
     covering every caller (direct or through a wrapper) uniformly.
     """
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 0
@@ -267,7 +267,7 @@ def test_overlay_writers_enable_foreign_keys_before_first_transaction(tmp_path: 
 
 
 def test_fresh_user_tier_has_no_legacy_overlay_tables(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         tables = _sqlite_objects(conn, "table")
         obsolete_overlay_tables = {
@@ -304,7 +304,7 @@ def test_fresh_user_tier_has_no_legacy_overlay_tables(tmp_path: Path) -> None:
 
 
 def test_fresh_user_tier_has_settings_table_for_non_assertion_state(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(user_settings)")}
         assert columns == {"setting_key", "value_json", "updated_at_ms", "author_ref"}
@@ -313,7 +313,7 @@ def test_fresh_user_tier_has_settings_table_for_non_assertion_state(tmp_path: Pa
 
 
 def test_assertions_have_read_path_indexes_for_overlay_and_candidate_flows(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         index_columns = {
             name: [str(row[2]) for row in conn.execute(f"PRAGMA index_info({name})")]
@@ -445,7 +445,7 @@ def test_index_json_contracts_reject_non_object_payloads(tmp_path: Path) -> None
 
 
 def test_assertion_round_trip_across_kinds(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
             conn,
@@ -511,7 +511,7 @@ def test_assertion_round_trip_across_kinds(tmp_path: Path) -> None:
 
 
 def test_assertion_defaults_are_explicit_private_no_inject(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         active = upsert_assertion(
             conn,
@@ -542,7 +542,7 @@ def test_assertion_defaults_are_explicit_private_no_inject(tmp_path: Path) -> No
         active_claims = list_assertion_claims(conn, target_ref="session:s-1", statuses=("active",))
         assert [claim.assertion_id for claim in active_claims] == ["default-decision"]
 
-        active_exports = list_assertions_for_export(conn, statuses=("active",))
+        active_exports = list(iter_assertions_for_export(conn, statuses=("active",)))
         assert [row.assertion_id for row in active_exports] == ["default-decision"]
     finally:
         conn.close()
@@ -558,7 +558,7 @@ def test_legacy_null_lifecycle_assertions_read_as_active_private_no_inject(tmp_p
     other four columns are still nullable and still carry their defaults on
     read, which is what the rest of this test pins.
     """
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         with pytest.raises(sqlite3.IntegrityError, match="NOT NULL constraint failed: assertions.status"):
             conn.execute(
@@ -607,13 +607,15 @@ def test_legacy_null_lifecycle_assertions_read_as_active_private_no_inject(tmp_p
         assert stored.context_policy == {"inject": False}
 
         assert [claim.assertion_id for claim in list_assertion_claims(conn, statuses=("active",))] == ["legacy-null"]
-        assert [row.assertion_id for row in list_assertions_for_export(conn, statuses=("active",))] == ["legacy-null"]
+        assert [row.assertion_id for row in list(iter_assertions_for_export(conn, statuses=("active",)))] == [
+            "legacy-null"
+        ]
     finally:
         conn.close()
 
 
 def test_assertion_write_rejects_unparseable_public_refs(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         with pytest.raises(ValueError, match="object ref must use"):
             upsert_assertion(
@@ -637,7 +639,7 @@ def test_assertion_write_rejects_unparseable_public_refs(tmp_path: Path) -> None
 
 
 def test_assertion_write_rejects_unknown_lifecycle_values(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         with pytest.raises(ValueError):
             upsert_assertion(
@@ -670,7 +672,7 @@ def test_assertion_write_rejects_unknown_lifecycle_values(tmp_path: Path) -> Non
 
 
 def test_assertion_write_normalizes_json_values_at_internal_boundary(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         with pytest.raises(TypeError, match="assertion value is not JSON-compatible"):
             upsert_assertion(
@@ -723,7 +725,7 @@ def test_assertion_write_normalizes_json_values_at_internal_boundary(tmp_path: P
 
 
 def test_assertion_upsert_preserves_created_at_and_updates_fields(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         first = upsert_assertion(
             conn,
@@ -753,7 +755,7 @@ def test_assertion_upsert_preserves_created_at_and_updates_fields(tmp_path: Path
 
 
 def test_supersession_and_status_persist(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
             conn,
@@ -789,7 +791,7 @@ def test_supersession_and_status_persist(tmp_path: Path) -> None:
 
 
 def test_list_assertions_filters_by_target_and_kind(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
             conn,
@@ -833,7 +835,7 @@ def test_list_assertions_filters_by_target_and_kind(tmp_path: Path) -> None:
 
 
 def test_list_assertion_claims_filters_lifecycle_assertions(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         assert set(ASSERTION_CLAIM_KINDS) == {
             AssertionKind.DECISION,
@@ -949,7 +951,7 @@ def test_list_assertion_claims_excludes_expired_claims_from_the_admission_read(t
     list_assertion_claims) and every other ASSERTION_CLAIM_KINDS consumer
     goes through -- no new AssertionStatus, no parallel filtered read path.
     """
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
             conn,
@@ -1014,7 +1016,7 @@ def test_highlight_candidate_promotion_carries_expiry_into_the_active_claim(tmp_
     read ``context/preamble.py`` uses) stops serving it, with HIGHLIGHT now a
     member of ``ASSERTION_CLAIM_KINDS``.
     """
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         candidate = upsert_assertion(
             conn,
@@ -1061,8 +1063,8 @@ def test_highlight_candidate_promotion_carries_expiry_into_the_active_claim(tmp_
         conn.close()
 
 
-def test_list_assertions_for_export_covers_all_kinds_and_statuses(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+def test_iter_assertions_for_export_covers_all_kinds_and_statuses(tmp_path: Path) -> None:
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         rows = [
             ("a-mark", AssertionKind.MARK, "active", 1_700_000_001_000),
@@ -1091,16 +1093,16 @@ def test_list_assertions_for_export_covers_all_kinds_and_statuses(tmp_path: Path
                 now_ms=now_ms,
             )
 
-        exported = list_assertions_for_export(conn)
+        exported = list(iter_assertions_for_export(conn))
         assert [row.assertion_id for row in exported] == ["a-mark", "a-deleted-note", "a-candidate"]
 
-        active = list_assertions_for_export(conn, statuses=("active",))
+        active = list(iter_assertions_for_export(conn, statuses=("active",)))
         assert [row.assertion_id for row in active] == ["a-mark"]
 
-        notes = list_assertions_for_export(conn, kinds=(AssertionKind.NOTE,))
+        notes = list(iter_assertions_for_export(conn, kinds=(AssertionKind.NOTE,)))
         assert [row.assertion_id for row in notes] == ["a-deleted-note"]
 
-        limited = list_assertions_for_export(conn, limit=2)
+        limited = list(iter_assertions_for_export(conn, limit=2))
         assert [row.assertion_id for row in limited] == ["a-mark", "a-deleted-note"]
 
         payload = assertion_envelope_to_payload(exported[0])
@@ -1129,7 +1131,7 @@ def test_list_assertions_for_export_covers_all_kinds_and_statuses(tmp_path: Path
 
 
 def test_assertion_targets_various_ref_shapes(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         refs = [
             "session:abc-123",
@@ -1161,7 +1163,7 @@ def test_assertion_targets_various_ref_shapes(tmp_path: Path) -> None:
 
 
 def test_session_digest_candidates_write_transform_candidate_assertions(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         digest = _recovery_candidate_digest()
         assert digest.decision_candidates
@@ -1251,7 +1253,7 @@ def test_session_digest_candidates_write_transform_candidate_assertions(tmp_path
 
 
 def test_candidate_assertion_acceptance_creates_active_assertion_with_lineage(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         digest = _recovery_candidate_digest()
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
@@ -1289,7 +1291,7 @@ def test_candidate_assertion_acceptance_creates_active_assertion_with_lineage(tm
 
 
 def test_candidate_assertion_rejection_preserves_reason_and_filtering(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         digest = _recovery_candidate_digest()
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
@@ -1320,7 +1322,7 @@ def test_candidate_assertion_rejection_preserves_reason_and_filtering(tmp_path: 
 
 
 def test_candidate_assertion_defer_records_reason_without_promoting(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         digest = _recovery_candidate_digest()
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
@@ -1359,7 +1361,7 @@ def test_candidate_assertion_defer_records_reason_without_promoting(tmp_path: Pa
 
 
 def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         digest = _recovery_candidate_digest()
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
@@ -1424,7 +1426,7 @@ def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path:
 def test_candidate_accept_rejects_supersede_replacement_fields(tmp_path: Path) -> None:
     """Only supersede may alter a candidate's promoted content."""
 
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         digest = _recovery_candidate_digest()
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
@@ -1460,7 +1462,7 @@ def test_judge_candidate_refuses_moved_evidence(tmp_path: Path) -> None:
     candidate.
     """
 
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
             conn,
@@ -1533,7 +1535,7 @@ def test_judge_candidate_refuses_moved_evidence(tmp_path: Path) -> None:
 def test_bulk_judgment_is_partial_idempotent_and_injection_is_reviewer_controlled(tmp_path: Path) -> None:
     """The real user-tier batch writer retains valid judgments around failures."""
 
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         digest = _recovery_candidate_digest()
         candidates = upsert_transform_candidate_assertions(
@@ -1610,7 +1612,7 @@ def test_bulk_judgment_is_partial_idempotent_and_injection_is_reviewer_controlle
 def test_bulk_judgment_rolls_back_on_unexpected_batch_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A non-item failure must not commit judgments from earlier batch items."""
 
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         digest = _recovery_candidate_digest()
         candidates = upsert_transform_candidate_assertions(
@@ -1686,7 +1688,7 @@ def test_bulk_judgment_rolls_back_on_unexpected_batch_error(tmp_path: Path, monk
 
 
 def test_candidate_reviews_survive_remirror_without_becoming_authoritative(tmp_path: Path) -> None:
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         digest = _recovery_candidate_digest()
         duplicate_digest = digest.model_copy(update={"decision_candidates": (digest.decision_candidates[0],) * 3})
@@ -1768,23 +1770,27 @@ def test_candidate_reviews_survive_remirror_without_becoming_authoritative(tmp_p
         conn.close()
 
 
-class _PauseAfterCandidateLookup:
-    """Exercise the production upsert through a second real SQLite connection."""
+def _pause_after_candidate_lookup(
+    conn: sqlite3.Connection, looked_up: threading.Event, release: threading.Event
+) -> sqlite3.Connection:
+    """Hold the production upsert on its own connection just after its candidate lookup.
 
-    def __init__(self, conn: sqlite3.Connection, looked_up: threading.Event, release: threading.Event) -> None:
-        self._conn = conn
-        self._looked_up = looked_up
-        self._release = release
+    The writer runs its statements on the connection's own cursors, so the
+    pause hooks SQLite's statement trace: the statement after the lookup
+    waits until the test releases it.
+    """
+    lookup_seen = False
 
-    def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> sqlite3.Cursor:
-        cursor = self._conn.execute(sql, parameters)
+    def trace(sql: str) -> None:
+        nonlocal lookup_seen
+        if lookup_seen and not looked_up.is_set():
+            looked_up.set()
+            release.wait(timeout=5)
         if "SELECT created_at_ms, status FROM assertions" in sql:
-            self._looked_up.set()
-            assert self._release.wait(timeout=5), "test did not release detector replay"
-        return cursor
+            lookup_seen = True
 
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._conn, name)
+    conn.set_trace_callback(trace)
+    return conn
 
 
 def test_cross_connection_replay_cannot_resurrect_operator_accept(tmp_path: Path) -> None:
@@ -1823,7 +1829,7 @@ def test_cross_connection_replay_cannot_resurrect_operator_accept(tmp_path: Path
             try:
                 assert detector.execute("PRAGMA busy_timeout").fetchone()[0] == WRITE_CONNECTION_PROFILE.busy_timeout_ms
                 upsert_assertion(
-                    _PauseAfterCandidateLookup(detector, looked_up, release_detector),  # type: ignore[arg-type]
+                    _pause_after_candidate_lookup(detector, looked_up, release_detector),
                     assertion_id=candidate.assertion_id,
                     target_ref=candidate.target_ref,
                     kind=candidate.kind,
@@ -1938,7 +1944,7 @@ def test_cross_connection_replay_inside_caller_owned_deferred_transaction_cannot
                 detector.execute("BEGIN")
                 assert detector.in_transaction
                 upsert_assertion(
-                    _PauseAfterCandidateLookup(detector, looked_up, release_detector),  # type: ignore[arg-type]
+                    _pause_after_candidate_lookup(detector, looked_up, release_detector),
                     assertion_id=candidate.assertion_id,
                     target_ref=candidate.target_ref,
                     kind=candidate.kind,
@@ -2026,7 +2032,7 @@ def test_upsert_pathology_findings_emits_queryable_candidates(tmp_path: Path) ->
     from polylogue.analysis.pathology import PathologyFinding
     from polylogue.core.refs import EvidenceRef
 
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         session_id = "codex-session:pathology-demo"
         findings = [
@@ -2105,7 +2111,7 @@ def test_assertion_id_for_pathology_finding_is_stable() -> None:
 
 def test_upsert_findings_reuses_candidate_lifecycle_and_evidence_refs(tmp_path: Path) -> None:
     """Real writer path: detector evidence remains reviewable and never auto-injects."""
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         finding = FindingAssertion(
             claim_key="tool-failure-rate",
@@ -2183,7 +2189,7 @@ def test_upsert_findings_reuses_candidate_lifecycle_and_evidence_refs(tmp_path: 
 
 def test_upsert_findings_rejects_incomplete_delta_and_unresolved_ref_shapes(tmp_path: Path) -> None:
     """Schema validation fails before a detector can create an unauditable claim."""
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         incomplete_delta = FindingAssertion(
             claim_key="missing-baseline",
@@ -2244,7 +2250,7 @@ def _finding_with_control(**control_overrides: JSONValue) -> FindingAssertion:
 
 def test_upsert_finding_with_matched_control_stores_validated_observed_outcome(tmp_path: Path) -> None:
     """A matched-shape control that isolates the frame variable is accepted and stored (rxdo.9.7)."""
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         finding = _finding_with_control()
         written = upsert_findings_as_assertions(conn, [finding], now_ms=1_700_000_000_000)
@@ -2272,7 +2278,7 @@ def test_upsert_finding_with_matched_control_stores_validated_observed_outcome(t
 
 def test_upsert_finding_rejects_confounded_unrelated_cohort_control(tmp_path: Path) -> None:
     """A deliberately divergent baseline that leaves the claim's frame variable unchecked fails closed."""
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         finding = _finding_with_control(control_kind="unrelated_cohort", confounds_checked=[])
         with pytest.raises(ValueError, match="control rejected"):
@@ -2283,7 +2289,7 @@ def test_upsert_finding_rejects_confounded_unrelated_cohort_control(tmp_path: Pa
 
 def test_upsert_finding_rejects_control_without_matching_variables(tmp_path: Path) -> None:
     """A matched-shape control declaring no matching variables isolates nothing -- rejected, not silently stored."""
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         finding = _finding_with_control(matching_variables=[])
         with pytest.raises(ValueError, match="control rejected"):
@@ -2295,7 +2301,7 @@ def test_upsert_finding_rejects_control_without_matching_variables(tmp_path: Pat
 def test_upsert_assertion_owned_transaction_rolls_back_on_write_failure(tmp_path: Path) -> None:
     """A failed standalone upsert cannot leave an owned transaction or partial row."""
 
-    conn = connect_user_tier(tmp_path / "user.db")
+    conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
             conn,

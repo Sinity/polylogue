@@ -23,6 +23,7 @@ from polylogue.sinex.models import (
     ReceiptState,
 )
 from polylogue.sinex.transport import SinexTransport, SinexTransportUnavailableError
+from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
 
 _RETRYABLE_STATUSES = (
     ObligationStatus.PENDING,
@@ -161,7 +162,7 @@ class PublicationService:
         if readonly:
             conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True, timeout=30.0)
         else:
-            conn = sqlite3.connect(self.source_db_path, timeout=30.0)
+            conn = open_source_tier_write_connection(self.source_db_path, archive_root=self.source_db_path.parent)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.execute("PRAGMA foreign_keys = ON")

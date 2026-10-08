@@ -11,27 +11,39 @@ rejects the state that ``machine_request_state`` returns for a
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from polylogue.operations.audit import AuditRepository, MachineRequestBinding
 from polylogue.operations.daemon_protocol import validate_operation_result
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceInput, FrozenSourceManifest
+from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceInput, SealedSourceManifestRef
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.source_builders import prepared_ingest_manifest
+
+
+def _leased_ingest_manifest(archive_root: Path, *args: Any, **kwargs: Any) -> SealedSourceManifestRef:
+    """Prepare the staged manifest under the archive's writer lease, as production does."""
+    with write_lease("test.ingest-manifest", archive_root=archive_root):
+        return prepared_ingest_manifest(archive_root, *args, **kwargs)
 
 
 def _accepted_ingest_state(tmp_path: Path) -> dict[str, object]:
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-await", archive_root=tmp_path):
+        publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
-    manifest = FrozenSourceManifest(
+    manifest = _leased_ingest_manifest(
+        tmp_path,
         "source-generation:await-contract",
         "d" * 64,
         (FrozenSourceInput("input.json", "/synthetic/input.json", blob_hash, publication_id),),
+        publisher_id=publisher.publisher_id,
     )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     binding = MachineRequestBinding("archive:test", "request:test", principal.actor_ref, "f" * 64, "ingest")

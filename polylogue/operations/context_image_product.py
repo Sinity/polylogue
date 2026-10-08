@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast, get_args
 
-from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
-from polylogue.context.compiler import (
+from polylogue.archive.context_models import (
     DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
     ContextImage,
@@ -15,13 +13,80 @@ from polylogue.context.compiler import (
     ContextSegmentProfile,
     ContextSpec,
 )
+from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
+from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
 from polylogue.context.product_image import compile_context_image
+from polylogue.core.async_bridge import complete_without_suspension
+from polylogue.core.enums import Origin
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.surfaces.chronicle import (
+    ChronicleProjectionPayload,
+    build_chronicle_projection_payload,
+    build_chronicle_session_payload,
+)
 from polylogue.surfaces.payloads import AssertionClaimPayload
 from polylogue.surfaces.projection_spec import projection_from_views
+from polylogue.surfaces.temporal_evidence import (
+    TemporalEvidenceEvent,
+    TemporalEvidenceWindow,
+    action_row_to_temporal_event,
+    build_temporal_evidence_window,
+    message_row_to_temporal_event,
+    summary_to_temporal_event,
+)
 
 if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.archive.session.domain_models import SessionSummary
+
+#: A context segment is a bounded excerpt of one session's temporal evidence,
+#: not its full timeline; the caveats on the window name each cut it makes.
+CONTEXT_TEMPORAL_MESSAGE_EVENTS = 8
+CONTEXT_TEMPORAL_ACTION_EVENTS = 4
+CONTEXT_CHRONICLE_EDGE_LIMIT = 8
+
+
+def context_temporal_window(archive: ArchiveStore, summary: SessionSummary) -> TemporalEvidenceWindow:
+    """The temporal context excerpt for one session, read from ``archive``."""
+    session_id = str(summary.id)
+    events: list[TemporalEvidenceEvent] = []
+    if session_event := summary_to_temporal_event(summary):
+        events.append(session_event)
+    predicate = QueryFieldPredicate(field="session.id", values=(session_id,), op="=").with_field_ref(
+        QueryFieldRef(scope="session", name="id", source_name="session.id")
+    )
+    message_rows = archive.query_messages(
+        predicate, limit=CONTEXT_TEMPORAL_MESSAGE_EVENTS, sort="time", sort_direction="asc"
+    )
+    action_rows = archive.query_session_actions(
+        [session_id], limit=CONTEXT_TEMPORAL_ACTION_EVENTS, sort_direction="asc"
+    )
+    events.extend(event for row in message_rows if (event := message_row_to_temporal_event(row)) is not None)
+    events.extend(event for row in action_rows if (event := action_row_to_temporal_event(row)) is not None)
+    caveats: list[str] = []
+    if (
+        len(message_rows) >= CONTEXT_TEMPORAL_MESSAGE_EVENTS
+        and (summary.message_count or 0) > CONTEXT_TEMPORAL_MESSAGE_EVENTS
+    ):
+        caveats.append("message_events_capped")
+    if len(action_rows) >= CONTEXT_TEMPORAL_ACTION_EVENTS:
+        caveats.append("action_events_capped")
+    return build_temporal_evidence_window(events, caveats=caveats)
+
+
+def context_chronicle_payload(
+    archive: ArchiveStore, summary: SessionSummary, *, edge_limit: int = CONTEXT_CHRONICLE_EDGE_LIMIT
+) -> ChronicleProjectionPayload:
+    """The chronicle context excerpt for one session, with lineage-composed edges."""
+    from polylogue.operations.read_view_chronicle import chronicle_edges
+
+    first, last, total = chronicle_edges(
+        archive, str(summary.id), edge_limit, origin=Origin.from_string(summary.origin)
+    )
+    session = build_chronicle_session_payload(
+        summary, first_messages=first, last_messages=last, total_matching_messages=total, edge_limit=edge_limit
+    )
+    return build_chronicle_projection_payload([session], edge_limit=edge_limit)
 
 
 class PinnedContextImageSource:
@@ -108,11 +173,11 @@ class PinnedContextImageSource:
         except KeyError:
             return None
 
-    def _context_temporal_window(self, summary: object) -> object:
-        raise ValueError("temporal view is not supported by the context-image read operation")
+    def _context_temporal_window(self, summary: SessionSummary) -> TemporalEvidenceWindow:
+        return context_temporal_window(self.archive, summary)
 
-    async def _context_chronicle_payload(self, summary: object) -> object:
-        raise ValueError("chronicle view is not supported by the context-image read operation")
+    async def _context_chronicle_payload(self, summary: SessionSummary) -> ChronicleProjectionPayload:
+        return context_chronicle_payload(self.archive, summary)
 
     async def list_assertion_claim_payloads(
         self, *, target_ref: str, statuses: tuple[str, ...], context_inject: bool
@@ -156,6 +221,12 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
     include_messages = bool(payload.get("include_messages", True))
     include_assertions = bool(payload.get("include_assertions", True))
     redact_paths = bool(payload.get("redact_paths", True))
+    read_views = payload.get("read_views")
+    views: tuple[str, ...] = (
+        tuple(str(view) for view in read_views)
+        if read_views is not None
+        else (("messages",) if include_messages else ())
+    )
     seed_session_ids = payload.get("seed_session_ids") or ()
     if seed_session_ids:
         seed_session_ids = tuple(seed_session_ids)[:max_sessions]
@@ -165,7 +236,7 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
         else ((f"session:{seed_session_id}",) if seed_session_id is not None else ())
     )
     spec = ContextSpec(
-        purpose="handoff",
+        purpose=payload.get("purpose", "handoff"),
         seed_refs=seed_refs,
         seed_query=query if query is not None else ("" if not seed_refs else None),
         seed_query_limit=max_sessions,
@@ -174,7 +245,7 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
         seed_since=payload.get("since"),
         seed_until=payload.get("until"),
         seed_origin=payload.get("origin"),
-        read_views=("messages",) if include_messages else (),
+        read_views=views,
         max_tokens=max_tokens,
         max_messages_per_session=payload.get(
             "max_messages_per_session", DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION
@@ -186,7 +257,7 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
     )
     if include_assertions:
         archive.require_user_tier()
-    image = asyncio.run(
+    image = complete_without_suspension(
         compile_context_image(
             PinnedContextImageSource(archive, observed_at_ms=int(payload.get("observed_at_ms", 0))), spec
         )

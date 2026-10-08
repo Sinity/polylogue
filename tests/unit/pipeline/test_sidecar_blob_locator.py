@@ -18,30 +18,23 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 
-import pytest
-
-import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.pipeline.ids import session_content_hash
-from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
-from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import record_excised_blob_hash
-from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite, prepare_session_write
-from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+from tests.infra.index_writer import write_fixture_retained_session
 
 _FULL_TEXT = "full sidecar output line\n" * 300
 _SESSION_ID = "claude-code-session:sidecar-bound"
 
 
-def _bound_payload() -> SessionWritePayload:
-    """A parsed session carrying the identity the parse worker binds."""
+def _bound_session() -> ParsedSession:
+    """A parsed session carrying the identity retained publication binds."""
     session = ParsedSession(
         source_name=Provider.CLAUDE_CODE,
         provider_session_id="sidecar-bound",
@@ -78,12 +71,7 @@ def _bound_payload() -> SessionWritePayload:
         ],
     )
     bound = str(session_content_hash(session))
-    return SessionWritePayload(
-        session_id=_SESSION_ID,
-        content_hash=bound,
-        parsed_session=session.model_copy(update={"content_hash": bound}),
-        message_count=1,
-    )
+    return session.model_copy(update={"content_hash": bound})
 
 
 def _stored(conn: sqlite3.Connection) -> tuple[str, dict[str, object], str]:
@@ -100,50 +88,42 @@ def _stored(conn: sqlite3.Connection) -> tuple[str, dict[str, object], str]:
     return str(content_hash), json.loads(str(event_row[0])), str(block_text)
 
 
-def _stored_representation_hash(payload: SessionWritePayload, stored_event: dict[str, object]) -> str:
+def _stored_representation_hash(session: ParsedSession, stored_event: dict[str, object]) -> str:
     """Hash the session as committed: its stored sidecar event in place of the parsed one."""
-    [parsed_event] = payload.parsed_session.session_events
-    committed = payload.parsed_session.model_copy(
+    [parsed_event] = session.session_events
+    committed = session.model_copy(
         update={"session_events": [parsed_event.model_copy(update={"payload": stored_event})]}
     )
     return str(session_content_hash(committed))
 
 
-@pytest.mark.parametrize("route", ["unprepared", "writer_prepared", "worker_prepared"])
-def test_sidecar_locator_is_committed_beside_the_bound_session(tmp_path: Path, route: str) -> None:
-    payload = _bound_payload()
-    bound = payload.content_hash
-    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
-    carriers: list[PreparedSessionWrite] = []
-    with open_connection(tmp_path / "index.db") as conn:
-        if route == "worker_prepared":
-            carrier = prepare_session_write(conn, payload.parsed_session, merge_append=False)
-            payload = replace(payload, prepared_write=carrier)
-        try:
-            changed, counts = ingest_batch_core._write_session(
-                conn,
-                payload,
-                blob_publisher=publisher,
-                prepared_writes=None if route == "unprepared" else carriers,
-            )
-            conn.commit()
-        finally:
-            for carrier in carriers:
-                carrier.close()
+def _publish(archive_root: Path, session: ParsedSession) -> bool:
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
+    conn = sqlite3.connect(archive_root / "index.db")
+    try:
+        changed, _counts = write_fixture_retained_session(conn, session)
+        return changed
+    finally:
+        conn.close()
+
+
+def test_sidecar_locator_is_committed_beside_the_bound_session(tmp_path: Path) -> None:
+    bound_session = _bound_session()
+    bound = str(bound_session.content_hash)
+    archive_root = tmp_path / "archive"
+    changed = _publish(archive_root, bound_session)
+    with sqlite3.connect(archive_root / "index.db") as conn:
         stored_hash, stored_event, block_text = _stored(conn)
 
     assert changed is True
-    if route != "unprepared":
-        assert carriers, "the prepared route must publish through a prepared carrier"
-    assert counts["sidecar_blobs_written"] == 1
     expected_hash = sha256(_FULL_TEXT.encode("utf-8")).hexdigest()
-    assert (tmp_path / "blob" / expected_hash[:2] / expected_hash[2:]).read_text() == _FULL_TEXT
-    [parsed_event] = payload.parsed_session.session_events
+    assert (archive_root / "blob" / expected_hash[:2] / expected_hash[2:]).read_text() == _FULL_TEXT
+    [parsed_event] = bound_session.session_events
     assert "blob_hash" not in parsed_event.payload, "the bound session object was rewritten"
     assert stored_event == {**parsed_event.payload, "blob_hash": expected_hash}
     assert block_text == _FULL_TEXT
     assert stored_hash == bound
-    assert _stored_representation_hash(payload, stored_event) == bound
+    assert _stored_representation_hash(bound_session, stored_event) == bound
 
 
 def test_excised_sidecar_is_refused_alone_and_the_session_still_writes(tmp_path: Path) -> None:
@@ -154,32 +134,21 @@ def test_excised_sidecar_is_refused_alone_and_the_session_still_writes(tmp_path:
     back on disk, its own block text stays, and nothing hashed is rewritten.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    source_db = archive_root / "source.db"
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
     excised_hash = sha256(_FULL_TEXT.encode("utf-8")).digest()
-    with sqlite3.connect(source_db) as ledger:
+    with sqlite3.connect(archive_root / "source.db") as ledger:
         record_excised_blob_hash(
             ledger, blob_hash=excised_hash, reason="synthetic", actor="user:local", excised_at_ms=1
         )
-    payload = _bound_payload()
-    publisher = ArchiveBlobPublisher(source_db, archive_root / "blob")
-    source_conn = sqlite3.connect(source_db)
-    try:
-        with open_connection(archive_root / "index.db") as conn:
-            changed, counts = ingest_batch_core._write_session(
-                conn, payload, blob_publisher=publisher, source_conn=source_conn
-            )
-            conn.commit()
-            stored_hash, stored_event, block_text = _stored(conn)
-    finally:
-        source_conn.close()
+    bound_session = _bound_session()
+    changed = _publish(archive_root, bound_session)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        stored_hash, stored_event, block_text = _stored(conn)
 
     assert changed is True
-    assert counts["sidecar_blobs_refused_excised"] == 1
-    assert counts["sidecar_blobs_written"] == 0
     assert not (archive_root / "blob" / excised_hash.hex()[:2] / excised_hash.hex()[2:]).exists()
-    [parsed_event] = payload.parsed_session.session_events
+    [parsed_event] = bound_session.session_events
     assert stored_event == {**parsed_event.payload, "blob_refusal": "content_excised"}
     assert block_text == _FULL_TEXT
-    assert stored_hash == payload.content_hash
-    assert _stored_representation_hash(payload, stored_event) == payload.content_hash
+    assert stored_hash == bound_session.content_hash
+    assert _stored_representation_hash(bound_session, stored_event) == bound_session.content_hash

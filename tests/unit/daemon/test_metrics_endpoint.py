@@ -361,7 +361,8 @@ class TestFormatMetricsReadsArchiveState:
                 CREATE TABLE sessions (
                     session_id TEXT PRIMARY KEY,
                     origin TEXT NOT NULL DEFAULT 'codex-session',
-                    message_count INTEGER NOT NULL DEFAULT 0
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    raw_id TEXT
                 );
                 CREATE TABLE messages (
                     message_id TEXT PRIMARY KEY,
@@ -793,7 +794,8 @@ class TestFormatMetricsReadsArchiveState:
                 CREATE TABLE sessions (
                     session_id TEXT PRIMARY KEY,
                     origin TEXT NOT NULL,
-                    message_count INTEGER NOT NULL
+                    message_count INTEGER NOT NULL,
+                    raw_id TEXT
                 );
                 CREATE TABLE messages (
                     message_id TEXT PRIMARY KEY,
@@ -818,7 +820,7 @@ class TestFormatMetricsReadsArchiveState:
                     error_message TEXT
                 );
                 CREATE TABLE message_embedding_refs (message_id TEXT PRIMARY KEY, vector_derivation_hash BLOB);
-                INSERT INTO sessions VALUES
+                INSERT INTO sessions (session_id, origin, message_count) VALUES
                     ('s-embedded', 'codex-session', 2),
                     ('s-pending', 'codex-session', 3),
                     ('s-missing-status', 'claude-code-session', 1);
@@ -888,7 +890,8 @@ class TestFormatMetricsReadsArchiveState:
                 CREATE TABLE sessions (
                     session_id TEXT PRIMARY KEY,
                     origin TEXT NOT NULL,
-                    message_count INTEGER NOT NULL
+                    message_count INTEGER NOT NULL,
+                    raw_id TEXT
                 );
                 CREATE TABLE messages (
                     message_id TEXT PRIMARY KEY,
@@ -899,7 +902,7 @@ class TestFormatMetricsReadsArchiveState:
                     word_count INTEGER NOT NULL DEFAULT 8,
                     content_hash TEXT
                 );
-                INSERT INTO sessions VALUES
+                INSERT INTO sessions (session_id, origin, message_count) VALUES
                     ('s-embedded', 'codex-session', 2),
                     ('s-pending', 'codex-session', 1);
                 INSERT INTO messages (message_id, session_id, content_hash) VALUES
@@ -1019,9 +1022,10 @@ class TestFormatMetricsReadsArchiveState:
                 CREATE TABLE sessions (
                     session_id TEXT PRIMARY KEY,
                     origin TEXT NOT NULL,
-                    message_count INTEGER NOT NULL
+                    message_count INTEGER NOT NULL,
+                    raw_id TEXT
                 );
-                INSERT INTO sessions VALUES
+                INSERT INTO sessions (session_id, origin, message_count) VALUES
                     ('c1', 'claude-code-session', 100),
                     ('c2', 'claude-code-session', 50),
                     ('c3', 'codex-session', 30);
@@ -1068,9 +1072,10 @@ class TestFormatMetricsReadsArchiveState:
                 CREATE TABLE sessions (
                     session_id TEXT PRIMARY KEY,
                     origin TEXT NOT NULL DEFAULT 'codex-session',
-                    message_count INTEGER NOT NULL DEFAULT 0
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    raw_id TEXT
                 );
-                INSERT INTO sessions VALUES ('s1', 'codex-session', 1);
+                INSERT INTO sessions (session_id, origin, message_count) VALUES ('s1', 'codex-session', 1);
             """)
 
         body = format_metrics(db)
@@ -1089,14 +1094,15 @@ class TestFormatMetricsReadsArchiveState:
                 CREATE TABLE sessions (
                     session_id TEXT PRIMARY KEY,
                     origin TEXT NOT NULL DEFAULT 'codex-session',
-                    message_count INTEGER NOT NULL DEFAULT 0
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    raw_id TEXT
                 );
                 CREATE TABLE embedding_status (
                     session_id TEXT PRIMARY KEY,
                     needs_reindex INTEGER NOT NULL,
                     error_message TEXT
                 );
-                INSERT INTO sessions VALUES ('s1', 'codex-session', 1);
+                INSERT INTO sessions (session_id, origin, message_count) VALUES ('s1', 'codex-session', 1);
                 INSERT INTO embedding_status VALUES ('s1', 0, NULL);
             """)
 

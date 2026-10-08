@@ -23,13 +23,14 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.repo_identity import repo_relative_path
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -199,8 +200,8 @@ def test_distinct_paths_normalize_across_two_worktree_checkouts(tmp_path: Path) 
             _edit_call(2, "pipeline/_core.py"),
         ],
     )
-    session_a_id = write_parsed_session_to_archive(conn, session_a)
-    session_b_id = write_parsed_session_to_archive(conn, session_b)
+    session_a_id = write_fixture_index_session(conn, session_a)
+    session_b_id = write_fixture_index_session(conn, session_b)
 
     assert distinct_repo_relative_file_count_for_session(conn, session_a_id) == DistinctFileCount(1)
     assert distinct_repo_relative_file_count_for_session(conn, session_b_id) == DistinctFileCount(1)
@@ -223,7 +224,7 @@ def test_distinct_file_count_deduplicates_repeated_touches(tmp_path: Path) -> No
             _edit_call(4, str(repo_root / "c.py")),
         ],
     )
-    session_id = write_parsed_session_to_archive(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     assert distinct_repo_relative_file_count_for_session(conn, session_id) == DistinctFileCount(3)
 
@@ -243,7 +244,7 @@ def test_session_structural_label_for_session_end_to_end(tmp_path: Path) -> None
             _edit_call(1, str(repo_root / "core.py")),
         ],
     )
-    session_id = write_parsed_session_to_archive(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     label = session_structural_label_for_session(
         conn,
@@ -281,7 +282,7 @@ def test_distinct_file_count_uses_a_sql_aggregate_when_no_root_is_stripped(tmp_p
             _edit_call(3, "/elsewhere/a.py"),
         ],
     )
-    session_id = write_parsed_session_to_archive(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     traced: list[str] = []
     conn.set_trace_callback(lambda sql: traced.append(" ".join(sql.split())))
@@ -319,7 +320,7 @@ def test_distinct_file_count_caps_and_reports_the_cap_when_a_root_is_stripped(
             _edit_call(3, str(repo_root / "c.py")),
         ],
     )
-    session_id = write_parsed_session_to_archive(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     monkeypatch.setattr(session_label_module, "MAX_DISTINCT_FILE_COUNT", 2)
 

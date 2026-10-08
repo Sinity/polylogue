@@ -27,6 +27,7 @@ from polylogue.mcp.call_log import (
     _outbox_root,
     _persist_delivery,
     _post_call_log,
+    _read_spooled_delivery,
     flush_mcp_call_log,
 )
 from polylogue.mcp.declarations.models import MCPCapabilities
@@ -94,6 +95,31 @@ def _read_calls(archive_root: Path, **filters: object) -> tuple[ArchiveMcpCallLo
         return list_mcp_calls(conn, **filters)  # type: ignore[arg-type]
     finally:
         conn.close()
+
+
+def test_spooled_delivery_auth_uses_its_captured_archive_root(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = load_polylogue_config()
+    token_paths: list[Path | None] = []
+
+    def resolve_token(
+        _explicit_token: str | None,
+        *,
+        allow_no_auth: bool = False,
+        token_path: Path | None = None,
+    ) -> str:
+        del allow_no_auth
+        token_paths.append(token_path)
+        return "synthetic-token"
+
+    monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", resolve_token)
+    delivery_path = _persist_delivery(config, _event("captured-auth-root"))
+
+    delivery = _read_spooled_delivery(delivery_path, config)
+
+    assert delivery.auth_token == "synthetic-token"
+    assert token_paths == [workspace_env["archive_root"] / "api-auth-token"]
 
 
 def test_registered_tools_persist_success_and_typed_failure_through_daemon(

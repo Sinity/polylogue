@@ -113,7 +113,7 @@ def test_init_command_writes_starter_config(isolated_home: Path) -> None:
     # writing it, which is always True; polylogue-jnj.8).
     assert "Wrote starter config" in result.output
     assert "already exists" not in result.output.lower()
-    assert "polylogue demo seed" in result.output
+    assert "polylogue demo tour" in result.output
 
 
 def test_init_command_dry_run_does_not_write(isolated_home: Path) -> None:

@@ -6,10 +6,12 @@ Functions: _decode_json_bytes, _iter_json_stream, _ZipEntryValidator, _process_z
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 from hypothesis import given, settings
@@ -20,14 +22,12 @@ from polylogue.core.enums import Provider
 from polylogue.sources import decoder_zip
 from polylogue.sources.decoder_json import JsonlDecodeError
 from polylogue.sources.decoders import (
-    MAX_AGGREGATE_UNCOMPRESSED_SIZE,
-    MAX_UNCOMPRESSED_SIZE,
     _decode_json_bytes,
     _iter_json_stream,
     _ZipEntryValidator,
-    open_bounded_zip_entry,
+    open_zip_entry,
 )
-from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
+from polylogue.storage.cursor_state import CursorStatePayload
 
 # =============================================================================
 # _decode_json_bytes
@@ -222,32 +222,13 @@ class TestZipEntryValidator:
             info.external_attr = 0o40775 << 16  # Directory bit
         return info
 
-    def test_bomb_protection_compression_ratio(self) -> None:
-        """Entries with compression ratio > MAX_COMPRESSION_RATIO are rejected."""
-        validator = _ZipEntryValidator(
-            "chatgpt",
-            cursor_state=_seeded_cursor_state(),
-            zip_path=Path("test.zip"),
-        )
-        # Ratio = 200000 / 1 = 200000, well above MAX_COMPRESSION_RATIO
-        bomb_entry = self._make_zip_info("data.json", file_size=200000, compress_size=1)
-        entries = list(validator.filter_entries([bomb_entry]))
-        assert len(entries) == 0
-
-    def test_size_limit_rejection(self) -> None:
-        """Entries with uncompressed size > MAX_UNCOMPRESSED_SIZE are rejected."""
-        validator = _ZipEntryValidator(
-            "chatgpt",
-            cursor_state=_seeded_cursor_state(),
-            zip_path=Path("test.zip"),
-        )
-        huge_entry = self._make_zip_info(
-            "data.json",
-            file_size=MAX_UNCOMPRESSED_SIZE + 1,
-            compress_size=MAX_UNCOMPRESSED_SIZE,
-        )
-        entries = list(validator.filter_entries([huge_entry]))
-        assert len(entries) == 0
+    def test_declared_size_and_ratio_do_not_drop_relevant_entries(self) -> None:
+        validator = _ZipEntryValidator("chatgpt", cursor_state=None, zip_path=Path("input.zip"))
+        entries = [
+            self._make_zip_info("ratio.json", file_size=200000, compress_size=1),
+            self._make_zip_info("large.json", file_size=11 * 1024**3, compress_size=11 * 1024**3),
+        ]
+        assert list(validator.filter_entries(entries)) == entries
 
     def test_claude_json_entries_are_not_special_cased(self) -> None:
         """Claude ZIP validation now relies on artifact classification, not filename allowlists."""
@@ -317,82 +298,18 @@ class TestZipEntryValidator:
 
         with zipfile.ZipFile(buffer) as zf:
             infos = zf.infolist()
-            with open_bounded_zip_entry(zf, infos[0]) as handle:
+            with open_zip_entry(zf, infos[0]) as handle:
                 assert handle.read() == b"first"
 
-    def test_cursor_state_records_failures(self) -> None:
-        """Rejected entries record failures in cursor_state."""
-        cursor_state = _seeded_cursor_state()
-        validator = _ZipEntryValidator(
-            "chatgpt",
-            cursor_state=cursor_state,
-            zip_path=Path("archive.zip"),
-        )
-        bomb_entry = self._make_zip_info("bomb.json", file_size=500000, compress_size=1)
-        list(validator.filter_entries([bomb_entry]))
-        failed_files: list[CursorFailurePayload] = cursor_state.get("failed_files", [])
-        assert cursor_state["failed_count"] >= 1
-        assert len(failed_files) >= 1
-
-    def test_aggregate_size_limit_rejects_many_entries_under_per_entry_cap(self) -> None:
-        """A zip bomb built from many entries, each individually under
-        MAX_UNCOMPRESSED_SIZE, is rejected once their SUM would exceed
-        MAX_AGGREGATE_UNCOMPRESSED_SIZE (polylogue-lqxx).
-
-        Each entry here is deliberately just 1 byte under the per-entry
-        cap, so this proves the aggregate check fires on its own -- the
-        existing per-entry check alone would accept every single one of
-        these entries.
-        """
-        cursor_state = _seeded_cursor_state()
-        validator = _ZipEntryValidator(
-            "chatgpt",
-            cursor_state=cursor_state,
-            zip_path=Path("bomb.zip"),
-        )
-        per_entry_size = MAX_UNCOMPRESSED_SIZE - 1
-        assert per_entry_size <= MAX_UNCOMPRESSED_SIZE  # sanity: never trips the per-entry cap
-
-        # 7 entries * (10 GiB - 1 byte) ~= 70 GiB, comfortably over the
-        # 64 GiB aggregate cap, while no single entry is oversized.
-        entry_count = (MAX_AGGREGATE_UNCOMPRESSED_SIZE // per_entry_size) + 2
+    def test_complete_selection_has_no_aggregate_byte_budget(self) -> None:
+        state = _seeded_cursor_state()
+        validator = _ZipEntryValidator("chatgpt", cursor_state=state, zip_path=Path("input.zip"))
         entries = [
-            self._make_zip_info(f"conversation_{i}.json", file_size=per_entry_size, compress_size=per_entry_size)
-            for i in range(entry_count)
+            self._make_zip_info(f"conversation_{i}.json", file_size=9 * 1024**3, compress_size=9 * 1024**3)
+            for i in range(10)
         ]
-
-        accepted = list(validator.filter_entries(entries))
-
-        # Every accepted entry was individually under the per-entry cap
-        # (proven above), yet not all entries were accepted -- the
-        # aggregate check, not the per-entry check, did the rejecting.
-        assert len(accepted) < entry_count
-        assert sum(info.file_size for info in accepted) <= MAX_AGGREGATE_UNCOMPRESSED_SIZE
-
-        failed_files: list[CursorFailurePayload] = cursor_state.get("failed_files", [])
-        assert cursor_state["failed_count"] >= 1
-        assert any("Aggregate uncompressed size" in failure["error"] for failure in failed_files)
-
-    def test_aggregate_size_limit_allows_archive_comfortably_under_cap(self) -> None:
-        """Multiple entries whose sum stays well under the aggregate cap
-        all decode successfully -- no regression for legitimate
-        multi-file exports."""
-        validator = _ZipEntryValidator(
-            "chatgpt",
-            cursor_state=None,
-            zip_path=Path("normal_export.zip"),
-        )
-        # 3 entries of 1 GiB each = 3 GiB total, far under both the 10 GiB
-        # per-entry cap and the 64 GiB aggregate cap.
-        one_gib = 1024 * 1024 * 1024
-        entries = [
-            self._make_zip_info(f"conversation_{i}.json", file_size=one_gib, compress_size=one_gib) for i in range(3)
-        ]
-
-        accepted = list(validator.filter_entries(entries))
-
-        assert len(accepted) == 3
-        assert sum(info.file_size for info in accepted) == 3 * one_gib
+        assert list(validator.filter_entries(entries)) == entries
+        assert state["failed_count"] == 0
 
     def test_validator_leaves_terminal_artifact_classification_to_zip_processing(self) -> None:
         """ZIP validation must not path-exclude entries before payload decoding.
@@ -493,99 +410,383 @@ def _zip_with_member(path: Path, name: str, payload: bytes) -> None:
         archive.writestr(name, payload)
 
 
-def test_zip_json_probe_refuses_an_oversized_member_with_an_event(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_zip_json_probe_consumes_complete_positive_member(tmp_path: Path) -> None:
+    fixture = Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json"
+    archive_path = tmp_path / "compressed.zip"
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        with archive.open("assets/conversations.json", "w") as member:
+            member.write(b'{"padding":"')
+            for _ in range(64):
+                member.write(b"x" * (1024 * 1024))
+            member.write(b'",' + fixture.read_bytes().lstrip()[1:])
+    with zipfile.ZipFile(archive_path) as archive:
+        info = archive.infolist()[0]
+        assert info.file_size / info.compress_size > 1000
+        artifact = decoder_zip.zip_entry_session_artifact(archive, info, provider=Provider.CHATGPT)
+    assert artifact is not None and artifact.parse_as_session
+
+
+def test_zip_parser_progress_identity_tracks_captured_occurrences_and_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A highly compressible JSON member cannot be read whole into memory.
+    import warnings
 
-    Anti-vacuity: removing ``max_bytes=ZIP_PROBE_MAX_BYTES`` from the probe's
-    ``open_bounded_zip_entry`` call restores the 10 GiB archival ceiling, so
-    ``handle.read()`` allocates the whole member, no ``ZipBombError`` is raised,
-    and neither the ``sources.zip.artifact_probe_unbounded`` event nor the
-    bounded peak asserted here occurs -- the probe would instead return a
-    classification decoded from the full payload. The ceiling is lowered here
-    rather than building a genuinely multi-gigabyte fixture; the code path under
-    test is identical.
-    """
-    monkeypatch.setattr(decoder_zip, "ZIP_PROBE_MAX_BYTES", 4096)
-    captured: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        decoder_zip,
-        "emit",
-        lambda event, /, **fields: captured.append((event, dict(fields))),
+    from devtools.fresh_build_bench.run import WorkProgressTail
+    from polylogue.core import work_progress
+    from polylogue.core.raw_coordinates import MemberAddressingMode
+    from polylogue.sources.source_acquisition_components import (
+        captured_zip_member_coordinate,
+        zip_acquisition_fingerprint,
     )
+    from polylogue.sources.source_staging import bind_source_input
 
-    archive_path = tmp_path / "crafted.zip"
-    # Well-formed JSON, far above the probe ceiling, ~1000:1 compressible --
-    # exactly what ZIP admission's ratio limit still lets through.
-    payload = b'{"title":"' + b"A" * (512 * 1024) + b'"}'
-    _zip_with_member(archive_path, "assets/blob.json", payload)
+    fixture = Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json"
+    payload = fixture.read_bytes()
+    first_container = tmp_path / "first.zip"
+    second_container = tmp_path / "second.zip"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(first_container, "w") as archive:
+            archive.writestr("assets/conversations.json", payload)
+            archive.writestr("assets/conversations.json", payload)
+    with zipfile.ZipFile(second_container, "w") as archive:
+        archive.writestr("assets/conversations.json", payload)
 
-    with zipfile.ZipFile(archive_path) as zf:
-        info = zf.getinfo("assets/blob.json")
-        result = decoder_zip.zip_entry_session_artifact(zf, info, provider=Provider.CHATGPT)
+    decoder_fingerprint = zip_acquisition_fingerprint(Provider.CHATGPT)
 
-    # The path rule stands: content evidence was never examined.
-    assert result is None
-    probe_events = [fields for event, fields in captured if event == "sources.zip.artifact_probe_unbounded"]
-    assert len(probe_events) == 1
-    # The refusal is observable and names what it declined to inspect.
-    assert probe_events[0]["entry"] == "assets/blob.json"
-    assert probe_events[0]["declared_bytes"] == len(payload)
-    assert probe_events[0]["outcome"] == "degraded"
+    def run_entry(container: Path, ordinal: int) -> tuple[set[str], int]:
+        with zipfile.ZipFile(container) as archive:
+            info = archive.infolist()[ordinal]
+            assert archive.read(info) == payload
+            with bind_source_input(container) as binding:
+                coordinate = captured_zip_member_coordinate(
+                    binding.captured_identity,
+                    entry_name=info.filename,
+                    entry_ordinal=ordinal,
+                    split_index=0,
+                    addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+                    container_blob_hash=hashlib.sha256(container.read_bytes()).hexdigest(),
+                    decoder_fingerprint=decoder_fingerprint,
+                )
+            assert coordinate is not None
+            classification = decoder_zip.zip_entry_session_artifact(
+                archive,
+                info,
+                provider=Provider.CHATGPT,
+                captured_zip_coordinate=coordinate,
+            )
+            assert classification is not None and classification.parse_as_session
+        product_ids = {
+            str(fields["productive_id"])
+            for event, fields in emitted
+            if event == "daemon.work.progress" and fields.get("phase") == "source_preparation"
+        }
+        assert product_ids
+        with events_path.open("a", encoding="utf-8") as handle:
+            for event, fields in emitted:
+                if event == "daemon.work.progress":
+                    handle.write(json.dumps({"event": event, **fields}) + "\n")
+        emitted.clear()
+        return product_ids, tail.poll()
+
+    emitted: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(work_progress, "PROGRESS_INTERVAL_S", 0)
+    monkeypatch.setattr(work_progress, "emit", lambda event, **fields: emitted.append((event, fields)))
+    events_path = tmp_path / "parser-progress.jsonl"
+    tail = WorkProgressTail(events_path, state_root=tmp_path)
+    try:
+        first = run_entry(first_container, 0)
+        retry = run_entry(first_container, 0)
+        duplicate_entry = run_entry(first_container, 1)
+        second_container_entry = run_entry(second_container, 0)
+
+        assert first[0] == retry[0]
+        assert first[1] > 0
+        assert retry[1] == first[1]
+        assert len(duplicate_entry[0]) == 1 and duplicate_entry[0] != first[0]
+        assert duplicate_entry[1] > retry[1]
+        assert len(second_container_entry[0]) == 1 and second_container_entry[0] != duplicate_entry[0]
+        assert second_container_entry[1] > duplicate_entry[1]
+    finally:
+        tail.close()
 
 
-def test_zip_json_probe_still_classifies_a_member_under_the_ceiling(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The ceiling is inert for ordinary members.
-
-    Anti-vacuity: a fix that refused every member -- or that returned ``None``
-    unconditionally -- would satisfy the bound above while destroying content
-    evidence. This asserts the probe still decodes and classifies a normal
-    conversation document, so the ceiling cannot be implemented as a blanket
-    refusal.
-    """
-    captured: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        decoder_zip,
-        "emit",
-        lambda event, /, **fields: captured.append((event, dict(fields))),
-    )
-    archive_path = tmp_path / "ordinary.zip"
-    payload = json.dumps([{"title": "synthetic", "mapping": {}}]).encode("utf-8")
-    _zip_with_member(archive_path, "assets/conversations.json", payload)
-
-    with zipfile.ZipFile(archive_path) as zf:
-        info = zf.getinfo("assets/conversations.json")
-        result = decoder_zip.zip_entry_session_artifact(zf, info, provider=Provider.CHATGPT)
-
-    assert result is not None and result.parse_as_session
-    assert [event for event, _ in captured if event == "sources.zip.artifact_probe_unbounded"] == []
+def test_zip_json_probe_does_not_override_with_empty_session_shape(tmp_path: Path) -> None:
+    archive_path = tmp_path / "empty.zip"
+    _zip_with_member(archive_path, "assets/conversations.json", b'{"title":"empty","mapping":{}}')
+    with zipfile.ZipFile(archive_path) as archive:
+        assert decoder_zip.zip_entry_session_artifact(archive, archive.infolist()[0], provider=Provider.CHATGPT) is None
 
 
-def test_jsonl_session_artifact_forwards_its_record_ceiling() -> None:
-    """The classification wrapper must not drop ``max_record_bytes``.
+def test_jsonl_session_artifact_preserves_a_large_valid_record() -> None:
+    payload = {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "id": "large-message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "x" * 200_000}],
+        },
+    }
+    raw = (json.dumps(payload) + "\n").encode()
+    artifact = jsonl_session_artifact(io.BytesIO(raw), provider=Provider.CODEX)
+    assert artifact is not None
+    assert artifact.parse_as_session
+    assert not artifact.schema_eligible
+    scan = scan_jsonl_session_artifact(io.BytesIO(raw), provider=Provider.CODEX)
+    assert scan.malformed_records == 0
 
-    Anti-vacuity: the wrapper previously called ``scan_jsonl_session_artifact``
-    without forwarding the bound, so every caller that wanted only the
-    classification silently got unbounded per-line reads. Reverting that
-    forwarding makes the oversized record inspectable again and the artifact
-    resolves, turning the ``is None`` assertion red.
-    """
-    oversized = (json.dumps({"title": "x" * 200_000, "mapping": {}}) + "\n").encode("utf-8")
 
-    assert (
-        jsonl_session_artifact(
-            io.BytesIO(oversized),
-            provider=Provider.CHATGPT,
-            max_record_bytes=1024,
+def test_zip_parser_uses_accepted_container_after_declared_alias_retargets(tmp_path: Path) -> None:
+    """A reopen of the operator alias would parse B and lose A's entry receipt."""
+    from polylogue.sources.source_staging import bind_source_input
+    from polylogue.storage.blob_store import BlobStore
+
+    payload = (Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json").read_bytes()
+    accepted = tmp_path / "accepted.zip"
+    unrelated = tmp_path / "unrelated.zip"
+    alias = tmp_path / "declared.zip"
+    _zip_with_member(accepted, "conversations.json", payload)
+    _zip_with_member(unrelated, "other.json", b'{"title":"unrelated","mapping":{}}')
+    alias.symlink_to(accepted)
+    with bind_source_input(alias) as binding:
+        alias.unlink()
+        alias.symlink_to(unrelated)
+        rows = list(
+            decoder_zip.process_zip(
+                alias,
+                provider_hint=Provider.CHATGPT,
+                should_group=True,
+                file_mtime=None,
+                capture_raw=True,
+                cursor_state=None,
+                blob_store=BlobStore(tmp_path / "blobs"),
+                source_binding=binding,
+            )
         )
-        is None
+    assert rows
+    for raw, session in rows:
+        assert session.source_name is Provider.CHATGPT
+        assert raw is not None
+        assert raw.captured_zip_coordinate is not None
+        assert raw.captured_zip_coordinate.canonical_container == str(accepted)
+        assert raw.captured_zip_coordinate.member_name == "conversations.json"
+        assert raw.captured_zip_coordinate.entry_ordinal == 0
+        assert raw.source_path == f"{alias}:conversations.json"
+
+
+def test_complete_jsonl_candidacy_preserves_healthy_records_before_bad_utf8() -> None:
+    message = b'{"sessionId":"accepted","uuid":"m1","type":"user","cwd":"/neutral"}\n'
+    handle = io.BytesIO(message + b'{"text":"\xff"}\n' + message)
+    scan = scan_jsonl_session_artifact(handle, provider=Provider.CLAUDE_CODE)
+    assert scan.artifact is not None
+    assert scan.artifact.parse_as_session
+    assert scan.malformed_records == 1
+    assert handle.tell() == len(handle.getvalue())
+    assert not handle.closed
+
+
+def test_complete_taxonomy_rewinds_multibyte_text_using_its_opaque_cookie() -> None:
+    from polylogue.archive.raw_payload.streams import raw_byte_stream
+
+    class CookieText(io.StringIO):
+        def tell(self) -> int:
+            return 1_000_000 + super().tell()
+
+        def seek(self, offset: int, whence: int = 0) -> int:
+            assert whence == 0
+            assert offset >= 1_000_000
+            return 1_000_000 + super().seek(offset - 1_000_000)
+
+    payload = '{"label":"α😀"}\n{"label":"終"}\n'
+    caller = CookieText(payload)
+    with raw_byte_stream(caller) as view:
+        expected = payload.encode("utf-8")
+        assert view.read(7) == expected[:7]
+        view.seek(0)
+        assert view.read() == expected
+        assert view.tell() == len(expected)
+        view.seek(5)
+        assert view.read() == expected[5:]
+    assert not caller.closed
+    caller.seek(1_000_000)
+    scan = scan_jsonl_session_artifact(caller, provider=Provider.UNKNOWN)
+    assert scan.proved_non_session
+    assert scan.valid_records == 2
+    assert not caller.closed
+
+
+@pytest.mark.parametrize("text", [False, True])
+@pytest.mark.parametrize("advertises_seek", [False, True])
+def test_complete_taxonomy_preserves_nonseekable_input_and_caller_closure(text: bool, advertises_seek: bool) -> None:
+    payload = '{"label":"α😀"}\n{"label":"終"}\n'
+
+    class BinaryPipe(io.BytesIO):
+        def seekable(self) -> bool:
+            return advertises_seek
+
+        def seek(self, *_args: object) -> int:
+            raise io.UnsupportedOperation("synthetic pipe")
+
+        def tell(self) -> int:
+            raise io.UnsupportedOperation("synthetic pipe")
+
+    class TextPipe(io.StringIO):
+        def seekable(self) -> bool:
+            return advertises_seek
+
+        def seek(self, *_args: object) -> int:
+            raise io.UnsupportedOperation("synthetic pipe")
+
+        def tell(self) -> int:
+            raise io.UnsupportedOperation("synthetic pipe")
+
+    caller = TextPipe(payload) if text else BinaryPipe(payload.encode())
+    scan = scan_jsonl_session_artifact(caller, provider=Provider.UNKNOWN)
+    assert scan.proved_non_session
+    assert scan.valid_records == 2
+    assert not caller.closed
+    assert caller.read() in (b"", "")
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_nonseekable_taxonomy_failed_native_close_retains_replay_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    cancelled: bool,
+) -> None:
+    import sqlite3
+
+    from polylogue.storage.sqlite import connection_profile
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+
+    class BinaryPipe(io.BytesIO):
+        def seekable(self) -> bool:
+            return False
+
+    actual_connect = sqlite3.connect
+
+    def connect(database: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        if str(database).endswith("bytes.db"):
+            kwargs["factory"] = ControlledConnection
+            connection = actual_connect(database, *args, **kwargs)
+            assert isinstance(connection, ControlledConnection)
+            connection.close_failure = sqlite3.OperationalError("synthetic replay close failure")
+            return connection
+        result = actual_connect(database, *args, **kwargs)
+        assert isinstance(result, sqlite3.Connection)
+        return result
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    caller = BinaryPipe(b'{"metadata":1}\n')
+    cancellation = InterruptedError("synthetic replay cancellation")
+
+    def stop() -> None:
+        if cancelled:
+            raise cancellation
+
+    with pytest.raises(connection_profile.NativeConnectionSettlementError) as refused:
+        scan_jsonl_session_artifact(caller, provider=Provider.UNKNOWN, check_stop=stop)
+    owner = refused.value.owner
+    assert not caller.closed
+    directory = owner.scratch_directory
+    assert directory is not None
+    assert Path(directory.name).is_dir()
+    if cancelled:
+        assert refused.value.__cause__ is cancellation
+    connection = owner.connection
+    assert isinstance(connection, ControlledConnection)
+    assert connection.close_attempts == 1
+    connection.close_failure = None
+    owner.close()
+    assert connection.close_attempts == 2
+    assert not Path(directory.name).exists()
+
+
+def test_nonseekable_taxonomy_cancellation_keeps_the_caller_open() -> None:
+    class BinaryPipe(io.BytesIO):
+        def seekable(self) -> bool:
+            return False
+
+    caller = BinaryPipe(b'{"metadata":1}\n' * 100)
+
+    def stop() -> None:
+        raise InterruptedError("synthetic replay cancellation")
+
+    with pytest.raises(InterruptedError):
+        scan_jsonl_session_artifact(caller, provider=Provider.UNKNOWN, check_stop=stop)
+    assert not caller.closed
+
+
+@pytest.mark.parametrize("text", [b"\xed\xa0\x80", b"\\ud800", b"\xed\xa0\xbd\xed\xb8\x80"])
+def test_complete_jsonl_projection_preserves_provider_surrogates(text: bytes) -> None:
+    from polylogue.core.json import decode_provider_utf8
+    from polylogue.sources.detection_projection import DetectorProjection, iter_projected_jsonl_records
+
+    raw = b'{"text":"' + text + b'"}\n'
+    records = list(
+        iter_projected_jsonl_records(io.BytesIO(raw), DetectorProjection(fields={"text": DetectorProjection()}))
     )
-    # Without the ceiling the same bytes are inspected normally, proving the
-    # input is otherwise classifiable and the bound is what changed the outcome.
-    scan = scan_jsonl_session_artifact(io.BytesIO(oversized), provider=Provider.CHATGPT)
-    assert scan.oversized_records == 0
+    assert records == [json.loads(decode_provider_utf8(raw))]
+
+
+def test_complete_jsonl_projection_rejects_raw_nul_without_losing_earlier_records() -> None:
+    from polylogue.sources.detection_projection import DetectorProjection, iter_projected_jsonl_records
+
+    failures: list[Exception] = []
+    records = list(
+        iter_projected_jsonl_records(
+            io.BytesIO(b'{"id":"first"}\n{"id":"bad\x00value"}\n{"id":"last"}\n'),
+            DetectorProjection(fields={"id": DetectorProjection()}),
+            on_decode_failure=failures.append,
+        )
+    )
+    assert records == [{"id": "first"}, {"id": "last"}]
+    assert len(failures) == 1
+
+
+@pytest.mark.parametrize(
+    "error", [UnicodeError("stop"), OSError("stop"), ValueError("stop"), json.JSONDecodeError("stop", "", 0)]
+)
+def test_complete_jsonl_projection_preserves_stop_callback_failure(error: Exception) -> None:
+    from polylogue.sources.detection_projection import DetectorProjection, iter_projected_jsonl_records
+
+    failures: list[Exception] = []
+    calls = 0
+
+    def stop() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:  # The line reader's checkpoint, inside event decoding.
+            raise error
+
+    with pytest.raises(type(error)) as raised:
+        list(
+            iter_projected_jsonl_records(
+                io.BytesIO(b'{"id":"accepted"}\n'),
+                DetectorProjection(fields={"id": DetectorProjection()}),
+                check_stop=stop,
+                on_decode_failure=failures.append,
+            )
+        )
+    assert raised.value is error
+    assert failures == []
+
+
+@pytest.mark.parametrize("document", [False, True])
+def test_complete_detection_projection_refuses_raw_nul_in_document_or_jsonl(document: bool) -> None:
+    import ijson
+
+    from polylogue.sources.detection_projection import (
+        DetectorProjection,
+        iter_projected_document_records,
+        project_detection_input,
+    )
+
+    handle = io.BytesIO(b'{"id":"bad\x00value"}\n')
+    rule = DetectorProjection(fields={"id": DetectorProjection()})
+    with pytest.raises((ijson.JSONError, json.JSONDecodeError)):
+        if document:
+            list(iter_projected_document_records(handle, rule))
+        else:
+            project_detection_input(handle, rule)
+    assert not handle.closed

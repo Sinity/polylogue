@@ -162,6 +162,7 @@ class QueryExecutionContext:
     query_ref: str
     workload_class: WorkloadClass = "interactive"
     admission_weight: int = 1
+    request_bytes: int = 0
     deadline_monotonic: float | None = None
     sqlite_vm_step_budget: int | None = None
     owner_ref: str | None = None
@@ -197,13 +198,15 @@ class QueryExecutionContext:
         sqlite_vm_step_budget: int | None = None,
         owner_ref: str | None = None,
     ) -> QueryExecutionContext:
-        query_ref = hashlib.sha256((query_text or "").encode("utf-8")).hexdigest()[:16]
+        request = (query_text or "").encode("utf-8")
+        query_ref = hashlib.sha256(request).hexdigest()[:16]
         deadline = time.monotonic() + timeout_s if timeout_s is not None else None
         return cls(
             call_id=uuid.uuid4().hex,
             query_ref=f"expr:{query_ref}",
             workload_class=workload_class,
             admission_weight=max(1, admission_weight),
+            request_bytes=len(request),
             deadline_monotonic=deadline,
             sqlite_vm_step_budget=sqlite_vm_step_budget,
             owner_ref=owner_ref,
@@ -742,7 +745,7 @@ async def execute_archive_read(
                 return work(store)
         return reader.run(archive_root, work, read_timeout=read_timeout, index_path=index_path)
 
-    from polylogue.storage.sqlite.async_adapter import default_archive_read_async_adapter
+    from polylogue.core.compute import CancellationHandle, DaemonOperationCancelled, compute_adapter
 
     async def _admitted_submission() -> T:
         # Acquire on the event loop so queued admission never consumes a
@@ -760,23 +763,52 @@ async def execute_archive_read(
                 admission._release(ctx, weight)
 
         submitted = False
+        cancellation = CancellationHandle()
+        remove_cancel_listener = ctx.add_cancel_listener(cancellation.cancel)
+        loop = asyncio.get_running_loop()
+        deadline = ctx.seconds_until_deadline()
+        deadline_timer = loop.call_later(deadline, cancellation.cancel) if deadline is not None else None
 
-        def _mark_submitted() -> None:
-            nonlocal submitted
-            submitted = True
+        def completed(_future: object) -> None:
+            # The physical compute future completes after native SQL settles,
+            # including a failed close. Never release on asyncio cancellation.
+            remove_cancel_listener()
+            _release()
+            if deadline_timer is not None:
+                with suppress(RuntimeError):
+                    loop.call_soon_threadsafe(deadline_timer.cancel)
 
         try:
-            return await default_archive_read_async_adapter().run(
-                _admitted_run,
-                on_submitted=_mark_submitted,
-                on_completed=_release,
+            physical = (
+                compute_adapter()
+                .submit(
+                    _admitted_run,
+                    admission_class="bulk-candidate" if ctx.workload_class == "scan" else "interactive-read",
+                    estimated_bytes=ctx.request_bytes,
+                    cancellation=cancellation,
+                )
+                .future
             )
+            submitted = True
+            physical.add_done_callback(completed)
+            try:
+                return await asyncio.shield(asyncio.wrap_future(physical, loop=loop))
+            except DaemonOperationCancelled:
+                # The compute owner refused or stopped the read before the
+                # reader opened a store; the settled future owns nothing.
+                ctx.mark_cleanup_complete()
+                if ctx.cancelled or ctx.deadline_exceeded():
+                    raise _abort_error(ctx) from None
+                raise
         except BaseException:
-            # No executor operation owns the lease when submission was
-            # rejected or cancellation arrived before this coroutine ran.
-            # After submission, _owned_run is the sole release owner.
             if not submitted:
+                remove_cancel_listener()
+                if deadline_timer is not None:
+                    deadline_timer.cancel()
                 _release()
+                # Refused before submission (a cancelled or expired admission):
+                # no reader ran, so there is nothing left to clean up.
+                ctx.mark_cleanup_complete()
             raise
 
     worker = asyncio.create_task(_admitted_submission())

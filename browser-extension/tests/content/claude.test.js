@@ -1,3 +1,6 @@
+import { captureProvider, proofFailureReport } from "../../scripts/live_provider_proof.mjs";
+import { stagingRuntime } from "../infra/capture-staging.js";
+import { webcrypto } from "node:crypto";
 /**
  * Tests for claude.js's native-capture contract (URL/role/turn extraction)
  * and claude_bridge.js's conversation-API URL resolution, driven through
@@ -31,6 +34,7 @@ import { JSDOM } from "jsdom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
+const assetStreamSource = readFileSync(resolve(testDirectory, "../../src/content/asset_stream.js"), "utf8");
 const bridgeSource = readFileSync(resolve(testDirectory, "../../src/content/claude_bridge.js"), "utf8");
 const commonSource = readFileSync(resolve(testDirectory, "../../src/common.js"), "utf8");
 const contentSource = readFileSync(resolve(testDirectory, "../../src/content/claude.js"), "utf8");
@@ -48,6 +52,8 @@ function jsonResponse(body, status = 200) {
 function installClaude({ url = "https://claude.ai/chat/conversation-1", resourceUrls = [], localStorageEntries = {}, fetch } = {}) {
   const dom = new JSDOM("<!doctype html><title>Claude fixture</title>", { url, runScripts: "outside-only" });
   openDoms.push(dom);
+  Object.defineProperty(dom.window, "crypto", { configurable: true, value: webcrypto });
+  dom.__captureRuntime = stagingRuntime(undefined, { tab_id: 42, document_id: "synthetic-document", provider: "claude-ai" });
   Object.defineProperty(dom.window, "fetch", { configurable: true, value: fetch || (async () => jsonResponse({ detail: "not_found" }, 404)) });
   Object.defineProperty(dom.window.performance, "getEntriesByType", {
     configurable: true,
@@ -57,10 +63,12 @@ function installClaude({ url = "https://claude.ai/chat/conversation-1", resource
   const runtimeListeners = [];
   const chrome = {
     runtime: {
-      id: "synthetic-extension-id",
+      id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       getManifest: () => ({ version: "0.1.0" }),
       onMessage: { addListener: (listener) => runtimeListeners.push(listener) },
       async sendMessage(message) {
+        const staged = await dom.__captureRuntime.sendMessage(message);
+        if (staged !== undefined) return staged;
         if (message.type === "polylogue.capture") {
           return { ok: true, provider: "claude-ai", provider_session_id: "conversation-1", receiver_request_id: "synthetic-request" };
         }
@@ -79,6 +87,7 @@ function installClaude({ url = "https://claude.ai/chat/conversation-1", resource
     },
   });
   const context = dom.getInternalVMContext();
+  new Script(assetStreamSource).runInContext(context);
   new Script(bridgeSource).runInContext(context);
   new Script(commonSource).runInContext(context);
   new Script(contentSource).runInContext(context);
@@ -88,7 +97,12 @@ function installClaude({ url = "https://claude.ai/chat/conversation-1", resource
       if (!listener) reject(new Error(`no runtime listener accepted ${message.type}`));
     });
   }
-  return { dom, sendRuntimeMessage };
+  dom.__captureRuntime.setDispatch(sendRuntimeMessage);
+  return { dom, sendRuntimeMessage: async (message) => {
+    const result = await sendRuntimeMessage(message);
+    if (result?.envelope) result.envelope = await dom.__captureRuntime.materialize(result.envelope);
+    return result;
+  } };
 }
 
 afterEach(() => {
@@ -96,6 +110,73 @@ afterEach(() => {
 });
 
 describe("claude.js native capture (real source)", () => {
+  it.each(["admission", "provider_fetch", "staging", "post_staging"])("retains the original caught %s boundary through real bridge/content and strict proof filtering", async (stage) => {
+    const secret = "https://private.invalid/conversation?token=neutral-private-error";
+    const fetch = vi.fn(async () => {
+      if (stage === "provider_fetch") throw new Error(secret);
+      const response = jsonResponse({ uuid: "conversation-1", chat_messages: [{ uuid: "u1", sender: "human", text: "Neutral message" }] });
+      if (stage === "post_staging") {
+        const originalGet = response.headers.get.bind(response.headers);
+        let contentTypeReads = 0;
+        response.headers.get = name => {
+          if (name === "content-type" && ++contentTypeReads === 2) throw new Error(secret);
+          return originalGet(name);
+        };
+      }
+      return response;
+    });
+    const { dom, sendRuntimeMessage } = installClaude({
+      localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: "11111111-1111-4111-8111-111111111111" }) }, fetch,
+    });
+    const originalSend = dom.__captureRuntime.sendMessage.bind(dom.__captureRuntime);
+    dom.__captureRuntime.sendMessage = async message => {
+      if (message.type === (stage === "admission" ? "polylogue.asset.begin" : stage === "staging" ? "polylogue.asset.seal" : "never")) return { ok: false, error: secret };
+      return originalSend(message);
+    };
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage" });
+    const expectedStage = stage === "post_staging" ? "unknown" : stage;
+    expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable", native_attempts: [{ stage: "page_bridge_fetch", failure_stage: expectedStage, error: secret, accepted: false }] });
+    if (stage === "admission") expect(fetch).not.toHaveBeenCalled();
+    const provider = { provider: "claude-ai", nativeId: "conversation-1", url: dom.window.location.href };
+    const chrome = { tabs: { query: async () => [{ id: 1, url: provider.url, pinned: false }], sendMessage: async () => result } };
+    const popup = { call: async (_method, params) => ({ result: { value: await new Script(params.expression).runInNewContext({ chrome, Date, setTimeout: globalThis.setTimeout }) } }) };
+    await captureProvider(popup, provider, 1, 1000);
+    const report = proofFailureReport("summary", new Error("proof_capture_incomplete"));
+    expect(report.capture_evidence[0].bridge).toMatchObject({ observed: true, accepted: false, category: "unknown", failure_stage: expectedStage, status: null });
+    expect(JSON.stringify(report)).not.toContain(secret);
+  });
+
+  it("keeps a cancelled suspended provider read distinct from a caught acquisition failure and drains original work", async () => {
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    let rejected = false;
+    const fetch = vi.fn((_url, { signal }) => new Promise((_resolve, reject) => {
+      entered();
+      signal.addEventListener("abort", () => { rejected = true; reject(signal.reason); }, { once: true });
+    }));
+    const { sendRuntimeMessage } = installClaude({
+      localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: "11111111-1111-4111-8111-111111111111" }) }, fetch,
+    });
+    const capture = sendRuntimeMessage({ type: "polylogue.capturePage" });
+    await started;
+    const cancelled = await sendRuntimeMessage({ type: "polylogue.cancelCapture" });
+    expect(cancelled).toMatchObject({ ok: true, outcome: "cancelled", drained: 1 });
+    expect(rejected).toBe(true);
+    expect(await capture).toMatchObject({ ok: false, error: "capture_cancelled", outcome: "cancelled" });
+    expect((await capture).native_attempts).toBeUndefined();
+  });
+
+  it.each([undefined, "foreign", { stage: "admission", private: "neutral-secret" }, null])("refuses malformed or missing bridge stage while preserving original error", async (stage) => {
+    const { dom, sendRuntimeMessage } = installClaude();
+    const originalPost = dom.window.postMessage;
+    dom.window.postMessage = data => {
+      if (data.type === "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.claude.nativeFetchRequest") originalPost({ type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.claude.nativeFetchResponse", requestId: data.requestId, error: "capture_staging_unavailable", failure_stage: stage });
+      else originalPost(data);
+    };
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage" });
+    expect(result.native_attempts[0]).toMatchObject({ error: "capture_staging_unavailable", failure_stage: "unknown", accepted: false });
+  });
+
   it.each([true, false])("acquires the current Claude revision despite an older intercepted capture: available=%s", async (available) => {
     const orgId = "11111111-1111-4111-8111-111111111111";
     const url = `https://claude.ai/api/organizations/${orgId}/chat_conversations/conversation-1`;
@@ -108,11 +189,11 @@ describe("claude.js native capture (real source)", () => {
     ] };
     const fetch = vi.fn(async () => available ? jsonResponse(fresh) : jsonResponse({ detail: "unavailable" }, 503));
     const { dom, sendRuntimeMessage } = installClaude({
-      localStorageEntries: { [`claude-mcp-has-connectors:${orgId}`]: "true" }, fetch,
+      localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: orgId }) }, fetch,
     });
     dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
       source: dom.window, origin: dom.window.location.origin,
-      data: { type: "polylogue.claude.nativeCapture", capture: {
+      data: { type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.claude.nativeCapture", capture: {
         ok: true, status: 200, contentType: "application/json", url, body: JSON.stringify(old),
       } },
     }));
@@ -122,8 +203,8 @@ describe("claude.js native capture (real source)", () => {
     expect(String(fetch.mock.calls[0][0])).toBe(`${url}?tree=True&rendering_mode=messages&render_all_tools=true&consistency=strong`);
     if (available) {
       expect(result.ok).toBe(true);
-      expect(result.envelope.session.turns.map(turn => turn.provider_turn_id)).toEqual(["u1", "a1", "u2"]);
-      expect(result.envelope.raw_provider_payload).toEqual(fresh);
+      expect((await dom.__captureRuntime.retainedNativeReplies(result.envelope)).chat_messages.map(message => message.uuid)).toEqual(["u1", "a1", "u2"]);
+      expect(await dom.__captureRuntime.retainedNativeReplies(result.envelope)).toEqual(fresh);
     } else {
       expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable" });
       expect(send.mock.calls.filter(([message]) => message.type === "polylogue.capture")).toEqual([]);
@@ -145,7 +226,22 @@ describe("claude.js native capture (real source)", () => {
     } finally { release('{"chat_messages":[]}'); await request; }
   });
 
-  it("extracts native Claude turns, normalizes roles, and skips empty messages", async () => {
+  it("fetches the current revision when lifecycle recapture follows a cached response", async () => {
+    const orgId = "11111111-1111-4111-8111-111111111111";
+    let messages = [{ uuid: "u1", sender: "human", text: "first" }];
+    const fetch = vi.fn(async () => jsonResponse({ uuid: "conversation-1", chat_messages: messages }));
+    const { dom, sendRuntimeMessage } = installClaude({
+      localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: orgId }) }, fetch,
+    });
+    const first = await sendRuntimeMessage({ type: "polylogue.capturePage" });
+    expect((await dom.__captureRuntime.retainedNativeReplies(first.envelope)).chat_messages).toEqual(messages);
+    messages = [...messages, { uuid: "a1", sender: "assistant", text: "new turn" }];
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "auto_capture_unconverged_provider" });
+    expect((await dom.__captureRuntime.retainedNativeReplies(result.envelope)).chat_messages).toEqual(messages);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains native Claude message roles and content verbatim for canonical receiver preparation", async () => {
     const orgId = "11111111-1111-4111-8111-111111111111";
     const fetch = vi.fn(async (input) => {
       const url = new URL(String(input));
@@ -163,26 +259,26 @@ describe("claude.js native capture (real source)", () => {
       }
       return jsonResponse({ detail: "not_found" }, 404);
     });
-    const { sendRuntimeMessage } = installClaude({
+    const { dom, sendRuntimeMessage } = installClaude({
       url: "https://claude.ai/chat/conversation-1",
-      localStorageEntries: { [`claude-mcp-has-connectors:${orgId}`]: "true" },
+      localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: orgId }) },
       fetch,
     });
 
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
 
     expect(result.ok).toBe(true);
-    const turns = result.envelope.session.turns;
-    expect(turns).toHaveLength(3);
-    expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant", "system"]);
-    expect(turns.map((turn) => turn.text)).toEqual(["Native user", "Native answer", "unrecognized-shaped system note"]);
-    expect(turns[1].parent_turn_id).toBe("u1");
-    expect(turns[1].provider_meta.capture_source).toBe("claude_chat_conversations_api");
+    const retained = await dom.__captureRuntime.retainedNativeReplies(result.envelope);
+    expect(retained.chat_messages.map((message) => message.sender)).toEqual(["human", "assistant", "assistant", "system"]);
+    expect(retained.chat_messages[1]).toMatchObject({ model: "claude-native", parent_message_uuid: "u1", content: [{ text: "Native answer" }] });
+    expect(retained.chat_messages[2].text).toBe("");
+    expect(retained.name).toBe("Native Claude title");
     expect(result.envelope.session.provider_session_id).toBe("conversation-1");
-    expect(result.envelope.session.title).toBe("Native Claude title");
+    expect(result.envelope.receiver_native).toBeDefined();
+    expect(result.envelope.session.turns).toEqual([]);
   });
 
-  it("resolves the organization id from claude.ai's own localStorage key when no resource entry has been observed yet", async () => {
+  it("uses the selected organization cache before the page observes a conversation request", async () => {
     const orgId = "d83be663-5e28-4dfc-8a54-1c34bdbb8c44";
     let requestedUrl = null;
     const fetch = vi.fn(async (input) => {
@@ -191,7 +287,7 @@ describe("claude.js native capture (real source)", () => {
     });
     const { sendRuntimeMessage } = installClaude({
       url: "https://claude.ai/chat/conversation-1",
-      localStorageEntries: { [`claude-mcp-has-connectors:${orgId}`]: "true" },
+      localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: orgId }) },
       fetch,
     });
 
@@ -201,6 +297,17 @@ describe("claude.js native capture (real source)", () => {
     expect(requestedUrl).toBe(
       `https://claude.ai/api/organizations/${orgId}/chat_conversations/conversation-1?tree=True&rendering_mode=messages&render_all_tools=true&consistency=strong`,
     );
+  });
+
+  it.each([null, "{invalid", JSON.stringify({ orgUuid: "not-an-organization" })])("refuses an absent or malformed selected organization instead of inferring stale storage keys: %s", async (selector) => {
+    const staleOrg = "00000000-0000-4000-8000-000000000043";
+    const fetch = vi.fn(async () => jsonResponse({ uuid: "conversation-1", chat_messages: [] }));
+    const { sendRuntimeMessage } = installClaude({
+      localStorageEntries: { [`claude-mcp-has-connectors:${staleOrg}`]: "true", ...(selector === null ? {} : { "omelette-org-settings-cache": selector }) }, fetch,
+    });
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage" });
+    expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable" });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("prefers an already-observed resource-timing chat_conversations URL over deriving one", async () => {
@@ -213,7 +320,7 @@ describe("claude.js native capture (real source)", () => {
     const { sendRuntimeMessage } = installClaude({
       url: "https://claude.ai/chat/conversation-1",
       resourceUrls: ["https://claude.ai/api/bootstrap/org-fallback/current_user_access", observedUrl],
-      localStorageEntries: { "claude-mcp-has-connectors:org-fallback": "true" },
+      localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: "00000000-0000-4000-8000-000000000042" }) },
       fetch,
     });
 
@@ -229,28 +336,35 @@ describe("claude.js native capture (real source)", () => {
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
 
     expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable" });
+    let repeated = result;
+    for (let attempt = 0; attempt < 8; attempt++) repeated = await sendRuntimeMessage({ type: "polylogue.capturePage" });
+    expect(repeated).toMatchObject({ ok: false, error: "native_capture_unavailable" });
+    expect(repeated.native_attempts).toHaveLength(6);
+    expect(repeated.native_attempts_dropped).toBe(3);
   });
 
   it("rejects a captured payload for a different conversation than the current URL", async () => {
     const { dom, sendRuntimeMessage } = installClaude({
       url: "https://claude.ai/chat/conversation-1",
-      localStorageEntries: { "claude-mcp-has-connectors:org-1": "true" },
+      localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: "00000000-0000-4000-8000-000000000042" }) },
     });
-    // Simulate claude_bridge.js's window.fetch interception observing a
-    // DIFFERENT conversation's response (e.g. a stale background tab fetch)
-    // -- must not be accepted for this page's conversation id.
+    const bodyRef = await dom.window.polylogueAssetStream.stageResponse(
+      jsonResponse({ uuid: "other-conversation", chat_messages: [{ uuid: "u1", sender: "human", text: "wrong conversation" }] }),
+      "claude-ai", new globalThis.AbortController().signal,
+    );
+    // A staged response from another conversation cannot become this page's cache.
     dom.window.dispatchEvent(
       new dom.window.MessageEvent("message", {
         source: dom.window,
         origin: dom.window.location.origin,
         data: {
-          type: "polylogue.claude.nativeCapture",
+          type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.claude.nativeCapture",
           capture: {
             ok: true,
             status: 200,
             contentType: "application/json",
             url: "https://claude.ai/api/organizations/org-1/chat_conversations/other-conversation",
-            body: JSON.stringify({ uuid: "other-conversation", chat_messages: [{ uuid: "u1", sender: "human", text: "wrong conversation" }] }),
+            bodyRef,
           },
         },
       }),
@@ -259,6 +373,21 @@ describe("claude.js native capture (real source)", () => {
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
 
     expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable" });
+  });
+
+  it("acquires the current revision after an unrelated conversation response arrives", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ uuid: "conversation-1", chat_messages: [{ uuid: "current-message", sender: "human", text: "fresh-current-text" }] }));
+    const { dom, sendRuntimeMessage } = installClaude({ localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: "00000000-0000-4000-8000-000000000042" }) }, fetch });
+    for (const id of ["conversation-1", "other-conversation"]) {
+      const bodyRef = await dom.window.polylogueAssetStream.stageResponse(jsonResponse({ uuid: id, chat_messages: [{ uuid: `message-${id}`, sender: "human", text: `text-${id}` }] }), "claude-ai", new globalThis.AbortController().signal, `https://claude.ai/api/organizations/00000000-0000-4000-8000-000000000042/chat_conversations/${id}`);
+      dom.window.dispatchEvent(new dom.window.MessageEvent("message", { source: dom.window, origin: dom.window.location.origin,
+        data: { type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.claude.nativeCapture", capture: { ok: true, bodyRef, capturedAt: new Date().toISOString(), url: `https://claude.ai/api/organizations/00000000-0000-4000-8000-000000000042/chat_conversations/${id}` } } }));
+    }
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
+    expect(result.ok).toBe(true);
+    expect(result.envelope.session.provider_session_id).toBe("conversation-1");
+    expect((await dom.__captureRuntime.retainedNativeReplies(result.envelope)).chat_messages[0].text).toBe("fresh-current-text");
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("returns null outside a /chat/<id> conversation route", async () => {
@@ -270,170 +399,27 @@ describe("claude.js native capture (real source)", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Native-payload structure extraction — driven through the REAL
-// nativeTurnBlocks/nativeTurnAttachments implementations in
-// src/content/claude.js (exposed for tests only via
-// window.polylogueCapture.__claudeNativeInternals), not a hand-copied
-// reimplementation. Claude's chat_conversations API returns the same segment
-// shape as the GDPR export, so tool_use / tool_result / thinking and both
-// attachment channels are observable at capture time; flattening them to
-// prose loses what the export path parses in full.
-// ---------------------------------------------------------------------------
+// Structured native semantics are qualified through the actual receiver in
+// test_native_receiver_complete_envelope_matches_canonical_provider_parsing,
+// using native-rich-blocks-v1.json (tool use/results, arrays, thinking and
+// signatures, token budgets) and native-attachment-order.json. The ordinary
+// Claude catalog remains the source of canonical normalization semantics.
 
-function installClaudeInternals() {
-  const dom = new JSDOM("<!doctype html><title>Claude internals fixture</title>", {
-    url: "https://claude.ai/chat/conversation-1",
-    runScripts: "outside-only",
-  });
-  openDoms.push(dom);
-  const chrome = { runtime: { id: "synthetic-extension-id", onMessage: { addListener: () => undefined } } };
-  Object.defineProperty(dom.window, "chrome", { configurable: true, value: chrome });
-  const context = dom.getInternalVMContext();
-  new Script(bridgeSource).runInContext(context);
-  new Script(commonSource).runInContext(context);
-  new Script(contentSource).runInContext(context);
-  return dom.window.polylogueCapture.__claudeNativeInternals;
-}
-
-describe("claude native capture — structured blocks", () => {
-  it("preserves tool_use with its id and input rather than flattening to prose", () => {
-    const { nativeTurnBlocks } = installClaudeInternals();
-    const blocks = nativeTurnBlocks({
-      content: [
-        { type: "text", text: "Let me search." },
-        { type: "tool_use", id: "toolu_01Bzda", name: "web_search", input: { query: "polylogue" } },
-      ],
-    });
-    expect(blocks).toHaveLength(2);
-    expect(blocks[1]).toMatchObject({
-      type: "tool_use",
-      tool_name: "web_search",
-      tool_id: "toolu_01Bzda",
-      tool_input: { query: "polylogue" },
-    });
-  });
-
-  it("carries the provider's own tool_result outcome, and leaves it unknown when absent", () => {
-    const { nativeTurnBlocks } = installClaudeInternals();
-    const failed = nativeTurnBlocks({
-      content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "boom", is_error: true }],
-    });
-    expect(failed[0]).toMatchObject({ type: "tool_result", tool_id: "toolu_1", is_error: true });
-
-    const unknown = nativeTurnBlocks({
-      content: [{ type: "tool_result", tool_use_id: "toolu_2", content: "ok" }],
-    });
-    // Absent is_error stays null (unknown) — never coerced to false.
-    expect(unknown[0].is_error).toBeNull();
-  });
-
-  it("keeps thinking segments, reading Claude's `thinking` field", () => {
-    const { nativeTurnBlocks } = installClaudeInternals();
-    const blocks = nativeTurnBlocks({
-      content: [{ type: "thinking", thinking: "considering options" }],
-    });
-    expect(blocks[0]).toMatchObject({ type: "thinking", text: "considering options" });
-  });
-
-  it("ignores segment shapes it does not recognise instead of guessing", () => {
-    const { nativeTurnBlocks } = installClaudeInternals();
-    expect(nativeTurnBlocks({ content: [{ type: "token_budget", budget: 5 }] })).toEqual([]);
-  });
-
-  it("joins text blocks when tool_result content is an array of content blocks, per Anthropic's API", () => {
-    const { nativeTurnBlocks } = installClaudeInternals();
-    const blocks = nativeTurnBlocks({
-      content: [
-        {
-          type: "tool_result",
-          tool_use_id: "toolu_3",
-          content: [
-            { type: "text", text: "first line" },
-            { type: "image", source: { type: "base64", data: "..." } },
-            { type: "text", text: "second line" },
-          ],
-        },
-      ],
-    });
-    expect(blocks[0].text).toBe("first line\nsecond line");
-  });
-
-  it("leaves tool_result text null when an array-shaped content has no text blocks (image-only)", () => {
-    const { nativeTurnBlocks } = installClaudeInternals();
-    const blocks = nativeTurnBlocks({
-      content: [
-        {
-          type: "tool_result",
-          tool_use_id: "toolu_4",
-          content: [{ type: "image", source: { type: "base64", data: "..." } }],
-        },
-      ],
-    });
-    expect(blocks[0].text).toBeNull();
-  });
-});
-
-describe("claude native capture — both attachment channels", () => {
-  it("extracts attachments[] inline content, which carries no provider id", () => {
-    const { nativeTurnAttachments } = installClaudeInternals();
-    const [attachment] = nativeTurnAttachments(
-      {
-        uuid: "msg-1",
-        attachments: [
-          { file_name: "paste.txt", file_size: "4817", file_type: "txt", extracted_content: "hello" },
-        ],
-      },
-      0,
-    );
-    expect(attachment).toMatchObject({
-      message_provider_id: "msg-1",
-      name: "paste.txt",
-      mime_type: "txt",
-      size_bytes: 4817,
-      extracted_content: "hello",
-    });
-    // Synthesised, stable, and namespaced so it cannot collide with files[].
-    expect(attachment.provider_attachment_id).toMatch(/^claude-attachment:[0-9a-f]+$/);
-  });
-
-  it("extracts files[] by its real uuid so a later byte acquisition can join", () => {
-    const { nativeTurnAttachments } = installClaudeInternals();
-    const [file] = nativeTurnAttachments(
-      { uuid: "msg-2", files: [{ file_name: "diagram.png", file_uuid: "file-abc123" }] },
-      0,
-    );
-    expect(file.provider_attachment_id).toBe("claude-file:file-abc123");
-    expect(file.provider_meta.file_uuid).toBe("file-abc123");
-  });
-
-  it("keeps the two channels distinct for one message", () => {
-    const { nativeTurnAttachments } = installClaudeInternals();
-    const out = nativeTurnAttachments(
-      {
-        uuid: "msg-3",
-        attachments: [{ file_name: "a.txt", file_size: "10", extracted_content: "x" }],
-        files: [{ file_name: "b.png", file_uuid: "file-b" }],
-      },
-      0,
-    );
-    expect(out).toHaveLength(2);
-    expect(out.map((a) => a.provider_meta.channel)).toEqual(["attachments", "files"]);
-  });
-
-  it("disambiguates two attachments with identical name and size in one message", () => {
-    const { nativeTurnAttachments } = installClaudeInternals();
-    const out = nativeTurnAttachments(
-      {
-        uuid: "msg-4",
-        attachments: [
-          { file_name: "dup.txt", file_size: "10", extracted_content: "first" },
-          { file_name: "dup.txt", file_size: "10", extracted_content: "second" },
-        ],
-      },
-      0,
-    );
-    expect(out).toHaveLength(2);
-    expect(out[0].provider_attachment_id).not.toBe(out[1].provider_attachment_id);
+describe("Claude original native attachment custody", () => {
+  it("retains both attachment channels and missing-ID out-of-order messages for the ordinary parser", async () => {
+    const payload = JSON.parse(readFileSync(resolve(testDirectory, "../../../tests/fixtures/claude-ai/native-attachment-order.json"), "utf8"));
+    const orgId = "00000000-0000-4000-8000-000000000042";
+    const fetch = vi.fn(async () => jsonResponse(payload));
+    const { dom, sendRuntimeMessage } = installClaude({ url: `https://claude.ai/chat/${payload.uuid}`,
+      localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: orgId }) }, fetch });
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "synthetic-attachment-custody" });
+    expect(result.ok).toBe(true);
+    const retained = await dom.__captureRuntime.retainedNativeReplies(result.envelope);
+    expect(retained).toEqual(payload);
+    expect(result.envelope.receiver_native).toBeDefined();
+    expect(result.envelope.session.turns).toEqual([]);
+    expect(retained.chat_messages[0].attachments.map((item) => item.extracted_content)).toEqual(["first", "second"]);
+    expect(retained.chat_messages[1].files[0].file_uuid).toBe("synthetic-file");
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

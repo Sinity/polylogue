@@ -15,7 +15,7 @@ import socket
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -23,17 +23,18 @@ from uuid import uuid4
 
 import pytest
 
-from polylogue.daemon.execution import BoundedComputeAdapter
+from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.daemon.http import _recover_startup_with_compute
 from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 from polylogue.daemon.socket_path import ensure_private_socket_dir
 from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.daemon_client import DaemonClient
 from polylogue.operations.daemon_reads import DaemonReadDependencies
-from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.operation_context import prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_off_event_loop
 
 if TYPE_CHECKING:
     from polylogue.operations.mutation_transaction import (
@@ -141,9 +142,15 @@ def running_daemon_operations(
     """
 
     archive_root = archive_root.resolve()
-    initialize_active_archive_root(archive_root)
-    if seed_archive is not None:
-        seed_archive(archive_root)
+
+    def prepare_archive() -> None:
+        initialize_active_archive_root(archive_root)
+        if seed_archive is not None:
+            seed_archive(archive_root)
+
+    # Async tests enter this synchronous stack from their event loop; setup's
+    # synchronous write lease must not block that loop.
+    run_off_event_loop(prepare_archive)
     socket_path = socket_path or (Path("/tmp") / f"plg-op-{os.getpid()}-{uuid4().hex}.sock")
     if socket_path.parent != Path("/tmp"):
         ensure_private_socket_dir(socket_path.parent)
@@ -169,10 +176,19 @@ def running_daemon_operations(
     # host routinely takes longer than 5 s to admit the startup journal write.
     bridge = DaemonWriteThreadBridge(coordinator, coordinator_loop.loop)
     bridge.run_sync("daemon.operation_journals.startup", prepare_operation_journals, archive_root)
-    bridge.run_sync("daemon.operation_recovery.startup", recover_interrupted_operations, archive_root)
     kernel = BoundedComputeAdapter(
         max_workers=compute_workers, queue_units=compute_queue_units, thread_name_prefix="test-daemon-operation"
     )
+    # Startup recovery runs on the daemon's own compute creator with its
+    # original input admission, exactly as the standalone HTTP server does.
+    recovery = asyncio.run_coroutine_threadsafe(
+        _recover_startup_with_compute(bridge, kernel, archive_root), coordinator_loop.loop
+    )
+    try:
+        bridge._await_owner_settlement("daemon.operation_recovery.startup", recovery)
+    except BaseException:
+        kernel.shutdown(wait=True)
+        raise
     session_maintenance = None
     if session_derivation:
         from time import time
@@ -182,12 +198,17 @@ def running_daemon_operations(
         session_maintenance = compose_session_profile_callback(
             archive_root, compute_adapter=kernel, write_bridge=bridge, now=time
         ).maintenance
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+
     if read_dependencies is None:
         read_dependencies = DaemonReadDependencies(hermes_root=archive_root.parent / "hermes")
     runtime = DaemonOperationRuntime(
         archive_root,
         write_bridge=bridge,
         execution_kernel=kernel,
+        raw_observation_owner=RawObservationConvergenceOwner(
+            archive_root, compute_adapter=kernel, write_bridge=bridge, write_coordinator=bridge.coordinator
+        ),
         owner_loop=bridge.owner_loop,
         session_maintenance=session_maintenance,
         read_dependencies=read_dependencies,
@@ -255,10 +276,21 @@ def cli_daemon_archive(
     at the developer's real home.
     """
 
+    from polylogue.daemon.cli import _acquire_pidfile
+
     archive_root = archive_root.resolve()
-    with running_daemon_operations(
-        archive_root, seed_archive=seed_archive, session_derivation=session_derivation
-    ) as stack:
+    with (
+        contextlib.ExitStack() as residency,
+        running_daemon_operations(
+            archive_root, seed_archive=seed_archive, session_derivation=session_derivation
+        ) as stack,
+    ):
+        # Claim residency exactly as ``polylogued run`` does, and release it
+        # only after the stack drains its writer. The CLI decides whether it is
+        # an offline writer from this lock; without it, an in-process CLI arms
+        # its process-wide offline-writer probe, which then takes archive
+        # custody on the daemon's own operation threads.
+        residency.callback(os.close, _acquire_pidfile(archive_root / "daemon.pid"))
         monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: stack.socket_path)
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
@@ -405,3 +437,23 @@ def execute_bound_delete(
             )
 
     return stack.write_bridge.run_sync("test.delete.bound-actuator", execute)
+
+
+@contextlib.asynccontextmanager
+async def async_daemon_serving_archive(
+    archive_root: Path, *, session_derivation: bool = False
+) -> AsyncIterator[DaemonOperationStack]:
+    """``daemon_serving_archive`` for an async law, started and stopped off its loop.
+
+    Starting the operation stack bootstraps the archive under the synchronous
+    write lease, which refuses to block a running event loop.
+    """
+    serving = daemon_serving_archive(archive_root, session_derivation=session_derivation)
+    stack = await asyncio.to_thread(serving.__enter__)
+    try:
+        yield stack
+    except BaseException as error:
+        if not await asyncio.to_thread(serving.__exit__, type(error), error, error.__traceback__):
+            raise
+    else:
+        await asyncio.to_thread(serving.__exit__, None, None, None)

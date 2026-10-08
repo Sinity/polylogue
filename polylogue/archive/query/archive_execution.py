@@ -13,11 +13,12 @@ does not push down.
 from __future__ import annotations
 
 import builtins
+import sqlite3
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import replace
 from itertools import islice
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
 from polylogue.archive.query.filter_kwargs import (
@@ -156,6 +157,33 @@ def _archive_summaries(
 
     query_text = _plan_text_query(plan)
     if query_text is not None:
+        if post_filter_fetch and sort == "random":
+            random_kept_summaries: list[ArchiveSessionSummary] = []
+            random_kept_count = 0
+            with closing(
+                archive.iter_session_identities(
+                    query=query_text,
+                    actions_only=plan.retrieval_lane == "actions",
+                    limit=None,
+                    offset=0,
+                    sort="random",
+                    reverse=reverse,
+                    **filter_kwargs,
+                )
+            ) as random_candidates:
+                while identity_batch := list(islice(random_candidates, limit)):
+                    rows: list[ArchiveSessionSummary] = []
+                    for identity in identity_batch:
+                        try:
+                            rows.append(archive.read_summary(identity.session_id))
+                        except KeyError:
+                            continue
+                    kept_rows = keep(rows) if keep is not None else rows
+                    random_kept_count += len(kept_rows)
+                    random_kept_summaries.extend(deliver(kept_rows))
+                    if wanted is not None and random_kept_count >= wanted:
+                        break
+            return random_kept_summaries
         if not post_filter_fetch:
             return deliver(
                 _kept(
@@ -206,6 +234,26 @@ def _archive_summaries(
                 ),
             )
         )
+    if sort == "random":
+        random_summaries: list[ArchiveSessionSummary] = []
+        random_summary_count = 0
+        with closing(
+            archive.iter_summaries(
+                limit=None,
+                offset=0,
+                sort="random",
+                reverse=reverse,
+                sample=False,
+                **filter_kwargs,
+            )
+        ) as random_summary_candidates:
+            while summary_random_batch := list(islice(random_summary_candidates, limit)):
+                kept_summary_random_batch = keep(summary_random_batch) if keep is not None else summary_random_batch
+                random_summary_count += len(kept_summary_random_batch)
+                random_summaries.extend(deliver(kept_summary_random_batch))
+                if wanted is not None and random_summary_count >= wanted:
+                    break
+        return random_summaries
     summaries: list[ArchiveSessionSummary] = []
     summary_count = 0
     fetch_offset = 0
@@ -298,6 +346,77 @@ def _attach_units_to_domain(
     return updated
 
 
+def _list_summaries_in_archive(
+    plan: SessionQueryPlan,
+    archive: ArchiveStore,
+    *,
+    config: Config | None,
+    archive_root: Path,
+    default_limit: int,
+    with_units: tuple[str, ...] = (),
+    with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
+) -> builtins.list[SessionSummary]:
+    """Execute the canonical summary plan on a caller's pinned archive read."""
+
+    def keep_matching(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
+        by_id = {row.session_id: row for row in rows}
+        if plan.can_use_summaries():
+            matching = plan._apply_common_filters([archive_summary_to_domain(row) for row in rows], sql_pushed=True)
+            matching_ids = {str(summary.id) for summary in matching}
+        else:
+            sessions = [
+                archive_envelope_to_session(
+                    archive.read_session(row.session_id),
+                    display_label=row.display_label,
+                    display_label_source=row.display_label_source,
+                )
+                for row in rows
+            ]
+            matching_ids = {str(session.id) for session in plan._apply_full_filters(sessions, sql_pushed=True)}
+        return [row for session_id, row in by_id.items() if session_id in matching_ids]
+
+    reduce_order = _ranked_window(plan) and plan.sample is not None
+    best: list[SessionSummary] = []
+    bound = plan.offset + (plan.limit if plan.limit is not None else default_limit)
+    reservoir = (
+        OffsetSampledPage(offset=plan.offset, sample=plan.sample, sort=plan._sort_summaries) if plan.sample else None
+    )
+
+    def reduce_batch(rows: list[ArchiveSessionSummary]) -> None:
+        nonlocal best
+        summaries = [archive_summary_to_domain(row) for row in rows]
+        if reservoir is not None:
+            reservoir.offer(summaries)
+            best = reservoir.items()
+        else:
+            best = plan._sort_summaries([*best, *summaries])[:bound]
+
+    archive_rows = _archive_summaries(
+        plan,
+        archive,
+        config=config,
+        archive_root=archive_root,
+        default_limit=default_limit,
+        keep=keep_matching if plan.has_post_filters() else None,
+        complete=reduce_order,
+        on_batch=reduce_batch if reduce_order else None,
+    )
+    summaries = _attach_units_to_domain(
+        best if reduce_order else [archive_summary_to_domain(row) for row in archive_rows],
+        archive,
+        with_units,
+        with_unit_fields,
+        with_unit_windows,
+    )
+    filtered = summaries if plan.has_post_filters() else plan._apply_common_filters(summaries, sql_pushed=True)
+    ranked_window = _ranked_window(plan)
+    ordered = filtered
+    if (plan.has_post_filters() or ranked_window) and plan.offset:
+        ordered = ordered[plan.offset :]
+    return plan._finalize(ordered)
+
+
 async def list_summaries_archive(
     plan: SessionQueryPlan,
     *,
@@ -308,49 +427,19 @@ async def list_summaries_archive(
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
     with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> builtins.list[SessionSummary]:
-    def keep_matching(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
-        by_id = {row.session_id: row for row in rows}
-        matching = plan._apply_common_filters([archive_summary_to_domain(row) for row in rows], sql_pushed=True)
-        return [by_id[str(summary.id)] for summary in matching]
-
     def read(archive: ArchiveStore) -> list[SessionSummary]:
-        reduce_order = _ranked_window(plan) and plan.sample is not None
-        best: list[SessionSummary] = []
-        bound = plan.offset + (plan.limit if plan.limit is not None else default_limit)
-        reservoir = (
-            OffsetSampledPage(offset=plan.offset, sample=plan.sample, sort=plan._sort_summaries)
-            if plan.sample
-            else None
-        )
-
-        def reduce_batch(rows: list[ArchiveSessionSummary]) -> None:
-            nonlocal best
-            summaries = [archive_summary_to_domain(row) for row in rows]
-            if reservoir is not None:
-                reservoir.offer(summaries)
-                best = reservoir.items()
-            else:
-                best = plan._sort_summaries([*best, *summaries])[:bound]
-
-        archive_rows = _archive_summaries(
+        return _list_summaries_in_archive(
             plan,
             archive,
             config=config,
             archive_root=archive_root,
             default_limit=default_limit,
-            keep=keep_matching if plan.has_post_filters() else None,
-            complete=reduce_order,
-            on_batch=reduce_batch if reduce_order else None,
-        )
-        return _attach_units_to_domain(
-            best if reduce_order else [archive_summary_to_domain(row) for row in archive_rows],
-            archive,
-            with_units,
-            with_unit_fields,
-            with_unit_windows,
+            with_units=with_units,
+            with_unit_fields=with_unit_fields,
+            with_unit_windows=with_unit_windows,
         )
 
-    summaries = await run_archive_read(
+    return await run_archive_read(
         archive_root,
         operation="archive.query.list-summaries",
         arguments={"plan": plan, "default_limit": default_limit, "with_units": with_units},
@@ -360,16 +449,6 @@ async def list_summaries_archive(
         projection="session-summaries",
         workload_class="scan" if _ranked_window(plan) or plan.limit is None or plan.limit > 1000 else "interactive",
     )
-    # ``keep_matching`` already filtered every row once; a predicate is never
-    # evaluated twice for one candidate.
-    filtered = summaries if plan.has_post_filters() else plan._apply_common_filters(summaries, sql_pushed=True)
-    # SQL orders lexical and structured results. Ranked routes qualify and
-    # settle the full scoped relation and its explicit sort before paging.
-    ranked_window = _ranked_window(plan)
-    ordered = filtered
-    if (plan.has_post_filters() or ranked_window) and plan.offset:
-        ordered = ordered[plan.offset :]
-    return plan._finalize(ordered)
 
 
 async def list_archive(
@@ -565,6 +644,31 @@ async def count_archive(
     archive_root: Path,
     config: Config | None,
 ) -> int:
+    return await run_archive_read(
+        archive_root,
+        operation="archive.query.count",
+        arguments={"plan": plan},
+        work=lambda archive: _count_in_archive(
+            plan,
+            archive,
+            config=config,
+            archive_root=archive_root,
+        ),
+        page_size=1,
+        projection="count",
+        workload_class="scan",
+    )
+
+
+def _count_in_archive(
+    plan: SessionQueryPlan,
+    archive: ArchiveStore,
+    *,
+    config: Config | None,
+    archive_root: Path,
+    default_limit: int = DEFAULT_SESSION_LIST_LIMIT,
+) -> int:
+    """Count the canonical query scope on a caller's pinned archive read."""
     if (
         not plan.has_post_filters()
         and plan.similar_text is None
@@ -573,73 +677,72 @@ async def count_archive(
     ):
         filter_kwargs = plan_filter_kwargs(plan)
         query_text = _plan_text_query(plan)
-        with archive_read_context(
-            archive_root,
-            operation="archive.query.count",
-            arguments={"plan": plan},
-            page_size=1,
-            projection="count",
-            workload_class="scan",
-        ) as archive:
-            if query_text is not None:
-                return int(
-                    archive.count_search_sessions(
-                        query_text,
-                        actions_only=plan.retrieval_lane == "actions",
-                        **filter_kwargs,
-                    )
+        if query_text is not None:
+            return int(
+                archive.count_search_sessions(
+                    query_text,
+                    actions_only=plan.retrieval_lane == "actions",
+                    **filter_kwargs,
                 )
-            return int(archive.count_sessions(**filter_kwargs))
+            )
+        return int(archive.count_sessions(**filter_kwargs))
+
+    unbounded = replace(plan, limit=None, offset=0)
+
+    def keep(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
+        if unbounded.can_use_summaries():
+            matching = unbounded._apply_common_filters(
+                [archive_summary_to_domain(row) for row in rows], sql_pushed=True
+            )
+            survivor_ids = {str(session.id) for session in matching}
+        else:
+            sessions = [
+                archive_envelope_to_session(
+                    archive.read_session(row.session_id),
+                    display_label=row.display_label,
+                    display_label_source=row.display_label_source,
+                )
+                for row in rows
+            ]
+            survivor_ids = {str(session.id) for session in unbounded._apply_full_filters(sessions, sql_pushed=True)}
+        return [row for row in rows if row.session_id in survivor_ids]
 
     if _ranked_window(plan):
-        unbounded = replace(plan, limit=None, offset=0)
+        total = 0
 
-        def read(archive: ArchiveStore) -> int:
-            total = 0
+        def count_ranked_batch(rows: list[ArchiveSessionSummary]) -> None:
+            nonlocal total
+            total += len(rows)
 
-            def count_batch(rows: list[ArchiveSessionSummary]) -> None:
-                nonlocal total
-                total += len(rows)
-
-            _archive_summaries(
-                unbounded,
-                archive,
-                config=config,
-                archive_root=archive_root,
-                default_limit=DEFAULT_SESSION_LIST_LIMIT,
-                complete=True,
-                on_batch=count_batch,
-            )
-            return min(total, plan.sample) if plan.sample is not None else total
-
-        return await run_archive_read(
-            archive_root,
-            operation="archive.query.count",
-            arguments={"plan": plan},
-            work=read,
-            page_size=1,
-            projection="count",
-            workload_class="scan",
-        )
-
-    # A count is the size of the whole result, not of one page: the SQL
-    # count above ignores the window, so this route drops the offset too.
-    unbounded = replace(plan, limit=None, offset=0)
-    if unbounded.can_use_summaries():
-        rows = await list_summaries_archive(
+        _archive_summaries(
             unbounded,
-            archive_root=archive_root,
+            archive,
             config=config,
-            default_limit=1_000_000,
+            archive_root=archive_root,
+            default_limit=default_limit,
+            keep=keep if unbounded.has_post_filters() else None,
+            complete=True,
+            on_batch=count_ranked_batch,
         )
-        return len(rows)
-    sessions = await list_archive(
+        return min(total, plan.sample) if plan.sample is not None else total
+
+    total = 0
+
+    def count_batch(rows: list[ArchiveSessionSummary]) -> None:
+        nonlocal total
+        total += len(rows)
+
+    _archive_summaries(
         unbounded,
-        archive_root=archive_root,
+        archive,
         config=config,
-        default_limit=1_000_000,
+        archive_root=archive_root,
+        default_limit=default_limit,
+        keep=keep if unbounded.has_post_filters() else None,
+        complete=True,
+        on_batch=count_batch,
     )
-    return len(sessions)
+    return total
 
 
 def _fts_lane_candidates(
@@ -882,6 +985,16 @@ def _ordered_scoped_hits(
             archive.check_operation_read()
             if full:
                 values = session_order_values(plan, archive_envelope_to_session(archive.read_session(hit.session_id)))
+            elif plan.sort in _COMPOSED_COUNT_SORTS:
+                summary = archive_summary_to_domain(archive.read_summary(hit.session_id))
+                values = summary_order_values(
+                    plan,
+                    summary,
+                    metrics=archive.read_session_sort_metrics(
+                        hit.session_id,
+                        sort=cast(Literal["messages", "words", "longest", "tokens"], plan.sort),
+                    ),
+                )
             else:
                 values = summary_order_values(plan, archive_summary_to_domain(archive.read_summary(hit.session_id)))
             yield hit.session_id, *values, hit.rank
@@ -953,18 +1066,26 @@ def archive_search_hits(
                 execution,
             )
 
-    if archive is not None:
-        return read(archive)
-    with archive_read_context(
-        archive_root,
-        operation="archive.query.search-hits",
-        arguments={"plan": plan, "default_limit": default_limit},
-        page_size=plan.limit,
-        offset=plan.offset,
-        projection="search-hits",
-        workload_class="scan" if _ranked_window(plan) or plan.limit is None or plan.limit > 1000 else "interactive",
-    ) as controlled_archive:
-        return read(controlled_archive)
+    from polylogue.storage.fts.fts_lifecycle import search_index_read_refusal
+
+    try:
+        if archive is not None:
+            return read(archive)
+        with archive_read_context(
+            archive_root,
+            operation="archive.query.search-hits",
+            arguments={"plan": plan, "default_limit": default_limit},
+            page_size=plan.limit,
+            offset=plan.offset,
+            projection="search-hits",
+            workload_class="scan" if _ranked_window(plan) or plan.limit is None or plan.limit > 1000 else "interactive",
+        ) as controlled_archive:
+            return read(controlled_archive)
+    except sqlite3.Error as exc:
+        refusal = search_index_read_refusal(exc)
+        if refusal is None:
+            raise
+        raise refusal from exc
 
 
 def _pair_hits(

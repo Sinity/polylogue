@@ -143,14 +143,14 @@ class TestColumnSpecReordering:
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
         from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 
-        assert ARCHIVE_DDL_BY_TIER == {
+        assert {
             ArchiveTier.AUDIT: AUDIT_DDL,
             ArchiveTier.EMBEDDINGS: EMBEDDINGS_DDL,
             ArchiveTier.INDEX: INDEX_DDL,
             ArchiveTier.OPS: OPS_DDL,
             ArchiveTier.SOURCE: SOURCE_DDL,
             ArchiveTier.USER: USER_DDL,
-        }
+        } == ARCHIVE_DDL_BY_TIER
 
     def test_non_vector_tier_scripts_create_their_schema(self) -> None:
         """Fresh archive tiers must execute the scripts exported through the public map."""

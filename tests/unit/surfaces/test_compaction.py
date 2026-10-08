@@ -5,7 +5,7 @@ from typing import cast
 
 import pytest
 
-from polylogue.context.compiler import ContextImage
+from polylogue.archive.context_models import ContextImage
 from polylogue.surfaces.compaction import (
     CompactionBudgetTooSmallError,
     CompactProjectionSpec,

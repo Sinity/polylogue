@@ -12,10 +12,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from polylogue.archive.message.roles import Role
-from polylogue.core.types import ContentHash, MessageId, SessionId
 from polylogue.storage.embeddings.identity import EmbeddingRecipe
-from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
@@ -44,25 +41,6 @@ class MutableSqliteVecProvider(SqliteVecProvider):
     _get_embeddings: EmbeddingFetcher
     _get_connection: Callable[[], sqlite3.Connection]
     _get_read_connection: VectorReadConnection
-
-
-def make_message(
-    message_id: str = "msg-1",
-    session_id: str = "conv-1",
-    role: str = "user",
-    text: str = "This is a sufficiently long test message for embedding.",
-    content_hash: str = "db48dd12723234f37e2c19a952b9a6f685a18632c8446a2d527f1cd074dd3454",
-    source_name: str = "test-provider",
-) -> MessageRecord:
-    return MessageRecord(
-        message_id=MessageId(message_id),
-        session_id=SessionId(session_id),
-        role=Role.normalize(role),
-        text=text,
-        content_hash=ContentHash(content_hash),
-        source_name=source_name,
-        version=1,
-    )
 
 
 @pytest.fixture
@@ -101,8 +79,6 @@ def test_operation_snapshot_provider_never_closes_or_writes_its_supplied_handle(
     assert provider._get_connection() is connection
     provider._release_connection(connection)
     assert tuple(connection.execute("SELECT 1").fetchone()) == (1,)
-    with pytest.raises(SqliteVecError, match="read-only"):
-        provider.upsert("session", [])
     assert tuple(connection.execute("SELECT 1").fetchone()) == (1,)
     connection.close()
 
@@ -332,141 +308,6 @@ def test_get_embeddings_error_does_not_leak_api_key(mock_provider: MutableSqlite
 
 
 @pytest.mark.parametrize(
-    ("role", "text", "should_embed"),
-    [
-        ("tool_result", "ok", False),
-        ("tool_result", "SUCCESS", False),
-        ("tool_result", "File contents: def hello(): print('world')", True),
-        ("system", "This is a sufficiently long system message.", False),
-        ("user", "   \n\t  ", False),
-        ("user", "1234567890123456789", False),
-        ("user", "12345678901234567890", True),
-    ],
-)
-def test_should_embed_message_contract(
-    mock_provider: MutableSqliteVecProvider,
-    role: str,
-    text: str,
-    should_embed: bool,
-) -> None:
-    """Only semantically useful messages should be embedded."""
-    assert mock_provider._should_embed_message(make_message(role=role, text=text)) is should_embed
-
-
-@pytest.mark.parametrize(
-    "messages",
-    [[], [make_message(text="short")]],
-    ids=["empty", "no-embeddable"],
-)
-def test_upsert_noop_contract(
-    mock_provider: MutableSqliteVecProvider,
-    messages: list[MessageRecord],
-) -> None:
-    """Upsert should short-circuit on empty or non-embeddable input."""
-    ensure_vec_available = MagicMock()
-    ensure_tables = MagicMock()
-    get_connection = MagicMock()
-    mock_provider._ensure_vec_available = ensure_vec_available
-    mock_provider._ensure_tables = ensure_tables
-    mock_provider._get_connection = get_connection
-
-    mock_provider.upsert("conv-1", messages)
-
-    ensure_vec_available.assert_not_called()
-    ensure_tables.assert_not_called()
-    get_connection.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    ("source_name", "expected_provider"),
-    [("claude-ai", "claude-ai"), (None, "test-provider")],
-    ids=["explicit-origin", "message-origin"],
-)
-def test_upsert_persistence_contract(
-    tmp_path: Path,
-    source_name: str | None,
-    expected_provider: str,
-) -> None:
-    """Upsert must filter messages, persist embeddings, and stamp provider metadata.
-
-    ``upsert`` now delegates to the canonical content-addressed write
-    primitives (polylogue-q88p), so this exercises a real sqlite-vec-backed
-    ``embeddings.db`` rather than mocked SQL -- the shape those primitives
-    write (vector_derivation_hash-keyed vectors + message_embedding_refs) is
-    not expressible as raw "INSERT INTO message_embeddings" string matching
-    against a mock connection anymore.
-    """
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from tests.infra.vector_archive import seed_vector_archive
-
-    seed_vector_archive(tmp_path, [])
-    provider = MutableSqliteVecProvider(
-        voyage_key="test-voyage-key", db_path=tmp_path / "embeddings.db", model="voyage-4", archive_root=tmp_path
-    )
-    provider.dimension = 1024
-    provider._vec_available = None
-    provider._tables_ensured = False
-
-    conn = sqlite3.connect(provider.db_path)
-    try:
-        initialize_archive_tier(conn, ArchiveTier.EMBEDDINGS)
-    except sqlite3.OperationalError as exc:
-        if "vec0" in str(exc) or "sqlite-vec" in str(exc):
-            pytest.skip("sqlite-vec extension is unavailable")
-        raise
-    conn.commit()
-    conn.close()
-
-    messages = [
-        make_message(message_id="m1", text="This is a long embeddable message."),
-        make_message(message_id="m2", text="short"),
-        make_message(message_id="m3", text="This is another long embeddable message."),
-    ]
-    embeddings_called_with: list[str] = []
-
-    def capture_embeddings(texts: list[str], input_type: str = "document") -> list[Embedding]:
-        del input_type
-        embeddings_called_with.extend(texts)
-        return [[0.1] * 1024 for _ in texts]
-
-    provider._get_embeddings = capture_embeddings
-
-    provider.upsert("conv-1", messages, origin=source_name)
-
-    assert embeddings_called_with == [
-        "This is a long embeddable message.",
-        "This is another long embeddable message.",
-    ]
-
-    verify = sqlite3.connect(provider.db_path)
-    try:
-        from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
-
-        loaded, error = try_load_sqlite_vec(verify)
-        assert loaded, error
-        assert verify.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 2
-        assert verify.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone()[0] == 2
-        origins = {
-            str(row[0]) for row in verify.execute("SELECT DISTINCT origin FROM message_embedding_refs").fetchall()
-        }
-        assert origins == {expected_provider}
-        assert verify.execute("SELECT COUNT(*) FROM embedding_status").fetchone()[0] == 1
-    finally:
-        verify.close()
-
-
-def test_upsert_closes_connection_on_embedding_error(mock_provider: MutableSqliteVecProvider) -> None:
-    """Connection cleanup must happen even when embedding generation fails."""
-    mock_provider._ensure_vec_available = MagicMock()
-    mock_provider._ensure_tables = MagicMock()
-    mock_provider._get_embeddings = MagicMock(side_effect=RuntimeError("API error"))
-
-    with pytest.raises(RuntimeError):
-        mock_provider.upsert("conv-1", [make_message()])
-
-
-@pytest.mark.parametrize(
     ("method_name", "provider", "embedding_result"),
     [
         ("query", None, [[0.1, 0.2]]),
@@ -626,30 +467,3 @@ def test_snapshot_admission_refuses_index_replacement_and_closes_its_handle(tmp_
     assert len(acquired) == 1
     with pytest.raises(sqlite3.ProgrammingError):
         acquired[0].execute("SELECT 1")
-
-
-@pytest.mark.parametrize("bad_hash", ("not-hex", "ab" * 31, "ab" * 33))
-@pytest.mark.parametrize("bad_text", ("short", "Invalid batch member otherwise has enough prose to embed"))
-def test_upsert_invalid_carried_hash_refuses_whole_batch_before_acquisition(
-    mock_provider: MutableSqliteVecProvider,
-    bad_hash: str,
-    bad_text: str,
-) -> None:
-    calls: list[str] = []
-
-    def embed(texts: list[str], input_type: str = "document") -> list[Embedding]:
-        calls.append(input_type)
-        return [[0.1] * 1024 for _ in texts]
-
-    mock_provider._get_embeddings = embed
-    mock_provider._ensure_vec_available = MagicMock(
-        side_effect=AssertionError("invalid batch must not admit a provider")
-    )
-    mock_provider._ensure_tables = MagicMock(side_effect=AssertionError("invalid batch must not initialize tables"))
-    mock_provider._get_connection = MagicMock(side_effect=AssertionError("invalid batch must not acquire a writer"))
-    with pytest.raises(ValueError):
-        mock_provider.upsert(
-            "conv-1", [make_message(), make_message(message_id="bad", content_hash=bad_hash, text=bad_text)]
-        )
-    assert calls == []
-    assert not mock_provider._get_connection.called

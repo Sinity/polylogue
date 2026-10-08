@@ -47,11 +47,13 @@ def test_clone_preserves_original_proof_and_both_owned_roots_open(
 ) -> None:
     """A clone retains original proof and executes a destination-owned train."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.durable_tier_fixtures import ship_synthetic_source_train
 
     template = tmp_path / "template"
     clone = tmp_path / "clone"
     marker = Path(".maintenance-state/durable-change-trains/source-002.json")
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "configured")
+    ship_synthetic_source_train(tmp_path / "train-package", monkeypatch)
     with ArchiveStore(template):
         pass
     finalize_archive_template(template)

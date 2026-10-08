@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from contextlib import closing
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +18,8 @@ from polylogue.pipeline.ids import session_id, session_revision_projection
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers import grok
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
+from tests.infra.retained_replay import publish_retained_payload
 
 
 def _nested_conversation() -> dict[str, Any]:
@@ -235,6 +240,82 @@ def test_session_id_survives_reordered_re_export_under_a_different_filename() ->
     assert first_export[0].provider_session_id in {s.provider_session_id for s in second_export}
 
 
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("appended_timestamp", [None, "2026-10-01T00:00:00Z"])
+def test_dated_opening_identity_survives_append_and_reorder(nested: bool, appended_timestamp: str | None) -> None:
+    """Treating absent time as earliest re-identifies the undated append case."""
+    payload = _nested_conversation() if nested else _flat_conversation()
+    original = grok.parse_conversation(payload, "original")
+    appended = {"sender": "grok", "message": "An additional answer", "create_time": appended_timestamp}
+    payload["responses"].append({"response": appended} if nested else appended)
+    extended = grok.parse_conversation(payload, "renamed")
+    payload["responses"].reverse()
+    reordered = parse_payload(Provider.GROK, {"conversations": [payload]}, "different-name")[0]
+    assert original.provider_session_id == extended.provider_session_id == reordered.provider_session_id
+    original_ids = {message.provider_message_id for message in original.messages}
+    assert original_ids <= {message.provider_message_id for message in extended.messages}
+    assert original_ids <= {message.provider_message_id for message in reordered.messages}
+
+
+def test_fully_undated_identity_uses_deterministic_content_selection_without_chronology_claim() -> None:
+    payload = _flat_conversation()
+    for response in payload["responses"]:
+        response.pop("create_time")
+    original = grok.parse_conversation(payload, "original")
+    payload["responses"].reverse()
+    reordered = grok.parse_conversation(payload, "renamed")
+    assert original.provider_session_id == reordered.provider_session_id
+    opening = min(original.messages, key=lambda message: message.provider_message_id)
+    from polylogue.pipeline.ids import idless_session_identity
+
+    assert original.provider_session_id == idless_session_identity(
+        first_message_provider_id=opening.provider_message_id,
+        first_message_text=opening.text,
+        created_at=original.created_at,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nested", [False, True])
+async def test_retained_grok_undated_append_updates_one_existing_conversation(tmp_path: Path, nested: bool) -> None:
+    """The streamed retained parser and writer must keep one accepted session head."""
+    root = tmp_path / "archive"
+    payload = _nested_conversation() if nested else _flat_conversation()
+    original = grok.parse_conversation(payload, "original")
+    expected_id = str(session_id(Provider.GROK, original.provider_session_id))
+
+    async def publish(conversation: dict[str, Any], acquired_at_ms: int) -> tuple[str, tuple[str, ...]]:
+        return await publish_retained_payload(
+            root,
+            provider=Provider.GROK,
+            payload=json.dumps({"conversations": [conversation]}).encode(),
+            source_path="/neutral/grok-export.json",
+            acquired_at_ms=acquired_at_ms,
+        )
+
+    original_raw, original_written = await publish(payload, 1)
+    assert original_written == (expected_id,)
+    with closing(sqlite3.connect(root / "index.db")) as conn:
+        original_message_ids = {row[0] for row in conn.execute("SELECT message_id FROM messages")}
+    appended = {"sender": "grok", "message": "An additional answer"}
+    payload["responses"].append({"response": appended} if nested else appended)
+    latest_raw, latest_written = await publish(payload, 2)
+    assert latest_raw != original_raw
+    assert latest_written == (expected_id,)
+    reordered = deepcopy(payload)
+    reordered["responses"].reverse()
+    latest_raw, latest_written = await publish(reordered, 3)
+    assert latest_written == (expected_id,)
+    with closing(sqlite3.connect(root / "index.db")) as conn:
+        assert conn.execute("SELECT session_id, raw_id, message_count FROM sessions").fetchall() == [
+            (expected_id, latest_raw, 3)
+        ]
+        assert original_message_ids <= {row[0] for row in conn.execute("SELECT message_id FROM messages")}
+        assert conn.execute("SELECT logical_source_key, accepted_raw_id FROM raw_revision_heads").fetchall() == [
+            (expected_id, latest_raw)
+        ]
+
+
 def test_contentless_conversation_falls_back_to_the_acquisition_id() -> None:
     """The one narrow exception: no admitted response and no create_time means
     there is literally nothing intrinsic to hash.
@@ -375,12 +456,7 @@ def test_export_human_sender_preserves_authorship_of_context_looking_prose(
     assert session.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
     assert session.messages[0].message_type is MessageType.CONTEXT
     with ArchiveStore(archive_root) as archive:
-        _, stored_id = archive.write_raw_and_parsed(
-            session,
-            payload=json.dumps(payload).encode(),
-            source_path="/example/grok.json",
-            acquired_at_ms=1735689600000,
-        )
+        stored_id = write_index_session(archive, session)
         hydrated = archive_envelope_to_session(archive.read_session(stored_id))
         message = next(iter(hydrated.messages))
         assert message.material_origin is MaterialOrigin.HUMAN_AUTHORED

@@ -53,6 +53,9 @@ def print_summary_impl(
     embedding_stats = None
 
     try:
+        # Direct-capable health probes read filesystem/tier status and remain
+        # available while the daemon is down; archive session counts and
+        # coverage below use resident operations.
         embedding_stats = embedding_status_payload(env)
     except Exception:
         logger.warning("Embedding status computation failed; summary will omit stats", exc_info=True)
@@ -88,6 +91,9 @@ def print_summary_impl(
         lines.append(embedding_line)
 
     if verbose:
+        # Readiness is the CLI's direct-capable diagnostic path: it reports
+        # tier availability so operators can inspect why the resident query
+        # service is unavailable.
         report = get_readiness_fn(config)
         provenance = report.provenance
         source_val = getattr(provenance.source, "value", provenance.source) if hasattr(provenance, "source") else "live"
@@ -103,6 +109,8 @@ def print_summary_impl(
                 icon = {"ok": "OK", "warning": "WARN", "error": "ERR"}.get(status_str, "?")
             lines.append(f"  {icon} {check.name}: {check.detail}")
     else:
+        # The compact readiness summary uses the same local health diagnostic
+        # contract as verbose mode; only session selection is resident-owned.
         lines.append(f"Readiness: {quick_readiness_summary_fn(config.archive_root)}")
 
     ui.summary("Polylogue", lines)

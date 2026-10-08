@@ -14,7 +14,7 @@ whatever ``_resolve_session_graph`` got wrong before anybody could see it, the
 mask ``daemon/lineage_startup.py`` exists to refuse.
 
 The re-derivation itself is the ordinary full-replay route
-(``backfill_historical_revision_evidence``) scoped to the child's own retained
+(``apply_prepared_revision_replay``) scoped to the child's own retained
 raw revision, so the write still lands through
 ``write_parsed_session_to_archive`` -- the single choke point shared by live
 ingest and full replay. There is no second lineage write route here.
@@ -25,11 +25,17 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from polylogue.core.compute import BoundedComputeAdapter, DaemonOperationCancelled
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import span
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.write import IDENTITY_INVALIDATION_DEBT_STAGE
+
+if TYPE_CHECKING:
+    from polylogue.storage.derived.raw import RawObservationReplacement
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 #: The stage name the writer records its lineage-prefix losses under. Imported,
@@ -157,14 +163,16 @@ def _retained_raw_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, .
     return (str(row[0]),)
 
 
-def recompose_session_prefix(archive_root: Path, index_path: Path, session_id: str) -> str | None:
+def recompose_session_prefix(
+    archive_root: Path, index_path: Path, session_id: str, *, compute_adapter: BoundedComputeAdapter
+) -> str | None:
     """Re-derive one child's prefix. Return ``None`` on success, else the reason.
 
     Success is decided by re-reading :func:`unrecomposed_prefix_reason` after
     the replay, never by the replay reporting that it ran. A best-effort
     partial recompose therefore cannot clear the row.
     """
-    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+    from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation, raw_observation_frame
 
     conn = open_readonly_connection(index_path)
     try:
@@ -179,11 +187,28 @@ def recompose_session_prefix(archive_root: Path, index_path: Path, session_id: s
     if not raw_ids:
         return "no retained raw revision is bound to this session, so its prefix cannot be re-derived"
     try:
-        backfill_historical_revision_evidence(
-            archive_root,
-            active_index_path=index_path,
-            selected_raw_ids=list(raw_ids),
+        adapter = make_raw_observation_derivation(
+            archive_root, compute_adapter=compute_adapter, index_db_path=index_path
         )
+        frame = raw_observation_frame(archive_root, raw_ids=raw_ids, index_db_path=index_path)
+        for raw_id in raw_ids:
+            replacement = adapter.compute(frame, raw_id, replay_current=True)
+            publication_started = False
+
+            def publish(replacement: RawObservationReplacement = replacement) -> bool:
+                nonlocal publication_started
+                publication_started = True
+                return adapter.publish(frame, replacement)
+
+            try:
+                published = admit_stage_write(LINEAGE_PREFIX_RECOMPOSE_STAGE, publish)
+            finally:
+                if not publication_started:
+                    replacement.close()
+            if not published:
+                return "retained preparation requires another pass before prefix publication"
+    except DaemonOperationCancelled:
+        raise
     except Exception as exc:
         return f"replaying retained raw evidence failed: {type(exc).__name__}: {exc}"
     conn = open_readonly_connection(index_path)
@@ -196,7 +221,7 @@ def recompose_session_prefix(archive_root: Path, index_path: Path, session_id: s
     return f"retained raw evidence was replayed and the prefix is still missing ({reason})"
 
 
-def make_lineage_prefix_recompose_stage(db_path: Path) -> ConvergenceStage:
+def make_lineage_prefix_recompose_stage(db_path: Path, *, compute_adapter: BoundedComputeAdapter) -> ConvergenceStage:
     """Build the stage that drains recorded lineage-prefix losses."""
     archive_root = db_path.parent
 
@@ -223,7 +248,7 @@ def make_lineage_prefix_recompose_stage(db_path: Path) -> ConvergenceStage:
             refused: dict[str, str] = {}
             recomposed = 0
             for session_id in ordered:
-                reason = recompose_session_prefix(archive_root, index_path, session_id)
+                reason = recompose_session_prefix(archive_root, index_path, session_id, compute_adapter=compute_adapter)
                 if reason is None:
                     recomposed += 1
                 else:
@@ -260,6 +285,7 @@ def make_lineage_prefix_recompose_stage(db_path: Path) -> ConvergenceStage:
         check_sessions=check_sessions,
         execute_sessions=execute_sessions,
         false_means_pending=True,
+        writer_admission="bridged",
     )
 
 

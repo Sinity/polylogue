@@ -188,7 +188,11 @@ def _read_spooled_delivery(path: Path, config: PolylogueConfig) -> _Delivery:
     return _Delivery(
         event=event,
         daemon_url=config.daemon_url,
-        auth_token=resolve_api_auth_token(config.api_auth_token, allow_no_auth=config.api_allow_no_auth),
+        auth_token=resolve_api_auth_token(
+            config.api_auth_token,
+            allow_no_auth=config.api_allow_no_auth,
+            token_path=Path(config.archive_root) / "api-auth-token",
+        ),
     )
 
 

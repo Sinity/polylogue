@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
@@ -7,7 +8,7 @@ from typing import Any, cast
 
 import pytest
 
-from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
+from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL, RawRevisionAuthority
 from polylogue.core.errors import SchemaSkew
 from polylogue.storage.archive_readiness import (
     CLAUDE_WORKFLOW_STAGE_NAME,
@@ -21,11 +22,11 @@ from polylogue.storage.archive_readiness import (
     raw_materialization_ready,
 )
 from polylogue.storage.raw_authority import (
-    RAW_AUTHORITY_PARSER_FINGERPRINT,
+    raw_authority_parser_fingerprint,
 )
 from polylogue.storage.sqlite import connection_profile
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
@@ -39,6 +40,66 @@ def _write_blob(root: Path, hex_hash: str, payload: bytes = b"{}") -> None:
     blob = root / "blob" / hex_hash[:2] / hex_hash[2:]
     blob.parent.mkdir(parents=True, exist_ok=True)
     blob.write_bytes(payload)
+
+
+def _seed_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...], rows: Any) -> None:
+    """Insert law rows into the real tier DDL, completing required columns.
+
+    Each law names only the columns it classifies on. Required columns it does
+    not name receive neutral values: a deterministic 32-byte blob hash, a
+    zero size, the first acquisition instant, and a derived session identity
+    (``session_id`` is generated from origin and native ID in the real DDL).
+    """
+    for ordinal, row in enumerate(rows):
+        values: dict[str, object] = dict(zip(columns, row, strict=True))
+        if table == "raw_sessions":
+            raw_id = str(values["raw_id"])
+            if values.get("origin") is None:
+                values["origin"] = "codex-session"
+            if values.get("source_path") is None:
+                values["source_path"] = f"{raw_id}.json"
+            if values.get("blob_hash") is None:
+                values["blob_hash"] = hashlib.sha256(raw_id.encode()).digest()
+            values.setdefault("blob_size", 0)
+            values.setdefault("acquired_at_ms", 1)
+            if values.get("source_index") is None:
+                values.pop("source_index", None)
+        elif table == "sessions":
+            session_id = values.pop("session_id", None)
+            if values.get("origin") is None:
+                values["origin"] = "codex-session"
+            if values.get("native_id") is None:
+                prefix = f"{values['origin']}:"
+                text = str(session_id) if session_id is not None else f"session-{ordinal}"
+                values["native_id"] = text.removeprefix(prefix)
+            values.setdefault("content_hash", bytes(32))
+        elif table == "raw_membership_census":
+            values.setdefault("parser_fingerprint", raw_authority_parser_fingerprint())
+            values.setdefault("censused_at_ms", 1)
+            if values.get("detail") is None:
+                values["detail"] = ""
+        elif table == "raw_session_memberships":
+            raw_id = str(values["raw_id"])
+            values.setdefault("logical_source_key", f"codex-session:{raw_id}-{ordinal}")
+            values.setdefault("provider_session_id", f"{raw_id}-{ordinal}")
+            values.setdefault("source_revision", "revision")
+            values.setdefault("normalized_content_hash", bytes(32))
+            values.setdefault("message_count", 1)
+            if values.get("decision") is not None:
+                values.setdefault("decided_at_ms", 1)
+        elif table == "raw_revision_applications":
+            raw_id = str(values["raw_id"])
+            values.setdefault("decision_id", f"decision-{raw_id}-{ordinal}")
+            values.setdefault("session_id", f"codex-session:{raw_id}")
+            values.setdefault("logical_source_key", f"codex-session:{raw_id}")
+            values.setdefault("source_revision", "revision")
+            values.setdefault("acquisition_generation", 0)
+            values.setdefault("decided_at_ms", 1)
+        names = list(values)
+        conn.execute(
+            f"INSERT INTO {table}({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+            [values[name] for name in names],
+        )
 
 
 def _stamp_index_as_current_schema(index_db: Path) -> None:
@@ -139,8 +200,15 @@ def test_raw_materialization_assessment_distinguishes_unmeasured_and_convergence
             "critical": 1,
         }
     )
-    assert missing_denominator_with_debt.state is RawMaterializationAssessmentState.UNMEASURED
-    assert missing_denominator_with_debt.reason == "raw_artifact_count_unavailable"
+    # An observed blocker refutes convergence even without a denominator
+    # (c42f5ea3a1); only a debt-free snapshot without one stays unmeasured.
+    assert missing_denominator_with_debt.state is RawMaterializationAssessmentState.POPULATED_UNCONVERGED
+    assert missing_denominator_with_debt.reason == "blocking_materialization_debt"
+    missing_denominator = assess_raw_materialization(
+        {"available": True, "raw_authority_parser_census": {"available": True}}
+    )
+    assert missing_denominator.state is RawMaterializationAssessmentState.UNMEASURED
+    assert missing_denominator.reason == "raw_artifact_count_unavailable"
 
 
 def test_raw_materialization_snapshot_rejects_malformed_parser_receipt(tmp_path: Path) -> None:
@@ -154,6 +222,7 @@ def test_raw_materialization_snapshot_rejects_malformed_parser_receipt(tmp_path:
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"malformed-census"}}\n',
             source_path="codex/malformed-census.jsonl",
+            canonical_source_path="codex/malformed-census.jsonl",
             acquired_at_ms=1,
         )
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -163,7 +232,7 @@ def test_raw_materialization_snapshot_rejects_malformed_parser_receipt(tmp_path:
                 raw_id, parser_fingerprint, status, logical_keys_json, detail
             ) VALUES (?, ?, 'complete', '["codex-session:duplicate", "codex-session:duplicate"]', '')
             """,
-            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+            (raw_id, raw_authority_parser_fingerprint()),
         )
         conn.commit()
 
@@ -187,6 +256,7 @@ def test_raw_materialization_snapshot_rejects_receipt_key_drift_from_durable_bin
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"durable-binding"}}\n',
             source_path="codex/durable-binding.jsonl",
+            canonical_source_path="codex/durable-binding.jsonl",
             acquired_at_ms=1,
             revision=RawRevisionEnvelope("codex:durable-binding", RawRevisionKind.FULL, "v1", 0),
         )
@@ -197,7 +267,7 @@ def test_raw_materialization_snapshot_rejects_receipt_key_drift_from_durable_bin
                 raw_id, parser_fingerprint, status, logical_keys_json, detail
             ) VALUES (?, ?, 'complete', '["codex-session:wrong-binding"]', '')
             """,
-            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+            (raw_id, raw_authority_parser_fingerprint()),
         )
         conn.commit()
 
@@ -220,6 +290,7 @@ def test_raw_materialization_snapshot_audits_validation_skipped_raws(tmp_path: P
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"skipped-census"}}\n',
             source_path="codex/skipped-census.jsonl",
+            canonical_source_path="codex/skipped-census.jsonl",
             acquired_at_ms=1,
         )
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -247,15 +318,33 @@ def test_raw_materialization_snapshot_accepts_parser_confirmed_empty_non_session
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"empty-census"}}\n',
             source_path="codex/empty-census.jsonl",
+            canonical_source_path="codex/empty-census.jsonl",
             acquired_at_ms=1,
             post_parse=True,
         )
-        archive.replace_raw_membership_census(
-            raw_id,
-            [],
-            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-            censused_at_ms=1,
-        )
+
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        publish_prepared_revision_source,
+        replace_raw_membership_census,
+    )
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    with (
+        write_lease("test.readiness-census", archive_root=tmp_path),
+        PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal,
+    ):
+        with seal.original_read_snapshot(), seal.source_producer():
+            replace_raw_membership_census(
+                seal,
+                raw_id,
+                [],
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                censused_at_ms=1,
+                revision_authority=None,
+            )
+        permit = seal.prepare_source_mutation()
+        publish_prepared_revision_source(seal, permit)
 
     parser_census = cast(
         Mapping[str, object], raw_materialization_readiness_snapshot(tmp_path)["raw_authority_parser_census"]
@@ -279,6 +368,7 @@ def test_raw_materialization_snapshot_streams_parser_census_rows(
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"stream-census"}}\n',
             source_path="codex/stream-census.jsonl",
+            canonical_source_path="codex/stream-census.jsonl",
             acquired_at_ms=1,
             revision=RawRevisionEnvelope("codex:stream-census", RawRevisionKind.FULL, "v1", 0),
         )
@@ -289,7 +379,7 @@ def test_raw_materialization_snapshot_streams_parser_census_rows(
                 raw_id, parser_fingerprint, status, logical_keys_json, detail
             ) VALUES (?, ?, 'complete', '["codex:stream-census"]', '')
             """,
-            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+            (raw_id, raw_authority_parser_fingerprint()),
         )
         conn.commit()
 
@@ -347,9 +437,16 @@ def test_raw_materialization_snapshot_streams_parser_census_rows(
 
 def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> None:
     """Exact readiness consumes source parser debt from its real SQLite projection."""
+    from functools import partial
+
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.core.enums import Provider
-    from polylogue.sources.revision_backfill import census_historical_revision_evidence
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.operations.raw_observation_derivation import raw_observation_frame
+    from polylogue.sources.revision_backfill import PreparedRevisionReplayResult, RevisionCensusResult
+    from polylogue.storage.derived.raw import RawObservationDerivation
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.prepared_replay import run_on_convergence_owner
 
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -361,6 +458,7 @@ def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> No
                 b'"content":[{"type":"input_text","text":"exact readiness"}]}}\n'
             ),
             source_path="codex/exact-readiness.jsonl",
+            canonical_source_path="codex/exact-readiness.jsonl",
             acquired_at_ms=1,
         )
 
@@ -368,8 +466,33 @@ def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> No
     assert blocked["surfaces"]["raw_artifacts"]["ready"] is False
     assert "parser_census_incomplete" in blocked["surfaces"]["raw_artifacts"]["blockers"]
 
-    census = census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
-    assert census.scanned == 1
+    def census_phase(
+        compute: BoundedComputeAdapter,
+    ) -> list[tuple[str, RevisionCensusResult | PreparedRevisionReplayResult]]:
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
+        frame = raw_observation_frame(tmp_path)
+        replacement = adapter.compute(frame, raw_id)
+        receipts: list[tuple[str, RevisionCensusResult | PreparedRevisionReplayResult]] = []
+        try:
+            # Single-pass convergence: compute commits the census and the
+            # classification in place; publication reports them with its replay.
+            assert not replacement.needs_source_census
+            admit_stage_write(
+                "test.readiness.census",
+                partial(
+                    adapter.publish,
+                    frame,
+                    replacement,
+                    phase_receipt=lambda kind, receipt: receipts.append((kind, receipt)),
+                ),
+            )
+        finally:
+            replacement.close()
+        return receipts
+
+    receipts = run_on_convergence_owner(tmp_path, "test.readiness.census", census_phase)
+    assert [kind for kind, _receipt in receipts] == ["census", "classification", "replay"]
+    assert receipts[0][1].scanned == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
         receipt = conn.execute(
             "SELECT status, logical_keys_json, detail FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
@@ -425,42 +548,34 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     with sqlite3.connect(source_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, source_path TEXT,
-                blob_hash BLOB, source_index INTEGER, revision_authority TEXT,
-                validation_status TEXT, parse_error TEXT, parsed_at_ms INTEGER
-            );
-            CREATE TABLE raw_membership_census (
-                raw_id TEXT PRIMARY KEY, status TEXT, member_count INTEGER, detail TEXT,
-                revision_authority TEXT
-            );
-            CREATE TABLE raw_session_memberships (raw_id TEXT, decision TEXT);
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO raw_sessions VALUES (?, 'codex-session', NULL, '', NULL, ?, ?, 'valid', NULL, NULL)
-            """,
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        _seed_rows(
+            conn,
+            "raw_sessions",
+            ("raw_id", "origin", "source_path", "source_index", "revision_authority", "validation_status"),
             [
-                ("append-quarantine", -1, "quarantined"),
-                ("membership-quarantine", 0, "quarantined"),
-                ("terminal-application", 0, "quarantined"),
-                ("terminal-application-error", 0, "quarantined"),
-                ("authority-pending", -1, "quarantined"),
-                ("append-proven", -1, "byte_proven"),
-                ("membership-settled", 0, "quarantined"),
-                ("membership-incomplete", 0, "quarantined"),
-                ("membership-null", 0, "quarantined"),
-                ("application-deferred", 0, "quarantined"),
+                (raw_id, "codex-session", "", source_index, authority, "valid")
+                for raw_id, source_index, authority in (
+                    ("append-quarantine", -1, "quarantined"),
+                    ("membership-quarantine", 0, "quarantined"),
+                    ("terminal-application", 0, "quarantined"),
+                    ("terminal-application-error", 0, "quarantined"),
+                    ("authority-pending", -1, "quarantined"),
+                    ("append-proven", -1, "byte_proven"),
+                    ("membership-settled", 0, "quarantined"),
+                    ("membership-incomplete", 0, "quarantined"),
+                    ("membership-null", 0, "quarantined"),
+                    ("application-deferred", 0, "quarantined"),
+                )
             ],
         )
         conn.execute(
             "UPDATE raw_sessions SET parse_error = 'database locked' WHERE raw_id = 'terminal-application-error'"
         )
-        conn.executemany(
-            "INSERT INTO raw_membership_census VALUES (?, ?, ?, ?, ?)",
+        _seed_rows(
+            conn,
+            "raw_membership_census",
+            ("raw_id", "status", "member_count", "detail", "revision_authority"),
             [
                 (
                     "append-quarantine",
@@ -475,8 +590,10 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(
                 ("membership-null", "complete", 1, None, None),
             ],
         )
-        conn.executemany(
-            "INSERT INTO raw_session_memberships VALUES (?, ?)",
+        _seed_rows(
+            conn,
+            "raw_session_memberships",
+            ("raw_id", "decision"),
             [
                 ("membership-quarantine", "ambiguous"),
                 ("membership-settled", "applied"),
@@ -486,16 +603,16 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(
             ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT);
-            CREATE TABLE raw_revision_applications (raw_id TEXT, decision TEXT, detail TEXT);
-            INSERT INTO raw_revision_applications VALUES ('terminal-application', 'superseded', 'test');
-            INSERT INTO raw_revision_applications VALUES ('terminal-application-error', 'superseded', 'test');
-            INSERT INTO raw_revision_applications VALUES (
-                'application-deferred', 'deferred', 'ordinary_replay:incomparable_existing_index_state'
-            );
-            """
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        _seed_rows(
+            conn,
+            "raw_revision_applications",
+            ("raw_id", "decision", "detail"),
+            [
+                ("terminal-application", "superseded", "test"),
+                ("terminal-application-error", "superseded", "test"),
+                ("application-deferred", "deferred", "ordinary_replay:incomparable_existing_index_state"),
+            ],
         )
 
     _stamp_index_as_current_schema(index_db)
@@ -545,16 +662,34 @@ def test_raw_materialization_snapshot_reads_append_census_writer_contract(tmp_pa
             provider=Provider.CODEX,
             payload=b'{"append":true}\n',
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=1,
         )
-        archive.replace_raw_membership_census(
-            raw_id,
-            None,
-            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-            censused_at_ms=0,
-            detail=BYTE_AUTHORITY_CENSUS_DETAIL,
-        )
+
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        publish_prepared_revision_source,
+        replace_raw_membership_census,
+    )
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    with (
+        write_lease("test.readiness-census", archive_root=tmp_path),
+        PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal,
+    ):
+        with seal.original_read_snapshot(), seal.source_producer():
+            replace_raw_membership_census(
+                seal,
+                raw_id,
+                None,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                censused_at_ms=0,
+                detail=BYTE_AUTHORITY_CENSUS_DETAIL,
+                revision_authority=RawRevisionAuthority.BYTE_PROVEN,
+            )
+        permit = seal.prepare_source_mutation()
+        publish_prepared_revision_source(seal, permit)
 
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
@@ -570,29 +705,18 @@ def test_raw_materialization_snapshot_ignores_skipped_raw_rows(tmp_path: Path) -
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     with sqlite3.connect(source_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                validation_status TEXT,
-                parse_error TEXT,
-                parsed_at_ms INTEGER
-            )
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO raw_sessions(raw_id, origin, validation_status, parse_error, parsed_at_ms)
-            VALUES (?, ?, ?, ?, ?)
-            """,
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        _seed_rows(
+            conn,
+            "raw_sessions",
+            ("raw_id", "origin", "validation_status", "parse_error", "parsed_at_ms"),
             [
                 ("raw-materializable", "chatgpt-export", "valid", None, 123),
                 ("raw-skipped", "aistudio-drive", "skipped", None, None),
             ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT)")
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
 
     _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
@@ -619,31 +743,22 @@ def test_raw_materialization_snapshot_counts_raw_artifacts_once(tmp_path: Path) 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     with sqlite3.connect(source_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                validation_status TEXT,
-                parse_error TEXT,
-                parsed_at_ms INTEGER
-            )
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO raw_sessions(raw_id, origin, validation_status, parse_error, parsed_at_ms)
-            VALUES (?, ?, ?, ?, ?)
-            """,
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        _seed_rows(
+            conn,
+            "raw_sessions",
+            ("raw_id", "origin", "validation_status", "parse_error", "parsed_at_ms"),
             [
                 ("raw-shared", "claude-code-session", "valid", None, 123),
                 ("raw-gap", "codex-session", "valid", None, 124),
             ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT)")
-        conn.executemany(
-            "INSERT INTO sessions(session_id, raw_id) VALUES (?, ?)",
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        _seed_rows(
+            conn,
+            "sessions",
+            ("session_id", "raw_id"),
             [
                 ("session-one", "raw-shared"),
                 ("session-two", "raw-shared"),
@@ -665,29 +780,18 @@ def test_raw_materialization_snapshot_marks_parse_failures_actionable(tmp_path: 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     with sqlite3.connect(source_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                validation_status TEXT,
-                parse_error TEXT,
-                parsed_at_ms INTEGER
-            )
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO raw_sessions(raw_id, origin, validation_status, parse_error, parsed_at_ms)
-            VALUES (?, ?, ?, ?, ?)
-            """,
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        _seed_rows(
+            conn,
+            "raw_sessions",
+            ("raw_id", "origin", "validation_status", "parse_error", "parsed_at_ms"),
             [
                 ("raw-failed-one", "codex-session", "failed", "bad json", None),
                 ("raw-failed-two", "aistudio-drive", "failed", "bad json", None),
             ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT)")
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
 
     _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
@@ -711,42 +815,45 @@ def test_raw_materialization_snapshot_classifies_native_aliases(tmp_path: Path) 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     with sqlite3.connect(source_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                native_id TEXT,
-                source_path TEXT,
-                blob_hash BLOB,
-                validation_status TEXT,
-                parse_error TEXT,
-                parsed_at_ms INTEGER
-            )
-            """
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        _seed_rows(
+            conn,
+            "raw_sessions",
+            (
+                "raw_id",
+                "origin",
+                "native_id",
+                "source_path",
+                "blob_hash",
+                "validation_status",
+                "parse_error",
+                "parsed_at_ms",
+            ),
+            [("raw-alias", "chatgpt-export", "conv-1", "capture.json", bytes.fromhex("11" * 32), "passed", None, 123)],
         )
-        conn.execute(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            ("raw-alias", "chatgpt-export", "conv-1", "capture.json", bytes.fromhex("11" * 32), "passed", None, 123),
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            ("older-raw", "chatgpt-export", "conv-1", "older.json", bytes.fromhex("12" * 32), "passed", None, 122),
+        _seed_rows(
+            conn,
+            "raw_sessions",
+            (
+                "raw_id",
+                "origin",
+                "native_id",
+                "source_path",
+                "blob_hash",
+                "validation_status",
+                "parse_error",
+                "parsed_at_ms",
+            ),
+            [("older-raw", "chatgpt-export", "conv-1", "older.json", bytes.fromhex("12" * 32), "passed", None, 122)],
         )
     _write_blob(tmp_path, "11" * 32)
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
-        conn.execute(
-            "INSERT INTO sessions(session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
-            ("chatgpt-export:conv-1", "chatgpt-export", "conv-1", "older-raw"),
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        _seed_rows(
+            conn,
+            "sessions",
+            ("session_id", "origin", "native_id", "raw_id"),
+            [("chatgpt-export:conv-1", "chatgpt-export", "conv-1", "older-raw")],
         )
 
     _stamp_index_as_current_schema(index_db)
@@ -773,26 +880,20 @@ def test_raw_materialization_snapshot_reports_an_alias_whose_own_blob_is_gone(tm
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     with sqlite3.connect(source_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                native_id TEXT,
-                source_path TEXT,
-                blob_hash BLOB,
-                validation_status TEXT,
-                parse_error TEXT,
-                parsed_at_ms INTEGER
-            )
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        _seed_rows(
+            conn,
+            "raw_sessions",
+            (
+                "raw_id",
+                "origin",
+                "native_id",
+                "source_path",
+                "blob_hash",
+                "validation_status",
+                "parse_error",
+                "parsed_at_ms",
+            ),
             [
                 # The newer snapshot: same provider session, its own blob gone.
                 ("raw-newer", "chatgpt-export", "conv-1", "newer.json", bytes.fromhex("11" * 32), "passed", None, 123),
@@ -801,10 +902,12 @@ def test_raw_materialization_snapshot_reports_an_alias_whose_own_blob_is_gone(tm
         )
     _write_blob(tmp_path, "12" * 32)
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
-        conn.execute(
-            "INSERT INTO sessions(session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
-            ("chatgpt-export:conv-1", "chatgpt-export", "conv-1", "older-raw"),
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        _seed_rows(
+            conn,
+            "sessions",
+            ("session_id", "origin", "native_id", "raw_id"),
+            [("chatgpt-export:conv-1", "chatgpt-export", "conv-1", "older-raw")],
         )
 
     _stamp_index_as_current_schema(index_db)
@@ -822,26 +925,20 @@ def test_raw_materialization_snapshot_classifies_stale_decode_aliases(tmp_path: 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     with sqlite3.connect(source_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                native_id TEXT,
-                source_path TEXT,
-                blob_hash BLOB,
-                validation_status TEXT,
-                parse_error TEXT,
-                parsed_at_ms INTEGER
-            )
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        _seed_rows(
+            conn,
+            "raw_sessions",
+            (
+                "raw_id",
+                "origin",
+                "native_id",
+                "source_path",
+                "blob_hash",
+                "validation_status",
+                "parse_error",
+                "parsed_at_ms",
+            ),
             [
                 (
                     "raw-stale-error",
@@ -868,10 +965,12 @@ def test_raw_materialization_snapshot_classifies_stale_decode_aliases(tmp_path: 
     # The decode error is stale precisely because the blob is present again.
     _write_blob(tmp_path, "11" * 32)
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
-        conn.execute(
-            "INSERT INTO sessions(session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
-            ("codex-session:session-1", "codex-session", "session-1", "raw-current"),
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        _seed_rows(
+            conn,
+            "sessions",
+            ("session_id", "origin", "native_id", "raw_id"),
+            [("codex-session:session-1", "codex-session", "session-1", "raw-current")],
         )
 
     _stamp_index_as_current_schema(index_db)
@@ -892,33 +991,29 @@ def test_raw_materialization_snapshot_classifies_dangling_index_raw_link_as_lost
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     with sqlite3.connect(source_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                native_id TEXT,
-                source_path TEXT,
-                blob_hash BLOB,
-                validation_status TEXT,
-                parse_error TEXT,
-                parsed_at_ms INTEGER
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            ("raw-new", "chatgpt-export", "conv-1", "capture.json", bytes.fromhex("11" * 32), "passed", None, 123),
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        _seed_rows(
+            conn,
+            "raw_sessions",
+            (
+                "raw_id",
+                "origin",
+                "native_id",
+                "source_path",
+                "blob_hash",
+                "validation_status",
+                "parse_error",
+                "parsed_at_ms",
+            ),
+            [("raw-new", "chatgpt-export", "conv-1", "capture.json", bytes.fromhex("11" * 32), "passed", None, 123)],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
-        conn.execute(
-            "INSERT INTO sessions(session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
-            ("chatgpt-export:conv-1", "chatgpt-export", "conv-1", "older-missing-raw"),
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        _seed_rows(
+            conn,
+            "sessions",
+            ("session_id", "origin", "native_id", "raw_id"),
+            [("chatgpt-export:conv-1", "chatgpt-export", "conv-1", "older-missing-raw")],
         )
 
     _stamp_index_as_current_schema(index_db)
@@ -964,25 +1059,16 @@ def test_raw_materialization_snapshot_marks_reverse_authority_query_failure_unav
     """A failed lost-source count cannot become a healthy zero."""
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        conn.execute(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                validation_status TEXT,
-                parse_error TEXT,
-                parsed_at_ms INTEGER
-            )
-            """
-        )
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.executescript(
             """
-            CREATE TABLE session_rows (raw_value INTEGER NOT NULL);
-            INSERT INTO session_rows VALUES (-9223372036854775808);
-            CREATE VIEW sessions AS
-            SELECT abs(raw_value) AS raw_id
-            FROM session_rows;
+            -- A real table (the reverse query skips anything else) whose
+            -- raw_id fails only when the lost-source count reads it; the
+            -- generated column is added after the row so insertion succeeds.
+            CREATE TABLE sessions (raw_value INTEGER NOT NULL);
+            INSERT INTO sessions (raw_value) VALUES (-9223372036854775808);
+            ALTER TABLE sessions ADD COLUMN raw_id INTEGER GENERATED ALWAYS AS (abs(raw_value)) VIRTUAL;
             """
         )
 
@@ -1013,60 +1099,67 @@ def test_raw_materialization_snapshot_classifies_source_path_aliases(tmp_path: P
     source_path.parent.mkdir()
     source_path.write_text("{}", encoding="utf-8")
     with sqlite3.connect(source_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                native_id TEXT,
-                source_path TEXT,
-                blob_hash BLOB,
-                validation_status TEXT,
-                parse_error TEXT,
-                parsed_at_ms INTEGER
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        _seed_rows(
+            conn,
+            "raw_sessions",
             (
-                "raw-source-alias",
-                "claude-code-session",
-                None,
-                str(source_path),
-                bytes.fromhex("12" * 32),
-                "passed",
-                None,
-                123,
+                "raw_id",
+                "origin",
+                "native_id",
+                "source_path",
+                "blob_hash",
+                "validation_status",
+                "parse_error",
+                "parsed_at_ms",
             ),
+            [
+                (
+                    "raw-source-alias",
+                    "claude-code-session",
+                    None,
+                    str(source_path),
+                    bytes.fromhex("12" * 32),
+                    "passed",
+                    None,
+                    123,
+                )
+            ],
         )
-        conn.execute(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+        _seed_rows(
+            conn,
+            "raw_sessions",
             (
-                "older-raw",
-                "claude-code-session",
-                "native-alias",
-                "older.json",
-                bytes.fromhex("13" * 32),
-                "passed",
-                None,
-                122,
+                "raw_id",
+                "origin",
+                "native_id",
+                "source_path",
+                "blob_hash",
+                "validation_status",
+                "parse_error",
+                "parsed_at_ms",
             ),
+            [
+                (
+                    "older-raw",
+                    "claude-code-session",
+                    "native-alias",
+                    "older.json",
+                    bytes.fromhex("13" * 32),
+                    "passed",
+                    None,
+                    122,
+                )
+            ],
         )
     _write_blob(tmp_path, "12" * 32)
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
-        conn.execute(
-            "INSERT INTO sessions(session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
-            ("claude-code-session:native-alias", "claude-code-session", "native-alias", "older-raw"),
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        _seed_rows(
+            conn,
+            "sessions",
+            ("session_id", "origin", "native_id", "raw_id"),
+            [("claude-code-session:native-alias", "claude-code-session", "native-alias", "older-raw")],
         )
 
     _stamp_index_as_current_schema(index_db)
@@ -1077,56 +1170,201 @@ def test_raw_materialization_snapshot_classifies_source_path_aliases(tmp_path: P
     assert _category_counts(snapshot)["materialized-alias"] == 1
 
 
-def test_raw_materialization_snapshot_classifies_parsed_non_session_artifacts(tmp_path: Path) -> None:
+def test_raw_materialization_snapshot_keeps_unreceipted_non_session_shaped_raw_unchecked(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     blob = tmp_path / "blob" / "dd" / ("dd" * 31)
     blob.parent.mkdir(parents=True)
     blob.write_text('{"type":"file-history-snapshot","messageId":"m1"}\n', encoding="utf-8")
     with sqlite3.connect(source_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                native_id TEXT,
-                source_path TEXT,
-                blob_hash BLOB,
-                validation_status TEXT,
-                parse_error TEXT,
-                parsed_at_ms INTEGER
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        _seed_rows(
+            conn,
+            "raw_sessions",
             (
-                "raw-sidecar",
-                "claude-code-session",
-                "sidecar-native",
-                str(tmp_path / "sidecar.jsonl"),
-                bytes.fromhex("dd" * 32),
-                "passed",
-                None,
-                123,
+                "raw_id",
+                "origin",
+                "native_id",
+                "source_path",
+                "blob_hash",
+                "validation_status",
+                "parse_error",
+                "parsed_at_ms",
             ),
+            [
+                (
+                    "raw-sidecar",
+                    "claude-code-session",
+                    "sidecar-native",
+                    str(tmp_path / "sidecar.jsonl"),
+                    bytes.fromhex("dd" * 32),
+                    "passed",
+                    None,
+                    123,
+                )
+            ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
 
     _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
-    assert snapshot["classification"] == "cheap_projection"
-    assert snapshot["classified"] == 1
-    assert snapshot["unchecked"] == 0
+    assert snapshot["classified"] == 0
+    assert snapshot["unchecked"] == 1
     counts = _category_counts(snapshot)
-    assert counts["parsed-non-session-artifact"] == 1
-    assert counts["raw_id_join_gap"] == 0
+    assert counts["raw_id_join_gap"] == 1
+
+
+def test_raw_materialization_snapshot_accepts_currently_censused_typed_empty_claude_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real raw-only intake is complete by typed artifact and current parser receipts."""
+    from types import SimpleNamespace
+
+    import polylogue.paths as polylogue_paths
+    import polylogue.sources.live.watcher as live_watcher
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live.watcher import default_sources
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.raw_owner_routes import run_ingest_files
+
+    bootstrap_archive_root(tmp_path)
+    claude_root = tmp_path / "neutral-home" / ".claude"
+    claude_root.mkdir(parents=True)
+    source_path = claude_root / "history.jsonl"
+    source_path.write_bytes(b"")
+    monkeypatch.setattr(polylogue_paths, "claude_code_path", lambda: claude_root / "projects")
+
+    source = next(item for item in default_sources() if item.name == "claude-code-history")
+    processor = LiveBatchProcessor(
+        SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db")),
+        (source,),
+        cursor=CursorStore(tmp_path / "ops.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    metrics = run_ingest_files(processor, [source_path], emit_event=False)
+    assert metrics.excluded_file_count == 1 and metrics.failed_file_count == 0, metrics
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions").fetchone()[0])
+        assert conn.execute(
+            "SELECT artifact_kind, parse_as_session, schema_eligible, support_status, decode_error, "
+            "malformed_jsonl_lines FROM raw_artifacts WHERE raw_id=?",
+            (raw_id,),
+        ).fetchall() == [("prompt_history_log", 0, 0, "unknown", None, 0)]
+        assert conn.execute(
+            "SELECT status, member_count, parser_fingerprint FROM raw_membership_census WHERE raw_id=?", (raw_id,)
+        ).fetchone() == ("non_session", 0, raw_authority_parser_fingerprint())
+        assert conn.execute(
+            "SELECT parser_fingerprint, status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id=?",
+            (raw_id,),
+        ).fetchone() == (raw_authority_parser_fingerprint(), "complete", "[]")
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=True)
+    assert snapshot["raw_artifact_count"] == 1
+    assert snapshot["materialized_raw_artifact_count"] == 0
+    assert snapshot["join_gap_count"] == 1
+    assert snapshot["classified"] == 1
+    assert snapshot["affected_unchecked"] == 0
+    assert _category_counts(snapshot)["parsed-non-session-artifact"] == 1
+    assert raw_materialization_ready(snapshot) is True
+
+    # Default daemon status uses the bounded projection. It must consume the
+    # same durable classification without turning the raw join into a session.
+    import polylogue.daemon.status as daemon_status
+
+    monkeypatch.setattr(daemon_status, "archive_root", lambda: tmp_path)
+    fast_status = daemon_status._raw_materialization_readiness_info(classify_gaps=False)
+    assert fast_status.raw_artifact_count == 1
+    assert fast_status.materialized_raw_artifact_count == 0
+    assert fast_status.join_gap_count == 1
+    assert fast_status.unchecked == 0
+    assert fast_status.category_counts["parsed-non-session-artifact"] == 1
+    assert daemon_status._component_from_raw_materialization_readiness(fast_status).state == "ready"
+
+    # The zero-member census proves the parser's session set, but every raw
+    # artifact in the cohort must agree with that non-session reading.
+    siblings = (
+        ("session-sibling", 1, 1, None, 0),
+        ("schema-eligible-sibling", 0, 1, None, 0),
+        ("decode-error-sibling", 0, 0, "synthetic decode refusal", 0),
+        ("malformed-sibling", 0, 0, None, 1),
+    )
+    for artifact_id, parse_as_session, schema_eligible, decode_error, malformed_lines in siblings:
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute(
+                """INSERT INTO raw_artifacts (
+                    artifact_id, raw_id, origin, source_path, source_index,
+                    artifact_kind, support_status, classification_reason,
+                    parse_as_session, schema_eligible, malformed_jsonl_lines,
+                    decode_error, first_observed_at_ms, last_observed_at_ms
+                ) VALUES (?, ?, 'claude-code-session', ?, 1, 'session_record_stream',
+                          'supported_parseable', 'synthetic mixed cohort', ?, ?, ?, ?, 1, 1)""",
+                (
+                    f"mixed-{artifact_id}",
+                    raw_id,
+                    f"{artifact_id}.jsonl",
+                    parse_as_session,
+                    schema_eligible,
+                    malformed_lines,
+                    decode_error,
+                ),
+            )
+            conn.commit()
+        mixed = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=True)
+        assert mixed["classified"] == 0
+        assert mixed["affected_unchecked"] == 1
+        assert raw_materialization_ready(mixed) is False
+        fast_mixed = daemon_status._raw_materialization_readiness_info(classify_gaps=False)
+        assert fast_mixed.unchecked == 1
+        assert daemon_status._component_from_raw_materialization_readiness(fast_mixed).state == "degraded"
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute("DELETE FROM raw_artifacts WHERE artifact_id=?", (f"mixed-{artifact_id}",))
+            conn.commit()
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_artifacts SET artifact_kind='terminal_unsupported_shape', "
+            "support_status='unsupported_parseable' WHERE raw_id=?",
+            (raw_id,),
+        )
+        conn.commit()
+    unsupported = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=True)
+    assert unsupported["classified"] == 0
+    assert unsupported["affected_unchecked"] == 1
+    assert raw_materialization_ready(unsupported) is False
+    assert daemon_status._raw_materialization_readiness_info(classify_gaps=False).unchecked == 1
+
+    # Durable parser receipts cannot erase a later validation refusal or
+    # retained decode failure for the same typed artifact.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_artifacts SET artifact_kind='prompt_history_log', support_status='unknown' WHERE raw_id=?",
+            (raw_id,),
+        )
+        conn.execute("UPDATE raw_sessions SET validation_status='failed' WHERE raw_id=?", (raw_id,))
+        conn.commit()
+    refused = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=True)
+    assert refused["classified"] == 0
+    assert refused["affected_actionable"] == 1
+    assert _category_counts(refused)["parse_failed"] == 1
+    assert daemon_status._raw_materialization_readiness_info(classify_gaps=False).unchecked == 1
+    assert raw_materialization_ready(refused) is False
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET validation_status=NULL, parse_error='decode: malformed retained bytes' "
+            "WHERE raw_id=?",
+            (raw_id,),
+        )
+        conn.commit()
+    decode_failed = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=True)
+    assert decode_failed["classified"] == 0
+    assert decode_failed["affected_actionable"] == 1
+    assert _category_counts(decode_failed)["parse_failed"] == 1
+    assert raw_materialization_ready(decode_failed) is False
 
 
 def test_raw_materialization_snapshot_keeps_unexplained_gaps_unchecked(tmp_path: Path) -> None:
@@ -1136,26 +1374,20 @@ def test_raw_materialization_snapshot_keeps_unexplained_gaps_unchecked(tmp_path:
     blob.parent.mkdir(parents=True)
     blob.write_text('{"type":"file-history-snapshot","messageId":"m1"}\n', encoding="utf-8")
     with sqlite3.connect(source_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                native_id TEXT,
-                source_path TEXT,
-                blob_hash BLOB,
-                validation_status TEXT,
-                parse_error TEXT,
-                parsed_at_ms INTEGER
-            )
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        _seed_rows(
+            conn,
+            "raw_sessions",
+            (
+                "raw_id",
+                "origin",
+                "native_id",
+                "source_path",
+                "blob_hash",
+                "validation_status",
+                "parse_error",
+                "parsed_at_ms",
+            ),
             [
                 (
                     "raw-sidecar",
@@ -1190,19 +1422,19 @@ def test_raw_materialization_snapshot_keeps_unexplained_gaps_unchecked(tmp_path:
             ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
 
     _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["raw_artifact_count"] == 2
     assert snapshot["total"] == 2
-    assert snapshot["classified"] == 1
-    assert snapshot["unchecked"] == 1
-    assert snapshot["affected_unchecked"] == 1
+    assert snapshot["classified"] == 0
+    assert snapshot["unchecked"] == 2
+    assert snapshot["affected_unchecked"] == 2
     counts = _category_counts(snapshot)
-    assert counts["parsed-non-session-artifact"] == 1
-    assert counts["raw_id_join_gap"] == 1
+    assert "parsed-non-session-artifact" not in counts
+    assert counts["raw_id_join_gap"] == 2
 
 
 def test_raw_materialization_snapshot_classifies_same_native_lost_source_evidence(
@@ -1211,50 +1443,47 @@ def test_raw_materialization_snapshot_classifies_same_native_lost_source_evidenc
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     with sqlite3.connect(source_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                native_id TEXT,
-                source_path TEXT,
-                blob_hash BLOB,
-                validation_status TEXT,
-                parse_error TEXT,
-                parsed_at_ms INTEGER
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        _seed_rows(
+            conn,
+            "raw_sessions",
             (
-                "newer-raw",
-                "claude-code-session",
-                "session-native",
-                str(tmp_path / "session-native.jsonl"),
-                bytes.fromhex("aa" * 32),
-                "passed",
-                None,
-                123,
+                "raw_id",
+                "origin",
+                "native_id",
+                "source_path",
+                "blob_hash",
+                "validation_status",
+                "parse_error",
+                "parsed_at_ms",
             ),
+            [
+                (
+                    "newer-raw",
+                    "claude-code-session",
+                    "session-native",
+                    str(tmp_path / "session-native.jsonl"),
+                    bytes.fromhex("aa" * 32),
+                    "passed",
+                    None,
+                    123,
+                )
+            ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
-        conn.execute(
-            """
-            INSERT INTO sessions(session_id, origin, native_id, raw_id)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                "claude-code-session:session-native",
-                "claude-code-session",
-                "session-native",
-                "missing-older-raw",
-            ),
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        _seed_rows(
+            conn,
+            "sessions",
+            ("session_id", "origin", "native_id", "raw_id"),
+            [
+                (
+                    "claude-code-session:session-native",
+                    "claude-code-session",
+                    "session-native",
+                    "missing-older-raw",
+                )
+            ],
         )
 
     _stamp_index_as_current_schema(index_db)
@@ -1365,8 +1594,12 @@ def test_pinned_materialization_readiness_degrades_like_its_path_twin(tmp_path: 
         conn.execute("DROP INDEX IF EXISTS idx_sessions_raw_id")
         # Remove the fixture's dependent triggers so SQLite can create the
         # deliberately unreadable projection, rather than refusing its setup.
-        conn.execute("DROP TRIGGER raw_existence_session_insert")
-        conn.execute("DROP TRIGGER raw_existence_session_update")
+        dependent = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='sessions' AND sql LIKE '%raw_id%'"
+        ).fetchall()
+        assert dependent
+        for (trigger,) in dependent:
+            conn.execute(f'DROP TRIGGER "{trigger}"')
         conn.execute("ALTER TABLE sessions DROP COLUMN raw_id")
         conn.commit()
         result = raw_materialization_readiness_from_pinned_index(conn, archive_root=tmp_path)
@@ -1457,6 +1690,7 @@ def test_converged_archive_reports_its_real_materialization_counts(tmp_path: Pat
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"converged-counts"}}\n',
             source_path="codex/converged-counts.jsonl",
+            canonical_source_path="codex/converged-counts.jsonl",
             acquired_at_ms=1,
             post_parse=True,
         )

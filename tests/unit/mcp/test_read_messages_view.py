@@ -19,6 +19,7 @@ from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.runtime import LineageCompleteness
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
@@ -70,25 +71,29 @@ async def test_read_messages_matches_python_api_positional_order(
     tmp_path: Path,
 ) -> None:
     root = tmp_path
-    with ArchiveStore(root) as store:
-        session_id = write_index_session(
-            store,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="order-parity",
-                title="Order parity",
-                messages=[
-                    ParsedMessage(
-                        provider_message_id=f"message-{position}",
-                        role=Role.USER if position % 2 == 0 else Role.ASSISTANT,
-                        text=f"body {position}",
-                        timestamp=f"2026-01-01T00:00:{9 - position:02d}Z",
-                        blocks=[],
-                    )
-                    for position in range(6)
-                ],
-            ),
-        )
+
+    def seed() -> str:
+        with ArchiveStore(root) as store:
+            return write_index_session(
+                store,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="order-parity",
+                    title="Order parity",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id=f"message-{position}",
+                            role=Role.USER if position % 2 == 0 else Role.ASSISTANT,
+                            text=f"body {position}",
+                            timestamp=f"2026-01-01T00:00:{9 - position:02d}Z",
+                            blocks=[],
+                        )
+                        for position in range(6)
+                    ],
+                ),
+            )
+
+    session_id = run_off_event_loop(seed)
 
     archive = Polylogue(archive_root=root, db_path=root / "index.db")
     try:

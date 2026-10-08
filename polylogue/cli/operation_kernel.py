@@ -7,7 +7,7 @@ archive, storage, or daemon-server imports.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -373,6 +373,27 @@ def configured_mutation_operation(config: Any, operation: str, payload: dict[str
     return {str(key): value for key, value in result.value.items()}
 
 
+def iter_configured_operation_result(config: Any, document: Mapping[str, object]) -> Iterator[bytes]:
+    """Read the complete product from the same configured resident delivery owner."""
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
+    from polylogue.operations.archive_root import operation_archive_root
+
+    root = operation_archive_root(config)
+    client = DaemonClient(
+        daemon_socket_path(root),
+        auth_token=lambda: resolve_api_auth_token(
+            getattr(config, "api_auth_token", None),
+            allow_no_auth=getattr(config, "api_allow_no_auth", False),
+        ),
+    )
+    try:
+        yield from client.iter_operation_result(document, archive_root=str(root))
+    except DaemonOperationProtocolError as exc:
+        raise OperationFailedError("operation_result_delivery_failed", str(exc)) from exc
+
+
 def configured_accepted_operation(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
     """Submit a declared operation and take its durable acceptance reference.
 
@@ -525,6 +546,7 @@ __all__ = [
     "OperationKernelError",
     "OperationRequest",
     "OperationResult",
+    "iter_configured_operation_result",
     "OperationUnavailableError",
     "configured_accepted_operation",
     "configured_follow_operation",

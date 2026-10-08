@@ -108,11 +108,15 @@ def test_every_console_script_refuses_an_unsupported_interpreter(script: str) ->
         args = [sorted(entrypoint.commands)[0], "--help"]
 
     with patch("polylogue.runtime.require_free_threaded_runtime", refuse):
-        with pytest.raises(RuntimeContractError):
+        with pytest.raises((RuntimeContractError, SystemExit)) as refused:
             if isinstance(entrypoint, click.Command):
                 entrypoint.main(args=args, standalone_mode=False)
             else:
                 entrypoint()
+    # The machine CLI entry renders every error as an exit status; its
+    # refusal must still be the runtime contract, chained as the cause.
+    if isinstance(refused.value, SystemExit):
+        assert isinstance(refused.value.__cause__, RuntimeContractError)
 
 
 def test_the_exempt_entrypoint_is_still_a_declared_console_script() -> None:

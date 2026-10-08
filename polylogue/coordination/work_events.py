@@ -20,3 +20,12 @@ def validate_work_event_id(value: str) -> str:
     if not normalized:
         raise ValueError("work event id must not be empty")
     return normalized
+
+
+class WorkEventProvenanceRefusedError(ValueError):
+    """The target session has no single retained acquisition provider."""
+
+    def __init__(self, session_id: str, reason: str) -> None:
+        self.session_id = session_id
+        self.reason = reason
+        super().__init__(f"work-event provenance refused for {session_id}: {reason}")

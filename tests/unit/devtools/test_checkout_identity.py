@@ -67,7 +67,7 @@ def test_verify_refuses_on_the_default_branch_before_any_work(
     """Anti-vacuity: drop the guard from ``verify._main`` and the run proceeds
     to its first step, raising ``_PastTheGuardError`` instead of returning."""
     monkeypatch.setattr(verify, "ROOT", _repository(tmp_path / "base", "master"))
-    monkeypatch.setattr(verify, "reconcile_and_record_verify_runs", _admitted)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", _admitted)
 
     assert verify._main(["--quick", "--json"]) == REFUSAL_EXIT
 
@@ -82,7 +82,7 @@ def test_verify_runs_on_the_default_branch_when_asked(
     """The opt-in admits the run, and its first line names what it tests."""
     root = _repository(tmp_path / "base", "master")
     monkeypatch.setattr(verify, "ROOT", root)
-    monkeypatch.setattr(verify, "reconcile_and_record_verify_runs", _admitted)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", _admitted)
 
     with pytest.raises(_PastTheGuardError):
         verify._main(["--quick", ON_DEFAULT_BRANCH_FLAG])
@@ -93,7 +93,7 @@ def test_verify_runs_on_the_default_branch_when_asked(
 
 def test_verify_runs_on_a_feature_branch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(verify, "ROOT", _repository(tmp_path / "feature", "claude/change"))
-    monkeypatch.setattr(verify, "reconcile_and_record_verify_runs", _admitted)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", _admitted)
 
     with pytest.raises(_PastTheGuardError):
         verify._main(["--quick"])
@@ -224,42 +224,6 @@ def test_a_checkout_that_moves_during_verification_voids_the_result(
     assert verify_module._main(["--quick"]) == 1
     assert history["diagnosis"] == "checkout_moved_during_run"
     assert "the checkout moved during the run" in capsys.readouterr().err
-
-
-def test_a_rerun_of_different_content_clears_no_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A flaky-rerun pass counts only for the content the failing run executed.
-
-    Anti-vacuity: drop the provenance comparison in ``rerun_failed_once`` and
-    the rerun's pass on edited content turns the failed test green.
-    """
-    from devtools.pytest_rerun import rerun_failed_once
-    from devtools.pytest_slot import SlotOutcome
-
-    report_path = tmp_path / "pytest-report.json"
-    report_path.write_text(
-        json.dumps({"exitcode": 1, "tests": [{"nodeid": "tests/test_a.py::test_x", "outcome": "failed"}]}),
-        encoding="utf-8",
-    )
-    first = {"git_head": "a" * 40, "git_branch": "claude/change", "git_worktree_content_sha256": "before"}
-
-    def rerun_on_edited_content(cmd: list[str], **_kwargs: object) -> SlotOutcome:
-        rerun_report = Path(next(arg for arg in cmd if arg.startswith("--polylogue-report-file=")).split("=", 1)[1])
-        rerun_report.write_text(
-            json.dumps({"tests": [{"nodeid": "tests/test_a.py::test_x", "outcome": "passed"}]}), encoding="utf-8"
-        )
-        edited = {**first, "git_worktree_content_sha256": "after"}
-        return SlotOutcome(returncode=0, slot="held", receipt={"worktree_provenance": edited})
-
-    monkeypatch.setattr("devtools.pytest_rerun.venv_python", lambda root: "python")
-    monkeypatch.setattr("devtools.pytest_rerun.run_pytest", rerun_on_edited_content)
-    step_dir = tmp_path / "step"
-    step_dir.mkdir()
-
-    rerun = rerun_failed_once(report_path=report_path, step_dir=step_dir, env={}, root=tmp_path, first_provenance=first)
-
-    assert rerun is not None
-    assert rerun["still_failed"] == ["tests/test_a.py::test_x"]
-    assert rerun["content_moved"] is True
 
 
 def test_a_content_edit_during_verification_voids_the_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -19,13 +19,17 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.browser_capture import (
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+    NativeCaptureIdentityMismatchError,
 )
 from polylogue.sources.parsers.claude.common import (
     CLAUDE_LINEAGE_CYCLE_INGEST_FLAG,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+from tests.infra.live_ingest import prepared_live_convergence_owner
 from tests.infra.pipeline_roundtrip import parse_payload_roundtrip, write_and_hydrate
+from tests.infra.retained_jsonl import acquire_full_revision
 from tests.infra.storage_records import db_setup
 
 
@@ -573,7 +577,8 @@ def test_claude_indistinguishable_duplicate_idless_owner_is_typed_ambiguity() ->
         session_revision_projection(parsed)
 
 
-def test_claude_timestamped_idless_edit_keeps_axis_and_persists_content(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_claude_timestamped_idless_edit_keeps_axis_and_persists_content(tmp_path: Path) -> None:
     def payload(text: str) -> dict[str, Any]:
         return {
             "uuid": "claude-idless-edit",
@@ -598,19 +603,38 @@ def test_claude_timestamped_idless_edit_keeps_axis_and_persists_content(tmp_path
     assert old_projection.session_hash != edited_projection.session_hash
 
     root = tmp_path / "archive"
-    with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
-            older,
-            payload=json.dumps(payload("before")).encode(),
-            source_path="/tmp/claude-idless-edit-before.json",
-            acquired_at_ms=1_775_000_000_000,
-        )
-        second = facade.write_raw_and_parsed_result(
-            edited,
-            payload=json.dumps(payload("after")).encode(),
-            source_path="/tmp/claude-idless-edit-after.json",
-            acquired_at_ms=1_775_000_000_001,
-        )
+    async with prepared_live_convergence_owner(root) as owner:
+
+        def acquire_0() -> str:
+            bootstrap_archive_root(root)
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CLAUDE_AI,
+                    payload=json.dumps(payload("before")).encode(),
+                    source_path=tmp_path / "captured" / "claude-idless-edit.json",
+                    native_id="claude-idless-edit",
+                    generation=0,
+                    acquired_at_ms=1775000000000,
+                )
+
+        first_raw_id = await run_archive_fixture_write(root, acquire_0)
+        first = (await owner.ingest_retained_raw_ids((first_raw_id,))).require_complete()
+
+        def acquire_1() -> str:
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CLAUDE_AI,
+                    payload=json.dumps(payload("after")).encode(),
+                    source_path=tmp_path / "captured" / "claude-idless-edit.json",
+                    native_id="claude-idless-edit",
+                    generation=1,
+                    acquired_at_ms=1775000000001,
+                )
+
+        second_raw_id = await run_archive_fixture_write(root, acquire_1)
+        second = (await owner.ingest_retained_raw_ids((second_raw_id,))).require_complete()
 
     conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
     try:
@@ -626,13 +650,14 @@ def test_claude_timestamped_idless_edit_keeps_axis_and_persists_content(tmp_path
     finally:
         conn.close()
 
-    assert first.content_changed is True
-    assert second.content_changed is True
-    assert second.counts["skipped_sessions"] == 0
+    assert any(receipt.changed_session_ids for receipt in first)
+    assert any(receipt.changed_session_ids for receipt in second)
+    assert sum(receipt.written_counts.get("skipped_sessions", 0) for receipt in second) == 0
     assert stored_text == "after"
 
 
-def test_claude_attachment_owner_stays_stable_across_idless_body_edit(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_claude_attachment_owner_stays_stable_across_idless_body_edit(tmp_path: Path) -> None:
     def payload(first_text: str) -> dict[str, Any]:
         return {
             "uuid": "claude-idless-attachment-edit",
@@ -665,23 +690,42 @@ def test_claude_attachment_owner_stays_stable_across_idless_body_edit(tmp_path: 
     assert _relation(older_projection, edited_projection) == "equal"
 
     root = tmp_path / "archive"
-    with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
-            older,
-            payload=json.dumps(older_payload).encode(),
-            source_path="/tmp/claude-idless-attachment-edit-before.json",
-            acquired_at_ms=1_775_000_000_000,
-        )
-        second = facade.write_raw_and_parsed_result(
-            edited,
-            payload=json.dumps(edited_payload).encode(),
-            source_path="/tmp/claude-idless-attachment-edit-after.json",
-            acquired_at_ms=1_775_000_000_001,
-        )
+    async with prepared_live_convergence_owner(root) as owner:
 
-    assert first.content_changed is True
-    assert second.content_changed is True
-    assert second.counts["skipped_sessions"] == 0
+        def acquire_0() -> str:
+            bootstrap_archive_root(root)
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CLAUDE_AI,
+                    payload=json.dumps(older_payload).encode(),
+                    source_path=tmp_path / "captured" / "claude-idless-attachment-edit.json",
+                    native_id="claude-idless-attachment-edit",
+                    generation=0,
+                    acquired_at_ms=1775000000000,
+                )
+
+        first_raw_id = await run_archive_fixture_write(root, acquire_0)
+        first = (await owner.ingest_retained_raw_ids((first_raw_id,))).require_complete()
+
+        def acquire_1() -> str:
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CLAUDE_AI,
+                    payload=json.dumps(edited_payload).encode(),
+                    source_path=tmp_path / "captured" / "claude-idless-attachment-edit.json",
+                    native_id="claude-idless-attachment-edit",
+                    generation=1,
+                    acquired_at_ms=1775000000001,
+                )
+
+        second_raw_id = await run_archive_fixture_write(root, acquire_1)
+        second = (await owner.ingest_retained_raw_ids((second_raw_id,))).require_complete()
+
+    assert any(receipt.changed_session_ids for receipt in first)
+    assert any(receipt.changed_session_ids for receipt in second)
+    assert sum(receipt.written_counts.get("skipped_sessions", 0) for receipt in second) == 0
     conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
     try:
         assert (
@@ -803,7 +847,8 @@ def test_claude_duplicate_native_attachment_owner_keeps_variant_coordinate(
     assert rows == [("att-variant-a", 0), ("att-variant-b", 1)]
 
 
-def test_claude_idless_file_reassignment_changes_owner_hash_and_reingests(
+@pytest.mark.asyncio
+async def test_claude_idless_file_reassignment_changes_owner_hash_and_reingests(
     tmp_path: Path,
 ) -> None:
     """A moved idless Claude file changes the real archive owner and hash."""
@@ -840,23 +885,42 @@ def test_claude_idless_file_reassignment_changes_owner_hash_and_reingests(
     assert first_position != second_position
 
     root = tmp_path / "archive"
-    with ArchiveStore(root) as facade:
-        initial = facade.write_raw_and_parsed_result(
-            first,
-            payload=json.dumps(first_payload).encode(),
-            source_path="/tmp/claude-idless-file-reassignment-before.json",
-            acquired_at_ms=1_775_000_000_000,
-        )
-        reassigned = facade.write_raw_and_parsed_result(
-            second,
-            payload=json.dumps(second_payload).encode(),
-            source_path="/tmp/claude-idless-file-reassignment-after.json",
-            acquired_at_ms=1_775_000_000_001,
-        )
+    async with prepared_live_convergence_owner(root) as owner:
 
-    assert initial.content_changed is True
-    assert reassigned.content_changed is True
-    assert reassigned.counts["skipped_sessions"] == 0
+        def acquire_0() -> str:
+            bootstrap_archive_root(root)
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CLAUDE_AI,
+                    payload=json.dumps(first_payload).encode(),
+                    source_path=tmp_path / "captured" / "claude-idless-file-reassignment.json",
+                    native_id="claude-idless-file-reassignment",
+                    generation=0,
+                    acquired_at_ms=1775000000000,
+                )
+
+        initial_raw_id = await run_archive_fixture_write(root, acquire_0)
+        initial = (await owner.ingest_retained_raw_ids((initial_raw_id,))).require_complete()
+
+        def acquire_1() -> str:
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CLAUDE_AI,
+                    payload=json.dumps(second_payload).encode(),
+                    source_path=tmp_path / "captured" / "claude-idless-file-reassignment.json",
+                    native_id="claude-idless-file-reassignment",
+                    generation=1,
+                    acquired_at_ms=1775000000001,
+                )
+
+        reassigned_raw_id = await run_archive_fixture_write(root, acquire_1)
+        reassigned = (await owner.ingest_retained_raw_ids((reassigned_raw_id,))).require_complete()
+
+    assert any(receipt.changed_session_ids for receipt in initial)
+    assert any(receipt.changed_session_ids for receipt in reassigned)
+    assert sum(receipt.written_counts.get("skipped_sessions", 0) for receipt in reassigned) == 0
     conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
     try:
         row = conn.execute(
@@ -873,26 +937,46 @@ def test_claude_idless_file_reassignment_changes_owner_hash_and_reingests(
     assert row == (second_position,)
 
 
-def test_claude_duplicate_native_owner_move_changes_real_ingest_hash_and_owner(
+@pytest.mark.asyncio
+async def test_claude_duplicate_native_owner_move_changes_real_ingest_hash_and_owner(
     tmp_path: Path,
 ) -> None:
     first_payload = _duplicate_native_variant_payload()
     second_payload = _duplicate_native_variant_payload(swapped=True)
     root = tmp_path / "archive"
 
-    with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
-            _parse_real_route(first_payload),
-            payload=json.dumps(first_payload).encode(),
-            source_path="/tmp/duplicate-native-first.json",
-            acquired_at_ms=1_775_000_000_000,
-        )
-        second = facade.write_raw_and_parsed_result(
-            _parse_real_route(second_payload),
-            payload=json.dumps(second_payload).encode(),
-            source_path="/tmp/duplicate-native-second.json",
-            acquired_at_ms=1_775_000_000_001,
-        )
+    async with prepared_live_convergence_owner(root) as owner:
+
+        def acquire_0() -> str:
+            bootstrap_archive_root(root)
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CLAUDE_AI,
+                    payload=json.dumps(first_payload).encode(),
+                    source_path=tmp_path / "captured" / "claude-duplicate-native-owners.json",
+                    native_id="claude-duplicate-native-owners",
+                    generation=0,
+                    acquired_at_ms=1775000000000,
+                )
+
+        first_raw_id = await run_archive_fixture_write(root, acquire_0)
+        first = (await owner.ingest_retained_raw_ids((first_raw_id,))).require_complete()
+
+        def acquire_1() -> str:
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CLAUDE_AI,
+                    payload=json.dumps(second_payload).encode(),
+                    source_path=tmp_path / "captured" / "claude-duplicate-native-owners.json",
+                    native_id="claude-duplicate-native-owners",
+                    generation=1,
+                    acquired_at_ms=1775000000001,
+                )
+
+        second_raw_id = await run_archive_fixture_write(root, acquire_1)
+        second = (await owner.ingest_retained_raw_ids((second_raw_id,))).require_complete()
 
     conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
     try:
@@ -910,9 +994,9 @@ def test_claude_duplicate_native_owner_move_changes_real_ingest_hash_and_owner(
     finally:
         conn.close()
 
-    assert first.content_changed is True
-    assert second.content_changed is True
-    assert second.counts["skipped_sessions"] == 0
+    assert any(receipt.changed_session_ids for receipt in first)
+    assert any(receipt.changed_session_ids for receipt in second)
+    assert sum(receipt.written_counts.get("skipped_sessions", 0) for receipt in second) == 0
     assert moved == [("att-variant-a", 1), ("att-variant-b", 0)]
 
 
@@ -926,6 +1010,9 @@ def test_authenticated_browser_capture_uses_native_payload_and_enriches_attachme
     session_payload["provider_session_id"] = "envelope-decoy"
 
     assert detect_provider(envelope) is Provider.CLAUDE_AI
+    with pytest.raises(NativeCaptureIdentityMismatchError):
+        parse_payload(Provider.CLAUDE_AI, envelope, "browser-fallback")
+    envelope = _native_browser_envelope(_native_claude_payload())
     parsed = parse_payload(Provider.CLAUDE_AI, envelope, "browser-fallback")
     assert len(parsed) == 1
     native = parsed[0]

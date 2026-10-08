@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from polylogue.archive.query.execution_control import (
     InterruptibleSQLiteRead,
@@ -17,15 +17,12 @@ from polylogue.archive.query.execution_control import (
 )
 from polylogue.archive.query.search_contract import LaneFailure
 from polylogue.core.errors import DatabaseError
-from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.search.cache import ReadViewIdentity, capture_read_view, current_cache_epoch
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 if TYPE_CHECKING:
     from polylogue.operations.audit import AuditRepository
-    from polylogue.operations.daemon_execution import OperationRuntime
-    from polylogue.operations.daemon_reads import DaemonReadDependencies
     from polylogue.storage.embeddings.identity import EmbeddingRecipe
 
 
@@ -45,16 +42,6 @@ class ConcurrentArchivePublicationError(DatabaseError):
     """
 
     code = "concurrent_archive_publication"
-
-
-@dataclass(frozen=True, slots=True)
-class OperationContext:
-    archive_root: Path
-    principal: MutationPrincipal
-    serving_identity: Literal["daemon"]
-    runtime: OperationRuntime | None = None
-    read_dependencies: DaemonReadDependencies | None = None
-    read_control: QueryExecutionContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +72,15 @@ class OperationControlResult:
 
 
 def prepare_operation_journals(root: Path) -> None:
+    """Establish live WAL policy while holding the archive's writer gate."""
+    from polylogue.storage.sqlite.write_lease import require_write_lease, write_lease
+
+    require_write_lease("machine operation journal startup", archive_root=root)
+    with write_lease("machine operation journal startup", archive_root=root):
+        _prepare_operation_journals_under_lease(root)
+
+
+def _prepare_operation_journals_under_lease(root: Path) -> None:
     """Establish live WAL policy under the writer before exposing readers.
 
     Fresh/bootstrap and restored sealed tiers may use rollback journals. A
@@ -323,8 +319,7 @@ def open_operation_read(
             except DatabaseError as exc:
                 if execution_context is not None and execution_context.should_abort():
                     raise
-                vector_connection.close()
-                archive.operation_vector_connection = None
+                archive.close_operation_vector_connection()
                 vector_failure = LaneFailure(
                     "vector",
                     "construction_failed",

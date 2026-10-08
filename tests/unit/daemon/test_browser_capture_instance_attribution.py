@@ -12,7 +12,6 @@ from typing import Any
 
 import pytest
 
-from polylogue.api import Polylogue
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import (
     BrowserCaptureWriteResult,
@@ -20,8 +19,8 @@ from polylogue.browser_capture.receiver import (
     write_capture_envelope,
 )
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.source_layout import export_drop_layout
+from tests.infra.live_batch import prepared_live_batch_processor
 
 
 def _envelope(instance_id: str, *, backfill_job_id: str) -> BrowserCaptureEnvelope:
@@ -124,20 +123,17 @@ async def test_concurrent_extension_instances_deduplicate_without_corrupting_spo
     }
     assert not list(tmp_path.rglob(".*.tmp"))
 
-    archive = Polylogue(archive_root=tmp_path / "archive")
-    processor = LiveBatchProcessor(
-        archive,
-        (WatchSource(name="browser-capture", root=tmp_path, suffixes=(".json",)),),
-        cursor=CursorStore(archive.backend.db_path),
+    # The supplied live owners: writer, retained publication and convergence,
+    # on an archive the fixture bootstraps with its durable Source tier.
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    async with prepared_live_batch_processor(
+        archive_root,
+        (WatchSource(name="browser-capture", root=tmp_path, layout=export_drop_layout((".json",))),),
         parser_fingerprint="test-parser",
-    )
-    try:
+    ) as processor:
         metrics = await processor.ingest_files([results[0].path], emit_event=False)
-        with sqlite3.connect(archive.archive_root / "index.db") as conn:
-            archived_count = conn.execute("SELECT COUNT(*) FROM sessions WHERE native_id = 'concurrent-1'").fetchone()[
-                0
-            ]
-        assert metrics.ingested_session_count == 1
-        assert archived_count == 1
-    finally:
-        await archive.close()
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        archived_count = conn.execute("SELECT COUNT(*) FROM sessions WHERE native_id = 'concurrent-1'").fetchone()[0]
+    assert metrics.ingested_session_count == 1
+    assert archived_count == 1

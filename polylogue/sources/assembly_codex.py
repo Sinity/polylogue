@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 
 from polylogue.core.enums import MaterialOrigin, TitleSource
 from polylogue.core.json import json_document
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import read_frame
 
 from .assembly import CodexHistoryTitles, CodexThreadNames, SidecarData
 from .parsers.base import ParsedSession
@@ -95,7 +93,7 @@ def _parse_codex_history(sessions_root: Path) -> dict[str, str]:
 
 def _parse_history_file(history_path: Path) -> dict[str, str]:
     try:
-        return parse_codex_history_bytes(history_path.read_bytes())
+        return dict(parse_codex_history_bytes(history_path.read_bytes()))
     except OSError as exc:
         logger.debug("Failed to read Codex history.jsonl: %s", exc)
         return {}
@@ -176,42 +174,6 @@ def _parse_state_db_file(state_path: Path) -> dict[str, str]:
     finally:
         conn.close()
     return titles
-
-
-def resolve_retained_codex_state_titles(
-    archive_root: Path,
-    thread_ids: Sequence[str],
-    *,
-    source_path: str | None = None,
-) -> CodexHistoryTitles:
-    """Read projected Codex thread titles for ``thread_ids`` out of ``index.db``.
-
-    The archive is the evidence carrier for this lane, so both the pipeline
-    ingest worker and retained-raw replay resolve step 3b from it rather than
-    from any live ``~/.codex`` file. A read-only connection keeps this safe
-    beside the daemon's single writer, and an absent or unreadable index
-    degrades to no evidence.
-    """
-    if not thread_ids:
-        return {}
-    from polylogue.storage.archive_identity import resolve_active_index_path
-
-    try:
-        index_db = resolve_active_index_path(archive_root)
-    except Exception as exc:
-        logger.debug("Failed to resolve index.db for Codex thread titles: %s", exc)
-        return {}
-    if not index_db.exists():
-        return {}
-    try:
-        frame = read_frame(index_db, timeout_class="background-read", tier=ArchiveTier.INDEX)
-    except sqlite3.Error as exc:
-        logger.debug("Failed to open index.db for Codex thread titles: %s", exc)
-        return {}
-    with frame:
-        from polylogue.sources.codex_state_projection import read_thread_titles
-
-        return read_thread_titles(frame.connection, thread_ids=thread_ids, source_path=source_path)
 
 
 def _title_preview(text: str) -> str | None:
@@ -446,5 +408,4 @@ __all__ = [
     "_parse_codex_state_titles",
     "parse_codex_history_bytes",
     "parse_codex_session_index_bytes",
-    "resolve_retained_codex_state_titles",
 ]

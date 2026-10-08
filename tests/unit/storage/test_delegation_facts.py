@@ -28,18 +28,19 @@ from polylogue.archive.query.unit_results import query_unit_envelope, query_unit
 from polylogue.core.enums import BranchType, Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.surfaces.payloads import DelegationCardPayload, QueryUnitAggregateRowPayload
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.session_profiles import write_session_profile
 
 _HASH = b"x" * 32
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -91,10 +92,23 @@ def _insert_message(
     conn.execute(
         """
         INSERT INTO messages (
-            session_id, native_id, position, role, message_type, model_name, content_hash, occurred_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            session_id, native_id, position, role, message_type, model_name, content_hash, content_address,
+            occurred_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, native_id, position, "assistant", "message", model_name, _HASH, 1_767_225_600_000 + position),
+        # The writer always stores a content address; lineage signature reads
+        # compose a child against its parent's stored addresses.
+        (
+            session_id,
+            native_id,
+            position,
+            "assistant",
+            "message",
+            model_name,
+            _HASH,
+            hashlib.sha256(f"{session_id}:{native_id}".encode()).digest(),
+            1_767_225_600_000 + position,
+        ),
     )
     return str(
         conn.execute(
@@ -505,6 +519,36 @@ def test_delegation_edge_only_when_no_dispatch_action(tmp_path: Path) -> None:
     assert row["instruction_payload"] is None
 
 
+def test_child_profile_update_rebuilds_its_parent_cohort_without_colliding_with_a_sibling(tmp_path: Path) -> None:
+    """Deleting only the updated child's rows before rebuilding the whole parent
+    cohort re-inserts the sibling's ``delegation_id`` and raises
+    ``UNIQUE constraint failed: delegation_facts.delegation_id``."""
+    conn = _connect(tmp_path / "index.db")
+    parent_id = _insert_session(conn, native_id="parent")
+    children = [_insert_session(conn, native_id=f"child-{index}") for index in range(2)]
+    for child_id in children:
+        _insert_session_link(
+            conn,
+            child_session_id=child_id,
+            dst_origin="claude-code-session",
+            dst_native_id="parent",
+            parent_session_id=parent_id,
+        )
+        write_session_profile(conn, child_id)
+
+    conn.execute("UPDATE session_profiles SET session_id = session_id WHERE session_id = ?", (children[0],))
+
+    rows = conn.execute(
+        "SELECT child_session_id, mapping_state FROM delegation_facts WHERE parent_session_id = ? "
+        "ORDER BY child_session_id",
+        (parent_id,),
+    ).fetchall()
+    assert [(row["child_session_id"], row["mapping_state"]) for row in rows] == [
+        (child_id, "edge_only") for child_id in sorted(children)
+    ]
+    assert conn.execute("SELECT COUNT(*) FROM delegation_refresh_scope").fetchone()[0] == 0
+
+
 def test_delegation_quarantined_link_surfaces_as_quarantined_state(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     parent_id = _insert_session(conn, native_id="parent")
@@ -642,7 +686,7 @@ def test_delegation_direction_matches_real_link_resolver(tmp_path: Path) -> None
         branch_type=BranchType.SUBAGENT,
         messages=[ParsedMessage(provider_message_id="c0", role=Role.USER, text="go", position=0)],
     )
-    child_id = write_parsed_session_to_archive(conn, child_session, content_hash=session_content_hash(child_session))
+    child_id = write_fixture_index_session(conn, child_session, content_hash=session_content_hash(child_session))
     conn.commit()
 
     # The resolver must have written the PARENT into sessions.parent_session_id

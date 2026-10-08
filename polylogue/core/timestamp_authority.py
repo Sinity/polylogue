@@ -15,7 +15,9 @@ clock value.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypeVar, cast
+
+from pydantic import BaseModel
 
 from polylogue.core.timestamps import parse_timestamp
 
@@ -129,7 +131,10 @@ def session_evidence_timestamps(
     return created, updated
 
 
-def normalize_session_timestamps(session: Any, *, fallback_timestamp: str | None = None) -> Any:
+_TimestampModel = TypeVar("_TimestampModel", bound=BaseModel)
+
+
+def normalize_session_timestamps(session: _TimestampModel, *, fallback_timestamp: str | None = None) -> _TimestampModel:
     """Fill and repair parsed-session fields according to the authority ladder."""
     created_ms, updated_ms = session_evidence_timestamps(session, fallback_timestamp=fallback_timestamp)
     raw_created = timestamp_millis(getattr(session, "created_at", None))

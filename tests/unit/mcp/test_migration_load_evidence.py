@@ -25,6 +25,7 @@ from typing import Any, cast
 
 import pytest
 
+from tests.infra.archive_templates import seeds_off_event_loop
 from tests.infra.live_ingest import write_index_session
 
 # These tests exercise the incident-scale query response and cancellation
@@ -51,6 +52,7 @@ from tests.infra.mcp import (
 )
 
 
+@seeds_off_event_loop
 def _seed_archive(
     archive_root: Path,
     *,

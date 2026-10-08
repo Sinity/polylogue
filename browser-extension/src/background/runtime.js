@@ -1,10 +1,12 @@
 import { AttachmentSha256 } from "../actions/sha256.js";
+import { NativeCaptureNormalizer } from "../capture/native.js";
+import { CaptureStaging } from "../capture/staging.js";
 import { BackfillCoordinator } from "../backfill/coordinator.js";
-import { DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_MS, receiverAckContractError, serializedContentHash, retryAfterMs } from "../backfill/models.js";
+import { BACKFILL_RECOVERY_CHECKPOINT_VERSION, DURABLE_RECEIVER_ACK_FIELDS, retryAfterMs, receiverAckContractError } from "../backfill/models.js";
 import { providerAdapters } from "../backfill/providers.js";
 import { executeProviderPageRequest } from "../backfill/page_transport.js";
-import { IndexedDbBackfillStore } from "../backfill/storage.js";
-import { CaptureJobClient } from "../backfill/capture_jobs.js";
+import { IndexedDbBackfillStore, nativeCacheOrder } from "../backfill/storage.js";
+import { CaptureJobClient, deriveAccountScope } from "../backfill/capture_jobs.js";
 import {
   classifyBrowserActionFailure,
   executeChatGptBrowserActionInPage,
@@ -20,7 +22,7 @@ import {
   runningPollDelayMs,
   scheduleFreshnessHint,
 } from "../capture/freshness.js";
-import { MAX_PROVIDER_COOLDOWN_MS, clampProviderCooldownMs } from "../capture/provider_cooldown.js";
+import { requireProviderCooldownMs } from "../capture/provider_cooldown.js";
 import { BACKGROUND_ALARMS } from "./adapters.js";
 import { registerBackgroundEvents } from "./events.js";
 
@@ -29,6 +31,19 @@ import { registerBackgroundEvents } from "./events.js";
 // no controller discovers a second Chrome or network client.
 let runtimeChrome = null;
 let runtimeNetwork = null;
+let captureStaging = null;
+let captureStore = null;
+let nativeNormalizer = null;
+let runtimeWorkerId = null;
+const nativeNormalizations = new Map();
+function trackNativeOperation(operation) {
+  let drained;
+  operation.drained = new Promise((resolve) => { drained = resolve; });
+  operation.finish = () => { nativeNormalizations.delete(operation.controller.signal); drained(); };
+  nativeNormalizations.set(operation.controller.signal, operation);
+}
+const captureDeliveries = new Map();
+const foregroundDeliveryCompletions = new Map();
 
 // Must match src/common.js's TEMPORARY_CHAT_ID_KEY-adjacent sentinel exactly
 // (sessionIdFromUrl's `__polylogue_temporary_chat__` return value) -- this
@@ -66,8 +81,6 @@ const CAPTURE_FRESHNESS_LEASE_MS = 2 * 60 * 1000;
 const CAPTURE_FRESHNESS_SWEEP_MINUTES = 15;
 const CAPTURE_FRESHNESS_SWEEP_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const BROWSER_ACTION_ATTACHMENT_CHUNK_BYTES = 64 * 1024;
-const CAPTURE_MESSAGE_TIMEOUT_MS = 35000;
-const BACKFILL_PAGE_REQUEST_TIMEOUT_MS = 58000;
 const BACKFILL_TRANSPORT_TAB_TTL_MS = 5 * 60 * 1000;
 const BACKFILL_TRANSPORT_CLEANUP_PREFIX = BACKGROUND_ALARMS.backfillTransportCleanup;
 const PROVIDER_TRANSPORT_SESSION_PREFIX = "polylogueProviderTransportTab";
@@ -107,10 +120,24 @@ function replaceLegacyAcceptedMessageIdentities() {
   });
 }
 
-function serializeCaptureQueueMutation(mutation) {
-  const result = captureQueueMutationQueue.then(mutation, mutation);
+function serializeCaptureQueueMutation(mutation, signal = null) {
+  let started = false;
+  const run = () => {
+    signal?.throwIfAborted();
+    started = true;
+    return mutation();
+  };
+  const result = captureQueueMutationQueue.then(run, run);
   captureQueueMutationQueue = result.then(() => undefined, () => undefined);
-  return result;
+  if (!signal) return result;
+  // Cancellation before ownership starts must not wait for another delivery's
+  // physical upload. The queued callback checks the same signal before writing.
+  return new Promise((resolve, reject) => {
+    const abort = () => { if (!started) reject(signal.reason); };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    result.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 function extensionInstanceId() {
@@ -151,67 +178,89 @@ function browserActionExecutorId() {
   return browserActionExecutorIdPromise;
 }
 
-async function withExtensionInstanceAttribution(envelope) {
+async function withExtensionInstanceAttribution(envelope, sender = null) {
+  if (envelope.receiver_native) {
+    const witness = await captureStore.getCapture(envelope.capture_record_ref);
+    if (!witness || witness.state !== "ready" || witness.receiver_native.sha256 !== envelope.receiver_native.sha256 ||
+        (sender && (witness.owner.tab_id !== sender.tab?.id || witness.owner.document_id !== sender.documentId))) throw new Error("native_preparation_owner_mismatch");
+    return envelope;
+  }
   const instanceId = await extensionInstanceId();
+  const { capture_observation_ref: observationRef, ...body } = envelope;
+  const witness = envelope.capture_record_ref
+    ? await captureStore.getCapture(envelope.capture_record_ref)
+    : observationRef ? await captureStore.getCapture(observationRef.id) : null;
+  if (envelope.capture_record_ref && (!witness || witness.state !== "ready" || typeof witness.raw_ref !== "string" ||
+      typeof witness.raw_revision_sha256 !== "string" || !Number.isSafeInteger(witness.record_count))) {
+    throw new Error("capture_observation_record_unavailable");
+  }
+  if (witness && (witness.provider !== envelope.session.provider || witness.native_id !== envelope.session.provider_session_id)) throw new Error("capture_observation_identity_mismatch");
+  if (witness && sender && (witness.owner.tab_id !== sender.tab?.id || witness.owner.document_id !== (sender.documentId || null))) throw new Error("capture_observation_owner_mismatch");
+  if (observationRef && (!witness || witness.kind !== "dom-observation" || witness.token !== observationRef.token)) throw new Error("capture_observation_owner_mismatch");
+  const provenance = { ...(envelope?.provenance || {}) };
+  delete provenance.acquisition_sequence;
   return {
-    ...envelope,
+    ...body,
     provenance: {
-      ...(envelope?.provenance || {}),
+      ...provenance,
       // The service worker owns this persistent identity. Do not trust an
       // independently reloadable content script to choose the attribution.
       extension_instance_id: instanceId,
+      ...(witness ? { captured_at: witness.observed_at } : {}),
+      ...(Number.isSafeInteger(witness?.acquisition_sequence) && witness.acquisition_sequence > 0
+        ? { acquisition_sequence: witness.acquisition_sequence } : {}),
     },
+    ...(observationRef ? { capture_observation_ref: observationRef } : {}),
   };
 }
 
-// Legacy per-instance mirror retained only as migration evidence. CaptureJobs
-// below are the durability authority for new writes.
-function mirrorBackfillCheckpointToReceiver(instanceId, checkpoint) {
-  postJson(
-    "/v1/backfill-checkpoint",
-    { extension_instance_id: instanceId, checkpoint },
-    null,
-    PROVIDER_REQUEST_TIMEOUT_MS,
-  ).catch(() => undefined);
-}
-
-async function commitCaptureJobsToReceiver(instanceId, checkpoint) {
+async function* commitCaptureJobsToReceiver(instanceId) {
   const settings = await receiverSettings();
   if (!settings.authToken) throw new Error("capture_job_receiver_auth_required");
-  if (!Array.isArray(checkpoint?.jobs)) throw new Error("capture_job_checkpoint_invalid");
   const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: runtimeChrome.storage.local });
-  const handles = new Map();
-  const accountHandle = (provider) => {
-    if (!handles.has(provider)) handles.set(provider, providerAccountHandle(provider));
-    return handles.get(provider);
-  };
-  const results = await Promise.all(checkpoint.jobs.map(async (job) => {
+  for await (const job of captureStore.jobs()) {
     try {
-      // Exact authenticated provider identity is mandatory. Guessing from the
-      // receiver pairing or extension profile can adopt another account's job.
-      const handle = await accountHandle(job.provider);
+      if (!/^h1:[A-Za-z0-9_-]{43}$/.test(job.account_scope || "")) throw new Error("capture_job_account_scope_unresolved");
+      const handle = await providerAccountHandle(job.provider);
       if (!handle) throw new Error(`capture_job_identity_unavailable:${job.provider}`);
-      const payload = {
-        version: checkpoint.version,
-        jobs: [job],
-        queue: checkpoint.queue?.filter((item) => item.job_id === job.id) || [],
-        revisions: checkpoint.revisions?.filter((revision) => revision.provider === job.provider) || [],
-      };
-      let adopted = await client.recoverOrCreate({ provider: job.provider, accountHandle: handle, locator: { kind: "backfill", provider: job.provider, cutoff: job.cutoff }, intentPayload: { provider: job.provider, cutoff: job.cutoff }, sessionId: instanceId });
-      adopted = await client.update(adopted, captureJobRetryState(job));
-      await client.checkpoint(adopted, payload);
-      return null;
+      let adopted = await client.recoverOrCreate({ provider: job.provider, accountHandle: handle,
+        locator: { kind: "backfill", provider: job.provider, cutoff: job.cutoff },
+        intentPayload: { provider: job.provider, cutoff: job.cutoff }, sessionId: instanceId });
+      if (adopted.scope.kind !== "account" || adopted.scope.key !== job.account_scope) throw new Error("capture_job_account_scope_mismatch");
+      for (;;) {
+        let snapshot = await captureStore.pendingRecoverySnapshot(job.id);
+        const recovered = Boolean(snapshot);
+        if (snapshot) {
+          const meta = await captureStaging.metadata(snapshot.artifact_id).catch((error) => {
+            if (error?.name === "NotFoundError") return null;
+            throw error;
+          });
+          if (meta?.state === "checkpoint-acknowledged") {
+            await captureStaging.releaseCheckpoint(snapshot, meta.receiver_receipt);
+            continue;
+          }
+        } else {
+          const snapshotId = `checkpoint:${globalThis.crypto.randomUUID()}`;
+          const artifactId = captureStaging.producerStageId({ checkpoint_snapshot_id: snapshotId }, snapshotId);
+          snapshot = await captureStore.createRecoverySnapshot(job.id, snapshotId, artifactId);
+        }
+        const prepared = await captureStaging.prepareCheckpoint(snapshot);
+        adopted = await client.update(adopted, captureJobRetryState(snapshot.job));
+        const result = await client.checkpoint(adopted, prepared);
+        const unchanged = adopted.job.checkpoint_digest === prepared.digest;
+        adopted = { ...adopted, job: result.job };
+        await captureStaging.releaseCheckpoint(snapshot, result.receipt || result.job.latest_receipt);
+        // A fresh consistent snapshot after ACK detects mutations that occurred
+        // during the upload. Stable canonical bytes terminate without HTTP.
+        if (unchanged && !recovered) break;
+      }
+      yield { job_id: job.id, error: null, outcome: "committed" };
     } catch (error) {
-      return {
-        job_id: job.id,
-        error: String(error?.message || error),
-        outcome: error?.outcome || null,
+      yield { job_id: job.id, error: String(error?.message || error), outcome: error?.outcome || null,
         retry_after_ms: Number.isFinite(error?.retryAfterMs) ? error.retryAfterMs : null,
-        retry_until_ms: Number.isFinite(error?.retryUntilMs) ? error.retryUntilMs : null,
-      };
+        retry_until_ms: Number.isFinite(error?.retryUntilMs) ? error.retryUntilMs : null };
     }
-  }));
-  return { failures: results.filter(Boolean) };
+  }
 }
 
 function captureJobRetryState(job) {
@@ -234,160 +283,89 @@ function captureJobRetryState(job) {
   };
 }
 
-async function restoreBackfillCheckpointFromReceiver(store, instanceId) {
-  try {
-    const remote = await getJson(
-      `/v1/backfill-checkpoint?extension_instance_id=${encodeURIComponent(instanceId)}`,
-      PROVIDER_REQUEST_TIMEOUT_MS,
-    );
-    if (remote?.checkpoint) return store.restoreRecoveryCheckpoint(remote.checkpoint);
-  } catch {
-    // No receiver-mirrored checkpoint reachable or available -- fall through
-    // to whatever local state already exists (typically none, the same
-    // empty-ledger outcome as before this fallback existed).
-  }
-  return { restored: 0, reason: "checkpoint_unavailable" };
-}
-
 async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
   const settings = await receiverSettings();
-  if (!settings.authToken) return { checkpoint: null, successfulProviders: [], unavailableProviders: providers };
+  if (!settings.authToken) return { successfulProviders: [], unavailableProviders: providers };
   const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: runtimeChrome.storage.local });
-  const recovered = [];
   const successfulProviders = [];
   const unavailableProviders = [];
   for (const provider of providers) {
     try {
       const accountHandle = await providerAccountHandle(provider);
-      const adopted = await client.discoverRecovery(provider, accountHandle, instanceId);
-      recovered.push(...adopted.map((entry) => ({
-        ...entry.job,
-        recovery_checkpoint_updated_at: entry.recovery_updated_at,
-      })));
-      if (adopted.length) successfulProviders.push(provider);
+      for await (const entry of client.discoverRecovery(provider, accountHandle, instanceId)) {
+        if (!entry.lease) throw new Error("capture_job_recovery_lease_held");
+        await client.restoreCheckpoint(entry, captureStore, captureStaging);
+      }
+      successfulProviders.push(provider);
     } catch (error) {
       unavailableProviders.push(provider);
-      await appendDebugLog({
-        stage: "capture_job_recovery_unavailable",
-        provider,
-        error: String(error.message || error),
-      });
+      await appendDebugLog({ stage: "capture_job_recovery_unavailable", provider, error: String(error.message || error) });
     }
   }
-  return { checkpoint: mergeCaptureJobRecoveryCheckpoints(recovered), successfulProviders, unavailableProviders };
+  return { successfulProviders, unavailableProviders };
 }
 
-function mergeCaptureJobRecoveryCheckpoints(jobs) {
-  const checkpoints = jobs
-    .filter((job) => job.checkpoint?.payload?.version === 1 && Array.isArray(job.checkpoint.payload.jobs))
-    .map((job) => {
-      const updatedAtMs = Date.parse(job.recovery_checkpoint_updated_at);
-      if (!Number.isFinite(updatedAtMs)) throw new Error(`capture_job_recovery_timestamp_invalid:${job.job_id}`);
-      return { jobId: job.job_id, updatedAtMs, payload: job.checkpoint.payload };
-    });
-  if (!checkpoints.length) return null;
-  const reconcile = (field) => {
-    const winners = new Map();
-    for (const checkpoint of checkpoints) {
-      for (const item of checkpoint.payload[field] || []) {
-        if (!item?.id) continue;
-        const current = winners.get(item.id);
-        if (!current) {
-          winners.set(item.id, { item, ...checkpoint });
-          continue;
-        }
-        if (JSON.stringify(current.item) === JSON.stringify(item)) continue;
-        if (checkpoint.updatedAtMs === current.updatedAtMs) {
-          throw new Error(`capture_job_recovery_conflict:${field}:${item.id}`);
-        }
-        if (checkpoint.updatedAtMs > current.updatedAtMs) winners.set(item.id, { item, ...checkpoint });
-      }
-    }
-    return [...winners.values()].map((winner) => winner.item);
-  };
-  return {
-    version: 1,
-    jobs: reconcile("jobs"),
-    queue: reconcile("queue"),
-    revisions: reconcile("revisions"),
-  };
+async function convertAcquiredBackfillRow(store, original) {
+  if (await store.localCheckpointRecordPublished("queue", original)) return;
+  const envelope = globalThis.structuredClone(original.envelope);
+  const prepared = await captureStaging.prepare(envelope, captureStaging.conversionId(`checkpoint:${original.id}`),
+    { delivery_kind: "backfill", id: original.id, job_id: original.job_id });
+  await captureStaging.file(prepared.ref);
+  const replacement = { ...original, body_ref: prepared.ref, envelope: {
+    capture_body_ref: prepared.ref,
+    session: { provider: original.provider, provider_session_id: original.native_id },
+    provider_meta: { capture_fidelity: original.envelope.provider_meta?.capture_fidelity || "native_full" },
+  } };
+  await store.convertLocalCheckpointRecord("queue", original, replacement);
 }
 
 async function backfillCoordinator() {
   const initializing = !backfillCoordinatorPromise;
   if (initializing) {
     const candidate = (async () => {
-      const store = new IndexedDbBackfillStore();
+      const store = captureStore;
       const instanceId = await extensionInstanceId();
       const stored = await runtimeChrome.storage.local.get({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: null });
-      await store.restoreRecoveryCheckpoint(stored[BACKFILL_RECOVERY_CHECKPOINT_KEY]);
-      const localCheckpoint = await store.exportRecoveryCheckpoint();
-      const localProviders = [...new Set(localCheckpoint.jobs.map((job) => job.provider))];
-      const providers = [...new Set(["chatgpt", "claude-ai", ...localProviders])];
+      const predecessor = stored[BACKFILL_RECOVERY_CHECKPOINT_KEY];
+      if (predecessor !== null) {
+        if (predecessor.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION ||
+            !["jobs", "queue", "revisions"].every((key) => Array.isArray(predecessor[key]))) {
+          throw new Error("checkpoint_conversion_shape_invalid");
+        }
+        // This is the sole read of the shipped whole-ledger cache. Keep the
+        // original until each record and acquired body has durable custody.
+        for (const collection of ["jobs", "queue", "revisions"]) {
+          for (const original of predecessor[collection]) {
+            if (await store.localCheckpointRecordPublished(collection, original)) continue;
+            let replacement = original;
+            if (collection === "queue" && original.envelope) {
+              await convertAcquiredBackfillRow(store, original);
+              continue;
+            }
+            if (collection === "queue" && replacement.body_ref) await captureStaging.file(replacement.body_ref);
+            await store.convertLocalCheckpointRecord(collection, original, replacement);
+          }
+        }
+        await runtimeChrome.storage.local.remove(BACKFILL_RECOVERY_CHECKPOINT_KEY);
+      }
+      for await (const original of store.unconvertedBackfillBodies()) await convertAcquiredBackfillRow(store, original);
+      const providers = ["chatgpt", "claude-ai", "grok"];
       const recovery = await loadBackfillCheckpointFromCaptureJobs(instanceId, providers);
-      if (recovery.successfulProviders.length) {
-        await store.reconcileRecoveryCheckpoint(
-          recovery.checkpoint || { version: 1, jobs: [], queue: [], revisions: [] },
-          recovery.successfulProviders,
-        );
-      }
-      const reconciledCheckpoint = await store.exportRecoveryCheckpoint();
-      if (!reconciledCheckpoint.jobs.length) {
-        // The per-instance route is legacy migration input only. It is tried
-        // after the receiver-authoritative registry and never overwrites a
-        // CaptureJob checkpoint.
-        await restoreBackfillCheckpointFromReceiver(store, instanceId);
-      }
-      const adapters = providerAdapters(providerPageFetch, { requirePageContext: true });
+      const adapters = providerAdapters(providerPageFetch, { requirePageContext: true, nativeBundleOwner: backfillNativeBundleOwner() });
       const coordinator = new BackfillCoordinator({
+        prepareCapture: (envelope, item, signal) => envelope.receiver_native ? { contentHash: envelope.receiver_native.sha256 } : captureStaging.prepare(envelope, captureStaging.conversionId(`backfill:${item.id}`), { delivery_kind: "backfill", id: item.id, job_id: item.job_id }, signal),
+        receiverAcked: (envelope) => envelope.receiver_native ? captureStaging.acknowledgeNative(envelope.capture_record_ref) : captureStaging.acknowledge(envelope.capture_body_ref),
         store,
         adapters,
-        receiver: (envelope, serialized) => postJson(
+        receiver: (envelope, serialized, signal) => postJson(
           "/v1/browser-captures",
           envelope,
           serialized,
-          PROVIDER_REQUEST_TIMEOUT_MS,
           true,
+          signal,
         ),
         receiverPreflight: backfillReceiverPreflight,
-        checkpoint: async (checkpoint) => {
-          const result = await commitCaptureJobsToReceiver(instanceId, checkpoint);
-          if (result.failures.length) return result;
-          try {
-            await runtimeChrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint });
-          } catch (error) {
-            await appendDebugLog({
-              stage: "capture_job_local_cache_write_failed",
-              error: String(error?.message || error),
-            });
-          }
-          mirrorBackfillCheckpointToReceiver(instanceId, checkpoint);
-          return result;
-        },
-        captureOverride: async ({ provider, nativeId, response, item, attribution }) => {
-          if (provider !== "chatgpt") return null;
-          const nativePayload = await response.json();
-          const nativePayloadBytes = new TextEncoder().encode(JSON.stringify(nativePayload)).length;
-          if (nativePayloadBytes > MAX_EXACT_CAPTURE_NATIVE_PAYLOAD_BYTES) {
-            // Oversized: the content-script exact-capture path would either
-            // re-fetch this same huge conversation itself (its own native-
-            // fetch fallback, independent of this bridge) and return it in
-            // the runtimeChrome.tabs.sendMessage RESPONSE -- crossing this second
-            // IPC channel's size ceiling in the other direction -- or, for a
-            // pinned conversation id, skip its DOM fallback entirely and
-            // fail outright. adapters.chatgpt.normalizeCapture() builds a
-            // full-fidelity capture entirely in this process, no
-            // runtimeChrome.tabs.sendMessage involved at all.
-            return adapters.chatgpt.normalizeCapture(response, item, attribution);
-          }
-          const captured = await captureProviderConversation(
-            provider,
-            nativeId,
-            "backfill_exact_capture",
-            { deferReceiver: true, nativePayload },
-          );
-          return captured.envelope;
-        },
+        checkpoint: () => commitCaptureJobsToReceiver(instanceId),
         alarms: runtimeChrome.alarms,
         instanceId,
         receiverContractEpoch: BACKFILL_WORKER_EPOCH,
@@ -407,19 +385,19 @@ async function backfillCoordinator() {
     const providers = coordinator.unavailableRecoveryProviders.filter(
       (provider) => tabs.some((tab) => archiveProviderForUrl(tab.url || tab.pendingUrl || "") === provider),
     );
-    if (providers.length && !coordinator.recoveryPromise) {
+    if (!providers.length) return coordinator;
+    if (!coordinator.recoveryPromise) {
       coordinator.recoveryPromise = (async () => {
-        const recovery = await loadBackfillCheckpointFromCaptureJobs(coordinator.recoveryInstanceId, providers);
-        if (recovery.successfulProviders.length) {
-          await coordinator.store.reconcileRecoveryCheckpoint(recovery.checkpoint, recovery.successfulProviders);
-        }
+        const recovery = await loadBackfillCheckpointFromCaptureJobs(
+          coordinator.recoveryInstanceId, providers,
+        );
         coordinator.unavailableRecoveryProviders = [
           ...coordinator.unavailableRecoveryProviders.filter((provider) => !providers.includes(provider)),
           ...recovery.unavailableProviders,
         ];
       })().finally(() => { coordinator.recoveryPromise = null; });
     }
-    if (coordinator.recoveryPromise) await coordinator.recoveryPromise;
+    await coordinator.recoveryPromise;
   }
   return coordinator;
 }
@@ -447,8 +425,15 @@ async function startBackfill(request) {
   if (inFlight) return inFlight;
   const pending = (async () => {
     const coordinator = await backfillCoordinator();
+    const settings = await receiverSettings();
+    if (!settings.authToken) throw new Error("capture_job_receiver_auth_required");
+    const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: runtimeChrome.storage.local });
+    const handle = await providerAccountHandle(provider);
+    if (!handle) throw new Error(`capture_job_identity_unavailable:${provider}`);
+    const accountScope = await deriveAccountScope(await client.scopeNamespace(), provider, handle);
     const job = await coordinator.start({
       provider,
+      account_scope: accountScope,
       cutoff: request.cutoff,
       policy: request.policy || {},
       provider_options: request.provider_options || {},
@@ -466,11 +451,13 @@ async function startBackfill(request) {
 
 // ---- Capture retry queue --------------------------------------------------
 //
-// Receiver outages retain each original capture body in IndexedDB. The local
-// storage value is a body-free status cache; an alarm delivers retained bodies
-// one at a time with per-entry backoff. Physical storage failure is explicit.
+// Acquired bodies and delivery references remain durable in OPFS and the
+// indexed queue until an actual receiver ACK or an explicit terminal refusal.
+// Chrome storage holds only the completed conversion marker; delivery cursors
+// are authoritative for counts, ordering, and retries.
 const CAPTURE_QUEUE_KEY = "polylogueCaptureQueue";
-const CAPTURE_QUEUE_EMPTY = Object.freeze({ entries: [], dropped_count: 0 });
+const CAPTURE_QUEUE_EMPTY = Object.freeze({ version: 3, dropped_count: 0 });
+let queueConversionPromise = null;
 const CAPTURE_RETRY_ALARM = BACKGROUND_ALARMS.captureRetry;
 const CAPTURE_RETRY_BASE_DELAY_MS = 30000;
 const CAPTURE_RETRY_MAX_DELAY_MS = 30 * 60 * 1000;
@@ -479,49 +466,33 @@ const CAPTURE_RETRY_ALARM_PERIOD_MINUTES = 1;
 // extra storage round trip; reloaded from storage once at SW startup.
 let cachedQueueLength = 0;
 
-function timeoutError(label, timeoutMs) {
-  const error = new Error(`${label}_timeout_after_${timeoutMs}ms`);
-  error.name = "PolylogueTimeoutError";
-  return error;
-}
-
-function withTimeout(promise, timeoutMs, label) {
-  let timer = 0;
-  const timeout = new Promise((_resolve, reject) => {
-    timer = globalThis.setTimeout(() => reject(timeoutError(label, timeoutMs)), timeoutMs);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer) globalThis.clearTimeout(timer);
-  });
-}
-
 function injectionPlanForUrl(url) {
   try {
-    const parsed = new URL(url || "");
+    const parsed = new globalThis.URL(url || "");
     if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) {
       return [
-        { files: ["src/content/chatgpt_bridge.js"], world: "MAIN" },
+        { files: ["src/content/asset_stream.js", "src/content/chatgpt_bridge.js"], world: "MAIN" },
         {
           files: [
             "src/common.js",
             "src/operator_status.js",
             "src/content/message_layer.js",
             "src/content/ambient_surface.js",
-            "src/content/chatgpt.js",
+            "src/content/asset_stream.js", "src/content/chatgpt.js",
           ],
         },
       ];
     }
     if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) {
       return [
-        { files: ["src/content/claude_bridge.js"], world: "MAIN" },
+        { files: ["src/content/asset_stream.js", "src/content/claude_bridge.js"], world: "MAIN" },
         {
           files: [
             "src/common.js",
             "src/operator_status.js",
             "src/content/message_layer.js",
             "src/content/ambient_surface.js",
-            "src/content/claude.js",
+            "src/content/asset_stream.js", "src/content/claude.js",
           ],
         },
       ];
@@ -536,8 +507,8 @@ function injectionPlanForUrl(url) {
       // (lossy) fallback for those origins. See manifest.json's matching
       // content_scripts change and this repo's Grok-on-X follow-up bead.
       return [
-        { files: ["src/content/grok_bridge.js"], world: "MAIN" },
-        { files: ["src/common.js", "src/content/grok.js"] },
+        { files: ["src/content/asset_stream.js", "src/content/grok_bridge.js"], world: "MAIN" },
+        { files: ["src/content/asset_stream.js", "src/common.js", "src/content/grok.js"] },
       ];
     }
     if (parsed.hostname === "gemini.google.com" || parsed.hostname.endsWith(".gemini.google.com")) {
@@ -799,20 +770,24 @@ async function observeReceiverIdentity(status, endpoint, scope) {
   });
 }
 
-async function clearReceiverPairing() {
+async function clearReceiverPairing(expectedRevision = null) {
   return serializeStorageMutation(async () => {
+    if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision !== receiverConfigurationRevision)) {
+      throw new Error("receiver_configuration_changed");
+    }
     receiverConfigurationRevision += 1;
     trustedReceiverHealthCache = null;
     await runtimeChrome.storage.local.remove?.(RECEIVER_PAIRING_KEY);
     // Test doubles and older browser shims may not expose remove(). Setting null
     // is equivalent for all readers and keeps reset bounded to this one key.
     if (!runtimeChrome.storage.local.remove) await runtimeChrome.storage.local.set({ [RECEIVER_PAIRING_KEY]: null });
+    return { settings: await receiverSettings(), revision: receiverConfigurationRevision };
   });
 }
 
 function hostnameForUrl(url) {
   try {
-    return new URL(url || "").hostname;
+    return new globalThis.URL(url || "").hostname;
   } catch {
     return "";
   }
@@ -867,8 +842,10 @@ function retryDelayForAttempt(attempts) {
 }
 
 function envelopeSessionSummary(envelope) {
+  if (envelope.capture_summary) return envelope.capture_summary;
   const session = envelope?.session || {};
   return {
+    title: session.title || null,
     provider: session.provider || null,
     providerSessionId: session.provider_session_id || null,
     captureMode: session.provider_meta?.capture_fidelity || null,
@@ -892,6 +869,15 @@ function captureRetryMetadata(entry) {
     turn_count: summary.turnCount, attachment_count: summary.attachmentCount };
 }
 
+async function cacheCaptureQueueState(queue) {
+  // The atomic IDB import marker and delivery roots own acquired bytes. A
+  // failed derived Chrome cache must not prevent their retry admission.
+  try { await runtimeChrome.storage.local.set({ [CAPTURE_QUEUE_KEY]: queue }); }
+  catch (error) {
+    await appendDebugLog({ stage: "capture_queue_cache_failed", error: String(error.message || error) }).catch(() => undefined);
+  }
+}
+
 async function initializeCaptureRetries() {
   if (!captureRetryInitialization) {
     captureRetryInitialization = (async () => {
@@ -904,7 +890,7 @@ async function initializeCaptureRetries() {
       })));
       const entries = await captureRetryStore.listCaptureRetries();
       const queue = { entries, dropped_count: previous?.dropped_count || 0 };
-      await cacheCaptureQueue(queue);
+      await cacheCaptureQueueState(queue);
       return queue.dropped_count;
     })().catch((error) => { captureRetryInitialization = null; throw error; });
   }
@@ -912,8 +898,161 @@ async function initializeCaptureRetries() {
 }
 
 async function getCaptureQueue() {
-  const dropped_count = await initializeCaptureRetries();
-  return { entries: await captureRetryStore.listCaptureRetries(), dropped_count };
+  if (!queueConversionPromise) queueConversionPromise = (async () => {
+    // Import the original local inputs once under5918's existing atomic marker.
+    // A metadata-only cache is never the authority for their acquired bodies.
+    const dropped = await initializeCaptureRetries();
+    for await (const metadata of captureRetryStore.captureRetryInputs()) {
+      const envelope = await captureRetryStore.getCaptureRetryEnvelope(metadata.id);
+      const delivery = { ...metadata, delivery_kind: "foreground", source_retry_id: metadata.id, summary: envelopeSessionSummary(envelope) };
+      const prepared = await captureStaging.prepare(envelope, captureStaging.conversionId(metadata.id), delivery);
+      const converted = { ...delivery, body_ref: prepared.ref };
+      await captureStaging.file(converted.body_ref);
+      const existing = await captureStore.getDelivery(converted.id);
+      if (existing && existing.body_ref !== converted.body_ref) throw new Error("capture_queue_conversion_conflict");
+      if (prepared.acknowledgedReceipt) {
+        // Original exact body receipt prevents a restart from resurrecting a
+        // delivery settled before source retirement completed.
+        await captureStore.deleteDelivery(converted.id);
+      } else {
+        if (!existing) await captureStore.putDelivery(converted);
+        const published = await captureStore.getDelivery(converted.id);
+        if (published?.body_ref !== converted.body_ref) throw new Error("capture_queue_conversion_unpublished");
+      }
+      // Published custody precedes atomic source retirement. Any failure keeps
+      // either the original input or its exact idempotently published delivery.
+      await captureRetryStore.retireCaptureRetry(metadata.id);
+      if (prepared.acknowledgedReceipt) await captureStaging.acknowledge(converted.body_ref);
+    }
+    await cacheCaptureQueueState({ version: 3, dropped_count: dropped });
+    return { version: 3, total: await captureStore.deliveryCount(), dropped_count: dropped };
+  })();
+  try { return await queueConversionPromise; } finally { queueConversionPromise = null; }
+}
+
+async function recoverStagedDeliveries() {
+  await getCaptureQueue();
+  for await (const { entry } of captureStore.deliveries()) {
+    if (!entry.preparing || entry.held) continue;
+    try { await captureStaging.resumeDelivery(entry); }
+    catch (error) {
+      await recordCaptureDeliveryFailure(entry, error);
+      await appendDebugLog({ stage: "capture_body_recovery_pending", queued_id: entry.id, error: String(typeof error.code === "string" ? error.code : (error.message || error)) });
+    }
+  }
+  for await (let meta of captureStaging.metadataEntries()) {
+    if (meta.state === "metadata-interrupted") {
+      await appendDebugLog({ stage: "capture_staging_metadata_interrupted", ref: meta.id }); continue;
+    }
+    if (meta.state === "receiver-preparing") {
+      try { meta = await captureStaging.completePreparedBody(meta.id); }
+      catch (error) { await appendDebugLog({ stage: "capture_staging_publication_pending", ref: meta.id, error: String(typeof error.code === "string" ? error.code : (error.message || error)) }); continue; }
+    }
+    if (meta.delivery?.delivery_kind !== "foreground" || !["receiver-ready", "receiver-acknowledged"].includes(meta.state)) continue;
+    await captureStaging.file(meta.id);
+    const existing = await captureStore.getDelivery(meta.delivery.id);
+    if (existing && existing.body_ref !== meta.id) throw new Error("capture_delivery_reference_conflict");
+    if (meta.state === "receiver-acknowledged") {
+      await captureStore.deleteDelivery(meta.delivery.id);
+      await captureStaging.acknowledge(meta.id); continue;
+    }
+    if (!existing) await captureStore.putDelivery({ ...meta.delivery, body_ref: meta.id });
+  }
+}
+
+async function tabIfPresent(tabId) {
+  try { return await runtimeChrome.tabs.get(tabId); }
+  catch (error) {
+    // Only Chrome's positive absence result permits custody retirement or
+    // forgetting an owned transport. Read/extension faults preserve both.
+    const absent = String(error?.message || error).match(/^No tab with id:\s*(\d+)\.?$/i);
+    if (absent && Number(absent[1]) === tabId) return null;
+    throw error;
+  }
+}
+
+async function reconcileCaptureRoots() {
+  await recoverStagedDeliveries();
+  for await (const capture of captureStore.captures()) {
+    if (capture.kind === "native-invocation" && capture.worker_owner !== runtimeWorkerId) await settleNativeInvocation(capture)
+      .catch((error) => appendDebugLog({ stage: "native_invocation_settlement_pending", ref: capture.id, error: String(error.message || error) }));
+    if (capture.delivery_kind === "foreground" && capture.state === "ready" && capture.raw_ref) {
+      await retainCaptureForDelivery({ envelope: nativeNormalizer.envelope(capture), reason: "native_publication_recovery" })
+        .catch((error) => appendDebugLog({ stage: "native_delivery_recovery_pending", ref: capture.id, error: String(typeof error.code === "string" ? error.code : (error.message || error)) }));
+    }
+    if (capture.state === "ready" && capture.raw_ref) {
+      await captureStaging.retireFailedNormalizations(capture.raw_ref, capture.id)
+        .catch((error) => appendDebugLog({ stage: "native_normalization_cleanup_pending", ref: capture.id, error: String(typeof error.code === "string" ? error.code : (error.message || error)) }));
+    }
+    if (!["native-cache", "dom-observation"].includes(capture.kind)) continue;
+    const owner = capture.owner;
+    const tab = await tabIfPresent(owner.tab_id);
+    let gone = !tab;
+    if (!gone && owner.document_id) {
+      try {
+        await runtimeChrome.tabs.sendMessage(owner.tab_id, { type: "polylogue.stagingOwner" }, { documentId: owner.document_id });
+      } catch (error) {
+        // A transient extension transport failure does not establish document
+        // loss. Chrome's targeted document lookup does.
+        gone = /no document with id/i.test(String(error.message || error));
+      }
+    }
+    if (gone) {
+      for await (const ref of captureStore.releaseNativeCaches(owner)) await captureStaging.discardUnreferenced(ref?.id || ref);
+    }
+  }
+  for await (const meta of captureStaging.metadataEntries()) {
+    if (meta.state === "checkpoint-acknowledged" && meta.owner?.checkpoint_snapshot_id) {
+      const snapshot = await captureStore.getCapture(meta.owner.checkpoint_snapshot_id);
+      if (snapshot?.kind === "checkpoint-export") {
+        await captureStore.acknowledgeExportSnapshot(snapshot, meta.receiver_receipt);
+        await captureStaging.discardUnreferenced(meta.id);
+      }
+    }
+    if (meta.kind === "native-response" && !meta.capture_bundle && ["acquiring", "sealed"].includes(meta.state)) {
+      await captureStaging.reconcileNativeAcquisition(meta.id);
+    }
+    if (meta.state === "receiver-acknowledged") {
+      const delivery = meta.delivery;
+      if (delivery?.delivery_kind === "foreground" && !await captureStore.getDelivery(delivery.id)) await captureStaging.acknowledge(meta.id);
+      if (delivery?.delivery_kind === "backfill") {
+        const item = await captureStore.getQueue(delivery.id);
+        if (item && ["complete", "superseded", "cancelled"].includes(item.state)) await captureStaging.acknowledge(meta.id);
+      }
+    }
+    // Unpublished acquisition remains owned while its document exists, and
+    // failed normalization rows retain their evidence for a visible retry.
+    if ((meta.acquisition && meta.acquisition_result) || (meta.capture_bundle && meta.state === "sealed")) {
+      try { await captureStaging.seal({ id: meta.id, token: meta.token }, meta.owner); }
+      catch (error) { await appendDebugLog({ stage: "capture_acquisition_recovery_pending", ref: meta.id, error: String(typeof error.code === "string" ? error.code : (error.message || error)) }); }
+    }
+    if (meta.retired) { await captureStaging.discardUnreferenced(meta.id); continue; }
+    if (!meta.owner?.tab_id || await captureStaging.referenced(meta.id)) continue;
+    const tab = await tabIfPresent(meta.owner.tab_id);
+    if (!tab) await captureStaging.discardUnreferenced(meta.id);
+  }
+}
+
+async function captureQueuePage({ cursor: after = null, pageSize = 50 } = {}) {
+  const queue = await getCaptureQueue();
+  if (!Number.isSafeInteger(pageSize) || pageSize <= 0) throw new Error("capture_queue_page_size_invalid");
+  const entries = [];
+  let pendingAcquisitions = 0;
+  for await (const capture of captureStore.captures()) {
+    if (["native-acquisition", "native-bundle"].includes(capture.kind) && !capture.queue_context) pendingAcquisitions += 1;
+  }
+  let nextCursor = null;
+  for await (const { entry, cursor } of captureStore.deliveries({ after })) {
+    if (entries.length === pageSize) { nextCursor = entries.at(-1).cursor; break; }
+    let tabOrigin = null;
+    try { tabOrigin = entry.tab_url ? new globalThis.URL(entry.tab_url).origin : null; } catch { /* No origin for an invalid retained locator. */ }
+    entries.push({ id: entry.id, reason: entry.reason, enqueued_at: entry.enqueued_at,
+      attempts: entry.attempts, next_attempt_at: entry.next_attempt_at, last_error: entry.last_error,
+      tab_origin: tabOrigin,
+      summary: entry.summary, provider: entry.summary?.provider || null,
+      provider_session_id: entry.summary?.providerSessionId || null, cursor });
+  }
+  return { total: queue.total, dropped_count: queue.dropped_count, pending_acquisition_count: pendingAcquisitions, entries, next_cursor: nextCursor };
 }
 
 async function refreshQueueBadge() {
@@ -923,21 +1062,11 @@ async function refreshQueueBadge() {
   await runtimeChrome.action.setBadgeBackgroundColor({ color: badge.color });
 }
 
-async function cacheCaptureQueue(queue) {
-  cachedQueueLength = queue.entries.length;
-  try {
-    await runtimeChrome.storage.local.set({ [CAPTURE_QUEUE_KEY]: queue });
-    await refreshQueueBadge();
-  } catch {
-    // This derived status cache cannot retract successful body admission or
-    // resurrect a body already retired in the IndexedDB transaction.
-  }
-  return queue;
-}
-
-async function saveCaptureQueue(queue) {
-  await captureRetryStore.replaceCaptureRetryMetadata(queue.entries);
-  return cacheCaptureQueue(queue);
+async function refreshCaptureQueueCount() {
+  const queue = await getCaptureQueue();
+  cachedQueueLength = queue.total;
+  await refreshQueueBadge();
+  return queue.total;
 }
 
 async function ensureRetryAlarm() {
@@ -953,50 +1082,175 @@ async function clearRetryAlarm() {
   await runtimeChrome.alarms.clear(CAPTURE_RETRY_ALARM);
 }
 
+function captureDeliveryOwner(sender) {
+  return { extension_id: sender.id || runtimeChrome.runtime.id,
+    tab_id: sender.tab?.id ?? null, document_id: sender.documentId || null };
+}
+
 function isRetryableCaptureError(error) {
   if (!error) return false;
-  // 408: the receiver cancelled an upload that stopped sending, releasing the
-  // disk space it had reserved; the capture itself was never refused.
-  if (typeof error.status === "number") return error.status >= 500 || error.status === 429 || error.status === 408;
+  if (["capture_delivery_preparation_missing", "capture_staging_asset_unsealed", "capture_staging_invalid_ref", "capture_staging_owner_mismatch", "capture_staging_sequence_mismatch"].includes(error.code) || error.name === "NotFoundError") return false;
+  if (error.code === "receiver_contract_incompatible" || error.code === "capture_cancelled" || error.name === "AbortError" || error.name === "QuotaExceededError") return false;
+  if (typeof error.status === "number") return error.status >= 500 || error.status === 429;
   // No HTTP status means fetch itself rejected (offline, DNS failure, refused
   // connection, CORS) rather than the receiver answering with an error body.
   return true;
 }
 
-async function enqueueCaptureForRetry({ envelope, reason, error, tab = null }) {
+async function retainCaptureForDelivery({ envelope, reason, tab = null, signal = null, operation = null }) {
   return serializeCaptureQueueMutation(async () => {
+  envelope = await withExtensionInstanceAttribution(envelope);
+  if (envelope.capture_record_ref) {
+    const root = await captureStore.foregroundDeliveryRoot(envelope.capture_record_ref);
+    if (root?.delivery) {
+      if (operation) operation.deliveryId = root.delivery.id;
+      return root.delivery;
+    }
+    if (root?.body) {
+      let meta = await captureStaging.metadata(root.body_ref);
+      if (meta.state === "receiver-preparing") meta = await captureStaging.completePreparedBody(meta.id, signal);
+      if (!meta.delivery || !["receiver-ready", "receiver-acknowledged"].includes(meta.state)) throw new Error("capture_delivery_preparation_missing");
+      if (meta.state === "receiver-acknowledged") throw new Error("capture_delivery_already_acknowledged");
+      const retained = { ...meta.delivery, body_ref: meta.id, capture_record_ref: envelope.capture_record_ref };
+      if (operation) operation.deliveryId = retained.id;
+      await captureStore.putDelivery(retained); await refreshCaptureQueueCount(); await ensureRetryAlarm(); return retained;
+    }
+  }
   const entry = {
-    id: buildReceiverRequestId(),
-    envelope,
+    id: buildReceiverRequestId(), delivery_kind: "foreground",
+    summary: envelopeSessionSummary(envelope),
     reason: reason || "content_script_capture",
     tab_id: tab?.id || null,
     tab_url: tab?.url || tab?.pendingUrl || null,
     enqueued_at: new Date().toISOString(),
     attempts: 0,
     next_attempt_at: new Date(Date.now() + retryDelayForAttempt(0)).toISOString(),
-    last_error: String(error?.message || error || "unknown"),
+    last_error: null,
+    capture_record_ref: envelope.capture_record_ref || null,
+    observation_ref: envelope.capture_observation_ref || null,
   };
-  try {
-    await initializeCaptureRetries();
-    await captureRetryStore.putCaptureRetry(captureRetryMetadata(entry), envelope);
-  } catch {
-    await appendCaptureLog({ ok: false, reason: "capture_retry_storage_failed",
-      provider: envelope?.session?.provider || null,
-      provider_session_id: envelope?.session?.provider_session_id || null });
-    return { accepted: false };
+  if (operation) operation.deliveryId = entry.id;
+  if (envelope.receiver_native) {
+    entry.receiver_native = envelope.receiver_native;
+    await captureStore.putDelivery(entry); await refreshCaptureQueueCount(); await ensureRetryAlarm(); return entry;
   }
-  const nextQueue = await getCaptureQueue();
-  await cacheCaptureQueue(nextQueue);
+  let prepared;
+  try { prepared = await captureStaging.prepare(envelope, null, entry, signal); }
+  catch (error) { error.captureDeliveryId = entry.id; await refreshCaptureQueueCount(); throw error; }
+  entry.body_ref = prepared.ref;
+  await getCaptureQueue();
+  await captureStore.putDelivery(entry);
+  await refreshCaptureQueueCount();
   await ensureRetryAlarm();
-  await appendCaptureLog({
-    ok: false,
-    reason: "capture_queued_for_retry",
-    queued_id: entry.id,
-    error: entry.last_error,
-    queue_length: nextQueue.entries.length,
+  return entry;
+  }, signal);
+}
+
+async function drainOwnedNativeBundles(owner, nativeId, beforeSequence, signal) {
+  for await (const bundle of captureStore.captures()) {
+    signal.throwIfAborted();
+    if (bundle.kind !== "native-bundle" || bundle.queue_context || bundle.state !== "ready" ||
+        bundle.native_id !== nativeId || JSON.stringify(bundle.owner) !== JSON.stringify(owner) ||
+        bundle.acquisition_sequence >= beforeSequence) continue;
+    try {
+      const completed = await nativeNormalizer.finishBundle(bundle.id, owner, { signal });
+      const envelope = await nativeNormalizer.normalize({ provider: bundle.provider, rawRef: completed.rawRef,
+        relatedRefs: completed.relatedRefs, acquisition: completed.acquisition, nativeId,
+        extensionVersion: runtimeChrome.runtime.getManifest().version, instanceId: await extensionInstanceId(), signal });
+      await retainCaptureForDelivery({ envelope, reason: "owned_acquisition_recovery", signal });
+    } catch (error) {
+      await appendDebugLog({ stage: "native_bundle_normalization_pending", ref: bundle.id, error: String(typeof error.code === "string" ? error.code : (error.message || error)) });
+      throw error;
+    }
+  }
+}
+
+async function recordCaptureDeliveryFailure(entry, error) {
+  return serializeCaptureQueueMutation(async () => {
+    await getCaptureQueue();
+    const failure = String(error.message || error);
+    const current = await captureStore.getDelivery(entry.id);
+    if (!current) throw new Error("capture_delivery_reference_missing");
+    const retryable = isRetryableCaptureError(error);
+    await captureStore.putDelivery({ ...current, held: !retryable,
+      next_attempt_at: retryable ? current.next_attempt_at : null, last_error: failure });
+    const total = await refreshCaptureQueueCount();
+    await appendCaptureLog({ ok: false, reason: "capture_queued_for_retry", queued_id: entry.id, error: failure, queue_length: total });
   });
-  return { queue: nextQueue, accepted: true };
+}
+
+async function retireCaptureDelivery(entry) {
+  return serializeCaptureQueueMutation(async () => {
+    await getCaptureQueue();
+    // ACK publication precedes retirement of the delivery root.
+    await captureStore.deleteDelivery(entry.id);
+    await refreshCaptureQueueCount();
+    if (entry.receiver_native) return captureStaging.acknowledgeNative(entry.capture_record_ref);
+    try { await captureStaging.metadata(entry.body_ref); }
+    catch (error) { if (error.name === "NotFoundError") return; throw error; }
+    await captureStaging.acknowledge(entry.body_ref);
   });
+}
+
+async function completeForegroundDelivery(delivery, signal) {
+  signal.throwIfAborted();
+  let completion = foregroundDeliveryCompletions.get(delivery.id);
+  if (completion?.controller.signal.aborted && !completion.settled) {
+    // Closing admission belongs to the cancelled physical attempt. A new
+    // invocation waits its settlement without becoming an owner of that abort.
+    const receipt = await new Promise((resolve, reject) => {
+      const abort = () => reject(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+      completion.promise.then(resolve, () => resolve(null))
+        .finally(() => signal.removeEventListener("abort", abort));
+    });
+    signal.throwIfAborted();
+    if (receipt) return receipt;
+    if (foregroundDeliveryCompletions.get(delivery.id) === completion) foregroundDeliveryCompletions.delete(delivery.id);
+    return completeForegroundDelivery(delivery, signal);
+  }
+  if (!completion) {
+    completion = { controller: new globalThis.AbortController(), participants: new Set(), settled: false, promise: null };
+    foregroundDeliveryCompletions.set(delivery.id, completion);
+    completion.promise = Promise.resolve().then(async () => {
+      const receipt = await postJson("/v1/browser-captures", delivery.receiver_native ? { receiver_native: delivery.receiver_native, capture_record_ref: delivery.capture_record_ref } : { capture_body_ref: delivery.body_ref }, null, true, completion.controller.signal);
+      // ACK is durable already. Retirement may be queued behind an unrelated
+      // upload and must not make this invocation own that physical settlement.
+      void retireCaptureDelivery(delivery).catch((error) => appendDebugLog({
+        stage: "capture_ack_cleanup_pending", error: String(error.message || error),
+      }).catch(() => undefined));
+      return receipt;
+    }).finally(() => {
+      completion.settled = true;
+      if (!completion.participants.size && foregroundDeliveryCompletions.get(delivery.id) === completion) foregroundDeliveryCompletions.delete(delivery.id);
+    });
+  }
+  const participant = {};
+  completion.participants.add(participant);
+  try {
+    return await new Promise((resolve, reject) => {
+      const abort = () => {
+        completion.participants.delete(participant);
+        if (completion.participants.size) {
+          // This invocation owns no other caller's progressing upload.
+          const error = new Error("capture_cancelled"); error.name = "AbortError"; error.code = "capture_cancelled";
+          error.sharedDeliveryContinues = true;
+          reject(error);
+        } else {
+          completion.controller.abort(signal.reason);
+          // The final owner drains the physical request. A validated ACK wins.
+          completion.promise.then(resolve, () => reject(signal.reason));
+        }
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+      completion.promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+    });
+  } finally {
+    completion.participants.delete(participant);
+    if (completion.settled && !completion.participants.size && foregroundDeliveryCompletions.get(delivery.id) === completion) foregroundDeliveryCompletions.delete(delivery.id);
+  }
 }
 
 async function recordSupersededCapture(summary, receipt, reason) {
@@ -1014,25 +1268,34 @@ async function recordSupersededCapture(summary, receipt, reason) {
 async function drainCaptureQueue(trigger = "alarm") {
   return serializeCaptureQueueMutation(async () => {
   const queue = await getCaptureQueue();
-  if (!queue.entries.length) {
+  if (!queue.total) {
     await clearRetryAlarm();
     return { drained: 0, remaining: 0 };
   }
   const now = Date.now();
-  const remaining = [];
   let drained = 0;
-  for (const entry of queue.entries) {
+  for await (const { entry } of captureStore.deliveries({ dueAt: now })) {
+    let activelyOwned = false;
+    for (const operation of captureDeliveries.values()) {
+      if (operation.deliveryId === entry.id) { activelyOwned = true; break; }
+    }
+    if (activelyOwned) continue;
+    if (entry.held && trigger !== "manual") continue;
     const dueAt = Date.parse(entry.next_attempt_at || "") || 0;
     if (dueAt > now) {
-      remaining.push(entry);
       continue;
     }
-    const summary = { provider: entry.provider, providerSessionId: entry.provider_session_id,
-      captureMode: entry.capture_fidelity, turnCount: entry.turn_count, attachmentCount: entry.attachment_count };
+    const envelope = entry.receiver_native ? { receiver_native: entry.receiver_native, capture_record_ref: entry.capture_record_ref } : { capture_body_ref: entry.body_ref };
+    const summary = entry.summary;
+    let acknowledged = false;
     try {
-      const envelope = await withExtensionInstanceAttribution(await captureRetryStore.getCaptureRetryEnvelope(entry.id));
+      await captureStaging.resumeDelivery(entry);
       const result = await postJson("/v1/browser-captures", envelope);
+      acknowledged = true;
       drained += 1;
+      await captureStore.deleteDelivery(entry.id);
+      if (entry.receiver_native) await captureStaging.acknowledgeNative(entry.capture_record_ref);
+      else await captureStaging.acknowledge(entry.body_ref);
       if (result.outcome === "superseded") {
         await recordSupersededCapture(summary, result, "capture_retry_superseded");
         continue;
@@ -1088,7 +1351,14 @@ async function drainCaptureQueue(trigger = "alarm") {
         last_receiver_request_id: result.receiver_request_id || null,
       }, entry.tab_url);
     } catch (error) {
+      if (acknowledged) {
+        // A post-ACK cleanup or telemetry failure cannot recreate delivery.
+        // The durable receipt lets startup finish retirement without another POST.
+        await appendDebugLog({ event: "capture_ack_cleanup_pending", stage_id: entry.body_ref, error: String(error.message || error) });
+        continue;
+      }
       if (!isRetryableCaptureError(error)) {
+        await captureStore.putDelivery({ ...entry, next_attempt_at: null, held: true, last_error: String(error.message || error) });
         await updateSessionLedger({
           provider: summary.provider,
           providerSessionId: summary.providerSessionId,
@@ -1112,9 +1382,10 @@ async function drainCaptureQueue(trigger = "alarm") {
         continue;
       }
       const attempts = entry.attempts + 1;
-      remaining.push({
+      await captureStore.putDelivery({
         ...entry,
         attempts,
+        held: false,
         last_error: String(error.message || error),
         next_attempt_at: new Date(now + retryDelayForAttempt(attempts)).toISOString(),
       });
@@ -1127,27 +1398,26 @@ async function drainCaptureQueue(trigger = "alarm") {
       });
     }
   }
-  const nextQueue = { entries: remaining, dropped_count: queue.dropped_count || 0 };
-  await saveCaptureQueue(nextQueue);
-  if (!remaining.length) {
+  const remaining = await refreshCaptureQueueCount();
+  if (!remaining) {
     await clearRetryAlarm();
   } else if (trigger === "alarm") {
-    await appendDebugLog({ stage: "capture_retry_drain", drained, remaining: remaining.length });
+    await appendDebugLog({ stage: "capture_retry_drain", drained, remaining });
   }
-  return { drained, remaining: remaining.length };
+  return { drained, remaining };
   });
 }
 
 async function loadCaptureQueueIntoCache() {
   const queue = await getCaptureQueue();
-  cachedQueueLength = queue.entries.length;
-  if (queue.entries.length) await ensureRetryAlarm();
+  cachedQueueLength = queue.total;
+  if (queue.total) await ensureRetryAlarm();
   return queue;
 }
 
 async function probeReceiverStatus(baseUrl, authToken = "") {
   const requestId = buildReceiverRequestId();
-  const controller = new AbortController();
+  const controller = new globalThis.AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort("receiver_health_timeout"), RECEIVER_HEALTH_TIMEOUT_MS);
   await appendDebugLog({ stage: "receiver_request", method: "GET", path: "/v1/status", endpoint: baseUrl, request_id: requestId });
   try {
@@ -1193,7 +1463,7 @@ async function probeReceiverStatus(baseUrl, authToken = "") {
 // this route's one-time credential.
 async function redeemPairingCode(baseUrl, code) {
   const requestId = buildReceiverRequestId();
-  const controller = new AbortController();
+  const controller = new globalThis.AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort("pairing_redeem_timeout"), RECEIVER_HEALTH_TIMEOUT_MS);
   await appendDebugLog({ stage: "receiver_request", method: "POST", path: "/v1/pairing/redeem", endpoint: baseUrl, request_id: requestId });
   try {
@@ -1475,6 +1745,12 @@ async function appendDebugLog(entry) {
   return next;
 }
 
+// Best-effort private tracing only: no receipt, identity or effect authority.
+function nativePreparationProgress(context, phase, state) {
+  if (!context || typeof context.native_request_id !== "string" || !/^polylogue-native-fetch-\d+-[a-z0-9]+$/.test(context.native_request_id) || !["normalize_admission", "native_prepare", "native_assets", "native_finalize"].includes(phase) || !["BEGIN", "END"].includes(state)) return;
+  void appendDebugLog({ stage: "native_preparation_progress", ...context, phase, state }).catch(() => undefined);
+}
+
 async function updateSessionLedger({ provider, providerSessionId, patch }) {
   if (!provider || !providerSessionId) return null;
   return serializeStorageMutation(async () => {
@@ -1652,20 +1928,142 @@ async function requirePairedTrustedReceiver() {
   return ensureTrustedReceiver();
 }
 
-async function postJson(path, payload, serializedBody = null, timeoutMs = null, requireReceiverRequestId = false) {
+async function prepareNativeCapture(capture, { rawRef, relatedRefs, queueContext, signal, summaryOnly = false, onProgress = null }) {
+  const progress = (phase, state) => { try { onProgress?.(phase, state); } catch { /* Diagnostics cannot change capture. */ } };
+  progress("native_prepare", "BEGIN");
+  await ensureTrustedReceiver();
+  const settings = await receiverSettings();
+  if (!settings.authToken) throw new Error("capture_job_receiver_auth_required");
+  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
+  client.nativeOwnerChanged = async (adopted) => {
+    const retained = await captureStore.getCapture(capture.id);
+    if (!retained) throw new Error("native_preparation_owner_missing");
+    await captureStore.putCapture({ ...retained, receiver_native: { ...retained.receiver_native, adopted,
+      acquisition_id: capture.acquisition_id, preparation_instance_id: capture.preparation_instance_id } });
+  };
+  const refs = capture.provider === "grok" ? { responses: rawRef, ...relatedRefs } : { conversation: rawRef };
+  const members = {};
+  for (const [name, ref] of Object.entries(refs)) {
+    const meta = await captureStaging.metadata(ref.id);
+    captureStaging.requireOwner(meta, ref, capture.owner);
+    if (meta.state !== "sealed") throw new Error("capture_staging_asset_unsealed");
+    members[name] = { sha256: meta.sha256, size_bytes: meta.bytes };
+  }
+  const rawRevision = await client.nativeRevision(capture.provider, capture.native_id, members);
+  const binding = { preparation_instance_id: capture.preparation_instance_id,
+    extension_instance_id: capture.extension_instance_id, acquisition_sequence: capture.acquisition_sequence,
+    invocation_id: capture.invocation_id, raw_revision: rawRevision, native_id: capture.native_id,
+    source_url: capture.source_url, document_id: capture.owner.document_id };
+  let adopted;
+  if (capture.receiver_native?.adopted) adopted = await client.refreshNativeOwner(capture.receiver_native.adopted, capture.preparation_instance_id, signal);
+  else if (queueContext) {
+    const job = await captureStore.assertJobExecution(queueContext.jobId, queueContext.owner, queueContext.generation);
+    const accountHandle = await providerAccountHandle(capture.provider);
+    if (!accountHandle) throw new Error("capture_job_account_scope_unresolved");
+    adopted = await client.recoverOrCreate({ provider: capture.provider, accountHandle,
+      locator: { kind: "backfill", provider: capture.provider, cutoff: job.cutoff },
+      intentPayload: { provider: capture.provider, cutoff: job.cutoff }, sessionId: capture.preparation_instance_id });
+    if (adopted.scope.key !== job.account_scope) throw new Error("capture_job_account_scope_mismatch");
+  } else adopted = await client.recoverInvocation({ provider: capture.provider, creationToken: capture.preparation_token,
+    binding, sessionId: capture.preparation_instance_id });
+  const reference = { adopted, acquisition_id: capture.acquisition_id, preparation_instance_id: capture.preparation_instance_id };
+  capture = { ...capture, receiver_native: reference, raw_revision_sha256: rawRevision };
+  await captureStore.putCapture(capture);
+  await client.beginNative(adopted, capture.acquisition_id, binding, Object.keys(refs), signal);
+  for (const [name, ref] of Object.entries(refs)) {
+    adopted = await client.refreshNativeOwner(adopted, capture.preparation_instance_id, signal);
+    const meta = await captureStaging.metadata(ref.id);
+    await client.nativeMember(adopted, capture.acquisition_id, name, await captureStaging.file(ref.id), meta.response_metadata || {}, meta.sha256, signal);
+  }
+  adopted = await client.refreshNativeOwner(adopted, capture.preparation_instance_id, signal);
+  const prepared = await client.prepareNative(adopted, capture.acquisition_id, {
+    captured_at: capture.observed_at, extension_instance_id: capture.extension_instance_id,
+    acquisition_sequence: capture.acquisition_sequence, source_url: capture.source_url,
+    extension_id: runtimeChrome.runtime.id || null, adapter_name: `${capture.provider}-native-v1`,
+    adapter_version: capture.extension_version, capture_mode: "snapshot", provider_meta: capture.attribution },
+    { capture_fidelity: "native_full", ...capture.attribution }, signal);
+  const preparedRoot = await captureStore.getCapture(capture.id);
+  await captureStore.putCapture({ ...preparedRoot, receiver_summary: { raw_revision: rawRevision, plan_digest: prepared.plan_digest, summary: prepared.summary } });
+  progress("native_prepare", "END");
+  if (summaryOnly) return { rawRevision, summary: prepared.summary, reference: { ...reference, adopted, plan_digest: prepared.plan_digest } };
+  progress("native_assets", "BEGIN");
+  for await (const asset of client.nativePlan(adopted, capture.acquisition_id, capture.preparation_instance_id, signal)) {
+    if (asset.receipt) continue;
+    const descriptor = asset.descriptor;
+    let outcome = { status: "no_resolvable_source" }; let file = null; let sha256 = null;
+    if (descriptor.provider_meta.native_inline_sha256) {
+      outcome = { status: "retained_native_bytes", sha256: descriptor.provider_meta.native_inline_sha256, size_bytes: descriptor.provider_meta.native_inline_size_bytes };
+    } else if (capture.provider !== "claude-ai") {
+      signal?.throwIfAborted();
+      const cancel = () => { void runtimeChrome.tabs.sendMessage(capture.owner.tab_id, { type: "polylogue.cancelRecordAssets", capture_ref: rawRef.id }, { documentId: capture.owner.document_id }).catch(() => undefined); };
+      signal?.addEventListener("abort", cancel, { once: true });
+      try {
+        const result = await runtimeChrome.tabs.sendMessage(capture.owner.tab_id, { type: "polylogue.acquireRecordAssets",
+          provider: capture.provider, nativeId: capture.native_id, capture_ref: rawRef.id,
+          recordKey: descriptor.original_record_key ?? String(descriptor.original_record_ordinal),
+          attachmentOrdinal: asset.ordinal, attachments: [descriptor] }, { documentId: capture.owner.document_id });
+        signal?.throwIfAborted();
+        if (!result?.ok) throw new Error(result?.error || "native_asset_acquisition_failed");
+        const acquired = result.acquisition.attachments?.[0];
+        if (acquired?.staged_asset) {
+          const meta = await captureStaging.metadata(acquired.staged_asset.id);
+          captureStaging.requireOwner(meta, acquired.staged_asset, capture.owner);
+          file = await captureStaging.file(meta.id); sha256 = meta.sha256; outcome = { status: "acquired" };
+        } else outcome = { status: result.acquisition.outcome.failed?.[0]?.status || "no_resolvable_source" };
+      } finally { signal?.removeEventListener("abort", cancel); }
+    }
+    adopted = await client.refreshNativeOwner(adopted, capture.preparation_instance_id, signal);
+    await client.nativeAsset(adopted, capture.acquisition_id, asset, outcome, file, sha256, signal);
+  }
+  progress("native_assets", "END");
+  progress("native_finalize", "BEGIN");
+  adopted = await client.refreshNativeOwner(adopted, capture.preparation_instance_id, signal);
+  const final = await client.finalizeNative(adopted, capture.acquisition_id, prepared.plan_digest, signal);
+  progress("native_finalize", "END");
+  return { rawRevision, summary: prepared.summary, reference: { ...reference, adopted,
+    plan_digest: prepared.plan_digest, sha256: final.sha256, size_bytes: final.size_bytes } };
+}
+
+async function publishNativeCapture(reference, recordRef, signal) {
+  await ensureTrustedReceiver();
+  const capture = await captureStore.getCapture(recordRef);
+  if (!capture || capture.state !== "ready" || capture.receiver_native.sha256 !== reference.sha256) throw new Error("native_final_artifact_conflict");
+  if (capture.receiver_receipt) return capture.receiver_receipt;
+  const settings = await receiverSettings();
+  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, fetchImpl: runtimeNetwork });
+  client.nativeOwnerChanged = async (adopted) => {
+    const retained = await captureStore.getCapture(recordRef);
+    if (!retained) throw new Error("native_preparation_owner_missing");
+    await captureStore.putCapture({ ...retained, receiver_native: { ...reference, adopted } });
+  };
+  const adopted = await client.refreshNativeOwner(reference.adopted, reference.preparation_instance_id, signal);
+  const receipt = await client.publishNative(adopted, reference.acquisition_id, reference.plan_digest, reference.sha256, signal);
+  const error = receiverAckContractError(receipt, reference.sha256);
+  if (error) throw error;
+  await captureStore.putCapture({ ...capture, receiver_native: { ...reference, adopted }, receiver_receipt: receipt });
+  return receipt;
+}
+
+async function postJson(path, payload, serializedBody = null, requireReceiverRequestId = false, signal = null) {
+  if (path === "/v1/browser-captures" && payload.receiver_native) return publishNativeCapture(payload.receiver_native, payload.capture_record_ref, signal);
   await ensureTrustedReceiver();
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
-  const serialized = serializedBody || JSON.stringify(payload);
   await appendDebugLog({ stage: "receiver_request", method: "POST", path, request_id: requestId, has_body: true });
-  const controller = timeoutMs ? new AbortController() : null;
-  const timeout = timeoutMs ? globalThis.setTimeout(() => controller.abort("receiver_request_timeout"), timeoutMs) : 0;
+  let captureBody = null;
+  if (path === "/v1/browser-captures") {
+    const prepared = await captureStaging.prepare(payload, null, null, signal);
+    captureBody = prepared;
+    if (prepared.acknowledgedReceipt) return prepared.acknowledgedReceipt;
+    serializedBody = prepared.body;
+  }
+  signal?.throwIfAborted();
   try {
     const response = await runtimeNetwork(`${settings.baseUrl}${path}`, {
       method: "POST",
       headers: await requestHeaders({ hasBody: true, requestId }),
-      body: serialized,
-      signal: controller?.signal,
+      body: serializedBody || JSON.stringify(payload),
+      signal,
     });
     const acknowledgedRequestId = response.headers.get("X-Request-ID");
     const receiverRequestId = acknowledgedRequestId || requestId;
@@ -1696,15 +2094,10 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null, 
       throw error;
     }
     const receipt = { ...body, receiver_request_id: receiverRequestId };
-    if (path === "/v1/browser-captures") {
-      const contractError = receiverAckContractError(
-        { ...receipt, receiver_request_id: acknowledgedRequestId }, await serializedContentHash(serialized),
-      );
-      if (contractError) {
-        contractError.receiverRequestId = acknowledgedRequestId;
-        contractError.status = response.status;
-        throw contractError;
-      }
+    if (captureBody) {
+      const contractError = receiverAckContractError(receipt, captureBody.contentHash);
+      if (contractError || !acknowledgedRequestId) throw contractError || new Error("receiver_contract_incompatible:missing_receiver_request_id");
+      await captureStaging.markAcknowledged(captureBody.ref, receipt);
     }
     return receipt;
   } catch (error) {
@@ -1717,8 +2110,6 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null, 
       error: String(error.message || error),
     });
     throw error;
-  } finally {
-    if (timeout) globalThis.clearTimeout(timeout);
   }
 }
 
@@ -1746,7 +2137,7 @@ async function getJson(path, timeoutMs = null) {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "GET", path, request_id: requestId });
-  const controller = timeoutMs ? new AbortController() : null;
+  const controller = timeoutMs ? new globalThis.AbortController() : null;
   const timeout = timeoutMs ? globalThis.setTimeout(() => controller.abort("receiver_request_timeout"), timeoutMs) : 0;
   try {
     const response = await runtimeNetwork(`${settings.baseUrl}${path}`, {
@@ -1819,7 +2210,7 @@ async function missionIntelligenceProjection(state, configuredUrl) {
     const status = error?.status === 401 ? "unauthorized" : error?.status === 404 ? "incompatible" : error?.status ? "receiver_error" : "offline";
     return unavailable(status, error?.message || "projection_unavailable");
   }
-  const archiveUrl = new URL(base);
+  const archiveUrl = new globalThis.URL(base);
   // The receiver (8765) does not serve archive pages. The daemon's canonical
   // reader is the separate web endpoint (8766) and uses /s/:session_id.
   if (archiveUrl.port === "8765") archiveUrl.port = "8766";
@@ -1842,7 +2233,7 @@ async function missionIntelligenceProjection(state, configuredUrl) {
 async function backfillReceiverPreflight() {
   let capability;
   try {
-    capability = await getJson("/v1/browser-captures/capabilities", PROVIDER_REQUEST_TIMEOUT_MS);
+    capability = await getJson("/v1/browser-captures/capabilities");
   } catch (error) {
     if (error?.status === 404) throw new Error("receiver_contract_incompatible:capability_endpoint_missing");
     throw error;
@@ -1887,10 +2278,11 @@ async function ensureCaptureScripts(tab) {
 
 function providerForUrl(url) {
   try {
-    const hostname = new URL(url || "").hostname;
+    const hostname = new globalThis.URL(url || "").hostname;
     if (hostname === "chatgpt.com") return "chatgpt";
     if (hostname === "claude.ai") return "claude-ai";
     if (hostname === "gemini.google.com") return "gemini";
+    if (hostname === "grok.com") return "grok";
   } catch {
     return null;
   }
@@ -1898,7 +2290,7 @@ function providerForUrl(url) {
 }
 
 function providerRequestFromUrl(urlValue) {
-  const url = new URL(urlValue);
+  const url = new globalThis.URL(urlValue);
   if (url.hostname === "chatgpt.com") {
     if (url.pathname === "/backend-api/conversations") {
       const archived = url.searchParams.get("is_archived");
@@ -1930,16 +2322,21 @@ function providerRequestFromUrl(urlValue) {
       nativeId: decodeURIComponent(conversation[2]),
     } };
   }
+  if (url.hostname === "grok.com") {
+    if (url.pathname === "/rest/app-chat/conversations") return { provider: "grok", operation: "inventory", params: {
+      pageSize: Number.parseInt(url.searchParams.get("pageSize") || "60", 10), pageToken: url.searchParams.get("pageToken") } };
+    const conversation = url.pathname.match(/^\/rest\/app-chat\/conversations\/([A-Za-z0-9_-]+)(?:\/(responses|response-node))?$/);
+    if (conversation) return { provider: "grok", operation: conversation[2] || "conversation", params: { nativeId: conversation[1] } };
+  }
   throw new Error("backfill_provider_url_not_allowed");
 }
 
 async function waitForProviderTab(tabId, provider) {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  for (;;) {
     const tab = await runtimeChrome.tabs.get(tabId);
     if (providerForUrl(tab?.url || tab?.pendingUrl) === provider && tab?.status === "complete") return tab;
     await new Promise((resolve) => globalThis.setTimeout(resolve, 250));
   }
-  throw new Error("backfill_provider_tab_load_timeout");
 }
 
 function providerTransportSessionKey(provider) {
@@ -1982,15 +2379,6 @@ async function observedProviderTab(provider) {
   return tabs.find((tab) => providerForUrl(tab.url || tab.pendingUrl) === provider) || null;
 }
 
-async function tabIfPresent(tabId) {
-  try { return await runtimeChrome.tabs.get(tabId); }
-  catch (error) {
-    const absent = String(error?.message || error).match(/^No tab with id:\s*(\d+)\.?$/i);
-    if (absent && Number(absent[1]) === tabId) return null;
-    throw error;
-  }
-}
-
 async function acquireProviderTab(provider, { allowCreate = false } = {}) {
   // Passive capture and inventory use a normal provider page only when the
   // operator already has one open. They must never materialize a root tab.
@@ -2028,7 +2416,7 @@ async function acquireProviderTab(provider, { allowCreate = false } = {}) {
       await forgetProviderTransport(provider, storedTabId);
     }
   }
-  const url = provider === "chatgpt" ? "https://chatgpt.com/" : "https://claude.ai/";
+  const url = provider === "chatgpt" ? "https://chatgpt.com/" : provider === "grok" ? "https://grok.com/" : "https://claude.ai/";
   const created = await runtimeChrome.tabs.create({ url, active: false });
   if (!created?.id) throw new Error("backfill_provider_tab_create_failed");
   await runtimeChrome.storage.session.set({ [key]: created.id });
@@ -2055,22 +2443,21 @@ function providerTab(provider, { allowCreate = false } = {}) {
   return tracked;
 }
 
-// A provider-controlled Retry-After can parse to Infinity or NaN. Only a
-// finite positive number of seconds is a usable delay; anything else falls
-// back to the default rate-limit delay rather than an unbounded deadline.
-// A finite but huge value (1e307) still overflows once converted to
-// milliseconds, so seconds are bounded by the cooldown ceiling here, before
-// any conversion.
 function finiteRetryAfterSeconds(value) {
   const seconds = Number(value);
   if (!Number.isFinite(seconds) || seconds <= 0) return null;
-  return Math.min(seconds, MAX_PROVIDER_COOLDOWN_MS / 1000);
+  requireProviderCooldownMs(Math.ceil(seconds * 1000));
+  return seconds;
 }
 
-function withProviderTransportOperation(provider, operation, { checkThrottle = true } = {}) {
+function withProviderTransportOperation(provider, operation, { checkThrottle = true, signal = null } = {}) {
+  let started = false;
   const prior = providerTransportOperations.get(provider) || Promise.resolve();
   const result = prior.catch(() => undefined).then(async () => {
+    signal?.throwIfAborted();
+    started = true;
     if (checkThrottle) await requireProviderThrottleAvailability(provider);
+    signal?.throwIfAborted();
     try {
       const value = await operation();
       // Some operations report a provider refusal as a resolved failure
@@ -2098,7 +2485,13 @@ function withProviderTransportOperation(provider, operation, { checkThrottle = t
     if (providerTransportOperations.get(provider) === tracked) providerTransportOperations.delete(provider);
   });
   providerTransportOperations.set(provider, tracked);
-  return tracked;
+  if (!signal) return tracked;
+  return new Promise((resolve, reject) => {
+    const abort = () => { if (!started) reject(signal.reason); };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    tracked.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 function providerThrottleError(deadline, nowMs) {
@@ -2118,34 +2511,13 @@ async function requireProviderThrottleAvailability(provider) {
   if (deadline > now) throw providerThrottleError(deadline, now);
 }
 
-// The background must not trust a content-script number. `error.retryAfterMs`
-// on the `polylogue.providerRateLimited` path is whatever the ChatGPT content
-// script forwarded, and that content script in turn read it out of the
-// page-controlled MAIN world, so this is a privilege boundary, not a formatting
-// helper. Clamp every branch, and say so when we do.
-function boundedProviderRetryDelay(delayMs, source, { floorMs = 0 } = {}) {
-  const clamp = clampProviderCooldownMs(delayMs);
-  if (clamp.clamped) {
-    runtimeChrome?.log?.(
-      "provider retry-after clamped",
-      { source, requested_ms: clamp.requestedMs, applied_ms: clamp.valueMs },
-    );
-  }
-  return Math.max(floorMs, clamp.valueMs);
-}
-
 function retryDelayFromProviderError(error, classified) {
-  if (Number.isFinite(error?.retryAfterMs)) {
-    return boundedProviderRetryDelay(error.retryAfterMs, "provider_error_retry_after_ms", { floorMs: 1_000 });
-  }
+  if (error?.retryAfterMs != null) return requireProviderCooldownMs(Math.max(1_000, error.retryAfterMs));
   if (error?.retryAfter) {
     const delay = retryAfterMs({ get: (name) => (name.toLowerCase() === "retry-after" ? error.retryAfter : null) }, Date.now());
-    if (delay !== null) return boundedProviderRetryDelay(delay, "provider_error_retry_after_header", { floorMs: 1_000 });
+    if (delay !== null) return requireProviderCooldownMs(Math.max(1_000, delay));
   }
-  return boundedProviderRetryDelay(
-    failureRetryDelayMs(0, classified.outcome, classified.retry_after_seconds),
-    "classified_retry_after_seconds",
-  );
+  return requireProviderCooldownMs(failureRetryDelayMs(0, classified.outcome, classified.retry_after_seconds));
 }
 
 async function recordProviderThrottle(provider, error, classified) {
@@ -2168,6 +2540,7 @@ function pageContextResponse(response) {
     status: Number(response?.status || 0),
     polyloguePageContext: true,
     polylogueAuthReason: response?.authReason || null,
+    polylogueSelectedOrganizationId: response?.selectedOrganizationId || null,
     headers: { get: (name) => {
       const normalized = name.toLowerCase();
       if (normalized === "content-type") return response?.contentType || "";
@@ -2178,45 +2551,148 @@ function pageContextResponse(response) {
   };
 }
 
-function scriptingResultTooLarge(error) {
-  const message = String(error?.message || error).toLowerCase();
-  return /(?:result|response|message|script).{0,100}(?:too large|exceed(?:s|ed)?|maximum).{0,100}(?:size|limit|length)/.test(message);
+function providerPageFailure(result, fallback) {
+  const error = new Error(String(result?.error || fallback));
+  if (result?.outcome === "rate_limited" && result.status === 429) {
+    error.outcome = "rate_limited"; error.status = 429; error.retryAfter = result.retryAfter;
+  }
+  return error;
 }
 
-// runtimeChrome.tabs.sendMessage (used by captureProviderConversation below to
-// hand the bridge projection to the content script as `nativePayload`) has an
-// independent Chrome extension IPC limit.
-const MAX_EXACT_CAPTURE_NATIVE_PAYLOAD_BYTES = 24 * 1024 * 1024;
+async function runProviderPageScript(transport, request, signal = null) {
+  await ensureCaptureScripts(transport.tab);
+  signal?.throwIfAborted();
+  const requestId = globalThis.crypto.randomUUID();
+  let cancellation = Promise.resolve();
+  const cancel = () => {
+    cancellation = runtimeChrome.scripting.executeScript({ target: { tabId: transport.tab.id }, world: "MAIN",
+      func: (id, ownerId) => globalThis.window.dispatchEvent(new globalThis.CustomEvent("polylogue.providerCancel", { detail: { requestId: id, ownerId } })), args: [requestId, runtimeChrome.runtime.id] });
+    void cancellation.catch(() => undefined);
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    const executions = await runtimeChrome.scripting.executeScript({
+      target: { tabId: transport.tab.id }, world: "MAIN",
+      func: executeProviderPageRequest, args: [{ ...request, requestId, ownerId: runtimeChrome.runtime.id }],
+    });
+    signal?.throwIfAborted();
+    return executions?.[0]?.result;
+  } finally { signal?.removeEventListener("abort", cancel); await cancellation; }
+}
 
-async function runProviderPageScript(transport, request) {
-  const executions = await withTimeout(
-    runtimeChrome.scripting.executeScript({
-      target: { tabId: transport.tab.id },
-      world: "MAIN",
-      func: executeProviderPageRequest,
-      args: [request],
-    }),
-    BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
-    "backfill_page_request",
-  );
-  return executions?.[0]?.result;
+function backfillNativeBundleOwner() {
+  return {
+    begin: async (nativeId, signal, context) => withProviderTransportOperation("grok", async () => {
+      signal?.throwIfAborted();
+      if (!context?.item) throw new Error("native_bundle_execution_missing");
+      const transport = await providerTab("grok");
+      await ensureCaptureScripts(transport.tab);
+      const documents = await runtimeChrome.scripting.executeScript({ target: { tabId: transport.tab.id }, world: "ISOLATED", func: () => true });
+      signal?.throwIfAborted();
+      const owner = { tab_id: transport.tab.id, document_id: documents?.[0]?.documentId || null, provider: "grok" };
+      const bundle = await captureStore.beginNativeBundle({ extensionInstanceId: await extensionInstanceId(), owner, provider: "grok", nativeId, bundleId: globalThis.crypto.randomUUID(),
+        requiredReplies: ["conversation", "responses"], queueContext: { itemId: context.item.id, jobId: context.jobId, owner: context.owner, generation: context.generation } });
+      Object.assign(context.item, await captureStore.getQueue(context.item.id));
+      return bundle;
+    }, { signal }),
+    response: async (bundleId, name, response, signal) => {
+      signal?.throwIfAborted();
+      const bundle = await captureStore.getCapture(bundleId);
+      if (!bundle) throw new Error("native_bundle_recovery_missing");
+      if (!response.ok) {
+        await captureStore.publishNativeBundleReply(bundleId, bundle.owner, name, null, { ok: false, status: response.status, retry_after: response.headers.get("retry-after") });
+        await captureStore.finishNativeBundle(bundleId, bundle.owner);
+      } else if (!bundle.replies[name] || bundle.replies[name].id !== response.captureRawRef?.id) throw new Error("native_bundle_reply_missing");
+    },
+    restoreReply: async (ref, signal) => {
+      signal?.throwIfAborted();
+      let meta;
+      try { meta = await captureStaging.metadata(ref.id); await captureStaging.file(ref.id); }
+      catch (error) {
+        if (error?.name === "NotFoundError" || error?.code === "capture_staging_interrupted") throw new Error("native_bundle_recovery_missing");
+        throw error;
+      }
+      if (meta.token !== ref.token || meta.state !== "sealed" || meta.owner.provider !== "grok") throw new Error("native_bundle_reply_invalid");
+      return stagedProviderResponse({ ok: true, status: meta.response_metadata?.status || 200,
+        contentType: meta.response_metadata?.content_type || "application/json", bodyRef: ref }, { provider: "grok" }, meta);
+    },
+    finish: async (bundleId, signal) => {
+      const bundle = await captureStore.getCapture(bundleId);
+      if (!bundle) throw new Error("native_bundle_recovery_missing");
+      return nativeNormalizer.finishBundle(bundleId, bundle.owner, { signal });
+    },
+  };
+}
+
+function nativeSessionIdFromHeaders(provider, headers) {
+  if (provider === "chatgpt") return headers.conversation_id || headers.id;
+  if (provider === "claude-ai") return headers.uuid || headers.id;
+  return headers.conversationId || headers.id;
+}
+
+function stagedProviderResponse(wire, request, meta) {
+    const response = pageContextResponse(wire);
+    response.captureRawRef = wire.bodyRef;
+    // Inventory replies are provider-paged. Native conversation responses use
+    // the streaming normalizer and never call this page materializer.
+    response.json = async () => {
+      const value = JSON.parse(await (await captureStaging.file(meta.id)).text());
+      if (meta.kind === "provider-inventory") await captureStaging.discardUnreferenced(meta.id);
+      return value;
+    };
+    response.normalizeCapture = async (item, attribution, relatedResponses = {}, signal = null, queueContext = null) => {
+      const controller = new globalThis.AbortController();
+      const abort = () => controller.abort(signal.reason);
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+      const operation = { rawId: meta.id, controller, promise: null };
+      trackNativeOperation(operation);
+      operation.promise = (async () => nativeNormalizer.normalize({ provider: request.provider, rawRef: wire.bodyRef, nativeId: item.native_id,
+        extensionVersion: runtimeChrome.runtime.getManifest().version, instanceId: await extensionInstanceId(), attribution: { backfill: attribution }, signal: controller.signal,
+        relatedRefs: Object.fromEntries(Object.entries(relatedResponses).map(([key, value]) => [key, value.captureRawRef])), queueContext }))();
+      try {
+        const envelope = await operation.promise;
+        await captureStaging.retireFailedNormalizations(meta.id, envelope.capture_record_ref, controller.signal)
+          .catch((error) => appendDebugLog({ stage: "native_normalization_cleanup_pending", raw_ref: meta.id, error: String(typeof error.code === "string" ? error.code : (error.message || error)) }));
+        return envelope;
+      } finally {
+        try { if (queueContext) Object.assign(item, await captureStore.getQueue(item.id)); }
+        finally { signal?.removeEventListener("abort", abort); operation.finish(); }
+      }
+    };
+    return response;
 }
 
 async function providerPageFetch(url, options = {}) {
   if (options.method && options.method !== "GET") throw new Error("backfill_provider_method_not_allowed");
-  const request = providerRequestFromUrl(url);
-  request.maxResponseBytes = 32 * 1024 * 1024;
+  const request = { ...providerRequestFromUrl(url), capture_bundle: options.captureBundle || null,
+    queue_context: options.queueContext ? { itemId: options.queueContext.item.id, jobId: options.queueContext.jobId,
+      owner: options.queueContext.owner, generation: options.queueContext.generation, nativeId: options.queueContext.item.native_id } : null };
+  if (request.queue_context) {
+    const context = request.queue_context;
+    const job = await captureStore.assertJobExecution(context.jobId, context.owner, context.generation);
+    if (!/^h1:[A-Za-z0-9_-]{43}$/.test(job.account_scope || "")) throw new Error("capture_job_account_scope_unresolved");
+    const item = await captureStore.getQueue(context.itemId);
+    if (item?.raw_acquisition_ref) {
+      const ref = item.raw_acquisition_ref;
+      const meta = await captureStaging.metadata(ref.id);
+      if (meta.state !== "sealed") throw new Error("native_acquisition_recovery_pending");
+      if (meta.token !== ref.token || meta.owner.provider !== request.provider || meta.source_url !== url ||
+          meta.queue_context?.jobId !== context.jobId || meta.queue_context?.itemId !== context.itemId) throw new Error("native_acquisition_identity_conflict");
+      const headers = await nativeNormalizer.headers(ref, options.signal);
+      if (String(nativeSessionIdFromHeaders(request.provider, headers) || "") !== context.nativeId) throw new Error("native_capture_identity_mismatch");
+      return stagedProviderResponse({ ok: true, status: meta.response_metadata?.status || 200,
+        contentType: meta.response_metadata?.content_type || "application/json", bodyRef: ref }, request, meta);
+    }
+  }
   return withProviderTransportOperation(request.provider, async () => {
     const transport = await providerTab(request.provider);
     let result;
     try {
-      result = await runProviderPageScript(transport, request);
+      result = await runProviderPageScript(transport, request, options.signal);
     } catch (error) {
       if (transport.owned) {
         if (transport.cleanupAlarm) await cleanupBackfillTransportTab(transport.cleanupAlarm);
-      }
-      if (scriptingResultTooLarge(error)) {
-        throw new Error("backfill_bridge_projection_too_large:observed_bytes=unavailable;limit_bytes=25165824");
       }
       throw error;
     }
@@ -2225,9 +2701,20 @@ async function providerPageFetch(url, options = {}) {
       if (error.includes("auth_context") || error.includes("selected_organization")) {
         return pageContextResponse({ ok: false, status: 401, contentType: "application/json", authReason: error, body: JSON.stringify({ error }) });
       }
-      throw new Error(error);
+      throw providerPageFailure(result, "backfill_page_request_failed");
     }
-    const response = pageContextResponse(result.response);
+    const wire = result.response;
+    if (!wire?.ok) {
+      const failed = pageContextResponse(wire);
+      if (failed.status === 429) {
+        const error = new Error("provider_rate_limited"); error.outcome = "rate_limited"; error.retryAfter = wire.retryAfter;
+        await recordProviderThrottle(request.provider, error, classifyBrowserActionFailure(error));
+      }
+      return failed;
+    }
+    const meta = await captureStaging.metadata(wire.bodyRef?.id);
+    if (meta.token !== wire.bodyRef?.token || meta.state !== "sealed" || meta.owner.tab_id !== transport.tab.id || meta.owner.provider !== request.provider) throw new Error("capture_staging_owner_mismatch");
+    const response = stagedProviderResponse(wire, request, meta);
     if (response.status === 429) {
       const error = new Error("provider_rate_limited");
       error.outcome = "rate_limited";
@@ -2235,7 +2722,7 @@ async function providerPageFetch(url, options = {}) {
       await recordProviderThrottle(request.provider, error, classifyBrowserActionFailure(error));
     }
     return response;
-  });
+  }, { signal: options.signal });
 }
 
 async function providerAccountHandle(provider) {
@@ -2243,18 +2730,13 @@ async function providerAccountHandle(provider) {
     const transport = await providerTab(provider);
     let result;
     try {
-      const executions = await withTimeout(
-        runtimeChrome.scripting.executeScript({
-          target: { tabId: transport.tab.id },
-          world: "MAIN",
-          func: executeProviderPageRequest,
-          args: [{ provider, operation: "identity", params: {} }],
-        }),
-        BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
-        "backfill_provider_identity",
-      );
+      await ensureCaptureScripts(transport.tab);
+      const executions = await runtimeChrome.scripting.executeScript({
+        target: { tabId: transport.tab.id }, world: "MAIN",
+        func: executeProviderPageRequest, args: [{ provider, operation: "identity", params: {}, ownerId: runtimeChrome.runtime.id }],
+      });
       result = executions?.[0]?.result;
-      if (!result?.ok) throw new Error(String(result?.error || "backfill_provider_identity_unavailable"));
+      if (!result?.ok) throw providerPageFailure(result, "backfill_provider_identity_unavailable");
       const accountHandle = result.response?.accountHandle;
       if (typeof accountHandle !== "string" || !accountHandle.trim()) {
         throw new Error("backfill_provider_identity_unavailable");
@@ -2346,11 +2828,7 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
     };
     const pageProvider = archiveProviderForUrl(conversationUrl);
     const resultWithTimeout = await withProviderTransportOperation(pageProvider, async () => {
-      const result = await withTimeout(
-        runtimeChrome.tabs.sendMessage(tab.id, captureMessage),
-        CAPTURE_MESSAGE_TIMEOUT_MS,
-        "capture_message",
-      );
+      const result = await runtimeChrome.tabs.sendMessage(tab.id, captureMessage);
       if (!result?.ok && result?.outcome === "rate_limited") {
         const error = new Error("provider_rate_limited");
         error.outcome = "rate_limited";
@@ -2365,6 +2843,7 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
     if (resultWithTimeout?.ok && resultWithTimeout.captureResult?.outcome === "superseded") return resultWithTimeout;
     if (resultWithTimeout?.ok) {
       const envelopeSession = resultWithTimeout.envelope?.session || {};
+      const summary = envelopeSessionSummary(resultWithTimeout.envelope || {});
       const provider = resultWithTimeout.captureResult?.provider || envelopeSession.provider;
       const providerSessionId = resultWithTimeout.captureResult?.provider_session_id || envelopeSession.provider_session_id;
       const pageProvider = archiveProviderForUrl(tab.url || tab.pendingUrl || "") || provider;
@@ -2389,10 +2868,8 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
           tab_id: tab.id,
           tab_url: tab.url || tab.pendingUrl || null,
           capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
-          turn_count: Array.isArray(envelopeSession.turns) ? envelopeSession.turns.length : null,
-          attachment_count: Array.isArray(envelopeSession.turns)
-            ? envelopeSession.turns.reduce((count, turn) => count + (Array.isArray(turn.attachments) ? turn.attachments.length : 0), 0)
-            : null,
+          turn_count: summary.turnCount,
+          attachment_count: summary.attachmentCount,
           archive_state: resultWithTimeout.archiveState || null,
           receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
           last_error: null,
@@ -2418,8 +2895,8 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
         provider: pageProvider,
         provider_session_id: pageSessionId,
         capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
-        asset_acquisition: envelopeSession.provider_meta?.asset_acquisition || null,
-        turn_count: Array.isArray(envelopeSession.turns) ? envelopeSession.turns.length : null,
+        asset_acquisition: summary.assetAcquisition,
+        turn_count: summary.turnCount,
         last_receiver_request_id:
           resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null
       }, tab.url || tab.pendingUrl || null);
@@ -2478,13 +2955,52 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
   }
 }
 
+async function settleNativeInvocation(row) {
+  const ref = { id: row.id, token: row.token };
+  await captureStore.closeNativeInvocation(ref, false);
+  try {
+    const result = await runtimeChrome.tabs.sendMessage(row.owner.tab_id,
+      { type: "polylogue.cancelCapture", invocationRef: ref }, row.owner.document_id ? { documentId: row.owner.document_id } : undefined);
+    if (!result?.ok) throw new Error("native_invocation_settlement_pending");
+    await captureStore.closeNativeInvocation(ref);
+  } catch (error) {
+    const tab = await tabIfPresent(row.owner.tab_id);
+    if (!tab || (row.owner.document_id && /no document with id/i.test(String(error.message || error)))) {
+      await captureStore.closeNativeInvocation(ref); return;
+    }
+    throw error;
+  }
+}
+
+async function requireNativeInvocation(ref, owner, nativeId) {
+  const row = ref ? await captureStore.getCapture(ref.id) : null;
+  if (!row || row.kind !== "native-invocation" || row.token !== ref.token || row.worker_owner !== runtimeWorkerId ||
+      JSON.stringify(row.owner) !== JSON.stringify(owner) || row.state !== "open") {
+    throw new Error("native_invocation_owner_mismatch");
+  }
+  if (row.native_id !== nativeId) throw new Error("native_capture_identity_mismatch");
+  const tab = await runtimeChrome.tabs.get(owner.tab_id);
+  const visibleId = conversationIdForUrl(tab?.url || "");
+  if (archiveProviderForUrl(tab?.url || "") !== owner.provider ||
+      (visibleId && visibleId !== nativeId && visibleId !== TEMPORARY_CHAT_SENTINEL)) throw new Error("native_invocation_document_changed");
+  if (owner.document_id) {
+    const document = await runtimeChrome.tabs.sendMessage(owner.tab_id, { type: "polylogue.stagingOwner" }, { documentId: owner.document_id });
+    if (!document?.ok) throw new Error("native_invocation_document_changed");
+  }
+  const current = await captureStore.getCapture(ref.id);
+  if (!current || current.token !== row.token || current.worker_owner !== runtimeWorkerId ||
+      JSON.stringify(current.owner) !== JSON.stringify(owner) || current.state !== "open") {
+    throw new Error("native_invocation_owner_mismatch");
+  }
+  return current;
+}
+
 async function captureProviderConversation(
   provider,
   providerSessionId,
   reason,
   {
     deferReceiver = false,
-    nativePayload = null,
     generationObservations = [],
     providerUpdatedAt = null,
   } = {},
@@ -2497,19 +3013,24 @@ async function captureProviderConversation(
   return withProviderTransportOperation(provider, async () => {
     const transport = await providerTab(provider);
     await ensureCaptureScripts(transport.tab);
-    const result = await withTimeout(
-      runtimeChrome.tabs.sendMessage(transport.tab.id, {
+    const documents = await runtimeChrome.scripting.executeScript({ target: { tabId: transport.tab.id }, world: "ISOLATED", func: () => true });
+    const owner = { tab_id: transport.tab.id, document_id: documents?.[0]?.documentId || null, provider };
+    for await (const prior of captureStore.captures()) {
+      if (prior.kind === "native-invocation" && prior.owner.tab_id === owner.tab_id) await settleNativeInvocation(prior);
+    }
+    const invocationRef = await captureStore.reserveCaptureObservation(owner, providerSessionId, "native-invocation", runtimeWorkerId, await extensionInstanceId());
+    let physicallySettled = false;
+    try {
+    const result = await runtimeChrome.tabs.sendMessage(transport.tab.id, {
         type: "polylogue.capturePage",
         reason,
         providerSessionId,
+        invocationRef,
         deferReceiver,
-        nativePayload,
         generationObservations,
         providerUpdatedAt,
-      }),
-      CAPTURE_MESSAGE_TIMEOUT_MS,
-      "capture_message",
-    );
+      }, owner.document_id ? { documentId: owner.document_id } : undefined);
+    physicallySettled = true;
     if (!result?.ok) {
       const error = new Error(result?.error || "exact_provider_capture_failed");
       error.outcome = result?.outcome || null;
@@ -2522,6 +3043,10 @@ async function captureProviderConversation(
     const acceptedId = result.envelope?.session?.provider_session_id;
     if (acceptedId !== providerSessionId) throw new Error("exact_provider_capture_identity_mismatch");
     return result;
+    } finally {
+      if (physicallySettled) await captureStore.closeNativeInvocation(invocationRef);
+      else await settleNativeInvocation({ owner, id: invocationRef.id, token: invocationRef.token });
+    }
   });
 }
 
@@ -2688,9 +3213,8 @@ async function runCaptureFreshnessSweep() {
   let queue = await storedCaptureFreshnessQueue();
   if (queue.sweep_not_before_ms > now) return { skipped: true, reason: "sweep_backoff" };
   const coordinator = await backfillCoordinator();
-  const activeJobs = await coordinator.store.listJobs();
-  if (activeJobs.some((job) => job.provider === "chatgpt" && job.status === "running")) {
-    return { skipped: true, reason: "explicit_backfill_running" };
+  for await (const job of coordinator.store.jobRecords()) {
+    if (job.provider === "chatgpt" && job.status === "running") return { skipped: true, reason: "explicit_backfill_running" };
   }
   const partition = queue.sweep_partition % 4;
   try {
@@ -2777,7 +3301,7 @@ function bytesToBase64(bytes) {
   for (let offset = 0; offset < bytes.length; offset += chunkSize) {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
   }
-  return btoa(binary);
+  return globalThis.btoa(binary);
 }
 
 // ---- Provider-neutral browser actions ----------------------------------
@@ -3062,7 +3586,7 @@ async function ensureBrowserActionAlarm() {
 
 function archiveProviderForUrl(url) {
   try {
-    const parsed = new URL(url || "");
+    const parsed = new globalThis.URL(url || "");
     if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) return "chatgpt";
     if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) return "claude-ai";
     if (parsed.hostname === "gemini.google.com" || parsed.hostname.endsWith(".gemini.google.com")) return "gemini";
@@ -3094,7 +3618,7 @@ function hasReceiverFreshnessConvergence(provider) {
 
 function conversationIdForUrl(url) {
   try {
-    const parsed = new URL(url || "");
+    const parsed = new globalThis.URL(url || "");
     const parts = parsed.pathname.split("/").filter(Boolean);
     const provider = archiveProviderForUrl(url);
     if (provider === "chatgpt") {
@@ -3175,7 +3699,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
       return captureTab(tab, "auto_capture_missing");
     }
     if (provider && providerSessionId) {
-      const query = new URLSearchParams({ provider, provider_session_id: providerSessionId });
+      const query = new globalThis.URLSearchParams({ provider, provider_session_id: providerSessionId });
       const state = await getJson(`/v1/archive-state?${query.toString()}`);
       await appendConversationTimeline({
         provider,
@@ -3308,7 +3832,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
       providerSessionId,
       event: "held_with_reason",
       reason,
-      detail: error.code || "archive_state_check_failed",
+      detail: typeof error.code === "string" ? error.code : "archive_state_check_failed",
       tabId: tab?.id || null,
     });
     await setStateForTab(tab?.id || null, {
@@ -3407,14 +3931,14 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
     extensionInstanceId().catch(() => null),
   ]);
   const backfillStatusPromise = coordinator
-    ? coordinator.listStatus().catch(() => [])
-    : Promise.resolve([]);
+    ? coordinator.listStatus({ activeOnly: true }).catch(() => ({ jobs: [], unavailable: true }))
+    : Promise.resolve({ jobs: [], unavailable: true });
   const [stored, backfillJobs, ambient] = await Promise.all([
     runtimeChrome.storage.local.get({
       polylogueState: null,
       polylogueSessionLedger: {},
       [CONVERSATION_TIMELINE_KEY]: {},
-      [CAPTURE_QUEUE_KEY]: { entries: [], dropped_count: 0 },
+      [CAPTURE_QUEUE_KEY]: CAPTURE_QUEUE_EMPTY,
       [CAPTURE_FRESHNESS_QUEUE_KEY]: null,
       [RECEIVER_PAIRING_KEY]: null,
     }),
@@ -3445,7 +3969,7 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
   let assertionCapability = false;
   if (includeIntelligence && receiverOnline) {
     try {
-      const capabilities = await getJson("/v1/browser-captures/capabilities", PROVIDER_REQUEST_TIMEOUT_MS);
+      const capabilities = await getJson("/v1/browser-captures/capabilities");
       // Only the declared top-level field is authoritative; any other shape
       // fails closed and leaves Save unavailable.
       assertionCapability = capabilities?.assertion_candidates === true;
@@ -3481,9 +4005,10 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
       configured_url: settings.baseUrl,
     },
     work: {
-      capture_queue: await getCaptureQueue(),
+      capture_queue: await captureQueuePage(),
       freshness_queue: freshnessQueue,
-      backfill_jobs: backfillJobs || [],
+      backfill_jobs: backfillJobs.jobs,
+      backfill_job_page: { total: backfillJobs.total, cursor: backfillJobs.cursor, has_more: backfillJobs.has_more, unavailable: backfillJobs.unavailable || false },
     },
     ambient,
     assertions: {
@@ -3517,7 +4042,11 @@ export function startBackgroundRuntime(adapters) {
   cachedQueueLength = 0;
   runtimeChrome = adapters;
   runtimeNetwork = adapters.network;
-void loadCaptureQueueIntoCache().catch((error) => appendDebugLog({ stage: "capture_retry_storage_error", error: String(error.message || error) }));
+  captureStore = captureRetryStore;
+  captureStaging = adapters.captureStaging || new CaptureStaging(globalThis.navigator?.storage, captureStore);
+  runtimeWorkerId = globalThis.crypto.randomUUID();
+  nativeNormalizer = new NativeCaptureNormalizer({ staging: captureStaging, store: captureStore, prepareNative: prepareNativeCapture });
+void reconcileCaptureRoots().then(loadCaptureQueueIntoCache).catch((error) => appendDebugLog({ stage: "capture_staging_recovery_failed", error: String(typeof error.code === "string" ? error.code : (error.message || error)) }));
 void replaceLegacyAcceptedMessageIdentities();
 void ensureBrowserActionAlarm();
 void ensureCaptureFreshnessAlarms();
@@ -3551,6 +4080,22 @@ void ensureCaptureFreshnessAlarms();
 
 runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
+    if (message.type === "polylogue.reserveCaptureObservation" || message.type === "polylogue.cancelCaptureObservation") {
+      const provider = archiveProviderForUrl(sender.tab?.url || "");
+      const nativeId = conversationIdForUrl(sender.tab?.url || "");
+      const owner = { tab_id: sender.tab?.id, document_id: sender.documentId || null, provider };
+      if (provider !== "gemini" || provider !== message.provider) throw new Error("capture_observation_identity_mismatch");
+      if (message.type === "polylogue.cancelCaptureObservation") {
+        const row = await captureStore.getCapture(message.observation_ref?.id);
+        if (row && (row.kind !== "dom-observation" || row.native_id !== message.native_id || row.token !== message.observation_ref.token || JSON.stringify(row.owner) !== JSON.stringify(owner))) throw new Error("capture_observation_owner_mismatch");
+        if (row) await captureStore.discardCapture(row.id);
+        sendResponse({ ok: true, outcome: "cancelled" }); return;
+      }
+      if (nativeId !== message.native_id) throw new Error("capture_observation_identity_mismatch");
+      await requirePairedTrustedReceiver();
+      const ref = await captureStore.reserveCaptureObservation(owner, nativeId);
+      sendResponse({ ok: true, observation_ref: ref }); return;
+    }
     if (message.type === "polylogue.missionControl.status") {
       sendResponse(await missionControlSnapshot(sender.tab || null, { refresh: message.refresh !== false, includeIntelligence: message.include_intelligence === true }));
       return;
@@ -3569,12 +4114,29 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.providerRateLimited") {
+      const provider = archiveProviderForUrl(sender.tab?.url || "");
+      if (!provider || provider !== message.provider) throw new Error("provider_rate_limit_sender_invalid");
+      if (message.provider_response?.status !== 429 || typeof message.request_id !== "string" || !message.request_id) throw new Error("provider_rate_limit_response_invalid");
+      if (message.claim) {
+        const meta = await captureStaging.metadata(message.claim.id);
+        const owner = { tab_id: sender.tab.id, document_id: sender.documentId || null, provider };
+        captureStaging.requireOwner(meta, message.claim, owner);
+        const responseClaim = ["native-response", "provider-inventory"].includes(meta.kind) &&
+          meta.state === "acquiring" && meta.id === captureStaging.producerStageId(owner, message.request_id) &&
+          meta.source_url === message.provider_response.url && archiveProviderForUrl(meta.source_url || "") === provider;
+        if (!meta.acquisition && !responseClaim) throw new Error("provider_rate_limit_claim_invalid");
+      } else if (archiveProviderForUrl(message.provider_response.url || "") !== provider) throw new Error("provider_rate_limit_response_invalid");
+      // This binds the report to its provider document. A MAIN-world response
+      // nonce correlates work; it is visible to page scripts, not authentication.
       const error = new Error("provider_rate_limited");
       error.outcome = "rate_limited";
       error.retryAfterSeconds = Number.isFinite(message.retry_after_seconds)
         ? message.retry_after_seconds
         : null;
-      error.retryAfterMs = error.retryAfterSeconds === null ? null : error.retryAfterSeconds * 1000;
+      error.retryAfterMs = typeof message.retry_after === "string"
+        ? retryAfterMs({ get: () => message.retry_after }, Date.now())
+        : error.retryAfterSeconds === null ? null : error.retryAfterSeconds * 1000;
+      if (error.retryAfterSeconds === null && error.retryAfterMs !== null) error.retryAfterSeconds = error.retryAfterMs / 1000;
       await recordProviderThrottle(message.provider, error, classifyBrowserActionFailure(error));
       sendResponse({ ok: true });
       return;
@@ -3585,9 +4147,15 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.receiverPairing.reset") {
-      await clearReceiverPairing();
-      const health = await checkReceiverHealth({ allowCanonicalRecovery: false });
-      sendResponse({ ok: true, health, pairing: health.pairing || await storedReceiverPairing() });
+      let reset;
+      try {
+        if (Object.hasOwn(message, "expectedConfigurationRevision") && !Number.isSafeInteger(message.expectedConfigurationRevision)) throw new Error("receiver_configuration_changed");
+        reset = await clearReceiverPairing(message.expectedConfigurationRevision ?? null);
+        const health = await checkReceiverHealth({ allowCanonicalRecovery: false, allowCredentialRefresh: message.allow_credential_refresh !== false, expectedScope: reset });
+        sendResponse({ ok: true, health, pairing: health.pairing, configurationRevision: reset.revision });
+      } catch (error) {
+        sendResponse({ ok: false, error: error?.message || "receiver_pairing_reset_failed", configurationRevision: reset?.revision ?? null });
+      }
       return;
     }
     if (message.type === "polylogue.ambient.configure") {
@@ -3599,7 +4167,12 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         siteEnabled: message.site_enabled ?? null,
       });
       if (settings.automatic_capture_enabled) await ensureCaptureFreshnessAlarms();
-      else await runtimeChrome.alarms?.clear?.(CAPTURE_FRESHNESS_ALARM);
+      else {
+        await runtimeChrome.alarms?.clear?.(CAPTURE_FRESHNESS_ALARM);
+        const tabs = await runtimeChrome.tabs.query({});
+        await Promise.allSettled(tabs.filter((tab) => ["chatgpt", "claude-ai", "grok", "gemini"].includes(archiveProviderForUrl(tab.url || tab.pendingUrl || "")))
+          .map((tab) => runtimeChrome.tabs.sendMessage(tab.id, { type: "polylogue.cancelCapture" })));
+      }
       sendResponse({ ok: true, ambient: settings });
       return;
     }
@@ -3665,24 +4238,380 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     if (message.type === "polylogue.backfill.status") {
       const coordinator = await backfillCoordinator();
-      sendResponse({ ok: true, jobs: await coordinator.listStatus() });
+      sendResponse({ ok: true, ...await coordinator.listStatus({ cursor: message.cursor || null, pageSize: message.pageSize || 25, activeOnly: message.activeOnly === true }) });
       return;
     }
-    if (message.type === "polylogue.backfill.export") {
-      const coordinator = await backfillCoordinator();
-      sendResponse({ ok: true, ledger: await coordinator.exportLedger(message.job_id) });
+    if (["polylogue.backfill.export", "polylogue.backfill.exportAck"].includes(message.type)) {
+      if (sender.url !== `chrome-extension://${runtimeChrome.runtime.id}/src/popup.html`) throw new Error("checkpoint_export_sender_invalid");
+      if (message.type === "polylogue.backfill.exportAck") {
+        const snapshot = await captureStore.getCapture(message.snapshot_id);
+        if (snapshot?.kind !== "checkpoint-export" || snapshot.token !== message.token) throw new Error("checkpoint_export_owner_mismatch");
+        const receipt = { digest: message.digest, size_bytes: message.size_bytes, outcome: "exported" };
+        if (snapshot.state === "acknowledged") {
+          if (snapshot.export_receipt.digest !== receipt.digest || snapshot.export_receipt.size_bytes !== receipt.size_bytes) throw new Error("checkpoint_export_receipt_conflict");
+        } else {
+          const meta = await captureStaging.metadata(snapshot.artifact_id);
+          if (`sha256:${meta.sha256}` !== receipt.digest || meta.bytes !== receipt.size_bytes || !["sealed", "checkpoint-acknowledged"].includes(meta.state)) throw new Error("checkpoint_export_receipt_conflict");
+        }
+        await captureStaging.releaseCheckpoint(snapshot, receipt);
+        sendResponse({ ok: true, outcome: "exported" }); return;
+      }
+      let snapshot = await captureStore.pendingRecoverySnapshot(message.job_id, "checkpoint-export");
+      if (!snapshot) {
+        const id = `export:${globalThis.crypto.randomUUID()}`;
+        const artifactId = captureStaging.producerStageId({ checkpoint_snapshot_id: id }, id);
+        snapshot = await captureStore.createRecoverySnapshot(message.job_id, id, artifactId, { kind: "checkpoint-export", token: globalThis.crypto.randomUUID() });
+      }
+      const prepared = await captureStaging.prepareCheckpoint(snapshot);
+      sendResponse({ ok: true, snapshot_id: snapshot.id, token: snapshot.token, artifact_ref: prepared.ref, digest: prepared.digest, size_bytes: prepared.sizeBytes });
       return;
+    }
+    if (message.type === "polylogue.releaseNativeCache") {
+      if (!sender.tab?.id) throw new Error("capture_staging_sender_invalid");
+      for await (const ref of captureStore.releaseNativeCaches({ tab_id: sender.tab.id, document_id: sender.documentId || null })) {
+        await captureStaging.discardUnreferenced(ref?.id || ref);
+      }
+      sendResponse({ ok: true }); return;
+    }
+    if (message.type?.startsWith("polylogue.nativeBundle.")) {
+      const provider = archiveProviderForUrl(sender.tab?.url || "");
+      if (provider !== "grok" || message.provider !== provider) throw new Error("native_bundle_owner_mismatch");
+      const owner = { tab_id: sender.tab.id, document_id: sender.documentId || null, provider };
+      if (message.type === "polylogue.nativeBundle.begin") {
+        await requirePairedTrustedReceiver(); await requireProviderThrottleAvailability(provider);
+        if (conversationIdForUrl(sender.tab.url) !== message.native_id) throw new Error("native_capture_identity_mismatch");
+        const bundle = await captureStore.beginNativeBundle({ extensionInstanceId: await extensionInstanceId(), owner, provider, nativeId: message.native_id, bundleId: message.bundle_id,
+          requiredReplies: ["conversation", "responses"] });
+        sendResponse({ ok: true, bundle_ref: bundle.id, replies: bundle.replies }); return;
+      }
+      const bundle = await captureStore.getCapture(message.bundle_ref);
+      if (message.type === "polylogue.nativeBundle.cancel") {
+        for (const operation of nativeNormalizations.values()) {
+          if (operation.bundleId !== message.bundle_ref) continue;
+          if (JSON.stringify(operation.owner) !== JSON.stringify(owner)) throw new Error("native_bundle_owner_mismatch");
+          operation.controller.abort(new globalThis.DOMException("capture_cancelled", "AbortError"));
+          await operation.drained;
+        }
+        if (bundle && JSON.stringify(bundle.owner) !== JSON.stringify(owner)) throw new Error("native_bundle_owner_mismatch");
+        sendResponse({ ok: true }); return;
+      }
+      if (bundle?.kind !== "native-bundle" || JSON.stringify(bundle.owner) !== JSON.stringify(owner)) throw new Error("native_bundle_owner_mismatch");
+      if (message.type === "polylogue.nativeBundle.outcome") {
+        await captureStore.publishNativeBundleReply(bundle.id, owner, message.name, null, message.outcome);
+        await captureStore.finishNativeBundle(bundle.id, owner);
+        sendResponse({ ok: true }); return;
+      }
+      if (message.type !== "polylogue.nativeBundle.finish") throw new Error("native_bundle_operation_invalid");
+      if (conversationIdForUrl(sender.tab.url) !== bundle.native_id) throw new Error("native_capture_identity_mismatch");
+      const controller = new globalThis.AbortController();
+      const operation = { rawId: bundle.replies.conversation?.id, bundleId: bundle.id, owner, controller,
+        promise: nativeNormalizer.finishBundle(bundle.id, owner, { pin: true, signal: controller.signal }) };
+      trackNativeOperation(operation);
+      let result;
+      try { result = await operation.promise; controller.signal.throwIfAborted(); }
+      finally { operation.finish(); }
+      sendResponse({ ok: true, acquisition: result.acquisition }); return;
+    }
+    if (message.type === "polylogue.cancelNativeRecovery") {
+      const provider = archiveProviderForUrl(sender.tab?.url || "");
+      const owner = { tab_id: sender.tab?.id, document_id: sender.documentId || null, provider };
+      if (!provider || provider !== message.provider) throw new Error("capture_staging_sender_invalid");
+      let operation = null;
+      for (const value of nativeNormalizations.values()) {
+        if (value.recoveryId === message.request_id) { operation = value; break; }
+      }
+      if (operation) {
+        if (JSON.stringify(operation.owner) !== JSON.stringify(owner)) throw new Error("capture_staging_owner_mismatch");
+        operation.controller.abort(new globalThis.DOMException("capture_cancelled", "AbortError")); await operation.drained;
+      }
+      sendResponse({ ok: true, outcome: "cancelled" }); return;
+    }
+    if (message.type === "polylogue.closeNativeInvocation") {
+      const provider = archiveProviderForUrl(sender.tab?.url || "");
+      if (!provider) throw new Error("capture_staging_sender_invalid");
+      const owner = { tab_id: sender.tab.id, document_id: sender.documentId || null, provider };
+      const row = await captureStore.getCapture(message.invocation_ref?.id);
+      if (!row || row.kind !== "native-invocation" || row.token !== message.invocation_ref.token ||
+          JSON.stringify(row.owner) !== JSON.stringify(owner)) throw new Error("native_invocation_owner_mismatch");
+      await captureStore.closeNativeInvocation(message.invocation_ref, false);
+      for (const operation of nativeNormalizations.values()) {
+        if (operation.invocationRef?.id === row.id && operation.invocationRef.token === row.token) {
+          operation.controller.abort(new globalThis.DOMException("capture_cancelled", "AbortError"));
+        }
+      }
+      sendResponse({ ok: true }); return;
+    }
+    if (message.type === "polylogue.restoreNativeCapture") {
+      const provider = archiveProviderForUrl(sender.tab?.url || "");
+      const pageId = conversationIdForUrl(sender.tab?.url || "");
+      if (!provider || provider !== message.provider) throw new Error("native_capture_identity_mismatch");
+      const owner = { tab_id: sender.tab.id, document_id: sender.documentId || null, provider };
+      if (!message.invocation_ref && pageId !== TEMPORARY_CHAT_SENTINEL && pageId !== message.native_id) throw new Error("native_capture_identity_mismatch");
+      if (!message.request_id) throw new Error("capture_staging_request_invalid");
+      for (const value of nativeNormalizations.values()) {
+        if (value.recoveryId === message.request_id) throw new Error("capture_staging_request_conflict");
+      }
+      const controller = new globalThis.AbortController();
+      const operation = { recoveryId: message.request_id, owner, controller, invocationRef: message.invocation_ref || null };
+      // Register before the first await: the following cancellation message
+      // must see this owner even while the first durable cursor is blocked.
+      trackNativeOperation(operation);
+      try {
+      if (message.invocation_ref) await requireNativeInvocation(message.invocation_ref, owner, message.native_id);
+      controller.signal.throwIfAborted();
+      let selected = null;
+      for await (const row of captureStore.captures()) {
+        controller.signal.throwIfAborted();
+        if (row.provider !== provider || row.native_id !== message.native_id || JSON.stringify(row.owner) !== JSON.stringify(owner)) continue;
+        if (row.kind === "native-bundle") {
+          if (row.queue_context) continue;
+          // Incomplete evidence belongs to this exact operation. It cannot be
+          // silently replaced by another provider acquisition after restart.
+          if (!row.replies.conversation || !row.replies.responses) continue;
+          if (Object.values(row.outcomes).some((outcome) => outcome.status === 429)) continue;
+          const result = await nativeNormalizer.finishBundle(row.id, owner, { pin: true, signal: controller.signal });
+          const raw = await captureStaging.metadata(result.rawRef.id);
+          const candidate = { ...result, source_url: raw.source_url, observed_at: raw.observed_at };
+          if (!selected || nativeCacheOrder(selected, candidate) > 0) selected = candidate;
+        } else if (row.kind === "native-cache" && (!selected || nativeCacheOrder(selected, row) > 0)) {
+          selected = { headers: row.headers, rawRef: row.raw_ref, relatedRefs: row.related_refs, acquisition: row.acquisition,
+            acquisition_sequence: row.acquisition_sequence, observed_at: row.observed_at };
+        }
+      }
+      if (provider !== "grok") {
+        for await (const meta of captureStaging.metadataEntries()) {
+          controller.signal.throwIfAborted();
+          if (meta.kind !== "native-response" || meta.queue_context || meta.state !== "sealed" || JSON.stringify(meta.owner) !== JSON.stringify(owner)) continue;
+          const ref = { id: meta.id, token: meta.token }; const headers = await nativeNormalizer.headers(ref, controller.signal);
+          const id = nativeSessionIdFromHeaders(provider, headers);
+          if (String(id || "") !== message.native_id) continue;
+          const candidate = { headers, rawRef: ref, relatedRefs: {}, acquisition: null,
+            acquisition_sequence: meta.acquisition_sequence, source_url: meta.source_url, observed_at: meta.observed_at };
+          if (!selected || nativeCacheOrder(selected, candidate) > 0) selected = candidate;
+        }
+        controller.signal.throwIfAborted();
+        if (selected) await captureStore.pinNativeCache({ owner, provider, nativeId: message.native_id, rawRef: selected.rawRef,
+          headers: selected.headers, observedAt: selected.observed_at, acquisitionSequence: selected.acquisition_sequence });
+      }
+      if (selected) {
+        if (pageId === TEMPORARY_CHAT_SENTINEL && selected.headers.is_temporary !== true) throw new Error("native_temporary_identity_mismatch");
+        const meta = await captureStaging.metadata(selected.rawRef.id); captureStaging.requireOwner(meta, selected.rawRef, owner);
+        await captureStaging.file(meta.id);
+        selected = { ok: true, bodyRef: selected.rawRef, relatedRefs: selected.relatedRefs, acquisition: selected.acquisition,
+          url: selected.source_url || meta.source_url, capturedAt: selected.observed_at, headers: selected.headers, acquisitionSequence: selected.acquisition_sequence };
+      }
+      controller.signal.throwIfAborted(); sendResponse({ ok: true, capture: selected });
+      } finally { operation.finish(); }
+      return;
+    }
+    if (message.type === "polylogue.normalizeNativeCapture" || message.type === "polylogue.nativeCaptureSummary" || message.type === "polylogue.cancelNativeCapture" || message.type === "polylogue.nativeCaptureHeader") {
+      const provider = archiveProviderForUrl(sender.tab?.url || "");
+      if (!provider || provider !== message.provider) throw new Error("capture_staging_sender_invalid");
+      const owner = { tab_id: sender.tab.id, document_id: sender.documentId || null, provider };
+      const progressContext = message.type === "polylogue.normalizeNativeCapture" ? { acquisition_ref: message.raw_ref?.id, native_request_id: message.native_request_id } : null;
+      const meta = await captureStaging.metadata(message.raw_ref?.id);
+      captureStaging.requireOwner(meta, message.raw_ref, owner);
+      for (const ref of Object.values(message.related_refs || {})) captureStaging.requireOwner(await captureStaging.metadata(ref.id), ref, owner);
+      if (message.type === "polylogue.nativeCaptureHeader") {
+        const controller = new globalThis.AbortController();
+        const operation = { rawId: meta.id, controller, invocationRef: message.invocation_ref || null, promise: nativeNormalizer.headers(message.related_refs?.conversation || message.raw_ref, controller.signal) };
+        trackNativeOperation(operation);
+        try {
+          const headers = await operation.promise; controller.signal.throwIfAborted();
+          const nativeId = nativeSessionIdFromHeaders(provider, headers);
+          if (!nativeId) throw new Error("native_capture_identity_missing");
+          const pageId = conversationIdForUrl(sender.tab.url);
+          if (message.invocation_ref) {
+            await requireNativeInvocation(message.invocation_ref, owner, String(nativeId));
+            const source = providerRequestFromUrl(meta.source_url || "");
+            if (source.provider !== provider || source.operation !== "conversation" || source.params.nativeId !== String(nativeId) ||
+                (meta.invocation_native_id && meta.invocation_native_id !== String(nativeId))) throw new Error("native_capture_identity_mismatch");
+          } else if (pageId === TEMPORARY_CHAT_SENTINEL ? headers.is_temporary !== true : pageId !== String(nativeId)) throw new Error("native_capture_identity_mismatch");
+          const pinned = await captureStore.pinNativeCache({ owner, provider, nativeId: String(nativeId), rawRef: message.raw_ref,
+            relatedRefs: message.related_refs || {}, acquisition: message.acquisition || null, headers, observedAt: meta.observed_at, acquisitionSequence: meta.acquisition_sequence });
+          for (const retired of pinned.retired) await captureStaging.discardUnreferenced(retired?.id || retired);
+          const current = pinned.current; const selectedMeta = await captureStaging.metadata(current.raw_ref.id);
+          controller.signal.throwIfAborted();
+          const describe = (ref, relatedRefs, acquisition, revisionHeaders, revisionMeta) => ({
+            ok: true, bodyRef: ref, relatedRefs, acquisition, nativeId: String(nativeId),
+            providerUpdatedAt: revisionHeaders.update_time ?? revisionHeaders.updated_at ?? revisionHeaders.updatedAt ?? revisionHeaders.modifyTime ?? null,
+            url: revisionMeta.source_url, capturedAt: revisionMeta.created_at, acquisitionSequence: revisionMeta.acquisition_sequence,
+          });
+          sendResponse({ ok: true, headers, content_sha256: meta.sha256,
+            capture: describe(message.raw_ref, message.related_refs || {}, message.acquisition || null, headers, meta),
+            cache: { headers: current.headers, capture: describe(current.raw_ref, current.related_refs, current.acquisition, current.headers, selectedMeta) } });
+        } finally { operation.finish(); }
+        return;
+      }
+      const urlId = conversationIdForUrl(sender.tab.url);
+      nativePreparationProgress(progressContext, "normalize_admission", "BEGIN");
+      if (message.type === "polylogue.normalizeNativeCapture" || message.type === "polylogue.nativeCaptureSummary") {
+        if (message.invocation_ref) {
+          await requireNativeInvocation(message.invocation_ref, owner, message.native_id);
+          const source = providerRequestFromUrl(meta.source_url || "");
+          if (source.provider !== provider || source.operation !== "conversation" || source.params.nativeId !== message.native_id ||
+              (meta.invocation_native_id && meta.invocation_native_id !== message.native_id)) throw new Error("native_capture_identity_mismatch");
+        } else if (urlId !== TEMPORARY_CHAT_SENTINEL && urlId !== message.native_id) throw new Error("native_capture_identity_mismatch");
+      }
+      if (message.type === "polylogue.cancelNativeCapture") {
+        // One raw revision can have a header read and normalization in flight.
+        // Abort every reader first, then drain them all before acknowledging.
+        const drains = [];
+        for (const operation of nativeNormalizations.values()) {
+          if (operation.rawId !== meta.id) continue;
+          operation.controller.abort(new globalThis.DOMException("capture_cancelled", "AbortError"));
+          drains.push(operation.drained);
+        }
+        await Promise.all(drains);
+        sendResponse({ ok: true, outcome: "cancelled" }); return;
+      }
+      await requirePairedTrustedReceiver(); await requireProviderThrottleAvailability(provider);
+      if (message.invocation_ref) await requireNativeInvocation(message.invocation_ref, owner, message.native_id);
+      nativePreparationProgress(progressContext, "normalize_admission", "END");
+      const controller = new globalThis.AbortController();
+      const onProgress = (phase, state) => { if (!controller.signal.aborted) nativePreparationProgress(progressContext, phase, state); };
+      const operation = { rawId: meta.id, controller, invocationRef: message.invocation_ref || null, promise: null };
+      trackNativeOperation(operation);
+      operation.promise = (async () => {
+      if (message.type !== "polylogue.nativeCaptureSummary") await drainOwnedNativeBundles(owner, message.native_id, meta.acquisition_sequence, controller.signal);
+      return nativeNormalizer.normalize({ provider, rawRef: message.raw_ref, nativeId: message.native_id,
+        extensionVersion: runtimeChrome.runtime.getManifest().version, instanceId: await extensionInstanceId(), attribution: message.attribution || {}, signal: controller.signal, relatedRefs: message.related_refs || {}, acquisition: message.acquisition || null, requireTemporary: urlId === TEMPORARY_CHAT_SENTINEL, summaryOnly: message.type === "polylogue.nativeCaptureSummary", onProgress });
+      })();
+      try {
+        const envelope = await operation.promise;
+        if (message.type === "polylogue.nativeCaptureSummary") {
+          controller.signal.throwIfAborted();
+          sendResponse({ ok: true, summary: envelope.summary, raw_revision: envelope.rawRevision, content_sha256: meta.sha256 });
+          return;
+        }
+        await captureStaging.retireFailedNormalizations(meta.id, envelope.capture_record_ref, controller.signal)
+          .catch((error) => appendDebugLog({ stage: "native_normalization_cleanup_pending", ref: envelope.capture_record_ref, error: String(typeof error.code === "string" ? error.code : (error.message || error)) }));
+        const headers = await nativeNormalizer.headers(message.related_refs?.conversation || message.raw_ref, controller.signal);
+        const pinned = await captureStore.pinNativeCache({ owner, provider, nativeId: envelope.session.provider_session_id, rawRef: message.raw_ref,
+          relatedRefs: message.related_refs || {}, acquisition: message.acquisition || null, headers, observedAt: meta.created_at, acquisitionSequence: meta.acquisition_sequence });
+        for (const retired of pinned.retired) await captureStaging.discardUnreferenced(retired?.id || retired);
+        controller.signal.throwIfAborted();
+        sendResponse({ ok: true, envelope });
+      }
+      catch (error) { sendResponse({ ok: false, error: typeof error.code === "string" ? error.code : String(error.message || error), outcome: controller.signal.aborted ? "cancelled" : "failed" }); }
+      finally { operation.finish(); }
+      return;
+    }
+    if (message.type.startsWith("polylogue.asset.")) {
+      const provider = archiveProviderForUrl(sender.tab?.url || "");
+      if (!["chatgpt", "claude-ai", "grok"].includes(provider) || (message.provider && message.provider !== provider)) throw new Error("capture_staging_sender_invalid");
+      const owner = { tab_id: sender.tab.id, document_id: sender.documentId || null, provider };
+      if (message.type === "polylogue.asset.begin") {
+        await requirePairedTrustedReceiver();
+        await requireProviderThrottleAvailability(provider);
+        if (typeof message.request_id !== "string" || !message.request_id) throw new Error("capture_staging_request_invalid");
+        if (message.invocation_ref) {
+          const requested = providerRequestFromUrl(message.source_url || "");
+          if (message.kind !== "native-response" || message.observation_only || message.acquisition || message.capture_bundle || message.queue_context ||
+              requested.provider !== provider || requested.operation !== "conversation") throw new Error("native_invocation_request_invalid");
+          await requireNativeInvocation(message.invocation_ref, owner, requested.params.nativeId);
+        }
+        let identity = null;
+        if (message.acquisition) {
+          const acquisition = message.acquisition;
+          const raw = await captureStaging.metadata(acquisition.raw_id);
+          captureStaging.requireOwner(raw, { id: raw.id, token: raw.token }, owner);
+          if (raw.state !== "sealed" || !acquisition.native_id || acquisition.record_key == null || !acquisition.attachment_id) throw new Error("capture_acquisition_identity_invalid");
+          if (!Number.isSafeInteger(acquisition.attachment_ordinal) || acquisition.attachment_ordinal < 0) throw new Error("capture_acquisition_identity_invalid");
+          identity = [provider, raw.id, acquisition.native_id, acquisition.record_key, acquisition.attachment_id, acquisition.attachment_ordinal];
+        }
+        if (message.capture_bundle) {
+          const bundle = await captureStore.getCapture(message.capture_bundle.id);
+          if (bundle?.kind !== "native-bundle" || bundle.provider !== provider || bundle.owner.tab_id !== owner.tab_id ||
+              (bundle.owner.document_id && bundle.owner.document_id !== owner.document_id) || !["conversation", "responses", "response_nodes"].includes(message.capture_bundle.name)) throw new Error("native_bundle_owner_mismatch");
+        }
+        if (message.queue_context) {
+          const requested = providerRequestFromUrl(message.source_url || "");
+          if (message.kind !== "native-response" || message.observation_only || requested.provider !== provider ||
+              requested.operation !== "conversation" || requested.params.nativeId !== message.queue_context.nativeId) throw new Error("native_acquisition_claim_invalid");
+          const job = await captureStore.assertJobExecution(message.queue_context.jobId, message.queue_context.owner, message.queue_context.generation);
+          if (typeof message.account_handle !== "string" || !message.account_handle) throw new Error("capture_job_account_scope_unresolved");
+          const settings = await receiverSettings();
+          const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: runtimeChrome.storage.local });
+          const observedScope = await deriveAccountScope(await client.scopeNamespace(), provider, message.account_handle);
+          if (observedScope !== job.account_scope) throw new Error("capture_job_account_scope_mismatch");
+        }
+        const ref = await captureStaging.begin(owner, { kind: message.kind, source_url: message.source_url, response_metadata: message.response_metadata,
+          observation_only: message.observation_only === true, queue_context: message.queue_context || null,
+          acquisition: identity, capture_bundle: message.capture_bundle, invocation_ref: message.invocation_ref || null, extension_instance_id: await extensionInstanceId() }, message.request_id);
+        if (message.invocation_ref) {
+          const requested = providerRequestFromUrl(message.source_url);
+          await requireNativeInvocation(message.invocation_ref, owner, requested.params.nativeId);
+        }
+        if (message.queue_context) await captureStore.bindNativeAcquisition(ref, owner, message.queue_context);
+        if (identity) {
+          // Publish a single acquisition owner before granting provider traffic.
+          // A retransmitted begin recovers that owner's immutable staged bytes.
+          const claim = await captureStore.reserveAcquisition(identity, ref, message.request_id);
+          if (claim.ref.id !== ref.id) await captureStaging.discard(ref.id);
+          const asset = await captureStaging.metadata(claim.ref.id);
+          if (asset.state === "sealed" || asset.acquisition_result) {
+            await captureStaging.seal(claim.ref, owner);
+            const published = await captureStore.getCapture(claim.id);
+            sendResponse({ ok: true, result: published.result }); return;
+          }
+          if (claim.producer_id !== message.request_id) {
+            sendResponse({ ok: false, error: "capture_acquisition_in_progress" }); return;
+          }
+          if (asset.sequence !== 0) {
+            // A surviving producer retries chunks against its ref, never begins
+            // a second provider read to replace an interrupted acquisition.
+            sendResponse({ ok: false, error: "capture_acquisition_interrupted" }); return;
+          }
+        }
+        sendResponse({ ok: true, ref });
+      } else if (message.type === "polylogue.asset.cancelRequest") {
+        if (typeof message.request_id !== "string" || !message.request_id) throw new Error("capture_staging_request_invalid");
+        const stageId = captureStaging.producerStageId(owner, message.request_id);
+        try {
+          const meta = await captureStaging.metadata(stageId);
+          await captureStaging.cancel({ id: meta.id, token: meta.token }, owner);
+        } catch (error) { if (error.code !== "capture_staging_interrupted") throw error; }
+        sendResponse({ ok: true });
+      } else if (message.type === "polylogue.asset.chunk") {
+        sendResponse({ ok: true, ...await captureStaging.append(message.ref, owner, message.sequence, message.base64) });
+      } else if (message.type === "polylogue.asset.seal") {
+        const asset = await captureStaging.seal(message.ref, owner, message.result);
+        sendResponse({ ok: true, asset });
+      } else if (message.type === "polylogue.asset.discard") {
+        await captureStaging.cancel(message.ref, owner);
+        sendResponse({ ok: true });
+      } else throw new Error("capture_staging_operation_invalid");
+      return;
+    }
+    if (message.type === "polylogue.cancelCaptureDelivery") {
+      const operation = captureDeliveries.get(message.request_id);
+      if (operation) {
+        const owner = captureDeliveryOwner(sender);
+        if (JSON.stringify(owner) !== JSON.stringify(operation.owner)) throw new Error("capture_delivery_owner_mismatch");
+        const error = new Error("capture_cancelled"); error.code = "capture_cancelled"; error.name = "AbortError";
+        operation.controller.abort(error);
+        await operation.promise.catch(() => undefined);
+      }
+      sendResponse({ ok: true }); return;
     }
     if (message.type === "polylogue.capture") {
-      const envelope = await withExtensionInstanceAttribution(message.envelope);
+      const requestId = message.request_id || buildReceiverRequestId();
+      if (captureDeliveries.has(requestId)) throw new Error("capture_delivery_request_conflict");
+      const operation = { owner: captureDeliveryOwner(sender), controller: new globalThis.AbortController(), promise: null };
+      captureDeliveries.set(requestId, operation);
+      operation.promise = (async () => {
+      const envelope = await withExtensionInstanceAttribution(message.envelope, sender);
       const summary = envelopeSessionSummary(envelope);
       let result;
+      let delivery = null;
       try {
         // Content scripts in an existing provider tab may outlive an extension
         // reload. Do not let one of those stale producers turn an unpaired
         // receiver into unauthenticated receiver traffic.
         if (sender.tab) await requirePairedTrustedReceiver();
-        result = await postJson("/v1/browser-captures", envelope);
+        delivery = await retainCaptureForDelivery({ envelope, reason: message.reason, tab: sender.tab, signal: operation.controller.signal, operation });
+        result = await completeForegroundDelivery(delivery, operation.controller.signal);
         if (Array.isArray(result?.accepted_identities)) {
           const key = sessionKey(summary.provider, summary.providerSessionId);
           const identities = Object.fromEntries(
@@ -3698,46 +4627,53 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
         }
       } catch (error) {
-        if (isRetryableCaptureError(error)) {
-          const queued = await enqueueCaptureForRetry({ envelope, reason: message.reason, error, tab: sender.tab });
+        if (result) {
+          await appendDebugLog({ stage: "capture_ack_identity_cache_pending", error: String(error.message || error) }).catch(() => undefined);
+        } else {
+          if (!delivery && error.captureDeliveryId) delivery = await captureStore.getDelivery(error.captureDeliveryId);
+          if (delivery && !error.sharedDeliveryContinues && !foregroundDeliveryCompletions.get(delivery.id)?.participants.size) {
+            await recordCaptureDeliveryFailure(delivery, error);
+          }
+          if (delivery && isRetryableCaptureError(error)) {
+            await appendConversationTimeline({
+              provider: summary.provider,
+              providerSessionId: summary.providerSessionId,
+              event: "held_with_reason",
+              reason: message.reason || "content_script_capture",
+              detail: "capture_queued_for_retry",
+              tabId: sender.tab?.id || null,
+            });
+            await setStateForTab(sender.tab?.id || null, {
+              online: false,
+              captured: false,
+              provider: summary.provider,
+              provider_session_id: summary.providerSessionId,
+              error: String(error.message || error),
+              last_receiver_request_id: error.receiverRequestId || null,
+            }, sender.tab?.url || sender.tab?.pendingUrl || null);
+            sendResponse({
+              ok: false,
+              queued: true,
+              error: String(error.message || error),
+              receiver_request_id: error.receiverRequestId || null,
+            });
+            return;
+          }
+          await updateSessionLedger({
+            provider: summary.provider,
+            providerSessionId: summary.providerSessionId,
+            patch: { last_error: String(error.message || error) },
+          });
           await appendConversationTimeline({
             provider: summary.provider,
             providerSessionId: summary.providerSessionId,
             event: "held_with_reason",
             reason: message.reason || "content_script_capture",
-            detail: queued.accepted ? "capture_queued_for_retry" : "capture_retry_storage_failed",
+            detail: typeof error.code === "string" ? error.code : "capture_rejected",
             tabId: sender.tab?.id || null,
           });
-          await setStateForTab(sender.tab?.id || null, {
-            online: false,
-            captured: false,
-            provider: summary.provider,
-            provider_session_id: summary.providerSessionId,
-            error: String(error.message || error),
-            last_receiver_request_id: error.receiverRequestId || null,
-          }, sender.tab?.url || sender.tab?.pendingUrl || null);
-          sendResponse({
-            ok: false,
-            queued: queued.accepted,
-            error: String(error.message || error),
-            receiver_request_id: error.receiverRequestId || null,
-          });
-          return;
+          throw error;
         }
-        await updateSessionLedger({
-          provider: summary.provider,
-          providerSessionId: summary.providerSessionId,
-          patch: { last_error: String(error.message || error) },
-        });
-        await appendConversationTimeline({
-          provider: summary.provider,
-          providerSessionId: summary.providerSessionId,
-          event: "held_with_reason",
-          reason: message.reason || "content_script_capture",
-          detail: error.code || "capture_rejected",
-          tabId: sender.tab?.id || null,
-        });
-        throw error;
       }
       if (result.outcome === "superseded") {
         await recordSupersededCapture(summary, result, message.reason || "content_script_capture");
@@ -3749,59 +4685,66 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true, ...result, captured: false });
         return;
       }
-      const archiveState = { state: result.state || "spooled_only" };
-      await updateSessionLedger({
-        provider: summary.provider || result.provider,
-        providerSessionId: summary.providerSessionId || result.provider_session_id,
-        patch: {
+      try {
+        const archiveState = { state: result.state || "spooled_only" };
+        await updateSessionLedger({
+          provider: summary.provider || result.provider,
+          providerSessionId: summary.providerSessionId || result.provider_session_id,
+          patch: {
+            capture_mode: summary.captureMode,
+            asset_acquisition: summary.assetAcquisition,
+            turn_count: summary.turnCount,
+            attachment_count: summary.attachmentCount,
+            receiver_request_id: result.receiver_request_id || null,
+            artifact_ref: result.artifact_ref || null,
+            extension_instance_id: result.capture_instance_id || null,
+            deduplicated: Boolean(result.deduplicated),
+            archive_state: archiveState,
+            last_error: null,
+          },
+        });
+        await appendCaptureLog({
+          ok: true,
+          reason: message.reason || "content_script_capture",
+          provider: summary.provider || result.provider,
+          provider_session_id: summary.providerSessionId || result.provider_session_id,
+          capture_mode: summary.captureMode,
+          receiver_request_id: result.receiver_request_id || null,
+          artifact_ref: result.artifact_ref || null,
+        });
+        await appendConversationTimeline({
+          provider: summary.provider || result.provider,
+          providerSessionId: summary.providerSessionId || result.provider_session_id,
+          event: "captured",
+          reason: message.reason || "content_script_capture",
+          detail: archiveState.state,
+          tabId: sender.tab?.id || null,
+        });
+        await setStateForTab(sender.tab?.id || null, {
+          online: true,
+          captured: true,
+          last_capture: result,
+          archive_state: archiveState,
+          provider: summary.provider || result.provider,
+          provider_session_id: summary.providerSessionId || result.provider_session_id,
           capture_mode: summary.captureMode,
           asset_acquisition: summary.assetAcquisition,
           turn_count: summary.turnCount,
           attachment_count: summary.attachmentCount,
-          receiver_request_id: result.receiver_request_id || null,
-          artifact_ref: result.artifact_ref || null,
           extension_instance_id: result.capture_instance_id || null,
           deduplicated: Boolean(result.deduplicated),
-          archive_state: archiveState,
-          last_error: null,
-        },
-      });
-      await appendCaptureLog({
-        ok: true,
-        reason: message.reason || "content_script_capture",
-        provider: summary.provider || result.provider,
-        provider_session_id: summary.providerSessionId || result.provider_session_id,
-        capture_mode: summary.captureMode,
-        receiver_request_id: result.receiver_request_id || null,
-        artifact_ref: result.artifact_ref || null,
-      });
-      await appendConversationTimeline({
-        provider: summary.provider || result.provider,
-        providerSessionId: summary.providerSessionId || result.provider_session_id,
-        event: "captured",
-        reason: message.reason || "content_script_capture",
-        detail: archiveState.state,
-        tabId: sender.tab?.id || null,
-      });
-      await setStateForTab(sender.tab?.id || null, {
-        online: true,
-        captured: true,
-        last_capture: result,
-        archive_state: archiveState,
-        provider: summary.provider || result.provider,
-        provider_session_id: summary.providerSessionId || result.provider_session_id,
-        capture_mode: summary.captureMode,
-        asset_acquisition: summary.assetAcquisition,
-        turn_count: summary.turnCount,
-        attachment_count: summary.attachmentCount,
-        extension_instance_id: result.capture_instance_id || null,
-        deduplicated: Boolean(result.deduplicated),
-        last_receiver_request_id: result.receiver_request_id || null
-      }, sender.tab?.url || sender.tab?.pendingUrl || null);
-      // Receiver just proved reachable — flush anything queued from earlier
+          last_receiver_request_id: result.receiver_request_id || null
+        }, sender.tab?.url || sender.tab?.pendingUrl || null);
+      } catch (error) {
+        await appendDebugLog({ stage: "capture_ack_telemetry_pending", error: String(error.message || error) }).catch(() => undefined);
+      }
+      // Receiver just proved reachable; flush anything queued from earlier
       // outages before returning this capture's result.
       void drainCaptureQueue("post_success");
       sendResponse({ ok: true, ...result });
+      return;
+      })();
+      try { await operation.promise; } finally { captureDeliveries.delete(requestId); }
       return;
     }
     if (message.type === "polylogue.captureFreshnessHint") {
@@ -3854,21 +4797,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.getCaptureQueue") {
-      const queue = await getCaptureQueue();
-      sendResponse({
-        ok: true,
-        dropped_count: queue.dropped_count,
-        entries: queue.entries.map((entry) => ({
-          id: entry.id,
-          reason: entry.reason,
-          enqueued_at: entry.enqueued_at,
-          attempts: entry.attempts,
-          next_attempt_at: entry.next_attempt_at,
-          last_error: entry.last_error,
-          provider: entry.provider || null,
-          provider_session_id: entry.provider_session_id || null,
-        })),
-      });
+      sendResponse({ ok: true, ...await captureQueuePage({ cursor: message.cursor, pageSize: message.pageSize }) });
       return;
     }
     if (message.type === "polylogue.retryCaptureQueue") {
@@ -3882,7 +4811,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.archiveState") {
-      const query = new URLSearchParams({
+      const query = new globalThis.URLSearchParams({
         provider: message.provider,
         provider_session_id: message.provider_session_id
       });
@@ -4043,7 +4972,9 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }, sender.tab?.url || sender.tab?.pendingUrl || null);
     sendResponse({
       ok: false,
-      error: String(error.message || error),
+      error: error.name === "AbortError" ? "capture_cancelled" : (typeof error.code === "string" ? error.code : (error.name === "QuotaExceededError" ? "capture_staging_quota_exceeded" : String(error.message || error))),
+      outcome: error.outcome || null,
+      retry_after_seconds: error.retryAfterSeconds ?? null,
       receiver_request_id: error.receiverRequestId || null
     });
   });

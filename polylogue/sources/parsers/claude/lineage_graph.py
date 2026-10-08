@@ -485,6 +485,14 @@ class ClaudeLineageGraph:
         ).fetchone()
         return row is not None and bool(row[0])
 
+    def emitted_coordinate(self, evidence_key: str) -> tuple[int, int] | None:
+        """Return the exact emitted occurrence, excluding summary-only records."""
+        row = self.conn.execute(
+            "SELECT position, variant_index FROM claude_graph_node WHERE evidence_key = ? AND has_material",
+            (evidence_key,),
+        ).fetchone()
+        return (int(row[0]), int(row[1])) if row is not None else None
+
     def duplicate_native_ids(self) -> list[str]:
         return [
             str(row[0])

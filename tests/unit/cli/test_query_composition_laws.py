@@ -20,7 +20,11 @@ from polylogue.archive.query.expression import compile_expression, parse_unit_so
 from polylogue.archive.query.unit_results import query_unit_rows
 from polylogue.cli import cli
 from polylogue.config import Source
-from polylogue.operations.canonical_archive_ingest import ingest_sources_archive, scoped_one_shot_archive_owner
+from polylogue.operations.canonical_archive_ingest import (
+    ingest_sources_archive,
+    one_shot_compute_owner,
+    scoped_one_shot_archive_owner,
+)
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import (
@@ -82,7 +86,8 @@ def _prepare_query_cardinality_archive(work: Path) -> _PreparedArchive:
 
         async def ingest_owned_clone() -> ParseResult:
             with scoped_one_shot_archive_owner(clone.root):
-                return await ingest_sources_archive(clone.root, sources)
+                async with one_shot_compute_owner() as adapter:
+                    return await ingest_sources_archive(clone.root, sources, compute_adapter=adapter)
 
         result = asyncio.run(ingest_owned_clone())
     assert result.parse_failures == 0
@@ -364,6 +369,7 @@ def test_survivor_detects_naive_duplicate_id_join_mutation(
                 r.tool_result_is_error AS is_error,
                 r.tool_result_exit_code AS exit_code,
                 r.block_id AS tool_result_block_id,
+                r.tool_result_outcome_unknown_reason AS outcome_unknown_reason,
                 CASE
                     WHEN r.block_id IS NULL THEN 'no_result'
                     WHEN r.tool_result_is_error IS NULL AND r.tool_result_exit_code IS NULL THEN 'outcome_unknown'

@@ -33,6 +33,16 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/archive/raw_payload/streams.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/archive/revision_authority.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/archive/session_revision_membership.py",
     "tiers": [],
     "authority": "scratch"
@@ -46,6 +56,11 @@
   {
     "file": "polylogue/browser_capture/capture_jobs.py",
     "tiers": []
+  },
+  {
+    "file": "polylogue/browser_capture/native_preparation.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/context/scheduler.py",
@@ -88,6 +103,16 @@
     ]
   },
   {
+    "file": "polylogue/maintenance/source_manifest_continuity.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/operations/assertion_export.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/operations/attachment_convergence.py",
     "tiers": [
       "index"
@@ -110,12 +135,6 @@
     "authority": "scratch"
   },
   {
-    "file": "polylogue/operations/facade_writers.py",
-    "tiers": [
-      "index"
-    ]
-  },
-  {
     "file": "polylogue/operations/ingest_inputs.py",
     "tiers": [],
     "authority": "scratch"
@@ -126,15 +145,18 @@
     "authority": "scratch"
   },
   {
-    "file": "polylogue/pipeline/services/ingest_batch/_core.py",
-    "tiers": [
-      "index",
-      "source"
-    ]
-  },
-  {
     "file": "polylogue/schemas/generation/observation_journal.py",
     "tiers": []
+  },
+  {
+    "file": "polylogue/schemas/observation_spill.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/schemas/retained_validation.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/schemas/source_cache.py",
@@ -188,10 +210,19 @@
     "authority": "scratch"
   },
   {
-    "file": "polylogue/sources/codex_state_evidence.py",
-    "tiers": [
-      "source"
-    ]
+    "file": "polylogue/sources/codex_state_projection.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/detection_projection.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/drive/witness.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/sources/live/cursor.py",
@@ -207,6 +238,21 @@
   },
   {
     "file": "polylogue/sources/live/tool_result_sidecars.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parse_accounting_spool.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/antigravity.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/chatgpt_sidecars.py",
     "tiers": [],
     "authority": "scratch"
   },
@@ -231,6 +277,26 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/sources/parsers/grok.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/hermes_spans.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/hermes_state.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/hermes_verification.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/sources/parsers/otel_genai.py",
     "tiers": [],
     "authority": "scratch"
@@ -251,14 +317,29 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/sources/retained_title_index.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/sources/revision_backfill.py",
     "tiers": [
       "source"
     ]
   },
   {
+    "file": "polylogue/sources/source_snapshot.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/sources/sqlite_export.py",
     "tiers": []
+  },
+  {
+    "file": "polylogue/sources/streamed_event_payload.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/sources/tool_outcomes.py",
@@ -270,6 +351,11 @@
     "tiers": [
       "source"
     ]
+  },
+  {
+    "file": "polylogue/storage/accepted_marker_producer.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/storage/blob_gc.py",
@@ -348,10 +434,9 @@
     ]
   },
   {
-    "file": "polylogue/storage/frontier_existence.py",
+    "file": "polylogue/storage/frontier_inspection.py",
     "tiers": [
-      "index",
-      "source"
+      "ops"
     ]
   },
   {
@@ -367,19 +452,7 @@
     ]
   },
   {
-    "file": "polylogue/storage/raw_authority.py",
-    "tiers": [
-      "source"
-    ]
-  },
-  {
     "file": "polylogue/storage/raw_authority_verdict_cache.py",
-    "tiers": [
-      "source"
-    ]
-  },
-  {
-    "file": "polylogue/storage/raw_reconciler.py",
     "tiers": [
       "source"
     ]
@@ -407,6 +480,11 @@
     "tiers": [
       "embeddings"
     ]
+  },
+  {
+    "file": "polylogue/storage/source_generation_receipts.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/storage/sqlite/action_pairs.py",
@@ -446,6 +524,12 @@
     ]
   },
   {
+    "file": "polylogue/storage/sqlite/literal_cells.py",
+    "tiers": [
+      "audit"
+    ]
+  },
+  {
     "file": "polylogue/storage/sqlite/migration_runner.py",
     "tiers": [
       "source",
@@ -482,12 +566,6 @@
     ]
   },
   {
-    "file": "polylogue/storage/sqlite/queries/raw_writes.py",
-    "tiers": [
-      "source"
-    ]
-  },
-  {
     "file": "polylogue/storage/sqlite/queries/sessions_writes.py",
     "tiers": [
       "index"
@@ -512,6 +590,12 @@
     ]
   },
   {
+    "file": "polylogue/storage/sqlite/reference_seal.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
     "file": "polylogue/storage/sqlite/schema.py",
     "tiers": [
       "ops"
@@ -522,5 +606,10 @@
     "tiers": [
       "ops"
     ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/session_shard.py",
+    "tiers": [],
+    "authority": "scratch"
   }
 ]

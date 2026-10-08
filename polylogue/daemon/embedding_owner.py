@@ -15,7 +15,7 @@ Two rules make that safe and are enforced here rather than documented:
   :meth:`DaemonWriteThreadBridge.run_sync` blocks on the loop it is scheduling
   onto, and
 * no second compute pool is created; the adapter is the one published for the
-  process (:func:`polylogue.daemon.execution.daemon_compute_adapter`).
+  process (:func:`polylogue.core.compute.compute_adapter`).
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ from typing import TYPE_CHECKING, TypedDict, TypeVar, cast
 if TYPE_CHECKING:
     from polylogue.config import PolylogueConfig
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import OperationStatus
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.operations.audit import MachineRequestBinding
 from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
@@ -51,7 +51,8 @@ from polylogue.operations.mutation_transaction import (
     MutationTargetStatus,
     build_typed_plan,
 )
-from polylogue.operations.operation_context import OperationContext, PinnedOperationRead, open_operation_read
+from polylogue.operations.operation_context import PinnedOperationRead, open_operation_read
+from polylogue.operations.operation_context_types import OperationContext
 
 if TYPE_CHECKING:
     from typing import SupportsFloat, SupportsInt
@@ -660,7 +661,7 @@ async def execute_embedding_backfill_operation(
     backlog owner is deliberately reused so a manual pass cannot create a
     second embedding writer.
     """
-    from polylogue.daemon.execution import daemon_compute_adapter
+    from polylogue.core.compute import compute_adapter
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge, daemon_write_coordinator
     from polylogue.operations.embedding_derivation import estimated_embedding_message_cost
 
@@ -713,7 +714,7 @@ async def execute_embedding_backfill_operation(
             # composed; install one shared runtime owner for subsequent work.
             owner = compose_embedding_convergence(
                 root / "index.db",
-                compute_adapter=daemon_compute_adapter(),
+                compute_adapter=compute_adapter(),
                 write_bridge=DaemonWriteThreadBridge(daemon_write_coordinator(), owner_loop),
             )
             runtime.embedding_convergence = owner

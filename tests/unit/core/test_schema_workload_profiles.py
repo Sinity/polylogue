@@ -39,12 +39,11 @@ from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, WireFormat
 from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
 from polylogue.sources.dispatch import parse_payload
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import (
-    read_archive_session_envelope,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def test_distribution_sketch_is_bounded_mergeable_and_preserves_tails() -> None:
@@ -141,8 +140,8 @@ def test_field_collection_retains_full_counts_while_bounding_legacy_evidence() -
 
     assert stats["$.items"].array_length_distribution.count == 5_000
     assert stats["$.items"].array_length_distribution.maximum == 36
-    assert len(stats["$.items"].array_lengths) == 2_000
-    assert stats["$.items"].truncated_evidence["array_length_samples"] == 3_000
+    assert stats["$.items"].array_length_distribution.minimum == 0
+    assert "array_length_samples" not in stats["$.items"].truncated_evidence
     assert stats["$.text"].string_length_distribution.count == 5_000
     assert stats["$.text"].categorical_distribution.count == 5_000
     assert stats["$.items"].object_key_distribution.count == 0
@@ -461,10 +460,10 @@ def test_profile_generated_tool_pair_reaches_production_action_view(tmp_path: Pa
     sessions = parse_payload("codex", records, "fallback")
     parsed_at = time.perf_counter()
 
-    conn = sqlite3.connect(tmp_path / "index.db")
+    conn = connect_measured(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     initialize_archive_tier(conn, ArchiveTier.INDEX)
-    session_id = write_parsed_session_to_archive(conn, sessions[0])
+    session_id = write_fixture_index_session(conn, sessions[0])
     materialized_at = time.perf_counter()
     actions = conn.execute(
         "SELECT tool_name, is_error, exit_code FROM actions WHERE session_id = ?",
@@ -561,11 +560,11 @@ def test_profile_generated_lineage_replays_through_production_write_and_read(tmp
     ]
     parsed_at = time.perf_counter()
 
-    conn = sqlite3.connect(tmp_path / "index.db")
+    conn = connect_measured(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     initialize_archive_tier(conn, ArchiveTier.INDEX)
-    parent_id = write_parsed_session_to_archive(conn, parsed[0])
-    child_id = write_parsed_session_to_archive(conn, parsed[1])
+    parent_id = write_fixture_index_session(conn, parsed[0])
+    child_id = write_fixture_index_session(conn, parsed[1])
     materialized_at = time.perf_counter()
     child_physical_count = conn.execute(
         "SELECT COUNT(*) FROM messages WHERE session_id = ?",
@@ -896,3 +895,23 @@ def test_archive_profile_preserves_composition_without_private_dimension_values(
     write_archive_workload_profile(tmp_path / "staged", profile)
     assert path.read_bytes() == first_bytes
     assert json.loads(gzip.decompress(first_bytes)) == profile
+
+
+def test_canonical_archive_measurements_refuse_missing_columns_instead_of_emitting_partial_profiles() -> None:
+    from polylogue.schemas.generation.archive_workload_profile import (
+        _anonymous_cardinality_profile,
+        _mix,
+        _scan_table_profile,
+    )
+
+    with sqlite3.connect(":memory:") as conn:
+        conn.execute("CREATE TABLE sessions(session_id TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('neutral')")
+        for observe in (
+            lambda: _mix(conn, "sessions", "origin"),
+            lambda: _scan_table_profile(conn, "sessions", mix_columns=("origin",)),
+            lambda: _scan_table_profile(conn, "sessions", length_columns=("title",)),
+            lambda: _anonymous_cardinality_profile(conn, table="sessions", column="git_branch"),
+        ):
+            with pytest.raises(sqlite3.OperationalError):
+                observe()

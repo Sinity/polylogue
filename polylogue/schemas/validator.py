@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from re import compile as compile_pattern
 from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
@@ -15,9 +17,12 @@ except ImportError:
     Draft202012Validator = None
 
 from polylogue.archive.raw_payload import extract_payload_samples
-from polylogue.core.enums import Provider
+from polylogue.core.compute_cancel import check_compute_cancelled
+from polylogue.core.enums import Provider, ValidationMode
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, json_document
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.schemas.field_stats.detection import is_dynamic_key
+from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaRegistry
 
 from .validator_resolution import (
@@ -33,6 +38,7 @@ from .validator_resolution import (
 
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
+    from polylogue.schemas.retained_validation import RetainedValidationVerdict
 
 ValidationSchema: TypeAlias = Mapping[str, object]
 ValidationSample: TypeAlias = JSONDocument
@@ -160,7 +166,13 @@ def _resolve_local_ref(schema: object, root: Mapping[str, object] | None) -> obj
     return resolved
 
 
-def _schema_branch_for_value(schema: object, value: object, root: Mapping[str, object] | None = None) -> object:
+def _schema_branch_for_value(
+    schema: object,
+    value: object,
+    root: Mapping[str, object] | None = None,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> object:
     schema = _resolve_local_ref(schema, root)
     if not isinstance(schema, Mapping):
         return None
@@ -173,11 +185,11 @@ def _schema_branch_for_value(schema: object, value: object, root: Mapping[str, o
         branches: list[Mapping[str, object]] = []
         base = {key: item for key, item in schema.items() if key != "allOf"}
         if base:
-            selected_base = _schema_branch_for_value(base, value, root)
+            selected_base = _schema_branch_for_value(base, value, root, connection=connection)
             if isinstance(selected_base, Mapping):
                 branches.append(selected_base)
         for branch in all_of:
-            selected = _schema_branch_for_value(branch, value, root)
+            selected = _schema_branch_for_value(branch, value, root, connection=connection)
             if isinstance(selected, Mapping):
                 branches.append(selected)
         if branches:
@@ -197,7 +209,7 @@ def _schema_branch_for_value(schema: object, value: object, root: Mapping[str, o
         # unrelated sibling branch.
         for branch in union_branches:
             resolved = _resolve_local_ref(branch, root)
-            if isinstance(resolved, Mapping) and _schema_accepts_value(resolved, value):
+            if isinstance(resolved, Mapping) and _schema_accepts_value(resolved, value, connection=connection):
                 return resolved
         for branch in union_branches:
             resolved = _resolve_local_ref(branch, root)
@@ -216,7 +228,9 @@ def _schema_branch_for_value(schema: object, value: object, root: Mapping[str, o
     return schema
 
 
-def _schema_accepts_value(schema: Mapping[str, object], value: object) -> bool:
+def _schema_accepts_value(
+    schema: Mapping[str, object], value: object, *, connection: sqlite3.Connection | None = None
+) -> bool:
     """Return whether an individual union branch accepts ``value``.
 
     This is deliberately a branch-selection aid only.  The complete schema
@@ -225,6 +239,10 @@ def _schema_accepts_value(schema: Mapping[str, object], value: object) -> bool:
     if Draft202012Validator is None:
         return False
     try:
+        if connection is not None:
+            from polylogue.schemas.retained_validation import _bounded_validator
+
+            return bool(_bounded_validator(schema, connection).is_valid(value))
         return bool(Draft202012Validator(schema).is_valid(value))
     except Exception:
         # A referenced or otherwise incomplete branch still has useful type
@@ -232,12 +250,19 @@ def _schema_accepts_value(schema: Mapping[str, object], value: object) -> bool:
         return False
 
 
-def _schema_for_property(schema: object, key: str, value: object, root: Mapping[str, object] | None = None) -> object:
+def _schema_for_property(
+    schema: object,
+    key: str,
+    value: object,
+    root: Mapping[str, object] | None = None,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> object:
     if not isinstance(schema, Mapping):
         return None
     properties = schema.get("properties")
     if isinstance(properties, Mapping) and key in properties:
-        return _schema_branch_for_value(properties[key], value, root)
+        return _schema_branch_for_value(properties[key], value, root, connection=connection)
     pattern_properties = schema.get("patternProperties")
     if isinstance(pattern_properties, Mapping):
         matches: list[Mapping[str, object]] = []
@@ -248,14 +273,14 @@ def _schema_for_property(schema: object, key: str, value: object, root: Mapping[
                 except Exception:
                     pattern_match = None
                 if pattern_match:
-                    selected = _schema_branch_for_value(pattern_schema, value, root)
+                    selected = _schema_branch_for_value(pattern_schema, value, root, connection=connection)
                     if isinstance(selected, Mapping):
                         matches.append(selected)
         if matches:
             return _merge_pattern_observation_schemas(matches)
     additional_properties = schema.get("additionalProperties")
     if isinstance(additional_properties, Mapping):
-        return _schema_branch_for_value(additional_properties, value, root)
+        return _schema_branch_for_value(additional_properties, value, root, connection=connection)
     return None
 
 
@@ -366,12 +391,7 @@ def _normalize_empty_arrays(data: object, schema: object = None) -> object:
 def _sample_payload(value: object) -> ValidationSample | None:
     if not isinstance(value, Mapping):
         return None
-    return json_document(dict(value))
-
-
-def _schema_mapping(value: object) -> ValidationSchema:
-    payload = _sample_payload(value)
-    return payload if payload is not None else {}
+    return json_document(dict(value.items()))
 
 
 def _validation_samples(
@@ -433,67 +453,67 @@ def detect_drift(
     and pattern properties remain declarations, so their members are not
     reported one-by-one.
     """
-    warnings: list[str] = []
-    # The outermost call owns the document the local ``$ref`` pointers resolve
-    # against; every nested call carries it forward.
+    return [f"Unexpected field: {field_path}" for field_path in _iter_drift_paths(data, schema, path, root)]
+
+
+def _iter_drift_paths(
+    data: Mapping[str, object],
+    schema: Mapping[str, object],
+    path: str,
+    root: Mapping[str, object] | None = None,
+    connection: sqlite3.Connection | None = None,
+) -> Iterable[str]:
+    """Yield every unexpected-field path without collecting warning strings."""
     root = root if root is not None else schema
-    selected_schema = _schema_branch_for_value(schema, data, root)
+    selected_schema = _schema_branch_for_value(schema, data, root, connection=connection)
     if not isinstance(selected_schema, Mapping):
-        return warnings
-    schema = selected_schema
-    schema_props = _schema_mapping(schema.get("properties", {}))
-    has_additional = schema.get("additionalProperties", True)
-    dynamic_container = bool(schema.get("x-polylogue-dynamic-keys"))
-
+        return
+    properties_value = selected_schema.get("properties", {})
+    properties = properties_value if isinstance(properties_value, Mapping) else {}
+    has_additional = selected_schema.get("additionalProperties", True)
+    dynamic_container = bool(selected_schema.get("x-polylogue-dynamic-keys"))
     for key, value in data.items():
-        current_path = f"{path}.{key}" if path else key
-
-        if key not in schema_props:
-            property_schema = _schema_for_property(schema, key, value, root)
-            if _has_matching_pattern_property(schema, key):
-                warnings.extend(_detect_nested_drift(value, property_schema, current_path, root))
-                continue
-            if has_additional is False:
-                warnings.append(f"Unexpected field: {current_path}")
+        check_compute_cancelled()
+        current_path = f"{path}.{key}" if path else str(key)
+        if key not in properties:
+            property_schema = _schema_for_property(selected_schema, str(key), value, root, connection=connection)
+            if _has_matching_pattern_property(selected_schema, str(key)):
+                yield from _iter_nested_drift_paths(value, property_schema, current_path, root, connection)
+            elif has_additional is False:
+                yield current_path
             elif has_additional is True:
                 if not dynamic_container:
-                    warnings.append(f"Unexpected field: {current_path}")
+                    yield current_path
             else:
-                additional_schema = _schema_mapping(has_additional)
-                if not dynamic_container and not looks_dynamic_key(key):
-                    warnings.append(f"Unexpected field: {current_path}")
-                # The KEY of a dynamic map is not a named field, but its VALUE
-                # is: ``additionalProperties`` declares the structured node, so
-                # a new provider field inside it is real drift. Skipping the
-                # whole entry meant a field that ingest can silently discard --
-                # ``mapping..new_provider_field`` in a ChatGPT export -- was
-                # never observed at all.
-                warnings.extend(_detect_nested_drift(value, additional_schema, current_path, root))
+                if not dynamic_container and not looks_dynamic_key(str(key)):
+                    yield current_path
+                yield from _iter_nested_drift_paths(value, has_additional, current_path, root, connection)
             continue
-
-        warnings.extend(_detect_nested_drift(value, schema_props.get(key), current_path, root))
-
-    return warnings
+        yield from _iter_nested_drift_paths(value, properties.get(key), current_path, root, connection)
 
 
-def _detect_nested_drift(
-    value: object, schema: object, path: str, root: Mapping[str, object] | None = None
-) -> list[str]:
-    """Walk an object or array using the schema branch selected by ``value``."""
-    selected_schema = _schema_branch_for_value(schema, value, root)
+def _iter_nested_drift_paths(
+    value: object,
+    schema: object,
+    path: str,
+    root: Mapping[str, object],
+    connection: sqlite3.Connection | None,
+) -> Iterable[str]:
+    selected_schema = _schema_branch_for_value(schema, value, root, connection=connection)
     if not isinstance(selected_schema, Mapping):
-        return []
-    nested_value = _sample_payload(value)
-    if nested_value is not None:
-        return detect_drift(nested_value, selected_schema, path, root)
-    if not isinstance(value, list):
-        return []
-    warnings: list[str] = []
-    for index, item in enumerate(value):
-        warnings.extend(
-            _detect_nested_drift(item, _schema_for_items(selected_schema, item, root), f"{path}[{index}]", root)
-        )
-    return warnings
+        return
+    if isinstance(value, Mapping):
+        yield from _iter_drift_paths(value, selected_schema, path, root, connection)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            check_compute_cancelled()
+            yield from _iter_nested_drift_paths(
+                item,
+                _schema_for_items(selected_schema, item, root),
+                f"{path}[{index}]",
+                root,
+                connection,
+            )
 
 
 def looks_dynamic_key(key: str) -> bool:
@@ -654,13 +674,21 @@ class SchemaValidator:
         return _available_providers(registry_cls=SchemaRegistry)
 
     def validate(self, data: object, *, include_drift: bool | None = None) -> ValidationResult:
-        normalized = _normalize_empty_arrays(data, self.schema)
-        errors = [format_validation_error(error) for error in self._validator.iter_errors(normalized)]
-        drift_warnings: list[str] = []
-        should_detect_drift = self.strict if include_drift is None else include_drift
-        sample = _sample_payload(normalized)
-        if should_detect_drift and sample is not None:
-            drift_warnings.extend(detect_drift(sample, self.schema, ""))
+        from polylogue.schemas.retained_validation import _bounded_validator, _ensure_reducer_tables, _normalized
+        from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+        with scratch_connection_context(prefix="polylogue-schema-validation-", filename="validation.sqlite") as conn:
+            _ensure_reducer_tables(conn)
+            normalized = _normalized(data, self.schema, self.schema, conn)
+            validator = _bounded_validator(self.schema, conn)
+            errors = [format_validation_error(error) for error in validator.iter_errors(normalized)]
+            should_detect_drift = self.strict if include_drift is None else include_drift
+            sample = _sample_payload(normalized)
+            drift_warnings = (
+                [f"Unexpected field: {path}" for path in _iter_drift_paths(sample, self.schema, "", self.schema, conn)]
+                if should_detect_drift and sample is not None
+                else []
+            )
         return ValidationResult(
             is_valid=len(errors) == 0,
             errors=errors,
@@ -704,13 +732,62 @@ def validate_provider_export(
     return validator.validate(data)
 
 
+def validate_retained_document(
+    provider: str | Provider,
+    path: Path,
+    *,
+    mode: ValidationMode,
+    raw_id: str,
+    revision_sha256: str,
+    evidence_id: str,
+    source_path: str | None = None,
+    jsonl: bool = False,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    schema_resolution: SchemaResolution | None = None,
+    schema_resolution_is_explicit: bool = False,
+    registry: SchemaRegistry | None = None,
+) -> RetainedValidationVerdict:
+    """Validate a retained source revision with a compact spill-backed verdict.
+
+    The retained ingest route uses this entrypoint while the raw revision and
+    its original evidence remain owned.  Importing lazily keeps the ordinary
+    in-memory validation surface independent of the retained storage adapter.
+    """
+    from polylogue.schemas.retained_validation import validate_retained_document as validate
+
+    return validate(
+        provider,
+        path,
+        mode=mode,
+        raw_id=raw_id,
+        revision_sha256=revision_sha256,
+        evidence_id=evidence_id,
+        source_path=source_path,
+        jsonl=jsonl,
+        captured_zip_coordinate=captured_zip_coordinate,
+        schema_resolution=schema_resolution,
+        schema_resolution_is_explicit=schema_resolution_is_explicit,
+        registry=registry,
+    )
+
+
 __all__ = [
     "PayloadValidation",
+    "RetainedValidationVerdict",
     "SchemaValidator",
     "ValidationResult",
     "collect_validation_samples",
     "detect_drift",
     "format_validation_error",
     "looks_dynamic_key",
+    "validate_retained_document",
     "validate_provider_export",
 ]
+
+
+def __getattr__(name: str) -> object:
+    if name == "RetainedValidationVerdict":
+        from polylogue.schemas.retained_validation import RetainedValidationVerdict
+
+        return RetainedValidationVerdict
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

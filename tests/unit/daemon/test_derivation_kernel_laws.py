@@ -17,7 +17,7 @@ red. A law nobody can break is not a law.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 import pytest
 
@@ -1059,7 +1059,7 @@ def test_a_domain_that_is_not_session_derived_ignores_the_barrier() -> None:
 class CarrierKeyedDerivation(RecordingDerivation):
     """One key per carrier, each naming several sessions."""
 
-    def barrier_sessions(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, tuple[str, ...]]:
+    def barrier_sessions(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, Iterable[str]]:
         return {"batch": ("s1", "s2")}
 
 
@@ -1070,6 +1070,36 @@ def test_a_key_naming_several_sessions_is_held_when_any_one_waits() -> None:
     report = converge(DerivationRegistry([adapter]), FRAME, barrier=lambda sessions: {"s2"} & set(sessions))
 
     assert adapter.published == []
+    assert report.outcomes[0].reason is PendingReason.BLOCKED
+
+
+def test_barrier_consumes_session_membership_in_pages_and_stops_at_a_blocker() -> None:
+    """A carrier with many sessions does not flatten its entire membership."""
+
+    class LargeCarrier(CarrierKeyedDerivation):
+        def barrier_sessions(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, Iterable[str]]:
+            def sessions() -> Iterator[str]:
+                try:
+                    for index in range(1000):
+                        yield f"s{index}"
+                finally:
+                    closed.append(True)
+
+            return {"batch": sessions()}
+
+    closed: list[bool] = []
+    adapter = LargeCarrier("markers", required=("batch",))
+    observed_sizes: list[int] = []
+
+    def barrier(sessions: Sequence[str]) -> set[str]:
+        observed_sizes.append(len(sessions))
+        return {"s300"}.intersection(sessions)
+
+    report = converge(DerivationRegistry([adapter]), FRAME, barrier=barrier)
+
+    assert observed_sizes == [128, 128, 128]
+    assert closed == [True]
+    assert adapter.computed == []
     assert report.outcomes[0].reason is PendingReason.BLOCKED
 
 

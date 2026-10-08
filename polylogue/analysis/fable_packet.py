@@ -10,13 +10,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import tempfile
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import closing
 from dataclasses import dataclass
 from hashlib import sha256
-from pathlib import Path
 
 from polylogue.analysis.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
 from polylogue.analysis.fable_packet_contracts import (
@@ -27,8 +24,8 @@ from polylogue.analysis.fable_packet_contracts import (
 )
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryFieldRef
 from polylogue.core.refs import ObjectRef, delegation_edge_object_id
-from polylogue.core.sqlite_scratch import connect_scratch_database
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveDelegationQueryRow, ArchiveStore
+from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 
 @dataclass(frozen=True)
@@ -48,8 +45,7 @@ def _structural_population(
     # The public compiler historically counts action identities after last-row
     # deduplication, while coverage totals describe every supplied row.
     with (
-        tempfile.TemporaryDirectory(prefix="polylogue-fable-coverage-") as directory,
-        closing(connect_scratch_database(Path(directory) / "coverage.db")) as scratch,
+        scratch_connection_context(prefix="polylogue-fable-coverage-", filename="coverage.db") as scratch,
     ):
         scratch.execute("CREATE TABLE identities(ref TEXT PRIMARY KEY, action INTEGER NOT NULL)")
         cancellation: BaseException | None = None

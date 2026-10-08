@@ -684,12 +684,15 @@ def _check_source_conservation_at_index_path(
     and history sidecar is materialized or carries a typed exclusion whose
     rule the report cites; an on-disk probe turns a raw row whose source file
     vanished into ``source_missing``. A raw acquired from inside an export
-    bundle records an ``archive!member`` coordinate, which the probe resolves
-    to its container and requires the member to be present in. Reverse: every
+    bundle records an ``archive!member`` or ``archive:member`` coordinate, which
+    the probe resolves to its container and requires the member to be present
+    in. Unreadable inventories are retryable ``source_unavailable`` evidence;
+    a non-ZIP container proves no retained member inventory. Reverse: every
     session traces to a raw row that is not a declared non-session artifact,
     and every message, block, and attachment ref traces to its owner. Blocking
     terms are the unexplained ones (``unexplained``, ``unclassified_shape``,
-    ``quarantined_cohort_unmaterialized``, ``source_lost``, orphans,
+    ``quarantined_cohort_unmaterialized``, ``source_lost``, ``missing_blob``,
+    ``source_unavailable``, orphans,
     phantoms); a source file that is gone while its raw payload bytes are
     retained (``source_missing``) is typed accounting, and ``pending``,
     ``authority_blocked_head``, plus hook events whose session file was never
@@ -2514,15 +2517,6 @@ def _check_session_fingerprint_stamps(
         return _error_check("session-fingerprint-stamps", f"could not open index.db: {exc}", exc=exc)
 
     try:
-        required_columns = {"parser_fingerprint", "lowering_fingerprint"}
-        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)")}
-        missing_columns = sorted(required_columns - columns)
-        if missing_columns:
-            return _error_check(
-                "session-fingerprint-stamps",
-                f"sessions is missing fingerprint column(s): {', '.join(missing_columns)}",
-            )
-
         total = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
         invalid_sql = "{column} IS NULL OR length({column}) != 64 OR {column} GLOB '*[^0-9a-f]*'"
         invalid_parser_count = int(

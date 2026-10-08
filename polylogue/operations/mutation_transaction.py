@@ -38,10 +38,15 @@ reaching those lower layers.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import os
 import secrets
-from collections.abc import Callable, Mapping
+import threading
+from builtins import BaseExceptionGroup
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -53,7 +58,7 @@ from polylogue.core.errors import SchemaRefusalError
 from polylogue.operations.machine_receipts import MachineHistoricalReceipt, encode_machine_receipt
 
 if TYPE_CHECKING:
-    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.audit import AcceptedIdentityResetCustody, AuditRepository
     from polylogue.operations.bindings import OperationBinding
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -408,11 +413,6 @@ def build_typed_plan(
 ) -> MutationPlan:
     """Construct a plan whose hash covers the complete typed authority input."""
 
-    if len(targets) > MAX_MUTATION_PLAN_TARGETS:
-        raise ValueError(
-            f"{operation!r} plan has {len(targets)} target(s), exceeding the "
-            f"{MAX_MUTATION_PLAN_TARGETS}-target mutation plan budget"
-        )
     target_digest = compute_target_digest(targets)
     plan_hash = compute_typed_plan_hash(
         operation=operation,
@@ -471,11 +471,9 @@ def validate_mutation_plan_integrity(plan: MutationPlan) -> None:
         raise AuthorizationMismatchError("preview plan payload does not match its authority hash")
 
 
-#: Mutation plans carry at most this many targets. The cap began as the
-#: operator-adjudication command budget (polylogue-39pdi); adjudication is
-#: deleted, and whether recovery still needs the cap is polylogue-aw070's
-#: decision.
-MAX_MUTATION_PLAN_TARGETS = 256
+#: Daemon publication pages bound resident work without limiting a plan's
+#: total authorized target set.
+MUTATION_PLAN_PAGE_SIZE = 256
 
 #: How many canonical session IDs a delete preview result names. The selection
 #: itself has no count cap, so the result reports its size and a leading sample
@@ -495,11 +493,6 @@ def build_plan(
 ) -> MutationPlan:
     """Construct a :class:`MutationPlan` with a freshly computed plan hash."""
 
-    if len(target_refs) > MAX_MUTATION_PLAN_TARGETS:
-        raise ValueError(
-            f"{operation!r} plan has {len(target_refs)} target(s), exceeding the "
-            f"{MAX_MUTATION_PLAN_TARGETS}-target mutation plan budget"
-        )
     resolved_context = dict(context or {})
     plan_hash = compute_plan_hash(
         operation=operation,
@@ -604,6 +597,50 @@ class StartedBoundMutation:
     operation_id: str | None
 
 
+@dataclass(slots=True)
+class _StartedMutationTransfer:
+    actuator: object
+    started: StartedBoundMutation
+    pid: int
+    thread: threading.Thread
+    task: object | None
+    consumed: bool = False
+
+
+_ACTIVE_STARTED_MUTATION: ContextVar[_StartedMutationTransfer | None] = ContextVar(
+    "operation_active_started_mutation", default=None
+)
+
+
+def _mutation_task() -> object | None:
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
+
+def take_started_bound_mutation(actuator: object, plan: MutationPlan) -> StartedBoundMutation:
+    """Transfer this executor's actual begun carrier once to its participant.
+
+    Context copies share the consumed frame. An inherited callback cannot
+    replay it after the original participant has taken the carrier.
+    """
+    transfer = _ACTIVE_STARTED_MUTATION.get()
+    if (
+        transfer is None
+        or transfer.consumed
+        or transfer.actuator is not actuator
+        or transfer.started.plan is not plan
+        or transfer.pid != os.getpid()
+        or transfer.thread is not threading.current_thread()
+        or transfer.task is not _mutation_task()
+    ):
+        raise MutationTransactionError("started mutation transfer does not belong to this exact participant")
+    transfer.consumed = True
+    _ACTIVE_STARTED_MUTATION.set(None)
+    return transfer.started
+
+
 @dataclass(frozen=True, slots=True)
 class RecoveryResolution:
     """How one interrupted operation was resolved from durable state.
@@ -666,8 +703,10 @@ class ReplayHandles:
     replace.
     """
 
-    def __init__(self, archive_root: Path) -> None:
+    def __init__(self, archive_root: Path, *, input_demand: Callable[[int], None] | None = None) -> None:
         self.archive_root = archive_root
+        self.input_demand = input_demand
+        self.recovery_operation: RecoveryOperation | None = None
         self._archive: ArchiveStore | None = None
 
     @property
@@ -698,6 +737,7 @@ class RecoveryOperation:
     reconstructed_target_count: int
     target_evidence_complete: bool
     context: Mapping[str, object] = field(default_factory=dict)
+    attempt_id: str | None = None
 
     @property
     def target_evidence_detail(self) -> str:
@@ -829,7 +869,7 @@ class OperationExecutor:
         # binding locally for daemonless/library executors so a caller cannot
         # forge a token-bearing dataclass after AUTHORIZE.
         self._issued_authorizations: dict[str, MutationAuthorization] = {}
-        self._prevalidated_executions: ContextVar[tuple[tuple[object, MutationPlan], ...]] = ContextVar(
+        self._prevalidated_executions: ContextVar[tuple[tuple[object, StartedBoundMutation], ...]] = ContextVar(
             "operation_executor_prevalidated_executions", default=()
         )
 
@@ -899,7 +939,7 @@ class OperationExecutor:
 
         if self._audit is None:
             raise MutationTransactionError("production mutation preparation requires a durable audit repository")
-        from polylogue.storage.archive_identity import ArchiveIdentity
+        from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 
         raw_plan = binding.actuator.prepare(args)
         return self.prepare_bound(
@@ -907,7 +947,9 @@ class OperationExecutor:
             args,
             principal,
             archive_instance_id=self._audit.ensure_archive_authority(now_ms=self._now_ms()),
-            archive_identity_digest=ArchiveIdentity.resolve(archive_root).authority_identity_digest,
+            archive_identity_digest=ArchiveIdentity.resolve_location(
+                ArchiveLocation.resolve(archive_root)
+            ).authority_identity_digest,
             parameter_digest=compute_parameter_digest(raw_plan),
             raw_plan=raw_plan,
         )
@@ -919,6 +961,7 @@ class OperationExecutor:
         principal: MutationPrincipal,
         *,
         confirmation_strength: ConfirmationStrength | None = None,
+        identity_reset_custody: AcceptedIdentityResetCustody | None = None,
     ) -> MutationAuthorization:
         """Issue a random one-time token bound to the persisted preview."""
 
@@ -929,7 +972,9 @@ class OperationExecutor:
         if not required.issubset(principal.capabilities):
             missing = sorted(required - principal.capabilities)
             raise CapabilityDeniedError(f"principal lacks declared capabilities: {missing}")
-        if self._now_ms() >= plan.expires_at_ms:
+        if identity_reset_custody is not None:
+            identity_reset_custody.require_authorization(preview, principal)
+        if identity_reset_custody is None and self._now_ms() >= plan.expires_at_ms:
             raise TokenExpiredError("cannot authorize an expired preview")
         # A destructive plan is never authorized with the interim boolean
         # strength.  Callers that omit the strength receive the canonical
@@ -942,6 +987,8 @@ class OperationExecutor:
             raise ConfirmationRequiredError(
                 f"{binding.spec.name!r} requires {plan.required_confirmation!r}, got {strength!r}"
             )
+        if identity_reset_custody is not None and strength != "bound_token":
+            raise ConfirmationRequiredError("accepted identity reset requires bound confirmation")
         token = self._token_factory()
         authorization = MutationAuthorization(
             plan_hash=plan.plan_hash,
@@ -952,7 +999,7 @@ class OperationExecutor:
             authorized_at=_utcnow_iso(),
             preview_ref=preview.preview_ref,
             token=token,
-            expires_at_ms=plan.expires_at_ms,
+            expires_at_ms=plan.expires_at_ms if identity_reset_custody is None else identity_reset_custody.issued_at_ms,
             capabilities=tuple(sorted(required)),
             surface=principal.surface,
         )
@@ -974,21 +1021,76 @@ class OperationExecutor:
     ) -> MutationReceipt:
         """Consume a bound token, journal intent, apply, and finalize honestly."""
 
-        started = self.begin_bound(binding, preview, authorization, args)
+        from polylogue.core.stage_admission import admit_stage_write
+
+        if self._audit is not None:
+            self._resolve_dead_operations(
+                resolver_actor_ref=authorization.actor,
+                prepared_excision_only=True,
+                input_demand=getattr(args, "input_demand", None),
+            )
+        started = admit_stage_write(
+            f"operation.{binding.spec.name}.begin", lambda: self.begin_bound(binding, preview, authorization, args)
+        )
         active_executions = self._prevalidated_executions.get()
-        scope_token = self._prevalidated_executions.set((*active_executions, (binding.actuator, started.plan)))
+        scope_token = self._prevalidated_executions.set((*active_executions, (binding.actuator, started)))
         try:
             receipt = self.execute(binding.actuator, started.plan, authorization, args)
-        except Exception as exc:
-            self.finalize_bound(
-                started,
-                error_summary=str(exc)[:512],
-                unknown_reason="actuator exception after durable intent",
-            )
+        except BaseException as exc:
+            error_summary = str(exc)[:512]
+            from polylogue.core.errors import RefusedBeforeEffectError
+
+            # Excision commits Source completion before its Index mutation,
+            # so an Index-side refusal cannot prove the whole operation
+            # without effect; it stays indeterminate below.
+            if isinstance(exc, RefusedBeforeEffectError) and started.plan.operation != "mutate-session-excision":
+                refused = MutationReceipt(
+                    operation=started.plan.operation,
+                    plan_hash=started.plan.plan_hash,
+                    status="blocked",
+                    target_refs=started.plan.target_refs,
+                    affected_count=0,
+                    detail=error_summary,
+                    receipt_ref=None,
+                    applied_at=_utcnow_iso(),
+                )
+                try:
+                    admit_stage_write(
+                        f"operation.{binding.spec.name}.refused",
+                        lambda: self.finalize_bound(started, receipt=refused, error_summary=error_summary),
+                    )
+                except BaseException as cleanup:
+                    raise BaseExceptionGroup("Mutation refusal and its finalization failed", [exc, cleanup]) from exc
+                raise
+
+            def finalize_indeterminate() -> None:
+                # Source completion is already durable if an Excision fault
+                # followed that commit. Project the same pending command
+                # before appending the attempt's indeterminate transition.
+                # Failed physical settlement still refuses this admission.
+                if self._audit is not None and started.plan.operation == "mutate-session-excision":
+                    self._audit.reconcile_continuity()
+                self.finalize_bound(
+                    started,
+                    error_summary=error_summary,
+                    unknown_reason="actuator exception after durable intent",
+                )
+
+            try:
+                admit_stage_write(
+                    f"operation.{binding.spec.name}.indeterminate",
+                    finalize_indeterminate,
+                )
+            except BaseException as cleanup:
+                raise BaseExceptionGroup(
+                    "Mutation apply and indeterminate finalization failed", [exc, cleanup]
+                ) from exc
             raise
         finally:
             self._prevalidated_executions.reset(scope_token)
-        completed = self.finalize_bound(started, receipt=receipt)
+        completed = admit_stage_write(
+            f"operation.{binding.spec.name}.finalize", lambda: self.finalize_bound(started, receipt=receipt)
+        )
         assert completed is not None
         return completed
 
@@ -1047,16 +1149,18 @@ class OperationExecutor:
         ):
             raise TokenExpiredError("authorization token is expired")
         if self._archive_root is not None:
-            from polylogue.storage.archive_identity import ArchiveIdentity
+            from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 
-            live_identity = ArchiveIdentity.resolve(self._archive_root).authority_identity_digest
+            live_identity = ArchiveIdentity.resolve_location(
+                ArchiveLocation.resolve(self._archive_root)
+            ).authority_identity_digest
             if live_identity != preview.plan.archive_identity_digest:
                 revoke_local()
                 raise PlanStaleError("archive identity changed after the bound preview was prepared")
         if self._audit is not None:
             # Land interrupted work before re-preparing, so the freshness
             # check below compares against the state that work leaves.
-            self._resolve_dead_operations()
+            self._resolve_dead_operations(resolver_actor_ref=authorization.actor)
         fresh_plan = self._typed_plan_from_actuator(
             binding,
             binding.actuator.prepare(args),
@@ -1082,7 +1186,7 @@ class OperationExecutor:
         operation_id: str | None = None
         if self._audit is not None:
             operation_id = self._audit.consume_authorization_and_start(preview, authorization)
-        return StartedBoundMutation(plan=fresh_plan, authorization=authorization, operation_id=operation_id)
+        return StartedBoundMutation(plan=preview.plan, authorization=authorization, operation_id=operation_id)
 
     def finalize_bound(
         self,
@@ -1119,7 +1223,9 @@ class OperationExecutor:
                     unknown_reason=unknown_reason,
                 )
                 return None
-            self._audit.finalize_attempt(started.operation_id, status=receipt.status, receipt=receipt)
+            self._audit.finalize_attempt(
+                started.operation_id, status=receipt.status, receipt=receipt, error_summary=error_summary
+            )
         except Exception as exc:
             if receipt is None:
                 raise
@@ -1168,17 +1274,25 @@ class OperationExecutor:
         if preview.plan.operation != binding.spec.name or authorization.plan_hash != preview.plan.plan_hash:
             raise AuthorizationMismatchError("accepted insight authority does not match this operation binding")
         if self._archive_root is not None:
-            from polylogue.storage.archive_identity import ArchiveIdentity
+            from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 
-            live_identity = ArchiveIdentity.resolve(self._archive_root).authority_identity_digest
+            live_identity = ArchiveIdentity.resolve_location(
+                ArchiveLocation.resolve(self._archive_root)
+            ).authority_identity_digest
             if live_identity != preview.plan.archive_identity_digest:
                 raise PlanStaleError("archive identity changed after the insight manifest was accepted")
-        self._resolve_dead_operations()
+        self._resolve_dead_operations(resolver_actor_ref=authorization.actor)
         self._refuse_unresolved_overlap(preview.plan)
         operation_id = self._audit.consume_authorization_and_start(preview, authorization)
         return StartedBoundMutation(plan=preview.plan, authorization=authorization, operation_id=operation_id)
 
-    def _resolve_dead_operations(self) -> None:
+    def _resolve_dead_operations(
+        self,
+        *,
+        resolver_actor_ref: str,
+        prepared_excision_only: bool = False,
+        input_demand: Callable[[int], None] | None = None,
+    ) -> None:
         """Land every dead interrupted operation this process can route.
 
         All of them, not only those sharing the new request's targets: a plan
@@ -1189,22 +1303,40 @@ class OperationExecutor:
         """
 
         assert self._audit is not None
-        orphaned = self._audit.orphaned_operations()
-        # Target overlap cannot fence work that deletes archive files: a write
-        # to logically unrelated rows still lands in a database the unrouted
-        # reset will unlink once startup recovery replays it.
-        for operation in orphaned:
-            if operation.operation in _RECOVERY_ROUTES:
-                continue
-            if any(ref.startswith("path:") for ref in self._audit.operation_plan(operation.operation_id).target_refs):
-                raise RecoveryBlockedError(
-                    f"interrupted {operation.operation} {operation.operation_id!r} replaces archive files and "
-                    "awaits daemon startup recovery; restart polylogued"
-                )
+        # Discovery is a settled continuity read on the original creator.
+        # Opening a writable audit handle here would bind an unbound outer
+        # lease before the admitted BEGIN tries to acquire the same custody.
+        with self._audit.recovery_discovery_read():
+            orphaned = self._audit.orphaned_operations()
+            # Target overlap cannot fence work that deletes archive files: a write
+            # to logically unrelated rows still lands in a database the unrouted
+            # reset will unlink once startup recovery replays it.
+            for operation in orphaned:
+                if operation.operation in _RECOVERY_ROUTES:
+                    continue
+                if any(
+                    ref.startswith("path:") for ref in self._audit.operation_plan(operation.operation_id).target_refs
+                ):
+                    raise RecoveryBlockedError(
+                        f"interrupted {operation.operation} {operation.operation_id!r} replaces archive files and "
+                        "awaits daemon startup recovery; restart polylogued"
+                    )
         dead = tuple(operation for operation in orphaned if operation.operation in _RECOVERY_ROUTES)
+        if prepared_excision_only:
+            dead = tuple(operation for operation in dead if operation.operation == "mutate-session-excision")
+        elif any(operation.operation == "mutate-session-excision" for operation in dead):
+            raise RecoveryBlockedError(
+                "interrupted Excision requires the original prepared recovery phase before begin"
+            )
         if not dead:
             return
-        deferred = resolve_interrupted_operations(self._audit, self._audit.path.parent, dead)
+        deferred = resolve_interrupted_operations(
+            self._audit,
+            self._audit.path.parent,
+            dead,
+            resolver_actor_ref=resolver_actor_ref,
+            input_demand=input_demand,
+        )
         if deferred:
             raise RecoveryBlockedError(
                 f"interrupted operation {deferred[0]!r} awaits archive state this runtime cannot resolve yet; "
@@ -1382,15 +1514,29 @@ class OperationExecutor:
             )
         active_executions = self._prevalidated_executions.get()
         if active_executions:
-            expected_actuator, expected_plan = active_executions[-1]
-            if actuator is not expected_actuator or plan is not expected_plan:
+            expected_actuator, started = active_executions[-1]
+            if actuator is not expected_actuator or plan is not started.plan:
                 raise MutationTransactionError("prevalidated execution does not match the active bound mutation")
             # Context variables are copied into callbacks/tasks at creation.
             # Remove this one-shot authority before entering actuator-owned
             # code so work it schedules cannot inherit and replay it later.
             cleared = self._prevalidated_executions.set(())
             try:
-                return actuator.apply(plan, args)
+                removal_scope = (
+                    nullcontext()
+                    if plan.operation == "mutate-session-excision"
+                    else _authorized_removal_apply(plan, self._archive_root, actuator, args)
+                )
+                with removal_scope:
+                    transfer = _StartedMutationTransfer(
+                        actuator, started, os.getpid(), threading.current_thread(), _mutation_task()
+                    )
+                    transfer_token = _ACTIVE_STARTED_MUTATION.set(transfer)
+                    try:
+                        return actuator.apply(plan, args)
+                    finally:
+                        transfer.consumed = True
+                        _ACTIVE_STARTED_MUTATION.reset(transfer_token)
             finally:
                 self._prevalidated_executions.reset(cleared)
         fresh_plan = actuator.prepare(args)
@@ -1400,7 +1546,46 @@ class OperationExecutor:
                 f"live state now resolves to {fresh_plan.plan_hash!r} "
                 f"({fresh_plan.target_count} target(s) vs {plan.target_count})"
             )
-        return actuator.apply(plan, args)
+        with _authorized_removal_apply(plan, self._archive_root, actuator, args):
+            return actuator.apply(plan, args)
+
+
+@contextmanager
+def _authorized_removal_apply(
+    plan: MutationPlan, archive_root: Path | None, actuator: object, args: object | None = None
+) -> Iterator[None]:
+    # Only these registered actuators intentionally remove stored sessions.
+    # Other operations may name sessions without authorizing their absence.
+    if plan.operation not in {"mutate-delete-session", "mutate-identity-reset", "mutate-session-excision"}:
+        yield
+        return
+    registered = _RECOVERY_ROUTES.get(plan.operation)
+    if registered is None or type(actuator) is not type(registered):
+        raise MutationTransactionError("session disappearance requires the registered removal actuator")
+    if archive_root is None:
+        # The registered domain actuator owns this exact argument shape.
+        # Do not import domain implementations into the transaction authority.
+        if args is None:
+            raise MutationTransactionError("session removal has no declared archive destination")
+        if plan.operation == "mutate-delete-session":
+            archive_root = cast(Any, args).archive._write_lease_archive_root
+        else:
+            archive_root = cast(Any, args).archive_root
+    from polylogue.core.write_lease import authorized_session_removal, write_lease
+
+    session_ids = tuple(ref.removeprefix("session:") for ref in plan.target_refs if ref.startswith("session:"))
+    # Library execution acquires the same existing root-bound lease; admitted
+    # daemon execution borrows that exact physical owner on its creator.
+    with (
+        write_lease("operation.authorized-removal", archive_root=archive_root),
+        authorized_session_removal(
+            archive_root=archive_root,
+            plan_hash=plan.plan_hash,
+            session_ids=session_ids,
+            excise_assertions=plan.operation == "mutate-session-excision",
+        ),
+    ):
+        yield
 
 
 class RecoverableActuator(Protocol):
@@ -1453,17 +1638,44 @@ def resolve_interrupted_operation(
             "not-replayable",
             f"{operation.operation!r} v{operation.operation_version} was retired; this runtime declares v{version}",
         )
-    plan = audit.operation_plan(operation.operation_id)
+    if operation.operation == "mutate-resolve-raw-authority-blocker" and handles.input_demand is not None:
+        from polylogue.core.stage_admission import admit_stage_write
+
+        plan = admit_stage_write("operation.recovery.plan", lambda: audit.operation_plan(operation.operation_id))
+    else:
+        with audit.settled_machine_read():
+            plan = audit.operation_plan(operation.operation_id)
+    if plan.plan_hash != operation.plan_hash or plan.operation != operation.operation:
+        raise AuthorizationMismatchError("recovery operation differs from its original durable plan")
+    if handles.recovery_operation is not None and handles.recovery_operation is not operation:
+        raise AuthorizationMismatchError("recovery handles already belong to another original operation")
+    handles.recovery_operation = operation
     try:
-        return actuator.recover(handles, plan)
+        if operation.operation == "mutate-session-excision":
+            # Original preparation runs off admission. The domain's exact
+            # retained command acquires physical removal custody only at apply.
+            return actuator.recover(handles, plan)
+        with _authorized_removal_apply(plan, handles.archive_root, actuator):
+            return actuator.recover(handles, plan)
     except (SchemaRefusalError, RecoveryDeferredError, RecoveryRedrivenByOwnerError):
         raise
     except Exception as exc:
+        if operation.operation == "mutate-session-excision":
+            # Source or paid effects may already be durable. A refusal or
+            # unsettled resource cannot erase that original attempt's fence.
+            raise RecoveryDeferredError(
+                f"original Excision recovery refused: {type(exc).__name__}: {exc}"[:512]
+            ) from exc
         return RecoveryResolution("replay-failed", f"{type(exc).__name__}: {exc}"[:512])
 
 
 def resolve_interrupted_operations(
-    audit: AuditRepository, archive_root: Path, operations: tuple[RecoveryOperation, ...]
+    audit: AuditRepository,
+    archive_root: Path,
+    operations: tuple[RecoveryOperation, ...],
+    *,
+    resolver_actor_ref: str,
+    input_demand: Callable[[int], None] | None = None,
 ) -> tuple[str, ...]:
     """Resolve and terminalize each dead operation; return the ids left pending.
 
@@ -1474,11 +1686,13 @@ def resolve_interrupted_operations(
     neither recorded nor returned as pending.
     """
 
+    if not resolver_actor_ref:
+        raise ValueError("recovery resolver actor_ref must not be empty")
     deferred: list[str] = []
     for operation in operations:
         # Fresh handles per operation: one resolution (a filesystem reset)
         # may remove the very tier files a cached store would keep open.
-        handles = ReplayHandles(archive_root)
+        handles = ReplayHandles(archive_root, input_demand=input_demand)
         try:
             resolution = resolve_interrupted_operation(audit, handles, operation)
         except (SchemaRefusalError, RecoveryDeferredError):
@@ -1488,7 +1702,14 @@ def resolve_interrupted_operations(
             continue
         finally:
             handles.close()
-        audit.record_recovery_resolution(operation.operation_id, resolution)
+        from polylogue.core.stage_admission import admit_stage_write
+
+        def finalize_recovery(
+            operation: RecoveryOperation = operation, resolution: RecoveryResolution = resolution
+        ) -> None:
+            audit.record_recovery_resolution(operation.operation_id, resolution, resolver_actor_ref=resolver_actor_ref)
+
+        admit_stage_write("operation.recovery.finalize", finalize_recovery)
     return tuple(deferred)
 
 
@@ -1530,6 +1751,7 @@ __all__ = [
     "PrincipalSurface",
     "SurfaceDeniedError",
     "StartedBoundMutation",
+    "take_started_bound_mutation",
     "TargetAuthorityPolicy",
     "TargetDurability",
     "TokenConsumedError",

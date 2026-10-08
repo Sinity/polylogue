@@ -12,12 +12,11 @@ the missing key.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
+from typing import Any
 
-import click
 import pytest
 
 from polylogue.cli.operation_kernel import OperationFailedError
@@ -144,64 +143,59 @@ def test_complete_selection_walks_the_ordinary_over_500_boundary(
     assert len(set(ids)) == LARGE_SEEDED_SESSIONS
 
 
+def _seeded_session_ids(root: Path) -> set[str]:
+    from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+
+    with readonly_connection_context(root / "index.db") as index:
+        return {str(row[0]) for row in index.execute("SELECT session_id FROM sessions")}
+
+
+def _tag_targets(root: Path, tag: str) -> set[str]:
+    from polylogue.core.enums import AssertionKind
+    from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+
+    with readonly_connection_context(root / "user.db") as user:
+        rows = user.execute(
+            "SELECT target_ref FROM assertions WHERE kind = ? AND status = 'active' AND key = ?",
+            (AssertionKind.TAG.value, tag),
+        ).fetchall()
+    return {str(row[0]).removeprefix("session:") for row in rows}
+
+
+@pytest.mark.uses_real_clock("drives delete and mark --all through a real resident daemon over its UDS socket")
 def test_complete_selection_all_verbs_receive_every_real_operation_id(
     seeded_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Selection, delete --all, and mark --all share the real page consumer.
+    """``delete --all`` and ``mark --all`` act on every match, across page boundaries.
 
-    The mutation transport is recorded because writes belong to the daemon;
-    no producer, selector, or verb callback is mocked.  Anti-vacuity: make
-    the list producer omit ``next_offset`` and resolution refuses before
-    either recorder can receive the incomplete first page.
+    The resident selection owner walks the canonical selection in pages and
+    seals every distinct identity before the mutation. With its page set below
+    the seeded count, a walk that stopped after one page would preview, tag or
+    delete ``PAGE`` sessions instead of all of them.
+
+    Anti-vacuity: stop the daemon-side walk after its first page and the preview
+    count, the tagged set and the deleted set each shrink to ``PAGE``.
     """
+    from click.testing import CliRunner
 
-    import polylogue.cli.session_rows as session_rows
-    from polylogue.cli import query_verbs
-    from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
-    from tests.infra.app_env import make_app_env
+    import polylogue.operations.daemon_mutations as daemon_mutations
+    from polylogue.cli import cli
 
-    monkeypatch.setattr(session_rows, "COMPLETE_SELECTION_PAGE", PAGE)
-    env = make_app_env(archive_root=seeded_root)
-    request = RootModeRequest.from_params({"query": (TOKEN,)})
-    with cli_daemon_archive(seeded_root, monkeypatch):
-        expected = resolve_session_ids_for_verb(env, request)
+    expected = _seeded_session_ids(seeded_root)
     assert len(expected) == SEEDED_SESSIONS
-    assert len(set(expected)) == SEEDED_SESSIONS
-
-    parent = click.Context(click.Command("query"))
-    parent.params = {"query_term": (TOKEN,)}
-    parent.meta["polylogue_query_terms"] = (TOKEN,)
-    child = click.Context(click.Command("verb"), parent=parent)
-    child.obj = env
-
-    deleted: list[list[str]] = []
-    mark_operations: list[tuple[str, dict[str, object]]] = []
-
-    def record_delete(_env: object, ids: list[str], *, force: bool, dry_run: bool = False) -> None:
-        assert force is True
-        assert dry_run is False
-        deleted.append(ids)
-
-    def record_mark(_env: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
-        mark_operations.append((operation, payload))
-        selection = payload["session_ids"]
-        assert isinstance(selection, list)
-        return {"status": "ok", "affected_count": len(selection)}
-
-    delete_callback = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
-    mark_callback = getattr(query_verbs.mark_verb.callback, "__wrapped__", None)
-    assert callable(delete_callback)
-    assert callable(mark_callback)
+    monkeypatch.setattr(daemon_mutations, "_MUTATION_SELECTION_PAGE_SIZE", PAGE)
     with cli_daemon_archive(seeded_root, monkeypatch):
-        with patch("polylogue.cli.archive_query.execute_delete_by_session_ids", side_effect=record_delete):
-            delete_callback(child, False, True, True, None)
-        with patch("polylogue.cli.archive_query.submit_cli_mutation", side_effect=record_mark):
-            mark_callback(child, ("reviewed",), (), False, False, False, False, False, False, None, True, False, None)
+        preview = CliRunner().invoke(cli, ["--plain", "find", TOKEN, "then", "delete", "--dry-run", "--all"])
+        marked = CliRunner().invoke(cli, ["--plain", "find", TOKEN, "then", "mark", "--tag-add", "reviewed", "--all"])
+        tagged = _tag_targets(seeded_root, "reviewed")
+        deleted = CliRunner().invoke(cli, ["--plain", "find", TOKEN, "then", "delete", "--yes", "--all"])
 
-    assert deleted == [expected]
-    assert mark_operations == [
-        ("mutation.session.tag", {"session_ids": expected, "tags": ["reviewed"]}),
-    ]
+    assert preview.exit_code == 0, preview.output
+    assert json.loads(preview.output)["session_count"] == SEEDED_SESSIONS
+    assert marked.exit_code == 0, marked.output
+    assert tagged == expected
+    assert deleted.exit_code == 0, deleted.output
+    assert _seeded_session_ids(seeded_root).isdisjoint(expected)
 
 
 @pytest.mark.parametrize(
@@ -223,59 +217,56 @@ def test_complete_selection_all_verbs_receive_every_real_operation_id(
         (
             [
                 {"items": [{"id": "a"}], "total": 2, "next_offset": 1},
-                OperationFailedError("read_failed", "later page failed"),
+                RuntimeError("later page failed"),
             ],
             "later page failed",
         ),
     ],
 )
-def test_mutating_selection_refuses_incomplete_or_failed_walks(pages: list[object], expected_message: str) -> None:
+@pytest.mark.uses_real_clock("submits the delete to a real resident daemon over its UDS socket")
+def test_mutating_selection_refuses_incomplete_or_failed_walks(
+    seeded_root: Path, monkeypatch: pytest.MonkeyPatch, pages: list[object], expected_message: str
+) -> None:
     """No --all mutation receives a prefix after a bad continuation.
 
-    Anti-vacuity: return the accumulated ids on a missing/repeated
-    ``next_offset`` (the pre-fix behavior) and the delete recorder is called.
+    The resident selection owner reads the canonical ``cli.query`` pages; each
+    page here replaces one of its reads. A missing continuation, a degraded
+    outcome, a non-advancing offset and a failing later page must each refuse
+    before any session is deleted.
+
+    Anti-vacuity: accept the accumulated identities on a missing or repeated
+    ``next_offset`` (the pre-fix behavior) and the delete proceeds.
     """
+    from click.testing import CliRunner
 
-    from polylogue.cli import query_verbs
-    from tests.infra.app_env import make_app_env
+    import polylogue.operations.daemon_reads as daemon_reads
+    from polylogue.cli import cli
 
+    before = _seeded_session_ids(seeded_root)
     calls = iter(pages)
-    deleted: list[list[str]] = []
+    original = daemon_reads.execute_read_operation
 
-    def dispatch(*_args: object, **_kwargs: object) -> SimpleNamespace:
+    def selection_read(operation: str, payload: dict[str, object], **kwargs: Any) -> object:
+        params = payload.get("params")
+        if operation != "cli.query" or not isinstance(params, dict) or TOKEN not in str(params.get("query")):
+            return original(operation, payload, **kwargs)
         page = next(calls)
         if isinstance(page, Exception):
             raise page
         assert isinstance(page, dict)
-        return SimpleNamespace(
-            value={
-                **fixture_query_page(page),
-                **({"outcome": page["outcome"]} if "outcome" in page else {}),
-                "snapshot_epoch": "fixture-selected-frame",
-            },
-            authority={},
-            envelope=None,
-        )
+        return {
+            **fixture_query_page(page),
+            **({"outcome": page["outcome"]} if "outcome" in page else {}),
+            "snapshot_epoch": "fixture-selected-frame",
+        }
 
-    parent = click.Context(click.Command("query"))
-    parent.params = {"query_term": (TOKEN,)}
-    parent.meta["polylogue_query_terms"] = (TOKEN,)
-    child = click.Context(click.Command("verb"), parent=parent)
-    child.obj = make_app_env()
-    callback = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
-    assert callable(callback)
+    with cli_daemon_archive(seeded_root, monkeypatch):
+        monkeypatch.setattr(daemon_reads, "execute_read_operation", selection_read)
+        result = CliRunner().invoke(cli, ["--plain", "find", TOKEN, "then", "delete", "--yes", "--all"])
 
-    with (
-        patch("polylogue.cli.operation_kernel.dispatch", side_effect=dispatch),
-        patch(
-            "polylogue.cli.archive_query.execute_delete_by_session_ids",
-            side_effect=lambda _env, ids, **_kwargs: deleted.append(ids),
-        ),
-        pytest.raises((click.ClickException, RuntimeError), match=expected_message),
-    ):
-        callback(child, False, True, True, None)
-
-    assert deleted == []
+    assert result.exit_code != 0, result.output
+    assert expected_message in result.output
+    assert _seeded_session_ids(seeded_root) == before
 
 
 def test_unknown_total_continues_only_on_a_full_page() -> None:
@@ -286,27 +277,6 @@ def test_unknown_total_continues_only_on_a_full_page() -> None:
     assert page_next_offset(offset=0, returned=PAGE, total=None, limit=PAGE) == PAGE
     assert page_next_offset(offset=PAGE, returned=1, total=None, limit=PAGE) is None
     assert page_next_offset(offset=0, returned=0, total=0, limit=PAGE) is None
-
-
-def test_the_mutating_verb_route_resolves_through_the_complete_walk() -> None:
-    """``select``/``mark``/``delete --all`` reach the walk above, not a page.
-
-    ``resolve_session_ids_for_verb`` is the single route the mutating verbs and
-    their cardinality guard share, so the completeness proved above is the
-    completeness they get.  Pinning the delegation is what makes that transfer
-    an assertion rather than a claim.
-
-    Anti-vacuity: point ``resolve_session_ids_for_verb`` at the bounded
-    ``query_session_selection`` probe instead and this goes red.
-    """
-
-    import inspect
-
-    from polylogue.cli import verb_cardinality
-
-    source = inspect.getsource(verb_cardinality.resolve_session_ids_for_verb)
-    assert "query_complete_session_selection" in source
-    assert "query_session_selection(" not in source
 
 
 @pytest.mark.parametrize("complete", [True, False])

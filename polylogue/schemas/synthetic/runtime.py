@@ -332,6 +332,12 @@ def _generate_object(
             }
         if selected_root_fields:
             candidate_keys &= selected_root_fields
+    # A skipped key is a container the caller fills itself (the route's
+    # message array or tree), so every document keeps the one shape that
+    # container belongs to, coverage witnesses included.
+    container_names = frozenset(skip_keys or ()) & frozenset(properties)
+    if container_names and self._relation_solver.mutual_exclusions:
+        candidate_keys = self._relation_solver.exclude_container_conflicts(path, candidate_keys, container_names)
     if skip_keys:
         candidate_keys -= skip_keys
 

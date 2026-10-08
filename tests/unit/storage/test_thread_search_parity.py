@@ -9,6 +9,7 @@ import pytest
 from polylogue.analysis.archive import ThreadInsightQuery
 from polylogue.api import Polylogue
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_archive_fixture_write
 from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
 from tests.infra.storage_records import seed_thread_search_archive
 
@@ -17,7 +18,7 @@ from tests.infra.storage_records import seed_thread_search_archive
 async def test_public_thread_search_filters_support_before_api_and_mcp_pages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ids = seed_thread_search_archive(tmp_path)
+    ids = await run_archive_fixture_write(tmp_path, lambda: seed_thread_search_archive(tmp_path))
     with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
         assert (
             archive._conn.execute("SELECT 1 FROM session_profiles WHERE session_id = ?", (ids["newer"],)).fetchone()

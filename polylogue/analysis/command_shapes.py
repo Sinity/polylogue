@@ -18,16 +18,14 @@ import math
 import os
 import shlex
 import sqlite3
-import tempfile
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from functools import partial
-from pathlib import Path
 
 from polylogue.analysis.archive import PaginatedInsightQuery
 from polylogue.analysis.archive_models import ArchiveInsightModel, ArchiveInsightProvenance
-from polylogue.core.sqlite_scratch import connect_scratch_database
+from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 COMMAND_SHAPES_INSIGHT_VERSION = 1
 
@@ -135,40 +133,37 @@ def _path_like(token: str) -> bool:
 
 @contextmanager
 def _command_shape_scratch() -> Iterator[tuple[sqlite3.Connection, sqlite3.Cursor]]:
-    """Own one disposable fold and settle every resource before returning."""
-    directory = tempfile.TemporaryDirectory(prefix="polylogue-command-shapes-")
-    scratch: sqlite3.Connection | None = None
-    cursor: sqlite3.Cursor | None = None
-    primary: BaseException | None = None
-    try:
-        scratch = connect_scratch_database(Path(directory.name) / "usage.db")
-        cursor = scratch.cursor()
-        yield scratch, cursor
-    except BaseException as exc:
-        primary = exc
-        raise
-    finally:
-        faults: list[BaseException] = []
-        if primary is not None:
-            faults.append(primary)
-        cleanup: list[Callable[[], object]] = []
-        if scratch is not None:
-            cleanup.append(partial(scratch.set_progress_handler, None, 0))
-        if cursor is not None:
-            cleanup.append(cursor.close)
-        if scratch is not None:
-            cleanup.append(scratch.close)
-        cleanup.append(directory.cleanup)
-        for finish in cleanup:
-            try:
-                finish()
-            except BaseException as exc:
-                if all(exc is not fault for fault in faults):
-                    faults.append(exc)
-        if faults and (primary is None or len(faults) > 1):
-            if len(faults) == 1:
-                raise faults[0]
-            raise BaseExceptionGroup("command-shape fold and cleanup failed", faults) from None
+    """Own one disposable fold and settle every resource before returning.
+
+    The scratch connection and its directory belong to the canonical custody
+    owner; this fold settles its own cursor and progress handler first.
+    """
+    with scratch_connection_context(prefix="polylogue-command-shapes-", filename="usage.db") as scratch:
+        cursor: sqlite3.Cursor | None = None
+        primary: BaseException | None = None
+        try:
+            cursor = scratch.cursor()
+            yield scratch, cursor
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            faults: list[BaseException] = []
+            if primary is not None:
+                faults.append(primary)
+            cleanup: list[Callable[[], object]] = [partial(scratch.set_progress_handler, None, 0)]
+            if cursor is not None:
+                cleanup.append(cursor.close)
+            for finish in cleanup:
+                try:
+                    finish()
+                except BaseException as exc:
+                    if all(exc is not fault for fault in faults):
+                        faults.append(exc)
+            if faults and (primary is None or len(faults) > 1):
+                if len(faults) == 1:
+                    raise faults[0]
+                raise BaseExceptionGroup("command-shape fold and cleanup failed", faults) from None
 
 
 def build_command_shape_usage(

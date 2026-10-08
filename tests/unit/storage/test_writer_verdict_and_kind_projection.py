@@ -16,20 +16,16 @@ from pathlib import Path
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider, SessionKind
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import (
-    _coalesce_block_row,
-    _refresh_session_projection,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.sqlite.archive_tiers.write import _coalesce_block_row, _refresh_session_projection
+from tests.infra.archive_templates import bootstrapped_tier_path
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
 
 
@@ -48,7 +44,7 @@ def test_session_kind_follows_a_later_resolved_subagent_link(tmp_path: Path) -> 
     """
     conn = _connect(tmp_path / "index.db")
     try:
-        parent_id = write_parsed_session_to_archive(
+        parent_id = write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
@@ -57,7 +53,7 @@ def test_session_kind_follows_a_later_resolved_subagent_link(tmp_path: Path) -> 
                 messages=[ParsedMessage(provider_message_id="p1", role=Role.USER, text="delegate this")],
             ),
         )
-        child_id = write_parsed_session_to_archive(
+        child_id = write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
@@ -96,7 +92,7 @@ def test_session_kind_follows_a_later_resolved_subagent_link(tmp_path: Path) -> 
 def _block_columns() -> dict[str, int]:
     names = ("tool_outcome", "tool_result_is_error", "tool_result_exit_code", "tool_result_outcome_unknown_reason")
     base = ("message_id", "session_id", "position", "content_hash", "block_type", "text", "tool_name")
-    extra = ("tool_input", "semantic_type", "media_type", "language")
+    extra = ("tool_input", "semantic_type", "semantic_extra_json", "media_type", "language")
     return {name: index for index, name in enumerate(base + extra + names)}
 
 

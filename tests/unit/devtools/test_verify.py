@@ -21,7 +21,6 @@ import tomllib
 from devtools import (
     agent_env,
     gate,
-    pytest_rerun,
     pytest_slot,
     required_gate,
     verify,
@@ -43,8 +42,7 @@ from devtools.verify_runs import (
     env_for_pytest_step,
 )
 
-#: `pytest_rerun.rerun_failed_once` and `_run` acquire the host's single pytest
-#: slot before executing. These tests drive that code inline through its
+#: `_run` acquires the host's single pytest slot before executing. These tests drive that code inline through its
 #: documented escape rather than requiring a live pueue queue.
 _SLOT_HELD_ENV = {"POLYLOGUE_PYTEST_SLOT": "held"}
 
@@ -600,7 +598,6 @@ def test_full_corpus_aggregate_sums_disjoint_lanes() -> None:
         "selected_union_count": 30,
         "terminal_union_count": 30,
         "outcomes": {"passed": 26, "skipped": 1, "xfailed": 1},
-        "flaky": [],
         "terminal_green": True,
         "complete_corpus_covered": True,
     }
@@ -1229,12 +1226,8 @@ def test_verify_retains_first_failure_without_retry(
         )
         return SimpleNamespace(returncode=1, slot="held", receipt=None, termination=None)
 
-    def unexpected_retry(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("ordinary verification must not retry")
-
     monkeypatch.setattr(verify, "run_pytest", execute)
     monkeypatch.setattr(verify, "run_pytest_isolated", execute)
-    monkeypatch.setattr(pytest_rerun, "rerun_failed_once", unexpected_retry)
     run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
     exit_code, _elapsed, metadata = verify._run("pytest selected", ["pytest"], run=run, runner=runner)
     assert exit_code == 1
@@ -1552,247 +1545,6 @@ def test_git_dirty_sees_untracked_files_regardless_of_config(monkeypatch: pytest
     assert "--untracked-files=all" in seen[0]
 
 
-def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Anti-vacuity: without the rerun a load-induced failure is a red step;
-    without the still-failed check a real failure passes as flaky."""
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.setattr(pytest_rerun, "venv_python", lambda root: "python")
-    report_path = tmp_path / ".cache" / "verify" / "last-pytest.json"
-    report_path.parent.mkdir(parents=True)
-    report_path.write_text(
-        json.dumps(
-            {
-                "tests": [
-                    {"nodeid": "tests/test_a.py::test_flaky", "outcome": "failed"},
-                    {"nodeid": "tests/test_a.py::test_red", "outcome": "failed"},
-                    {"nodeid": "tests/test_a.py::test_ok", "outcome": "passed"},
-                ],
-                "summary": {"failed": 2, "passed": 1, "exitstatus": 1},
-            }
-        )
-    )
-    step_dir = tmp_path / "step"
-    step_dir.mkdir()
-    (step_dir / "summary.json").write_text(json.dumps({"exitstatus": 1, "failed": 2}))
-    reruns: list[list[str]] = []
-
-    def fake_run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
-        reruns.append(command)
-        rerun_report = Path(next(a for a in command if a.startswith(_REPORT_PREFIX)).split("=", 1)[1])
-        rerun_report.write_text(
-            json.dumps(
-                {
-                    "tests": [
-                        {"nodeid": "tests/test_a.py::test_flaky", "outcome": "passed"},
-                        {"nodeid": "tests/test_a.py::test_red", "outcome": "failed"},
-                    ]
-                }
-            )
-        )
-        return SimpleNamespace(returncode=1)
-
-    _stub_held_pytest(monkeypatch, fake_run)
-
-    result = pytest_rerun.rerun_failed_once(
-        report_path=report_path, step_dir=step_dir, env=_SLOT_HELD_ENV, root=tmp_path
-    )
-
-    assert result is not None
-    assert result["flaky"] == ["tests/test_a.py::test_flaky"]
-    assert result["still_failed"] == ["tests/test_a.py::test_red"]
-    assert "-p" in reruns[0] and "no:testmon" in reruns[0]
-    # Exactly the failed tests are selected, and nothing that passed.
-    assert [arg for arg in reruns[0] if arg.startswith("tests/")] == [
-        "tests/test_a.py::test_flaky",
-        "tests/test_a.py::test_red",
-    ]
-    patched = json.loads(report_path.read_text())
-    by_id = {t["nodeid"]: t for t in patched["tests"]}
-    assert by_id["tests/test_a.py::test_flaky"]["outcome"] == "passed"
-    assert by_id["tests/test_a.py::test_flaky"]["flaky"] is True
-    assert by_id["tests/test_a.py::test_red"]["outcome"] == "failed"
-    assert patched["summary"]["failed"] == 1 and patched["summary"]["flaky"] == 1
-    assert patched["summary"]["exitstatus"] == 1, "a real failure keeps the step red"
-    assert json.loads((step_dir / "summary.json").read_text()) == {"exitstatus": 1, "failed": 2, "flaky": 1}
-
-    # Every failure passes alone: both summaries agree the step is green.
-    report_path.write_text(
-        json.dumps(
-            {
-                "tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": "failed"}],
-                "summary": {"failed": 1, "exitstatus": 1},
-            }
-        )
-    )
-    (step_dir / "summary.json").write_text(json.dumps({"exitstatus": 1}))
-
-    def _rerun_passing_with(returncode: int) -> None:
-        def fake(command: list[str], **_kwargs: Any) -> SimpleNamespace:
-            Path(next(a for a in command if a.startswith(_REPORT_PREFIX)).split("=", 1)[1]).write_text(
-                json.dumps({"tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": "passed"}]})
-            )
-            return SimpleNamespace(returncode=returncode)
-
-        _stub_held_pytest(monkeypatch, fake)
-
-    _rerun_passing_with(0)
-    result = pytest_rerun.rerun_failed_once(
-        report_path=report_path, step_dir=step_dir, env=_SLOT_HELD_ENV, root=tmp_path
-    )
-    assert result is not None and result["still_failed"] == []
-    assert json.loads((step_dir / "summary.json").read_text())["exitstatus"] == 0
-    assert json.loads(report_path.read_text())["summary"]["exitstatus"] == 0
-
-    # Every node passed but pytest exited 3 (internal error): nothing is cleared.
-    report_path.write_text(
-        json.dumps(
-            {
-                "tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": "failed"}],
-                "summary": {"failed": 1, "exitstatus": 1},
-            }
-        )
-    )
-    _rerun_passing_with(3)
-    result = pytest_rerun.rerun_failed_once(
-        report_path=report_path, step_dir=step_dir, env=_SLOT_HELD_ENV, root=tmp_path
-    )
-    assert result is not None and result["still_failed"] == ["tests/test_a.py::test_flaky"] and result["flaky"] == []
-
-
-def _flake_rerun_fixture(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    rerun_outcome: str = "passed",
-) -> tuple[Path, list[list[str]]]:
-    """Seed a first-run report with one failure and stub the rerun subprocess."""
-
-    report_path = tmp_path / "pytest.json"
-    report_path.write_text(
-        json.dumps(
-            {
-                "exitcode": 1,
-                "summary": {"failed": 1, "passed": 2},
-                "tests": [
-                    {"nodeid": "tests/test_a.py::test_flaky", "outcome": "failed"},
-                    {"nodeid": "tests/test_a.py::test_ok", "outcome": "passed"},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    step_dir = tmp_path / "step"
-    step_dir.mkdir()
-    launched: list[list[str]] = []
-
-    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
-        launched.append(list(command))
-        rerun_file = next(
-            Path(argument.split("=", 1)[1]) for argument in command if argument.startswith(_REPORT_PREFIX)
-        )
-        rerun_file.write_text(
-            json.dumps(
-                {
-                    "exitcode": 0 if rerun_outcome == "passed" else 1,
-                    "tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": rerun_outcome}],
-                }
-            ),
-            encoding="utf-8",
-        )
-        return subprocess.CompletedProcess(command, 0 if rerun_outcome == "passed" else 1)
-
-    _stub_held_pytest(monkeypatch, fake_run)
-    return report_path, launched
-
-
-def test_accepted_flake_clears_both_recorded_exit_statuses(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Anti-vacuity: drop the ``patched["exitcode"] = 0`` line and this fails.
-
-    The json report states its exit status twice. Patching only ``summary``
-    left the top-level field naming the pre-rerun failure, so a consumer
-    reading it saw a red run the verifier had already accepted as flaky.
-    """
-
-    report_path, _ = _flake_rerun_fixture(tmp_path, monkeypatch)
-    monkeypatch.setattr(pytest_rerun, "venv_python", lambda root: "python")
-
-    rerun = pytest_rerun.rerun_failed_once(
-        report_path=report_path, step_dir=tmp_path / "step", env=_SLOT_HELD_ENV, root=tmp_path
-    )
-
-    assert rerun is not None
-    assert rerun["flaky"] == ["tests/test_a.py::test_flaky"]
-    assert rerun["still_failed"] == []
-    patched = json.loads(report_path.read_text(encoding="utf-8"))
-    assert patched["exitcode"] == 0
-    assert patched["summary"]["exitstatus"] == 0
-    assert patched["flaky_nodeids"] == ["tests/test_a.py::test_flaky"]
-
-
-def test_receipt_names_the_tests_that_only_passed_on_rerun() -> None:
-    """Anti-vacuity: remove the rerun block from canonical_verification_receipt
-    and the step below carries no flake evidence at all.
-
-    A step green only because its failures passed alone is weaker evidence
-    than one that never failed; the durable receipt must let a reader tell
-    them apart.
-    """
-
-    entry = {
-        "run_id": "run-1",
-        "status": "passed",
-        "steps": [
-            {
-                "step_id": "s1",
-                "name": "pytest",
-                "exit": 0,
-                "diagnosis": "gate_passed",
-                "rerun": {
-                    "attempted": ["tests/test_a.py::test_flaky"],
-                    "still_failed": [],
-                    "flaky": ["tests/test_a.py::test_flaky"],
-                },
-            }
-        ],
-    }
-
-    receipt = verify_runs.canonical_verification_receipt(entry)
-    step = receipt["steps"][0]
-
-    assert step["status"] == "passed"
-    assert step["flaky"] == ["tests/test_a.py::test_flaky"]
-    assert step["flaky_count"] == 1
-
-
-def test_receipt_omits_flake_fields_when_no_test_flaked() -> None:
-    """Anti-vacuity: emit the keys unconditionally and this fails.
-
-    An empty flake list must not appear, or every clean step would look like
-    it carried rerun evidence.
-    """
-
-    entry = {
-        "run_id": "run-2",
-        "status": "passed",
-        "steps": [
-            {
-                "step_id": "s1",
-                "name": "pytest",
-                "exit": 0,
-                "rerun": {"attempted": ["t"], "still_failed": ["t"], "flaky": []},
-            }
-        ],
-    }
-
-    step = verify_runs.canonical_verification_receipt(entry)["steps"][0]
-
-    assert "flaky" not in step
-    assert "flaky_count" not in step
-
-
 def test_focused_explicit_workers_are_sized_inside_the_admitted_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     """The command keeps intent; the slot measures the live cgroup on start.
 
@@ -1951,11 +1703,10 @@ def test_schema_promotion_json_stays_one_document(monkeypatch: pytest.MonkeyPatc
     assert recorded["capture_output"] is True
 
 
-def test_rerun_selector_strips_the_xdist_group_suffix() -> None:
-    """Anti-vacuity: passing the report node id through unchanged makes the
-    rerun error with "not found" for every grouped test, which is what wiped
-    the 2026-09-05 corpus rerun."""
-    from devtools.pytest_rerun import report_nodeid_to_selector
+def test_report_selector_strips_the_xdist_group_suffix() -> None:
+    """Anti-vacuity: passing the report node id through unchanged makes every
+    grouped test unselectable ("not found") when a report id is run again."""
+    from devtools.pytest_stream_report import report_nodeid_to_selector
 
     assert report_nodeid_to_selector("tests/a.py::test_x@web-reader") == "tests/a.py::test_x"
     assert report_nodeid_to_selector("tests/a.py::T::test_x[p]@grp") == "tests/a.py::T::test_x[p]"
@@ -1969,20 +1720,11 @@ def test_rerun_selector_strips_the_xdist_group_suffix() -> None:
     )
 
 
-def test_unavailable_pytest_counts_remain_absent_and_flakes_are_aggregated() -> None:
+def test_unavailable_pytest_counts_remain_absent() -> None:
     """Anti-vacuity: an empty list of executed pytest steps is not a measured zero."""
     empty = verify._aggregate_pytest_results([], expected_step_count=0, mode="quick", exit_code=0)
     assert empty["selected_union_count"] is None
     assert empty["terminal_union_count"] is None
-    assert empty["flaky"] == []
-
-    aggregate = verify._aggregate_pytest_results(
-        [{"name": "pytest selected", "statistics": {}, "rerun": {"flaky": ["t::test_flaky"]}}],
-        expected_step_count=1,
-        mode="affected",
-        exit_code=0,
-    )
-    assert aggregate["flaky"] == ["t::test_flaky"]
 
 
 def test_complete_corpus_tier_traces_and_deselects_nothing() -> None:
@@ -2379,3 +2121,22 @@ def test_actual_changed_graph_refuses_before_selector_dispatch(
     decision = verify._affected_admission(root=tmp_path, graph=graph)
     assert decision.status == "unknown"
     assert decision.selected_count is None
+
+
+def test_declared_testmon_environment_follows_the_verify_command() -> None:
+    """The execution-source guard compares this with the admitted environment.
+
+    Anti-vacuity: report ``default`` for an untraced command and a descriptor
+    run would be refused for an environment it never writes.
+    """
+    from devtools.pytest_options import declared_testmon_environment
+
+    traced = verify._pytest_command(selection="affected", worker_args=(), hypothesis_profile=None, explicit_tests=())
+    untraced = verify._pytest_command(
+        selection="descriptor", worker_args=(), hypothesis_profile=None, explicit_tests=()
+    )
+
+    assert declared_testmon_environment(traced) == _testmon_environment(verify.ROOT)
+    assert declared_testmon_environment(untraced) is None
+    assert declared_testmon_environment(["python", "-m", "pytest", "--testmon", "--no-testmon"]) is None
+    assert declared_testmon_environment(["pytest", "--testmon", "--testmon-env", "x"]) == "x"

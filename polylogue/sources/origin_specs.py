@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
@@ -29,10 +30,13 @@ from dataclasses import dataclass, replace
 from functools import cache, lru_cache
 from itertools import islice
 from pathlib import Path
-from typing import IO, Literal, cast
+from typing import IO, TYPE_CHECKING, Literal, cast
+
+if TYPE_CHECKING:
+    from polylogue.sources.sqlite_inspection import SQLiteClassification
 
 from polylogue.core.enums import Origin, Provider, ToolResultUnknownReason
-from polylogue.core.json_envelope import jsonl_record_envelopes, sqlite_value_limit, top_level_envelopes
+from polylogue.core.json_envelope import jsonl_record_envelopes, top_level_envelopes
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -268,6 +272,7 @@ def _invalidate_source_signatures() -> None:
     _source_signature.cache_clear()
     _local_import_paths.cache_clear()
     _semantic_source_closure.cache_clear()
+    _normalized_source_digest.cache_clear()
 
 
 def _fingerprint_path_label(path: Path) -> str:
@@ -287,7 +292,7 @@ def _module_path(base: Path) -> Path | None:
 
 
 #: Bump when lexical import-edge resolution changes.
-_IMPORT_EDGE_MEMO_VERSION = 1
+_IMPORT_EDGE_MEMO_VERSION = 2
 
 
 def _source_memo_root() -> Path | None:
@@ -359,7 +364,23 @@ def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
         bases = list(_import_bases(signature))
         if memo is not None:
             _publish_source_memo(memo, json.dumps(bases))
-    found = {resolved for label in bases if (resolved := _module_path(_source_path(label, _SOURCE_ROOT))) is not None}
+    found: set[Path] = set()
+    for label in bases:
+        base = _source_path(label, _SOURCE_ROOT)
+        resolved = _module_path(base)
+        if resolved is not None:
+            found.add(resolved)
+        # Implicit namespace packages have no ``__init__.py`` to fingerprint.
+        # Their executable members are the imported modules, so close over
+        # those members at the import edge itself.  This also makes
+        # ``from .parsers import (provider_a, provider_b)`` contribute the
+        # parser files that Python loads from ``sources/parsers``.
+        if base.is_dir() and not (base / "__init__.py").is_file():
+            for child in sorted(base.iterdir()):
+                if child.is_file() and child.suffix == ".py":
+                    found.add(child.resolve())
+                elif child.is_dir() and (child / "__init__.py").is_file():
+                    found.add((child / "__init__.py").resolve())
     return tuple(sorted(str(item) for item in found))
 
 
@@ -382,9 +403,22 @@ def _import_bases(signature: tuple[str, str, int]) -> tuple[str, ...]:
                 base = path.parent
                 for _ in range(node.level - 1):
                     base = base.parent
-                bases.add(base / Path(*(node.module or "").split(".")))
+                module_base = base / Path(*(node.module or "").split("."))
+                bases.add(module_base)
+                # ``from package import name`` may resolve ``name`` to a
+                # package attribute or to a submodule.  Include the submodule
+                # candidate whenever it exists; doing so closes Python's
+                # namespace-package import route without relying on which
+                # attribute happened to be loaded in this process.
+                for alias in node.names:
+                    if alias.name != "*":
+                        bases.add(module_base / Path(*alias.name.split(".")))
             elif node.module and node.module.startswith("polylogue."):
-                bases.add(_SOURCE_ROOT / Path(*node.module.split(".")))
+                module_base = _SOURCE_ROOT / Path(*node.module.split("."))
+                bases.add(module_base)
+                for alias in node.names:
+                    if alias.name != "*":
+                        bases.add(module_base / Path(*alias.name.split(".")))
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.startswith("polylogue."):
@@ -426,7 +460,8 @@ def _semantic_source_paths(
 
 
 #: Bump when the normalization below changes; it is part of the disk memo key.
-_FINGERPRINT_ALGORITHM_VERSION = 5
+#: Version 6 folds each file's normalized AST digest instead of its dump.
+_FINGERPRINT_ALGORITHM_VERSION = 6
 
 
 def _fingerprint_memo_path(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> Path | None:
@@ -466,25 +501,47 @@ def _observed_source_bytes(signature: tuple[str, str, int]) -> bytes:
     return source
 
 
+@lru_cache(maxsize=4096)
+def _normalized_source_digest(signature: tuple[str, str, int]) -> str:
+    """Digest one file's normalized AST, once per source revision.
+
+    Namespaces share most of their closures, so each file is parsed once per
+    revision instead of once per namespace that reaches it. The memo is keyed
+    by the file's label and content signature, so an edit always misses.
+    """
+    root = _source_memo_root()
+    memo = None
+    if root is not None:
+        key = _source_memo_key((signature,), "normalized-ast", _FINGERPRINT_ALGORITHM_VERSION)
+        memo = root / f"normalized-{key}.txt"
+        try:
+            cached = memo.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            cached = ""
+        if re.fullmatch(r"[0-9a-f]{64}", cached):
+            return cached
+    path_string = signature[0]
+    source = _observed_source_bytes(signature)
+    tree = ast.parse(source.decode("utf-8"))
+    normalized = _DocstringStripper().visit(tree)
+    if (
+        Path(path_string).name == "origin_specs.py"
+        and _fingerprint_path_label(Path(path_string)) == "polylogue/sources/origin_specs.py"
+    ):
+        normalized = _ProjectionFingerprintStripper().visit(normalized)
+    normalized = _SchemaDdlFingerprintStripper().visit(normalized)
+    dumped = ast.dump(normalized, annotate_fields=True, include_attributes=False)
+    digest = hashlib.sha256(dumped.encode("utf-8")).hexdigest()
+    if memo is not None:
+        _publish_source_memo(memo, digest)
+    return digest
+
+
 def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> str:
-    fragments: list[dict[str, str]] = []
-    for signature in signatures:
-        path_string = signature[0]
-        source = _observed_source_bytes(signature)
-        tree = ast.parse(source.decode("utf-8"))
-        normalized = _DocstringStripper().visit(tree)
-        if (
-            Path(path_string).name == "origin_specs.py"
-            and _fingerprint_path_label(Path(path_string)) == "polylogue/sources/origin_specs.py"
-        ):
-            normalized = _ProjectionFingerprintStripper().visit(normalized)
-        normalized = _SchemaDdlFingerprintStripper().visit(normalized)
-        fragments.append(
-            {
-                "path": _fingerprint_path_label(Path(path_string)),
-                "ast": ast.dump(normalized, annotate_fields=True, include_attributes=False),
-            }
-        )
+    fragments = [
+        {"path": _fingerprint_path_label(Path(signature[0])), "ast_sha256": _normalized_source_digest(signature)}
+        for signature in signatures
+    ]
     payload = {"namespace": namespace, "sources": fragments}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -516,9 +573,6 @@ class OriginArtifactRule:
     coverage_role: str
     fidelity_note: str
     path_suffixes: tuple[str, ...]
-    # Suffixes safe to project onto a whole watched root. Path-scoped forms
-    # such as opaque sidecars stay governed by ``path_pattern``.
-    watch_suffixes: tuple[str, ...] | None = None
     # Schema admission is intentionally independent from session admission.
     # ``raw-only`` JSON sidecars can still contribute privacy-safe structure;
     # opaque bytes have a typed, explicit non-applicability outcome.
@@ -683,6 +737,7 @@ def recognize_source_class(
     *,
     payload: object | None = None,
     source_only: bool = False,
+    sqlite_classification: SQLiteClassification | None = None,
 ) -> SourceClassRecognition | None:
     """Classify broad-root candidates before provider-session admission.
 
@@ -697,16 +752,20 @@ def recognize_source_class(
             return SourceClassRecognition("unsupported", "SQLite has no declared provider source class")
         return None
 
-    from polylogue.sources.parsers import (
-        antigravity,
-        codex_state,
-        hermes_spans,
-        hermes_state,
-        hermes_verification,
-        local_agent,
-    )
+    from polylogue.sources.parsers import antigravity, codex_state
 
     path = Path(source_path)
+    if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"} and sqlite_classification is None:
+        from polylogue.sources.sqlite_inspection import SQLiteClassification, classify_sqlite_source
+
+        try:
+            sqlite_classification = classify_sqlite_source(path)
+        except sqlite3.DatabaseError as exc:
+            # Invalid database bytes are an unsupported shape. Storage faults
+            # remain visible to acquisition's retryable-failure owner.
+            if getattr(exc, "sqlite_errorcode", None) not in {None, sqlite3.SQLITE_NOTADB}:
+                raise
+            sqlite_classification = SQLiteClassification(False, False, False, "unknown")
     rule = artifact_rule_for_path(provider, str(path))
     if rule is not None and rule.parse_policy != "session":
         return SourceClassRecognition("non_session", f"declared {rule.kind} artifact")
@@ -721,12 +780,14 @@ def recognize_source_class(
             return SourceClassRecognition("non_session", "extracted transcript corpus")
         return SourceClassRecognition("session", f"declared {rule.kind} source class")
     if provider is Provider.ANTIGRAVITY:
-        classification = antigravity.classify_source_path(path)
-        if classification.role.value == "conversation_protobuf":
+        if source_only and rule is None and path.suffix.lower() not in {".db", ".sqlite", ".sqlite3"}:
+            return None
+        classification = antigravity.classify_source_path(path, payload=payload)
+        if classification.parse_as_session:
             return SourceClassRecognition("session", "Antigravity declared conversation source class")
         if classification.role.value != "unknown":
             return SourceClassRecognition("non_session", "Antigravity declared artifact source class")
-        if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"} and antigravity.looks_like_trajectory_db_path(path):
+        if sqlite_classification is not None and sqlite_classification.antigravity:
             return SourceClassRecognition("session", "Antigravity trajectory SQLite schema signature")
 
     if path.suffix.lower() == ".zip":
@@ -743,15 +804,19 @@ def recognize_source_class(
                 return SourceClassRecognition("session", f"declared Codex {declaration.kind} database")
             if provider is Provider.HERMES and path.name in {"state.db", "verification_evidence.db"}:
                 return SourceClassRecognition("session", "declared Hermes SQLite source class")
-            return SourceClassRecognition("unsupported", f"{provider.value} SQLite has no declared source class")
+            if provider is not Provider.HERMES:
+                return SourceClassRecognition("unsupported", f"{provider.value} SQLite has no declared source class")
+            # A Hermes database under an undeclared name (a ``backup.db``) is
+            # admitted by its schema signature on both routes, the same
+            # evidence the retained replay reads, never by its name alone.
         if provider is Provider.HERMES:
-            if hermes_state.looks_like_state_db_path(
-                path
-            ) or hermes_verification.looks_like_verification_evidence_db_path(path):
+            if sqlite_classification is not None and (
+                sqlite_classification.hermes_state or sqlite_classification.hermes_verification
+            ):
                 return SourceClassRecognition("session", "Hermes SQLite schema signature")
             return SourceClassRecognition("unsupported", "Hermes SQLite lacks a declared state/verification schema")
         if provider is Provider.CODEX:
-            if codex_state.is_in_scope_codex_sqlite_path(path):
+            if sqlite_classification is not None and sqlite_classification.codex_kind in codex_state.IN_SCOPE_KINDS:
                 return SourceClassRecognition("session", "Codex SQLite schema signature")
             return SourceClassRecognition("unsupported", "Codex SQLite lacks a declared state schema")
         return SourceClassRecognition("unsupported", f"{provider.value} SQLite has no declared source class")
@@ -762,6 +827,18 @@ def recognize_source_class(
     if provider not in {Provider.HERMES, Provider.ANTIGRAVITY}:
         return None
 
+    return recognize_json_source_class(provider, path, payload=payload)
+
+
+def recognize_json_source_class(
+    provider: Provider, source_path: str | Path, *, payload: object | None = None
+) -> SourceClassRecognition | None:
+    """Use the canonical bounded JSON probe and provider structural signature."""
+    from polylogue.sources.parsers import antigravity, hermes_spans, local_agent
+
+    if provider not in {Provider.HERMES, Provider.ANTIGRAVITY}:
+        return None
+    path = Path(source_path)
     if payload is None:
         import ijson
 
@@ -785,22 +862,12 @@ def recognize_source_class(
                         islice(jsonl_record_envelopes(handle, fields=fields), SOURCE_CLASS_JSONL_LEADING_RECORDS)
                     )
                 else:
-                    # The record parser holds a JSON document whole (ijson's
-                    # item list, then ``json.load``), so a document beyond the
-                    # record bound is refused by name, as an over-bound JSONL
-                    # line is (polylogue-0df0u).
-                    size = path.stat().st_size
-                    if size > sqlite_value_limit():
-                        return SourceClassRecognition(
-                            "unsupported",
-                            f"{provider.value} JSON document of {size} bytes is beyond the record bound",
-                        )
                     first = _first_significant_byte(handle)
                     handle.seek(0)
                     if first == b"[":
                         # The signature is read from the leading records; the
                         # rest is streamed, its envelopes dropped as they come,
-                        # because the record parser reads the whole array: a
+                        # because preparation consumes the complete array: a
                         # malformed tail refuses it, and the Hermes predicate
                         # applies to every member.
                         elements = top_level_envelopes(handle, expand_arrays=True, fields=fields)
@@ -1166,6 +1233,10 @@ class OriginSpec:
         if self.assembly_spec_path is not None:
             declared_paths.append(self.assembly_spec_path)
         declared_paths.extend(rule.parser_path for rule in self.artifact_rules if rule.parser_path is not None)
+        if self.database_capability is not None:
+            declared_paths.extend(
+                member.consumer for member in self.database_capability.members if member.consumer is not None
+            )
         source_paths = tuple(dict.fromkeys(_source_file_from_reference(path) for path in declared_paths))
         return _fingerprint_sources(
             source_paths,
@@ -1367,10 +1438,6 @@ class OriginSpecRegistry:
                     raise ValueError(
                         f"{spec.origin.value}: {rule.kind} acquisition suffixes must be lowercase dot suffixes or empty"
                     )
-                if rule.watch_suffixes is not None and any(
-                    not suffix.startswith(".") or suffix != suffix.lower() for suffix in rule.watch_suffixes
-                ):
-                    raise ValueError(f"{spec.origin.value}: {rule.kind} watch suffixes must be lowercase dot suffixes")
             if any("db" in mode or "sqlite" in mode for mode in spec.acquisition_modes):
                 if spec.database_capability is None:
                     raise ValueError(f"{spec.origin.value}: database acquisition requires a database capability")
@@ -1667,7 +1734,6 @@ def _claude_code_spec() -> OriginSpec:
                     "within a session, joined to it by session_native_id."
                 ),
                 path_suffixes=(".ndjson",),
-                watch_suffixes=(".ndjson",),
             ),
             OriginArtifactRule(
                 kind="tool_result_sidecar",
@@ -1695,7 +1761,6 @@ def _claude_code_spec() -> OriginSpec:
                 # ordinary suffix projection because text and HTML are
                 # path-scoped and must not widen the Claude root globally.
                 path_suffixes=(".json", ".txt", ".html", ""),
-                watch_suffixes=(".json",),
                 schema_observation_strategy="opaque-non-applicable",
                 schema_non_applicability_reason=(
                     "Tool output is provider payload, not a stable sidecar record contract; retain bytes and join "
@@ -1809,7 +1874,6 @@ def _claude_code_spec() -> OriginSpec:
                 path_suffixes=(".md",),
                 # Path-scoped: ``.md`` must not become an admitted suffix for
                 # the whole ``projects/`` root, only for ``memory/`` inside it.
-                watch_suffixes=(),
             ),
             OriginArtifactRule(
                 kind="session_index",
@@ -1831,7 +1895,6 @@ def _claude_code_spec() -> OriginSpec:
                 path_suffixes=(".json",),
                 # ``.json`` is already an admitted Claude Code suffix; this
                 # rule states a location, not a new suffix family.
-                watch_suffixes=(),
             ),
             OriginArtifactRule(
                 kind="prompt_history_log",
@@ -1839,7 +1902,7 @@ def _claude_code_spec() -> OriginSpec:
                 # install and sits two levels above the project directories,
                 # outside the sessions root. Its rows carry the paste
                 # evidence no transcript records.
-                path_pattern=r"(?:^|/)history\.jsonl$",
+                path_pattern=r"(?:^|/)\.claude/history\.jsonl$",
                 parse_policy="raw-only",
                 parser_path=None,
                 coverage_role="prompt_history_log",
@@ -1850,7 +1913,6 @@ def _claude_code_spec() -> OriginSpec:
                     "scope, so two installs never share one history."
                 ),
                 path_suffixes=(".jsonl",),
-                watch_suffixes=(),
             ),
         ),
         assembly_spec_path="polylogue/sources/assembly_claude_code.py:ClaudeCodeAssemblySpec",
@@ -1930,24 +1992,24 @@ def path_declaration_refuses_session(provider: Provider, source_path: str | Path
     return rule is not None and rule.parse_policy == "raw-only"
 
 
-def artifact_suffixes_for_provider(
-    provider: Provider,
-    *,
-    defaults: tuple[str, ...] = (),
-) -> tuple[str, ...]:
-    """Project live-acquisition suffixes from the owning OriginSpec rules.
+def pre_acquisition_path_exclusion(provider: Provider, source_path: str | Path) -> str | None:
+    """Return the ordinary intake's definitive metadata-only exclusion.
 
-    Acquisition may add a generic default, but provider artifact families must
-    not maintain a second suffix inventory beside OriginSpec.
+    Artifact rules retain their declared raw or fact evidence. JSONL, SQLite,
+    and ZIP acquisition require their own classifiers, so this rule abstains.
     """
+    from polylogue.archive.artifact_taxonomy import strong_path_classification
+    from polylogue.sources.dispatch import is_jsonl_source_path
 
-    suffixes = list(defaults)
-    for spec in ORIGIN_SPECS:
-        if provider not in spec.provider_wires:
-            continue
-        for rule in spec.artifact_rules:
-            suffixes.extend(rule.watch_suffixes if rule.watch_suffixes is not None else rule.path_suffixes)
-    return tuple(dict.fromkeys(suffix.lower() for suffix in suffixes))
+    path = Path(source_path)
+    if path.suffix.lower() in {".db", ".sqlite", ".sqlite3", ".zip"}:
+        return None
+    if artifact_rule_for_path(provider, str(path)) is not None or is_jsonl_source_path(str(path)):
+        return None
+    strong = strong_path_classification(path, provider=provider)
+    if strong is not None and not strong.parse_as_session:
+        return "path rule classifies this as non-session evidence"
+    return None
 
 
 def database_capability_for_provider(provider: Provider) -> DatabaseSourceCapability | None:
@@ -2036,7 +2098,6 @@ def _chatgpt_spec() -> OriginSpec:
                     "the same asset id in two exports names two objects and never cross-binds."
                 ),
                 path_suffixes=(".json",),
-                watch_suffixes=(),
             ),
             OriginArtifactRule(
                 kind="export_asset",
@@ -2062,7 +2123,6 @@ def _chatgpt_spec() -> OriginSpec:
                 path_suffixes=(".dat", ".png", ".jpg", ".jpeg", ".webp", ".wav", ".pdf", ".json", ""),
                 # Path-scoped by id-bearing member name: no suffix family may
                 # be projected onto a whole watched root from this rule.
-                watch_suffixes=(),
                 schema_observation_strategy="opaque-non-applicable",
                 schema_non_applicability_reason=(
                     "Export attachment bytes are heterogeneous payloads; preserve the content-addressed bytes and "
@@ -2133,20 +2193,22 @@ def _grok_spec() -> OriginSpec:
         Origin.GROK_EXPORT,
         provider=Provider.GROK,
         tightness=85,
-        discovery="Grok account-data export document admission.",
-        acquisition_modes=("export-json",),
+        discovery="Grok account export and original app-chat endpoint bundle admission.",
+        acquisition_modes=("export-json", "native-json"),
         parser_paths=("polylogue/sources/parsers/grok.py",),
         fixture_paths=(
             "tests/unit/sources/parsers/test_grok.py",
+            "tests/unit/sources/parsers/test_grok_native.py",
             "tests/unit/sources/parsers/test_origin_regression_pack.py",
         ),
         assembly_paths=("polylogue/sources/dispatch.py:_lower_grok_export_payload",),
         fidelity_notes=(
-            "No native conversation or response id is present in any confirmed export shape; "
-            "provider_session_id is derived from file identity and provider_message_id from response content.",
+            "Account exports lack native IDs; original endpoint bundles preserve native conversation/response IDs. "
+            "In account exports, "
+            "provider_session_id and provider_message_id are derived from their declared semantic content.",
             "The export drops attachments/images by xAI's own documentation; only text turns are recoverable.",
         ),
-        display_description="Grok account-data exports (lab: xAI)",
+        display_description="Grok account exports and original endpoint bundles (lab: xAI)",
         topology_capabilities=_no_topology_capabilities(Origin.GROK_EXPORT),
         tool_outcome_unknown_reasons=frozenset(
             {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
@@ -2241,7 +2303,6 @@ def _codex_spec() -> OriginSpec:
                     "within a session, joined to it by session_native_id."
                 ),
                 path_suffixes=(".ndjson",),
-                watch_suffixes=(".ndjson",),
             ),
             OriginArtifactRule(
                 kind="agent_memory_document",
@@ -2267,7 +2328,6 @@ def _codex_spec() -> OriginSpec:
                 ),
                 path_suffixes=(".md",),
                 # Path-scoped: the Codex roots must not admit ``.md`` globally.
-                watch_suffixes=(),
             ),
             OriginArtifactRule(
                 kind="session_index",
@@ -2286,7 +2346,6 @@ def _codex_spec() -> OriginSpec:
                 path_suffixes=(".jsonl",),
                 # The Codex state root stays suffix-narrow. Its path-rule
                 # escape hatch admits only this declared exact coordinate.
-                watch_suffixes=(),
             ),
             OriginArtifactRule(
                 kind="prompt_history_log",
@@ -2302,7 +2361,6 @@ def _codex_spec() -> OriginSpec:
                     "supply a title only to rollouts from the same install and are never parsed as sessions."
                 ),
                 path_suffixes=(".jsonl",),
-                watch_suffixes=(),
             ),
         ),
         display_description="Codex CLI local sessions (lab: OpenAI)",
@@ -2382,6 +2440,20 @@ def _codex_spec() -> OriginSpec:
             "token_usage_record are classified at their top-level dispatch and "
             "retain only named delegation/counter fields; opaque siblings are "
             "excluded rather than copied as a wire-payload dump.",
+            "Top-level function_call/function_call_output/reasoning records "
+            "(acquired): the 2025 direct-message rollouts write these "
+            "unwrapped, beside top-level messages. They lower through the "
+            "same route as their response_item-wrapped form, so tool-call "
+            "pairing, reasoning blocks, ids and tool outcomes are identical "
+            "in both generations.",
+            "retained_context.verified_answer (acquired): the user's accepted "
+            "question/answer pairs for a request_user_input call, kept whole "
+            "on a verified_answer session_event anchored to the call_id. "
+            "realtime_item.realtime_session_started/_closed are lifecycle "
+            "markers without conversation content; their realtime session "
+            "id, marker id and outcome are kept on session_events of the "
+            "same names. Any other payload type under these envelopes is a "
+            "typed unknown with a codex_unknown_outer_record event.",
             "event_msg.memory_citation (measured negative, polylogue-cgfy "
             "codex lane): observed null on every sampled record across "
             "~3,200 real session files -- a constant, not an unread signal; "
@@ -2428,7 +2500,7 @@ def _codex_spec() -> OriginSpec:
                         "projects",
                         "project_roots",
                     ),
-                    consumer="polylogue/sources/codex_state_evidence.py:record_codex_state_snapshot_terminal",
+                    consumer="polylogue/sources/codex_state_evidence.py:prepare_codex_state_source_terminal",
                     table_rules=(
                         DatabaseTableRule(
                             "threads",
@@ -2513,7 +2585,7 @@ def _codex_spec() -> OriginSpec:
                     "goals",
                     "goal intent is retained as durable raw evidence",
                     logical_tables=("thread_goals", "thread_goal_continuation_deferrals"),
-                    consumer="polylogue/sources/codex_state_evidence.py:materialize_codex_state_content",
+                    consumer="polylogue/sources/codex_state_evidence.py:prepare_codex_state_source_terminal",
                 ),
                 DatabaseMemberRule(
                     "memories_1.sqlite",
@@ -2521,7 +2593,7 @@ def _codex_spec() -> OriginSpec:
                     "memories",
                     "memory state is retained as durable raw evidence",
                     logical_tables=("stage1_outputs", "jobs"),
-                    consumer="polylogue/sources/codex_state_evidence.py:materialize_codex_state_content",
+                    consumer="polylogue/sources/codex_state_evidence.py:prepare_codex_state_source_terminal",
                 ),
                 DatabaseMemberRule("logs_2.sqlite", "out-of-scope", "logs", "runtime tracing is not session evidence"),
                 DatabaseMemberRule(
@@ -2608,7 +2680,6 @@ def _gemini_cli_spec() -> OriginSpec:
                 # suffix is projected onto the watched root because the
                 # directory shape is the whole admission evidence.
                 path_suffixes=(".txt", ".json", ".md", ".log", ""),
-                watch_suffixes=(),
                 schema_observation_strategy="opaque-non-applicable",
                 schema_non_applicability_reason=(
                     "Tool output is provider payload, not a stable sidecar record contract; retain bytes and join "
@@ -2630,7 +2701,6 @@ def _gemini_cli_spec() -> OriginSpec:
                     "prompts only and duplicate what the chat checkpoints carry, so they are never a session."
                 ),
                 path_suffixes=(".json",),
-                watch_suffixes=(),
             ),
         ),
         fidelity_notes=(
@@ -2702,7 +2772,6 @@ def _hermes_spec() -> OriginSpec:
                     "within a session, joined to it by session_native_id."
                 ),
                 path_suffixes=(".ndjson",),
-                watch_suffixes=(".ndjson",),
             ),
             OriginArtifactRule(
                 kind="skill_asset",
@@ -2721,7 +2790,6 @@ def _hermes_spec() -> OriginSpec:
                     "Skill-shipped prompt templates are retained as raw artifact evidence and never create a session."
                 ),
                 path_suffixes=(".json", ".jsonl", ".md", ".txt", ""),
-                watch_suffixes=(),
                 schema_observation_strategy="opaque-non-applicable",
                 schema_non_applicability_reason=(
                     "A shipped prompt template is skill content, not a provider record contract; retain the "
@@ -2812,7 +2880,6 @@ def _antigravity_spec() -> OriginSpec:
                 coverage_role="conversation_protobuf",
                 fidelity_note="Opaque conversation protobufs are converted only by Antigravity's language server.",
                 path_suffixes=(".pb",),
-                watch_suffixes=(".pb", ".db", ".sqlite", ".sqlite3"),
             ),
             OriginArtifactRule(
                 kind="agent_sidecar_meta",
@@ -2992,7 +3059,6 @@ def _aistudio_drive_spec() -> OriginSpec:
                     "observation has no retained blob to re-inspect."
                 ),
                 path_suffixes=(".json",),
-                watch_suffixes=(),
             ),
             OriginArtifactRule(
                 kind="metadata_document",
@@ -3012,7 +3078,6 @@ def _aistudio_drive_spec() -> OriginSpec:
                 path_suffixes=(".json",),
                 # One named file, not a suffix family: enumeration of the
                 # Drive root stays governed by ``path_pattern``.
-                watch_suffixes=(),
             ),
         ),
         assembly_paths=("polylogue/sources/dispatch.py:_lower_payload_specs",),
@@ -3104,7 +3169,6 @@ def _otel_genai_spec() -> OriginSpec:
                     "document with a normalizable GenAI span."
                 ),
                 path_suffixes=(".json",),
-                watch_suffixes=(".json",),
             ),
         ),
         fidelity_notes=(
@@ -3305,6 +3369,23 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
     ),
     Origin.GROK_EXPORT: (
         _completeness_mode(
+            "provider-package:grok-export/native-json@v1",
+            "native-json",
+            Provider.GROK,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/grok.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/parsers/grok.py",),
+            parser_paths=("polylogue/sources/parsers/grok.py",),
+            normalizer_paths=("polylogue/sources/parsers/grok.py",),
+            fixture_paths=("tests/unit/sources/parsers/test_grok_native.py", "tests/fixtures/grok/native-bundle.json"),
+            schema_paths=(),
+            docs_paths=("docs/providers/README.md",),
+            caveats=(
+                "Original endpoint replies preserve native identity and structured material. "
+                "No nonempty response_nodes graph contract or operational schema package is admitted.",
+            ),
+        ),
+        _completeness_mode(
             "provider-package:grok-export/export-json@v1",
             "export-json",
             Provider.GROK,
@@ -3452,6 +3533,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "claude.looks_like_code (envelope marker, #3428)",
             fixed_provider=Provider.CLAUDE_CODE,
+            stream_projection_path="polylogue.sources.parsers.claude.code_detection:detection_projection",
         ),
         DetectorBinding(
             "claude-code-record-stream",
@@ -3461,6 +3543,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             "claude.looks_like_code (record stream envelope markers)",
             mode_rank=0,
             fixed_provider=Provider.CLAUDE_CODE,
+            stream_projection_path="polylogue.sources.parsers.claude.code_detection:detection_projection",
         ),
     ),
     Origin.CODEX_SESSION: (
@@ -3471,6 +3554,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "codex.looks_like (pydantic record validation)",
             fixed_provider=Provider.CODEX,
+            stream_projection_path="polylogue.sources.parsers.codex:detection_projection",
         ),
         DetectorBinding(
             "codex-record-stream",
@@ -3480,6 +3564,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             "codex.looks_like (pydantic record stream validation)",
             mode_rank=1,
             fixed_provider=Provider.CODEX,
+            stream_projection_path="polylogue.sources.parsers.codex:detection_projection",
         ),
     ),
     Origin.GEMINI_CLI_SESSION: (
@@ -3490,14 +3575,16 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "local_agent.looks_like_gemini_cli",
             fixed_provider=Provider.GEMINI_CLI,
+            stream_projection_path="polylogue.sources.parsers.local_agent:detection_projection",
         ),
         DetectorBinding(
-            "gemini-cli-sequence-stub",
+            "gemini-cli-sequence-document",
             DetectionMode.SEQUENCE_DOCUMENT,
-            "polylogue.sources.dispatch:_looks_like_gemini_cli_sequence_stub",
+            "polylogue.sources.dispatch:_looks_like_gemini_cli_sequence_document",
             0,
-            "local_agent.looks_like_gemini_cli (stub record)",
+            "local_agent.looks_like_gemini_cli (document or checkpoint stub)",
             fixed_provider=Provider.GEMINI_CLI,
+            stream_projection_path="polylogue.sources.parsers.local_agent:detection_projection",
         ),
     ),
     Origin.HERMES_SESSION: (
@@ -3508,6 +3595,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "hermes_state.looks_like_state_db_payload",
             fixed_provider=Provider.HERMES,
+            stream_projection_path="polylogue.sources.parsers.hermes_state:detection_projection",
         ),
         DetectorBinding(
             "hermes-verification-record",
@@ -3516,6 +3604,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             1,
             "hermes_verification.looks_like_verification_evidence_db_payload",
             fixed_provider=Provider.HERMES,
+            stream_projection_path="polylogue.sources.parsers.hermes_verification:detection_projection",
         ),
         DetectorBinding(
             "hermes-atif-record",
@@ -3524,6 +3613,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             2,
             "hermes_spans.looks_like_atif_payload",
             fixed_provider=Provider.HERMES,
+            stream_projection_path="polylogue.sources.parsers.hermes_spans:detection_projection",
         ),
         DetectorBinding(
             "hermes-atof-record",
@@ -3532,6 +3622,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             3,
             "hermes_spans.looks_like_atof_payload",
             fixed_provider=Provider.HERMES,
+            stream_projection_path="polylogue.sources.parsers.hermes_spans:detection_projection",
         ),
         DetectorBinding(
             "hermes-local-agent-record",
@@ -3540,14 +3631,16 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             4,
             "local_agent.looks_like_hermes",
             fixed_provider=Provider.HERMES,
+            stream_projection_path="polylogue.sources.parsers.local_agent:detection_projection",
         ),
         DetectorBinding(
             "hermes-atof-sequence",
             DetectionMode.SEQUENCE_DOCUMENT,
             "polylogue.sources.dispatch:_looks_like_hermes_atof_sequence",
             0,
-            "hermes_spans.looks_like_atof_payload (sequence[0])",
+            "hermes_spans.looks_like_atof_payload (any complete sequence document)",
             fixed_provider=Provider.HERMES,
+            stream_projection_path="polylogue.sources.parsers.hermes_spans:detection_projection",
         ),
     ),
     Origin.ANTIGRAVITY_SESSION: (
@@ -3558,6 +3651,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "antigravity.looks_like_markdown_export",
             fixed_provider=Provider.ANTIGRAVITY,
+            stream_projection_path="polylogue.sources.parsers.antigravity:detection_projection",
         ),
     ),
     Origin.CHATGPT_EXPORT: (
@@ -3568,6 +3662,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "chatgpt.looks_like_fragment (mapping node shape)",
             fixed_provider=Provider.CHATGPT,
+            stream_projection_path="polylogue.sources.parsers.chatgpt:detection_projection",
         ),
         DetectorBinding(
             "chatgpt-record-shared-decode",
@@ -3576,14 +3671,16 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             1,
             "chatgpt.looks_like_shared_decode (shared-page stream decode)",
             fixed_provider=Provider.CHATGPT,
+            stream_projection_path="polylogue.sources.parsers.chatgpt:detection_projection",
         ),
         DetectorBinding(
             "chatgpt-sequence-document",
             DetectionMode.SEQUENCE_DOCUMENT,
             "polylogue.sources.dispatch:_looks_like_chatgpt_sequence_document",
             0,
-            "chatgpt.looks_like (sequence[0] whole-document)",
+            "chatgpt.looks_like (any complete sequence document)",
             fixed_provider=Provider.CHATGPT,
+            stream_projection_path="polylogue.sources.parsers.chatgpt:whole_document_detection_projection",
         ),
     ),
     Origin.CLAUDE_AI_EXPORT: (
@@ -3594,6 +3691,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "claude.looks_like_claude_memories",
             fixed_provider=Provider.CLAUDE_AI,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
         DetectorBinding(
             "claude-ai-record-project",
@@ -3602,6 +3700,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             1,
             "claude.looks_like_claude_project",
             fixed_provider=Provider.CLAUDE_AI,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
         DetectorBinding(
             "claude-ai-record",
@@ -3610,30 +3709,34 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             2,
             "claude.looks_like_ai (non-empty plausible chat_messages)",
             fixed_provider=Provider.CLAUDE_AI,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
         DetectorBinding(
             "claude-ai-sequence-chat-messages",
             DetectionMode.SEQUENCE_DOCUMENT,
             "polylogue.sources.dispatch:_looks_like_claude_ai_sequence",
             0,
-            "sequence[0] chat_messages dict-key present",
+            "claude.looks_like_ai (any complete sequence document)",
             fixed_provider=Provider.CLAUDE_AI,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
         DetectorBinding(
             "claude-ai-sequence-memories",
             DetectionMode.SEQUENCE_DOCUMENT,
             "polylogue.sources.dispatch:_looks_like_claude_memories_sequence",
             1,
-            "claude.looks_like_claude_memories (sequence[0])",
+            "claude.looks_like_claude_memories (any complete sequence document)",
             fixed_provider=Provider.CLAUDE_AI,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
         DetectorBinding(
             "claude-ai-sequence-project",
             DetectionMode.SEQUENCE_DOCUMENT,
             "polylogue.sources.dispatch:_looks_like_claude_project_sequence",
             2,
-            "claude.looks_like_claude_project (sequence[0])",
+            "claude.looks_like_claude_project (any complete sequence document)",
             fixed_provider=Provider.CLAUDE_AI,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
     ),
     Origin.CLAUDE_DESIGN_SESSION: (
@@ -3644,32 +3747,54 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "claude.looks_like_claude_design",
             fixed_provider=Provider.CLAUDE_DESIGN,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
         DetectorBinding(
             "claude-design-sequence",
             DetectionMode.SEQUENCE_DOCUMENT,
             "polylogue.sources.dispatch:_looks_like_claude_design_sequence",
             0,
-            "claude.looks_like_claude_design (sequence[0])",
+            "claude.looks_like_claude_design (any complete sequence document)",
             fixed_provider=Provider.CLAUDE_DESIGN,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
     ),
     Origin.GROK_EXPORT: (
         DetectorBinding(
+            "grok-native-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_grok_native_record",
+            0,
+            "grok.looks_like_native_bundle",
+            fixed_provider=Provider.GROK,
+            stream_projection_path="polylogue.sources.parsers.grok:native_detection_projection",
+        ),
+        DetectorBinding(
+            "grok-native-sequence",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_grok_native_sequence",
+            0,
+            "grok.looks_like_native_bundle (any complete sequence document)",
+            fixed_provider=Provider.GROK,
+            stream_projection_path="polylogue.sources.parsers.grok:native_detection_projection",
+        ),
+        DetectorBinding(
             "grok-record",
             DetectionMode.RECORD,
             "polylogue.sources.dispatch:_looks_like_grok_record",
-            0,
+            1,
             "grok.looks_like_export",
             fixed_provider=Provider.GROK,
+            stream_projection_path="polylogue.sources.parsers.grok:detection_projection",
         ),
         DetectorBinding(
             "grok-sequence",
             DetectionMode.SEQUENCE_DOCUMENT,
             "polylogue.sources.dispatch:_looks_like_grok_sequence",
-            0,
-            "grok.looks_like_export (sequence[0])",
+            1,
+            "grok.looks_like_export (any complete sequence document)",
             fixed_provider=Provider.GROK,
+            stream_projection_path="polylogue.sources.parsers.grok:detection_projection",
         ),
     ),
     Origin.AISTUDIO_DRIVE: (
@@ -3680,14 +3805,16 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "drive.looks_like (chunkedPrompt/chunks)",
             fixed_provider=Provider.GEMINI,
+            stream_projection_path="polylogue.sources.parsers.drive:detection_projection",
         ),
         DetectorBinding(
             "aistudio-drive-sequence",
             DetectionMode.SEQUENCE_DOCUMENT,
             "polylogue.sources.dispatch:_looks_like_gemini_mapping_sequence",
             0,
-            "drive.looks_like (sequence[0])",
+            "drive.looks_like (any complete sequence document)",
             fixed_provider=Provider.GEMINI,
+            stream_projection_path="polylogue.sources.parsers.drive:detection_projection",
         ),
     ),
     Origin.OTEL_GENAI: (
@@ -3698,6 +3825,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "OTLP-JSON resourceSpans contains a normalizable span with gen_ai.* attributes",
             fixed_provider=Provider.OTEL_GENAI,
+            stream_projection_path="polylogue.sources.parsers.otel_genai:detection_projection",
         ),
     ),
     Origin.UNKNOWN_EXPORT: (
@@ -3709,15 +3837,17 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             "browser_capture.looks_like",
             dynamic_provider_path="polylogue.sources.dispatch:_browser_capture_provider",
             dynamic_provider_allowlist=_ALL_BROWSER_CAPTURE_PROVIDERS,
+            stream_projection_path="polylogue.sources.parsers.browser_capture:detection_projection",
         ),
         DetectorBinding(
             "browser-capture-sequence",
             DetectionMode.SEQUENCE_DOCUMENT,
             "polylogue.sources.dispatch:_looks_like_browser_capture_sequence",
             0,
-            "sequence[0] browser_capture.looks_like -> browser_capture.looks_like",
+            "browser_capture.looks_like (any complete sequence envelope)",
             dynamic_provider_path="polylogue.sources.dispatch:_browser_capture_sequence_provider",
             dynamic_provider_allowlist=_ALL_BROWSER_CAPTURE_PROVIDERS,
+            stream_projection_path="polylogue.sources.parsers.browser_capture:detection_projection",
         ),
     ),
 }
@@ -3802,6 +3932,82 @@ def origin_specs() -> tuple[OriginSpec, ...]:
     """Return the stable public-origin admission projection."""
 
     return ORIGIN_SPECS
+
+
+@cache
+def parser_semantic_authority_fingerprint() -> str:
+    """Fingerprint every executable parser route used by raw authority.
+
+    The shared lowering closure covers dispatch, message identity, writer
+    lowering, lineage, and revision membership. Each executable OriginSpec
+    then contributes its actual provider-to-parser, stream, assembly, and
+    artifact routes plus the recursive source closure rooted at those routes.
+    This projects the existing admission registry; it does not create a
+    second parser inventory or a manually advanced semantic version.
+    """
+    executable = sorted(
+        (spec for spec in ORIGIN_SPECS if spec.lifecycle == "executable"),
+        key=lambda spec: spec.origin.value,
+    )
+    payload = {
+        "shared_lowering": lowering_fingerprint(),
+        "executable_origins": [
+            {
+                "origin": spec.origin.value,
+                "provider_wires": tuple(provider.value for provider in spec.provider_wires),
+                "lifecycle": spec.lifecycle,
+                "acquisition_modes": spec.acquisition_modes,
+                "parser_paths": spec.parser_paths,
+                "stream_parser_path": spec.stream_parser_path,
+                "assembly_paths": spec.assembly_paths,
+                "assembly_spec_path": spec.assembly_spec_path,
+                "artifact_routes": tuple(
+                    {
+                        "kind": rule.kind,
+                        "path_pattern": rule.path_pattern,
+                        "parse_policy": rule.parse_policy,
+                        "parser_path": rule.parser_path,
+                    }
+                    for rule in spec.artifact_rules
+                ),
+                "database_capability": (
+                    None
+                    if spec.database_capability is None
+                    else {
+                        "snapshot_method": spec.database_capability.snapshot_method,
+                        "consistency_fence": spec.database_capability.consistency_fence,
+                        "revision_identity": spec.database_capability.revision_identity,
+                        "raw_id_strategy": spec.database_capability.raw_id_strategy,
+                        "full_snapshot_per_revision": spec.database_capability.full_snapshot_per_revision,
+                        "snapshot_lineage_policy": spec.database_capability.snapshot_lineage_policy,
+                        "members": tuple(
+                            {
+                                "filename": member.filename,
+                                "disposition": member.disposition,
+                                "kind": member.kind,
+                                "reason": member.reason,
+                                "logical_tables": member.logical_tables,
+                                "consumer": member.consumer,
+                                "table_rules": tuple(
+                                    {
+                                        "table": rule.table,
+                                        "disposition": rule.disposition,
+                                        "reason": rule.reason,
+                                    }
+                                    for rule in member.table_rules
+                                ),
+                            }
+                            for member in spec.database_capability.members
+                        ),
+                    }
+                ),
+                "parser_closure": spec.parser_fingerprint(),
+            }
+            for spec in executable
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def artifact_observation_contracts(
@@ -3950,7 +4156,7 @@ def validate_assembly_spec_parity(
 
     ``polylogue.sources.assembly.get_assembly_spec`` is the current production
     per-provider sidecar/title/orchestration enrichment factory consumed by
-    ingest (``source_walk.py``, ``emitter.py``, ``ingest_worker.py``). This is
+    ingest (``source_walk.py``, ``emitter.py``, ``revision_backfill.py``). This is
     the one typed admission point polylogue-2qx.2, polylogue-j2zz, and
     polylogue-ih67 build their assembly/orchestration/title/action extensions
     on: a declared ``assembly_spec_path`` that must agree with whether the live
@@ -4023,11 +4229,12 @@ __all__ = [
     "artifact_rule_for_path",
     "artifact_observation_contracts",
     "path_declaration_refuses_session",
-    "artifact_suffixes_for_provider",
+    "pre_acquisition_path_exclusion",
     "recognize_source_class",
     "schema_observed_leaf_values",
     "undeclared_schema_values",
     "lowering_fingerprint",
+    "parser_semantic_authority_fingerprint",
     "detector_registry",
     "materializer_fingerprint",
     "replay_routing_fingerprint",

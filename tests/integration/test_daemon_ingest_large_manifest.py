@@ -16,8 +16,8 @@ from polylogue.operations.ingest_acceptance import INGEST_OPERATION
 from polylogue.operations.ingest_inputs import retain_input_page
 from polylogue.operations.machine_receipts import IngestHistoricalReceiptV2
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceInput
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.daemon_service_harness import ServiceHarness
 
 
@@ -31,8 +31,7 @@ async def test_machine_ingest_10241_files_has_complete_historical_pages(tmp_path
         (source_dir / f"input-{ordinal:05d}.zip").write_bytes(empty_zip)
 
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root):
-        pass
+    await run_archive_fixture_write(archive_root, lambda: bootstrap_archive_root(archive_root))
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     harness = ServiceHarness(profile=ServiceProfile.SURFACES, capabilities={ServiceCapability.API})
     try:
@@ -80,8 +79,7 @@ async def test_later_input_page_failure_aborts_preaccept_source_state(
         (source_dir / f"input-{ordinal:05d}.zip").write_bytes(empty_zip)
 
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root):
-        pass
+    await run_archive_fixture_write(archive_root, lambda: bootstrap_archive_root(archive_root))
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     harness = ServiceHarness(profile=ServiceProfile.SURFACES, capabilities={ServiceCapability.API})
     calls = 0

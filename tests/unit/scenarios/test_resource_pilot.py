@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tempfile
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING
@@ -39,14 +40,29 @@ def _provider_native_ids(package: ProviderSourcePackage) -> tuple[str, ...]:
     )
 
 
-def _is_scratch_database(database: object) -> bool:
-    """Whether a connection target is private scratch, not a file on disk.
+_ARCHIVE_TIER_FILES = frozenset({"source.db", "index.db", "embeddings.db", "user.db", "audit.db", "ops.db"})
 
-    Parsers keep bounded working state in in-memory or temporary SQLite
-    databases (chatgpt timing, codex record spill); neither is an archive tier.
+
+def _is_scratch_database(database: object) -> bool:
+    """Whether a connection target is private parser scratch, not archive state.
+
+    Parsers keep bounded working state in in-memory SQLite or in a paged
+    scratch file inside their own ``polylogue-*`` temporary directory (the
+    ChatGPT sidecar asset index pages to disk so a large export's sidecars
+    are not held in memory); neither is an archive tier.
     """
     value = str(database)
-    return value in {"", ":memory:"} or (value.startswith("file:") and "mode=memory" in value)
+    if value in {"", ":memory:"} or (value.startswith("file:") and "mode=memory" in value):
+        return True
+    if value.startswith("file:"):
+        # A read-only reopen of the same scratch file names it as a URI.
+        value = value.removeprefix("file:").split("?", 1)[0]
+    path = Path(value)
+    return (
+        path.name not in _ARCHIVE_TIER_FILES
+        and path.parent.name.startswith("polylogue-")
+        and path.parent.parent == Path(tempfile.gettempdir())
+    )
 
 
 def test_parser_resource_needs_only_provider_bytes(
@@ -205,7 +221,7 @@ def test_parser_resource_acquisition_opens_no_archive_tier(tmp_path: Path) -> No
             )
 
     assert sessions
-    # Parser scratch databases are allowed; any database file, tier or not, is not.
+    # Private parser scratch is allowed; any other database file, tier or not, is not.
     assert opened_files == [], f"parser-only pilot acquisition opened database files: {opened_files}"
     tiers = {name: count for name, count in counter.connections_by_database.items() if name != "other"}
     assert tiers == {}, f"parser-only pilot acquisition opened archive tiers: {tiers}"

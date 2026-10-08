@@ -40,7 +40,11 @@ conversations exported from files that happen to share a stem
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, MutableSequence
+import json
+import sqlite3
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping, MutableSequence, MutableSet
+from contextlib import contextmanager
+from typing import Protocol
 
 from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
@@ -49,6 +53,7 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSourc
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.timestamps import canonical_timestamp_text
 from polylogue.pipeline.ids import idless_session_identity
+from polylogue.sources.detection_projection import DetectorProjection
 
 from .base import (
     AdmissionLedger,
@@ -153,11 +158,14 @@ def _session_identity(messages: Iterable[ParsedMessage], created_at: str | None,
     a single blank-text response but a ``create_time``, or with responses but
     no timestamps, still hashes.
     """
-    # Reorder-stable selection of the opening turn: earliest declared
-    # timestamp, ties broken by the (content-derived) message id. Taking
+    # Prefer actual timestamp evidence over an undated turn. Missing time
+    # does not prove that a reply predates an already dated opening. With
+    # no dated turns the message id is only a deterministic selection, not
+    # proof of chronology; an append can then change the selected anchor.
+    # Ties are broken by the (content-derived) message id. Taking
     # ``messages[0]`` would reintroduce exactly the array-order sensitivity
     # this identity exists to remove.
-    opening = min(messages, key=lambda m: (m.timestamp or "", m.provider_message_id), default=None)
+    opening = min(messages, key=lambda m: (m.timestamp is None, m.timestamp or "", m.provider_message_id), default=None)
     if opening is None and created_at is None:
         return fallback_id
     return idless_session_identity(
@@ -274,7 +282,18 @@ __all__ = [
     "parse_conversation",
     "looks_like_native_bundle",
     "parse_native_bundle",
+    "parse_native_response_stream",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Consume every conversation and retain an exact existential shape witness."""
+    item = DetectorProjection(fields={"conversation": DetectorProjection(), "responses": DetectorProjection()})
+    return DetectorProjection(
+        fields={
+            "conversations": DetectorProjection(item=item, array_fold="any", array_predicate=looks_like_conversation),
+        }
+    )
 
 
 # These fields are emitted by the retained app-chat /responses reply and
@@ -489,105 +508,211 @@ def _native_attachments(fields: Mapping[str, object], own_id: str) -> list[Parse
     return attachments
 
 
+class NativeGrokSpill(Protocol):
+    """Collections borrowed from the existing prepared-session scratch owner."""
+
+    def messages(self) -> MutableSequence[ParsedMessage]: ...
+    def attachments(self) -> MutableSequence[ParsedAttachment]: ...
+    def events(self) -> MutableSequence[ParsedSessionEvent]: ...
+    def seen_set(self) -> MutableSet[str]: ...
+    def string_map(self) -> MutableMapping[str, str]: ...
+    def connection(self) -> sqlite3.Connection: ...
+    def set_record_origin(self, position: int, original_key: str) -> None: ...
+
+
+def _native_key(value: str) -> str:
+    # Scratch TEXT keys must preserve even an escaped lone surrogate. This
+    # representation is private graph bookkeeping, never a provider identity.
+    return json.dumps(value, ensure_ascii=True)
+
+
+@contextmanager
+def _ordered_native_responses(
+    responses: Iterable[object], spill: NativeGrokSpill | None
+) -> Iterator[tuple[Iterator[tuple[int, object]], int]]:
+    def order(entry: object) -> tuple[str, str]:
+        fields = _response_fields(entry)
+        return _timestamp_text(fields.get("createTime")) or "", _string(fields.get("responseId")) or ""
+
+    if spill is None:
+        records = sorted(enumerate(responses), key=lambda item: order(item[1]))
+        yield iter(records), len(records)
+        return
+    connection = spill.connection()
+    connection.execute("DROP TABLE IF EXISTS temp.grok_native_response_order")
+    connection.execute(
+        "CREATE TEMP TABLE grok_native_response_order (ordinal INTEGER PRIMARY KEY, order_time BLOB NOT NULL, order_id BLOB NOT NULL, record_json TEXT NOT NULL)"
+    )
+    connection.execute(
+        "CREATE INDEX temp.grok_native_response_ordering ON grok_native_response_order(order_time, order_id, ordinal)"
+    )
+    cursor = None
+    try:
+        count = 0
+        for ordinal, record in enumerate(responses):
+            timestamp, native_id = order(record)
+            connection.execute(
+                "INSERT INTO grok_native_response_order VALUES (?, ?, ?, ?)",
+                (
+                    ordinal,
+                    timestamp.encode("utf-8", "surrogatepass"),
+                    native_id.encode("utf-8", "surrogatepass"),
+                    json.dumps(record, ensure_ascii=True),
+                ),
+            )
+            count += 1
+        cursor = connection.execute(
+            "SELECT ordinal, record_json FROM grok_native_response_order ORDER BY order_time, order_id, ordinal"
+        )
+        yield ((row[0], json.loads(row[1])) for row in cursor), count
+    finally:
+        if cursor is not None:
+            cursor.close()
+        connection.execute("DROP TABLE temp.grok_native_response_order")
+
+
 def _parse_native_session(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
-    conversation = _native_conversation(payload)
     responses_reply = payload.get("responses")
     responses = (
         responses_reply if isinstance(responses_reply, list) else _list(_mapping(responses_reply).get("responses"))
     )
-    messages: list[ParsedMessage] = []
-    attachments: list[ParsedAttachment] = []
-    events: list[ParsedSessionEvent] = []
-    variants: dict[str, int] = {}
-    ledger = AdmissionLedger()
-    ledger.expect(AdmissionUnit.OUTER_RECORD, 1)
-    ledger.materialized(AdmissionUnit.OUTER_RECORD, 0, "bundle")
-    ledger.expect(AdmissionUnit.MESSAGE, len(responses))
-    # Match the acquired browser record ordering, independent of pagination
-    # or the endpoint's array ordering; identity still uses native IDs.
-    ordered = sorted(
-        responses,
-        key=lambda entry: (
-            _timestamp_text(_response_fields(entry).get("createTime")) or "",
-            _string(_response_fields(entry).get("responseId")) or "",
-        ),
+    return parse_native_response_stream(
+        _native_conversation(payload), responses, fallback_id, response_nodes=payload.get("response_nodes")
     )
-    for ordinal, entry in enumerate(ordered):
-        if not isinstance(entry, Mapping):
-            ledger.refusal(AdmissionUnit.MESSAGE, ordinal, str(ordinal), AdmissionRefusalReason.MALFORMED)
-            events.append(
-                ParsedSessionEvent(event_type="grok_response_refusal", payload={"reason": "malformed", "raw": entry})
+
+
+def parse_native_response_stream(
+    conversation: Mapping[str, object],
+    responses: Iterable[object],
+    fallback_id: str,
+    *,
+    response_nodes: object = None,
+    spill: NativeGrokSpill | None = None,
+) -> ParsedSession:
+    """Lower native responses through the same ordinary Grok semantics.
+
+    ``spill`` orders and retains collections in the existing scratch owner.
+    A single record/string and the response-nodes event still materialize;
+    this route does not claim scalar-independent preparation or lowering.
+    """
+    if not _string(conversation.get("conversationId")):
+        raise ValueError("native Grok conversation lacks its identity")
+    messages = spill.messages() if spill is not None else []
+    attachments = spill.attachments() if spill is not None else []
+    events = spill.events() if spill is not None else []
+    variants: MutableMapping[str, str] = spill.string_map() if spill is not None else {}
+    with _ordered_native_responses(responses, spill) as (ordered, count):
+        ledger = AdmissionLedger()
+        ledger.expect(AdmissionUnit.OUTER_RECORD, 1)
+        ledger.materialized(AdmissionUnit.OUTER_RECORD, 0, "bundle")
+        ledger.expect(AdmissionUnit.MESSAGE, count)
+        for ordinal, (original_ordinal, entry) in enumerate(ordered):
+            if not isinstance(entry, Mapping):
+                ledger.refusal(AdmissionUnit.MESSAGE, ordinal, str(ordinal), AdmissionRefusalReason.MALFORMED)
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="grok_response_refusal", payload={"reason": "malformed", "raw": entry}
+                    )
+                )
+                continue
+            ledger.materialized(AdmissionUnit.MESSAGE, ordinal, str(ordinal))
+            fields = _response_fields(entry)
+            own_id = _string(fields.get("responseId"))
+            if not own_id:
+                # Native absence remains absence; the shared archive identity
+                # owner derives an intrinsic ID rather than a positional one.
+                own_id = ""
+            text = _string(fields.get("message"))
+            timestamp = _timestamp_text(fields.get("createTime"))
+            role = _role_for_sender(fields.get("sender"))
+            blocks = _native_blocks(fields, own_id)
+            variant_key = _native_key(own_id)
+            variant = int(variants.get(variant_key, "0"))
+            variants[variant_key] = str(variant + 1)
+            coordinate = MessageOwnerCoordinate(
+                stable_key=own_id or None, position=len(messages), variant_index=variant
             )
-            continue
-        ledger.materialized(AdmissionUnit.MESSAGE, ordinal, str(ordinal))
-        fields = _response_fields(entry)
-        own_id = _string(fields.get("responseId"))
-        if not own_id:
-            # Native absence remains absence; the shared archive identity
-            # owner derives an intrinsic ID rather than a positional one.
-            own_id = ""
-        text = _string(fields.get("message"))
-        timestamp = _timestamp_text(fields.get("createTime"))
-        role = _role_for_sender(fields.get("sender"))
-        blocks = _native_blocks(fields, own_id)
-        variant = variants.get(own_id, 0)
-        variants[own_id] = variant + 1
-        coordinate = MessageOwnerCoordinate(stable_key=own_id or None, position=len(messages), variant_index=variant)
-        messages.append(
-            ParsedMessage(
-                provider_message_id=own_id,
-                role=role,
-                text=text,
-                timestamp=timestamp,
-                blocks=blocks,
-                parent_message_provider_id=_string(fields.get("parentResponseId")),
-                position=len(messages),
-                variant_index=variant,
-                owner_coordinate=coordinate,
-                model_name=_string(fields.get("model")),
-                material_origin=_response_material_origin(role, text, blocks),
-            )
-        )
-        for attachment in _native_attachments(fields, own_id):
-            attachment.owner_coordinate = coordinate
-            attachment.message_position = coordinate.position
-            attachment.message_variant_index = variant
-            attachment.message_provider_id = own_id or None
-            attachments.append(attachment)
-        facts = {key: fields[key] for key in ("partial", "manual", "shared", "streamErrors") if key in fields}
-        if facts:
-            events.append(
-                ParsedSessionEvent(
-                    event_type="grok_response_state",
+            if spill is not None:
+                spill.set_record_origin(len(messages), str(original_ordinal))
+            messages.append(
+                ParsedMessage(
+                    provider_message_id=own_id,
+                    role=role,
+                    text=text,
                     timestamp=timestamp,
-                    source_message_provider_id=own_id or None,
-                    payload=facts,
-                    boundary_message_position=len(messages) - 1,
+                    blocks=blocks,
+                    parent_message_provider_id=_string(fields.get("parentResponseId")),
+                    position=len(messages),
+                    variant_index=variant,
+                    owner_coordinate=coordinate,
+                    model_name=_string(fields.get("model")),
+                    material_origin=_response_material_origin(role, text, blocks),
                 )
             )
+            for attachment in _native_attachments(fields, own_id):
+                attachment.owner_coordinate = coordinate
+                attachment.message_position = coordinate.position
+                attachment.message_variant_index = variant
+                attachment.message_provider_id = own_id or None
+                attachments.append(attachment)
+            facts = {key: fields[key] for key in ("partial", "manual", "shared", "streamErrors") if key in fields}
+            if facts:
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="grok_response_state",
+                        timestamp=timestamp,
+                        owner_coordinate=coordinate,
+                        source_message_provider_id=own_id or None,
+                        payload=facts,
+                        boundary_message_position=len(messages) - 1,
+                    )
+                )
     # The acquisition order is chronological. Parent edges carry
     # branches; absence of a selected leaf must not invent one on a fork.
-    children = {message.parent_message_provider_id for message in messages if message.parent_message_provider_id}
-    leaves = [message for message in messages if message.provider_message_id not in children]
-    leaf = leaves[0] if len(leaves) == 1 else None
-    active: set[str] = set()
-    by_id = {message.provider_message_id: message for message in messages if message.provider_message_id}
-    current = leaf
-    while current is not None and current.provider_message_id not in active:
-        active.add(current.provider_message_id)
-        current = by_id.get(current.parent_message_provider_id or "")
-    for message in messages:
-        message.is_active_leaf = message is leaf if leaf is not None else None
-        message.is_active_path = message.provider_message_id in active if leaf is not None else None
+    children: MutableSet[str] = spill.seen_set() if spill is not None else set()
+    by_id: MutableMapping[str, str] = spill.string_map() if spill is not None else {}
+    for position, message in enumerate(messages):
+        if message.parent_message_provider_id:
+            children.add(_native_key(message.parent_message_provider_id))
+        if message.provider_message_id:
+            by_id[_native_key(message.provider_message_id)] = str(position)
+    leaf_position = None
+    leaf_count = 0
+    for position, message in enumerate(messages):
+        if _native_key(message.provider_message_id) not in children:
+            leaf_position = position
+            leaf_count += 1
+    if leaf_count != 1:
+        leaf_position = None
+    active: MutableSet[str] = spill.seen_set() if spill is not None else set()
+    current_position = leaf_position
+    while current_position is not None:
+        current = messages[current_position]
+        key = _native_key(current.provider_message_id)
+        if key in active:
+            break
+        active.add(key)
+        parent_position = by_id.get(_native_key(current.parent_message_provider_id or ""))
+        current_position = int(parent_position) if parent_position is not None else None
+    for position, message in enumerate(messages):
+        messages[position] = message.model_copy(
+            update={
+                "is_active_leaf": position == leaf_position if leaf_position is not None else None,
+                "is_active_path": _native_key(message.provider_message_id) in active
+                if leaf_position is not None
+                else None,
+            }
+        )
+    leaf = messages[leaf_position] if leaf_position is not None else None
     created_at = _timestamp_text(conversation.get("createTime"))
     updated_at = _timestamp_text(conversation.get("modifyTime"))
     events.append(
         ParsedSessionEvent(event_type="grok_conversation_state", timestamp=updated_at, payload=dict(conversation))
     )
-    if payload.get("response_nodes") is not None:
+    if response_nodes is not None:
         events.append(
             ParsedSessionEvent(
-                event_type="grok_response_nodes", timestamp=updated_at, payload={"reply": payload["response_nodes"]}
+                event_type="grok_response_nodes", timestamp=updated_at, payload={"reply": response_nodes}
             )
         )
     title = _string(conversation.get("title"))
@@ -598,12 +723,12 @@ def _parse_native_session(payload: Mapping[str, object], fallback_id: str) -> Pa
         title_source=TitleSource.ORIGIN if title else None,
         created_at=created_at,
         updated_at=updated_at,
-        messages=messages,
+        messages=[],
         unit_accounting=ledger.close(),
-        attachments=attachments,
-        session_events=events,
+        attachments=[],
+        session_events=[],
         active_leaf_message_provider_id=leaf.provider_message_id if leaf is not None else None,
-    )
+    ).model_copy(update={"messages": messages, "attachments": attachments, "session_events": events})
 
 
 def parse_native_bundle(payload: Mapping[str, object], fallback_id: str) -> list[ParsedSession]:
@@ -615,3 +740,20 @@ def parse_native_bundle(payload: Mapping[str, object], fallback_id: str) -> list
     if not looks_like_native_bundle(payload):
         raise ValueError("invalid Grok endpoint bundle")
     return [parse_conversation(payload, fallback_id)]
+
+
+def native_detection_projection() -> DetectorProjection:
+    """Preserve the native predicate's exact nested identity and list shapes."""
+    identity = DetectorProjection(fields={"conversationId": DetectorProjection()})
+    conversation = DetectorProjection(
+        fields={
+            "conversationId": DetectorProjection(),
+            "conversation": identity,
+        }
+    )
+    return DetectorProjection(
+        fields={
+            "conversation": conversation,
+            "responses": DetectorProjection(fields={"responses": DetectorProjection()}),
+        }
+    )

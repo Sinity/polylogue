@@ -37,6 +37,7 @@ from polylogue.sources.drive import (
 )
 from polylogue.sources.drive.source import DriveSourceAPI
 from polylogue.sources.drive.types import DriveFile
+from polylogue.sources.drive.witness import drive_cache_directory, drive_source_coordinate
 from polylogue.sources.parsers.base import RawSessionData
 from polylogue.storage.blob_store import BlobStore
 
@@ -55,6 +56,9 @@ class _StubDriveClient:
     def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:
         del folder_id
         yield from self.files
+
+    def get_metadata(self, file_id: str, *, refresh: bool = False) -> DriveFile:
+        return next(file for file in self.iter_json_files("") if file.file_id == file_id)
 
     def download_bytes(self, file_id: str) -> bytes:
         self.downloaded.append(file_id)
@@ -78,7 +82,8 @@ def _run(tmp_path: Path, cache_bytes: bytes) -> tuple[_StubDriveClient, list[Pat
     cache_dir = tmp_path / "drive-cache"
     cache_dir.mkdir()
     source = Source(name="gemini", folder="AI Studio", path=cache_dir)
-    cache_path = drive_cache_file_path(cache_dir, "prompt.json")
+    cache_path = drive_cache_file_path(drive_cache_directory(cache_dir, "folder:AI Studio"), "f1")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_bytes(cache_bytes)
     cache_path.with_name(f"{cache_path.name}.revision").write_text(_MTIME)
     client = _StubDriveClient(
@@ -89,7 +94,7 @@ def _run(tmp_path: Path, cache_bytes: bytes) -> tuple[_StubDriveClient, list[Pat
         iter_drive_raw_data(
             source=source,
             client=cast(DriveSourceAPI, client),
-            known_mtimes={str(cache_path): _MTIME},
+            known_mtimes={drive_source_coordinate("gemini", "folder:AI Studio", "f1"): _MTIME},
             blob_store=BlobStore(tmp_path / "blob"),
         )
     )
@@ -126,7 +131,7 @@ def test_a_cache_from_an_earlier_revision_is_redownloaded(tmp_path: Path) -> Non
     the stale cached document is returned while the grown one is never read.
     """
     source = Source(name="gemini", folder="Google AI Studio", path=tmp_path)
-    cache_path = drive_cache_file_path(tmp_path, "prompt.json")
+    cache_path = drive_cache_file_path(drive_cache_directory(tmp_path, "folder:Google AI Studio"), "f1")
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_bytes(b'{"chunkedPrompt": {"chunks": []}}')
     cache_path.with_name(f"{cache_path.name}.revision").write_text("2025-01-01T00:00:00Z")

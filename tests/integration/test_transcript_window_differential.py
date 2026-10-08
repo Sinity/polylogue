@@ -69,6 +69,7 @@ from polylogue.archive.query.transaction import QueryContinuationInvalidError, Q
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
 
@@ -79,7 +80,7 @@ pytestmark = pytest.mark.xdist_group("web-reader")
 _MESSAGE_COUNT = 6
 
 
-def _seed_session(archive_root: Path, *, native_id: str = "transcript-window") -> str:
+def _seed_session_on_writer(archive_root: Path, *, native_id: str = "transcript-window") -> str:
     """Write one multi-message session through the production writer."""
 
     with ArchiveStore(archive_root) as archive_db:
@@ -101,6 +102,11 @@ def _seed_session(archive_root: Path, *, native_id: str = "transcript-window") -
                 ],
             ),
         )
+
+
+def _seed_session(archive_root: Path, *, native_id: str = "transcript-window") -> str:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_session_on_writer(archive_root, native_id=native_id))
 
 
 @contextmanager

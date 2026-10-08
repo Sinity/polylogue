@@ -32,9 +32,11 @@ polylogue find "pytest" then read --view messages
 polylogue find "pytest" then analyze --facets
 
 # Source-only / CI-cloud verification without a daemon
-polylogue demo tour --out-dir polylogue-demo-tour --force
-polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
-polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
+# (demo seeding writes only a scratch root, never the configured archive)
+polylogue demo tour --root ./polylogue-demo-tour/archive --out-dir polylogue-demo-tour --force
+polylogue demo receipts --root ./polylogue-receipts-demo/archive --seed --format json
+polylogue demo seed --root ./polylogue-demo-archive --force --with-overlays --format json
+polylogue demo verify --root ./polylogue-demo-archive --require-overlays --format json
 polylogue demo script --shell bash
 
 # Repository behavior checks
@@ -88,8 +90,9 @@ process with `ingest_one_shot_archive()`, and verifies:
 - three sessions are stored: ChatGPT export, Claude Code session, and Codex
   session;
 - nineteen messages are indexed;
-- raw source paths remain relative (`chatgpt/demo-00.json`,
-  `claude-code/demo-00.jsonl`, `codex/demo-00.jsonl`);
+- raw source paths remain relative and sit at each provider's declared layout
+  position (`chatgpt/demo-00.json`, `claude-code/-synthetic-project/demo-00.jsonl`,
+  `codex/2026/01/01/rollout-demo-00.jsonl`);
 - `polylogue` full-text search for `pytest` is backed by the Claude Code demo
   session;
 - deterministic user overlays are stored in `user.db`: the `pytest-triage`

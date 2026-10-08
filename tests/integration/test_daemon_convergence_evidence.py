@@ -36,17 +36,15 @@ import asyncio
 import json
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.operations.daemon_workload_probe import REPORT_VERSION, compare, probe
 from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
-from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource
+from tests.infra.live_batch import prepared_live_batch_processor
 
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
 
@@ -83,20 +81,6 @@ def _write_claude_code_session(path: Path, session_id: str, n_messages: int) -> 
                 "userType": "external",
             }
             fh.write(json.dumps(record) + "\n")
-
-
-class _MinimalPolylogue:
-    """Minimal polylogue double sufficient for LiveBatchProcessor.
-
-    Matches the shape used by ``tests/unit/daemon/test_convergence_final_state.py``
-    — ``archive_root`` and ``backend.db_path`` are the only fields the
-    batch processor and converger touch at this scope.
-    """
-
-    def __init__(self, archive_root: Path, db_path: Path) -> None:
-        self.archive_root = archive_root
-        self.backend = SimpleNamespace(db_path=db_path)
-        self.config = None
 
 
 # ---------------------------------------------------------------------------
@@ -180,17 +164,20 @@ def test_daemon_convergence_evidence_full_archive_state(
     assert before["fts_trigger_state"]["all_present"] is True, before["fts_trigger_state"]
 
     # ── Drive convergence: same primitives as polylogued run ─────────
+    # The live batch publishes through the daemon's writer, retained Raw
+    # owner and capture stage; the fixture composes exactly those owners.
     converger = DaemonConverger(())
-    polylogue = _MinimalPolylogue(tmp_path, db_path)
-    processor = LiveBatchProcessor(
-        cast(Any, polylogue),
-        (WatchSource(name="claude-code", root=corpus_root),),
-        cursor=CursorStore(db_path),
-        parser_fingerprint="convergence-evidence-v1",
-        converger=converger,
-    )
 
-    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
+    async def ingest() -> Any:
+        async with prepared_live_batch_processor(
+            tmp_path,
+            (WatchSource(name="claude-code", root=corpus_root),),
+            parser_fingerprint="convergence-evidence-v1",
+            converger=converger,
+        ) as processor:
+            return await processor.ingest_files(files, emit_event=False)
+
+    metrics = asyncio.run(ingest())
 
     # ── Ingest completeness ─────────────────────────────────────────
     assert metrics.failed_file_count == 0, (

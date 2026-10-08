@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 import re
@@ -11,9 +12,11 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -30,7 +33,14 @@ from polylogue.sources.hooks import (
 )
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, PER_TURN_END
-from tests.infra.hook_carriers import acquire_hook_carriers, hook_event_count, materialize_hook_carriers
+from polylogue.sources.source_layout import export_drop_layout
+from tests.infra.hook_carriers import (
+    acquire_hook_carriers,
+    hook_event_count,
+    materialize_acquired_hook_carriers,
+    materialize_hook_carriers,
+)
+from tests.infra.raw_owner_routes import live_owner_set
 
 _TIMESTAMP = "2026-09-16T00:00:00Z"
 
@@ -96,6 +106,148 @@ def test_one_appended_line_materializes_one_hook_event(
         assert conn.execute("SELECT origin, session_native_id, event_type FROM raw_hook_events").fetchall() == [
             (expected_origin, session_id, event_type)
         ]
+
+
+@pytest.mark.asyncio
+async def test_hook_derivation_publication_uses_the_daemon_writer_bridge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon's production hook callback bridges only the publisher write.
+
+    Anti-vacuity: omitting its stage admission makes the source-tier write
+    fail the daemon's enforced writer lease instead of materializing the event.
+    """
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.daemon.convergence import _DerivationAdmission
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+    from polylogue.logging import propagate
+    from polylogue.operations.hook_event_derivation import converge_hook_carriers, discover_pending_hook_carriers
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    append_hook_event(
+        event_type="PostToolUse",
+        session_id="coordinator-session",
+        provider="codex",
+        timestamp=_TIMESTAMP,
+        payload={"tool_name": "exec"},
+        root=spool_root,
+        event_id="f" * 32,
+    )
+    assert acquire_hook_carriers(archive_root) == 1
+    pending = discover_pending_hook_carriers(archive_root, 1)
+    assert len(pending) == 1
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+    admission = _DerivationAdmission(
+        DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+        loop_thread_id=threading.get_ident(),
+    )
+    try:
+        with stage_write_admission(admission.stage_write):
+            submitted = compute.submit(
+                propagate(
+                    functools.partial(
+                        converge_hook_carriers,
+                        archive_root,
+                        raw_ids=(pending[0][0],),
+                        limit=1,
+                    )
+                ),
+                admission_class="incremental-background",
+            )
+        report = await asyncio.wrap_future(submitted.future)
+        assert report.done == 1
+        with sqlite3.connect(archive_root / "source.db") as conn:
+            assert conn.execute(
+                "SELECT session_native_id FROM raw_hook_events WHERE session_native_id = ?",
+                ("coordinator-session",),
+            ).fetchone() == ("coordinator-session",)
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_hook_derivation_rechecks_binding_after_writer_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A competing publication while queued makes the stale replacement a no-op."""
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.daemon.convergence import _DerivationAdmission
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+    from polylogue.logging import propagate
+    from polylogue.operations.hook_event_derivation import discover_pending_hook_carriers
+    from polylogue.sources.live.archive_open import _open_archive_for_live_write
+    from polylogue.storage.derived.hook_events import HookEventsDerivation
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    append_hook_event(
+        event_type="PostToolUse",
+        session_id="binding-race-session",
+        provider="codex",
+        timestamp=_TIMESTAMP,
+        payload={"tool_name": "exec"},
+        root=spool_root,
+        event_id="e" * 32,
+    )
+    assert acquire_hook_carriers(archive_root) == 1
+    pending = discover_pending_hook_carriers(archive_root, 1)
+    assert len(pending) == 1
+
+    derivation = HookEventsDerivation(archive_root)
+    frame = SimpleNamespace(
+        archive_root=archive_root,
+        recipe_version=lambda domain: derivation.recipe_version if domain == derivation.domain else None,
+    )
+    replacement = derivation.compute(frame, pending[0][0])
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+    loop = asyncio.get_running_loop()
+    writer_admission = _DerivationAdmission(
+        DaemonWriteThreadBridge(coordinator, loop),
+        loop_thread_id=threading.get_ident(),
+    )
+    archive_open_count = 0
+
+    def admit_after_competing_publication(actor: str, work: Callable[[], bool]) -> bool:
+        def publish_competitor() -> bool:
+            nonlocal archive_open_count
+            archive_open_count += 1
+            store = _open_archive_for_live_write(archive_root)
+            with store as archive:
+                archive.write_hook_events_from_carrier(
+                    carrier_source_id=replacement.identity.source_id,
+                    carrier_relative_path=replacement.identity.relative_path,
+                    carrier_role=replacement.identity.role,
+                    carrier_blob_hash=bytes.fromhex(replacement.blob_hash),
+                    carrier_source_path=replacement.source_path,
+                    events=replacement.payload,
+                    acquired_at_ms=replacement.acquired_at_ms,
+                )
+                archive.commit()
+            return work()
+
+        return writer_admission.stage_write(actor, publish_competitor)
+
+    try:
+        with stage_write_admission(admit_after_competing_publication):
+            submitted = compute.submit(
+                propagate(functools.partial(derivation.publish, frame, replacement)),
+                admission_class="incremental-background",
+            )
+        assert await asyncio.wrap_future(submitted.future) is False
+        assert archive_open_count == 1
+        with sqlite3.connect(archive_root / "source.db") as conn:
+            assert conn.execute(
+                "SELECT session_native_id FROM raw_hook_events WHERE session_native_id = ?",
+                ("binding-race-session",),
+            ).fetchall() == [("binding-race-session",)]
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
 
 
 def test_a_carrier_never_mints_a_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -337,15 +489,21 @@ def test_grown_carrier_retains_only_an_append_revision(tmp_path: Path, monkeypat
     source = WatchSource(
         name="codex-hooks",
         root=hook_carrier_provider_dir("codex", spool_root),
-        suffixes=(".ndjson",),
+        layout=export_drop_layout((".ndjson",)),
         source_id="primary-hook-spool:codex",
         role="primary-writable",
     )
-    watcher = LiveWatcher(
-        SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
-        (source,),
-    )
-    metrics = asyncio.run(watcher._ingest_files([carrier]))
+
+    async def grow() -> Any:
+        async with live_owner_set(archive_root) as owners:
+            watcher = LiveWatcher(
+                SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
+                (source,),
+                **owners.watcher_kwargs(),
+            )
+            return await watcher._ingest_files([carrier])
+
+    metrics = asyncio.run(grow())
     assert (metrics.append_file_count, metrics.full_file_count) == (1, 0)
 
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -363,7 +521,7 @@ def test_grown_carrier_retains_only_an_append_revision(tmp_path: Path, monkeypat
     assert rows == [
         ("codex-session", str(carrier), initial_size, "full", None, None),
         ("codex-session", str(carrier), grown_size - initial_size, "append", initial_size, grown_size),
-    ]
+    ], rows
 
 
 def test_carrier_coordinates_are_byte_offsets_not_ordinals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -754,14 +912,15 @@ def test_compact_bounds_one_carrier_and_stays_idempotent(tmp_path: Path, monkeyp
 def test_compact_and_materialize_ten_thousand_events(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, events: int
 ) -> None:
-    """k3ahm AC3: 10,000 folded events materialize at well over 2,000/s.
+    """k3ahm AC3: 10,000 events compact and materialize at well over 2,000/s.
 
-    The threshold is deliberately far below the measured rate (about 6,000/s
-    on the development workstation for the whole acquire+materialize route)
-    so this fails on a regression of the route's shape -- a return to
-    per-event blob publication or per-event commits -- rather than on a busy
-    machine. Anti-vacuity: restore the per-event write and this is red by two
-    orders of magnitude.
+    The timed window is exactly compaction and materialization. Archive
+    bootstrap and carrier acquisition are fixed per-test costs, not per-event
+    throughput, so they run outside it. The floor fails on a regression of
+    the route's shape -- a return to per-event blob publication, per-event
+    commits or per-event statements -- rather than on a busy machine.
+    Anti-vacuity: restore the per-event write and this is red by two orders
+    of magnitude.
     """
 
     archive_root, spool_root = _scratch(tmp_path, monkeypatch)
@@ -782,10 +941,16 @@ def test_compact_and_materialize_ten_thousand_events(
             encoding="utf-8",
         )
 
-    assert compact_legacy_spool(spool_root)["folded"] == events
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(archive_root)
     started = time.perf_counter()
-    assert materialize_hook_carriers(archive_root) == events
-    elapsed = time.perf_counter() - started
+    assert compact_legacy_spool(spool_root)["folded"] == events
+    compact_elapsed = time.perf_counter() - started
+    assert acquire_hook_carriers(archive_root) >= 1
+    started = time.perf_counter()
+    assert materialize_acquired_hook_carriers(archive_root) == events
+    elapsed = compact_elapsed + (time.perf_counter() - started)
     assert events / elapsed > 2_000, f"{events / elapsed:.0f} events/s"
 
 

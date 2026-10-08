@@ -42,7 +42,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.queries.artifacts import artifact_observation_params
 from polylogue.storage.sqlite.queries.raw_writes import execute_raw_admission_plan_async
-from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
+from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update, raw_state_parameter
 
 OUT_OF_VOCABULARY = "not-a-declared-member"
 
@@ -77,6 +77,7 @@ def _raw_session(conn: sqlite3.Connection, **overrides: object) -> str:
     kwargs: dict[str, Any] = {
         "origin": Origin.CLAUDE_CODE_SESSION,
         "source_path": "/captures/record.jsonl",
+        "canonical_source_path": "/captures/record.jsonl",
         "source_index": 0,
         "payload": PAYLOAD,
         "acquired_at_ms": 1,
@@ -282,6 +283,7 @@ def test_async_admission_refuses_out_of_vocabulary_before_any_sql(
             origin=Origin.CHATGPT_EXPORT,
             capture_mode=Provider.CHATGPT,
             source_path="/captures/source.json",
+            canonical_source_path="/captures/source.json",
             source_index=0,
             blob_hash=BLOB_HASH,
             blob_size=len(PAYLOAD),
@@ -352,4 +354,4 @@ def test_raw_state_update_compiler_refuses_out_of_vocabulary(
     # test anti-vacuous: the compiler, not pydantic/coercion, must refuse it.
     object.__setattr__(update, field, value)
     with pytest.raises(ValueError, match=field):
-        compile_raw_state_update(update, now_ms=1)
+        compile_raw_state_update(update, now_ms=1, literal=raw_state_parameter)

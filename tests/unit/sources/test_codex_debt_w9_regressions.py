@@ -20,9 +20,11 @@ import pytest
 from polylogue.config import Source
 from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 from polylogue.core.enums import Provider
+from polylogue.operations.import_operations import prepare_import_source_admission
 from polylogue.sources import assembly_chatgpt, dispatch, drive, revision_backfill
 from polylogue.sources.drive.types import DriveFile
-from polylogue.sources.import_preflight import ImportPreflightStatus, preflight_import_source
+from polylogue.sources.drive.witness import drive_cache_directory, drive_source_coordinate
+from polylogue.sources.import_preflight import ImportPreflightStatus
 from polylogue.sources.live import WatchSource, cold_build, hook_paste_enrichment
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import jsonl_complete_prefix
@@ -31,6 +33,7 @@ from polylogue.sources.parsers import local_agent
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement, write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 _TIMESTAMP = "2026-06-02T00:00:00Z"
 
@@ -75,11 +78,18 @@ def test_w9_asset_acquisition_rejects_symlink_leaves(tmp_path: Path) -> None:
     good = audio / "file_def.wav"
     good.write_bytes(b"selected regular file")
 
-    acquired = assembly_chatgpt._acquire_asset_blobs_from_directory(export, BlobStore(tmp_path / "blob"))
+    from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
 
-    assert acquired
-    assert {blob[0] for blob in acquired.values()} == {sha256(good.read_bytes()).hexdigest()}
-    assert all("abc" not in key for key in acquired)
+    index = ChatGPTAssetIndex()
+    try:
+        assembly_chatgpt._acquire_asset_blobs_from_directory(export, BlobStore(tmp_path / "blob"), index)
+        index.seal()
+        acquired = index.asset_blobs
+        assert acquired
+        assert {blob[0] for blob in acquired.values()} == {sha256(good.read_bytes()).hexdigest()}
+        assert all("abc" not in key for key in acquired)
+    finally:
+        index.close()
 
 
 def test_w9_retained_unknown_project_is_detected_beyond_prefix() -> None:
@@ -97,26 +107,34 @@ def test_w9_retained_unknown_project_is_detected_beyond_prefix() -> None:
         "is_starter_project": False,
     }
     assert dispatch.detect_provider(payload) is Provider.CLAUDE_AI
-    provider, _evidence = revision_backfill._detect_unknown_retained_provider(
+    provider, _evidence = revision_backfill._resolved_retained_provider(
         BytesIO(json.dumps(payload).encode()), "projects/w9-project.json"
     )
     assert provider is Provider.CLAUDE_AI
 
 
-@pytest.mark.parametrize("wrapper_depth", [0, 1, 2])
-def test_w9_drive_lowering_preserves_gemini_source_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    wrapper_depth: int,
-) -> None:
-    """W9-90-16: the production Gemini parser receives None before the fix."""
-    payload: Any = {
+def _w9_gemini_cli_document() -> dict[str, Any]:
+    return {
         "sessionId": "w9-gemini",
         "projectHash": "w9-project",
         "startTime": _TIMESTAMP,
         "lastUpdated": _TIMESTAMP,
         "messages": [{"id": "m", "type": "user", "content": "hello"}],
     }
+
+
+@pytest.mark.parametrize("wrapper_depth", [0, 1])
+def test_w9_gemini_cli_parser_receives_its_source_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wrapper_depth: int,
+) -> None:
+    """W9-90-16: the production Gemini CLI parser received None before the fix.
+
+    A Gemini CLI document (or its one-level document array) at its own
+    location reaches ``parse_gemini_cli`` with the recorded source path.
+    """
+    payload: Any = _w9_gemini_cli_document()
     for _ in range(wrapper_depth):
         payload = [payload]
     source_path = str(tmp_path / "chats" / "session.json")
@@ -128,9 +146,25 @@ def test_w9_drive_lowering_preserves_gemini_source_path(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(local_agent, "parse_gemini_cli", record_path)
-    sessions = dispatch.parse_payload(Provider.GEMINI, payload, "fallback", source_path=source_path)
+    sessions = dispatch.parse_payload(Provider.GEMINI_CLI, payload, "fallback", source_path=source_path)
     assert sessions
     assert seen == [source_path]
+
+
+@pytest.mark.parametrize("wrapper_depth", [0, 1, 2])
+def test_w9_drive_gemini_location_refuses_gemini_cli_documents(tmp_path: Path, wrapper_depth: int) -> None:
+    """The Drive-backed Gemini location admits only its own origin.
+
+    Replaces the retired W9-90-16 Drive-lowering premise: a Gemini CLI document
+    at any wrapper depth is a foreign-origin refusal there, never parsed.
+    """
+    payload: Any = _w9_gemini_cli_document()
+    for _ in range(wrapper_depth):
+        payload = [payload]
+    with pytest.raises(dispatch.ForeignOriginContentError):
+        dispatch.parse_payload(
+            Provider.GEMINI, payload, "fallback", source_path=str(tmp_path / "chats" / "session.json")
+        )
 
 
 class _DriveClient:
@@ -145,6 +179,9 @@ class _DriveClient:
     def iter_json_files(self, _folder_id: str) -> Any:
         yield self.file
 
+    def get_metadata(self, _file_id: str, *, refresh: bool = False) -> DriveFile:
+        return self.file
+
     def download_bytes(self, _file_id: str) -> bytes:
         self.downloads += 1
         return self.payload
@@ -153,7 +190,8 @@ class _DriveClient:
 def _cached_drive_source(root: Path, name: str, payload: bytes) -> tuple[Source, Path, _DriveClient]:
     root.mkdir(parents=True, exist_ok=True)
     source = Source(name="gemini", folder="AI Studio", path=root)
-    cache = drive.drive_cache_file_path(root, name)
+    cache = drive.drive_cache_file_path(drive_cache_directory(root, "w9-folder"), "w9-file")
+    cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_bytes(payload)
     cache.with_name(cache.name + ".revision").write_text(_TIMESTAMP, encoding="utf-8")
     return source, cache, _DriveClient(name, payload)
@@ -172,7 +210,9 @@ def test_w9_drive_cache_accepts_null_jsonl(
             source=source,
             client=cast(Any, client),
             blob_store=BlobStore(tmp_path / "blob"),
-            known_mtimes={str(cache): _TIMESTAMP} if known_revision else None,
+            known_mtimes={drive_source_coordinate(source.name, "w9-folder", "w9-file"): _TIMESTAMP}
+            if known_revision
+            else None,
         )
     )
     assert client.downloads == 0
@@ -256,7 +296,7 @@ def test_w9_trajectory_preflight_reports_degraded_steps(tmp_path: Path) -> None:
             INSERT INTO steps VALUES (0, 'message', 'v1', '{"role":"user","text":"hello"}');
             INSERT INTO steps VALUES (1, 'future-step', 'v999', '{}');
         """)
-    result = preflight_import_source(source)
+    result = prepare_import_source_admission(source).preflight
     assert result.supported_count == 1
     assert result.caveats
     assert result.status is ImportPreflightStatus.DEGRADED
@@ -282,7 +322,9 @@ def test_w9_completed_ingest_repeats_materialized_count(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(processor._cursor, "update_ingest_attempt", drop_cursor_progress)
-    metrics = asyncio.run(processor.ingest_files([source], emit_event=False, whole_archive_convergence=False))
+    metrics = asyncio.run(
+        ingest_files_with_owners(processor, [source], emit_event=False, whole_archive_convergence=False)
+    )
     assert metrics.succeeded_file_count == 1
     assert dropped
     with sqlite3.connect(archive_root / "ops.db") as connection:
@@ -312,11 +354,15 @@ def test_w9_source_only_protobuf_does_not_invoke_converter(
     monkeypatch.setattr(source_parsing, "iter_antigravity_language_server_sessions", unexpected_converter)
     set_degraded(DegradedReason(code="schema_version_mismatch", message="derived tier unavailable", derived_only=True))
     try:
-        result = processor._ingest_full_paths_sync([source], source_name="antigravity")
+        # A protobuf trajectory is not a SQLite state path; it has no capture.
+        # The pass runs with the daemon's canonical owners (writer admission).
+        metrics = asyncio.run(
+            ingest_files_with_owners(processor, [source], emit_event=False, whole_archive_convergence=False)
+        )
     finally:
         clear_degraded()
-    assert result.succeeded == [source]
-    assert result.failed == []
+    assert metrics.succeeded_file_count == 1
+    assert metrics.failed_file_count == 0
     with sqlite3.connect(archive_root / "source.db") as connection:
         assert connection.execute("SELECT lower(hex(blob_hash)), parsed_at_ms FROM raw_sessions").fetchall() == [
             (sha256(payload).hexdigest(), None),

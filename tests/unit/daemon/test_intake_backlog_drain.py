@@ -1,4 +1,4 @@
-"""The intake loop promotes a cold build only after observed work drains."""
+"""The intake loop settles cold builds after complete quiescent discovery."""
 
 from __future__ import annotations
 
@@ -11,9 +11,19 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.core.enums import Provider, Role
+from polylogue.daemon.intake import (
+    AdmissionOutcome,
+    AdmissionResult,
+    FairIntakeDispatcher,
+    IntakeClassSpec,
+    IntakeItem,
+)
 from polylogue.operations.intake_adapters import ColdBuildSettlement, DaemonIntakeService
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cold_build import ColdBuildGeneration, active_index_generation_is_empty
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from tests.infra.index_writer import fixture_index_connection, write_fixture_index_session
 
 
 @dataclass
@@ -51,21 +61,74 @@ async def _run_passes(script: list[_Pass], fired: list[int]) -> _ScriptedDispatc
     task = asyncio.create_task(service.run())
     for _ in range(40):
         await asyncio.sleep(0.01)
-        if fired or dispatcher.calls > len(script) + 2:
+        if fired or dispatcher.calls >= len(script):
             break
     task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
     return dispatcher
 
 
-def test_the_drain_signal_waits_for_a_pass_that_did_something() -> None:
-    """An idle startup is not a drained backlog.
-
-    Anti-vacuity: firing the callback on any non-progressing pass makes the
-    recorded pass index 1 instead of 3.
-    """
+def test_initial_quiescent_pass_settles_without_a_watched_admission() -> None:
+    """An operation-written candidate does not need watched-file progress."""
     fired: list[int] = []
-    asyncio.run(_run_passes([_Pass(False), _Pass(True), _Pass(False), _Pass(False)], fired))
-    assert fired == [3]
+    asyncio.run(_run_passes([_Pass(False), _Pass(True), _Pass(False)], fired))
+    assert fired == [1]
+
+
+def test_external_candidate_write_settles_when_watched_input_is_excluded(tmp_path: Path) -> None:
+    """External writes remain eligible when fair intake admits no sessions."""
+
+    class ExcludedHistory:
+        acknowledged = False
+        admissions = 0
+
+        async def discover(self, *, limit: int) -> tuple[IntakeItem, ...]:
+            return () if self.acknowledged or limit < 1 else (IntakeItem("history", "local"),)
+
+        async def admit(self, item: IntakeItem) -> AdmissionResult:
+            self.admissions += 1
+            return AdmissionResult(AdmissionOutcome.EXCLUDED, reason="no_sessions")
+
+        async def acknowledge(self, item: IntakeItem) -> None:
+            self.acknowledged = True
+
+    with fixture_index_connection(tmp_path / "candidate" / "index.db") as conn:
+        write_fixture_index_session(
+            conn,
+            ParsedSession(
+                source_name=Provider.CHATGPT,
+                provider_session_id="external-fixture",
+                messages=[ParsedMessage(provider_message_id="fixture-message", role=Role.USER, text="fixture message")],
+            ),
+        )
+        conn.commit()
+        counts: list[int] = []
+        history = ExcludedHistory()
+
+        async def scenario() -> None:
+            dispatcher = FairIntakeDispatcher((IntakeClassSpec(name="local", adapter=history),))
+            settled = asyncio.Event()
+
+            def drained() -> None:
+                counts.append(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+                settled.set()
+
+            service = DaemonIntakeService(dispatcher, idle_delay_s=0.05, on_backlog_drained=drained)
+            task = asyncio.create_task(service.run())
+            try:
+                async with asyncio.timeout(1):
+                    await settled.wait()
+            finally:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+        asyncio.run(scenario())
+
+    assert counts == [1]
+    assert history.admissions == 1
+    assert history.acknowledged
 
 
 def test_the_drain_signal_fires_once() -> None:
@@ -91,32 +154,32 @@ def test_deferred_or_unmeasured_pass_does_not_promote_candidate() -> None:
 
 
 def test_deferred_only_build_never_claims_completed_backlog() -> None:
-    """Without a successful admission, a deferred source cannot settle a build."""
+    """A pass with unresolved discovery cannot settle a build."""
     fired: list[int] = []
-    asyncio.run(_run_passes([_Pass(False, False), _Pass(False), _Pass(False)], fired))
+    asyncio.run(_run_passes([_Pass(False, False), _Pass(False, False), _Pass(False, False)], fired))
     assert fired == []
 
 
-def test_empty_no_input_build_waits_for_future_files_then_discards_on_shutdown(tmp_path: Path) -> None:
-    """An empty startup leaves the candidate available until daemon shutdown."""
+def test_empty_no_input_build_discards_after_quiescent_discovery(tmp_path: Path) -> None:
+    """A settled empty candidate retires without replacing the active index."""
     assert active_index_generation_is_empty(tmp_path)
     generation = ColdBuildGeneration.begin(
         tmp_path,
         reason="empty active index generation",
-        sources=(WatchSource("fixture", tmp_path / "absent-source"),),
+        observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", tmp_path / "absent-source"),)),
     )
     generation_root = generation.generation_root
 
     async def run_idle() -> None:
         dispatcher = _ScriptedDispatcher([_Pass(False), _Pass(False)])
 
-        def premature_promotion() -> None:
-            generation.promote()
+        def discard_empty_candidate() -> None:
+            generation.discard()
 
         service = DaemonIntakeService(
             cast(Any, dispatcher),
             idle_delay_s=0.05,
-            on_backlog_drained=premature_promotion,
+            on_backlog_drained=discard_empty_candidate,
         )
         task = asyncio.create_task(service.run())
         try:
@@ -132,10 +195,10 @@ def test_empty_no_input_build_waits_for_future_files_then_discards_on_shutdown(t
 
     try:
         asyncio.run(run_idle())
-        assert generation.generation.state == "inactive"
-        assert not generation.settled
+        assert generation.discarded
+        assert active_index_generation_is_empty(tmp_path)
     finally:
-        # This is the daemon's shutdown action for an unpromoted candidate.
+        # Keep failed scenarios from leaving an owned inactive candidate.
         generation.discard()
     assert not generation_root.exists()
 

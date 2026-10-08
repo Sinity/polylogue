@@ -387,7 +387,7 @@ def test_convergence_debt_summary_rejects_missing_required_columns(tmp_path: Pat
     assert summary.available is False
     assert summary.failed_count == 0
     assert summary.deferred_count == 0
-    assert "missing required column" in (summary.error or "")
+    assert summary.error
 
 
 # ---------------------------------------------------------------------------

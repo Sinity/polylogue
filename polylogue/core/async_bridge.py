@@ -15,6 +15,9 @@ here for existing callers that already pay the ``polylogue.api`` cost.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
+import sys
 import threading
 from collections.abc import Awaitable, Coroutine
 from typing import TypeVar
@@ -24,6 +27,24 @@ T = TypeVar("T")
 
 async def _await(awaitable: Awaitable[T]) -> T:
     return await awaitable
+
+
+def complete_without_suspension(coroutine: Coroutine[object, object, T]) -> T:
+    """Drive a coroutine whose awaits all resolve synchronously, on this thread.
+
+    Shared builders are coroutines because their facade readers are
+    asynchronous; over a pinned synchronous snapshot reader they never
+    suspend. Admitted archive reads may run that work nested on a compute
+    worker that is already driving an event loop, where ``asyncio.run`` and a
+    hop to another thread (which would lose the snapshot's thread-bound
+    connections) are both wrong. A coroutine that does suspend is refused.
+    """
+    try:
+        coroutine.send(None)
+    except StopIteration as finished:
+        return finished.value  # type: ignore[no-any-return]
+    coroutine.close()
+    raise RuntimeError("a pinned-snapshot coroutine suspended; its reader must not await")
 
 
 def run_coroutine_sync(coro: Awaitable[T]) -> T:
@@ -41,23 +62,34 @@ def run_coroutine_sync(coro: Awaitable[T]) -> T:
     global could be left pointing at a loop whose thread had stopped driving it,
     so ``run_coroutine_threadsafe`` scheduled work that never ran and
     ``future.result()`` blocked forever (observed hanging the full test suite).
-    A fresh thread + ``asyncio.run`` per call has no shared state, so it cannot
-    be poisoned by prior calls or test ordering; the cost (one thread spawn per
-    sync-bridge call, ~once per CLI invocation) is negligible.
+    The caller joins that physical thread. When it holds a compute reservation,
+    the bridge borrows that exact reservation and cancellation mailbox, so a
+    nested pure unit cannot submit-and-wait onto the saturated adapter. Native
+    SQL created by the bridge settles in its owning coroutine Task before the
+    loop or thread retires.
     """
     wrapper: Coroutine[object, object, T] = _await(coro)
+    compute = sys.modules.get("polylogue.core.compute")
+    borrow = compute.capture_compute_bridge() if compute is not None else contextlib.nullcontext
+
+    async def joined() -> T:
+        # Settle inside the physical coroutine Task, before asyncio.run retires
+        # it. Only newly created owners belong to this nested bridge unit.
+        with borrow():
+            return await wrapper
 
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(wrapper)
+        return asyncio.run(joined())
 
+    submitter_context = contextvars.copy_context()
     result: list[T] = []
     error: list[BaseException] = []
 
     def _runner() -> None:
         try:
-            result.append(asyncio.run(wrapper))
+            result.append(submitter_context.run(asyncio.run, joined()))
         except BaseException as exc:
             error.append(exc)
 

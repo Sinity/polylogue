@@ -19,17 +19,17 @@ from polylogue.sources.live.discovery import _bounded_source_paths
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.parsers.antigravity import AntigravitySourceInspection, census_source
 from polylogue.sources.parsers.local_agent import looks_like_hermes
-from polylogue.sources.source_walk import _iter_source_entries
+from polylogue.sources.source_walk import layout_source_paths
 from tests.infra.source_parser_cases import case, ordered_scandir
 
 
 def test_alias_enumeration_has_one_stable_order(tmp_path: Path) -> None:
     """Assigning alias ownership before sorting changes the cursor sequence."""
-    target = tmp_path / "zz-real"
+    target = tmp_path / "-zz-real"
     target.mkdir()
     (target / "one.jsonl").write_text("{}\n", encoding="utf-8")
-    (tmp_path / "aa-link").symlink_to(target, target_is_directory=True)
-    (tmp_path / "bb-link").symlink_to(target, target_is_directory=True)
+    (tmp_path / "-aa-link").symlink_to(target, target_is_directory=True)
+    (tmp_path / "-bb-link").symlink_to(target, target_is_directory=True)
     source = WatchSource(name="claude-code", root=tmp_path)
     forward = _bounded_source_paths(source, (source,), limit=100, after=None, scandir=ordered_scandir)
     reverse = _bounded_source_paths(
@@ -37,7 +37,7 @@ def test_alias_enumeration_has_one_stable_order(tmp_path: Path) -> None:
     )
     assert forward == reverse
     assert forward
-    assert forward[0] == tmp_path / "aa-link/one.jsonl"
+    assert forward[0] == tmp_path / "-aa-link/one.jsonl"
 
 
 @pytest.fixture
@@ -130,28 +130,30 @@ def test_observation_contracts_cover_every_provider_wire() -> None:
             assert any(row.origin is spec.origin and row.provider is wire for row in contracts)
 
 
-def test_census_records_directory_link_without_following_cycle(tmp_path: Path) -> None:
-    """Following a self-link multiplied candidates before the nonregular check."""
-    brain = tmp_path / "brain"
-    brain.mkdir()
+def test_census_never_follows_a_directory_link_outside_the_layout(tmp_path: Path) -> None:
+    """Following a self-link multiplied candidates; the layout never reaches it."""
+    brain = tmp_path / "brain" / "c1"
+    brain.mkdir(parents=True)
     (brain / "note.md").write_text("neutral note", encoding="utf-8")
     (brain / "cycle").symlink_to(tmp_path, target_is_directory=True)
     census = census_source(tmp_path)
-    assert len(census.items) == 2
-    link = next(item for item in census.items if item.relative_path == "brain/cycle")
-    assert link.inspection is AntigravitySourceInspection.NON_REGULAR
+    assert [item.relative_path for item in census.items] == ["brain/c1/note.md"]
+    assert census.items[0].inspection is AntigravitySourceInspection.REGULAR
 
 
 def test_source_walk_follows_a_linked_tree_and_stops_at_a_cycle(tmp_path: Path) -> None:
-    """Not following links drops ``linked/``; following without a visited set never ends."""
-    export = tmp_path / "export"
-    export.mkdir()
-    (export / "session.jsonl").write_text("{}\n", encoding="utf-8")
+    """Not following links drops ``linked/``; following without a visited set never ends.
+
+    The target stays inside the root (in a directory the walk itself never
+    enters), the containment discovery requires of every followed link.
+    """
     root = tmp_path / "root"
-    root.mkdir()
+    export = root / ".export"
+    export.mkdir(parents=True)
+    (export / "session.jsonl").write_text("{}\n", encoding="utf-8")
     (root / "linked").symlink_to(export, target_is_directory=True)
     (root / "loop").symlink_to(root, target_is_directory=True)
-    assert _iter_source_entries(root) == [root / "linked/session.jsonl", root / "loop"]
+    assert layout_source_paths("inbox", root) == [root / "linked/session.jsonl"]
 
 
 def test_equal_checkouts_share_fingerprint_and_lexical_edge_memos(

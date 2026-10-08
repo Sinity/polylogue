@@ -272,7 +272,6 @@ ARCHIVE_ATTACHMENT_DISPOSITIONS: Dispositions = {
 }
 
 _SUMMARY_AGGREGATE_COUNTERS: tuple[str, ...] = (
-    "word_count",
     "reported_duration_ms",
     "tool_use_count",
     "thinking_count",
@@ -295,6 +294,7 @@ ARCHIVE_SUMMARY_DISPOSITIONS: Dispositions = {
     "created_at": exposed("created_at", parse_archive_datetime),
     "updated_at": exposed("updated_at", parse_archive_datetime),
     "message_count": exposed("message_count"),
+    "word_count": exposed("word_count"),
     "tags": exposed("tags_m2m", _strings),
     "parent_id": exposed("parent_id", _optional_session_id),
     "branch_type": exposed("branch_type", _optional_branch_type),

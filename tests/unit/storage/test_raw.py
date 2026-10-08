@@ -10,6 +10,7 @@ This module contains tests for:
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 
@@ -50,6 +51,7 @@ class TestRawSessionStorage:
             raw_id="abc123",
             source_name="test-provider",
             source_path="/tmp/test.json",
+            canonical_source_path="/tmp/test.json",
             source_index=0,
             blob_size=len(b'{"test": "data"}'),
             acquired_at="2026-02-02T12:00:00+00:00",
@@ -84,7 +86,7 @@ class TestRawSessionStorage:
             assert admitted[4] == RawRevisionAuthority.QUARANTINED.value
 
     async def test_repository_update_raw_state_uses_source_tier(self, tmp_path: Path) -> None:
-        initialize_active_archive_root(tmp_path)
+        await asyncio.to_thread(initialize_active_archive_root, tmp_path)
         source_backend = SQLiteBackend(db_path=tmp_path / "source.db")
         try:
             await admit_raw_record(
@@ -93,6 +95,7 @@ class TestRawSessionStorage:
                     raw_id="raw-split",
                     source_name="chatgpt-export",
                     source_path="/tmp/export.json",
+                    canonical_source_path="/tmp/export.json",
                     source_index=0,
                     blob_size=2,
                     acquired_at="2026-02-02T12:00:00+00:00",
@@ -135,6 +138,7 @@ class TestRawSessionStorage:
             raw_id="abc123",
             source_name="test-provider",
             source_path="/tmp/test.json",
+            canonical_source_path="/tmp/test.json",
             source_index=0,
             blob_size=len(b'{"test": "data"}'),
             acquired_at="2026-02-02T12:00:00+00:00",
@@ -155,6 +159,7 @@ class TestRawSessionStorage:
             raw_id="raw-conflicting-duplicate",
             source_name="chatgpt",
             source_path="/exports/original.json",
+            canonical_source_path="/exports/original.json",
             source_index=2,
             blob_size=11,
             acquired_at="2026-02-02T12:00:00+00:00",
@@ -195,6 +200,7 @@ class TestRawSessionStorage:
             raw_id="raw-null-mtime",
             source_name="chatgpt",
             source_path="/exports/same.json",
+            canonical_source_path="/exports/same.json",
             source_index=0,
             blob_size=3,
             acquired_at="2026-02-02T12:00:00+00:00",
@@ -219,6 +225,7 @@ class TestRawSessionStorage:
             raw_id="xyz789",
             source_name="chatgpt",
             source_path="/path/to/export.json",
+            canonical_source_path="/path/to/export.json",
             source_index=5,
             blob_size=len(b'{"id": "conv-123", "messages": []}'),
             acquired_at="2026-02-02T12:00:00+00:00",
@@ -243,6 +250,7 @@ class TestRawSessionStorage:
             raw_id="gemini-export",
             source_name="gemini",
             source_path="/tmp/export.json",
+            canonical_source_path="/tmp/export.json",
             blob_size=2,
             acquired_at="2026-02-02T12:00:00+00:00",
         ).model_copy(update={"capture_mode": Provider.GEMINI})
@@ -250,6 +258,7 @@ class TestRawSessionStorage:
             raw_id="drive-live",
             source_name="gemini",
             source_path="/tmp/live-drive.json",
+            canonical_source_path="/tmp/live-drive.json",
             blob_size=2,
             acquired_at="2026-02-02T12:00:00+00:00",
         ).model_copy(update={"capture_mode": Provider.DRIVE})
@@ -280,6 +289,7 @@ class TestRawSessionStorage:
             raw_id="reacquired-aistudio",
             source_name="gemini",
             source_path="/tmp/live-drive.json",
+            canonical_source_path="/tmp/live-drive.json",
             blob_size=2,
             acquired_at="2026-02-02T12:00:00+00:00",
         ).model_copy(update={"capture_mode": Provider.DRIVE})
@@ -304,6 +314,7 @@ class TestRawSessionStorage:
             raw_id="reacquired-aistudio-reverse",
             source_name="gemini",
             source_path="/tmp/export.json",
+            canonical_source_path="/tmp/export.json",
             blob_size=2,
             acquired_at="2026-02-02T12:00:00+00:00",
         ).model_copy(update={"capture_mode": Provider.GEMINI})
@@ -329,6 +340,7 @@ class TestRawSessionStorage:
             raw_id="legacy-aistudio-unknown",
             source_name="gemini",
             source_path="/tmp/pre-capture-mode.json",
+            canonical_source_path="/tmp/pre-capture-mode.json",
             blob_size=2,
             acquired_at="2026-02-02T12:00:00+00:00",
         )
@@ -352,6 +364,7 @@ class TestRawSessionStorage:
             raw_id="drive-planning-state",
             source_name="gemini",
             source_path="/tmp/live-drive.json",
+            canonical_source_path="/tmp/live-drive.json",
             blob_size=2,
             acquired_at="2026-02-02T12:00:00+00:00",
         ).model_copy(update={"capture_mode": Provider.DRIVE})
@@ -375,6 +388,7 @@ class TestRawSessionStorage:
                 raw_id=f"raw-{i}",
                 source_name="test" if i < 2 else "other",
                 source_path=f"/path/{i}.json",
+                canonical_source_path=f"/path/{i}.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00+00:00",
             )
@@ -394,6 +408,7 @@ class TestRawSessionStorage:
                 raw_id=f"raw-{i}",
                 source_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
+                canonical_source_path=f"/path/{i}.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00+00:00",
             )
@@ -416,6 +431,7 @@ class TestRawSessionStorage:
                 raw_id=f"raw-id-{i}",
                 source_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
+                canonical_source_path=f"/path/{i}.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00+00:00",
             )
@@ -439,6 +455,7 @@ class TestRawSessionStorage:
                 raw_id=f"raw-header-{i}",
                 source_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
+                canonical_source_path=f"/path/{i}.json",
                 blob_size=(i + 1) * 10,
                 acquired_at=f"2026-02-02T12:00:0{i}+00:00",
             )
@@ -461,6 +478,7 @@ class TestRawSessionStorage:
                     raw_id=raw_id,
                     source_name="chatgpt",
                     source_path=f"/path/{raw_id}.json",
+                    canonical_source_path=f"/path/{raw_id}.json",
                     blob_size=blob_size,
                     acquired_at="2026-02-02T12:00:00+00:00",
                 ),
@@ -479,6 +497,7 @@ class TestRawSessionStorage:
                     raw_id=raw_id,
                     source_name="chatgpt",
                     source_path=f"/path/{raw_id}.json",
+                    canonical_source_path=f"/path/{raw_id}.json",
                     blob_size=len(b"{}"),
                     acquired_at="2026-02-02T12:00:00+00:00",
                 ),
@@ -504,6 +523,7 @@ class TestRawSessionRevisionAndQueries:
             raw_id="revision-guarded",
             source_name="chatgpt",
             source_path="/tmp/export.json",
+            canonical_source_path="/tmp/export.json",
             blob_size=2,
             acquired_at="2026-02-02T12:00:00+00:00",
         )
@@ -535,6 +555,7 @@ class TestRawSessionRevisionAndQueries:
                 payload_provider="chatgpt",
                 source_name="inbox",
                 source_path="/path/raw.json",
+                canonical_source_path="/path/raw.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00+00:00",
             ),
@@ -557,6 +578,7 @@ class TestRawSessionRevisionAndQueries:
                     raw_id=f"raw-{i}",
                     source_name="test",
                     source_path=f"/path/{i}.json",
+                    canonical_source_path=f"/path/{i}.json",
                     blob_size=len(b"{}"),
                     acquired_at="2026-02-02T12:00:00+00:00",
                 ),
@@ -576,6 +598,7 @@ class TestRawSessionRevisionAndQueries:
             raw_id="raw-abc123",
             source_name="test",
             source_path="/test.json",
+            canonical_source_path="/test.json",
             blob_size=len(b'{"id": "test-conv"}'),
             acquired_at="2026-02-02T12:00:00+00:00",
         )
@@ -639,6 +662,7 @@ class TestRawSessionRevisionAndQueries:
                     raw_id=f"count-{i}",
                     source_name="chatgpt" if i < 3 else "claude-ai",
                     source_path=f"/path/{i}.json",
+                    canonical_source_path=f"/path/{i}.json",
                     blob_size=len(b"{}"),
                     acquired_at="2026-02-02T12:00:00+00:00",
                 ),
@@ -660,6 +684,7 @@ class TestRawSessionRevisionAndQueries:
                 raw_id=f"raw-all-{i}",
                 source_name="test",
                 source_path=f"/tmp/test-{i}.json",
+                canonical_source_path=f"/tmp/test-{i}.json",
                 source_index=i,
                 blob_size=len(f'{{"idx": {i}}}'.encode()),
                 acquired_at="2026-02-02T12:00:00+00:00",
@@ -685,6 +710,7 @@ class TestRawSessionRecordValidation:
             raw_id="valid-id",
             source_name="chatgpt",
             source_path="/path/to/file.json",
+            canonical_source_path="/path/to/file.json",
             blob_size=len(b'{"test": true}'),
             acquired_at="2026-02-02T12:00:00Z",
         )
@@ -699,6 +725,7 @@ class TestRawSessionRecordValidation:
                 raw_id="",
                 source_name="test",
                 source_path="/test.json",
+                canonical_source_path="/test.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00Z",
             )
@@ -710,6 +737,7 @@ class TestRawSessionRecordValidation:
                 raw_id="test-id",
                 source_name="",
                 source_path="/test.json",
+                canonical_source_path="/test.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00Z",
             )
@@ -721,6 +749,7 @@ class TestRawSessionRecordValidation:
             raw_id="test-id",
             source_name="test",
             source_path="/test.json",
+            canonical_source_path="/test.json",
             blob_size=1024,
             acquired_at="2026-02-02T12:00:00Z",
         )

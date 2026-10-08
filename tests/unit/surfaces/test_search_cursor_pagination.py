@@ -9,6 +9,8 @@ rows are interleaved between requests (simulated ingest noise).
 
 from __future__ import annotations
 
+import base64
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -72,7 +74,7 @@ def _payloads(hits: list[SessionSearchHit]) -> list[SessionSearchHitPayload]:
 
 
 def test_cursor_round_trip_preserves_anchor() -> None:
-    original = SearchCursor(v=SEARCH_CURSOR_VERSION, r=7, s=-3.14, c="chatgpt:abc", lane="hybrid")
+    original = SearchCursor(v=SEARCH_CURSOR_VERSION, r=7, s=-3.14, c="chatgpt:abc", lane="hybrid", ordered=False)
     token = build_search_cursor(
         _payloads([_hit(conv_id="chatgpt:abc", rank=7, score=-3.14, retrieval_lane="hybrid", score_kind="bm25")])
     )
@@ -102,7 +104,7 @@ def test_cursor_decode_rejects_unknown_version() -> None:
     import base64
     import json
 
-    payload = json.dumps({"v": 999, "r": 1, "s": None, "c": "x", "l": "auto"}).encode()
+    payload = json.dumps({"v": 999, "r": 1, "s": None, "c": "x", "l": "auto", "o": False}).encode()
     token = base64.urlsafe_b64encode(payload).decode().rstrip("=")
     with pytest.raises(InvalidSearchCursorError, match="version"):
         decode_search_cursor(token)
@@ -111,6 +113,13 @@ def test_cursor_decode_rejects_unknown_version() -> None:
 def test_cursor_decode_rejects_empty_token() -> None:
     with pytest.raises(InvalidSearchCursorError):
         decode_search_cursor("")
+
+
+def test_cursor_without_ordering_contract_is_rejected() -> None:
+    body = {"v": SEARCH_CURSOR_VERSION, "r": 1, "s": 0.0, "c": "a", "l": "hybrid"}
+    token = base64.urlsafe_b64encode(json.dumps(body).encode()).decode()
+    with pytest.raises(InvalidSearchCursorError, match="payload is invalid"):
+        decode_search_cursor(token)
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +135,7 @@ def test_apply_cursor_drops_up_to_and_including_anchor_by_rank() -> None:
             _hit(conv_id="c", rank=3, score=None, score_kind=None),
         ]
     )
-    cursor = SearchCursor(v=1, r=2, s=None, c="b", lane="dialogue")
+    cursor = SearchCursor(v=1, r=2, s=None, c="b", lane="dialogue", ordered=False)
     survived = apply_search_cursor(hits, cursor)
     assert [h.session.id for h in survived] == ["c"]
 
@@ -141,15 +150,30 @@ def test_apply_cursor_uses_score_for_bm25_lane() -> None:
         ]
     )
     # Cursor anchor at session 'a' with score -5.0.
-    cursor = SearchCursor(v=1, r=1, s=-5.0, c="a", lane="dialogue")
+    cursor = SearchCursor(v=1, r=1, s=-5.0, c="a", lane="dialogue", ordered=False)
     survived = apply_search_cursor(hits, cursor)
     # 'a' is dropped (score equal AND id <= anchor's c); b,c survive (worse scores).
     assert [h.session.id for h in survived] == ["b", "c"]
 
 
+def test_explicitly_ordered_cursor_uses_result_position_over_lane_score() -> None:
+    """A declared date order can oppose the hybrid relevance score."""
+    hits = _payloads(
+        [
+            _hit(conv_id="newest", rank=1, score=0.01, retrieval_lane="hybrid", score_kind="rrf"),
+            _hit(conv_id="older", rank=2, score=0.04, retrieval_lane="hybrid", score_kind="rrf"),
+        ]
+    )
+    page = build_search_envelope(hits[:1], total=2, limit=1, offset=0, query="q", retrieval_lane="hybrid", sort="date")
+    assert page.next_cursor is not None
+    cursor = decode_search_cursor(page.next_cursor)
+    assert cursor.ordered is True
+    assert [hit.session.id for hit in apply_search_cursor(hits, cursor)] == ["older"]
+
+
 def test_apply_cursor_rejects_lane_mismatch() -> None:
     hits = _payloads([_hit(conv_id="a", rank=1, score=-1.0)])
-    cursor = SearchCursor(v=1, r=1, s=-1.0, c="x", lane="hybrid")
+    cursor = SearchCursor(v=1, r=1, s=-1.0, c="x", lane="hybrid", ordered=False)
     with pytest.raises(InvalidSearchCursorError, match="retrieval_lane"):
         apply_search_cursor(hits, cursor, retrieval_lane="dialogue")
 
@@ -161,7 +185,7 @@ def test_apply_cursor_accepts_auto_request_for_resolved_lane_cursor() -> None:
             _hit(conv_id="b", rank=2, score=-4.0),
         ]
     )
-    cursor = SearchCursor(v=1, r=1, s=-5.0, c="a", lane="dialogue")
+    cursor = SearchCursor(v=1, r=1, s=-5.0, c="a", lane="dialogue", ordered=False)
 
     survived = apply_search_cursor(hits, cursor, retrieval_lane="auto")
 
@@ -267,7 +291,7 @@ def test_apply_cursor_with_rrf_lane_higher_is_better() -> None:
             _hit(conv_id="c", rank=3, score=0.02, retrieval_lane="hybrid", score_kind="rrf"),
         ]
     )
-    cursor = SearchCursor(v=1, r=1, s=0.05, c="a", lane="hybrid")
+    cursor = SearchCursor(v=1, r=1, s=0.05, c="a", lane="hybrid", ordered=False)
     survived = apply_search_cursor(hits, cursor)
     assert [h.session.id for h in survived] == ["b", "c"]
 

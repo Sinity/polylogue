@@ -38,7 +38,7 @@ explicit absence rather than silence.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -46,6 +46,7 @@ from typing import Protocol
 __all__ = [
     "RetainedSidecarFile",
     "RetainedSidecarScope",
+    "CapturedSidecarResolver",
     "SiblingTranscript",
     "SidecarResolver",
     "UNRESOLVED_SIDECAR_SCOPE",
@@ -68,6 +69,12 @@ class RetainedSidecarFile:
     byte_size: int
     file_mtime_ms: int | None
     read_text: Callable[[], str]
+    # Private retained-byte identity. Acquisition scopes may leave these
+    # unset; derived scopes use them to capture a scope without keeping a
+    # PreparedSessionSourceRead capability alive across parsing.
+    raw_id: str | None = None
+    blob_hash: str | None = None
+    source_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +90,12 @@ class SiblingTranscript:
 
     coordinate: str
     open_records: Callable[[], Iterator[object]]
+    # Ordered FULL/APPEND payloads that the record stream actually reads.
+    record_blobs: tuple[tuple[str, str], ...] = ()
+    # Every candidate revision considered while choosing those payloads. An
+    # added competing append can change the selected chain even if the
+    # selected bytes themselves remain unchanged.
+    selection_witness: tuple[tuple[object, ...], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +112,10 @@ class RetainedSidecarScope:
     files: tuple[RetainedSidecarFile, ...] = field(default_factory=tuple)
     siblings: tuple[SiblingTranscript, ...] = field(default_factory=tuple)
     available: bool = False
+    # Exact durable predicates used to resolve this scope. The values are
+    # deliberately opaque to joins; neutral retained parsing compares them
+    # at fresh binding before reusing parser output.
+    witness: tuple[tuple[object, ...], ...] = ()
 
 
 #: The scope a route resolves when it has no evidence to offer at all.
@@ -113,6 +130,25 @@ class SidecarResolver(Protocol):
 
     def gemini_cli_scope(self, source_path: str | Path | None, session_id: str | None) -> RetainedSidecarScope:
         """Scope for a Gemini CLI ``tool-outputs/session-<id>/`` directory."""
+
+
+class CapturedSidecarResolver:
+    """Resolve Claude Code scopes from immutable attempt-owned files.
+
+    This adapter is for detached retained parsing: it intentionally has no
+    ambient filesystem or archive fallback. A missing path is unresolved.
+    """
+
+    def __init__(self, scopes: Mapping[str, RetainedSidecarScope]) -> None:
+        self._scopes = dict(scopes)
+
+    def claude_code_scope(self, source_path: str | Path | None) -> RetainedSidecarScope:
+        if source_path is None:
+            return UNRESOLVED_SIDECAR_SCOPE
+        return self._scopes.get(Path(source_path).as_posix(), UNRESOLVED_SIDECAR_SCOPE)
+
+    def gemini_cli_scope(self, _source_path: str | Path | None, _session_id: str | None) -> RetainedSidecarScope:
+        return UNRESOLVED_SIDECAR_SCOPE
 
 
 def iter_jsonl_records(open_binary: Callable[[], Iterator[bytes]]) -> Iterator[object]:

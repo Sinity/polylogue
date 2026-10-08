@@ -12,7 +12,6 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.archive_canonical_snapshot import (
     RUN_LOCAL_NORMALIZATION_ALLOWLIST,
@@ -28,6 +27,7 @@ from tests.infra.convergence_harness import (
     initialize_active_archive,
     rich_convergence_sources,
 )
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.source_composer import ComposedSources
 
 
@@ -69,13 +69,14 @@ def _add_real_action_result(archive_root: Path) -> None:
         ],
     )
     with open_connection(archive_root / "index.db") as conn:
-        write_parsed_session_to_archive(conn, session, content_hash=session_content_hash(session))
+        write_fixture_index_session(conn, session, content_hash=session_content_hash(session))
 
 
 def _build_archive(root: Path, composed: ComposedSources | None = None) -> ConvergenceArchive:
     """Use production ingest and convergence without the unrelated blob audit."""
     selected = rich_convergence_sources() if composed is None else composed
     initialize_active_archive(root)
+    # Fixture ingest prepares lease-free and takes the writer lease itself.
     archive = ingest_composed_sources(
         root,
         selected,

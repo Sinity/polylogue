@@ -64,7 +64,7 @@ async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) ->
 
     for provider_dir in sorted(corpus_dir.iterdir()):
         provider = provider_dir.name
-        for file_path in sorted(provider_dir.iterdir()):
+        for file_path in sorted(path for path in provider_dir.rglob("*") if path.is_file()):
             raw_bytes = file_path.read_bytes()
             raw_id = hashlib.sha256(raw_bytes).hexdigest()
 
@@ -75,6 +75,7 @@ async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) ->
                     raw_id=raw_id,
                     source_name=provider,
                     source_path=str(file_path),
+                    canonical_source_path=str(file_path),
                     blob_size=len(raw_bytes),
                     acquired_at="2024-01-15T10:00:00+00:00",
                 ),

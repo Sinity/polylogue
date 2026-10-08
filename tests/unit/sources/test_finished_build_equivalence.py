@@ -8,16 +8,16 @@ compares two arms, and the finished-build comparator
 
 This module is the comparison, at a synthetic scale that runs without live
 data or a dedicated measurement host: one sealed raw population, cloned into
-two isolated arms, each completed through
-``backfill_historical_revision_evidence`` --
+two isolated arms, each completed through the canonical retained replay
+route (``RawObservationDerivation`` compute and publish on the daemon raw
+owner's admitted worker) --
 
-* baseline: retained active-index replay without session shards;
-* replacement: replay into an owned inactive generation with session shards.
+* baseline: retained replay into the active Index;
+* replacement: retained replay into an owned inactive Index generation.
 
 Both arms call the same replay entry point. They do not execute live intake
-through ``RawObservationPublisher.publish`` or cold-start orchestration through
-``ArchiveStore.open_cold_build_generation``; equivalence of those drivers is
-not established by this fixture.
+or cold-start orchestration; equivalence of those drivers is not established
+by this fixture.
 
 Equivalence is over the completed logical output (every comparable index
 table, the public insight reads, FTS readiness, open debt and the canonical
@@ -30,15 +30,8 @@ Anti-vacuity: ``test_finished_build_comparison_rejects_a_diverged_or_indebted_ar
 executes both mutations a hollow comparator would survive -- one unresolved
 convergence-debt row and one deleted ``blocks`` row.
 
-The replacement arm's measured elapsed time was once dominated by
-``spill_prefetch.decode_concurrent`` rather than by its own work: the AUTO
-pipeline-decode prefetcher blocked for a full 30 s SQLite busy timeout on its
-first reparse inside the owned-generation bulk-build route (0.10 s with
-``pipeline_decode=False``, same output). polylogue-cz17d fixed that at the
-source -- a prefetch worker no longer opens a handle to an EXCLUSIVE-locked
-owned generation. Both arms still run the production default and this module
-still encodes no timing tolerance, so a regression re-appears as elapsed time
-in the receipt rather than being hidden by a bound.
+Both arms use the production retained-parse route and encode no timing
+tolerance. Runtime measurements remain separate from output equivalence.
 """
 
 from __future__ import annotations
@@ -51,13 +44,17 @@ from pathlib import Path
 import pytest
 
 from devtools.measurement_receipts import emit_receipt
+from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation
 from polylogue.sources import revision_backfill
-from polylogue.sources.revision_backfill import (
-    backfill_historical_revision_evidence,
-    census_historical_revision_evidence,
-    split_parse_and_apply_seconds,
+from polylogue.sources.live import WatchSource
+from polylogue.sources.live.cold_build import (
+    ColdBuildGeneration,
+    clear_cold_build_generation,
+    register_cold_build_generation,
 )
-from polylogue.storage.index_generation import IndexGenerationStore
+from polylogue.storage.derived.raw import RawObservationDerivation
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root, finalize_archive_template
 from tests.infra.reindex_differential import (
     FinishedBuildOutput,
@@ -69,6 +66,7 @@ from tests.infra.reindex_differential import (
     finished_build_work_identity,
     seal_raw_input,
 )
+from tests.infra.retained_replay import replay_retained_components
 from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
 from tests.infra.workload_artifacts import FinishedBuildResourceProbe
 
@@ -89,26 +87,17 @@ _LEDGER_TOLERANCE_S = 0.5
 
 @dataclass(frozen=True, slots=True)
 class _Arm:
-    """One configuration of the production backfill entry point."""
+    """One destination configuration of the canonical retained replay route."""
 
     name: str
     owned_inactive_generation: bool
-    use_session_shards: bool
-    ingest_workers: int
 
 
-_BASELINE_ARM = _Arm(
-    name="retained-active-index",
-    owned_inactive_generation=False,
-    use_session_shards=False,
-    ingest_workers=1,
-)
-_REPLACEMENT_ARM = _Arm(
-    name="fresh-generation-sealed-shard",
-    owned_inactive_generation=True,
-    use_session_shards=True,
-    ingest_workers=2,
-)
+_BASELINE_ARM = _Arm(name="retained-active-index", owned_inactive_generation=False)
+_REPLACEMENT_ARM = _Arm(name="fresh-owned-generation", owned_inactive_generation=True)
+#: The production callable both arms execute, and the code the work identity binds.
+_REPLAY_ROUTE = RawObservationDerivation.publish
+_ROUTE_CODE = (make_raw_observation_derivation, RawObservationDerivation)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,34 +140,11 @@ class _ArmRun:
         return max(durations.items(), key=lambda item: item[1])
 
 
-def test_replay_prefetch_counts_are_separate_from_stage_durations(tmp_path: Path) -> None:
-    with revision_backfill._ParsedSessionSpill(tmp_path, max_cached_payload_bytes=None) as spill:
-        prefetcher = revision_backfill._ReplaySpillPrefetcher(
-            spill,
-            archive_root=tmp_path,
-            max_buffered_tree_bytes=1,
-        )
-        prefetcher.hits = 2
-        prefetcher.reparse_hits = 1
-        prefetcher.consumed = 1
-        prefetcher.decode_seconds = 0.25
-
-        timings = prefetcher.close()
-        counts = prefetcher.counts()
-
-    assert timings == {"spill_prefetch.decode_concurrent": 0.25}
-    assert counts == {
-        "spill_prefetch.hits": 2,
-        "spill_prefetch.reparse_hits": 1,
-        "spill_prefetch.consumed": 1,
-    }
-
-
 def test_replay_enrichment_counts_are_request_local() -> None:
     @revision_backfill._capture_replay_enrichment_degradations
-    def replay_probe() -> revision_backfill.RevisionBackfillResult:
+    def replay_probe() -> revision_backfill.PreparedRevisionReplayResult:
         revision_backfill._count_enrichment_degradation("probe")
-        return revision_backfill.RevisionBackfillResult(0, 0, 0, 0, 0, 0)
+        return revision_backfill.PreparedRevisionReplayResult(0, 0, 0, 0, 0)
 
     first = replay_probe()
     second = replay_probe()
@@ -187,57 +153,88 @@ def test_replay_enrichment_counts_are_request_local() -> None:
     assert second.stage_counts == {"replay_enrichment_degraded.probe": 1}
 
 
+def _merged_publication_ledger(receipts: tuple[object, ...]) -> tuple[dict[str, float], dict[str, int]]:
+    timings: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for receipt in receipts:
+        if not isinstance(receipt, revision_backfill.PreparedRevisionReplayResult):
+            continue
+        for stage, seconds in receipt.stage_timings_s.items():
+            timings[stage] = timings.get(stage, 0.0) + seconds
+        for stage, count in receipt.stage_counts.items():
+            counts[stage] = counts.get(stage, 0) + count
+    return timings, counts
+
+
 def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Arm) -> _ArmRun:
     """Complete one replay configuration over an isolated clone of the sealed input."""
     archive_root = clone_sealed_arm(template, destination, sealed)
-    route_root = archive_root
+    cold_build: ColdBuildGeneration | None = None
     if arm.owned_inactive_generation:
-        generation = IndexGenerationStore.for_archive_root(archive_root).create(
-            source_snapshot="finished-build-equivalence"
-        )
-        owned = (generation.generation_id, generation.owner_id)
-        route_root = Path(generation.index_path).parent
-    else:
-        owned = None
+        # The owned generation is the registered cold-build destination, as the
+        # daemon's fresh build engages it; the retained owner writes only there.
+        with write_lease("test.finished-build.generation", archive_root=archive_root):
+            cold_build = ColdBuildGeneration.begin(
+                archive_root,
+                reason="finished-build-equivalence",
+                observed=ColdBuildGeneration.observe_source_baseline(
+                    (WatchSource("fixture", archive_root / "absent"),)
+                ),
+                owner_id="finished-build-equivalence",
+            )
+        register_cold_build_generation(cold_build)
+    generation = None if cold_build is None else cold_build.generation
+    index_path = archive_root / "index.db" if generation is None else Path(generation.index_path)
+
+    # Open the writer destination before preparation records its file identity,
+    # as the production ingest route's retained destination step does.
+    with write_lease("test.finished-build.destination", archive_root=archive_root):
+        with (
+            ArchiveStore.open_existing(archive_root, read_only=False)
+            if cold_build is None
+            else cold_build.open_writer()
+        ):
+            pass
 
     probe = FinishedBuildResourceProbe.start()
-    result = backfill_historical_revision_evidence(
-        route_root,
-        owned_inactive_generation=owned,
-        ingest_workers=arm.ingest_workers,
-        use_session_shards=arm.use_session_shards,
-    )
-    index_path = route_root / "index.db"
+    try:
+        run = replay_retained_components(archive_root, owned_generation=generation)
+        if cold_build is not None:
+            # A finished fresh build publishes its candidate; public reads then
+            # serve the replacement generation.
+            cold_build.promote()
+    finally:
+        if cold_build is not None:
+            clear_cold_build_generation()
+    stage_timings_s, stage_counts = _merged_publication_ledger(run.receipts)
     with sqlite3.connect(f"file:{index_path}?mode=ro", uri=True) as conn:
         session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
     read_session_ids = session_ids[:3]
     search_queries = ("amg1-payload",)
     output = capture_finished_build_output(
-        route_root,
+        archive_root,
         index_path,
-        work=finished_build_work_identity(
-            sealed,
-            profile=_WORK_PROFILE,
-            routes=(backfill_historical_revision_evidence, revision_backfill._FrozenReplayShardTransport),
-        ),
-        route=FinishedBuildRoute.from_production_callable(arm.name, backfill_historical_revision_evidence),
+        work=finished_build_work_identity(sealed, profile=_WORK_PROFILE, routes=_ROUTE_CODE),
+        route=FinishedBuildRoute.from_production_callable(arm.name, _REPLAY_ROUTE),
         resource_probe=probe,
         session_ids=read_session_ids,
         search_queries=search_queries,
     )
-    _parse_seconds, writer_apply_seconds = split_parse_and_apply_seconds(result.stage_timings_s)
+    writer_apply_seconds = sum(
+        seconds for stage, seconds in stage_timings_s.items() if stage.endswith(".index_parsed_write")
+    )
     return _ArmRun(
         arm=arm,
         output=output,
-        archive_root=route_root,
+        archive_root=archive_root,
         index_path=index_path,
         session_ids=read_session_ids,
         search_queries=search_queries,
-        replayed_logical_sources=result.replayed_logical_sources,
-        adoption_deferred=result.adoption_deferred,
-        quarantined=result.quarantined,
-        stage_timings_s=dict(result.stage_timings_s),
-        stage_counts=dict(result.stage_counts),
+        replayed_logical_sources=run.replayed_logical_sources,
+        adoption_deferred=run.adoption_deferred,
+        quarantined=run.quarantined,
+        stage_timings_s=stage_timings_s,
+        stage_counts=stage_counts,
         writer_apply_seconds=writer_apply_seconds,
     )
 
@@ -253,9 +250,6 @@ def _sealed_template(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Se
         avg_payload_bytes=_RAW_PAYLOAD_BYTES,
         authoritative_source=True,
     )
-    census = census_historical_revision_evidence(template)
-    assert census.scanned == _RAW_COUNT
-    assert census.quarantined == 0
     sealed = seal_raw_input(template)
     assert sealed.raw_count == _RAW_COUNT
     finalize_archive_template(template)
@@ -286,8 +280,6 @@ def test_both_replay_configurations_finish_the_same_work(
 
     # Configuration differences are real; different driver entry points are
     # not. The callable identity below must name the route actually executed.
-    assert baseline.arm.use_session_shards is False
-    assert replacement.arm.use_session_shards is True
     assert baseline.index_path != replacement.index_path
     assert baseline.arm.owned_inactive_generation is False
     assert replacement.arm.owned_inactive_generation is True
@@ -296,7 +288,7 @@ def test_both_replay_configurations_finish_the_same_work(
     assert (
         baseline.output.route.callable_identity
         == replacement.output.route.callable_identity
-        == "polylogue.sources.revision_backfill.backfill_historical_revision_evidence"
+        == "polylogue.storage.derived.raw.RawObservationDerivation.publish"
     )
 
     assert_finished_builds_equivalent(baseline.output, replacement.output)
@@ -354,7 +346,6 @@ def test_each_arm_attributes_its_elapsed_time_to_a_named_phase(
             {
                 "arm": run.arm.name,
                 "replay_callable": run.output.route.callable_identity,
-                "ingest_workers": run.arm.ingest_workers,
                 "input_digest": sealed.digest,
                 "input_bytes": sealed.byte_count,
                 "input_raw_count": sealed.raw_count,
@@ -407,7 +398,6 @@ def test_finished_build_comparison_rejects_a_diverged_or_indebted_arm(tmp_path: 
     template = tmp_path / "sealed-input"
     bootstrap_archive_root(template)
     build_independent_raw_corpus(template, raw_count=2, avg_payload_bytes=1_000, authoritative_source=True)
-    census_historical_revision_evidence(template)
     sealed = seal_raw_input(template)
     finalize_archive_template(template)
 

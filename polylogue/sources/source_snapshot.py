@@ -6,10 +6,10 @@ the candidate cohort into a private immutable tree, inventories the live roots
 again, and publishes two digests: candidate bytes and the material that stayed
 in the ordinary source roots after the cut.
 
-The source roots are never moved, renamed, or acknowledged by this module.
-Consequently, a later daemon catch-up sees carry-forward files through its
-normal acquisition route.  A candidate can only be read from the published
-private tree, and every read rechecks its content digest.
+The declared spool strategy hands its original generation aside and creates
+a fresh active root; other strategies copy their roots. A later daemon
+catch-up sees carry-forward files through its normal acquisition route. A
+candidate is read from the published private tree, with its digest rechecked.
 """
 
 from __future__ import annotations
@@ -24,16 +24,25 @@ import sqlite3
 import stat
 import tempfile
 import zipfile
-from collections.abc import Iterable, Mapping
-from contextlib import ExitStack
+from bisect import bisect_left
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
+if TYPE_CHECKING:
+    from polylogue.sources.source_layout import SourceLayout
+
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
-from polylogue.sources.sqlite_export import BinaryWriteSink, write_logical_export
-from polylogue.sources.sqlite_snapshot import member_export_scope, sqlite_member_revision
+from polylogue.sources.file_alias import contained_file_alias_coordinate
+from polylogue.sources.origin_specs import pre_acquisition_path_exclusion
+from polylogue.sources.source_staging import bind_source_input
+from polylogue.sources.sqlite_export import BinaryWriteSink, _logical_export_digest_bound, _write_logical_export_bound
+from polylogue.sources.sqlite_snapshot import member_export_scope
 
 _FICLONE = 0x40049409
 _MANIFEST_VERSION = 2
@@ -329,6 +338,12 @@ class CandidateInput:
     size_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class SourceSnapshotResult:
+    candidate_items: tuple[CutItem, ...]
+    observation_binding: SourceCutBinding
+
+
 class SourceSnapshotStrategy(Protocol):
     mode: SnapshotMode
 
@@ -337,7 +352,7 @@ class SourceSnapshotStrategy(Protocol):
         binding: SourceCutBinding,
         destination: Path,
         baseline: tuple[CutItem, ...],
-    ) -> tuple[CutItem, ...]: ...
+    ) -> SourceSnapshotResult: ...
 
 
 def _sha256_path(path: Path) -> str:
@@ -345,37 +360,100 @@ def _sha256_path(path: Path) -> str:
     try:
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                check_compute_cancelled()
                 digest.update(chunk)
     except OSError as exc:
         raise SourceSnapshotError(f"source member is unreadable: {path}") from exc
     return digest.hexdigest()
 
 
-def _snapshot_regular_file(path: Path) -> tuple[str, int, str]:
-    """Hash one descriptor's captured prefix and return its matching identity.
+@contextmanager
+def _open_source_root(binding: SourceCutBinding) -> Iterator[tuple[int, os.stat_result, Path]]:
+    """Resolve accepted parent aliases once and bind the actual declared root."""
+    descriptor: int | None = None
+    root = Path(binding.source.root)
+    try:
+        if _root_identity(root) != binding.root_identity:
+            raise SourceMutationError(f"source root identity changed: {root}")
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        if binding.root_identity.kind == "directory":
+            flags |= os.O_DIRECTORY
+        physical_root = root.resolve(strict=True)
+        descriptor = os.open(physical_root, flags)
+        info = os.fstat(descriptor)
+        kind = "directory" if stat.S_ISDIR(info.st_mode) else "file" if stat.S_ISREG(info.st_mode) else "other"
+        if (info.st_dev, info.st_ino, kind) != (
+            binding.root_identity.device,
+            binding.root_identity.inode,
+            binding.root_identity.kind,
+        ):
+            raise SourceMutationError(f"source root identity changed: {root}")
+        yield descriptor, info, physical_root
+    except OSError as exc:
+        raise SourceSnapshotError(f"source root is unreadable: {root}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
-    A concurrent append after ``fstat`` must not pair an old size with a digest
-    read through EOF. Reading exactly the captured size gives one coherent
-    append-log prefix, even if the path grows while the descriptor is read.
-    If the file changed while it was read (its ctime moved), the prefix is
-    hashed again: an append leaves it identical, while an in-place rewrite does
-    not and is refused rather than published as one observation.
-    """
+
+@contextmanager
+def _open_source_file(
+    anchor: int,
+    coordinate: str,
+    path: Path,
+    expected: tuple[int, int] | None,
+    *,
+    directory: bool = False,
+) -> Iterator[tuple[int, os.stat_result]]:
+    """Open relative to the bound root, refusing substituted internal symlinks."""
+    parent: int | None = None
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY)
+        parent = os.dup(anchor)
+        if coordinate:
+            parts = Path(coordinate).parts
+            for component in parts[:-1]:
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                os.close(parent)
+                parent = child
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            if directory:
+                flags |= os.O_DIRECTORY
+            descriptor = os.open(parts[-1], flags, dir_fd=parent)
+        else:
+            descriptor = os.dup(anchor)
         info = os.fstat(descriptor)
+        valid_kind = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+        if not valid_kind or (expected is not None and (info.st_dev, info.st_ino) != expected):
+            raise SourceMutationError(f"source member identity changed: {path}")
+        yield descriptor, info
+    except OSError as exc:
+        raise SourceSnapshotError(f"source member is unreadable: {path}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if parent is not None:
+            os.close(parent)
+
+
+def _snapshot_regular_file(
+    path: Path, expected: os.stat_result, *, anchor: int, coordinate: str
+) -> tuple[str, int, str]:
+    """Hash one descriptor's captured prefix and return its matching identity.
+
+    Enumeration binds the inode; opening refuses symlink substitution. An
+    append after fstat keeps the original prefix's size, hash and identity.
+    A changed prefix or truncation refuses the whole observation.
+    """
+    with _open_source_file(anchor, coordinate, path, (expected.st_dev, expected.st_ino)) as (descriptor, info):
+        if not coordinate:
+            info = expected
         first = _hash_prefix(descriptor, info.st_size, path)
         after = os.fstat(descriptor)
         truncated = after.st_size < info.st_size
         changed = after.st_ctime_ns != info.st_ctime_ns
         if truncated or (changed and _hash_prefix(descriptor, info.st_size, path) != first):
             raise SourceSnapshotError(f"source member was rewritten while reading: {path}")
-    except OSError as exc:
-        raise SourceSnapshotError(f"source member is unreadable: {path}") from exc
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
     return first, info.st_size, _identity(info)
 
 
@@ -385,6 +463,7 @@ def _hash_prefix(descriptor: int, size: int, path: Path) -> str:
     os.lseek(descriptor, 0, os.SEEK_SET)
     remaining = size
     while remaining:
+        check_compute_cancelled()
         chunk = os.read(descriptor, min(1024 * 1024, remaining))
         if not chunk:
             raise SourceSnapshotError(f"source member was truncated while reading: {path}")
@@ -394,11 +473,22 @@ def _hash_prefix(descriptor: int, size: int, path: Path) -> str:
 
 
 def _root_identity(root: Path) -> SourceRootIdentity:
+    """Identify the actual root an explicit declaration names.
+
+    A declared file root may be an alias (the snapshot route accepts one for
+    a SQLite database); its identity is the resolved actual file, so a
+    retargeted alias reads as a changed root. A directory root is never an
+    alias: its members would be enumerated through the link.
+    """
     try:
         info = root.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            info = root.resolve(strict=True).lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise SourceSnapshotError(f"source root alias does not name a regular file: {root}")
     except OSError as exc:
         raise SourceSnapshotError(f"source root is unreadable: {root}") from exc
-    if stat.S_ISLNK(info.st_mode) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+    if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
         raise SourceSnapshotError(f"source root is not a regular file or directory: {root}")
     return SourceRootIdentity(
         info.st_dev,
@@ -412,66 +502,335 @@ def _identity(info: os.stat_result) -> str:
     return f"dev:{info.st_dev}:ino:{info.st_ino}:ctime:{info.st_ctime_ns}"
 
 
-def _walk_files(root: Path) -> tuple[tuple[str, Path, os.stat_result], ...]:
-    if root.is_file():
-        try:
-            info = root.stat()
-        except OSError as exc:
-            raise SourceSnapshotError(f"source member disappeared: {root}") from exc
-        return ((root.name, root, info),)
-    result: list[tuple[str, Path, os.stat_result]] = []
+def _walk_files(
+    root: Path,
+    anchor: int,
+    root_info: os.stat_result,
+    physical_root: Path,
+    *,
+    layout_name: str | None = None,
+    exclude_coordinates: tuple[str, ...] = (),
+) -> Iterator[tuple[str, Path, os.stat_result, int | None, Path]]:
+    """Enumerate every member, propagating scan and stat faults to the root owner."""
     try:
-        paths = sorted(root.rglob("*"))
-    except OSError as exc:
-        raise SourceSnapshotError(f"source root is unreadable: {root}") from exc
-    for path in paths:
-        try:
-            info = path.lstat()
-        except OSError as exc:
-            raise SourceSnapshotError(f"source member disappeared: {path}") from exc
-        if stat.S_ISDIR(info.st_mode):
-            continue
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-            raise SourceSnapshotError(f"source member is not a regular file: {path}")
-        result.append((path.relative_to(root).as_posix(), path, info))
-    return tuple(result)
+        if stat.S_ISREG(root_info.st_mode):
+            yield root.name, root, root_info, None, physical_root.parent
+            return
+        if not stat.S_ISDIR(root_info.st_mode):
+            raise SourceSnapshotError(f"source root is not a directory: {root}")
+        layout = None
+        excluded_database_names: frozenset[str] = frozenset()
+        if layout_name is not None:
+            from polylogue.sources.source_layout import source_layout_for
+
+            layout = source_layout_for(layout_name)
+            from polylogue.sources.origin_specs import database_capability_for_provider
+
+            capability = database_capability_for_provider(layout.provider) if layout.provider is not None else None
+            if capability is not None:
+                excluded_database_names = frozenset(
+                    member.filename for member in capability.members if member.disposition == "out-of-scope"
+                )
+        with (
+            tempfile.TemporaryDirectory(prefix="polylogue-alias-coverage-") as directory,
+            closing(sqlite3.connect(Path(directory) / "coverage.db")) as coverage,
+        ):
+            coverage.execute("PRAGMA journal_mode=OFF")
+            coverage.execute("PRAGMA synchronous=OFF")
+            coverage.execute("PRAGMA cache_size=-1024")
+            coverage.execute(
+                "CREATE TABLE targets(coordinate TEXT PRIMARY KEY, device INTEGER, inode INTEGER) WITHOUT ROWID"
+            )
+            coverage.execute(
+                "CREATE TABLE aliases(coordinate TEXT PRIMARY KEY, device INTEGER, inode INTEGER, ctime INTEGER, "
+                "link_text TEXT, target TEXT, target_device INTEGER, target_inode INTEGER) WITHOUT ROWID"
+            )
+            yield from _walk_bound_directory_files(
+                root, anchor, root_info, physical_root, layout, exclude_coordinates, excluded_database_names, coverage
+            )
+    except (OSError, sqlite3.Error) as exc:
+        raise SourceSnapshotError(f"source root inventory failed: {root}") from exc
+
+
+def _walk_bound_directory_files(
+    root: Path,
+    anchor: int,
+    root_info: os.stat_result,
+    physical_root: Path,
+    layout: SourceLayout | None,
+    exclude_coordinates: tuple[str, ...],
+    excluded_database_names: frozenset[str],
+    coverage: sqlite3.Connection,
+) -> Iterator[tuple[str, Path, os.stat_result, int | None, Path]]:
+    directories: list[tuple[Path, os.stat_result, tuple[str, ...]]] = [(root, root_info, ())]
+    while directories:
+        check_compute_cancelled()
+        directory, expected, relative = directories.pop()
+        with (
+            _open_source_file(
+                anchor,
+                directory.relative_to(root).as_posix() if directory != root else "",
+                directory,
+                (expected.st_dev, expected.st_ino),
+                directory=True,
+            ) as (descriptor, _info),
+            os.scandir(descriptor) as entries,
+        ):
+            children = sorted(entries, key=lambda entry: entry.name)
+            for entry in children:
+                check_compute_cancelled()
+                path = directory / entry.name
+                info = entry.stat(follow_symlinks=False)
+                child_parts = (*relative, entry.name)
+                if stat.S_ISDIR(info.st_mode):
+                    if layout is None or layout.admits_directory(child_parts):
+                        directories.append((path, info, child_parts))
+                elif stat.S_ISREG(info.st_mode):
+                    if "/".join(child_parts) in exclude_coordinates:
+                        continue
+                    if layout is not None and layout.artifact_kind(child_parts) is None:
+                        continue
+                    if entry.name in excluded_database_names:
+                        # The acquisition registry owns this exclusion. An
+                        # arriving projection must not become a byte obligation
+                        # or independently cover a selected alias target.
+                        continue
+                    if (
+                        layout is not None
+                        and layout.provider is not None
+                        and pre_acquisition_path_exclusion(layout.provider, path) is not None
+                    ):
+                        continue
+                    coordinate = path.relative_to(root).as_posix()
+                    coverage.execute("INSERT INTO targets VALUES (?,?,?)", (coordinate, info.st_dev, info.st_ino))
+                    yield (
+                        coordinate,
+                        path,
+                        info,
+                        descriptor,
+                        (physical_root / path.relative_to(root)).parent,
+                    )
+                elif stat.S_ISLNK(info.st_mode) and (layout is None or layout.artifact_kind(child_parts) is not None):
+                    coordinate = "/".join(child_parts)
+                    link_text = os.readlink(entry.name, dir_fd=descriptor)
+                    after = os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
+                    if (after.st_dev, after.st_ino, after.st_ctime_ns) != (info.st_dev, info.st_ino, info.st_ctime_ns):
+                        raise SourceMutationError(f"source alias changed during inventory: {path}")
+                    named = Path(link_text)
+                    target = Path(
+                        os.path.normpath(
+                            str(named if named.is_absolute() else physical_root / Path(coordinate).parent / named)
+                        )
+                    )
+                    # An absolute target may use the declaration's stable parent alias.
+                    if target.is_relative_to(root):
+                        target = physical_root / target.relative_to(root)
+                    target_coordinate = contained_file_alias_coordinate(physical_root, target, stat.S_IFREG)
+                    if target_coordinate is None or (
+                        layout is not None and layout.artifact_kind(Path(target_coordinate).parts) is None
+                    ):
+                        raise SourceSnapshotError(f"source alias target is outside the declared layout: {path}")
+                    with _open_source_file(anchor, target_coordinate, target, None) as (_target, target_info):
+                        if contained_file_alias_coordinate(physical_root, target, target_info.st_mode) is None:
+                            raise SourceSnapshotError(f"source alias target is not a regular file: {path}")
+                    coverage.execute(
+                        "INSERT INTO aliases VALUES (?,?,?,?,?,?,?,?)",
+                        (
+                            coordinate,
+                            info.st_dev,
+                            info.st_ino,
+                            info.st_ctime_ns,
+                            link_text,
+                            target_coordinate,
+                            target_info.st_dev,
+                            target_info.st_ino,
+                        ),
+                    )
+                elif (
+                    layout is None
+                    or layout.admits_directory(child_parts)
+                    or layout.artifact_kind(child_parts) is not None
+                ):
+                    raise SourceSnapshotError(f"source member is not a regular file: {path}")
+    for coordinate, device, inode, ctime, link_text, target, target_device, target_inode in coverage.execute(
+        "SELECT coordinate,device,inode,ctime,link_text,target,target_device,target_inode FROM aliases"
+    ):
+        check_compute_cancelled()
+        observed = coverage.execute("SELECT device,inode FROM targets WHERE coordinate=?", (target,)).fetchone()
+        if observed != (target_device, target_inode):
+            raise SourceSnapshotError(f"source alias target was not independently observed: {root / coordinate}")
+        parent_coordinate = str(Path(coordinate).parent)
+        parent_coordinate = "" if parent_coordinate == "." else parent_coordinate
+        with (
+            _open_source_file(
+                anchor,
+                parent_coordinate,
+                root / parent_coordinate,
+                None,
+                directory=True,
+            ) as (parent, _info),
+            _open_source_file(anchor, target, root / target, (target_device, target_inode)),
+        ):
+            current = os.stat(Path(coordinate).name, dir_fd=parent, follow_symlinks=False)
+            current_link = os.readlink(Path(coordinate).name, dir_fd=parent)
+            if (current.st_dev, current.st_ino, current.st_ctime_ns, current_link) != (
+                device,
+                inode,
+                ctime,
+                link_text,
+            ):
+                raise SourceMutationError(f"source alias changed during inventory: {root / coordinate}")
 
 
 def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
+    return tuple(_iter_observe(binding))
+
+
+def _iter_observe(binding: SourceCutBinding) -> Iterator[CutItem]:
+    root = Path(binding.source.root)
+    if binding.policy.mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
+        if _root_identity(root) != binding.root_identity:
+            raise SourceMutationError(f"source root identity changed: {root}")
+        if binding.root_identity.kind == "directory":
+            with _open_source_root(binding) as (anchor, root_info, physical_root):
+                yield from _observe_sqlite_members(
+                    binding,
+                    _walk_files(
+                        root,
+                        anchor,
+                        root_info,
+                        physical_root,
+                        layout_name=binding.source.layout_name,
+                        exclude_coordinates=binding.source.exclude_coordinates,
+                    ),
+                )
+        else:
+            yield from _observe_sqlite_members(binding, ((root.name, root, root.stat(), None, root.parent),))
+        if _root_identity(root) != binding.root_identity:
+            raise SourceMutationError(f"source root identity changed: {root}")
+        return
+    with _open_source_root(binding) as (anchor, root_info, physical_root):
+        yield from _observe_root(binding, anchor, root_info, physical_root)
+        if _root_identity(root) != binding.root_identity:
+            raise SourceMutationError(f"source root identity changed: {root}")
+        return
+
+
+def _observe_sqlite_members(
+    binding: SourceCutBinding, members: Iterable[tuple[str, Path, os.stat_result, int | None, Path]]
+) -> Iterator[CutItem]:
+    for coordinate, path, before, parent_anchor, semantic_parent in members:
+        check_compute_cancelled()
+        expected = before.st_dev, before.st_ino
+        for info in (before, path.stat() if parent_anchor is None else path.lstat()):
+            if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != expected:
+                raise SourceMutationError(f"source database identity changed: {path}")
+        # The isolated export owner binds SQLite's actual descriptors to
+        # this enumerated identity without closing any guard database fd.
+        try:
+            with bind_source_input(
+                path, parent_anchor=parent_anchor, semantic_parent=semantic_parent
+            ) as source_binding:
+                identity = _logical_export_digest_bound(
+                    path,
+                    scope=member_export_scope(source_binding.source_path),
+                    expected_identity=expected,
+                    parent_anchor=source_binding.parent_anchor,
+                    source_binding=source_binding,
+                )
+        except sqlite3.Error as exc:
+            raise SourceSnapshotError(f"SQLite source observation failed: {path}") from exc
+        after = path.stat() if parent_anchor is None else path.lstat()
+        if not stat.S_ISREG(after.st_mode) or (after.st_dev, after.st_ino) != expected:
+            raise SourceMutationError(f"source database identity changed: {path}")
+        yield CutItem(binding.source.source_id, coordinate, identity, identity, before.st_size)
+
+
+def _observe_root(
+    binding: SourceCutBinding, anchor: int, root_info: os.stat_result, physical_root: Path
+) -> Iterator[CutItem]:
     root = Path(binding.source.root)
     mode = binding.policy.mode
     if mode is SnapshotMode.ARCHIVE_MEMBER:
         if not root.is_file():
             raise SourceSnapshotError("archive-member sources must name an archive file")
-        archive_identity = _root_identity(root)
+        archive_info = root_info
         try:
-            with zipfile.ZipFile(root) as archive:
-                return tuple(
-                    CutItem(
+            with (
+                os.fdopen(os.dup(anchor), "rb") as stream,
+                zipfile.ZipFile(stream) as archive,
+            ):
+                for info in sorted(archive.infolist(), key=lambda item: item.filename):
+                    check_compute_cancelled()
+                    if info.is_dir():
+                        continue
+                    digest = hashlib.sha256()
+                    size = 0
+                    with archive.open(info) as member:
+                        while chunk := member.read(1024 * 1024):
+                            check_compute_cancelled()
+                            digest.update(chunk)
+                            size += len(chunk)
+                    yield CutItem(
                         binding.source.source_id,
                         f"{root.name}!{info.filename}",
-                        f"{archive_identity.device}:{archive_identity.inode}:{archive_identity.ctime_ns}:{info.header_offset}",
-                        hashlib.sha256(archive.read(info)).hexdigest(),
-                        info.file_size,
+                        f"{archive_info.st_dev}:{archive_info.st_ino}:{archive_info.st_ctime_ns}:{info.header_offset}",
+                        digest.hexdigest(),
+                        size,
                     )
-                    for info in sorted(archive.infolist(), key=lambda item: item.filename)
-                    if not info.is_dir()
-                )
-        except (OSError, zipfile.BadZipFile, KeyError) as exc:
+                after = os.fstat(anchor)
+                if (after.st_size, after.st_ctime_ns) != (archive_info.st_size, archive_info.st_ctime_ns):
+                    raise SourceMutationError(f"archive changed during inventory: {root}")
+                return
+        except DaemonOperationCancelled:
+            raise
+        except (OSError, zipfile.BadZipFile, KeyError, RuntimeError) as exc:
             raise SourceSnapshotError(f"archive member inventory failed: {root}") from exc
-    result: list[CutItem] = []
-    for coordinate, path, info in _walk_files(root):
-        if mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
-            identity = sqlite_member_revision(path)
-            # Logical content is the continuity identity. Filesystem metadata
-            # and page layout are transport observations, not source meaning.
-            content_sha256 = identity
-        else:
-            content_sha256, captured_size, identity = _snapshot_regular_file(path)
-            result.append(CutItem(binding.source.source_id, coordinate, identity, content_sha256, captured_size))
-            continue
-        result.append(CutItem(binding.source.source_id, coordinate, identity, content_sha256, info.st_size))
-    return tuple(result)
+    logical_members: set[str] = set()
+    if binding.source.layout_name is not None:
+        from polylogue.sources.origin_specs import database_capability_for_provider
+        from polylogue.sources.source_layout import source_layout_for
+
+        provider = source_layout_for(binding.source.layout_name).provider
+        capability = database_capability_for_provider(provider) if provider is not None else None
+        if capability is not None:
+            logical_members = {member.filename for member in capability.members if member.disposition != "out-of-scope"}
+    for coordinate, path, member_info, _parent_anchor, _semantic_parent in _walk_files(
+        root,
+        anchor,
+        root_info,
+        physical_root,
+        layout_name=binding.source.layout_name,
+        exclude_coordinates=binding.source.exclude_coordinates,
+    ):
+        if path.name in logical_members:
+            # A database created after declaration discovery must never
+            # enter the ordinary byte inventory as a physical page image.
+            raise SourceMutationError(f"source database requires a logical declaration: {path}")
+        content_sha256, captured_size, identity = _snapshot_regular_file(
+            path,
+            member_info,
+            anchor=anchor,
+            coordinate=coordinate if binding.root_identity.kind == "directory" else "",
+        )
+        yield CutItem(binding.source.source_id, coordinate, identity, content_sha256, captured_size)
+
+
+def bind_source_observation(declaration: SourceDeclaration) -> SourceCutBinding:
+    """Capture the root identity shared by observation and member addressing."""
+    return SourceCutBinding(declaration, _root_identity(declaration.root), _default_policy(declaration.role))
+
+
+def iter_observe_source_members(binding: SourceCutBinding) -> Iterator[CutItem]:
+    """Stream a captured source inventory without retaining its members.
+
+    Callers derive member paths from this binding's root kind. Exhaust the
+    iterator to receive the final root identity check.
+    """
+    try:
+        yield from _iter_observe(binding)
+    except sqlite3.DatabaseError as exc:
+        raise SourceSnapshotError(f"source database unreadable: {exc}") from exc
 
 
 def observe_source_members(declaration: SourceDeclaration) -> tuple[CutItem, ...]:
@@ -482,48 +841,58 @@ def observe_source_members(declaration: SourceDeclaration) -> tuple[CutItem, ...
     are observed at their declared logical granularity rather than being
     reduced to one root row or a filesystem byte count.
     """
-    try:
-        return _observe(
-            SourceCutBinding(
-                declaration,
-                _root_identity(declaration.root),
-                _default_policy(declaration.role),
-            )
-        )
-    except sqlite3.DatabaseError as exc:
-        # An unreadable declared SQLite root is an unavailable source, typed
-        # at this seam rather than by each caller.
-        raise SourceSnapshotError(f"source database unreadable: {exc}") from exc
+    return tuple(iter_observe_source_members(bind_source_observation(declaration)))
 
 
-def _try_reflink(source: Path, destination: Path) -> bool:
+def _try_reflink(descriptor: int, destination: Path) -> bool:
     try:
-        with source.open("rb") as source_stream:
-            destination_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                fcntl.ioctl(destination_fd, _FICLONE, source_stream.fileno())
-                os.fsync(destination_fd)
-            finally:
-                os.close(destination_fd)
+        destination_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            fcntl.ioctl(destination_fd, _FICLONE, descriptor)
+            os.fsync(destination_fd)
+        finally:
+            os.close(destination_fd)
         return True
     except OSError as exc:
         destination.unlink(missing_ok=True)
         if exc.errno not in {errno.EOPNOTSUPP, errno.ENOTTY, errno.EINVAL, errno.EXDEV, errno.ENOSPC, errno.EIO}:
-            raise SourceSnapshotError(f"reflink failed for {source}") from exc
+            raise SourceSnapshotError("reflink failed for bound source descriptor") from exc
         return False
 
 
-def _copy_file(source: Path, destination: Path, policy: SourceCutPolicy) -> None:
+def _copy_file(
+    source: Path,
+    destination: Path,
+    policy: SourceCutPolicy,
+    *,
+    expected: tuple[int, int],
+    captured_size: int | None,
+    anchor: int,
+    coordinate: str,
+) -> None:
+    """Copy the enumerated inode, preserving the captured append-log prefix."""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if policy.prefer_reflink and _try_reflink(source, destination):
-        return
-    if not policy.allow_full_copy_fallback:
-        raise SourceSnapshotError(f"reflink unavailable and full copy is disabled: {source}")
-    if policy.capacity_bytes is not None and source.stat().st_size > policy.capacity_bytes:
-        raise SourceSnapshotError(f"capacity preflight rejects full copy: {source}")
-    shutil.copyfile(source, destination)
-    with destination.open("rb") as stream:
-        os.fsync(stream.fileno())
+    with _open_source_file(anchor, coordinate, source, expected) as (descriptor, info):
+        size = info.st_size if captured_size is None else captured_size
+        if size > info.st_size:
+            raise SourceMutationError(f"source truncated before copying: {source}")
+        if policy.prefer_reflink and size == info.st_size and _try_reflink(descriptor, destination):
+            return
+        if not policy.allow_full_copy_fallback:
+            raise SourceSnapshotError(f"reflink unavailable and full copy is disabled: {source}")
+        if policy.capacity_bytes is not None and size > policy.capacity_bytes:
+            raise SourceSnapshotError(f"capacity preflight rejects full copy: {source}")
+        remaining = size
+        with destination.open("xb") as output:
+            while remaining:
+                check_compute_cancelled()
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    raise SourceMutationError(f"source truncated while copying: {source}")
+                output.write(chunk)
+                remaining -= len(chunk)
+            output.flush()
+            os.fsync(output.fileno())
 
 
 def _fsync_directory(path: Path) -> None:
@@ -535,7 +904,11 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _fsync_tree(root: Path) -> None:
-    for directory, _children, _files in os.walk(root, topdown=False):
+    def refuse_unreadable_directory(error: OSError) -> None:
+        raise SourceSnapshotError(f"candidate directory sync inventory failed: {root}") from error
+
+    for directory, _children, _files in os.walk(root, topdown=False, onerror=refuse_unreadable_directory):
+        check_compute_cancelled()
         _fsync_directory(Path(directory))
 
 
@@ -546,22 +919,63 @@ def _write_durable(path: Path, payload: str) -> None:
         os.fsync(stream.fileno())
 
 
+def _archive_member_info(archive: zipfile.ZipFile, item: CutItem) -> zipfile.ZipInfo:
+    """Select the already captured member offset, including duplicate names."""
+    try:
+        offset = int(item.identity.rsplit(":", 1)[1])
+    except (ValueError, IndexError) as exc:
+        raise SourceMutationError(f"archive member identity changed: {item.coordinate}") from exc
+    entries = archive.infolist()
+    position = bisect_left(entries, offset, key=lambda entry: entry.header_offset)
+    if position == len(entries):
+        raise SourceMutationError(f"archive member disappeared: {item.coordinate}")
+    entry = entries[position]
+    if entry.header_offset != offset or entry.is_dir() or not item.coordinate.endswith("!" + entry.filename):
+        raise SourceMutationError(f"archive member coordinate changed: {item.coordinate}")
+    return entry
+
+
 def _copy_candidates(
     binding: SourceCutBinding,
     baseline: tuple[CutItem, ...],
     destination: Path,
 ) -> tuple[CutItem, ...]:
+    with _open_source_root(binding) as (anchor, _root_info, _physical_root):
+        return _copy_bound_candidates(binding, baseline, destination, anchor)
+
+
+def _copy_bound_candidates(
+    binding: SourceCutBinding, baseline: tuple[CutItem, ...], destination: Path, anchor: int
+) -> tuple[CutItem, ...]:
     root = Path(binding.source.root)
     if binding.policy.mode is SnapshotMode.ARCHIVE_MEMBER:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        _copy_file(root, destination, binding.policy)
+        _copy_file(
+            root,
+            destination,
+            binding.policy,
+            expected=(binding.root_identity.device, binding.root_identity.inode),
+            captured_size=None,
+            anchor=anchor,
+            coordinate="",
+        )
         try:
             with zipfile.ZipFile(destination) as archive:
+                archive.infolist().sort(key=lambda entry: entry.header_offset)
                 members = []
                 for item in baseline:
-                    member_name = item.coordinate.split("!", 1)[1]
-                    payload = archive.read(member_name)
-                    if hashlib.sha256(payload).hexdigest() != item.content_sha256 or len(payload) != item.size_bytes:
+                    check_compute_cancelled()
+                    info = _archive_member_info(archive, item)
+                    if item.coordinate != f"{root.name}!{info.filename}":
+                        raise SourceMutationError(f"archive member coordinate changed: {item.coordinate}")
+                    digest = hashlib.sha256()
+                    size = 0
+                    with archive.open(info) as stream:
+                        while chunk := stream.read(1024 * 1024):
+                            check_compute_cancelled()
+                            digest.update(chunk)
+                            size += len(chunk)
+                    if digest.hexdigest() != item.content_sha256 or size != item.size_bytes:
                         raise SourceMutationError(f"archive member changed during cut: {item.coordinate}")
                     members.append(item)
                 return tuple(
@@ -575,13 +989,24 @@ def _copy_candidates(
                     )
                     for item in members
                 )
-        except (OSError, zipfile.BadZipFile, KeyError) as exc:
+        except DaemonOperationCancelled:
+            raise
+        except (OSError, zipfile.BadZipFile, KeyError, RuntimeError) as exc:
             raise SourceMutationError(f"archive changed during cut: {root}") from exc
     result: list[CutItem] = []
     for item in baseline:
-        source = root / item.coordinate if root.is_dir() else root
-        target = destination / item.coordinate if root.is_dir() else destination
-        _copy_file(source, target, binding.policy)
+        check_compute_cancelled()
+        source = root / item.coordinate if binding.root_identity.kind == "directory" else root
+        target = destination / item.coordinate if binding.root_identity.kind == "directory" else destination
+        _copy_file(
+            source,
+            target,
+            binding.policy,
+            expected=(int(item.identity.split(":")[1]), int(item.identity.split(":")[3])),
+            captured_size=item.size_bytes,
+            anchor=anchor,
+            coordinate=item.coordinate if binding.root_identity.kind == "directory" else "",
+        )
         # A changed source is deliberately carried forward by the post-cut
         # inventory.  Only a torn candidate copy is unsafe; a stable copy of
         # the pre-cut bytes remains a valid candidate even when the writer
@@ -600,8 +1025,8 @@ class _FilesystemStrategy:
 
     def snapshot(
         self, binding: SourceCutBinding, destination: Path, baseline: tuple[CutItem, ...]
-    ) -> tuple[CutItem, ...]:
-        return _copy_candidates(binding, baseline, destination)
+    ) -> SourceSnapshotResult:
+        return SourceSnapshotResult(_copy_candidates(binding, baseline, destination), binding)
 
 
 class _BoundedSnapshotWriter:
@@ -626,14 +1051,21 @@ class _BoundedSnapshotWriter:
 class _SQLiteLogicalExportStrategy(_FilesystemStrategy):
     def snapshot(
         self, binding: SourceCutBinding, destination: Path, baseline: tuple[CutItem, ...]
-    ) -> tuple[CutItem, ...]:
+    ) -> SourceSnapshotResult:
         root = Path(binding.source.root)
         if root.is_dir():
             raise SourceSnapshotError("mutable-sqlite declarations must name one database")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with destination.open("xb") as raw_handle:
+        with bind_source_input(root) as source_binding, destination.open("xb") as raw_handle:
             handle = _BoundedSnapshotWriter(raw_handle, capacity_bytes=binding.policy.capacity_bytes)
-            write_logical_export(root, handle, scope=member_export_scope(root))
+            _write_logical_export_bound(
+                root,
+                handle,
+                scope=member_export_scope(source_binding.source_path),
+                parent_anchor=source_binding.parent_anchor,
+                source_binding=source_binding,
+                expected_identity=(binding.root_identity.device, binding.root_identity.inode),
+            )
             raw_handle.flush()
             os.fsync(raw_handle.fileno())
         if not destination.exists():
@@ -641,11 +1073,25 @@ class _SQLiteLogicalExportStrategy(_FilesystemStrategy):
         digest = _sha256_path(destination)
         if digest != baseline[0].identity:
             raise SourceMutationError(f"SQLite logical export does not match source logical revision: {root}")
-        if sqlite_member_revision(root) != baseline[0].identity:
-            raise SourceMutationError(f"SQLite source changed during logical export: {root}")
+        with bind_source_input(root) as source_binding:
+            if (
+                _logical_export_digest_bound(
+                    root,
+                    scope=member_export_scope(source_binding.source_path),
+                    parent_anchor=source_binding.parent_anchor,
+                    source_binding=source_binding,
+                    expected_identity=(binding.root_identity.device, binding.root_identity.inode),
+                )
+                != baseline[0].identity
+            ):
+                raise SourceMutationError(f"SQLite source changed during logical export: {root}")
         size = destination.stat().st_size
-        return tuple(
-            CutItem(item.source_id, item.coordinate, item.identity, digest, size, str(destination)) for item in baseline
+        return SourceSnapshotResult(
+            tuple(
+                CutItem(item.source_id, item.coordinate, item.identity, digest, size, str(destination))
+                for item in baseline
+            ),
+            binding,
         )
 
 
@@ -654,7 +1100,7 @@ class _SpoolHandoffStrategy(_FilesystemStrategy):
 
     def snapshot(
         self, binding: SourceCutBinding, destination: Path, baseline: tuple[CutItem, ...]
-    ) -> tuple[CutItem, ...]:
+    ) -> SourceSnapshotResult:
         root = Path(binding.source.root)
         if not root.is_dir():
             raise SourceSnapshotError("spool handoff requires a directory root")
@@ -663,9 +1109,17 @@ class _SpoolHandoffStrategy(_FilesystemStrategy):
             raise SourceSnapshotError(f"stale spool handoff generation exists: {retired}")
         os.replace(root, retired)
         root.mkdir(mode=0o700)
+        active_binding = SourceCutBinding(binding.source, _root_identity(root), binding.policy)
         _fsync_directory(root.parent)
         retired_binding = SourceCutBinding(
-            SourceDeclaration(binding.source.source_id, binding.source.role, retired, binding.source.mutable),
+            SourceDeclaration(
+                binding.source.source_id,
+                binding.source.role,
+                retired,
+                binding.source.mutable,
+                binding.source.layout_name,
+                binding.source.exclude_coordinates,
+            ),
             _root_identity(retired),
             binding.policy,
         )
@@ -675,7 +1129,7 @@ class _SpoolHandoffStrategy(_FilesystemStrategy):
             # The old generation is still the only copy of pre-cut spool
             # material. Keep it for recovery if candidate copying fails.
             raise
-        return copied
+        return SourceSnapshotResult(copied, active_binding)
 
 
 def _default_policy(role: SourceRole) -> SourceCutPolicy:
@@ -976,7 +1430,9 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
         baselines = {binding.source.source_id: _observe(binding) for binding in preflight.bindings}
         _preflight_copy_capacity(preflight, baselines, staging.parent)
         candidate_items: list[CutItem] = []
+        observation_bindings: list[SourceCutBinding] = []
         for binding in preflight.bindings:
+            check_compute_cancelled()
             source_destination = staging / "candidate" / binding.source.source_id
             if binding.policy.mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
                 source_destination = source_destination.with_name(source_destination.name + ".jsonl")
@@ -984,9 +1440,11 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
                 source_destination = source_destination.with_name(
                     source_destination.name + Path(binding.source.root).suffix
                 )
-            candidate_items.extend(
-                _strategy(binding.policy).snapshot(binding, source_destination, baselines[binding.source.source_id])
+            snapshot = _strategy(binding.policy).snapshot(
+                binding, source_destination, baselines[binding.source.source_id]
             )
+            candidate_items.extend(snapshot.candidate_items)
+            observation_bindings.append(snapshot.observation_binding)
         candidate_items = [
             CutItem(
                 item.source_id,
@@ -1008,12 +1466,13 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
                 and _root_identity(binding.source.root) != binding.root_identity
             ):
                 raise SourceMutationError(f"source root identity changed: {binding.source.source_id}")
-        post_items = [item for binding in preflight.bindings for item in _observe(binding)]
+        post_items = [item for binding in observation_bindings for item in _observe(binding)]
         modes = {binding.source.source_id: binding.policy.mode for binding in preflight.bindings}
         candidate_keys = {_ownership_key(item, mode=modes[item.source_id]) for item in candidate_items}
         baseline_coordinates = {(item.source_id, item.coordinate) for items in baselines.values() for item in items}
         carry_items: list[CutItem] = []
         for item in post_items:
+            check_compute_cancelled()
             mode = modes[item.source_id]
             if (
                 mode in {SnapshotMode.COMPLETE_COPY, SnapshotMode.DIRECTORY_COPY}
@@ -1106,10 +1565,11 @@ def reacquire_candidate(
     modes = dict(result.ownership_modes)
     # Keep each central directory open once, rather than reparsing a ZIP for
     # every member. The manifest names member bytes, not container bytes, and
-    # a member is read by name exactly as the cut read it.
+    # each member is selected by its captured physical header offset.
     archives: dict[Path, zipfile.ZipFile] = {}
     with ExitStack() as stack:
         for item in result.candidate_manifest.items:
+            check_compute_cancelled()
             if source_id is not None and item.source_id != source_id:
                 continue
             if selected is not None and item.coordinate not in selected:
@@ -1120,19 +1580,23 @@ def reacquire_candidate(
             if not path.is_relative_to(result.candidate_root):
                 raise CandidateCohortError(f"candidate path escapes published snapshot: {item.coordinate}")
             if modes[item.source_id] is SnapshotMode.ARCHIVE_MEMBER:
-                _, separator, member_name = item.coordinate.partition("!")
-                if not separator:
+                if "!" not in item.coordinate:
                     raise CandidateCohortError(f"candidate member has no archive coordinate: {item.coordinate}")
                 try:
                     if path not in archives:
                         archives[path] = stack.enter_context(zipfile.ZipFile(path))
+                        archives[path].infolist().sort(key=lambda entry: entry.header_offset)
+                    info = _archive_member_info(archives[path], item)
                     digest = hashlib.sha256()
                     size = 0
-                    with archives[path].open(member_name) as stream:
+                    with archives[path].open(info) as stream:
                         while chunk := stream.read(1024 * 1024):
+                            check_compute_cancelled()
                             digest.update(chunk)
                             size += len(chunk)
                     unchanged = size == item.size_bytes and digest.hexdigest() == item.content_sha256
+                except DaemonOperationCancelled:
+                    raise
                 except (OSError, zipfile.BadZipFile, KeyError, RuntimeError) as exc:
                     raise SourceMutationError(f"candidate archive mutated: {item.coordinate}") from exc
             else:
@@ -1168,7 +1632,10 @@ __all__ = [
     "SourceSeal",
     "SourceSnapshotError",
     "SourceSnapshotStrategy",
+    "SourceSnapshotResult",
     "execute_source_cut",
+    "bind_source_observation",
+    "iter_observe_source_members",
     "load_source_cut",
     "preflight_source_cut",
     "observe_source_members",

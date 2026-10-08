@@ -25,7 +25,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
-    durable_authority_logical_keys,
+    parser_census_identity_measurement,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     PENDING_RAW_LOGICAL_SOURCE_PREFIX,
@@ -45,6 +45,7 @@ async def test_a_pending_async_acquisition_can_later_bind_its_parsed_identity(
         raw_id="raw-pending-1",
         source_name="chatgpt-export",
         source_path="/imports/conversations.json",
+        canonical_source_path="/imports/conversations.json",
         source_index=0,
         blob_size=16,
         acquired_at="2026-02-02T12:00:00+00:00",
@@ -63,14 +64,19 @@ async def test_a_pending_async_acquisition_can_later_bind_its_parsed_identity(
 
         # A pending key is excluded from the durable identity set rather than
         # rejected as an unknown prefix, so the census can still answer.
-        assert (
-            durable_authority_logical_keys(
-                raw_logical_key=stored[0],
-                revision_kind=RawRevisionKind.FULL.value,
-                membership_logical_keys=(),
+        with parser_census_identity_measurement(
+            raw_logical_key=stored[0],
+            revision_kind=RawRevisionKind.FULL.value,
+            membership_logical_keys=(),
+            observed_logical_keys=(),
+        ) as measured:
+            assert measured.durable_valid
+            assert measured.identities_match
+            assert not measured.complete(
+                typed_non_session=False,
+                parser_confirmed_non_session=False,
+                byte_governed_fragment=False,
             )
-            == ()
-        )
 
         # The wrong observable outcome the malformed prefix produced: the
         # parser has proved a session identity and the bind is refused.

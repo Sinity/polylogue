@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sqlite3
@@ -245,6 +246,22 @@ class _FakeToolCountStore:
 
     def begin_read_snapshot(self) -> None:
         """No-op: the interruptible-read runner (#2964) requires this to exist."""
+        return None
+
+    def set_read_progress_guard(self, guard: object, *, n_opcodes: int = 2000, check_cancelled: object = None) -> None:
+        """No-op: the runner installs its abort guard on the real connection."""
+        del guard, n_opcodes, check_cancelled
+
+    def end_read_snapshot(self) -> None:
+        """No-op half of the reader protocol the runner settles on exit."""
+        return None
+
+    def clear_read_progress_guard(self) -> None:
+        """No-op: the runner clears its progress guard while settling."""
+        return None
+
+    def close(self) -> None:
+        """No-op: the runner closes the store it was handed."""
         return None
 
     def list_tool_call_count_rows(self, query: ToolUsageInsightQuery | None = None) -> list[dict[str, object]]:
@@ -853,7 +870,7 @@ async def test_tools_renders_against_real_archive_backed_store(tmp_path: Path) -
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     db_path = tmp_path / "index.db"
     (
         SessionBuilder(db_path, "conv-tools-real")

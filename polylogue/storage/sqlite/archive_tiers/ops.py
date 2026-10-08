@@ -83,6 +83,17 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
         "context scheduler", "one admission decision per candidate item", True, "retain"
     ),
     "schema_identity": OpsTableDisposition("schema bootstrap", "one derived-schema identity", True, "retain"),
+    # Frontier inspection: a lost journal or certificate only forces the next
+    # inspection to run in full mode; no accepted state is lost.
+    "raw_frontier_cursor_changes": OpsTableDisposition(
+        "frontier inspection", "one journal row per changed cursor path", False, "retain"
+    ),
+    "raw_frontier_cursor_journal_control": OpsTableDisposition(
+        "frontier inspection", "one retained-floor watermark for the cursor journal", False, "retain"
+    ),
+    "raw_frontier_inspection": OpsTableDisposition(
+        "frontier inspection", "one coverage certificate for the accepted frontier", False, "retain"
+    ),
 }
 # Batch aggregation is a terminal run state distinct from both success and
 # failure: completed siblings and retryable failed siblings remain visible.
@@ -164,6 +175,7 @@ OPS_DDL = f"""
 CREATE TABLE IF NOT EXISTS ingest_cursor (
     source_path          TEXT PRIMARY KEY,
     canonical_source_path TEXT,
+    captured_profile_key TEXT,
     origin               TEXT CHECK ({check("origin", Origin)} OR origin IS NULL),
     stat_size            INTEGER,
     byte_offset          INTEGER,
@@ -484,6 +496,39 @@ CREATE TABLE IF NOT EXISTS context_injection_ledger (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_context_injection_ledger_build
 ON context_injection_ledger(build_ref, observed_at_ms);
+CREATE TABLE IF NOT EXISTS raw_frontier_cursor_changes (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_path TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS raw_frontier_cursor_journal_control (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    retained_floor INTEGER NOT NULL DEFAULT 0 CHECK(retained_floor>=0)
+) STRICT;
+INSERT OR IGNORE INTO raw_frontier_cursor_journal_control(singleton) VALUES (1);
+CREATE TABLE IF NOT EXISTS raw_frontier_inspection (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    authority_identity TEXT NOT NULL,
+    source_watermark INTEGER NOT NULL CHECK(source_watermark>=0),
+    index_watermark INTEGER NOT NULL CHECK(index_watermark>=0),
+    cursor_watermark INTEGER NOT NULL CHECK(cursor_watermark>=0),
+    state TEXT NOT NULL,
+    inspected_at_ms INTEGER NOT NULL CHECK(inspected_at_ms>=0),
+    detail TEXT
+) STRICT;
+CREATE TRIGGER IF NOT EXISTS raw_frontier_cursor_insert AFTER INSERT ON ingest_cursor
+BEGIN INSERT INTO raw_frontier_cursor_changes(source_path) VALUES (NEW.source_path);
+INSERT INTO raw_frontier_cursor_changes(source_path) SELECT NEW.canonical_source_path WHERE NEW.canonical_source_path IS NOT NULL; END;
+CREATE TRIGGER IF NOT EXISTS raw_frontier_cursor_update AFTER UPDATE ON ingest_cursor
+BEGIN INSERT INTO raw_frontier_cursor_changes(source_path) VALUES (NEW.source_path);
+INSERT INTO raw_frontier_cursor_changes(source_path) SELECT NEW.canonical_source_path WHERE NEW.canonical_source_path IS NOT NULL; END;
+CREATE TRIGGER IF NOT EXISTS raw_frontier_cursor_old_path AFTER UPDATE OF source_path,canonical_source_path ON ingest_cursor
+BEGIN INSERT INTO raw_frontier_cursor_changes(source_path) VALUES (OLD.source_path);
+INSERT INTO raw_frontier_cursor_changes(source_path) SELECT OLD.canonical_source_path WHERE OLD.canonical_source_path IS NOT NULL; END;
+CREATE TRIGGER IF NOT EXISTS raw_frontier_cursor_delete AFTER DELETE ON ingest_cursor
+BEGIN INSERT INTO raw_frontier_cursor_changes(source_path) VALUES (OLD.source_path);
+INSERT INTO raw_frontier_cursor_changes(source_path) SELECT OLD.canonical_source_path WHERE OLD.canonical_source_path IS NOT NULL; END;
+CREATE TRIGGER IF NOT EXISTS raw_frontier_cursor_prune AFTER DELETE ON raw_frontier_cursor_changes
+BEGIN UPDATE raw_frontier_cursor_journal_control SET retained_floor=max(retained_floor,OLD.sequence) WHERE singleton=1; END;
 """
 
 # CREATE TABLE schema_identity; ddl-lifecycle-waiver: derived schema_identity is existing bootstrap metadata; declaring it in canonical DDL changes fresh-bootstrap completeness, not the ops data shape.

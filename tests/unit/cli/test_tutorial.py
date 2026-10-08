@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -12,7 +13,6 @@ from click.testing import CliRunner
 
 from polylogue.cli.commands.tutorial import STAGES, tutorial_command
 from polylogue.cli.shared.types import AppEnv
-from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
 
 class _CapturingConsole:
@@ -34,6 +34,48 @@ def _set_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """Inherit XDG paths from the autouse fixture; set HOME to a sandbox."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     return tmp_path
+
+
+def _starter_toml() -> str:
+    """The config ``polylogue init`` actually writes (no sources detected)."""
+    from polylogue.cli.commands.init import render_starter_toml
+
+    return render_starter_toml(())
+
+
+def _tutorial_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, sessions: int) -> Path:
+    """Bootstrap a real archive at the tutorial's archive root with ``sessions`` sessions."""
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.live_ingest import write_session_sync
+
+    root = tmp_path / "tutorial-archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    bootstrap_archive_root(root)
+    for index in range(sessions):
+        write_session_sync(
+            root / "index.db",
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=f"tutorial-{index}",
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
+            ),
+            archive_root=root,
+        )
+    return root
+
+
+def _resident_search_count(monkeypatch: pytest.MonkeyPatch, count: int) -> None:
+    from polylogue.cli import operation_kernel
+
+    def read(_config: object, operation: str, payload: dict[str, object]) -> Any:
+        assert operation == "query.aggregate"
+        assert payload == {"mode": "count", "params": {}}
+        return SimpleNamespace(value={"count": count})
+
+    monkeypatch.setattr(operation_kernel, "configured_read_operation", read)
 
 
 def test_stage_count() -> None:
@@ -93,7 +135,7 @@ def test_guided_path_hidden_once_config_exists(monkeypatch: pytest.MonkeyPatch, 
     _set_xdg(monkeypatch, tmp_path)
     config_dir = tmp_path / "xdg-config" / "polylogue"
     config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "polylogue.toml").write_text("[sources]\n", encoding="utf-8")
+    (config_dir / "polylogue.toml").write_text(_starter_toml(), encoding="utf-8")
 
     runner = CliRunner()
     env = _make_env()
@@ -119,7 +161,7 @@ def test_stage_starter_config_present(monkeypatch: pytest.MonkeyPatch, tmp_path:
     _set_xdg(monkeypatch, tmp_path)
     config_dir = tmp_path / "xdg-config" / "polylogue"
     config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "polylogue.toml").write_text("[sources]\n")
+    (config_dir / "polylogue.toml").write_text(_starter_toml(), encoding="utf-8")
     satisfied, _ = _stage_starter_config()
     assert satisfied is True
 
@@ -128,14 +170,8 @@ def test_stage_first_search_empty_archive(monkeypatch: pytest.MonkeyPatch, tmp_p
     from polylogue.cli.commands.tutorial import _stage_first_search
 
     _set_xdg(monkeypatch, tmp_path)
-    data_dir = tmp_path / "xdg-data" / "polylogue"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    db = data_dir / "index.db"
-    conn = sqlite3.connect(db)
-    conn.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION}")
-    conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
-    conn.commit()
-    conn.close()
+    _tutorial_archive(monkeypatch, tmp_path, sessions=0)
+    _resident_search_count(monkeypatch, 0)
     satisfied, message = _stage_first_search()
     assert satisfied is False
     assert "empty" in message.lower()
@@ -145,14 +181,8 @@ def test_stage_first_search_reads_archive_file_set(monkeypatch: pytest.MonkeyPat
     from polylogue.cli.commands.tutorial import _stage_first_search
 
     _set_xdg(monkeypatch, tmp_path)
-    data_dir = tmp_path / "xdg-data" / "polylogue"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    db = data_dir / "index.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
-    conn.execute("INSERT INTO sessions VALUES ('codex-session:one')")
-    conn.commit()
-    conn.close()
+    _tutorial_archive(monkeypatch, tmp_path, sessions=1)
+    _resident_search_count(monkeypatch, 1)
     satisfied, message = _stage_first_search()
     assert satisfied is True
     assert "1" in message
@@ -162,23 +192,18 @@ def test_stage_first_search_ignores_retired_single_file_db(monkeypatch: pytest.M
     from polylogue.cli.commands.tutorial import _stage_first_search
 
     _set_xdg(monkeypatch, tmp_path)
-    data_dir = tmp_path / "xdg-data" / "polylogue"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    retired = sqlite3.connect(data_dir / "retired.sqlite")
+    root = _tutorial_archive(monkeypatch, tmp_path, sessions=1)
+    retired = sqlite3.connect(root / "retired.sqlite")
     retired.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
+    retired.executemany("INSERT INTO sessions VALUES (?)", [(n,) for n in range(5)])
     retired.commit()
     retired.close()
-    archive = sqlite3.connect(data_dir / "index.db")
-    archive.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION}")
-    archive.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
-    archive.execute("INSERT INTO sessions VALUES ('codex-session:one')")
-    archive.commit()
-    archive.close()
+    _resident_search_count(monkeypatch, 1)
 
     satisfied, message = _stage_first_search()
 
     assert satisfied is True
-    assert "1" in message
+    assert "1" in message and "5" not in message
 
 
 def test_stage_first_search_no_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

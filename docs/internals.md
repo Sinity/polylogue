@@ -9,14 +9,14 @@ debugging landmarks. For a task-to-owner map, start with
 
 | Invariant | Enforced in |
 | --- | --- |
-| Archive writes are idempotent by content hash | `pipeline/ids.py`, `pipeline/services/ingest_batch/_core.py` |
+| Archive writes are idempotent by content hash | `pipeline/ids.py`, `storage/sqlite/archive_tiers/write.py` |
 | Content hash excludes user metadata (tags, summaries) | `pipeline/ids.py:session_content_hash()` |
 | Content hash NFC-folds only declared prose fields | `pipeline/ids.py:_NFC_TEXT_FIELDS` |
-| Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py`, `pipeline/services/ingest_batch/_core.py` |
+| Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and bootstrap paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py` |
 | SQLite read/write tuning is profile-driven, not backend-local | `storage/sqlite/connection_profile.py` |
 | FTS tokenizer is `unicode61` (no porter stemmer) | `storage/sqlite/archive_tiers/index.py` |
 | A session's transcript order is `(position, variant_index)` for every read -- lineage-composed or not, storage query or markdown export; observed timestamps are metadata and are non-monotonic against position on every origin | `core/identity_law.py:transcript_order_sql()`, read by `storage/sqlite/queries/message_query_reads.py` |
-| `raw_sessions.source_index` is a reacquisition hint, never an address; a container member is addressed by `raw_container_coordinates.addressing_mode` plus content identity | `operations/zip_acquisition_replay.py:resolve_member_candidate()`, `core/content_identity.py:structural_content_identity()` |
+| `raw_sessions.source_index` is a reacquisition hint, never an address; a container member is addressed by `raw_container_coordinates.addressing_mode` plus content identity | `storage/source_zip_replay.py:resolve_member_candidate()`, `core/content_identity.py:structural_content_identity()` |
 | Schema bootstrap branching is shared across sync and async backends | `storage/sqlite/schema_bootstrap.py:decide_schema_bootstrap()` |
 | A tier file's existence/size/`PRAGMA user_version` status is computed exactly once, in the substrate, and consumed by every status surface -- reimplementing this probe per-surface previously let a bare CLI status and a daemon-backed status disagree in production (polylogue-703) | `storage/archive_readiness.py:probe_archive_tier()`, consumed by `daemon/status.py:_archive_tier_status()`, `operations/daemon_workload_probe.py` and `storage/tier_access.py` |
 
@@ -52,7 +52,7 @@ debugging landmarks. For a task-to-owner map, start with
 | `sources/parsers/*.py` | Per-provider parsing |
 | `pipeline/ingest_support.py` | Ingest stage definitions and source selection helpers |
 | `pipeline/ids.py` | Content hashing and ID generation |
-| `pipeline/services/ingest_batch/_core.py` | Batch ingest (largest pipeline file) |
+| `pipeline/services/ingest_batch.py` | Thin adapter from acquired Raw batches to the supplied retained owner |
 
 ## Extension Points
 
@@ -469,7 +469,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   one cross-database atomic transaction. Ordinary ingest marker acceptance has
   its own recoverable source/index protocol: pending source bytes precede the
   index witness, and source acceptance finalizes only after the matching index
-  commit (`pipeline/services/ingest_batch/_core.py`).
+  commit (`operations/raw_observation_derivation.py`).
 - Index schema version 30 makes `session_events` the lossless generic relation
   for every parsed non-message event. It retains open event types and structured
   payloads in original positions while policy and usage tables remain typed
@@ -1000,7 +1000,7 @@ default reading; such a row is never accepted from its position alone.
 
 The position is a hint. Providers reorder, insert into, and re-export their
 members, so the value at a recorded position may be a different and equally
-valid conversation. Reacquisition (`operations/zip_acquisition_replay.py`,
+valid conversation. Reacquisition (`storage/source_zip_replay.py`,
 `storage/blob_integrity.py:_member_payload_by_content()`) therefore checks the
 hinted value's content identity first and returns it only when it matches;
 otherwise it resolves across the whole member and reports a typed ambiguity

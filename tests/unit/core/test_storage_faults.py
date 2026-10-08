@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import sqlite3
+from builtins import BaseExceptionGroup
 
 import pytest
 
@@ -108,3 +109,32 @@ def test_sqlite_snapshot_export_escapes_only_on_capacity() -> None:
     with pytest.raises(ArchiveStorageFaultError):
         raise_if_storage_fault(exported(sqlite3.SQLITE_FULL), kinds=CAPACITY_FAULTS)
     raise_if_storage_fault(exported(sqlite3.SQLITE_READONLY), kinds=CAPACITY_FAULTS)
+
+
+@pytest.mark.parametrize("kind,number", [(StorageFaultKind.IO, errno.EIO), (StorageFaultKind.CAPACITY, errno.ENOSPC)])
+def test_grouped_terminal_storage_failure_is_retryable(kind: StorageFaultKind, number: int) -> None:
+    primary = ValueError("synthetic parser work failure")
+    cleanup = OSError(number, "synthetic terminal storage failure")
+    wrapped = RuntimeError("synthetic native owner failure")
+    wrapped.__cause__ = cleanup
+    failure = BaseExceptionGroup("mutation and cleanup", [primary, BaseExceptionGroup("native cleanup", [wrapped])])
+    assert storage_fault_kind(failure) is kind
+    disposition = classify_archive_write_exception(failure)
+    assert disposition.retryable and disposition.outcome_code == "transient_error"
+    assert disposition.evidence_ref == f"archive_write:storage_fault:{kind.value}"
+    with pytest.raises(ArchiveStorageFaultError) as caught:
+        raise_if_storage_fault(failure)
+    assert caught.value.kind is kind and caught.value.__cause__ is failure
+
+
+def test_storage_fault_traversal_keeps_deep_siblings_and_terminates_cycles() -> None:
+    cycle = RuntimeError("cycle")
+    cycle.__cause__ = cycle
+    fault: BaseException = OSError(errno.EIO, "synthetic storage failure")
+    for _ in range(32):
+        wrapper = RuntimeError("nested owner")
+        wrapper.__cause__ = fault
+        fault = wrapper
+    failure = BaseExceptionGroup("terminal siblings", [cycle, fault])
+    assert storage_fault_kind(failure) is StorageFaultKind.IO
+    assert storage_fault_kind(BaseExceptionGroup("non-storage siblings", [cycle, ValueError("input")])) is None

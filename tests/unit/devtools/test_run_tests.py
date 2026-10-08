@@ -1061,16 +1061,11 @@ def test_a_focused_failure_retains_its_first_report_without_retry(
 
     def execute(command: list[str], **kwargs: Any) -> SlotOutcome:
         calls.append(command)
-        assert "POLYLOGUE_PYTEST_RERUN_IN_SLOT" not in kwargs["env"]
         return SlotOutcome(returncode=1, slot="held")
-
-    def unexpected_retry(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("ordinary failure must not trigger a diagnostic retry")
 
     monkeypatch.setattr(run_tests, "write_run_receipt", lambda _path: None)
     monkeypatch.setattr(run_tests, "run_pytest", execute)
     monkeypatch.setattr(run_tests, "run_pytest_isolated", execute)
-    monkeypatch.setattr("devtools.pytest_rerun.rerun_failed_once", unexpected_retry)
     exit_code, _elapsed, metadata = run_tests._run(
         "pytest focused",
         ["pytest"],
@@ -1095,11 +1090,7 @@ def test_an_unfinishable_focused_run_is_never_adjudicated(monkeypatch: pytest.Mo
         json.dumps({"tests": [{"nodeid": "tests/test_a.py::test_x", "outcome": "failed"}]}), encoding="utf-8"
     )
 
-    def explode(*_args: Any, **_kwargs: Any) -> SlotOutcome:
-        raise AssertionError("an unfinishable run must not be rerun")
-
     monkeypatch.setattr(run_tests, "write_run_receipt", lambda _path: None)
-    monkeypatch.setattr("devtools.pytest_rerun.run_pytest", explode)
     monkeypatch.setattr(run_tests, "run_pytest", lambda *_a, **_k: SlotOutcome(returncode=3, slot="held"))
 
     exit_code, _elapsed, metadata = run_tests._run(

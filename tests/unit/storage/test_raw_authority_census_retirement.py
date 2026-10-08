@@ -15,16 +15,19 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.config import Config
 from polylogue.storage.archive_readiness import (
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
 )
-from polylogue.storage.raw_authority import resolve_raw_authority_blocker
-from polylogue.storage.raw_reconciler import RawAuthorityFrontierState, inspect_raw_authority_frontier
+from polylogue.storage.frontier_inspection import (
+    inspect_prepared_raw_authority_frontier,
+    prepared_frontier_blocker_acknowledgement,
+)
+from polylogue.storage.raw_reconciler import RawAuthorityFrontierState
 from polylogue.storage.sqlite.archive_tiers.schema_inventory import canonical_schema_objects
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+from tests.infra.live_ingest import prepared_live_convergence_owner
 
 #: Every object the census ledger declared.
 RETIRED_CENSUS_OBJECTS = (
@@ -47,10 +50,6 @@ RETAINED_AUTHORITY_TABLES = (
 )
 
 
-def _config(root: Path) -> Config:
-    return Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "index.db")
-
-
 @pytest.mark.parametrize("object_ref", RETIRED_CENSUS_OBJECTS)
 def test_fresh_source_ddl_omits_every_census_ledger_object(object_ref: str) -> None:
     """A fresh source generation declares none of the census ledger objects."""
@@ -65,9 +64,11 @@ def test_retained_raw_authority_tables_are_still_declared(table: str) -> None:
     assert table in declared
 
 
-def test_a_fresh_archive_builds_without_the_census_ledger(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_a_fresh_archive_builds_without_the_census_ledger(tmp_path: Path) -> None:
     """Bootstrapping creates the retained tables and none of the retired ones."""
-    bootstrap_archive_root(tmp_path)
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
     with sqlite3.connect(tmp_path / "source.db") as conn:
         live = {
             str(name)
@@ -77,25 +78,38 @@ def test_a_fresh_archive_builds_without_the_census_ledger(tmp_path: Path) -> Non
     assert live.isdisjoint({ref.split(":", 1)[1] for ref in RETIRED_CENSUS_OBJECTS})
 
 
-def test_frontier_inspection_is_content_addressed_and_writes_nothing_when_unchanged(tmp_path: Path) -> None:
-    """Two passes over an unchanged, clean frontier agree and record no rows.
-
-    Anti-vacuity: the census ledger's whole purpose was recording one row set
-    per pass. If any per-pass ledger were reintroduced, the second pass would
-    either write rows here or mint a different ``pass_id``.
-    """
-    bootstrap_archive_root(tmp_path)
-
-    first = inspect_raw_authority_frontier(_config(tmp_path))
-    second = inspect_raw_authority_frontier(_config(tmp_path))
-
-    assert first.pass_id == second.pass_id
-    assert first.pass_id.startswith("raw-authority-frontier-pass:")
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_frontier_inspection_writes_no_source_ledger_when_unchanged(tmp_path: Path) -> None:
+    """Inspection measures Ops coverage without resurrecting a Source pass ledger."""
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
+    source_before = (tmp_path / "source.db").read_bytes()
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        first = await owner.run_convergence_sync(
+            "fixture.retirement.inspect",
+            inspect_prepared_raw_authority_frontier,
+            tmp_path,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+        )
+        second = await owner.run_convergence_sync(
+            "fixture.retirement.inspect",
+            inspect_prepared_raw_authority_frontier,
+            tmp_path,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+        )
+    assert first.mode == "full" and first.healthy
+    assert first.pass_id is not None
+    assert second.mode == "current" and second.healthy and second.pass_id is None
+    assert (tmp_path / "source.db").read_bytes() == source_before
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_authority_blockers").fetchone()[0] == 0
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_frontier_inspection").fetchone()[0] == 1
 
 
-def test_readiness_still_reads_blockers_after_the_census_tables_are_gone(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_readiness_still_reads_blockers_after_the_census_tables_are_gone(tmp_path: Path) -> None:
     """A blocking frontier refutes readiness through the durable blocker row.
 
     This is the regression the retirement could have caused silently: the old
@@ -105,35 +119,39 @@ def test_readiness_still_reads_blockers_after_the_census_tables_are_gone(tmp_pat
 
     Anti-vacuity: resolving the one blocker flips both assertions back.
     """
-    bootstrap_archive_root(tmp_path)
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_authority_blockers (
-                blocker_id, plan_input_digest, observed_pass_id, reason,
-                expected_json, observed_json, created_at_ms
-            ) VALUES (
-                'raw-authority-blocker:retirement-test', ?, 'raw-authority-frontier-pass:test',
-                'missing bytes require reacquisition', ?,
-                '{"state": "missing_bytes_reacquire"}', 1000
-            )
-            """,
-            (
-                "d" * 64,
-                json.dumps(
-                    {
-                        "plan_id": "raw-replay:retirement-test",
-                        "input_digest": "d" * 64,
-                        "input_raw_ids": [],
-                        "logical_keys": [],
-                        "authority_witness": {"schema": "polylogue.raw-authority-frontier-plan.v1"},
-                        "source_preconditions": {},
-                        "index_preconditions": {},
-                    }
+
+    def seed_blocker() -> None:
+        bootstrap_archive_root(tmp_path)
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_authority_blockers (
+                    blocker_id, plan_input_digest, observed_pass_id, reason,
+                    expected_json, observed_json, created_at_ms
+                ) VALUES (
+                    'raw-authority-blocker:retirement-test', ?, 'raw-authority-frontier-pass:test',
+                    'missing bytes require reacquisition', ?,
+                    '{"state": "missing_bytes_reacquire"}', 1000
+                )
+                """,
+                (
+                    "d" * 64,
+                    json.dumps(
+                        {
+                            "plan_id": "raw-replay:retirement-test",
+                            "input_digest": "d" * 64,
+                            "input_raw_ids": [],
+                            "logical_keys": [],
+                            "authority_witness": {"schema": "polylogue.raw-authority-frontier-plan.v1"},
+                            "source_preconditions": {},
+                            "index_preconditions": {},
+                        }
+                    ),
                 ),
-            ),
-        )
-        conn.commit()
+            )
+            conn.commit()
+
+    await run_archive_fixture_write(tmp_path, seed_blocker)
 
     blocked = raw_materialization_readiness_snapshot(tmp_path)
     assert blocked["raw_authority_blocker_count"] == 1
@@ -143,26 +161,40 @@ def test_readiness_still_reads_blockers_after_the_census_tables_are_gone(tmp_pat
     assert refs[0]["blocker_id"] == "raw-authority-blocker:retirement-test"
     assert refs[0]["observed_pass_id"] == "raw-authority-frontier-pass:test"
 
-    resolve_raw_authority_blocker(
-        tmp_path,
-        "raw-authority-blocker:retirement-test",
-        resolution="reacquired the missing bytes",
-    )
+    from polylogue.core.stage_admission import admit_stage_write
+
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+
+        def resolve_blocker() -> None:
+            with prepared_frontier_blocker_acknowledgement(
+                tmp_path,
+                "raw-authority-blocker:retirement-test",
+                resolution="reacquired the missing bytes",
+                input_demand=owner._compute_adapter.amend_current_input_demand,
+            ) as prepared:
+                assert prepared.found
+                admit_stage_write("fixture.retirement.resolve", prepared.publish)
+
+        await owner.run_convergence_sync("fixture.retirement.acknowledge", resolve_blocker)
 
     cleared = raw_materialization_readiness_snapshot(tmp_path)
     assert cleared["raw_authority_blocker_count"] == 0
     assert cleared["raw_authority_frontier_remediation_refs"] == []
 
 
-def test_frontier_obligation_states_are_the_only_blocker_writers_left(tmp_path: Path) -> None:
-    """Every published blocker names an obligation state, not a plan outcome.
-
-    The retired stale-plan and invalid-application blocker writers updated
-    ``raw_authority_census_plans`` in the same transaction as their blocker
-    insert, so they could not survive the drop. This pins what remains.
-    """
-    bootstrap_archive_root(tmp_path)
-    inspect_raw_authority_frontier(_config(tmp_path))
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_frontier_obligation_states_are_the_only_blocker_writers_left(tmp_path: Path) -> None:
+    """Prepared inspection retains the obligation vocabulary after census retirement."""
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        outcome = await owner.run_convergence_sync(
+            "fixture.retirement.obligations",
+            inspect_prepared_raw_authority_frontier,
+            tmp_path,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+        )
+    assert outcome.healthy
     with sqlite3.connect(tmp_path / "source.db") as conn:
         origins = {
             str(origin)
@@ -174,36 +206,69 @@ def test_frontier_obligation_states_are_the_only_blocker_writers_left(tmp_path: 
     assert {state.value for state in RawAuthorityFrontierState} >= {"missing_bytes_reacquire", "corrupt"}
 
 
-def test_terminal_supersessions_are_reported_but_not_counted_as_plans(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from polylogue.core.json import json_document
-    from polylogue.storage.raw_reconciler import RawAuthorityFrontierItem
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_terminal_supersessions_remain_readable_without_creating_obligations(tmp_path: Path) -> None:
+    """Resident replay retains the losing snapshot and its terminal application evidence."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    terminal = RawAuthorityFrontierItem(
-        state=RawAuthorityFrontierState.SUPERSEDED,
-        raw_id="raw:terminal",
-        logical_source_key=None,
-        session_id=None,
-        reason="terminal supersession",
-        evidence_digest="digest",
-        input_raw_ids=(),
-        source_preconditions=json_document({}),
-        index_preconditions=json_document({}),
-        plan_id="plan:terminal",
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.raw_reconciler._frontier_items",
-        lambda _config: ((terminal,), 0, 1),
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.offline_guard.offline_maintenance_block_reason",
-        lambda _config, **_kwargs: None,
-    )
-    monkeypatch.setattr("polylogue.storage.raw_reconciler._reconcile_frontier_obligations", lambda *_args: {})
+    def acquire() -> tuple[str, str]:
+        bootstrap_archive_root(tmp_path)
+        records = [
+            {
+                "type": "user",
+                "uuid": f"retirement-user-{index}",
+                "sessionId": "retirement-session",
+                "timestamp": f"2026-07-20T10:00:0{index}.000Z",
+                "message": {"role": "user", "content": f"neutral message {index}"},
+            }
+            for index in range(2)
+        ]
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            raw_ids = []
+            for count in (1, 2):
+                raw_ids.append(
+                    archive.write_raw_payload(
+                        provider=Provider.CLAUDE_CODE,
+                        payload=("".join(json.dumps(record) + "\n" for record in records[:count])).encode(),
+                        source_path="neutral/retirement-session.jsonl",
+                        canonical_source_path="neutral/retirement-session.jsonl",
+                        acquired_at_ms=count,
+                    )
+                )
+            archive.commit()
+        return raw_ids[0], raw_ids[1]
 
-    census = inspect_raw_authority_frontier(_config(tmp_path))
-
-    assert census.terminal_superseded_count == 1
-    assert census.plan_count == 0
-    assert census.items[0].state is RawAuthorityFrontierState.SUPERSEDED
+    old_raw, new_raw = await run_archive_fixture_write(tmp_path, acquire)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        receipts = (await owner.ingest_retained_raw_ids((old_raw, new_raw))).require_complete()
+        assert receipts
+        outcome = await owner.run_convergence_sync(
+            "fixture.retirement.terminal",
+            inspect_prepared_raw_authority_frontier,
+            tmp_path,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id IN (?,?)", (old_raw, new_raw)).fetchone()[0]
+            == 2
+        )
+        assert (
+            conn.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL").fetchone()[0] == 0
+        )
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert (
+            conn.execute("SELECT decision FROM raw_revision_applications WHERE raw_id=?", (old_raw,)).fetchone()[0]
+            == "superseded"
+        )
+        assert (
+            conn.execute("SELECT COUNT(*) FROM raw_revision_heads WHERE accepted_raw_id=?", (old_raw,)).fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute("SELECT COUNT(*) FROM raw_revision_heads WHERE accepted_raw_id=?", (new_raw,)).fetchone()[0]
+            > 0
+        )
+    assert outcome.healthy and outcome.blocking_head_checks == 0

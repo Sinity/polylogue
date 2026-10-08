@@ -734,12 +734,31 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     from polylogue.cli.lowering import lower_cli_query, lower_query_aggregate, lower_query_units
     from polylogue.cli.operation_kernel import OperationKernelError
 
-    if tags_to_add or metadata_to_set:
-        _emit_user_mutations(
-            env, request, tags_to_add=tags_to_add, metadata_to_set=metadata_to_set, limit=limit, offset=page_offset
-        )
-        return
-    if delete_matched:
+    if tags_to_add or metadata_to_set or delete_matched:
+        # A lone ref-shaped token names one session, exactly as it does for a
+        # read. A read may fall through to a text search when no such session
+        # exists; a mutation may not, because that search can match every
+        # session whose text mentions the token and the write would reach all
+        # of them.
+        exact_session_ids: list[str] | None = None
+        if session_scope_id is None and query and not similar_text and _single_query_token_looks_like_ref(query):
+            resolved = _transcript_or_page(
+                config, query, daemon_disabled=daemon_disabled, message_limit=1, certain=False
+            )
+            if resolved is None:
+                _fail(f"Session not found: {query}")
+            exact_session_ids = [str(resolved.get("session_id") or query)]
+        if tags_to_add or metadata_to_set:
+            _emit_user_mutations(
+                env,
+                request,
+                tags_to_add=tags_to_add,
+                metadata_to_set=metadata_to_set,
+                limit=limit,
+                offset=page_offset,
+                session_ids=exact_session_ids,
+            )
+            return
         execute_delete_selection(
             env,
             request,
@@ -748,6 +767,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             offset=page_offset,
             force=bool(params.get("force")),
             dry_run=bool(params.get("dry_run")),
+            session_ids=exact_session_ids,
         )
         return
 
@@ -857,12 +877,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 return
             _emit_session_result(session, output_format=output_format, fields=fields, view=read_view)
             return
-        if tags_to_add or metadata_to_set or delete_matched:
-            # The token looked like one session's id and no such session
-            # exists. A read may fall through to a text search for it; a
-            # mutation may not, because that search can match every session
-            # whose text mentions the id and the write would reach all of them.
-            _fail(f"Session not found: {transcript_ref}")
 
     # --- Ordinary page: one declared session query, rendered as list or search.
     try:
@@ -1388,23 +1402,28 @@ def _emit_user_mutations(
     metadata_to_set: tuple[tuple[str, str], ...],
     limit: int,
     offset: int,
+    session_ids: Sequence[str] | None = None,
 ) -> None:
-    """Submit the displayed root window and all changes as one resident intent."""
+    """Submit the displayed root window and all changes as one resident intent.
+
+    ``session_ids`` names an exact selection the caller already resolved; it
+    replaces the page selection rather than narrowing it.
+    """
     from polylogue.cli.lowering import lower_user_change
     from polylogue.surfaces.payloads import MutationResultPayload
 
-    result = submit_cli_mutation(
-        env,
-        "mutation.session.mark",
-        lower_user_change(
-            request,
-            mode="page",
-            limit=limit,
-            offset=offset,
-            tags=tags_to_add,
-            pairs=metadata_to_set,
-        ),
+    payload = lower_user_change(
+        request,
+        mode="page",
+        limit=limit,
+        offset=offset,
+        tags=tags_to_add,
+        pairs=metadata_to_set,
     )
+    if session_ids is not None:
+        del payload["selection"]
+        payload["session_ids"] = list(session_ids)
+    result = submit_cli_mutation(env, "mutation.session.mark", payload)
     tags = _object_int(result.get("tag_count"))
     metadata = _object_int(result.get("applied_count"))
     if not metadata_to_set:

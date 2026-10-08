@@ -24,11 +24,14 @@ from polylogue.api.archive_reads import ArchiveReadCapability
 from polylogue.api.facade_client import submit_facade_product
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.blackboard import BlackboardNote
+from polylogue.archive.context_models import (
+    DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
+    DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
+)
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
 from polylogue.archive.message.models import Message
-from polylogue.archive.message.roles import MessageRoleFilter, Role
+from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.message.types import MessageType, validate_message_type_filter
-from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
 from polylogue.archive.query.spec import (
     DEFAULT_SESSION_LIST_LIMIT,
     normalize_action_sequence,
@@ -40,10 +43,6 @@ from polylogue.archive.query.transaction import archive_read_context, run_archiv
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.config import active_archive_root as _active_archive_root
-from polylogue.context.compiler import (
-    DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
-    DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
-)
 from polylogue.context.scheduler import (
     ContextLedgerRecord,
     read_context_ledger,
@@ -88,17 +87,9 @@ from polylogue.storage.sqlite.connection_profile import read_frame as read_frame
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 from polylogue.surfaces.chronicle import (
     ChronicleProjectionPayload,
-    ChronicleSessionPayload,
-    build_chronicle_projection_payload,
-    build_chronicle_session_payload,
 )
 from polylogue.surfaces.temporal_evidence import (
-    TemporalEvidenceEvent,
     TemporalEvidenceWindow,
-    action_row_to_temporal_event,
-    build_temporal_evidence_window,
-    message_row_to_temporal_event,
-    summary_to_temporal_event,
 )
 
 if TYPE_CHECKING:
@@ -119,6 +110,7 @@ if TYPE_CHECKING:
     from polylogue.annotations.join_contracts import AnnotationStructuralJoinResult
     from polylogue.annotations.schema import AnnotationSchemaRegistry
     from polylogue.api import Polylogue
+    from polylogue.archive.context_models import ContextImage, ContextOmission, ContextSpec
     from polylogue.archive.filter.filters import SessionFilter
     from polylogue.archive.message.models import Message
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
@@ -130,7 +122,6 @@ if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.context.claude_agent_dispatch_correlation import ClaudeAgentDispatchCorrelation
     from polylogue.context.codex_spawn_edge_correlation import CodexSpawnEdgeReconciliation
-    from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
     from polylogue.context.hermes_delivery_correlation import HermesContextDeliveryCorrelation
     from polylogue.core.protocols import ProgressCallback
     from polylogue.operations import ArchiveStats
@@ -398,81 +389,32 @@ def _archive_action_sequence(values: Sequence[str]) -> tuple[str, ...]:
     return normalize_action_sequence("action_sequence", ",".join(values))
 
 
-def _archive_context_session_predicate(session_id: str) -> QueryFieldPredicate:
-    """Build a bound exact-session predicate without reparsing public DSL text."""
-
-    return QueryFieldPredicate(field="session.id", values=(session_id,), op="=").with_field_ref(
-        QueryFieldRef(scope="session", name="id", source_name="session.id")
-    )
-
-
 def _archive_context_temporal_window(config: Config, summary: SessionSummary) -> TemporalEvidenceWindow:
-    """Build a bounded temporal context window for one selected session."""
+    """Build the temporal context excerpt for one selected session."""
+    from polylogue.operations.context_image_product import CONTEXT_TEMPORAL_MESSAGE_EVENTS, context_temporal_window
 
-    session_id = str(summary.id)
-    message_limit = 8
-    action_limit = 4
-    events: list[TemporalEvidenceEvent] = []
-    if session_event := summary_to_temporal_event(summary):
-        events.append(session_event)
-    caveats: list[str] = []
     with archive_read_context(
         _active_archive_root(config),
         operation="archive.context.temporal_window",
-        arguments={"session_id": session_id},
-        page_size=message_limit,
+        arguments={"session_id": str(summary.id)},
+        page_size=CONTEXT_TEMPORAL_MESSAGE_EVENTS,
         projection="temporal-window",
         stable_order="time,message_id",
     ) as archive:
-        message_rows = archive.query_messages(
-            _archive_context_session_predicate(session_id),
-            limit=message_limit,
-            sort="time",
-            sort_direction="asc",
-        )
-        action_rows = archive.query_session_actions([session_id], limit=action_limit, sort_direction="asc")
-    events.extend(event for row in message_rows if (event := message_row_to_temporal_event(row)) is not None)
-    events.extend(event for row in action_rows if (event := action_row_to_temporal_event(row)) is not None)
-    if len(message_rows) >= message_limit and (summary.message_count or 0) > message_limit:
-        caveats.append("message_events_capped")
-    if len(action_rows) >= action_limit:
-        caveats.append("action_events_capped")
-    return build_temporal_evidence_window(events, caveats=caveats)
+        return context_temporal_window(archive, summary)
 
 
-async def _archive_context_chronicle_payload(
-    config: Config,
-    summary: SessionSummary,
-    *,
-    edge_limit: int = 8,
-) -> ChronicleProjectionPayload:
-    """Build a bounded chronicle projection for one selected session."""
+async def _archive_context_chronicle_payload(config: Config, summary: SessionSummary) -> ChronicleProjectionPayload:
+    """Build the chronicle context excerpt for one selected session."""
+    from polylogue.operations.context_image_product import context_chronicle_payload
 
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-    archive_root = _active_archive_root(config)
-    backend = SQLiteBackend(db_path=archive_root / "index.db")
-    session_payloads: list[ChronicleSessionPayload] = []
-    try:
-        first_messages, last_messages, total = await backend.get_message_edge_windows(
-            str(summary.id),
-            message_role=(Role.USER, Role.ASSISTANT),
-            message_type="message",
-            material_origin=(MaterialOrigin.HUMAN_AUTHORED, MaterialOrigin.ASSISTANT_AUTHORED),
-            edge_limit=edge_limit * 5,
-        )
-        session_payloads.append(
-            build_chronicle_session_payload(
-                summary,
-                first_messages=first_messages,
-                last_messages=last_messages,
-                total_matching_messages=total,
-                edge_limit=edge_limit,
-            )
-        )
-    finally:
-        await backend.close()
-    return build_chronicle_projection_payload(session_payloads, edge_limit=edge_limit)
+    with archive_read_context(
+        _active_archive_root(config),
+        operation="archive.context.chronicle",
+        arguments={"session_id": str(summary.id)},
+        projection="chronicle",
+    ) as archive:
+        return context_chronicle_payload(archive, summary)
 
 
 def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) -> dict[str, object]:
@@ -522,9 +464,17 @@ def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) 
         kwargs["reverse"] = True
     if spec.sample is not None:
         # ``spec.sample`` is the requested page size; ``list_summaries(sample=...)``
-        # is the boolean "order randomly" switch, and the size travels as
-        # ``limit``. Passing the count through worked only because it is truthy.
+        # is the boolean "order randomly" switch. Sampling starts at offset
+        # zero and its requested size replaces the ordinary page limit.
         kwargs["sample"] = True
+        kwargs["limit"] = spec.sample
+        kwargs["offset"] = 0
+    elif spec.latest:
+        # Keep the low-level summary route aligned with query_spec_to_plan.
+        # The plan's latest expansion is an updated-date ordering and one row.
+        latest = spec.to_plan()
+        kwargs["sort"] = latest.sort
+        kwargs["limit"] = latest.limit
     return kwargs
 
 
@@ -1210,13 +1160,13 @@ def _archive_aggregate_facet_families(
 def _canonical_repo_facet_label(*, repo_name: object, root_path: object, origin_url: object) -> str | None:
     """Return a product-level repo facet label or ``None`` for path noise."""
 
-    repo = _clean_repo_label(repo_name)
+    repo = repo_name if isinstance(repo_name, str) and repo_name else None
     if repo and not _is_noisy_repo_label(repo):
         return repo
     url_label = _repo_label_from_url(origin_url)
     if url_label and not _is_noisy_repo_label(url_label):
         return url_label
-    root = _clean_repo_label(root_path)
+    root = root_path if isinstance(root_path, str) and root_path else None
     if root is None:
         return None
     basename = root.rstrip("/").rsplit("/", maxsplit=1)[-1]
@@ -2206,8 +2156,7 @@ class _ArchiveNeighborRuntime:
 def _actions_for_session(session: Session) -> tuple[Action, ...]:
     """Derive ordered actions from an archive session's tool blocks.
 
-    Mirrors the ingest-time derivation (``pipeline/services/ingest_worker``):
-    each message's content blocks are parsed into tool calls, then promoted
+    Each message's content blocks are parsed into tool calls, then promoted
     to ``Action`` records. No storage round-trip — the domain
     session already carries the content blocks the actions are built from.
     """
@@ -3306,7 +3255,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         spec: ContextSpec,
     ) -> tuple[list[str], dict[str, str], list[ContextOmission]]:
         """Resolve ContextSpec query/filter seed selection into session ids."""
-        from polylogue.context.compiler import ContextOmission
+        from polylogue.archive.context_models import ContextOmission
         from polylogue.context.selection import clamp_context_image_limit, select_context_image_sessions
 
         session_ids: list[str] = []
@@ -3365,7 +3314,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         return session_ids, message_anchor_by_session, omitted
 
     async def record_manual_continuation(self, child_session_id: str, parent_session_id: str) -> None:
-        """Record a spawned-fresh continuation and its first handoff claim."""
+        """Commit a durable handoff parent and derive its spawned-fresh continuation."""
         from polylogue.api.facade_client import submit_facade_writer
 
         child = str(child_session_id).strip()
@@ -3450,7 +3399,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         accumulation, omission accounting, and assertion inclusion are all
         delegated to :meth:`compile_context`.
         """
-        from polylogue.context.compiler import ContextSpec
+        from polylogue.archive.context_models import ContextSpec
         from polylogue.surfaces.projection_spec import projection_from_views
 
         views: tuple[str, ...] = ("messages",) if include_messages else ()
@@ -3511,7 +3460,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         source_tool_calls: dict[str, str] | None = None,
     ) -> Any:
         """Build a scheduler-admitted context preamble for one boundary."""
-        import asyncio
         from contextlib import suppress
         from datetime import datetime, timezone
 
@@ -3525,21 +3473,19 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             _active_archive_root(self.config),
             operation="context.preamble",
             arguments={"session_id": session_id, "related_limit": related_limit, "boundary": boundary},
-            work=lambda archive: asyncio.run(
-                execute_context_preamble(
-                    archive,
-                    session_id=session_id,
-                    related_limit=related_limit,
-                    repo_path=repo_path,
-                    cwd=cwd,
-                    recent_files=recent_files,
-                    source_tool_calls=source_tool_calls or {"context_preamble_payload": "polylogue-api"},
-                    require_session=require_session,
-                    boundary=boundary,
-                    token_budget=token_budget,
-                    observed_project_state=project_state,
-                    observed_at=observed_at,
-                )
+            work=lambda archive: execute_context_preamble(
+                archive,
+                session_id=session_id,
+                related_limit=related_limit,
+                repo_path=repo_path,
+                cwd=cwd,
+                recent_files=recent_files,
+                source_tool_calls=source_tool_calls or {"context_preamble_payload": "polylogue-api"},
+                require_session=require_session,
+                boundary=boundary,
+                token_budget=token_budget,
+                observed_project_state=project_state,
+                observed_at=observed_at,
             ),
         )
         if result.ledger is not None:
@@ -5206,6 +5152,58 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             for summary in archive_summaries
         ]
 
+    async def list_session_summaries_with_count(
+        self,
+        spec: SessionQuerySpec,
+    ) -> tuple[builtins.list[SessionSummary], int]:
+        """Read one session page and its total from the same archive snapshot."""
+
+        def read(archive: Any) -> tuple[builtins.list[SessionSummary], int]:
+            from polylogue.archive.query.archive_execution import _count_in_archive, _list_summaries_in_archive
+
+            if spec.session_id is not None:
+                try:
+                    archive.resolve_session_id(spec.session_id)
+                except KeyError:
+                    return [], 0
+            count_plan = spec.to_plan()
+            plan = count_plan
+            if spec.sample is not None:
+                if spec.sample <= 0:
+                    raise ValueError("sample must be positive")
+                if spec.query_terms or spec.contains_terms:
+                    raise ValueError("sample does not combine with search terms")
+                if spec.cursor:
+                    raise ValueError("sample does not combine with a cursor")
+                plan = replace(plan, sort="random", limit=spec.sample, offset=0, sample=None)
+            summaries = _list_summaries_in_archive(
+                plan,
+                archive,
+                config=self.config,
+                archive_root=_active_archive_root(self.config),
+                default_limit=DEFAULT_SESSION_LIST_LIMIT,
+            )
+            total = _count_in_archive(
+                count_plan,
+                archive,
+                config=self.config,
+                archive_root=_active_archive_root(self.config),
+            )
+            if spec.latest:
+                total = min(total, 1)
+            return summaries, total
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.sessions.list-with-count",
+            arguments={"spec": spec},
+            work=read,
+            page_size=spec.limit,
+            offset=spec.offset,
+            projection="session-summary-and-count",
+            workload_class="scan" if spec.limit is None or spec.limit > 1000 else "interactive",
+        )
+
     async def count_sessions(
         self,
         *,
@@ -5369,12 +5367,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         At least one of ``session_id`` or ``query`` must be provided.
         """
-        import asyncio
-
         from polylogue.archive.session.neighbor_candidates import (
             NeighborDiscoveryRequest,
             discover_neighbor_candidates,
         )
+        from polylogue.core.async_bridge import complete_without_suspension
 
         request = NeighborDiscoveryRequest(
             session_id=session_id,
@@ -5393,7 +5390,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 "limit": limit,
                 "window_hours": window_hours,
             },
-            work=lambda archive: asyncio.run(discover_neighbor_candidates(_ArchiveNeighborRuntime(archive), request)),
+            # The admitted read may run nested on a compute worker driving an
+            # event loop; the archive-backed runtime never suspends.
+            work=lambda archive: complete_without_suspension(
+                discover_neighbor_candidates(_ArchiveNeighborRuntime(archive), request)
+            ),
             page_size=limit,
             projection="neighbor-candidates",
             stable_order="score,time,session_id",

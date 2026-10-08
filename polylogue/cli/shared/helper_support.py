@@ -176,17 +176,11 @@ def mutation_refusal(exc: Exception, operation: str) -> click.ClickException:
 
             return EmptyCardinalityError(str(exc.detail))
         if exc.code == "selection_ambiguous":
-            from polylogue.cli.contextual_errors import NextAction
-            from polylogue.cli.verb_cardinality import AmbiguousCardinalityError
+            from polylogue.cli.verb_cardinality import ambiguous_resident_selection
 
             sample = exc.data.get("session_ids_sample")
             candidates = tuple(value for value in sample if isinstance(value, str)) if isinstance(sample, list) else ()
-            return AmbiguousCardinalityError(
-                str(exc.detail),
-                candidates=candidates,
-                bounded=True,
-                next_actions=(NextAction("Act on every match", "polylogue find <QUERY> then mark/delete --all"),),
-            )
+            return ambiguous_resident_selection(operation, candidates)
         return click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}")
     return click.ClickException(f"{operation} failed: {exc}")
 

@@ -8,11 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.registry import SchemaRegistry
-from polylogue.schemas.validator import SchemaValidator, ValidationResult
-from polylogue.storage.runtime import RawSessionRecord
+from polylogue.schemas.validator import (
+    RetainedValidationVerdict,
+    SchemaValidator,
+    ValidationResult,
+    validate_retained_document,
+)
 
 _ELEMENT_KIND = "session_record_stream"
 
@@ -151,42 +155,42 @@ def test_inferred_package_choice_can_use_historical_fallback(schema_registry: Sc
     assert payload_validation.sample_results[0][1].is_valid
 
 
-def test_strict_ingest_uses_accepted_historical_schema_resolution(
-    schema_registry: SchemaRegistry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_strict_retained_validation_uses_accepted_historical_schema_resolution(
+    schema_registry: SchemaRegistry, tmp_path: Path
 ) -> None:
-    """Strict ingest carries a legacy stream's accepted schema into parsing."""
-    from polylogue.pipeline.services import ingest_worker
-    from polylogue.pipeline.services.ingest_worker import _IngestContext, _ParsePlan, ingest_record
-    from polylogue.storage.blob_store import get_blob_store
-
+    """Strict retained validation accepts a legacy stream through its selected schema."""
     payload = _payload({"type": "shutdown_request", "reason": "done"})
-    raw_content = json.dumps(payload).encode() + b"\n"
-    blob_store = get_blob_store()
-    raw_id, blob_size = blob_store.write_from_bytes(raw_content)
-    raw_record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name=Provider.CLAUDE_CODE,
-        payload_provider=Provider.CLAUDE_CODE,
-        source_path="/exports/legacy-claude-code.jsonl",
-        blob_size=blob_size,
-        acquired_at="2026-01-01T00:00:00Z",
+    path = tmp_path / "legacy.jsonl"
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    requested_resolution = SchemaResolution(
+        provider="claude-code",
+        package_version="v2",
+        element_kind=_ELEMENT_KIND,
+        exact_structure_id=None,
+        bundle_scope=None,
+        reason="package_default",
     )
-    observed: dict[str, object] = {}
-    original_parse_plan_sessions = ingest_worker._parse_plan_sessions
 
-    def capture_parse_plan_sessions(context: _IngestContext, plan: _ParsePlan) -> object:
-        observed["schema_resolution"] = plan.schema_resolution
-        return original_parse_plan_sessions(context, plan)
+    result: RetainedValidationVerdict = validate_retained_document(
+        Provider.CLAUDE_CODE,
+        path,
+        mode=ValidationMode.STRICT,
+        raw_id="raw-historical-claude",
+        revision_sha256="a" * 64,
+        evidence_id="raw-historical-claude",
+        source_path="/exports/legacy-claude-code.jsonl",
+        jsonl=True,
+        schema_resolution=requested_resolution,
+        schema_resolution_is_explicit=False,
+        registry=schema_registry,
+    )
 
-    monkeypatch.setattr("polylogue.pipeline.services.ingest_worker._SCHEMA_REGISTRY", schema_registry)
-    monkeypatch.setattr(ingest_worker, "_parse_plan_sessions", capture_parse_plan_sessions)
-
-    result = ingest_record(raw_record, str(tmp_path / "archive"), "strict")
-
-    assert result.error is None
-    assert result.sessions
-    assert isinstance(observed["schema_resolution"], SchemaResolution)
-    assert observed["schema_resolution"].package_version == "v1"
+    assert result.status is ValidationStatus.PASSED
+    assert not result.strict_refusal
+    assert result.sample_count == 1
+    assert result.invalid_count == 0
+    assert result.schema_resolution is not None
+    assert result.schema_resolution.package_version == "v1"
 
 
 def test_payload_validation_reuses_selection_verdicts(

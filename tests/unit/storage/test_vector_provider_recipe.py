@@ -1,7 +1,7 @@
 """The vector provider factory owns the embedding recipe contract.
 
 ``resolve_optional_vector_provider`` -- the route behind
-``SessionRepository.embed_session`` / ``similarity_search`` -- calls
+``SessionRepository.similarity_search`` -- calls
 ``create_vector_provider`` with ``config=None``. The factory loaded only the
 ambient Voyage key and skipped the recipe block, so a declared model was
 silently replaced by the library default and the repository wrote or queried

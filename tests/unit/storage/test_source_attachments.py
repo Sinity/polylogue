@@ -240,3 +240,92 @@ def test_acquired_source_attachment_bytes_have_a_durable_owner() -> None:
 
     owners = {(owner.tier, owner.table, owner.blob_column) for owner in BLOB_OWNERS}
     assert ("source", "source_attachments", "blob_hash") in owners
+
+
+@pytest.mark.parametrize("row_factory", [None, sqlite3.Row])
+def test_attachment_census_and_generation_seal_use_declared_columns(row_factory: Any) -> None:
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.archive_tiers.source_items import seal_source_generation
+
+    with closing(_conn()) as conn:
+        conn.row_factory = row_factory
+        payload = b"neutral attachment"
+        record_source_attachments(
+            conn,
+            source_generation_id="g",
+            observed_at_ms=2,
+            attachments=(
+                SourceAttachment(
+                    "a",
+                    "aistudio-drive",
+                    "drive",
+                    2,
+                    "p",
+                    payload,
+                    hashlib.sha256(payload).digest(),
+                    len(payload),
+                    "acquired",
+                ),
+            ),
+        )
+        census = source_attachment_census(conn, "g")
+        assert census["groups"] == [
+            {
+                "origin": "aistudio-drive",
+                "source_class": "drive",
+                "reachability": "current",
+                "disposition": "acquired",
+                "reference_rows": 1,
+                "reference_count": 2,
+                "distinct_payloads": 1,
+                "distinct_blobs": 1,
+                "bytes": len(payload),
+            }
+        ]
+        assert census["distinct_payload_bytes"] == len(payload)
+        seal_source_generation(conn, source_generation_id="g", sealed_at_ms=3)
+        assert tuple(conn.execute("SELECT sealed_at_ms FROM source_generations").fetchone()) == (3,)
+
+
+@pytest.mark.parametrize("commit", [False, True])
+@pytest.mark.parametrize("first_kind", ["new", "pending", "same-reference"])
+def test_later_attachment_conflict_rolls_back_the_complete_batch(commit: bool, first_kind: str) -> None:
+    from contextlib import closing
+
+    with closing(_conn()) as conn:
+        settled = SourceAttachment("b", "aistudio-drive", "drive", disposition="expired", reason="original")
+        pending = SourceAttachment("a", "aistudio-drive", "drive", disposition="pending", reason="queued")
+        initial = (settled, pending) if first_kind == "pending" else (settled,)
+        record_source_attachments(conn, source_generation_id="g", observed_at_ms=2, attachments=initial)
+        conn.execute("UPDATE source_generations SET created_at_ms=9")
+        first = SourceAttachment("a", "aistudio-drive", "drive", disposition="expired", reason="offered")
+        second = SourceAttachment("b", "aistudio-drive", "drive", disposition="expired", reason="changed")
+        if first_kind == "same-reference":
+            second = SourceAttachment("a", "aistudio-drive", "drive", disposition="expired", reason="changed")
+        before = [tuple(row) for row in conn.execute("SELECT * FROM source_attachments ORDER BY reference_id")]
+        with pytest.raises(SourceAttachmentConflictError):
+            record_source_attachments(
+                conn, source_generation_id="g", observed_at_ms=3, attachments=(first, second), commit=commit
+            )
+        assert conn.in_transaction
+        conn.commit()
+        assert [tuple(row) for row in conn.execute("SELECT * FROM source_attachments ORDER BY reference_id")] == before
+        assert tuple(conn.execute("SELECT created_at_ms FROM source_generations").fetchone()) == (9,)
+
+
+def test_attachment_commit_false_keeps_new_transaction_uncommitted() -> None:
+    from contextlib import closing
+
+    with closing(_conn()) as conn:
+        conn.commit()
+        record_source_attachments(
+            conn,
+            source_generation_id="g",
+            observed_at_ms=2,
+            commit=False,
+            attachments=(SourceAttachment("a", "aistudio-drive", "drive", disposition="expired", reason="neutral"),),
+        )
+        assert conn.in_transaction
+        conn.rollback()
+        assert conn.execute("SELECT COUNT(*) FROM source_attachments").fetchone()[0] == 0

@@ -12,6 +12,7 @@ import time
 from collections.abc import Mapping
 from http import HTTPStatus
 from io import BytesIO
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -25,14 +26,19 @@ class _Headers:
         return self._values.get(key, default)
 
 
-def _mutating_handler(kernel: object, *, deadline_ms: str = "300") -> tuple[Any, list[tuple[HTTPStatus, object]]]:
-    """A handler wired to a real compute kernel, inside the write gate."""
+def _mutating_handler(
+    kernel: object, *, deadline_ms: str = "300", write_bridge: object | None = None
+) -> tuple[Any, list[tuple[HTTPStatus, object]]]:
+    """A handler wired to a real compute kernel and, optionally, a real writer bridge."""
     from polylogue.daemon.http import DaemonAPIHandler
 
     sent: list[tuple[HTTPStatus, object]] = []
 
+    installed_bridge = write_bridge
+
     class _Server:
         execution_kernel = kernel
+        write_bridge = installed_bridge
 
     class _RecordingHandler(DaemonAPIHandler):
         def __init__(self) -> None:
@@ -44,8 +50,6 @@ def _mutating_handler(kernel: object, *, deadline_ms: str = "300") -> tuple[Any,
             self.rfile = BytesIO(b"")
             self.wfile = BytesIO()
             self.headers = cast("Any", _Headers({"X-Polylogue-Deadline-Ms": deadline_ms}))
-            # The write gate is what marks a route mutating.
-            self._write_gate_depth = 1
 
         def _send_json(
             self, status: HTTPStatus, payload: object, *, extra_headers: Mapping[str, str] | None = None
@@ -56,7 +60,9 @@ def _mutating_handler(kernel: object, *, deadline_ms: str = "300") -> tuple[Any,
 
 
 @pytest.mark.uses_real_clock("asserts a real-thread wait actually returns within its bound")
-def test_mutating_route_wait_is_bounded_by_the_request_deadline() -> None:
+def test_mutating_route_wait_is_bounded_by_the_request_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """polylogue-8r4zq: a blocked mutation answers, typed, within its bound.
 
     Input: the route body blocks the way a control mutation queued behind a
@@ -70,19 +76,26 @@ def test_mutating_route_wait_is_bounded_by_the_request_deadline() -> None:
     the wait silently falls back to the 60s default instead of honouring the
     declared deadline.
     """
-    from polylogue.daemon.execution import BoundedComputeAdapter
-    from polylogue.daemon.http import daemon_safe_handler
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.daemon.http import _StandaloneWriteRuntime, daemon_safe_handler
+    from tests.infra.archive_templates import bootstrap_archive_root
 
     release = threading.Event()
+    archive_root = bootstrap_archive_root(tmp_path / "archive")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     kernel = BoundedComputeAdapter(max_workers=2, queue_units=2)
-    handler, sent = _mutating_handler(kernel, deadline_ms="300")
+    # A real writer bridge: the route's own write gate admits the request and
+    # the admitted body runs on the writer worker under the declared deadline.
+    runtime = _StandaloneWriteRuntime(archive_root, compute_adapter=kernel)
+    handler, sent = _mutating_handler(kernel, deadline_ms="300", write_bridge=runtime.bridge)
 
     async def _blocked(_poly: object) -> object:  # pragma: no cover - never completes in time
         release.wait(30)
         return {"ok": True}
 
     def _route(self: Any) -> None:
-        self._send_json(HTTPStatus.OK, self._sync_run(_blocked))
+        with self._write_gate("test.bounded-mutation"):
+            self._send_json(HTTPStatus.OK, self._sync_run(_blocked))
 
     guarded = daemon_safe_handler(_route)
 
@@ -91,7 +104,8 @@ def test_mutating_route_wait_is_bounded_by_the_request_deadline() -> None:
         guarded(handler)
     finally:
         release.set()
-        kernel.executor.shutdown(wait=False)
+        runtime.close()
+        kernel.shutdown(wait=True)
 
     elapsed = time.monotonic() - started
     assert elapsed < 10.0, f"the mutating wait was not bounded: {elapsed:.1f}s"

@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.json import JSONDocument
 from polylogue.core.metrics import read_peak_rss_self_mb
 from polylogue.core.protocols import ProgressCallback
@@ -18,14 +19,14 @@ from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
 from polylogue.sources.cursor import _record_cursor_failure
 from polylogue.sources.drive.types import DriveUILike
-from polylogue.sources.source_acquisition import iter_source_raw_data
+from polylogue.sources.drive.witness import DriveListingWitness
+from polylogue.sources.source_acquisition import iter_source_acquisition_records
 from polylogue.sources.source_snapshot import (
     SourceCutPolicy,
     SourceCutResult,
     execute_source_cut,
     preflight_source_cut,
 )
-from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 
@@ -39,7 +40,7 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-__all__ = ["AcquisitionService", "AcquireResult", "iter_source_raw_data"]
+__all__ = ["AcquisitionService", "AcquireResult", "iter_source_acquisition_records"]
 
 
 class AcquisitionService:
@@ -87,8 +88,9 @@ class AcquisitionService:
         prepared_observation: ArtifactObservationRecord | None = None,
         preparation_error: Exception | None = None,
         failures: list[CursorFailurePayload] | None = None,
-    ) -> None:
-        await persist_raw_record(
+        on_failure: Callable[[Exception], None] | None = None,
+    ) -> str | None:
+        return await persist_raw_record(
             self.repository,
             record,
             result=result,
@@ -96,6 +98,7 @@ class AcquisitionService:
             prepared_observation=prepared_observation,
             preparation_error=preparation_error,
             failures=failures,
+            on_failure=on_failure,
         )
 
     async def _persist_source_cursors(
@@ -103,6 +106,7 @@ class AcquisitionService:
         source: Source,
         *,
         cursor_state: CursorStatePayload | None = None,
+        observations: dict[str, tuple[str, tuple[int, int, int, int, int], str | None]],
     ) -> None:
         """Persist stat cursors only for source paths acquired successfully."""
         if source.path is None:
@@ -111,8 +115,7 @@ class AcquisitionService:
         # and a POSIX path may itself contain ``:``, so the first colon is not
         # the boundary. Resolve each failure against the real source files once;
         # the per-file check is then one set lookup however many files failed.
-        source_paths = list(_resolve_source_paths(source))
-        source_keys = {str(path) for path in source_paths}
+        source_keys = set(observations)
         failed_paths: set[str] = set()
         failed_everything = False
         if cursor_state:
@@ -141,20 +144,18 @@ class AcquisitionService:
             # to skip.  Do not turn a failed persistence/read pass into a
             # successful stat cursor for every file in the source.
             failed_everything = failed_everything or bool(cursor_state.get("error_count"))
-        for file_path in source_paths:
-            if failed_everything or str(file_path) in failed_paths:
+        for source_path, (canonical_path, observed, profile_key) in observations.items():
+            if failed_everything or source_path in failed_paths:
                 continue
-            try:
-                st = file_path.stat()
-                await self.repository.upsert_source_file_cursor(
-                    str(file_path),
-                    st_dev=st.st_dev,
-                    st_ino=st.st_ino,
-                    st_size=st.st_size,
-                    mtime_ns=st.st_mtime_ns,
-                )
-            except OSError:
-                continue
+            await self.repository.upsert_source_file_cursor(
+                source_path,
+                canonical_source_path=canonical_path,
+                captured_profile_key=profile_key,
+                st_dev=observed[0],
+                st_ino=observed[1],
+                st_size=observed[2],
+                mtime_ns=observed[3],
+            )
 
     async def visit_sources(
         self,
@@ -166,9 +167,11 @@ class AcquisitionService:
         progress_label: str = "Scanning",
         on_record: Callable[[RawSessionRecord], Awaitable[None]] | None = None,
         on_source_complete: Callable[[CursorStatePayload], Awaitable[None]] | None = None,
+        before_input_complete: Callable[[], Awaitable[None]] | None = None,
         observation_callback: Callable[[JSONDocument], None] | None = None,
         persist_cursors: bool = True,
         blob_store: BlobStore | None = None,
+        drive_witnesses: dict[str, DriveListingWitness] | None = None,
     ) -> ScanResult:
         """Visit source raw payloads incrementally without forcing list materialization.
 
@@ -194,9 +197,25 @@ class AcquisitionService:
         for source in sources:
             logger.debug("Scanning source", source=source.name)
             cursor_state: CursorStatePayload = {}
+            witness = None
+            if source.is_drive and drive_witnesses is not None:
+                witness = DriveListingWitness(source.name, source.folder or "")
+                drive_witnesses[source.name] = witness
+            observations: dict[str, tuple[str, tuple[int, int, int, int, int], str | None]] = {}
+
+            def observe_input(
+                semantic: str,
+                physical: str,
+                observed: tuple[int, int, int, int, int],
+                profile: str | None,
+                captured: dict[str, tuple[str, tuple[int, int, int, int, int], str | None]] = observations,
+            ) -> None:
+                captured[semantic] = (physical, observed, profile)
+
             try:
                 async for record in iter_raw_record_stream(
                     source,
+                    drive_witness=witness,
                     blob_root=self.backend.db_path.parent / "blob",
                     blob_store=blob_store,
                     known_mtimes=known_mtimes,
@@ -207,10 +226,21 @@ class AcquisitionService:
                     observation_callback=observation_callback,
                     progress_callback=progress_callback,
                     execution=self.execution,
+                    input_repository=self.repository if before_input_complete is not None else None,
+                    before_input_complete=before_input_complete,
+                    input_observation_callback=observe_input,
                 ):
+                    if record.canonical_source_path is not None and record.captured_file_observation is not None:
+                        observations[record.source_path] = (
+                            record.canonical_source_path,
+                            record.captured_file_observation,
+                            record.captured_profile_key,
+                        )
                     await _consume(record)
                     if progress_callback:
                         progress_callback(1, desc=f"{progress_label} [{source.name}]")
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 logger.error(
                     "Failed to scan source",
@@ -219,10 +249,15 @@ class AcquisitionService:
                     exc_info=True,
                 )
                 result.counts["errors"] += 1
+                if witness is not None:
+                    witness.enumeration_error = type(exc).__name__
                 prior_errors = cursor_state.get("error_count", 0)
                 cursor_state["error_count"] = int(prior_errors) + 1
                 cursor_state["latest_error"] = str(exc)
 
+            if witness is not None:
+                # Download/blob failures are not raised by the per-file stream.
+                result.counts["errors"] += witness.acquisition_failure_count
             if on_source_complete is not None:
                 # The callback may record per-path persistence failures into
                 # this source's cursor state before its cursors are saved.
@@ -231,7 +266,7 @@ class AcquisitionService:
             # Slice B: persist cursor stat fields for all source files after
             # processing so the next run can skip unchanged files.
             if persist_cursors and not source.is_drive:
-                await self._persist_source_cursors(source, cursor_state=cursor_state)
+                await self._persist_source_cursors(source, cursor_state=cursor_state, observations=observations)
 
             if cursor_state:
                 result.cursors[source.name] = cursor_state
@@ -337,14 +372,36 @@ class AcquisitionService:
                 )
                 async with self.backend.bulk_connection():
                     for pending_record, observation, preparation_error in records:
-                        await self._persist_record(
+                        from polylogue.sources.drive.witness import drive_source_prefix
+
+                        witness = next(
+                            (
+                                value
+                                for name, value in result.drive_witnesses.items()
+                                if pending_record.source_path.startswith(drive_source_prefix(name))
+                            ),
+                            None,
+                        )
+
+                        def failed(
+                            exc: Exception,
+                            witness: DriveListingWitness | None = witness,
+                            coordinate: str = pending_record.source_path,
+                        ) -> None:
+                            if witness is not None:
+                                witness.record_failure(coordinate, "persist", exc)
+
+                        raw_id = await self._persist_record(
                             pending_record,
                             result=result,
                             policy_snapshot=current_policy,
                             prepared_observation=observation,
                             preparation_error=preparation_error,
                             failures=persist_failures,
+                            on_failure=failed,
                         )
+                        if witness is not None and raw_id is not None:
+                            witness.bind_raw(pending_record.source_path, raw_id)
 
             if self.execution is None:
                 await persist()
@@ -361,6 +418,8 @@ class AcquisitionService:
                     observation = await self.execution.prepare(
                         lambda: inspect_raw_artifact(record, blob_store=blob_publisher)
                     )
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     preparation_error = exc
             pending_records.append((record, observation, preparation_error))
@@ -385,10 +444,19 @@ class AcquisitionService:
                 progress_label="Scanning",
                 on_record=_store,
                 on_source_complete=_complete_source,
+                before_input_complete=_flush_pending,
                 observation_callback=_observe,
                 blob_store=blob_publisher,
+                drive_witnesses=result.drive_witnesses,
             )
             await _flush_pending()
+        except BaseException:
+            # Preparation has physically drained before it escapes execution.
+            # No caller receives this result, so no caller can own its witnesses.
+            for witness in result.drive_witnesses.values():
+                witness.close()
+            result.drive_witnesses.clear()
+            raise
         finally:
             blob_publisher.discard_pending()
         result.errors += visit_result.counts["errors"]

@@ -22,6 +22,24 @@ class IngestDaemonRequiredError(PolylogueError):
     code = "daemon_required"
 
 
+class IngestNotCompletedError(PolylogueError, RuntimeError):
+    """The daemon's ingest settled without a completed or degraded receipt.
+
+    Carries the daemon's outcome and its typed error (for a missing path,
+    ``FileNotFoundError``), so a caller sees why instead of a bare outcome.
+    """
+
+    code = "ingest_not_completed"
+
+    def __init__(self, outcome: object, error: object) -> None:
+        self.outcome = str(outcome)
+        error_map = error if isinstance(error, dict) else {}
+        self.error_code = error_map.get("code")
+        self.detail = error_map.get("detail")
+        suffix = f" ({self.error_code}: {self.detail})" if self.error_code else ""
+        super().__init__(f"daemon ingest did not complete: {self.outcome}{suffix}")
+
+
 class PolylogueIngestMixin:
     if TYPE_CHECKING:
 
@@ -82,7 +100,7 @@ class PolylogueIngestMixin:
             # ``degraded`` committed every row this result reports; only the
             # derived convergence after it stopped, and the receipt says so.
             if envelope.get("outcome") not in {"completed", "degraded"}:
-                raise RuntimeError(f"daemon ingest did not complete: {envelope.get('outcome')}")
+                raise IngestNotCompletedError(envelope.get("outcome"), envelope.get("error"))
             body = envelope.get("result")
             if not isinstance(body, dict):
                 raise RuntimeError("daemon ingest returned no terminal receipt")
@@ -136,4 +154,4 @@ class PolylogueIngestMixin:
         return result
 
 
-__all__ = ["IngestDaemonRequiredError", "PolylogueIngestMixin"]
+__all__ = ["IngestDaemonRequiredError", "IngestNotCompletedError", "PolylogueIngestMixin"]

@@ -18,18 +18,19 @@ from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _persist(root: Path, session: ParsedSession) -> tuple[Path, str]:
+    root.mkdir(parents=True, exist_ok=True)
     with write_lease("optional numeric parser fixture", archive_root=root):
         initialize_active_archive_root(root)
         with closing(open_connection(root / "index.db", tier=ArchiveTier.INDEX, archive_root=root)) as conn:
             conn.row_factory = sqlite3.Row
             with conn:
-                session_id = write_parsed_session_to_archive(conn, session, content_hash=session_content_hash(session))
+                session_id = write_fixture_index_session(conn, session, content_hash=session_content_hash(session))
     return root / "index.db", session_id
 
 
@@ -229,7 +230,7 @@ def test_drive_execution_optional_exit_code_keeps_unknown_and_output(
 def test_antigravity_exit_code_does_not_truncate_into_success(
     tmp_path: Path, value: JSONValue, code: int | None, outcome: str
 ) -> None:
-    from polylogue.sources.parsers.antigravity import parse_trajectory_db
+    from tests.infra.antigravity_parser import parse_trajectory_db
 
     source = tmp_path / "trajectory.db"
     with closing(sqlite3.connect(source)) as conn:

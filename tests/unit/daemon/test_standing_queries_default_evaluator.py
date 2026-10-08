@@ -35,10 +35,16 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.query_objects import put_query, put_query_name
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.compute_owner import owned_compute_adapter
 from tests.infra.live_ingest import write_index_session
 
 
 def _seed_archive_with_one_codex_session(archive_root: Path) -> str:
+    return run_off_event_loop(lambda: _seed_archive_with_one_codex_session_sync(archive_root))
+
+
+def _seed_archive_with_one_codex_session_sync(archive_root: Path) -> str:
     archive_root.mkdir(parents=True, exist_ok=True)
     with ArchiveStore(archive_root) as archive:
         session_id = write_index_session(
@@ -80,10 +86,11 @@ def test_default_stage_set_evaluates_a_watched_query_without_an_injected_fake(tm
         put_query_name(conn, name="codex-watch", query_hash=query.query_hash, watch=True, updated_at_ms=2)
         conn.commit()
 
-    stages = make_default_convergence_stages(archive_root / "index.db")
-    standing_stage = next(stage for stage in stages if stage.name == "standing-queries")
-    converger = DaemonConverger(stages=(standing_stage,))
-    states, _timings = converger.converge_sessions((session_id,))
+    with owned_compute_adapter() as compute:
+        stages = make_default_convergence_stages(archive_root / "index.db", compute_adapter=compute)
+        standing_stage = next(stage for stage in stages if stage.name == "standing-queries")
+        converger = DaemonConverger(stages=(standing_stage,))
+        states, _timings = converger.converge_sessions((session_id,))
     assert states[session_id].stages["standing-queries"].value == "done"
 
     with sqlite3.connect(archive_root / "user.db") as conn:
@@ -111,7 +118,7 @@ def test_default_stage_set_evaluates_a_watched_query_without_an_injected_fake(tm
 # surface -- and then run the real convergence stage set over it.
 
 
-def _seed_second_codex_session(archive_root: Path) -> str:
+def _seed_second_codex_session_on_writer(archive_root: Path) -> str:
     with ArchiveStore(archive_root) as archive:
         return write_index_session(
             archive,
@@ -132,6 +139,11 @@ def _seed_second_codex_session(archive_root: Path) -> str:
                 ],
             ),
         )
+
+
+def _seed_second_codex_session(archive_root: Path) -> str:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_second_codex_session_on_writer(archive_root))
 
 
 @contextmanager
@@ -166,12 +178,13 @@ def _saved_view_writer(archive_root: Path) -> Iterator[Callable[..., Awaitable[d
 
 
 def _converge(archive_root: Path, session_ids: tuple[str, ...]) -> None:
-    stages = make_default_convergence_stages(archive_root / "index.db")
-    standing_stage = next(stage for stage in stages if stage.name == "standing-queries")
-    converger = DaemonConverger(stages=(standing_stage,))
-    states, _timings = converger.converge_sessions(session_ids)
-    for session_id in session_ids:
-        assert states[session_id].stages["standing-queries"].value == "done"
+    with owned_compute_adapter() as compute:
+        stages = make_default_convergence_stages(archive_root / "index.db", compute_adapter=compute)
+        standing_stage = next(stage for stage in stages if stage.name == "standing-queries")
+        converger = DaemonConverger(stages=(standing_stage,))
+        states, _timings = converger.converge_sessions(session_ids)
+        for session_id in session_ids:
+            assert states[session_id].stages["standing-queries"].value == "done"
 
 
 @pytest.mark.asyncio

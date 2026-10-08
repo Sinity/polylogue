@@ -104,6 +104,7 @@ def test_source_tier_acquisition_opens_and_admits_raw(stale_index_root: Path) ->
             provider=Provider.CLAUDE_CODE,
             payload=b'{"type":"summary","summary":"acquired in degraded mode"}\n',
             source_path=str(stale_index_root / "inbox" / "session.jsonl"),
+            canonical_source_path=str(stale_index_root / "inbox" / "session.jsonl"),
             acquired_at_ms=1_754_200_000_000,
         )
     assert raw_id

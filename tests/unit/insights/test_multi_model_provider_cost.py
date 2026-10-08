@@ -24,7 +24,9 @@ from polylogue.api import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.io_phase_metrics import connect_measured
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.index_writer import write_fixture_index_session
 
 _REPORTED_TOTAL = 12.5
 
@@ -83,11 +85,15 @@ def _single_model_session(session_key: str, *, reported: float) -> ParsedSession
 
 
 def _write(db_path: Path, *sessions: ParsedSession) -> None:
-    conn = sqlite3.connect(db_path)
+    run_off_event_loop(lambda: _write_on_writer(db_path, sessions))
+
+
+def _write_on_writer(db_path: Path, sessions: tuple[ParsedSession, ...]) -> None:
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     try:
         for session in sessions:
-            write_parsed_session_to_archive(conn, session)
+            write_fixture_index_session(conn, session)
         conn.commit()
     finally:
         conn.close()

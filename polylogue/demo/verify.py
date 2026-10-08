@@ -6,16 +6,20 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.archive.query.transaction import run_archive_read_sync
+from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, DEMO_HERMES_SESSION_ID, DEMO_SESSION_IDS
 from polylogue.sources.parsers.hermes_identity import (
     profile_key,
-    profile_root_for_artifact,
     qualified_session_id,
 )
+from polylogue.sources.source_layout import canonical_session_position
 
 from .constructs import construct_problem_messages, evaluate_demo_constructs
 from .models import DemoVerifyResult
 from .seed import DEMO_SOURCE_DIRNAME
+
+#: Where the demo writes its Hermes snapshot, below the demo Hermes root.
+DEMO_HERMES_SNAPSHOT_POSITION = canonical_session_position("hermes", "demo-00", ".json").as_posix()
 
 
 def _expected_demo_session_ids(archive_root: Path) -> set[str]:
@@ -28,7 +32,7 @@ def _expected_demo_session_ids(archive_root: Path) -> set[str]:
     """
 
     hermes_snapshot = _recorded_hermes_source_path(archive_root) or (
-        archive_root / DEMO_SOURCE_DIRNAME / "hermes" / "demo-00.json"
+        archive_root / DEMO_SOURCE_DIRNAME / "hermes" / DEMO_HERMES_SNAPSHOT_POSITION
     )
     hermes_id = qualified_session_id(
         DEMO_HERMES_SESSION_ID.removeprefix("hermes-session:"),
@@ -46,7 +50,7 @@ def _recorded_hermes_source_path(archive_root: Path) -> Path | None:
     source_db = archive_root / "source.db"
     if not source_db.exists():
         return None
-    suffix = f"/{DEMO_SOURCE_DIRNAME}/hermes/demo-00.json"
+    suffix = f"/{DEMO_SOURCE_DIRNAME}/hermes/{DEMO_HERMES_SNAPSHOT_POSITION}"
     with _connect(source_db) as conn:
         rows = conn.execute(
             "SELECT DISTINCT source_path FROM raw_sessions WHERE substr(source_path, -length(?)) = ? LIMIT 2",

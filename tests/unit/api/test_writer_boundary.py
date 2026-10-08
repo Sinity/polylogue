@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -17,6 +17,7 @@ from polylogue.core.enums import AssertionKind
 from polylogue.core.refs import ExecutionContextRef
 from polylogue.daemon.socket_path import daemon_socket_path
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.daemon_operations import running_daemon_operations
 
 
@@ -34,8 +35,13 @@ def _assembly() -> ContextAssembly:
 async def test_public_facade_refuses_mutation_when_daemon_is_absent(tmp_path: Path) -> None:
     """An initialized archive without a daemon cannot accept a facade write."""
     root = tmp_path / "archive"
-    with ArchiveStore(root):
-        pass
+
+    def _off_loop_1() -> Any:
+        with ArchiveStore(root):
+            pass
+        return None
+
+    run_off_event_loop(_off_loop_1)
     archive = Polylogue(archive_root=root)
     try:
         with pytest.raises(FacadeDaemonRequiredError):
@@ -79,7 +85,7 @@ async def test_public_facade_mutations_roundtrip_through_daemon_writer(
                     == 1
                 )
 
-            from polylogue.context.compiler import ContextImage, ContextSpec
+            from polylogue.archive.context_models import ContextImage, ContextSpec
 
             image = ContextImage(spec=ContextSpec(seed_refs=("session:codex:synthetic",), read_views=()), segments=())
             delivered = await archive.record_context_delivery(
@@ -163,8 +169,13 @@ async def test_facade_cancelled_after_submission_reports_recoverable_indetermina
     from polylogue.operations.daemon_errors import DaemonMutationIndeterminateError
 
     root = tmp_path / "archive"
-    with ArchiveStore(root):
-        pass
+
+    def _off_loop_2() -> Any:
+        with ArchiveStore(root):
+            pass
+        return None
+
+    run_off_event_loop(_off_loop_2)
     started, release = threading.Event(), threading.Event()
 
     def pending_operation(

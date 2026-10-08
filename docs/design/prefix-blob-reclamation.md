@@ -61,7 +61,7 @@ Three buckets, computed against `/realm/db/polylogue/source.db` + blob store
 |---|---|---:|---:|---|
 | **A** — already classified | `revision_kind='full'`, `revision_authority='byte_proven'`, not the cohort's terminal (leaf) member | 992 | 10.48 GB | Trust the durable `predecessor_raw_id`/`baseline_raw_id` chain already written by `classify_raw_revision_cohort`. No bytes read. |
 | **B** — typed, needs a fresh proof | `logical_source_key` assigned, `revision_kind='full'`, cohort has ≥2 members but not all already `byte_proven` (default-quarantined, never reclassified) | 318 reclaimable / 3,432 cohorts checked (50 proven, 3,382 quarantined) | 7.17 GB | Ran the real `classify_historical_full_revision_streams` against the live blob store for every such cohort. |
-| **C** — never-typed (`revision_kind='unknown'`) | Legacy/backfill raws, grouped by `source_path` per the `classify_untyped_full_revision_groups` equivalence rule | 11 reclaimable / 3,240 cohorts checked (4 proven, 3,236 quarantined) | 0.0006 GB | Same streamed proof, path-grouped candidates. |
+| **C** — never-typed (`revision_kind='unknown'`) | Legacy/backfill raws, grouped by `source_path`, the same-file equivalence edge | 11 reclaimable / 3,240 cohorts checked (4 proven, 3,236 quarantined) | 0.0006 GB | Same streamed proof, path-grouped candidates. |
 | **Total** | | **1,321** | **17.65 GB** (18.12% of archive) | |
 
 The B/C pass took ~70s wall time reading the live blob store (read-only,
@@ -211,8 +211,7 @@ bead's framing implies.** Fifteen-plus call sites read blob bytes via
 `storage/artifacts/inspection.py`, `schemas/sampling_db.py`,
 `schemas/validation/corpus.py`, `storage/blob_integrity.py`,
 `sources/source_parsing.py`, `sources/live/batch.py`, `storage/repair.py`,
-`storage/raw_reconciler.py`, `storage/sqlite/queries/artifacts.py`,
-`pipeline/services/ingest_worker.py`. Several of these are exactly the
+`storage/raw_reconciler.py`, `storage/sqlite/queries/artifacts.py`. Several of these are exactly the
 maintenance/forensic tools (repair, reconciler, inspection, integrity audit)
 that legitimately need to open **any** raw_id's exact original bytes on
 operator demand — including a superseded one.

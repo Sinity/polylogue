@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
 import dataclasses
 import errno
@@ -11,30 +12,36 @@ import os
 import re
 import sqlite3
 import stat
+import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from types import FrameType, SimpleNamespace
+from typing import Any, ParamSpec, TypeVar, cast
 from unittest.mock import Mock, patch
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.config import Config
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.json import JSONDocument, loads
 from polylogue.daemon.commands import main
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.daemon.derivation import DerivationReport, Outcome
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.daemon.lineage_startup import LineageStartupCensus
+from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.logging import capture
+from polylogue.operations.drive_readiness import DriveCatchupReport, DriveCatchupState
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.revision_backfill import RetainedReplayOutcome
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 from polylogue.storage.derived.raw import RawObservationScope
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -43,6 +50,9 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
+
+P = ParamSpec("P")
+T = TypeVar("T")
 
 
 def _converged_lineage_census() -> LineageStartupCensus:
@@ -189,7 +199,8 @@ def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> No
 
 
 def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
-    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.live_ingest import prepared_live_convergence_owner
 
     for filename, tier in (
         ("source.db", ArchiveTier.SOURCE),
@@ -203,9 +214,19 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
             initialize_runtime_source_fixture(tmp_path / filename)
         else:
             initialize_archive_database(tmp_path / filename, tier)
-    inspect_raw_authority_frontier(
-        Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
-    )
+
+    async def inspect_fixture() -> None:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+            inspection = await owner.run_convergence_sync(
+                "fixture.frontier.inspect",
+                inspect_prepared_raw_authority_frontier,
+                tmp_path,
+                input_demand=owner._compute_adapter.amend_current_input_demand,
+            )
+            assert inspection.mode == "full" and inspection.healthy
+            assert inspection.accepted_head_checks == inspection.cursor_checks == 0
+
+    asyncio.run(inspect_fixture())
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
@@ -219,6 +240,10 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     assert result.exit_code == 1
     payload = loads(result.output)
     assert isinstance(payload, dict)
+    frontier = cast(dict[str, object], payload["raw_frontier_integrity"])
+    assert frontier["available"] is True
+    assert frontier["broken_head_status"] == "healthy"
+    assert frontier["cursor_ahead_status"] == "healthy"
     storage = cast(dict[str, object], payload["archive_storage"])
     assert storage["active_store"] == "archive_file_set"
     assert storage["archive_root"] == str(tmp_path)
@@ -350,6 +375,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
 def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
     tmp_path: Path,
     frozen_clock: FrozenClock,
+    bounded_compute_adapter: BoundedComputeAdapter,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -375,7 +401,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
         execute_sessions=lambda session_ids: tuple(session_ids) == ("conv-1",),
     )
     with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
-        retried = daemon_cli._drain_convergence_debt_once(db)
+        retried = daemon_cli._drain_convergence_debt_once(db, compute_adapter=bounded_compute_adapter)
         debt_after = cursor.list_convergence_debt()
 
     assert retried == 1
@@ -387,6 +413,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
 def test_drain_convergence_debt_preserves_error_for_unimplemented_stage(
     tmp_path: Path,
     frozen_clock: FrozenClock,
+    bounded_compute_adapter: BoundedComputeAdapter,
 ) -> None:
     """A stage with no registered implementation leaves its debt row untouched.
 
@@ -420,7 +447,7 @@ def test_drain_convergence_debt_preserves_error_for_unimplemented_stage(
         execute=lambda _candidate: False,
     )
     with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
-        retried = daemon_cli._drain_convergence_debt_once(db)
+        retried = daemon_cli._drain_convergence_debt_once(db, compute_adapter=bounded_compute_adapter)
         debt_after = cursor.list_convergence_debt()
 
     assert retried == 0
@@ -914,7 +941,9 @@ def test_polylogued_watch_reports_archive_ownership_conflict_as_click_error(
     assert "Traceback" not in result.output
 
 
-def test_drive_source_catchup_skips_when_no_drive_sources(tmp_path: Path) -> None:
+def test_drive_source_catchup_skips_when_no_drive_sources(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     from polylogue.config import Config
     from polylogue.daemon import cli as daemon_cli
 
@@ -929,13 +958,19 @@ def test_drive_source_catchup_skips_when_no_drive_sources(tmp_path: Path) -> Non
         patch("polylogue.config.get_config", return_value=config),
         patch("polylogue.services.build_runtime_services") as build_services,
     ):
-        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once(_unused_session_profile_callback))
+        changed = asyncio.run(
+            daemon_cli._run_drive_source_catchup_once(
+                _unused_session_profile_callback, raw_owner=None, compute_owner=bounded_compute_adapter
+            )
+        )
 
-    assert changed == 0
+    assert changed.state.value == "complete"
     build_services.assert_not_called()
 
 
-def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) -> None:
+def test_drive_source_catchup_ingests_configured_drive_source(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """Drive hands every parsed id to the daemon's canonical derivation owner.
 
     Anti-vacuity: restoring the legacy bulk-refresh caller reaches the patched
@@ -962,10 +997,19 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
             events.append("close")
 
     class FakeParser:
-        def __init__(self, *, repository: object, archive_root: Path, config: Config, execution: object) -> None:
+        def __init__(
+            self,
+            *,
+            repository: object,
+            archive_root: Path,
+            config: Config,
+            execution: object,
+            retained_runner: object,
+        ) -> None:
             from polylogue.daemon.drive_catchup import DriveCatchupExecution
 
             assert isinstance(execution, DriveCatchupExecution)
+            assert retained_runner == raw_owner.ingest_retained_raw_ids
             events.append(("parser", repository, archive_root, config))
 
         async def ingest_sources(
@@ -975,16 +1019,24 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
             stage: str,
             parse_records: bool,
             max_pass_seconds: float | None = None,
+            skip_acquire: bool = False,
         ) -> SimpleNamespace:
             events.append(("ingest", sources, stage, parse_records, max_pass_seconds))
             return SimpleNamespace(
-                acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0),
+                acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0, drive_witnesses={}),
                 parse_result=SimpleNamespace(
                     processed_ids={"session-b", "session-a"},
                     counts={"sessions": 0},
                     time_budget_exceeded=False,
                 ),
             )
+
+    class FakeRawOwner:
+        async def ingest_retained_raw_ids(self, raw_ids: Sequence[str]) -> RetainedReplayOutcome:
+            del raw_ids
+            return RetainedReplayOutcome()
+
+    raw_owner = FakeRawOwner()
 
     async def canonical_callback(session_ids: Sequence[str] | None) -> DerivationReport:
         events.append(("canonical", session_ids))
@@ -995,16 +1047,25 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
         patch("polylogue.services.build_runtime_services", return_value=FakeServices()) as build_services,
         patch("polylogue.pipeline.services.parsing.ParsingService", FakeParser),
     ):
-        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once(canonical_callback))
+        changed = asyncio.run(
+            daemon_cli._run_drive_source_catchup_once(
+                canonical_callback,
+                raw_owner=cast(RawObservationConvergenceOwner, raw_owner),
+                compute_owner=bounded_compute_adapter,
+            )
+        )
 
-    assert changed == 2
+    assert changed.changed_count == 2
+    assert changed.state.value == "unknown"
     build_services.assert_called_once_with(config=config, db_path=config.db_path)
     assert ("ingest", [drive_source], "all", True, daemon_cli._DRIVE_CATCHUP_MAX_PASS_SECONDS) in events
     assert ("canonical", ("session-a", "session-b")) in events
     assert events[-1] == "close"
 
 
-def test_drive_source_catchup_keeps_session_derivation_failures_nonfatal(tmp_path: Path) -> None:
+def test_drive_source_catchup_keeps_session_derivation_failures_nonfatal(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """A derived-output failure does not discard completed Drive source work."""
     from polylogue.config import Config, Source
     from polylogue.daemon import cli as daemon_cli
@@ -1030,7 +1091,7 @@ def test_drive_source_catchup_keeps_session_derivation_failures_nonfatal(tmp_pat
 
         async def ingest_sources(self, **_kwargs: object) -> SimpleNamespace:
             return SimpleNamespace(
-                acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0),
+                acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0, drive_witnesses={}),
                 parse_result=SimpleNamespace(
                     processed_ids={"raw-link-only-session"},
                     counts={"sessions": 0},
@@ -1048,32 +1109,41 @@ def test_drive_source_catchup_keeps_session_derivation_failures_nonfatal(tmp_pat
         patch("polylogue.pipeline.services.parsing.ParsingService", FakeParser),
         capture() as records,
     ):
-        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once(failing_callback))
+        changed = asyncio.run(
+            daemon_cli._run_drive_source_catchup_once(
+                failing_callback, raw_owner=None, compute_owner=bounded_compute_adapter
+            )
+        )
 
-    assert changed == 1
+    assert changed.changed_count == 1
+    assert changed.state.value == "unknown"
     failures = [r for r in records if r["event"] == "daemon.drive_catchup.session_profile_failed"]
     assert len(failures) == 1
     assert failures[0]["outcome"] == "degraded"
     assert failures[0]["error_type"] == "RuntimeError"
     # The pass itself still completed, and says so separately.
     assert [r["event"] for r in records if str(r["event"]).startswith("daemon.drive_catchup.pass.")][-1] == (
-        "daemon.drive_catchup.pass.ok"
+        "daemon.drive_catchup.pass.degraded"
     )
 
 
-def test_drive_source_catchup_safe_wrapper_logs_failure() -> None:
+def test_drive_source_catchup_safe_wrapper_logs_failure(bounded_compute_adapter: BoundedComputeAdapter) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    async def fail_catchup(_callback: object) -> int:
+    async def fail_catchup(_callback: object, **_owners: object) -> int:
         raise RuntimeError("drive unavailable")
 
     with (
         patch.object(daemon_cli, "_run_drive_source_catchup_once", fail_catchup),
         capture() as records,
     ):
-        changed = asyncio.run(daemon_cli._run_drive_source_catchup_safely(_unused_session_profile_callback))
+        changed = asyncio.run(
+            daemon_cli._run_drive_source_catchup_safely(
+                _unused_session_profile_callback, raw_owner=None, compute_owner=bounded_compute_adapter
+            )
+        )
 
-    assert changed == 0
+    assert changed.state.value == "retryable"
     failures = [r for r in records if r["event"] == "daemon.drive_catchup.failed"]
     assert len(failures) == 1
     assert failures[0]["outcome"] == "error"
@@ -1323,16 +1393,20 @@ def test_reconcile_blob_publications_clears_terminal_receipts_at_startup(
 
     source_db = archive_root_path / "source.db"
     store = BlobStore(archive_root_path / "blob")
-    publisher = ArchiveBlobPublisher(source_db, store.root)
-    missing_hash, _ = publisher.write_from_bytes(b"startup-missing-terminal")
-    referenced_hash, referenced_size = publisher.write_from_bytes(b"startup-referenced-terminal")
-    publisher.flush()
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    with write_lease("test.startup-blob-reservations", archive_root=archive_root_path):
+        publisher = ArchiveBlobPublisher(source_db, store.root)
+        missing_hash, _ = publisher.write_from_bytes(b"startup-missing-terminal")
+        referenced_hash, referenced_size = publisher.write_from_bytes(b"startup-referenced-terminal")
+        publisher.flush()
     store.blob_path(missing_hash).unlink()
     with sqlite3.connect(source_db) as conn:
         write_source_raw_session_blob_ref(
             conn,
             origin=Origin.CHATGPT_EXPORT,
             source_path="startup-referenced.json",
+            canonical_source_path="startup-referenced.json",
             source_index=0,
             blob_hash=bytes.fromhex(referenced_hash),
             blob_size=referenced_size,
@@ -1365,9 +1439,12 @@ def test_daemon_rebuild_lease_refusal_precedes_startup_blob_reconciliation(
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root_path))
 
     source_db = archive_root_path / "source.db"
-    publisher = ArchiveBlobPublisher(source_db, BlobStore(archive_root_path / "blob").root)
-    publisher.write_from_bytes(b"startup-rebuild-refusal")
-    publisher.flush()
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    with write_lease("test.startup-blob-reservations", archive_root=archive_root_path):
+        publisher = ArchiveBlobPublisher(source_db, BlobStore(archive_root_path / "blob").root)
+        publisher.write_from_bytes(b"startup-rebuild-refusal")
+        publisher.flush()
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
 
@@ -1745,19 +1822,16 @@ def test_lifecycle_start_failure_releases_pidfile(tmp_path: Path, monkeypatch: p
     """A failed forensic start must not strand the daemon's mutual-exclusion lock."""
     from polylogue.daemon import cli as daemon_cli
 
-    class Coordinator:
-        async def run_sync(self, _actor: str, _function: object, /, *args: object, **kwargs: object) -> object:
+    class Coordinator(DaemonWriteCoordinator):
+        async def run_sync(self, _actor: str, _function: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
             raise RuntimeError("ops unavailable")
-
-        async def shutdown(self, *, timeout: float) -> bool:
-            assert timeout == 5.0
-            return True
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr(
         "polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: tmp_path / "index.db"
     )
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: Coordinator())
+    coordinator = Coordinator(archive_root=tmp_path)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: coordinator)
 
     with pytest.raises(RuntimeError, match="ops unavailable"):
         asyncio.run(
@@ -1779,22 +1853,19 @@ def test_daemon_startup_reconciles_trains_before_schema_probe(tmp_path: Path, mo
 
     events: list[str] = []
 
-    class Coordinator:
-        async def run_sync(self, actor: str, _function: object, /, *args: object, **kwargs: object) -> object:
+    class Coordinator(DaemonWriteCoordinator):
+        async def run_sync(self, actor: str, _function: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
             del args, kwargs
             if actor == "daemon.lifecycle.start":
                 raise RuntimeError("startup stopped")
-            return None
-
-        async def shutdown(self, *, timeout: float) -> bool:
-            assert timeout == 5.0
-            return True
+            return cast(T, None)
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr(
         "polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: tmp_path / "index.db"
     )
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: Coordinator())
+    coordinator = Coordinator(archive_root=tmp_path)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: coordinator)
 
     def reconcile(root: Path) -> tuple[Path, ...]:
         events.append(f"reconcile:{root}")
@@ -2010,9 +2081,9 @@ def test_shutdown_lifecycle_event_is_bounded_when_writer_gate_is_stuck(tmp_path:
 @pytest.mark.parametrize("configured_drive", [False, True])
 def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path, configured_drive: bool) -> None:
     from polylogue.config import Source
+    from polylogue.core.compute import BoundedComputeAdapter, reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.convergence import DaemonConverger
-    from polylogue.daemon.execution import BoundedComputeAdapter, reset_daemon_compute_adapter
     from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 
     events: list[str] = []
@@ -2068,19 +2139,21 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     async def fake_reconcile_blob_publications() -> None:
         events.append("blob-publications")
 
-    async def fake_drive_catchup(callback: object) -> int:
+    async def fake_drive_catchup(callback: object, *, raw_owner: object, compute_owner: object) -> DriveCatchupReport:
         from polylogue.storage.sqlite.write_lease import current_write_lease
 
         assert current_write_lease() is None
         assert callback is api_server.session_profile_callback
+        assert raw_owner is api_server.operation_runtime.raw_observation_owner
+        assert compute_owner is api_server.execution_kernel
         events.append("drive-once")
         drive_called.set()
-        return 0
+        return DriveCatchupReport(DriveCatchupState.COMPLETE)
 
     async def fake_configure_fts_automerge() -> None:
         events.append("automerge")
 
-    def fake_operation_recovery(_archive_root_path: Path) -> None:
+    def fake_operation_recovery(_archive_root_path: Path, *, resolver_actor_ref: str, input_demand: object) -> None:
         events.append("operation-recovery")
 
     def recording_converger(
@@ -2094,14 +2167,11 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         await asyncio.Event().wait()
 
     class FakeAPIServer:
+        execution_kernel: BoundedComputeAdapter
+
         def __init__(self) -> None:
             self.stopped = threading.Event()
             self.session_profile_callback = object()
-            self.execution_kernel = BoundedComputeAdapter(
-                max_workers=1,
-                queue_units=0,
-                thread_name_prefix="test-daemon-api",
-            )
             self.operation_runtime = SimpleNamespace(
                 shutdown=self._shutdown_operation_runtime,
                 embedding_convergence=None,
@@ -2121,11 +2191,24 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
             self.execution_kernel.shutdown(wait=False, cancel_futures=True)
             return None
 
-    reset_daemon_compute_adapter()
+    assert reset_compute_adapter(join_timeout_s=5) == ()
     api_server = FakeAPIServer()
 
     def make_api_server(*_args: object, **_kwargs: object) -> FakeAPIServer:
         events.append("api-bind")
+        kernel = _kwargs["execution_kernel"]
+        assert isinstance(kernel, BoundedComputeAdapter)
+        api_server.execution_kernel = kernel
+        bridge = _kwargs["write_bridge"]
+        root = _kwargs["archive_root"]
+        assert isinstance(bridge, DaemonWriteThreadBridge)
+        assert isinstance(root, Path)
+        api_server.operation_runtime.raw_observation_owner = RawObservationConvergenceOwner(
+            root,
+            compute_adapter=kernel,
+            write_bridge=bridge,
+            write_coordinator=bridge.coordinator,
+        )
         return api_server
 
     api_server_factory = Mock(side_effect=make_api_server)
@@ -2135,7 +2218,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         lifecycle_payloads.append(cast(dict[str, object], kwargs["payload"]))
 
     with contextlib.ExitStack() as stack:
-        stack.callback(reset_daemon_compute_adapter)
+        stack.callback(reset_compute_adapter)
         stack.enter_context(
             patch(
                 "polylogue.config.get_config",
@@ -2275,9 +2358,9 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
     restart, and the recorded ``None`` scope or repaired durable profile fails.
     """
     from polylogue import Polylogue as RealPolylogue
+    from polylogue.core.compute import reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon import session_profile_composition
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.services import ServiceProfile
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 
@@ -2409,26 +2492,34 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
             # This fixture writes derived output out from under the daemon and
             # retains the matching transaction-owned demand obligation. The
             # periodic owner must discover that obligation without a file hint.
-            from polylogue.storage.sqlite.write_lease import declared_unguarded_write
+            from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+            from polylogue.storage.sqlite.write_lease import write_lease
 
-            with (
-                declared_unguarded_write("test fixture clears derived rows to force reconvergence"),
-                contextlib.closing(sqlite3.connect(archive_root / "index.db")) as conn,
-            ):
-                assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-                for table in ("session_latency_profiles", "session_profiles"):
-                    conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
-                conn.execute(
-                    "INSERT INTO session_profile_demand(session_id, revision) VALUES (?, 1) "
-                    "ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1",
-                    (session_id,),
-                )
-                conn.commit()
+            def clear_projection() -> None:
+                with (
+                    write_lease("test.fixture.profile-demand", archive_root=archive_root),
+                    contextlib.closing(
+                        open_isolated_write_connection(
+                            archive_root / "index.db", purpose="test.fixture.profile-demand", archive_root=archive_root
+                        )
+                    ) as conn,
+                ):
+                    assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+                    for table in ("session_latency_profiles", "session_profiles"):
+                        conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+                    conn.execute(
+                        "INSERT INTO session_profile_demand(session_id, revision) VALUES (?, 1) "
+                        "ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1",
+                        (session_id,),
+                    )
+                    conn.commit()
+
+            await asyncio.to_thread(clear_projection)
             assert not profile_exists()
 
             await run_until_observed_sweep()
     finally:
-        reset_daemon_compute_adapter()
+        assert reset_compute_adapter(join_timeout_s=5) == ()
 
     assert observed_scopes == [None, None]
     assert profile_exists()
@@ -2456,9 +2547,9 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
     from polylogue.archive.session_revision_membership import MembershipDecision
     from polylogue.browser_capture.models import BrowserCaptureEnvelope
     from polylogue.browser_capture.receiver import write_capture_envelope
+    from polylogue.core.compute import reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.convergence import DaemonConverger
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.intake import FairIntakeDispatcher
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
@@ -2466,6 +2557,12 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
     from polylogue.sources.live.watcher import LiveWatcher
 
     archive_root = tmp_path / "archive"
+    from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+
+    # The law is intake, not first bootstrap: a fresh archive's startup
+    # applies every declared durable migration before intake begins.
+    archive_root.mkdir()
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
     source_root = tmp_path / "source"
     source_root.mkdir()
     first_pass = asyncio.Event()
@@ -2596,7 +2693,7 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
         await asyncio.Event().wait()
 
     coordinator = DaemonWriteCoordinator(archive_root=archive_root)
-    reset_daemon_compute_adapter()
+    assert reset_compute_adapter(join_timeout_s=5) == ()
     try:
         with contextlib.ExitStack() as stack:
             _daemon_startup_stubs(stack, daemon_cli, archive_root)
@@ -2620,7 +2717,11 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
             task = asyncio.create_task(
                 daemon_cli.run_daemon_services(
                     sources=(
-                        WatchSource(name=source_name, root=source_root, suffixes=(".json" if browser else ".jsonl",)),
+                        WatchSource(
+                            name=source_name,
+                            root=source_root,
+                            layout=export_drop_layout((".json" if browser else ".jsonl",)),
+                        ),
                     ),
                     enable_watch=True,
                     enable_browser_capture=False,
@@ -2712,7 +2813,10 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                         break
                     await asyncio.sleep(0.05)
                 else:
-                    pytest.fail(f"index never converged to {expected_versions} message(s): {message_count()}")
+                    pytest.fail(
+                        f"index never converged to {expected_versions} message(s): {message_count()}; "
+                        f"membership evidence={evidence}"
+                    )
                 # The active pointer exposes messages before the promotion
                 # callback has finished deriving profiles. Wait for that
                 # observable publication with its own deadline, then hold the
@@ -2747,16 +2851,31 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                 )
                 assert all(rows in ([], [(session_id,)]) for rows in observed_profiles), str(observed_profiles)
                 if browser:
-                    assert (
-                        evidence == [(MembershipDecision.AMBIGUOUS.value, RawRevisionAuthority.QUARANTINED.value)] * 2
-                    )
+                    # Intake admits the competing snapshot; its retained
+                    # publication records the decision afterwards. Read the
+                    # settled evidence, not the admission-time sample.
+                    decided = [(MembershipDecision.AMBIGUOUS.value, RawRevisionAuthority.QUARANTINED.value)] * 2
+                    for _ in range(200):
+                        with contextlib.closing(
+                            sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)
+                        ) as conn:
+                            evidence = conn.execute(
+                                "SELECT decision, revision_authority FROM raw_session_memberships "
+                                "WHERE logical_source_key = ?",
+                                (session_id,),
+                            ).fetchall()
+                        if evidence == decided:
+                            break
+                        await asyncio.sleep(0.05)
+                    assert evidence == decided
+                    assert message_count() == expected_versions
                 assert all(path.is_file() for path in carriers)
             finally:
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await asyncio.wait_for(task, timeout=10)
     finally:
-        reset_daemon_compute_adapter()
+        assert reset_compute_adapter(join_timeout_s=5) == ()
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
@@ -2926,9 +3045,19 @@ async def _await_server_readiness_or_daemon_exit(
 def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     received_signal_name: str | None,
     expected_interrupted_cleanup_calls: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Signal shutdown defers OPS recovery, while ordinary shutdown performs it."""
     from polylogue.daemon import cli as daemon_cli
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    # The law is shutdown, not first bootstrap: a fresh archive's startup
+    # applies every declared durable migration before the servers start.
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    bootstrap_archive_root(archive_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
 
     class BlockingServer:
         shutdown_called = False
@@ -2971,21 +3100,34 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     def noop_sync(*_args: object) -> None:
         return None
 
-    async def no_drive_changes() -> int:
-        return 0
+    async def no_drive_changes(_callback: object, *, raw_owner: object, compute_owner: object) -> DriveCatchupReport:
+        assert raw_owner is api_server.operation_runtime.raw_observation_owner
+        assert compute_owner is api_server.execution_kernel
+        return DriveCatchupReport(DriveCatchupState.COMPLETE)
 
     async def wait_forever(*_args: object, **_kwargs: object) -> None:
         await asyncio.Event().wait()
 
     browser_server = BlockingServer()
     api_server = APIBlockingServer()
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
+    from polylogue.core.compute import reset_compute_adapter
 
-    api_server.execution_kernel = BoundedComputeAdapter(
-        max_workers=1,
-        queue_units=0,
-        thread_name_prefix="test-daemon-api",
-    )
+    def make_api_server(*_args: object, **kwargs: object) -> APIBlockingServer:
+        kernel = kwargs["execution_kernel"]
+        assert isinstance(kernel, BoundedComputeAdapter)
+        api_server.execution_kernel = kernel
+        bridge = kwargs["write_bridge"]
+        root = kwargs["archive_root"]
+        assert isinstance(bridge, DaemonWriteThreadBridge)
+        assert isinstance(root, Path)
+        api_server.operation_runtime.raw_observation_owner = RawObservationConvergenceOwner(
+            root,
+            compute_adapter=kernel,
+            write_bridge=bridge,
+            write_coordinator=bridge.coordinator,
+        )
+        return api_server
+
     api_server.session_profile_callback = None
 
     async def shutdown_operation_runtime() -> None:
@@ -3032,6 +3174,8 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         patch.object(daemon_cli, "_reconcile_blob_publications", noop),
         patch.object(daemon_cli, "_configure_fts_automerge", noop),
         patch.object(daemon_cli, "_run_drive_source_catchup_safely", no_drive_changes),
+        patch.object(daemon_cli, "_periodic_raw_materialization_convergence", lambda **_kwargs: wait_forever()),
+        patch("polylogue.daemon.blob_gc_periodic.periodic_blob_gc_check", lambda **_kwargs: wait_forever()),
         patch.object(daemon_cli, "_periodic_wal_checkpoint", wait_forever),
         patch.object(daemon_cli, "_periodic_fts_merge", wait_forever),
         patch(
@@ -3048,16 +3192,16 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", lambda **_kwargs: wait_forever()),
         patch("polylogue.daemon.convergence.DaemonConverger", return_value=FakeConverger()),
         patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
-        patch("polylogue.daemon.http.DaemonAPIHTTPServer", return_value=api_server),
+        patch("polylogue.daemon.http.DaemonAPIHTTPServer", side_effect=make_api_server),
     )
     with contextlib.ExitStack() as stack:
         for scoped_patch in patches:
             stack.enter_context(scoped_patch)
-        reset_daemon_compute_adapter()
+        assert reset_compute_adapter(join_timeout_s=5) == ()
         try:
             asyncio.run(exercise())
         finally:
-            reset_daemon_compute_adapter()
+            assert reset_compute_adapter(join_timeout_s=5) == ()
 
     assert browser_server.shutdown_called is True
     assert browser_server.close_called is True
@@ -3306,13 +3450,14 @@ def test_raw_observation_owner_preserves_source_frontier_refusal(
             return {raw_id: "/archive/refused.jsonl"}
 
     monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.make_raw_observation_derivation",
+        "polylogue.operations.raw_observation_owner.make_raw_observation_derivation",
         lambda *_args, **_kwargs: Derivation(),
     )
     owner = RawObservationConvergenceOwner(
         tmp_path,
         compute_adapter=cast(BoundedComputeAdapter, object()),
         write_bridge=cast(DaemonWriteThreadBridge, object()),
+        write_coordinator=cast(DaemonWriteCoordinator, object()),
     )
 
     with pytest.raises(RuntimeError, match=pattern):
@@ -3324,87 +3469,65 @@ def test_raw_observation_publication_holds_writer_lease_through_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Canonical replay keeps FTS/index publication under one writer lease."""
-    from contextlib import contextmanager
+    """Canonical replay applies its prepared publication under the writer lease.
 
-    from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
+    Real retained bytes are acquired and replayed through the canonical owner;
+    every prepared replay apply must observe a held ``ActiveWriterLease``, and
+    the raw frontier gate is consulted for the published raw first.
+    Anti-vacuity: acquiring the lease after, or releasing it before, the
+    prepared apply records an unheld apply; skipping the frontier gate leaves
+    ``blocked_checks`` without the raw.
+    """
+    import asyncio
 
-    held = 0
-    replay_held: list[int] = []
+    from polylogue.core.enums import Provider
+    from polylogue.sources import revision_backfill
+    from polylogue.storage import index_generation, raw_retention
+    from tests.infra.retained_replay import publish_retained_payload
+
+    leases: list[index_generation.ActiveWriterLease] = []
+    replay_held: list[bool] = []
     blocked_checks: list[tuple[str, ...]] = []
 
-    class Lease:
-        def __init__(self, _root: Path) -> None:
-            pass
+    class RecordingLease(index_generation.ActiveWriterLease):
+        def __init__(self, archive_root: Path) -> None:
+            super().__init__(archive_root)
+            leases.append(self)
 
-        def acquire(self) -> None:
-            nonlocal held
-            held += 1
+    real_apply = revision_backfill.apply_prepared_revision_replay
+    real_blocked = raw_retention.raw_frontier_blocked_raw_ids
 
-        def close(self) -> None:
-            nonlocal held
-            held -= 1
+    def recording_apply(*args: Any, **kwargs: Any) -> Any:
+        replay_held.append(any(lease.held for lease in leases))
+        return real_apply(*args, **kwargs)
 
-    class FakeArchive:
-        # ``publish`` pins its membership read through ``open_operation_read``
-        # (3faacef23, #5023), which reads the archive's own root and active
-        # index path to capture the read view. A double that omits them is more
-        # permissive than production, so they are supplied rather than the
-        # production read being loosened; ``pin_operation_snapshot`` stays
-        # absent because operation_context declares that minimal-double path.
-        archive_root = tmp_path
-        index_db_path = tmp_path / "index.db"
-
-        def expand_raw_membership_selection(self, _raw_ids: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-            return ("raw-1",), ()
-
-        def raw_revision_descriptor(self, _raw_id: str) -> tuple[str, str, str, str, int]:
-            return ("codex-session", "blob-hash", "/archive/source.jsonl", "full", 1)
-
-    @contextmanager
-    def open_archive() -> Any:
-        yield FakeArchive()
-
-    def fake_replay(*_args: object, **_kwargs: object) -> None:
-        replay_held.append(held)
-
-    monkeypatch.setattr("polylogue.storage.index_generation.ActiveWriterLease", Lease)
-
-    def record_blocked_check(_root: Path, raw_ids: Sequence[str]) -> object:
+    def recording_blocked(root: Path, raw_ids: Sequence[str]) -> Any:
         blocked_checks.append(tuple(raw_ids))
-        return SimpleNamespace(source_paths=frozenset(), unattributed_reason=None)
+        return real_blocked(root, raw_ids)
 
-    monkeypatch.setattr(
-        "polylogue.storage.raw_retention.raw_frontier_blocked_raw_ids",
-        record_blocked_check,
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        lambda *_args, **_kwargs: open_archive(),
-    )
-    monkeypatch.setattr("polylogue.storage.blob_store.BlobStore.verify", lambda _self, _blob_hash: True)
-    monkeypatch.setattr("polylogue.sources.revision_backfill.backfill_historical_revision_evidence", fake_replay)
+    monkeypatch.setattr(index_generation, "ActiveWriterLease", RecordingLease)
+    monkeypatch.setattr(revision_backfill, "apply_prepared_revision_replay", recording_apply)
+    monkeypatch.setattr(raw_retention, "raw_frontier_blocked_raw_ids", recording_blocked)
 
-    adapter = RawObservationDerivation(tmp_path)
-    monkeypatch.setattr(adapter, "_current", lambda _frame: True)
-    monkeypatch.setattr(adapter, "_binding", lambda _raw_ids: "binding")
-    monkeypatch.setattr(adapter, "source_paths", lambda _raw_ids: {"raw-1": "/archive/source.jsonl"})
-    frame = SimpleNamespace(
-        archive_root=str(tmp_path),
-        source_revision=str(tmp_path / "index.db"),
-        recipe_version=lambda _domain: adapter.recipe_version,
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"lease-replay","timestamp":"2025-01-01T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user","content":'
+        b'[{"type":"input_text","text":"Hello"}]}}\n'
     )
-    replacement = RawObservationReplacement(
-        key="raw-1",
-        input_binding="binding",
-        payload=None,
-        raw_ids=("raw-1",),
+    raw_id, written = asyncio.run(
+        publish_retained_payload(
+            tmp_path / "archive",
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=str(tmp_path / "sessions" / "lease-replay.jsonl"),
+            acquired_at_ms=1,
+        )
     )
 
-    assert adapter.publish(frame, replacement) is True
-    assert blocked_checks == [("raw-1",)]
-    assert replay_held == [1]
-    assert held == 0
+    assert written
+    assert replay_held and all(replay_held)
+    assert (raw_id,) in blocked_checks
+    assert not any(lease.held for lease in leases)
 
 
 def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
@@ -3419,15 +3542,16 @@ def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
     pass that publishes anyway fails the zero-session check, and one that
     leaves the raw terminal fails the next pass's session and FTS checks.
     """
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.core.enums import Provider
     from polylogue.core.write_lease import coordinator_write_lease_active
-    from polylogue.daemon.derivation import DerivationFrame, ReplacementLike
-    from polylogue.daemon.execution import BoundedComputeAdapter
     from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
     from polylogue.daemon.write_coordinator import (
         DaemonWriteCoordinator,
         DaemonWriteThreadBridge,
     )
+    from polylogue.sources import revision_backfill
+    from polylogue.storage.derived.raw import RawFrame, RawObservationDerivation, RawObservationReplacement
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -3458,48 +3582,137 @@ def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
             provider=Provider.CHATGPT,
             payload=json.dumps(payload).encode(),
             source_path="cancelled-owner.json",
+            canonical_source_path="cancelled-owner.json",
             acquired_at_ms=1,
         )
 
     async def scenario() -> None:
         compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-        coordinator = DaemonWriteCoordinator()
+        coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
         owner = RawObservationConvergenceOwner(
             tmp_path,
             compute_adapter=compute,
             write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            write_coordinator=coordinator,
         )
-        adapter = owner._converger._derivation_adapter("raw_observation")
-        original_compute = adapter.compute
+        adapter, index_path, index_destination = owner._archive.destination_adapter()
+        monkeypatch.setattr(owner._archive, "destination_adapter", lambda: (adapter, index_path, index_destination))
+        original_compute = RawObservationDerivation.compute
+        original_publish = RawObservationDerivation.publish
+        publication_flags: list[tuple[bool, bool, bool, bool]] = []
+        publication_line_sites: list[tuple[int, ...]] = []
+        replay_failures: list[tuple[tuple[str, str], ...]] = []
+        membership_gate: list[tuple[bool, int, int, bool, bool]] = []
+        original_replay = revision_backfill.apply_prepared_revision_replay
+
+        def observed_replay(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return original_replay(*args, **kwargs)
+            except BaseException as failure:
+                causes: list[tuple[str, str]] = []
+                current: BaseException | None = failure
+                seen: set[int] = set()
+                while current is not None and id(current) not in seen:
+                    seen.add(id(current))
+                    causes.append((type(current).__name__, str(current)))
+                    current = current.__cause__
+                replay_failures.append(tuple(causes))
+                raise
+
+        monkeypatch.setattr(revision_backfill, "apply_prepared_revision_replay", observed_replay)
         started = threading.Event()
+        loop = asyncio.get_running_loop()
+        compute_started = loop.create_future()
         release = threading.Event()
 
-        def paused_compute(frame: DerivationFrame, key: str) -> ReplacementLike:
+        def paused_compute(
+            instance: RawObservationDerivation, frame: RawFrame, key: str, **kwargs: Any
+        ) -> RawObservationReplacement:
             assert not coordinator_write_lease_active()
             started.set()
-            assert release.wait(timeout=2.0)
-            return original_compute(frame, key)
+            loop.call_soon_threadsafe(lambda: None if compute_started.done() else compute_started.set_result(None))
+            release.wait()
+            return original_compute(instance, frame, key, **kwargs)
 
-        monkeypatch.setattr(adapter, "compute", paused_compute)
-        task = asyncio.create_task(owner.converge_raw_id(raw_id))
+        monkeypatch.setattr(RawObservationDerivation, "compute", paused_compute)
+
+        def observed_publish(
+            instance: RawObservationDerivation, frame: RawFrame, replacement: RawObservationReplacement, **kwargs: Any
+        ) -> bool:
+            assert isinstance(replacement, RawObservationReplacement)
+            flags = (
+                replacement.already_valid,
+                replacement.needs_source_census,
+                replacement.needs_source_classification,
+            )
+            previous_trace = sys.gettrace()
+            observed_lines: list[int] = []
+
+            def observed_line(current: Any, event: str, argument: object) -> Any:
+                if current.f_code is original_replay.__code__:
+                    if event == "exception" and isinstance(argument, tuple):
+                        failure = argument[1]
+                        if isinstance(failure, revision_backfill.RetainedPreparationRetryableError) and str(
+                            failure
+                        ).startswith("prepared membership authority changed for "):
+                            fields = current.f_locals
+                            plan = fields.get("membership_plan")
+                            candidates = fields.get("candidate_raw_ids", ())
+                            membership_gate.append(
+                                (
+                                    plan is not None,
+                                    len(plan.candidate_raw_ids) if plan is not None else 0,
+                                    len(candidates),
+                                    plan.head_raw_id == fields.get("head_raw_id") if plan is not None else False,
+                                    plan.candidate_raw_ids == tuple(sorted(candidates)) if plan is not None else False,
+                                )
+                            )
+                    return observed_line
+                if current.f_code is not original_publish.__code__:
+                    return None
+                if event == "line":
+                    observed_lines.append(current.f_lineno)
+                return observed_line
+
+            # Do not replace an existing diagnostic/coverage trace. A missing
+            # sequence then explicitly means this observation was unavailable.
+            if previous_trace is None:
+                sys.settrace(observed_line)
+            try:
+                result = original_publish(instance, frame, replacement, **kwargs)
+            finally:
+                sys.settrace(previous_trace)
+                publication_line_sites.append(tuple(observed_lines))
+            publication_flags.append((*flags, result))
+            return result
+
+        monkeypatch.setattr(RawObservationDerivation, "publish", observed_publish)
+        task = asyncio.create_task(owner.replay_retained_raw_ids((raw_id,)))
         try:
-            assert await asyncio.to_thread(started.wait, 2.0)
+            done, _ = await asyncio.wait((task, compute_started), return_when=asyncio.FIRST_COMPLETED)
+            assert compute_started in done and started.is_set(), task.result() if task in done else None
             task.cancel()
             release.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
             with sqlite3.connect(tmp_path / "index.db") as conn:
                 assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
-            await owner.converge_raw_id(raw_id)
+            next_report = (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
             with sqlite3.connect(tmp_path / "index.db") as conn:
-                assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+                assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,), (
+                    next_report,
+                    publication_flags,
+                    publication_line_sites,
+                    replay_failures,
+                    membership_gate,
+                )
                 assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] > 0
         finally:
             release.set()
             if not task.done():
                 await task
-            compute.shutdown(wait=True)
             assert await coordinator.shutdown(timeout=2.0) is True
+            compute.shutdown(wait=True)
 
     asyncio.run(scenario())
 
@@ -3588,7 +3801,10 @@ def _daemon_startup_stubs(
     stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", _noop))
     stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", _noop))
     stack.enter_context(
-        patch("polylogue.operations.mutation_replay.recover_interrupted_operations", lambda _root: None)
+        patch(
+            "polylogue.operations.mutation_replay.recover_interrupted_operations",
+            lambda _root, *, resolver_actor_ref, input_demand: None,
+        )
     )
     stack.enter_context(patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown"))
     stack.enter_context(patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()))
@@ -3608,14 +3824,16 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
     tmp_path: Path, fault: str, expected_reason: str
 ) -> None:
     from polylogue import Polylogue as RealPolylogue
+    from polylogue.core.compute import reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.catchup_status import _cold_build_settlement
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
     from polylogue.sources.live.cold_build import ColdBuildGeneration, active_cold_build_generation
     from polylogue.sources.live.production_baseline import ProductionSourceBaseline
+    from polylogue.storage.derived import raw as raw_derivation
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
 
     archive_root = tmp_path / "archive"
     source_root = tmp_path / "source"
@@ -3652,6 +3870,27 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
     real_readiness = ArchiveStore.run_generation_readiness_pass
     real_verify = ProductionSourceBaseline.verify
     calls = 0
+    cleanup_owners: dict[int, tuple[object, ...]] = {}
+    real_cleanup = raw_derivation._cleanup_scratch
+
+    def observed_cleanup(scratch: tempfile.TemporaryDirectory[str]) -> None:
+        # Observe on the actual creator immediately before delegating unchanged.
+        for owner in retained_native_sql_owners_for_lifetime(scratch):
+            cleanup_owners.setdefault(
+                id(owner),
+                (
+                    id(owner),
+                    owner._connection_identity,
+                    owner.connection is None,
+                    owner._settled,
+                    owner.close_required,
+                    id(owner._terminal_parent),
+                    type(owner._terminal_parent).__name__,
+                    owner.thread is threading.current_thread(),
+                    any(item is scratch for item in owner._lifetime_dependencies),
+                ),
+            )
+        real_cleanup(scratch)
 
     def busy_once(self: ArchiveStore) -> None:
         nonlocal calls
@@ -3669,13 +3908,14 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
             raise cantopen.value
         real_verify(self, source_db)
 
-    reset_daemon_compute_adapter()
+    assert reset_compute_adapter(join_timeout_s=5) == ()
     try:
         with contextlib.ExitStack() as stack:
             _daemon_startup_stubs(stack, daemon_cli, archive_root)
             stack.enter_context(patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root)))
             stack.enter_context(patch.object(ArchiveStore, "run_generation_readiness_pass", busy_once))
             stack.enter_context(patch.object(ProductionSourceBaseline, "verify", cantopen_once))
+            stack.enter_context(patch.object(raw_derivation, "_cleanup_scratch", observed_cleanup))
             stack.enter_context(
                 patch(
                     "polylogue.daemon.intake_adapters.DaemonIntakeService",
@@ -3684,7 +3924,7 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
             )
             task = asyncio.create_task(
                 daemon_cli.run_daemon_services(
-                    sources=(WatchSource("codex", source_root, suffixes=(".jsonl",)),),
+                    sources=(WatchSource("codex", source_root, layout=export_drop_layout((".jsonl",))),),
                     enable_watch=True,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
@@ -3694,6 +3934,7 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
                     service_profile=ServiceProfile.INTAKE,
                 )
             )
+            primary_failure: BaseException | None = None
             try:
                 async with asyncio.timeout(20):
                     while _cold_build_settlement().get("cold_build_settlement_state") != "retryable":
@@ -3726,12 +3967,44 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
                     sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True)
                 ) as active:
                     assert active.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+            except BaseException as failure:
+                primary_failure = failure
+                failure.add_note(
+                    f"settlement fault={fault}, readiness_calls={calls}, verification_calls={verify_calls}, "
+                    f"state={_cold_build_settlement().get('cold_build_settlement_state')}, "
+                    f"reason={_cold_build_settlement().get('cold_build_settlement_reason')}, "
+                    f"error={_cold_build_settlement().get('cold_build_settlement_last_error')}"
+                )
+                failure.add_note(f"original scratch cleanup owners={tuple(cleanup_owners.values())!r}")
+                thread_sites: list[tuple[str, tuple[tuple[str, str, int], ...]]] = []
+                thread_names = {thread.ident: thread.name for thread in threading.enumerate()}
+                for thread_id, thread_frame in sys._current_frames().items():
+                    if thread_id == threading.get_ident():
+                        continue
+                    sites: list[tuple[str, str, int]] = []
+                    frame: FrameType | None = thread_frame
+                    while frame is not None:
+                        filename = frame.f_code.co_filename
+                        if "/polylogue/" in filename:
+                            sites.append((filename.split("/polylogue/", 1)[1], frame.f_code.co_name, frame.f_lineno))
+                        frame = frame.f_back
+                    if sites:
+                        thread_sites.append((thread_names.get(thread_id, "unknown"), tuple(sites)))
+                failure.add_note(f"observed publication worker sites={thread_sites!r}")
+                raise
             finally:
                 task.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(task, timeout=10)
+                try:
+                    with pytest.raises(asyncio.CancelledError):
+                        await asyncio.wait_for(task, timeout=10)
+                except BaseException as cleanup:
+                    if primary_failure is not None:
+                        raise builtins.BaseExceptionGroup(
+                            "cold settlement and daemon cleanup failed", [primary_failure, cleanup]
+                        ) from None
+                    raise
     finally:
-        reset_daemon_compute_adapter()
+        assert reset_compute_adapter(join_timeout_s=5) == ()
 
 
 def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
@@ -3744,6 +4017,7 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
         ProductionBaselineReadUnavailableError,
     )
     from polylogue.storage.archive_identity import ArchiveLocationError
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealError, ReferenceSealStaleError
 
     assert classify_cold_build_settlement_failure(ProductionBaselineError("missing source revision")) == (
         "source_integrity",
@@ -3756,6 +4030,14 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
     assert classify_cold_build_settlement_failure(
         ColdBuildCoverageError(missing_count=1, first_missing_session_id="codex:synthetic")
     ) == ("active_coverage_incomplete", False)
+    assert classify_cold_build_settlement_failure(ReferenceSealStaleError("snapshot changed")) == (
+        "promotion_evidence_changed",
+        True,
+    )
+    assert classify_cold_build_settlement_failure(ReferenceSealError("durable ref cannot be preserved")) == (
+        "durable_reference_preservation",
+        False,
+    )
     assert classify_cold_build_settlement_failure(RuntimeError("database is locked")) is None
     assert classify_cold_build_settlement_failure(OSError(errno.EIO, "transient pointer I/O")) == (
         "storage_io_unavailable",
@@ -3795,9 +4077,9 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_path: Path) -> None:
     from polylogue import Polylogue as RealPolylogue
+    from polylogue.core.compute import reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.catchup_status import _cold_build_settlement
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
     from polylogue.sources.live.cold_build import active_cold_build_generation
@@ -3821,7 +4103,7 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
         verifications += 1
         raise ProductionBaselineError("missing retained revision")
 
-    reset_daemon_compute_adapter()
+    assert reset_compute_adapter(join_timeout_s=5) == ()
     try:
         with contextlib.ExitStack() as stack:
             _daemon_startup_stubs(stack, daemon_cli, archive_root)
@@ -3835,7 +4117,7 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
             )
             task = asyncio.create_task(
                 daemon_cli.run_daemon_services(
-                    sources=(WatchSource("codex", source_root, suffixes=(".jsonl",)),),
+                    sources=(WatchSource("codex", source_root, layout=export_drop_layout((".jsonl",))),),
                     enable_watch=True,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
@@ -3870,7 +4152,7 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
             assert candidate.discarded
             assert not candidate.generation_root.exists()
     finally:
-        reset_daemon_compute_adapter()
+        assert reset_compute_adapter(join_timeout_s=5) == ()
 
 
 @pytest.mark.asyncio
@@ -3888,18 +4170,16 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
     active index keeps serving both sessions. When the daemon watches both
     roots the candidate covers every served session and promotes.
 
-    Anti-vacuity: deleting the ``require_active_coverage`` call from
-    ``promote_cold_build_covering_active_index`` (or settling through
-    ``generation.promote`` directly) promotes the one-session candidate, and
-    the active index loses ``codex-session:cold-imported``.
+    Anti-vacuity: dropping the active-coverage census from the retained
+    ``PreparedIndexPromotion`` lets the one-session candidate publish, and the
+    active index loses ``codex-session:cold-imported``.
     """
     from polylogue import Polylogue as RealPolylogue
+    from polylogue.core.compute import reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.catchup_status import _cold_build_settlement
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
-    from polylogue.sources.live.batch import LiveBatchProcessor
     from polylogue.sources.live.cold_build import active_cold_build_generation, active_index_generation_is_empty
     from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
     from polylogue.storage.archive_identity import resolve_active_index_path
@@ -3916,7 +4196,10 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
             return {str(row[0]) for row in db.execute("SELECT session_id FROM sessions")}
 
     archive_root = tmp_path / "archive"
-    archive_root.mkdir()
+    from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+
+    # Source-only acquisition refuses an archive without its durable Source tier.
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
     source_root = tmp_path / "source"
     source_root.mkdir()
     imports_root = tmp_path / "imports"
@@ -3929,28 +4212,31 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
     os.utime(imported_file, (1.0, 1.0))
     served = {"codex-session:cold-watched", "codex-session:cold-imported"}
 
-    assert active_index_generation_is_empty(archive_root)
+    from tests.infra.archive_templates import run_archive_fixture_write
+
+    assert await run_archive_fixture_write(archive_root, lambda: active_index_generation_is_empty(archive_root))
+    from tests.infra.live_batch import prepared_live_batch_processor
+
     for root, path in ((source_root, watched_file), (imports_root, imported_file)):
-        processor = LiveBatchProcessor(
-            cast(
-                Any,
-                SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
-            ),
-            (WatchSource("codex", root, suffixes=(".jsonl",)),),
-            cursor=CursorStore(archive_root / "index.db"),
+        # The supplied live owners: writer, retained publication and convergence.
+        async with prepared_live_batch_processor(
+            archive_root,
+            (WatchSource("codex", root, layout=export_drop_layout((".jsonl",))),),
             parser_fingerprint=_PARSER_FINGERPRINT,
-        )
-        metrics = await processor.ingest_files([path], emit_event=False)
+        ) as processor:
+            metrics = await processor.ingest_files([path], emit_event=False)
         assert metrics.succeeded_file_count == 1, metrics
     assert session_ids(resolve_active_index_path(archive_root)) == served
 
-    daemon_sources: tuple[WatchSource, ...] = (WatchSource("codex", source_root, suffixes=(".jsonl",)),)
+    daemon_sources: tuple[WatchSource, ...] = (
+        WatchSource("codex", source_root, layout=export_drop_layout((".jsonl",))),
+    )
     if imported_source_kept:
-        daemon_sources += (WatchSource("imports", imports_root, suffixes=(".jsonl",)),)
+        daemon_sources += (WatchSource("imports", imports_root, layout=export_drop_layout((".jsonl",))),)
     else:
         imported_file.unlink()
 
-    reset_daemon_compute_adapter()
+    assert reset_compute_adapter(join_timeout_s=5) == ()
     try:
         with contextlib.ExitStack() as stack:
             _daemon_startup_stubs(stack, daemon_cli, archive_root)
@@ -4011,7 +4297,7 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
                 with pytest.raises(asyncio.CancelledError):
                     await asyncio.wait_for(task, timeout=10)
     finally:
-        reset_daemon_compute_adapter()
+        assert reset_compute_adapter(join_timeout_s=5) == ()
 
 
 @pytest.mark.asyncio
@@ -4043,9 +4329,9 @@ async def test_cold_baseline_observation_cancel_stops_owned_worker() -> None:
 @pytest.mark.asyncio
 async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: Path) -> None:
     from polylogue import Polylogue as RealPolylogue
+    from polylogue.core.compute import reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.catchup_status import _cold_build_settlement
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
     from polylogue.sources.live import production_baseline
@@ -4103,7 +4389,7 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
         )
         return production_baseline._seal(baseline.operation_id, baseline.source_signature, rows)
 
-    reset_daemon_compute_adapter()
+    assert reset_compute_adapter(join_timeout_s=5) == ()
     try:
         with contextlib.ExitStack() as stack:
             _daemon_startup_stubs(stack, daemon_cli, archive_root)
@@ -4122,8 +4408,8 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
             task = asyncio.create_task(
                 daemon_cli.run_daemon_services(
                     sources=(
-                        WatchSource("codex", source_root, suffixes=(".jsonl",), required=True),
-                        WatchSource("missing", missing_root, suffixes=(".jsonl",), required=True),
+                        WatchSource("codex", source_root, layout=export_drop_layout((".jsonl",)), required=True),
+                        WatchSource("missing", missing_root, layout=export_drop_layout((".jsonl",)), required=True),
                     ),
                     enable_watch=True,
                     enable_browser_capture=False,
@@ -4174,7 +4460,7 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
                 with pytest.raises(asyncio.CancelledError):
                     await asyncio.wait_for(task, timeout=10)
     finally:
-        reset_daemon_compute_adapter()
+        assert reset_compute_adapter(join_timeout_s=5) == ()
 
 
 #: Task-name prefixes the daemon may create outside the supervisor, with the
@@ -4198,6 +4484,9 @@ _DECLARED_UNSUPERVISED_TASK_PREFIXES: dict[str, str] = {
     "polylogue-managed:": "DaemonWriteCoordinator: one tracked post-write effect",
     "polylogue-drive-catchup:": "DriveCatchupExecution: one settled catch-up step",
     "polylogue-ingest-redrive:": "DaemonOperationRuntime: the ingest owner's accepted-ingest re-drive",
+    "polylogue-prepared-writer:": "DaemonWriteCoordinator: one prepared writer-worker body",
+    "polylogue-writer-custody:": "async_write_lease: archive custody acquisition and settlement wait",
+    "polylogue-writer-hold:": "DaemonWriteThreadBridge.hold: the write gate held for one delegated thread",
 }
 
 
@@ -4866,7 +5155,9 @@ async def test_established_missing_source_refuses_before_starting_services(tmp_p
     from polylogue.storage.sqlite.migration_runner import DurableChangeTrainError
 
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    from tests.infra.archive_templates import run_archive_fixture_write
+
+    await run_archive_fixture_write(archive_root, lambda: initialize_active_archive_root(archive_root))
     (archive_root / "source.db").unlink()
     retained = {name: (archive_root / name).read_bytes() for name in ("user.db", "audit.db")}
     with contextlib.ExitStack() as stack:
@@ -5172,7 +5463,7 @@ async def test_no_watch_fresh_audit_fault_returns_to_its_periodic_cadence(
 
     archive_root = tmp_path / "fresh"
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     tick_finished = asyncio.Event()
     delays: list[float] = []
     calls = 0
@@ -5219,3 +5510,70 @@ async def test_no_watch_fresh_audit_fault_returns_to_its_periodic_cadence(
             await task
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)
+
+
+def test_startup_archive_admission_uses_eventual_compute_creator_and_settles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    from math import inf
+
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+    from polylogue.operations import durable_change_train
+    from polylogue.storage.sqlite.connection_profile import retained_native_settlement_owners_on_current_thread
+    from polylogue.storage.sqlite.write_lease import require_write_lease
+    from tests.infra.excision_embeddings import seed_excision_session
+
+    seed_excision_session(tmp_path, native_id="startup-original-owner", with_embedding=True)
+    events: list[str] = []
+    main_thread = threading.get_ident()
+    original_reconcile = durable_change_train.reconcile_durable_change_trains_on_startup
+
+    class SchemaProbeReachedError(Exception):
+        pass
+
+    stopped = SchemaProbeReachedError("after physically settled bootstrap")
+
+    async def run() -> None:
+        coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+        kernel = BoundedComputeAdapter(max_workers=1, queue_units=1, queue_bytes=0)
+        monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: coordinator)
+        monkeypatch.setattr("polylogue.core.compute.compute_adapter", lambda: kernel)
+        monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+
+        def reconcile(root: Path) -> tuple[Path, ...]:
+            assert threading.get_ident() != main_thread
+            kernel.require_current_creator()
+            require_write_lease("startup control", archive_root=tmp_path)
+            result = original_reconcile(root)
+            assert not retained_native_settlement_owners_on_current_thread()
+            events.append("original-creator-reconciled")
+            return result
+
+        def schema_probe() -> None:
+            assert threading.get_ident() == main_thread
+            assert events == ["original-creator-reconciled"]
+            events.append("schema-after-settlement")
+            raise stopped
+
+        monkeypatch.setattr(durable_change_train, "reconcile_durable_change_trains_on_startup", reconcile)
+        monkeypatch.setattr(daemon_cli, "_check_schema_version_fast", schema_probe)
+        try:
+            with pytest.raises(SchemaProbeReachedError) as caught:
+                await daemon_cli.run_daemon_services(
+                    sources=(),
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                )
+            assert caught.value is stopped
+            assert events == ["original-creator-reconciled", "schema-after-settlement"]
+            assert not (tmp_path / "daemon.pid").exists()
+        finally:
+            kernel.shutdown(wait=True)
+            assert await coordinator.shutdown(timeout=inf)
+
+    asyncio.run(run())

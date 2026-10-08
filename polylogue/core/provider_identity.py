@@ -62,6 +62,8 @@ Key alias rules
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import Final
 
 from polylogue.core.schema_subjects import CORE_SCHEMA_PROVIDERS, schema_subject
@@ -106,6 +108,7 @@ _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
     "cursor": "codex",
     "codex-state": "codex",
     "codex-memories": "codex",
+    "antigravity-cli": "antigravity",
 }
 
 
@@ -153,8 +156,14 @@ __all__ = [
     "canonical_acquisition_provider",
     "canonical_runtime_provider",
     "canonical_schema_provider",
+    "captured_hermes_profile_key",
     "normalize_provider_token",
 ]
+
+
+def captured_hermes_profile_key(profile_root: Path) -> str:
+    """Hash an already accepted Hermes namespace without filesystem discovery."""
+    return hashlib.sha256(str(profile_root).encode("utf-8", errors="surrogatepass")).hexdigest()[:12]
 
 
 def canonical_acquisition_provider(
@@ -180,3 +189,32 @@ def canonical_acquisition_provider(
     source_token = normalize_provider_token(source_name)
     source_prefix = source_token.split(":", 1)[0]
     return canonical_runtime_provider(source_prefix)
+
+
+#: Directory names Hermes interposes between its install root and a raw
+#: artifact file. ``state.db`` and ``verification_evidence.db`` sit at the
+#: root itself; session snapshots live under ``sessions/`` (``sessions/saved/``
+#: when retained); NeMo Relay ATIF/ATOF documents live under
+#: ``observability/nemo-relay/<family>/``.
+_PROFILE_SUBTREE_DIRECTORIES: frozenset[str] = frozenset(
+    {"sessions", "saved", "observability", "nemo-relay", "atif", "atof"}
+)
+
+
+def profile_root_for_artifact(artifact_path: Path) -> Path:
+    """Return the Hermes install root that owns any raw Hermes artifact.
+
+     Every Hermes artifact family must hash the *same* root or one logical
+     session gets two profile keys and lands as two archive sessions
+    : handing a family its file's immediate parent makes
+     ``<root>/observability/nemo-relay/atof/events.jsonl`` resolve to
+     ``.../atof`` while ``<root>/state.db`` resolves to ``<root>``.
+
+     The root is found by climbing the contiguous chain of Hermes' own
+     interposed subtree directories above the file, so this is pure path
+     arithmetic and works during replay, where the source tree is gone.
+    """
+    root = artifact_path.parent
+    while root.name in _PROFILE_SUBTREE_DIRECTORIES and root != root.parent:
+        root = root.parent
+    return root

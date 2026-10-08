@@ -224,7 +224,7 @@ class TestInsightsEndpointDispatch:
         send_error.assert_not_called()
         send_json.assert_called_once()
         status, payload = send_json.call_args.args
-        assert status == HTTPStatus.OK
+        assert status == HTTPStatus.OK, (status, payload)
         assert payload["session_id"] == session_id
         assert payload["include"] == list(INSIGHT_KINDS)
         kinds = payload["kinds"]
@@ -245,7 +245,7 @@ class TestInsightsEndpointDispatch:
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A path-only change is stale even when the session timestamp stays fixed."""
-        from polylogue.daemon.execution import BoundedComputeAdapter
+        from polylogue.core.compute import BoundedComputeAdapter
         from polylogue.daemon.session_profile_composition import compose_session_profile_callback
         from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 
@@ -254,7 +254,7 @@ class TestInsightsEndpointDispatch:
 
         async def converge() -> None:
             compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-            coordinator = DaemonWriteCoordinator()
+            coordinator = DaemonWriteCoordinator(archive_root=root)
             try:
                 composed = compose_session_profile_callback(
                     root,
@@ -324,7 +324,7 @@ class TestInsightsEndpointDispatch:
         send_error.assert_not_called()
         send_json.assert_called_once()
         status, payload = send_json.call_args.args
-        assert status == HTTPStatus.OK
+        assert status == HTTPStatus.OK, (status, payload)
         assert payload["include"] == ["profile", "threads"]
         # Only the requested kinds appear — restriction must be honored.
         assert set(payload["kinds"].keys()) == {"profile", "threads"}
@@ -335,7 +335,7 @@ class TestInsightsEndpointDispatch:
         _, send_json = _capture_responses(handler)
         handler.do_GET()
         status, payload = send_json.call_args.args
-        assert status == HTTPStatus.OK
+        assert status == HTTPStatus.OK, (status, payload)
         assert set(payload["kinds"].keys()) == {"profile", "threads"}
 
     def test_envelope_carries_origin_and_id(self, workspace_env: dict[str, Path]) -> None:

@@ -10,6 +10,7 @@ import pytest
 
 from polylogue.mcp.server_support import _set_runtime_services
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.mcp import invoke_surface, invoke_surface_async
 
 
@@ -17,7 +18,7 @@ def _content_hash(value: str) -> bytes:
     return hashlib.sha256(value.encode()).digest()
 
 
-def _seed_session(
+def _seed_session_on_writer(
     archive_root: Path,
     *,
     session_id: str,
@@ -47,6 +48,15 @@ def _seed_session(
             (message_id, session_id, 0, "text", text),
         )
         conn.commit()
+
+
+def _seed_session(archive_root: Path, *, session_id: str, origin: str, native_id: str, text: str) -> None:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(
+        lambda: _seed_session_on_writer(
+            archive_root, session_id=session_id, origin=origin, native_id=native_id, text=text
+        )
+    )
 
 
 def _prepare_mcp_archive(monkeypatch: pytest.MonkeyPatch, archive_root: Path) -> None:
@@ -161,58 +171,65 @@ class TestMCPRealRepositoryPaths:
         assert len(parsed["items"]) == 1
 
     def test_add_list_remove_tag_roundtrip(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Tag writes reach ``user.db`` through the resident daemon and read back.
+
+        MCP writes are daemon-owned (``submit_facade_operation`` refuses with
+        ``daemon_required`` otherwise), so the round trip runs against a real
+        daemon behind the archive socket.
+        """
         from polylogue.mcp.declarations.models import MCPCapabilities
         from polylogue.mcp.server import build_server
+        from tests.infra.daemon_operations import cli_daemon_archive
 
         archive_root = tmp_path / "archive"
         _prepare_mcp_archive(monkeypatch, archive_root)
         conv_id = "chatgpt-export:real-tag"
-        _seed_session(
-            archive_root,
-            session_id=conv_id,
-            origin="chatgpt-export",
-            native_id="real-tag",
-            text="tag me",
-        )
-        server = build_server(capabilities=MCPCapabilities(write=True))
 
-        # `list_tags`/`add_tag`/`remove_tag` were folded into the dispatcher by
-        # the 103->10 consolidation: writes go through `write(operation=...)`
-        # and tags are read back as a `query` filter rather than their own tool.
-        def _tagged_total() -> int:
-            payload = json.loads(
+        def seed(root: Path) -> None:
+            _seed_session_on_writer(
+                root, session_id=conv_id, origin="chatgpt-export", native_id="real-tag", text="tag me"
+            )
+
+        with cli_daemon_archive(archive_root, monkeypatch, seed_archive=seed):
+            server = build_server(capabilities=MCPCapabilities(write=True))
+
+            # `list_tags`/`add_tag`/`remove_tag` were folded into the dispatcher by
+            # the 103->10 consolidation: writes go through `write(operation=...)`
+            # and tags are read back as a `query` filter rather than their own tool.
+            def _tagged_total() -> int:
+                payload = json.loads(
+                    invoke_surface(
+                        server._tool_manager._tools["query"].fn,
+                        tag="important",
+                        origin="chatgpt-export",
+                        projection="sessions",
+                    )
+                )
+                return int(payload["total"])
+
+            assert _tagged_total() == 0
+
+            add_payload = json.loads(
                 invoke_surface(
-                    server._tool_manager._tools["query"].fn,
+                    server._tool_manager._tools["write"].fn,
+                    operation="add_tag",
+                    session_id=conv_id,
                     tag="important",
-                    origin="chatgpt-export",
-                    projection="sessions",
                 )
             )
-            return int(payload["total"])
+            assert add_payload["status"] == "ok", add_payload
+            assert _tagged_total() == 1
 
-        assert _tagged_total() == 0
-
-        add_payload = json.loads(
-            invoke_surface(
-                server._tool_manager._tools["write"].fn,
-                operation="add_tag",
-                session_id=conv_id,
-                tag="important",
+            remove_payload = json.loads(
+                invoke_surface(
+                    server._tool_manager._tools["write"].fn,
+                    operation="remove_tag",
+                    session_id=conv_id,
+                    tag="important",
+                    # The dispatcher guards destructive writes; removal without
+                    # confirm=true is refused rather than silently applied.
+                    confirm=True,
+                )
             )
-        )
-        assert add_payload["status"] == "ok"
-        assert _tagged_total() == 1
-
-        remove_payload = json.loads(
-            invoke_surface(
-                server._tool_manager._tools["write"].fn,
-                operation="remove_tag",
-                session_id=conv_id,
-                tag="important",
-                # The dispatcher guards destructive writes; removal without
-                # confirm=true is refused rather than silently applied.
-                confirm=True,
-            )
-        )
-        assert remove_payload["status"] == "ok"
-        assert _tagged_total() == 0
+            assert remove_payload["status"] == "ok", remove_payload
+            assert _tagged_total() == 0

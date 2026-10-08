@@ -307,6 +307,11 @@ def antigravity_path() -> Path:
     return Path.home() / ".gemini" / "antigravity"
 
 
+def antigravity_cli_path() -> Path:
+    """Antigravity CLI state directory: one trajectory SQLite store per conversation."""
+    return Path.home() / ".gemini" / "antigravity-cli"
+
+
 GEMINI_DRIVE_FOLDER = "Google AI Studio"
 
 

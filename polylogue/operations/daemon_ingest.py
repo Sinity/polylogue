@@ -10,7 +10,7 @@ import json
 import os
 import sqlite3
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import closing
 from dataclasses import asdict, dataclass, field, replace
 from functools import partial
@@ -19,6 +19,11 @@ from time import monotonic, time
 from typing import TypeVar
 from uuid import uuid4
 
+from polylogue.core.raw_failure_evidence import (
+    CohortMembershipRefusalError,
+    RetainedRawDecodeRefusalError,
+    RetainedRawDependencyRefusalError,
+)
 from polylogue.logging import WARNING, emit
 from polylogue.operations.audit import AuditRepository, MachineRequestBinding
 from polylogue.operations.bindings import runtime_operation_binding
@@ -37,6 +42,7 @@ from polylogue.operations.ingest_inputs import (
     enumerate_ingest_input,
     retain_input_page,
     spool_connection,
+    unlink_spool,
 )
 from polylogue.operations.insight_acceptance import SessionInsightPartReceipt
 from polylogue.operations.machine_lifecycle import machine_request_state
@@ -50,13 +56,13 @@ from polylogue.operations.machine_receipts import (
     IngestInputPageHistoricalReceipt,
     IngestInputRawMemberHistorical,
     IngestInputRawPageHistoricalReceipt,
+    IngestInputRawPagesDigest,
     IngestInsightPageHistoricalReceipt,
     IngestRefusalPageHistoricalReceipt,
     IngestRefusalPagesDigest,
     IngestRefusedMembershipHistorical,
     IngestTerminalSummaryHistorical,
     InsightTargetHistoricalReceipt,
-    ingest_input_raw_pages_digest,
     ingest_insight_pages_digest,
     ingest_terminal_outcome,
     ingest_unconverged_error,
@@ -67,32 +73,19 @@ from polylogue.operations.mutation_transaction import (
     OperationExecutor,
     StartedBoundMutation,
 )
-from polylogue.operations.operation_context import OperationContext, PinnedOperationRead, open_operation_read
+from polylogue.operations.operation_context import PinnedOperationRead, open_operation_read
+from polylogue.operations.operation_context_types import OperationContext
+from polylogue.operations.source_item_settlement import settle_materialized_source_items
 from polylogue.sources.origin_specs import retained_enumeration_fingerprint
-from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.revision_backfill import enrich_sessions_from_archive, parse_retained_raw_sessions
+from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
     consume_blob_publication_receipt,
     publication_refused,
 )
-from polylogue.storage.ingest_governance import (
-    CensusPublication,
-    CohortMembershipRefusalError,
-    CohortPublication,
-    PreparedIngestCohort,
-    PreparedRawCensus,
-    discard_prepared_ingest_cohort,
-    prepare_ingest_cohort,
-    prepare_raw_census,
-    publish_ingest_cohort,
-    publish_raw_census,
-)
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
-from polylogue.storage.source_generation_receipts import source_generation_receipt_page
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.raw_admission import execute_source_item_admission
+from polylogue.storage.source_generation_receipts import iter_source_item_raw_receipts, source_generation_receipt_page
+from polylogue.storage.sqlite.archive_tiers.raw_admission import RawAdmissionArm, execute_source_item_admission
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     FrozenSourceInput,
     RetainedSourceGeneration,
@@ -108,6 +101,11 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
 from polylogue.storage.sqlite.population_admission import assert_population_admitted
+from polylogue.storage.sqlite.reference_seal import (
+    IndexMutationDestination,
+    ReferenceSealStaleError,
+    index_path_for_connection,
+)
 
 _T = TypeVar("_T")
 
@@ -128,13 +126,11 @@ class _ExcisedRecords:
     central-directory ordinal accounted as a refused disposition.
     """
 
-    coordinates: set[str] = field(default_factory=set)
-    members: dict[int, str] = field(default_factory=dict)
+    members: PickleSpool[tuple[int, str]] = field(default_factory=PickleSpool)
 
     def add(self, prepared: PreparedSourceRecord) -> None:
-        self.coordinates.add(prepared.member.record_coordinate)
         if prepared.member.entry_ordinal is not None:
-            self.members[prepared.member.entry_ordinal] = str(prepared.record.source_path)
+            self.members.append((prepared.member.entry_ordinal, str(prepared.record.source_path)))
 
     def record_member_dispositions(
         self, connection: sqlite3.Connection, *, source_generation_id: str, source_item_id: str, observed_at_ms: int
@@ -144,7 +140,7 @@ class _ExcisedRecords:
             record_source_item_member_disposition,
         )
 
-        for ordinal, member_name in sorted(self.members.items()):
+        for ordinal, member_name in self.members:
             admitted = connection.execute(
                 "SELECT 1 FROM source_item_raw_members m JOIN raw_container_coordinates c ON c.raw_id=m.raw_id "
                 "WHERE m.source_generation_id=? AND m.source_item_id=? AND c.entry_ordinal=?",
@@ -162,18 +158,8 @@ class _ExcisedRecords:
                     observed_at_ms=observed_at_ms,
                 )
 
-
-def _parse_assembled_retained_raw(archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:
-    """Parse one retained raw and apply its provider's session assembly.
-
-    The same composition the live writer uses
-    (``LiveBatchProcessor._parse_retained_raw_sessions``), so a session
-    admitted through this operation carries the same assembled title and
-    enrichment as one admitted by the watcher or a from-empty build.
-    """
-    sessions = parse_retained_raw_sessions(archive, raw_id)
-    provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
-    return enrich_sessions_from_archive(archive, provider, source_path, sessions)
+    def close(self) -> None:
+        self.members.close()
 
 
 class IngestStoppedError(RuntimeError):
@@ -189,7 +175,7 @@ class IngestProjectionUnrecoverableError(RuntimeError):
 class IngestReprepareRequiredError(RuntimeError):
     """The pinned generation moved under this attempt; nothing here is permanent.
 
-    Raised by :meth:`IngestExecution.archive_write` when a concurrent index
+    Raised by :meth:`IngestExecution.require_publication_identity` when a concurrent index
     promotion or writer already advanced the archive past the snapshot this
     attempt pinned. The work this attempt already did is still valid (the
     manifest and prepared source are content-addressed), only the active
@@ -200,7 +186,7 @@ class IngestReprepareRequiredError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class SourceReceiptSpool:
-    """One pinned source/index projection reduced on disk by raw and logical ID."""
+    """One pinned Source projection reduced on disk by raw and logical ID."""
 
     path: Path
     source_generation_id: str
@@ -209,17 +195,34 @@ class SourceReceiptSpool:
     complete: bool
     confirmed_raw_count: int
     unresolved_raw_count: int
+    index_destination: IndexMutationDestination | None = None
 
     def close(self) -> None:
-        self.path.unlink(missing_ok=True)
+        unlink_spool(self.path)
 
-    def pending_raw_page(self, after: str | None = None) -> tuple[str, ...]:
+    def raw_page(self, after: str | None = None) -> tuple[str, ...]:
         with spool_connection(self.path, read_only=True) as conn:
             return tuple(
                 str(row[0])
                 for row in conn.execute(
-                    "SELECT raw_id FROM raws WHERE parser_complete=0 AND raw_id>? ORDER BY raw_id LIMIT 256",
+                    "SELECT raw_id FROM raws WHERE raw_id>? ORDER BY raw_id LIMIT 256",
                     (after or "",),
+                ).fetchall()
+            )
+
+    def complete_raw_sessions(self, raw_ids: tuple[str, ...]) -> tuple[str, ...]:
+        """Sessions the archive holds, at this projection, for exactly these raws."""
+        if not raw_ids:
+            return ()
+        with spool_connection(self.path, read_only=True) as conn:
+            return tuple(
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT DISTINCT l.expected_session_id FROM raw_logicals r "
+                    "JOIN logicals l ON l.logical_key=r.logical_key "
+                    f"WHERE r.raw_id IN ({','.join('?' * len(raw_ids))}) AND l.complete=1 "
+                    "ORDER BY l.expected_session_id",
+                    raw_ids,
                 ).fetchall()
             )
 
@@ -240,6 +243,9 @@ def _spool_source_receipt(
     index_conn: sqlite3.Connection,
     generation_id: str,
     path: Path,
+    *,
+    check_stop: Callable[[], None] | None = None,
+    index_destination: IndexMutationDestination | None = None,
 ) -> SourceReceiptSpool:
     """Project all witnesses under one pinned pair without an unbounded result."""
     generation = source_conn.execute(
@@ -255,58 +261,102 @@ def _spool_source_receipt(
     with spool_connection(path) as spool:
         spool.executescript(
             "CREATE TABLE items(ordinal INTEGER PRIMARY KEY, source_item_id TEXT NOT NULL, coordinate TEXT NOT NULL, "
-            "raws_json TEXT NOT NULL, retired_count INTEGER NOT NULL);"
+            "raw_count INTEGER NOT NULL, unresolved_count INTEGER NOT NULL, retired_count INTEGER NOT NULL, "
+            "source_complete INTEGER NOT NULL);"
+            "CREATE TABLE item_raws(source_item_id TEXT NOT NULL, raw_id TEXT NOT NULL, raw_blob_hash BLOB NOT NULL, "
+            "complete INTEGER NOT NULL, "
+            "PRIMARY KEY(source_item_id, raw_id)) WITHOUT ROWID;"
             "CREATE UNIQUE INDEX items_source_id ON items(source_item_id);"
             "CREATE TABLE raws(raw_id TEXT PRIMARY KEY, complete INTEGER NOT NULL, parser_complete INTEGER NOT NULL) WITHOUT ROWID;"
             "CREATE TABLE logicals(logical_key TEXT PRIMARY KEY, expected_session_id TEXT NOT NULL, complete INTEGER NOT NULL) WITHOUT ROWID;"
             "CREATE INDEX logicals_session ON logicals(expected_session_id);"
+            "CREATE TABLE raw_logicals(raw_id TEXT NOT NULL, logical_key TEXT NOT NULL, "
+            "PRIMARY KEY(raw_id, logical_key)) WITHOUT ROWID;"
             "CREATE TABLE raw_metadata(source_item_id TEXT PRIMARY KEY, page_ref TEXT NOT NULL, page_count INTEGER NOT NULL, "
             "raw_count INTEGER NOT NULL, unresolved_count INTEGER NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID;"
         )
         while True:
             page = source_generation_receipt_page(
-                source_conn, index_conn, source_generation_id=generation_id, after=cursor
+                source_conn, source_generation_id=generation_id, after=cursor, check_stop=check_stop
             )
             if not page.items:
                 break
-            retired_by_item: dict[str, int] = {}
-            for retired in page.retired_coordinates:
-                retired_by_item[retired.source_item_id] = retired_by_item.get(retired.source_item_id, 0) + 1
             for item in page.items:
-                raw_status = [(raw.raw_id, raw.complete) for raw in item.raws]
+                if check_stop is not None:
+                    check_stop()
+                enumeration_complete &= item.enumeration_complete
+                complete &= item.source_complete
+                raw_count = unresolved_count = 0
+                with closing(
+                    iter_source_item_raw_receipts(
+                        source_conn,
+                        index_conn,
+                        source_generation_id=generation_id,
+                        source_item_id=item.source_item_id,
+                        check_stop=check_stop,
+                    )
+                ) as raw_receipts:
+                    for raw in raw_receipts:
+                        raw_complete = raw.parser_complete
+                        for logical in raw.logicals:
+                            raw_complete &= logical.complete
+                            if check_stop is not None:
+                                check_stop()
+                            spool.execute(
+                                "INSERT INTO logicals VALUES (?, ?, ?) ON CONFLICT(logical_key) DO UPDATE SET "
+                                "complete=MIN(complete, excluded.complete)",
+                                (logical.logical_source_key, logical.expected_session_id, int(logical.complete)),
+                            )
+                            spool.execute(
+                                "INSERT INTO raw_logicals VALUES (?, ?) ON CONFLICT DO NOTHING",
+                                (raw.raw_id, logical.logical_source_key),
+                            )
+                        member_hash = source_conn.execute(
+                            "SELECT raw_blob_hash FROM main.source_item_raw_members "
+                            "WHERE source_generation_id=? AND source_item_id=? AND raw_id=? "
+                            "ORDER BY record_coordinate LIMIT 1",
+                            (generation_id, item.source_item_id, raw.raw_id),
+                        ).fetchone()
+                        if member_hash is None or not isinstance(member_hash[0], bytes):
+                            raw_complete = False
+                        raw_count += 1
+                        unresolved_count += not raw_complete
+                        complete &= raw_complete
+                        spool.execute(
+                            "INSERT INTO item_raws VALUES (?, ?, ?, ?)",
+                            (
+                                item.source_item_id,
+                                raw.raw_id,
+                                member_hash[0] if member_hash is not None else b"",
+                                int(raw_complete),
+                            ),
+                        )
+                        spool.execute(
+                            "INSERT INTO raws VALUES (?, ?, ?) ON CONFLICT(raw_id) DO UPDATE SET "
+                            "complete=MIN(complete, excluded.complete), "
+                            "parser_complete=MIN(parser_complete, excluded.parser_complete)",
+                            (raw.raw_id, int(raw_complete), int(raw.parser_complete)),
+                        )
                 spool.execute(
-                    "INSERT INTO items VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO items VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         observed_count,
                         item.source_item_id,
                         item.logical_coordinate,
-                        json.dumps(raw_status, separators=(",", ":")),
-                        retired_by_item.get(item.source_item_id, 0),
+                        raw_count,
+                        unresolved_count,
+                        item.retired_count,
+                        int(item.source_complete and unresolved_count == 0),
                     ),
                 )
                 observed_count += 1
-                enumeration_complete &= item.enumeration_complete
-                complete &= item.complete
-                for raw in item.raws:
-                    spool.execute(
-                        "INSERT INTO raws VALUES (?, ?, ?) ON CONFLICT(raw_id) DO UPDATE SET "
-                        "complete=MIN(complete, excluded.complete), "
-                        "parser_complete=MIN(parser_complete, excluded.parser_complete)",
-                        (raw.raw_id, int(raw.complete), int(raw.parser_complete)),
-                    )
-                    for logical in raw.logicals:
-                        spool.execute(
-                            "INSERT INTO logicals VALUES (?, ?, ?) ON CONFLICT(logical_key) DO UPDATE SET "
-                            "complete=MIN(complete, excluded.complete)",
-                            (logical.logical_source_key, logical.expected_session_id, int(logical.complete)),
-                        )
             cursor = page.next_cursor
         enumeration_complete &= observed_count == item_count
         complete &= enumeration_complete
         confirmed = int(spool.execute("SELECT COUNT(*) FROM raws WHERE complete=1").fetchone()[0])
         unresolved = int(spool.execute("SELECT COUNT(*) FROM raws WHERE complete=0").fetchone()[0])
     return SourceReceiptSpool(
-        path, generation_id, observed_count, enumeration_complete, complete, confirmed, unresolved
+        path, generation_id, observed_count, enumeration_complete, complete, confirmed, unresolved, index_destination
     )
 
 
@@ -356,6 +406,9 @@ class IngestExecution:
                 "CREATE TABLE refusals(ordinal INTEGER PRIMARY KEY, logical_key TEXT NOT NULL, raw_id TEXT NOT NULL, "
                 "reason TEXT NOT NULL, UNIQUE(logical_key, raw_id, reason));"
                 "CREATE TABLE changed_sessions(session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL) WITHOUT ROWID;"
+                # Raws this execution's admission introduced, not duplicates
+                # of retained raws.
+                "CREATE TABLE admitted_raws(raw_id TEXT PRIMARY KEY) WITHOUT ROWID;"
             )
         self.session_id_pages_ref: str | None = None
         self.session_id_page_count = 0
@@ -368,6 +421,9 @@ class IngestExecution:
         #: interrupted attempt of it.
         self.unchanged_publications = 0
         self.refused_count = 0
+        self.source_items_sealable = False
+        self._materialization_index_destination: IndexMutationDestination | None = None
+        self._materialization_destination_bound = False
         self.inline_refusals: list[IngestRefusedMembershipHistorical] = []
         self.refusal_pages_ref: str | None = None
         self.refusal_page_count = 0
@@ -382,13 +438,35 @@ class IngestExecution:
         self.retained_profile_parts: tuple[SessionInsightPartReceipt, ...] | None = None
         self.publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
 
-    def record_refusal(self, refusal: CohortMembershipRefusalError) -> None:
+    def record_refusal(self, logical_key: str, refusal: RetainedRawDecodeRefusalError) -> None:
         with spool_connection(self.state_path) as state:
             state.execute(
                 # A transient retry drives the generation again from the start:
                 # one refused membership is one refusal, however many drives saw it.
                 "INSERT OR IGNORE INTO refusals(logical_key, raw_id, reason) VALUES (?, ?, ?)",
-                (refusal.logical_source_key, refusal.raw_id, refusal.reason[:512]),
+                (logical_key, refusal.raw_id, refusal.kind.value),
+            )
+
+    @staticmethod
+    def _validate_index_destination(destination: IndexMutationDestination) -> None:
+        try:
+            destination.validate()
+        except (FileNotFoundError, ReferenceSealStaleError) as exc:
+            raise IngestReprepareRequiredError("retained replay Index destination changed; retry required") from exc
+
+    @staticmethod
+    def _require_materialization_destination(
+        receipt: SourceReceiptSpool,
+        expected: IndexMutationDestination | None,
+    ) -> None:
+        if receipt.index_destination != expected:
+            raise IngestReprepareRequiredError("materialization receipt Index destination changed")
+
+    def record_membership_refusal(self, logical_key: str, raw_id: str, reason: str) -> None:
+        with spool_connection(self.state_path) as state:
+            state.execute(
+                "INSERT OR IGNORE INTO refusals(logical_key, raw_id, reason) VALUES (?, ?, ?)",
+                (logical_key, raw_id, reason),
             )
 
     def record_changed_session(self, session_id: str, message_count: int) -> None:
@@ -399,10 +477,14 @@ class IngestExecution:
                 (session_id, message_count),
             )
 
+    def record_admitted_raws(self, raw_ids: Iterable[str]) -> None:
+        with spool_connection(self.state_path) as state:
+            state.executemany("INSERT OR IGNORE INTO admitted_raws VALUES (?)", ((raw_id,) for raw_id in raw_ids))
+
     def changed_session_recorded(self, session_id: str) -> bool:
         """Whether this execution already recorded ``session_id`` as changed (a retry re-publishing its own work)."""
         assert_population_admitted(self.state_path)
-        with closing(sqlite3.connect(self.state_path)) as state:
+        with spool_connection(self.state_path, read_only=True) as state:
             return (
                 state.execute("SELECT 1 FROM changed_sessions WHERE session_id = ?", (session_id,)).fetchone()
                 is not None
@@ -504,6 +586,39 @@ class IngestExecution:
 
         return await self.runtime.write_phase("ingest.source", publish)
 
+    async def settle_source_items(self, generation: RetainedSourceGeneration, receipt: SourceReceiptSpool) -> int:
+        """Publish only item outcomes proved by this generation's materialization."""
+        if receipt.source_generation_id != generation.source_generation_id:
+            raise ValueError("materialization receipt names a different source generation")
+        if self.snapshot is None:
+            raise ValueError("materialization receipt has no pinned archive identity")
+        identity = self.snapshot.identity
+
+        def settle(connection: sqlite3.Connection) -> int:
+            # The active generation may move while the callback waits for the
+            # single writer. Recheck immediately before Source mutations.
+            self.require_publication_identity(identity)
+            self._require_materialization_destination(receipt, self._materialization_index_destination)
+            if receipt.index_destination is not None:
+                self._validate_index_destination(receipt.index_destination)
+            changed = settle_materialized_source_items(
+                connection,
+                source_generation_id=generation.source_generation_id,
+                receipt_path=receipt.path,
+                observed_at_ms=int(time() * 1000),
+                check_stop=self.check_stop,
+            )
+            if receipt.index_destination is not None:
+                self._validate_index_destination(receipt.index_destination)
+            census = connection.execute(
+                "SELECT sealable FROM source_item_reconciliation WHERE source_generation_id=?",
+                (generation.source_generation_id,),
+            ).fetchone()
+            self.source_items_sealable = census is not None and bool(census[0])
+            return changed
+
+        return await self.source_write(settle)
+
     async def abort_prepared(self, generation_id: str) -> None:
         """Settle a failed pre-accept attempt even after stop was requested."""
         await self.runtime.compute_phase(self.publisher.discard_pending)
@@ -526,27 +641,15 @@ class IngestExecution:
 
         await self.runtime.write_phase("ingest.source", discard)
 
-    async def archive_write(self, work: Callable[[ArchiveStore], _T]) -> _T:
-        assert self.snapshot is not None
-        expected = self.snapshot.identity
-
-        def publish() -> _T:
-            self.check_stop()
-            location = ArchiveLocation.resolve(self.archive_root)
-            current = ArchiveIdentity.resolve_location(location)
-            if (current.authority_identity_digest, current.active_generation) != (
-                expected.authority_identity_digest,
-                expected.active_generation,
-            ):
-                raise IngestReprepareRequiredError("ingest publication generation changed; reprepare required")
-            with ArchiveStore.open_existing(self.archive_root, read_only=False) as archive:
-                if archive.index_db_path.resolve() != location.active_index_path.resolve():
-                    raise IngestReprepareRequiredError("ingest writer opened another index generation")
-                result = work(archive)
-                archive.commit()
-                return result
-
-        return await self.runtime.write_phase("ingest.publish", publish)
+    def require_publication_identity(self, expected: ArchiveIdentity) -> None:
+        self.check_stop()
+        location = ArchiveLocation.resolve(self.archive_root)
+        current = ArchiveIdentity.resolve_location(location)
+        if (current.authority_identity_digest, current.active_generation) != (
+            expected.authority_identity_digest,
+            expected.active_generation,
+        ):
+            raise IngestReprepareRequiredError("ingest publication generation changed; reprepare required")
 
     async def accept(self) -> RetainedSourceGeneration | None:
         # Required derivation capability must exist before accepting retained work.
@@ -653,7 +756,7 @@ class IngestExecution:
                 await self.abort_prepared(generation_id)
                 raise
             finally:
-                await self.runtime.compute_phase(lambda: spool.unlink(missing_ok=True))
+                await self.runtime.compute_phase(lambda: unlink_spool(spool))
 
             def accept_prepared() -> dict[str, object]:
                 self.check_stop()
@@ -709,7 +812,12 @@ class IngestExecution:
 
         def load_started() -> StartedBoundMutation:
             assert self.binding is not None
-            with self.audit.settled_machine_read():
+            # This execution just accepted the request. Another audit
+            # continuity transition (a concurrent request's write) holding the
+            # lock at this instant is contention, not absence: wait for it on
+            # this compute phase, which stays cancellable, rather than refuse
+            # an accepted ingest as indeterminate.
+            with self.audit.settled_machine_read(wait_for_lock=True):
                 parts = self.audit.machine_parts(self.binding)
                 if len(parts) != 1 or not parts[0].get("operation_id") or not parts[0].get("authorization_ref"):
                     raise ValueError("legacy accepted source intent lacks an audited ingest execution")
@@ -773,7 +881,7 @@ class IngestExecution:
 
     async def enumerate_item(
         self, generation: RetainedSourceGeneration, item: RetainedSourceInput
-    ) -> tuple[tuple[int, ...], int] | None:
+    ) -> tuple[range, int] | None:
         if item.enumeration_complete:
             return None
         assert self.record is not None
@@ -781,39 +889,34 @@ class IngestExecution:
         source_name = self.accepted_source_name()
         iterator = enumerate_ingest_input(
             item,
+            enumeration_fingerprint=generation.enumeration_fingerprint,
             source_generation_id=generation.source_generation_id,
             publisher=self.publisher,
             acquired_at_ms=acquired_at_ms,
             check_stop=self.check_stop,
             source_name=source_name,
         )
-        coordinates: list[str] = []
-        member_ordinals: set[int] = set()
+        coordinates: PickleSpool[str] = PickleSpool()
         member_count: int | None = None
         published_terminal = False
-        excised = _ExcisedRecords()
+        excised: _ExcisedRecords | None = None
         try:
+            excised = _ExcisedRecords()
             current = await self.runtime.compute_phase(lambda: next(iterator, None))
             while current is not None:
                 self.check_stop()
                 following = await self.runtime.compute_phase(lambda: next(iterator, None))
-                if isinstance(current, PreparedSourceMemberDisposition):
-                    member_ordinals.add(current.entry_ordinal)
-                    member_count = current.member_count
-                else:
-                    coordinates.append(current.member.record_coordinate)
-                    if current.member.entry_ordinal is not None:
-                        member_ordinals.add(current.member.entry_ordinal)
-                    member_count = current.member_count
+                member_count = current.member_count
                 await self._publish_record(
                     generation,
                     item,
                     current,
-                    tuple(coordinates) if following is None else None,
+                    coordinates if following is None else None,
                     acquired_at_ms,
-                    tuple(sorted(member_ordinals)) if following is None else None,
+                    range(member_count) if following is None and member_count is not None else None,
                     member_count if following is None else None,
                     excised=excised,
+                    admitted_coordinates=coordinates,
                 )
                 published_terminal = following is None
                 current = following
@@ -821,9 +924,15 @@ class IngestExecution:
                 # The caller completes empty inputs in one writer transaction
                 # for the whole accepted input page. This keeps a large set of
                 # no-record files from paying a source connection per file.
-                return tuple(sorted(member_ordinals)), member_count if member_count is not None else 0
+                count = member_count if member_count is not None else 0
+                return range(count), count
         finally:
-            await self.runtime.compute_phase(iterator.close)
+            try:
+                await self.runtime.compute_phase(iterator.close)
+            finally:
+                if excised is not None:
+                    excised.close()
+                coordinates.close()
         return None
 
     async def _publish_record(
@@ -831,14 +940,18 @@ class IngestExecution:
         generation: RetainedSourceGeneration,
         item: RetainedSourceInput,
         prepared: PreparedSourceRecord | PreparedSourceMemberDisposition | None,
-        completed_coordinates: tuple[str, ...] | None,
+        completed_coordinates: Iterable[str] | None,
         observed_at_ms: int,
-        completed_member_ordinals: tuple[int, ...] | None = None,
+        completed_member_ordinals: Iterable[int] | None = None,
         member_count: int | None = None,
         *,
         excised: _ExcisedRecords,
+        admitted_coordinates: PickleSpool[str],
     ) -> None:
+        admitted_raw_ids: list[str] = []
+
         def publish(connection: sqlite3.Connection) -> None:
+            admitted_raw_ids.clear()
             if isinstance(prepared, PreparedSourceMemberDisposition):
                 from polylogue.storage.sqlite.archive_tiers.source_items import (
                     SourceItemMemberDisposition,
@@ -857,7 +970,10 @@ class IngestExecution:
                 )
             elif prepared is not None:
                 try:
-                    execute_source_item_admission(connection, prepared.admission, prepared.member)
+                    admission = execute_source_item_admission(connection, prepared.admission, prepared.member)
+                    admitted_coordinates.append(prepared.member.record_coordinate)
+                    if admission.arm is not RawAdmissionArm.SKIP_DUPLICATE:
+                        admitted_raw_ids.append(admission.raw_id)
                 except ContentExcisedError:
                     # The archive forgets on purpose: durably excised bytes are
                     # a skip, not a failed ingest. The admission savepoint left
@@ -879,181 +995,212 @@ class IngestExecution:
                     source_generation_id=generation.source_generation_id,
                     source_item_id=item.source_item_id,
                     enumeration_fingerprint=generation.enumeration_fingerprint,
-                    record_coordinates=tuple(c for c in completed_coordinates if c not in excised.coordinates),
+                    record_coordinates=completed_coordinates,
                     enumerated_at_ms=observed_at_ms,
                     member_ordinals=completed_member_ordinals,
                     member_count=member_count,
+                    check_stop=self.check_stop,
                 )
 
         await self.source_write(publish)
+        if admitted_raw_ids:
+            self.record_admitted_raws(admitted_raw_ids)
 
-    async def receipt(self, generation_id: str) -> SourceReceiptSpool:
+    async def receipt(
+        self,
+        generation_id: str,
+        *,
+        index_destination: IndexMutationDestination | None = None,
+    ) -> SourceReceiptSpool:
         fd, name = tempfile.mkstemp(prefix="polylogue-source-receipt-", suffix=".sqlite", dir=os.environ.get("TMPDIR"))
         os.close(fd)
         path = Path(name)
 
         def read_receipt(pinned: PinnedOperationRead) -> SourceReceiptSpool:
-            index_connection = pinned.archive.index_connection
-            if index_connection is None:
-                raise RuntimeError("accepted ingest requires the pinned index tier")
-            return _spool_source_receipt(
-                pinned.archive.source_connection,
-                index_connection,
-                generation_id,
-                path,
-            )
+            if index_destination is None:
+                index_connection = pinned.archive.index_connection
+                if index_connection is None:
+                    raise RuntimeError("accepted ingest requires the pinned active index tier")
+                return _spool_source_receipt(
+                    pinned.archive.source_connection,
+                    index_connection,
+                    generation_id,
+                    path,
+                    check_stop=self.check_stop,
+                )
+
+            self._validate_index_destination(index_destination)
+            if index_destination.kind != "owned_inactive" or index_destination.index_path is None:
+                raise ValueError("receipt Index destination is not the owned inactive generation")
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+            assert index_destination.generation is not None
+            try:
+                candidate = ArchiveStore.open_owned_inactive_read(index_destination.generation)
+            except FileNotFoundError as exc:
+                raise IngestReprepareRequiredError("owned cold Index disappeared before receipt read") from exc
+            try:
+                index_connection = candidate.index_connection
+                if index_connection is None:
+                    raise RuntimeError("owned cold Index reader has no Index connection")
+                if index_path_for_connection(index_connection).resolve(strict=True) != index_destination.index_path:
+                    raise IngestReprepareRequiredError("receipt Index connection differs from its owned destination")
+                index_connection.execute("BEGIN")
+                index_connection.execute("SELECT rootpage FROM main.sqlite_schema LIMIT 1").fetchone()
+                self._validate_index_destination(index_destination)
+                receipt = _spool_source_receipt(
+                    pinned.archive.source_connection,
+                    index_connection,
+                    generation_id,
+                    path,
+                    check_stop=self.check_stop,
+                    index_destination=index_destination,
+                )
+                self._validate_index_destination(index_destination)
+                return receipt
+            finally:
+                candidate.close()
 
         try:
             return await self.read(read_receipt)
         except BaseException:
-            path.unlink(missing_ok=True)
+            unlink_spool(path)
             raise
 
     async def materialize(self, generation_id: str) -> SourceReceiptSpool:
-        """Reuse canonical census and cohort publication, reconciling first."""
+        """Publish this original generation through the resident Raw owner."""
         initial = await self.receipt(generation_id)
+        assert self.snapshot is not None
+        expected = self.snapshot.identity
         try:
             with spool_connection(initial.path, read_only=True) as conn:
                 retired = conn.execute("SELECT 1 FROM items WHERE retired_count>0 LIMIT 1").fetchone()
             if retired is not None:
                 raise ValueError("accepted raw member was retired; it cannot be readmitted")
+
+            def refused(keys: tuple[str, ...], refusal: RetainedRawDecodeRefusalError) -> None:
+                for key in keys:
+                    self.record_refusal(key, refusal)
+                emit(
+                    "ingest.membership.refused",
+                    logical_source_keys=keys,
+                    raw_id=refusal.raw_id,
+                    reason=refusal.kind.value,
+                    outcome="refused",
+                )
+
+            def dependency_refused(refusal: RetainedRawDependencyRefusalError) -> None:
+                for key in refusal.logical_source_keys:
+                    self.record_membership_refusal(key, refusal.subject_raw_id, "required_raw_dependency_refused")
+                emit(
+                    "ingest.membership.refused",
+                    logical_source_keys=refusal.logical_source_keys,
+                    raw_id=refusal.subject_raw_id,
+                    reason="required_raw_dependency_refused",
+                    dependency_raw_id=refusal.dependency.raw_id,
+                    dependency_reason=refusal.dependency.kind.value,
+                    outcome="refused",
+                )
+
+            def membership_refused(refusal: CohortMembershipRefusalError) -> None:
+                self.record_membership_refusal(refusal.logical_source_key, refusal.raw_id, refusal.reason)
+                emit(
+                    "ingest.membership.refused",
+                    logical_source_keys=(refusal.logical_source_key,),
+                    raw_id=refusal.raw_id,
+                    reason=refusal.reason,
+                    outcome="refused",
+                )
+
             cursor: str | None = None
-            while raw_page := initial.pending_raw_page(cursor):
-                for raw_id in raw_page:
-                    for _attempt in range(3):
-                        observed_at_ms = int(time() * 1000)
-
-                        def prepare_census(
-                            pinned: PinnedOperationRead,
-                            *,
-                            census_raw_id: str = raw_id,
-                            census_observed_at_ms: int = observed_at_ms,
-                        ) -> PreparedRawCensus:
-                            return prepare_raw_census(
-                                pinned.archive,
-                                census_raw_id,
-                                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                                parse_retained_raw=parse_retained_raw_sessions,
-                                censused_at_ms=census_observed_at_ms,
-                            )
-
-                        prepared: PreparedRawCensus = await self.read(prepare_census)
-
-                        def publish_census(
-                            archive: ArchiveStore, *, census: PreparedRawCensus = prepared
-                        ) -> CensusPublication:
-                            return publish_raw_census(archive, census)
-
-                        result: CensusPublication = await self.archive_write(publish_census)
-                        if result.published:
-                            break
-                    else:
-                        raise ValueError("accepted raw census kept changing during preparation")
+            while raw_page := initial.raw_page(cursor):
+                self.check_stop()
+                materialization = await self.runtime.materialize_retained_raw_ids(
+                    raw_page,
+                    on_terminal_refusal=refused,
+                    on_dependency_refusal=dependency_refused,
+                    on_membership_refusal=membership_refused,
+                    before_publication=partial(self.require_publication_identity, expected),
+                )
+                if self._materialization_destination_bound:
+                    if self._materialization_index_destination != materialization.index_destination:
+                        raise ReferenceSealStaleError("retained raws used different Index destinations")
+                else:
+                    self._materialization_index_destination = materialization.index_destination
+                    self._materialization_destination_bound = True
+                replay = materialization.outcome
+                for publication in replay.receipts:
+                    for logical_key, raw_id, decision in publication.membership_refusals:
+                        self.record_membership_refusal(logical_key, raw_id, decision.value)
+                    for session_id, before_hash, after_hash, message_count in publication.session_outputs:
+                        if before_hash != after_hash:
+                            self.record_changed_session(session_id, message_count)
+                        elif not self.changed_session_recorded(session_id):
+                            self.unchanged_publications += 1
+                # The page's published siblings are accounted above; a raw
+                # that failed retryably fails this operation, which retries.
+                replay.require_complete()
                 cursor = raw_page[-1]
         finally:
             initial.close()
-
-        observed = await self.receipt(generation_id)
+        settled = await self.receipt(
+            generation_id,
+            index_destination=(
+                self._materialization_index_destination if self._materialization_destination_bound else None
+            ),
+        )
         try:
-            with spool_connection(observed.path) as pending:
-                pending.execute("CREATE TABLE pending(logical_key TEXT PRIMARY KEY) WITHOUT ROWID")
-                pending.execute(
-                    "CREATE TABLE attempts(logical_key TEXT PRIMARY KEY, count INTEGER NOT NULL) WITHOUT ROWID"
+            await self._attribute_converged_sessions(settled)
+        except BaseException:
+            settled.close()
+            raise
+        return settled
+
+    async def _attribute_converged_sessions(self, settled: SourceReceiptSpool) -> None:
+        """Count the sessions the archive serves from raws this ingest introduced.
+
+        Under single-pass convergence the daemon's raw owner may publish an
+        accepted raw before this materialization reaches it, which then finds
+        the content already written. The ingest still reports what the archive
+        holds for the inputs it introduced: every session of the settled
+        projection whose row is served from one of those raws. A raw that
+        duplicated a retained one introduced nothing, so a repeated ingest
+        still reports no change.
+        """
+        cursor = ""
+        while True:
+            self.check_stop()
+            with spool_connection(self.state_path, read_only=True) as state:
+                raw_ids = tuple(
+                    str(row[0])
+                    for row in state.execute(
+                        "SELECT raw_id FROM admitted_raws WHERE raw_id>? ORDER BY raw_id LIMIT 256", (cursor,)
+                    )
                 )
-                pending.execute("INSERT INTO pending SELECT logical_key FROM logicals WHERE complete=0")
-                while row := pending.execute("SELECT logical_key FROM pending ORDER BY logical_key LIMIT 1").fetchone():
-                    self.check_stop()
-                    key = str(row[0])
-                    pending.execute("DELETE FROM pending WHERE logical_key=?", (key,))
-                    pending.execute(
-                        "INSERT INTO attempts VALUES (?, 1) ON CONFLICT(logical_key) DO UPDATE SET count=count+1",
-                        (key,),
+            if not raw_ids:
+                return
+            cursor = raw_ids[-1]
+            complete = set(settled.complete_raw_sessions(raw_ids))
+            if not complete:
+                continue
+
+            def served_sessions(
+                pinned: PinnedOperationRead, raws: tuple[str, ...] = raw_ids
+            ) -> tuple[tuple[str, int], ...]:
+                index_connection = pinned.archive.index_connection
+                if index_connection is None:
+                    raise RuntimeError("accepted ingest requires the pinned index tier")
+                return tuple(
+                    (str(row[0]), int(row[1]))
+                    for row in index_connection.execute(
+                        f"SELECT session_id, message_count FROM sessions WHERE raw_id IN ({','.join('?' * len(raws))})",
+                        raws,
                     )
-                    attempts = int(
-                        pending.execute("SELECT count FROM attempts WHERE logical_key=?", (key,)).fetchone()[0]
-                    )
-                    if attempts > 3:
-                        raise ValueError("accepted membership cohort kept changing during preparation")
-                    observed_at_ms = int(time() * 1000)
+                )
 
-                    def prepare_cohort(
-                        pinned: PinnedOperationRead,
-                        *,
-                        cohort_key: str = key,
-                        cohort_observed_at_ms: int = observed_at_ms,
-                    ) -> PreparedIngestCohort:
-                        return prepare_ingest_cohort(
-                            pinned.archive,
-                            logical_source_key=cohort_key,
-                            source_generation_id=generation_id,
-                            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                            parse_retained_raw=_parse_assembled_retained_raw,
-                            acquired_at_ms=cohort_observed_at_ms,
-                        )
-
-                    prepared_cohort: PreparedIngestCohort | None = None
-                    try:
-                        prepared_cohort = await self.read(prepare_cohort)
-                    except CohortMembershipRefusalError as refusal:
-                        # Refuse this key while the rest of the generation continues.
-                        emit(
-                            "ingest.membership.refused",
-                            logical_source_key=refusal.logical_source_key,
-                            raw_id=refusal.raw_id,
-                            reason=refusal.reason,
-                            outcome="refused",
-                        )
-                        self.record_refusal(refusal)
-                        continue
-                    assert prepared_cohort is not None
-                    try:
-                        self.check_stop()
-
-                        def publish_cohort(
-                            archive: ArchiveStore, *, cohort: PreparedIngestCohort = prepared_cohort
-                        ) -> tuple[CohortPublication, int | None]:
-                            before = {
-                                session_id: archive._conn.execute(
-                                    "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
-                                ).fetchone()
-                                for session_id in cohort.affected_session_ids
-                            }
-                            published = publish_ingest_cohort(archive, cohort)
-                            if not published.published or published.session_id is None:
-                                return published, None
-                            after = archive._conn.execute(
-                                "SELECT content_hash, message_count FROM sessions WHERE session_id = ?",
-                                (published.session_id,),
-                            ).fetchone()
-                            if after is None:
-                                raise RuntimeError("published ingest cohort has no session row")
-                            prior = before.get(published.session_id)
-                            changed = prior is None or prior[0] != after[0]
-                            return published, int(after[1]) if changed else None
-
-                        publication, changed_message_count = await self.archive_write(publish_cohort)
-                    finally:
-
-                        def discard_cohort(*, cohort: PreparedIngestCohort = prepared_cohort) -> None:
-                            discard_prepared_ingest_cohort(cohort)
-
-                        await self.runtime.compute_phase(discard_cohort)
-                    if publication.reprepare_required:
-                        for redo_key in (key, *publication.reprepare_logical_source_keys):
-                            pending.execute("INSERT OR IGNORE INTO pending VALUES (?)", (redo_key,))
-                    if changed_message_count is not None and publication.session_id is not None:
-                        self.record_changed_session(publication.session_id, changed_message_count)
-                    elif (
-                        publication.published
-                        and publication.session_id is not None
-                        and not self.changed_session_recorded(publication.session_id)
-                    ):
-                        self.unchanged_publications += 1
-        finally:
-            observed.close()
-        # A published classification may still be ambiguous or incomplete.
-        # Only exact source/application/head witnesses can certify it.
-        return await self.receipt(generation_id)
+            for session_id, message_count in await self.read(served_sessions):
+                if session_id in complete and not self.changed_session_recorded(session_id):
+                    self.record_changed_session(session_id, message_count)
 
     async def converge_profiles(self, receipt: SourceReceiptSpool) -> tuple[SessionInsightPartReceipt, ...]:
         """Derive only the exact sessions proved by this source denominator.
@@ -1103,7 +1250,7 @@ class IngestExecution:
                 inputs: list[IngestInputHistoricalReceipt] = []
                 for item in source_page:
                     row = observed.execute(
-                        "SELECT coordinate, raws_json, retired_count FROM items WHERE source_item_id=?",
+                        "SELECT coordinate, raw_count, unresolved_count, retired_count FROM items WHERE source_item_id=?",
                         (item.source_item_id,),
                     ).fetchone()
                     if row is None:
@@ -1119,20 +1266,33 @@ class IngestExecution:
                         continue
                     if str(row[0]) != item.coordinate:
                         raise ValueError("terminal source item coordinate changed")
-                    raw_status = json.loads(str(row[1]))
-                    raw_ids = sorted({str(raw_id) for raw_id, _complete in raw_status})
-                    unresolved = sorted({str(raw_id) for raw_id, complete in raw_status if not complete})
-                    retired_count = int(row[2])
+                    raw_count, unresolved_count, retired_count = map(int, row[1:])
                     page_metadata = observed.execute(
                         "SELECT page_ref, page_count, raw_count, unresolved_count, digest "
                         "FROM raw_metadata WHERE source_item_id=?",
                         (item.source_item_id,),
                     ).fetchone()
+                    raw_ids: list[str] | None = None
+                    unresolved: list[str] = []
+                    if page_metadata is None:
+                        if raw_count > MAX_INLINE_RAW_IDS_PER_INPUT:
+                            raise ValueError("terminal raw attribution lacks its persisted pages")
+                        with closing(
+                            observed.execute(
+                                "SELECT raw_id, complete FROM item_raws WHERE source_item_id=? ORDER BY raw_id LIMIT ?",
+                                (item.source_item_id, MAX_INLINE_RAW_IDS_PER_INPUT),
+                            )
+                        ) as raw_cursor:
+                            raw_status = raw_cursor.fetchall()
+                        raw_ids = [str(raw_id) for raw_id, _complete in raw_status]
+                        unresolved = [str(raw_id) for raw_id, complete in raw_status if not complete]
+                        if len(raw_ids) != raw_count or len(unresolved) != unresolved_count:
+                            raise ValueError("terminal raw attribution changed")
                     inputs.append(
                         IngestInputHistoricalReceipt(
                             source_item_id=item.source_item_id,
                             logical_coordinate=item.coordinate,
-                            denominator=len(raw_ids) + retired_count,
+                            denominator=raw_count + retired_count,
                             raw_ids=None if page_metadata is not None else raw_ids,
                             unresolved_raw_ids=[] if page_metadata is not None else unresolved,
                             raw_id_pages_ref=None if page_metadata is None else page_metadata[0],
@@ -1172,7 +1332,7 @@ class IngestExecution:
             insight_pages_digest=self.insight_pages_digest,
             summary=IngestTerminalSummaryHistorical(
                 enumeration_complete=receipt.enumeration_complete,
-                source_complete=receipt.complete and self.refused_count == 0,
+                source_complete=receipt.complete and self.source_items_sealable and self.refused_count == 0,
                 confirmed_raw_count=receipt.confirmed_raw_count,
                 unresolved_raw_count=receipt.unresolved_raw_count,
                 profile_targets_observed=sum(len(part.targets) for part in profile_parts),
@@ -1214,42 +1374,68 @@ class IngestExecution:
         profile_parts: tuple[SessionInsightPartReceipt, ...],
     ) -> IngestHistoricalReceiptV2:
         assert self.started_mutation is not None
+        await self.settle_source_items(generation, receipt)
         started = self.started_mutation
         operation_id = started.operation_id
         assert operation_id is not None
         with spool_connection(receipt.path) as observed:
-            for item_id, raw_json in observed.execute("SELECT source_item_id, raws_json FROM items ORDER BY ordinal"):
-                raw_status = sorted(json.loads(str(raw_json)), key=lambda raw: raw[0])
-                if len(raw_status) <= MAX_INLINE_RAW_IDS_PER_INPUT:
+            item_cursor: tuple[int] | None = None
+            while True:
+                self.check_stop()
+                with closing(
+                    observed.execute(
+                        "SELECT ordinal, source_item_id, raw_count, unresolved_count FROM items "
+                        "WHERE ordinal>? ORDER BY ordinal LIMIT 1",
+                        (-1 if item_cursor is None else item_cursor[0],),
+                    )
+                ) as cursor:
+                    item = cursor.fetchone()
+                if item is None:
+                    break
+                ordinal, item_id, raw_count, unresolved_count = item
+                item_cursor = (int(ordinal),)
+                if raw_count <= MAX_INLINE_RAW_IDS_PER_INPUT:
                     continue
-                raw_pages = [
-                    IngestInputRawPageHistoricalReceipt(
+                raw_digest = IngestInputRawPagesDigest()
+                raw_page_count = 0
+                after_raw = ""
+                observed_raw_count = observed_unresolved = 0
+                while True:
+                    self.check_stop()
+                    with closing(
+                        observed.execute(
+                            "SELECT raw_id, complete FROM item_raws WHERE source_item_id=? AND raw_id>? "
+                            "ORDER BY raw_id LIMIT ?",
+                            (item_id, after_raw, MAX_PAGE_ITEMS),
+                        )
+                    ) as cursor:
+                        rows = cursor.fetchall()
+                    if not rows:
+                        break
+                    raw_page = IngestInputRawPageHistoricalReceipt(
                         source_item_id=str(item_id),
-                        ordinal=ordinal,
+                        ordinal=raw_page_count,
                         raws=[
                             IngestInputRawMemberHistorical(raw_id=str(raw_id), unresolved=not complete)
-                            for raw_id, complete in raw_status[offset : offset + MAX_PAGE_ITEMS]
+                            for raw_id, complete in rows
                         ],
                     )
-                    for ordinal, offset in enumerate(range(0, len(raw_status), MAX_PAGE_ITEMS))
-                ]
-                observed.execute(
-                    "INSERT INTO raw_metadata VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        item_id,
-                        operation_id,
-                        len(raw_pages),
-                        len(raw_status),
-                        sum(not complete for _raw_id, complete in raw_status),
-                        ingest_input_raw_pages_digest(raw_pages),
-                    ),
-                )
-                for raw_page in raw_pages:
+                    raw_digest.update(raw_page)
+                    observed_raw_count += len(rows)
+                    observed_unresolved += sum(not complete for _raw_id, complete in rows)
+                    after_raw = str(rows[-1][0])
+                    raw_page_count += 1
 
                     def persist_raw_page(page: IngestInputRawPageHistoricalReceipt = raw_page) -> None:
                         self.audit.append_ingest_input_raw_page(operation_id, page)
 
                     await self.runtime.write_phase("ingest.input_raw_page", persist_raw_page)
+                if (observed_raw_count, observed_unresolved) != (raw_count, unresolved_count):
+                    raise ValueError("terminal raw attribution changed")
+                observed.execute(
+                    "INSERT INTO raw_metadata VALUES (?, ?, ?, ?, ?, ?)",
+                    (item_id, operation_id, raw_page_count, raw_count, unresolved_count, raw_digest.hexdigest()),
+                )
         with spool_connection(self.state_path, read_only=True) as state:
             counts = state.execute("SELECT COUNT(*), COALESCE(SUM(message_count), 0) FROM changed_sessions").fetchone()
             self.changed_session_count, self.changed_message_count = int(counts[0]), int(counts[1])
@@ -1578,7 +1764,7 @@ async def redrive_accepted_ingests(
     be driven at all terminalizes as failed. An owner shutdown leaves the run
     for the next owner. ``stop_requested`` receives the request id.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
     from polylogue.operations.audit import AuditRepository
 
     # Claims are durable rows; the execution (its scratch state file and blob
@@ -1719,7 +1905,7 @@ async def redrive_accepted_ingests(
             await execution.settle_failed(f"{type(exc).__name__}: {exc}")
         finally:
             await asyncio.to_thread(execution.publisher.discard_pending)
-            execution.state_path.unlink(missing_ok=True)
+            unlink_spool(execution.state_path)
 
 
 async def drive_accepted_generation(
@@ -1734,7 +1920,7 @@ async def drive_accepted_generation(
     cursor: tuple[str, str] | None = None
     seen = 0
     while page := await execution.input_page(generation, cursor):
-        empty: list[tuple[RetainedSourceInput, tuple[int, ...], int]] = []
+        empty: list[tuple[RetainedSourceInput, range, int]] = []
         for item in page:
             execution.check_stop()
             completion = await execution.enumerate_item(generation, item)
@@ -1747,7 +1933,7 @@ async def drive_accepted_generation(
             def complete_empty_page(
                 conn: sqlite3.Connection,
                 *,
-                batch: tuple[tuple[RetainedSourceInput, tuple[int, ...], int], ...] = tuple(empty),
+                batch: tuple[tuple[RetainedSourceInput, range, int], ...] = tuple(empty),
                 observed_at_ms: int = accepted_at_ms,
             ) -> None:
                 for item, ordinals, member_count in batch:
@@ -1760,6 +1946,7 @@ async def drive_accepted_generation(
                         enumerated_at_ms=observed_at_ms,
                         member_ordinals=ordinals,
                         member_count=member_count,
+                        check_stop=execution.check_stop,
                     )
 
             await execution.source_write(complete_empty_page)
@@ -1784,7 +1971,7 @@ async def execute_ingest_operation(
     request: DaemonOperationRequest, context: OperationContext
 ) -> DaemonOperationEnvelope:
     """Accept immutable input before any raw admission, then settle each phase."""
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
 
     started = monotonic()
     request = validate_execution_request(request, context)
@@ -1879,4 +2066,4 @@ async def execute_ingest_operation(
         raise
     finally:
         await asyncio.to_thread(execution.publisher.discard_pending)
-        execution.state_path.unlink(missing_ok=True)
+        unlink_spool(execution.state_path)

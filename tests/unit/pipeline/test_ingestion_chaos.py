@@ -1,16 +1,18 @@
-"""Ingestion chaos and recovery tests (Workstream E).
+"""JSONL decoder resilience and timestamp edge cases (Workstream E).
 
 Tests for:
-- E1-E2: Large-batch partial-corruption (malformed JSON, truncation, bad UTF-8,
-  wrong envelope) — pipeline skips corrupted lines, processes the rest.
-- E3-E5: Timestamp edge-case parsing (1970-adjacent, Y2K38, far-future, mixed
-  formats, missing timestamps) and re-run idempotency.
+- E1-E2: Large-batch partial-corruption at the JSONL decoder boundary.
+- E3-E4: Timestamp edge-case parsing (1970-adjacent, Y2K38, far-future, mixed
+  formats, missing timestamps).
+
+Archive publication and terminal-shape behavior are exercised by the retained
+parser/source-owner tests, rather than the removed one-shot worker API.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -18,9 +20,7 @@ import pytest
 from hypothesis import given, settings
 
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
-from polylogue.storage.runtime import RawSessionRecord
 from tests.infra.large_batches import (
     corrupt_line_bad_utf8,
     corrupt_line_malformed_json,
@@ -40,49 +40,6 @@ TimestampInput = str | int | float | None
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_raw_record(
-    raw_id: str,
-    provider: str,
-    content: bytes,
-    path: str = "/exports/test.jsonl",
-) -> RawSessionRecord:
-    from polylogue.storage.blob_store import get_blob_store
-
-    # Write content to blob store
-    blob_store = get_blob_store()
-    actual_raw_id, blob_size = blob_store.write_from_bytes(content)
-    now = datetime.now(timezone.utc).isoformat()
-
-    return RawSessionRecord(
-        raw_id=actual_raw_id,  # Use the actual hash as raw_id
-        source_name="test",
-        source_path=path,
-        source_index=None,
-        blob_size=blob_size,
-        acquired_at=now,
-        file_mtime=now,
-    )
-
-
-def _make_parsing_service(tmp_path: Path) -> ParsingService:
-    from polylogue.config import Config
-    from polylogue.pipeline.services.parsing import ParsingService
-    from polylogue.storage.repository import SessionRepository
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-    db = SQLiteBackend(db_path=tmp_path / "test.db")
-    config = Config(
-        sources=[],
-        archive_root=tmp_path / "archive",
-        render_root=tmp_path / "render",
-    )
-    return ParsingService(
-        repository=SessionRepository(backend=db),
-        archive_root=tmp_path / "archive",
-        config=config,
-    )
 
 
 def _jsonl_bytes(lines: list[str]) -> bytes:
@@ -293,74 +250,6 @@ class TestCorruptionAtBoundaries:
 
         parsed = _iter_jsonl_stream(data)
         assert len(parsed) == self.BATCH_SIZE - 1
-
-
-# ===========================================================================
-# E1-E2 (pipeline layer): ParsingService with corrupted raw records
-# ===========================================================================
-
-
-class TestParsingServiceCorruption:
-    """ingest_record handles partial corruption."""
-
-    def test_malformed_jsonl_line_in_codex_raw(self, tmp_path: Path) -> None:
-        """Codex JSONL with 1 bad line: parsing succeeds with fewer messages."""
-        from polylogue.pipeline.services.ingest_worker import ingest_record
-
-        lines = generate_large_jsonl(50, provider="codex")
-        corrupted = corrupt_line_malformed_json(lines, 25)
-        content = _jsonl_bytes(corrupted)
-
-        record = _make_raw_record("codex-corrupt-1", "codex", content, "/exports/codex.jsonl")
-        result = ingest_record(record, str(tmp_path / "archive"), "off")
-        assert result.error is None
-        if result.sessions:
-            assert result.sessions[0].parsed_session.source_name in ("codex", "codex-cli")
-
-    def test_truncated_jsonl_line_in_codex_raw(self, tmp_path: Path) -> None:
-        """Codex JSONL with 1 truncated line: parsing succeeds."""
-        from polylogue.pipeline.services.ingest_worker import ingest_record
-
-        lines = generate_large_jsonl(50, provider="codex")
-        corrupted = corrupt_line_truncated(lines, 10)
-        content = _jsonl_bytes(corrupted)
-
-        record = _make_raw_record("codex-truncated-1", "codex", content, "/exports/codex.jsonl")
-        result = ingest_record(record, str(tmp_path / "archive"), "off")
-        assert result.error is None
-
-    def test_wrong_envelope_in_codex_raw(self, tmp_path: Path) -> None:
-        """Codex JSONL with 1 wrong-envelope line: refused, loudly and typed.
-
-        ``classify_artifact`` refuses a Codex record stream wholesale once it
-        contains a record shape it does not support (artifact_taxonomy/
-        runtime.py, "Codex record stream contains unsupported session
-        records" -> ArtifactKind.UNKNOWN, parse_as_session=False). All 50
-        records of this rollout are therefore dropped, not just the corrupted
-        one.
-
-        This test previously asserted only ``result.error is None`` and so
-        pinned the polylogue-u1ww0 defect in place: the drop was reported as
-        ``outcome_code='success'`` with zero sessions, which is precisely the
-        silent-content-loss shape a from-scratch rebuild cannot tolerate. The
-        classifier's wholesale refusal is deliberate and unchanged here; what
-        changed is that it is now *reported* as a refusal.
-
-        Anti-vacuity: restoring the silent-success branch makes both outcome
-        assertions below fail.
-        """
-        from polylogue.core.enums import IngestOutcome
-        from polylogue.pipeline.services.ingest_worker import ingest_record
-
-        lines = generate_large_jsonl(50, provider="codex")
-        corrupted = corrupt_line_wrong_envelope(lines, 30)
-        content = _jsonl_bytes(corrupted)
-
-        record = _make_raw_record("codex-wrong-env-1", "codex", content, "/exports/codex.jsonl")
-        result = ingest_record(record, str(tmp_path / "archive"), "off")
-        assert not result.sessions
-        assert result.outcome_code == IngestOutcome.UNSUPPORTED_SHAPE.value
-        assert result.error is not None and "was not recognized" in result.error
 
 
 # ===========================================================================
@@ -726,49 +615,122 @@ class TestTimestampPatternsInJsonl:
 
 
 class TestRerunIdempotency:
-    """Running the same batch twice produces identical records, no duplicates."""
+    """The actual retained owner replays one acquired raw without duplication."""
 
-    def test_same_batch_twice_produces_same_records(self, tmp_path: Path) -> None:
-        """Parsing the same raw record twice yields identical results."""
-        from polylogue.pipeline.services.ingest_worker import ingest_record
+    def test_same_retained_raw_twice_keeps_the_same_index_rows(self, tmp_path: Path) -> None:
+        import asyncio
+        import sqlite3
 
-        lines = generate_large_jsonl(20, provider="codex")
+        from polylogue.core.enums import Provider
+        from tests.infra.retained_replay import publish_retained_payload, replay_retained_components
+
+        payload = (
+            b'{"type":"session_meta","payload":{"id":"chaos-rerun","timestamp":"2026-01-01T00:00:00Z"}}\n'
+            b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
+            b'"content":[{"type":"input_text","text":"hello"}]}}\n'
+        )
+        archive = tmp_path / "archive"
+        raw_id, _ = asyncio.run(
+            publish_retained_payload(
+                archive,
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path="sessions/chaos-rerun.jsonl",
+                acquired_at_ms=1,
+            )
+        )
+        with sqlite3.connect(archive / "index.db") as conn:
+            first = conn.execute(
+                "SELECT session_id, message_count FROM sessions WHERE native_id='chaos-rerun'"
+            ).fetchone()
+            first_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        assert first is not None
+        assert first[1] == 1
+        assert first_messages == 1
+
+        replay_retained_components(archive, selected_raw_ids=(raw_id,))
+
+        with sqlite3.connect(archive / "index.db") as conn:
+            second = conn.execute(
+                "SELECT session_id, message_count FROM sessions WHERE native_id='chaos-rerun'"
+            ).fetchone()
+            second_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        assert second == first
+        assert second_messages == first_messages
+
+    def test_codex_rollout_with_unsupported_record_preserves_typed_event(self, tmp_path: Path) -> None:
+        """The retained route accounts for an unsupported outer record as a typed event."""
+        import asyncio
+        import sqlite3
+        import uuid
+
+        from polylogue.core.enums import Provider
+        from polylogue.sources.revision_backfill import RevisionCensusResult
+        from polylogue.storage.blob_store import BlobStore
+        from tests.infra.archive_templates import bootstrap_archive_root
+        from tests.infra.retained_jsonl import retained_raw_fixture, run_retained_source_phase
+        from tests.infra.retained_replay import replay_retained_components
+
+        lines = corrupt_line_wrong_envelope(generate_large_jsonl(50, provider="codex"), 30)
         content = _jsonl_bytes(lines)
+        archive = tmp_path / "archive"
+        bootstrap_archive_root(archive)
+        blob_hash, _size = BlobStore(archive / "blob").write_from_bytes(content)
+        with retained_raw_fixture(
+            root=archive,
+            provider=Provider.CODEX,
+            blob_hash=blob_hash,
+            source_path="sessions/wrong-envelope.jsonl",
+        ) as (reader, raw_id):
+            assert reader.raw_revision_descriptor(raw_id)[1] == blob_hash
 
-        record = _make_raw_record("idempotency-test", "codex", content, "/exports/codex.jsonl")
+        published, phase, receipt = asyncio.run(run_retained_source_phase(archive, (raw_id,)))
 
-        result_1 = ingest_record(record, str(tmp_path / "archive"), "off")
-        result_2 = ingest_record(record, str(tmp_path / "archive"), "off")
+        assert published is False and phase == "census"
+        assert isinstance(receipt, RevisionCensusResult)
+        assert receipt == RevisionCensusResult(
+            scanned=1,
+            classified_full=1,
+            quarantined=0,
+            input_raw_ids=(raw_id,),
+            logical_keys=("codex-session:wrong-envelope",),
+        )
+        with sqlite3.connect(archive / "source.db") as conn:
+            assert conn.execute(
+                "SELECT status, member_count FROM raw_membership_census WHERE raw_id=?", (raw_id,)
+            ).fetchone() == ("complete", 1)
+            assert conn.execute(
+                "SELECT status FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)
+            ).fetchone() == ("complete",)
+            assert conn.execute(
+                "SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=? AND artifact_id LIKE 'raw-failure:%'", (raw_id,)
+            ).fetchone() == (0,)
+            assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone() == (None,)
 
-        assert len(result_1.sessions) == len(result_2.sessions)
-        for conv1, conv2 in zip(result_1.sessions, result_2.sessions, strict=True):
-            assert conv1.session_id == conv2.session_id
-            assert conv1.parsed_session.source_name == conv2.parsed_session.source_name
-            assert conv1.message_count == conv2.message_count
+        replay_retained_components(archive, selected_raw_ids=(raw_id,))
+        with sqlite3.connect(archive / "index.db") as conn:
+            assert conn.execute("SELECT native_id, message_count FROM sessions").fetchall() == [("wrong-envelope", 49)]
+            expected_message_ids = sorted(
+                str(uuid.UUID(int=index + 1, version=4)) for index in range(50) if index != 30
+            )
+            assert conn.execute("SELECT native_id FROM messages ORDER BY native_id").fetchall() == [
+                (message_id,) for message_id in expected_message_ids
+            ]
+            event = conn.execute("SELECT event_type, payload_json FROM session_events").fetchone()
+        assert event is not None and event[0] == "codex_unknown_outer_record"
+        assert json.loads(event[1]) == {
+            "record": {"completely": "different", "no_type": "field", "structure": True},
+            "source_index": 31,
+            "wire_type": "unknown",
+        }
 
-    def test_reparse_with_corruption_then_clean(self, tmp_path: Path) -> None:
-        """First parse with corruption, second with clean data — both succeed."""
-        from polylogue.pipeline.services.ingest_worker import ingest_record
-
-        # First: corrupted
-        lines_corrupt = generate_large_jsonl(20, provider="codex")
-        lines_corrupt = corrupt_line_malformed_json(lines_corrupt, 10)
-        content_corrupt = _jsonl_bytes(lines_corrupt)
-
-        record_corrupt = _make_raw_record("idempotency-corrupt", "codex", content_corrupt, "/exports/codex.jsonl")
-        result_corrupt = ingest_record(record_corrupt, str(tmp_path / "archive"), "off")
-
-        # Second: clean (same data without corruption)
-        lines_clean = generate_large_jsonl(20, provider="codex")
-        content_clean = _jsonl_bytes(lines_clean)
-
-        record_clean = _make_raw_record("idempotency-clean", "codex", content_clean, "/exports/codex.jsonl")
-        result_clean = ingest_record(record_clean, str(tmp_path / "archive"), "off")
-
-        assert result_corrupt.error is None
-        assert result_clean.error is None
-        # Clean parse should have all sessions
-        assert len(result_clean.sessions) >= len(result_corrupt.sessions)
+        replay_retained_components(archive, selected_raw_ids=(raw_id,))
+        with sqlite3.connect(archive / "index.db") as conn:
+            assert conn.execute("SELECT native_id, message_count FROM sessions").fetchall() == [("wrong-envelope", 49)]
+            assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (49,)
+            assert conn.execute("SELECT event_type, COUNT(*) FROM session_events GROUP BY event_type").fetchall() == [
+                ("codex_unknown_outer_record", 1)
+            ]
 
     def test_iter_json_stream_idempotent(self) -> None:
         """_iter_json_stream produces identical output on repeated calls."""

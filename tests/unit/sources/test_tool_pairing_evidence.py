@@ -13,6 +13,7 @@ before and after its mutation is proving nothing.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -24,10 +25,20 @@ from devtools.tool_evidence_oracle import (
     declare_tool_evidence,
     judge_conservation,
 )
-from polylogue.core.enums import BlockType
+from polylogue.analysis.tool_episodes import ToolEpisodeQuery
+from polylogue.core.enums import BlockType, ToolOutcome
+from polylogue.core.sources import origin_from_provider
+from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedSession
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 from polylogue.sources.parsers.claude import parse_ai as claude_ai_parse
+from polylogue.sources.tool_outcomes import derive_tool_outcomes
+from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.sqlite.action_relation import action_relation_select_sql
+from polylogue.storage.sqlite.archive_tiers import write as archive_write
+from polylogue.storage.sqlite.archive_tiers.read_insights import ArchiveReadInsights
+from polylogue.storage.sqlite.run_projection_relations import observed_event_relation_sql
+from tests.infra.index_writer import close_fixture_index_connection, write_fixture_index_session
 from tests.infra.live_ingest import write_session_sync
 
 # ---------------------------------------------------------------------------
@@ -438,14 +449,17 @@ def test_source_to_action_oracle_refuses_a_mutated_pairing(
 
     from polylogue.storage.sqlite.connection import open_connection
 
-    clean_db = tmp_path / f"clean-{label}.db"
+    # Each write owns its own archive root: one root has one active Index.
+    clean_db = tmp_path / f"clean-{label}" / "index.db"
+    clean_db.parent.mkdir()
     with open_connection(clean_db):
         pass
     clean_actions, clean_results = _write_and_read(clean_db, session)
     baseline = judge_conservation(evidence, clean_actions, physical_results=clean_results)
     assert baseline.conserved, baseline.to_dict()
 
-    mutated_db = tmp_path / f"mutated-{label}.db"
+    mutated_db = tmp_path / f"mutated-{label}" / "index.db"
+    mutated_db.parent.mkdir()
     with open_connection(mutated_db):
         pass
     mutated_actions, mutated_results = _write_and_read(mutated_db, mutate(session))
@@ -520,3 +534,174 @@ def test_oracle_counts_a_result_naming_no_declared_call() -> None:
     evidence = declare_tool_evidence(records, origin="codex-session")
     assert evidence.calls == ()
     assert evidence.orphan_results == 1
+
+
+@pytest.mark.parametrize("append", [False, True])
+@pytest.mark.parametrize("reported", ["ok", "error", "unknown"])
+@pytest.mark.parametrize("parent_proved", [True, False])
+def test_parent_proven_fanout_preserves_all_results_and_aggregate_verdict(
+    test_db: Path, reported: str, parent_proved: bool, append: bool
+) -> None:
+    payload = chatgpt_conversation()
+    mapping = payload["mapping"]
+    assert isinstance(mapping, dict)
+    second = mapping["res-fanout-2"]
+    assert isinstance(second, dict)
+    wire = second["message"]
+    assert isinstance(wire, dict)
+    if reported == "error":
+        wire["content"] = {"content_type": "system_error", "name": "ExecError", "text": "neutral failed reply"}
+    elif reported == "unknown":
+        wire["content"] = {"content_type": "text", "parts": ["neutral incomplete reply"]}
+        wire["status"] = "in_progress"
+    parsed = chatgpt_parse(payload, "conv-tool-evidence")
+    if not parent_proved:
+        # Keep the complete physical replies and reusable tool ID, while
+        # removing only the native per-invocation proof from model-backed input.
+        parsed = parsed.model_copy(
+            update={
+                "messages": [
+                    message.model_copy(update={"parent_message_provider_id": None})
+                    if message.provider_message_id in {"res-fanout-1", "res-fanout-2"}
+                    else message
+                    for message in parsed.messages
+                ]
+            }
+        )
+    reduced = derive_tool_outcomes(
+        list(parsed.messages), parsed.session_events, origin=origin_from_provider(parsed.source_name)
+    )
+    browser_use = next(
+        block
+        for message in reduced
+        for block in message.blocks
+        if block.type is BlockType.TOOL_USE and block.tool_name == "browser"
+    )
+    expected = reported if parent_proved else "unknown"
+    assert browser_use.tool_outcome is ToolOutcome(expected)
+    if append:
+        appended_ids = {"res-fanout-2", "call-abandoned"}
+        baseline = parsed.model_copy(
+            update={"messages": [m for m in parsed.messages if m.provider_message_id not in appended_ids]}
+        )
+        # A merge-append write carries only the new records; the later reply
+        # must still re-decide the earlier invocation's verdict.
+        tail = parsed.model_copy(
+            update={"messages": [m for m in parsed.messages if m.provider_message_id in appended_ids]}
+        )
+        write_session_sync(test_db, baseline)
+        conn = connect_measured(test_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            sid = write_fixture_index_session(conn, tail, merge_append=True, content_hash=session_content_hash(parsed))
+        finally:
+            close_fixture_index_connection(conn)
+    else:
+        sid = write_session_sync(test_db, parsed)
+    assert _physical_results(test_db, sid) == 5
+    with sqlite3.connect(f"file:{test_db}?mode=ro", uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        generic = conn.execute(action_relation_select_sql() + " ORDER BY tool_use_block_id").fetchall()
+        cached = conn.execute("SELECT * FROM action_pairs ORDER BY tool_use_block_id").fetchall()
+        assert [(row["tool_use_block_id"], row["tool_outcome"], row["tool_result_block_id"]) for row in generic] == [
+            (row["tool_use_block_id"], row["tool_outcome"], row["tool_result_block_id"]) for row in cached
+        ]
+        browser = next(row for row in generic if row["tool_name"] == "browser")
+        # A later reply changes the earlier invocation's block verdict. Its
+        # message hash must be the original row producer's current digest.
+        message = conn.execute(
+            f"SELECT {', '.join(archive_write._REHASH_MESSAGE_COLUMNS)}, content_hash FROM messages WHERE message_id=?",
+            (browser["message_id"],),
+        ).fetchone()
+        assert message is not None
+        message_index = {name: index for index, name in enumerate(archive_write._REHASH_MESSAGE_COLUMNS)}
+        block_index = {name: index for index, name in enumerate(archive_write._REHASH_BLOCK_COLUMNS)}
+        stored_blocks = conn.execute(
+            f"SELECT {', '.join(archive_write._REHASH_BLOCK_COLUMNS)} FROM blocks WHERE message_id=? ORDER BY position",
+            (browser["message_id"],),
+        )
+        expected_message_hash = archive_write._message_row_hash(
+            sid,
+            message["native_id"],
+            int(message["position"]),
+            int(message["variant_index"] or 0),
+            archive_write._row_fields_digest(message, message_index),
+            archive_write._stored_block_hash_parts(stored_blocks, block_index),
+        )
+        assert message["content_hash"] == expected_message_hash
+        assert browser["tool_outcome"] == expected
+        assert browser["tool_result_block_id"] is None
+        assert browser["output_text"] is None
+        assert browser["exit_code"] is None
+        events = conn.execute(
+            observed_event_relation_sql(source_where="1=1")
+            + " SELECT * FROM observed_events WHERE kind='tool_finished' AND tool_name='browser'"
+        ).fetchall()
+        reader = ArchiveReadInsights(
+            conn,
+            checkpoint=lambda: None,
+            normalize_origin=lambda value: value,
+            iso_from_milliseconds=lambda value: str(value),
+        )
+        episodes = reader.list_tool_episode_insights(ToolEpisodeQuery(session_id=sid, tool="browser"))
+        assert len(episodes) == 1
+        assert episodes[0].result_output is None
+        if parent_proved:
+            assert reader.degraded_components == ("tool_episode_plural_output_omitted",)
+            assert episodes[0].tool_result_block_id is None
+            assert episodes[0].is_error is None and episodes[0].exit_code is None
+            assert len(events) == 1
+            assert events[0]["status"] == ("failed" if reported == "error" else reported)
+            refs = json.loads(events[0]["evidence_refs_json"])
+            assert len(refs) == 3 and len(set(refs)) == 3
+            assert events[0]["result_message_id"] is None and events[0]["result_position"] is None
+        else:
+            assert reader.degraded_components == ()
+            assert events == []
+
+
+@pytest.mark.parametrize("alternatives", [False, True])
+def test_native_reply_siblings_distinguish_alternatives_from_sequential_fanout(
+    test_db: Path, alternatives: bool
+) -> None:
+    payload = chatgpt_conversation()
+    mapping = payload["mapping"]
+    assert isinstance(mapping, dict)
+    first = mapping["res-fanout-1"]
+    second = mapping["res-fanout-2"]
+    assert isinstance(first, dict) and isinstance(second, dict)
+    invocation = first["parent"]
+    assert isinstance(invocation, str)
+    if alternatives:
+        second["parent"] = invocation
+        call = mapping[invocation]
+        assert isinstance(call, dict)
+        call["children"] = ["res-fanout-1", "res-fanout-2"]
+    parsed = chatgpt_parse(payload, "conv-tool-evidence")
+    replies = [
+        message for message in parsed.messages if message.provider_message_id in {"res-fanout-1", "res-fanout-2"}
+    ]
+    assert len(replies) == 2
+    if alternatives:
+        assert replies[0].parent_message_provider_id == replies[1].parent_message_provider_id
+        assert replies[0].variant_index != replies[1].variant_index
+    else:
+        assert replies[1].parent_message_provider_id == replies[0].provider_message_id
+    expected = ToolOutcome.UNKNOWN if alternatives else ToolOutcome.OK
+    reduced = derive_tool_outcomes(
+        list(parsed.messages), parsed.session_events, origin=origin_from_provider(parsed.source_name)
+    )
+    browser = next(
+        block
+        for message in reduced
+        for block in message.blocks
+        if block.type is BlockType.TOOL_USE and block.tool_name == "browser"
+    )
+    assert browser.tool_outcome is expected
+    sid = write_session_sync(test_db, parsed)
+    assert _physical_results(test_db, sid) == 5
+    with sqlite3.connect(f"file:{test_db}?mode=ro", uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        action = next(row for row in conn.execute(action_relation_select_sql()) if row["tool_name"] == "browser")
+        assert action["tool_outcome"] == expected.value
+        assert action["tool_result_block_id"] is None

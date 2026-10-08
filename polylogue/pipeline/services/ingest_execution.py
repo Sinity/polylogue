@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol, TypeVar
 
 T = TypeVar("T")
+P = TypeVar("P")
 
 
 class IngestExecution(Protocol):
@@ -18,3 +19,12 @@ class IngestExecution(Protocol):
     async def publish(self, actor: str, operation: Callable[[], Awaitable[T]]) -> T: ...
 
     async def publish_sync(self, actor: str, operation: Callable[[], T]) -> T: ...
+
+    async def publish_prepared_sync(
+        self,
+        actor: str,
+        prepare: Callable[[], P],
+        operation: Callable[[P], T],
+        *,
+        estimated_bytes: int = 0,
+    ) -> T: ...

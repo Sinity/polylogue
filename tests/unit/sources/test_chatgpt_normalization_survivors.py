@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 from copy import deepcopy
@@ -10,16 +9,24 @@ from typing import cast
 import pytest
 
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
+from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.json import JSONDocument
+from polylogue.core.sources import origin_from_provider
+from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources import dispatch
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers import browser_capture, chatgpt
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import AttachmentRecord
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult, ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+from tests.infra.live_ingest import prepared_live_convergence_owner
+from tests.infra.retained_jsonl import acquire_full_revision
 
 _FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "chatgpt"
 _NATIVE_FIXTURE = _FIXTURE_DIR / "native-conversation-v1.json"
@@ -151,6 +158,7 @@ def test_chatgpt_native_wire_fixture_survives_dispatch_and_semantic_normalizatio
     answer = by_id["answer-active-message"]
 
     assert context.message_type is MessageType.CONTEXT
+    assert context.role is Role.SYSTEM
     assert context.material_origin is MaterialOrigin.RUNTIME_CONTEXT
     assert user.material_origin is MaterialOrigin.HUMAN_AUTHORED
     assert thought.material_origin is MaterialOrigin.ASSISTANT_AUTHORED
@@ -323,7 +331,8 @@ def test_chatgpt_media_pointers_survive_dispatch_with_typed_unavailable_assets()
     assert all(attachment.provider_file_id for attachment in attachments.values())
 
 
-def test_chatgpt_media_pointers_survive_archive_write_public_read_and_replay(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_chatgpt_media_pointers_survive_archive_write_public_read_and_replay(tmp_path: Path) -> None:
     """Clean and incremental archive replay preserve A/V identity and absence honestly.
 
     This drives the parsed A/V references through the production archive writer
@@ -336,7 +345,6 @@ def test_chatgpt_media_pointers_survive_archive_write_public_read_and_replay(tmp
     initial_payload = _chatgpt_av_replay_payload(include_incremental_output=False)
     incremental_payload = _chatgpt_av_replay_payload(include_incremental_output=True)
     initial = _parse_one(initial_payload)
-    clean = _parse_one(initial_payload)
     incremental = _parse_one(incremental_payload)
     initial_pointers = {
         "file-service://file-replay-audio",
@@ -348,31 +356,62 @@ def test_chatgpt_media_pointers_survive_archive_write_public_read_and_replay(tmp
     _assert_av_reference_conservation(incremental, final_pointers)
 
     root = tmp_path / "archive"
-    with ArchiveStore(root) as archive:
-        first = archive.write_raw_and_parsed_result(
-            initial,
-            payload=json.dumps(initial_payload, sort_keys=True).encode(),
-            source_path="/fixture/chatgpt-media-initial.json",
-            acquired_at_ms=1_800_000_000_000,
-        )
-        clean_result = archive.write_raw_and_parsed_result(
-            clean,
-            payload=b"same normalized media, different raw observation",
-            source_path="/fixture/chatgpt-media-clean-replay.json",
-            acquired_at_ms=1_800_000_000_001,
-        )
-        incremental_result = archive.write_raw_and_parsed_result(
-            incremental,
-            payload=json.dumps(incremental_payload, sort_keys=True).encode(),
-            source_path="/fixture/chatgpt-media-incremental.json",
-            acquired_at_ms=1_800_000_000_002,
-        )
-        envelope = archive.read_session(first.session_id)
+    session_id = str(make_session_id(initial.source_name, initial.provider_session_id))
+    async with prepared_live_convergence_owner(root) as owner:
 
-    assert clean_result.content_changed is False
-    assert clean_result.counts["skipped_sessions"] == 1
-    assert incremental_result.content_changed is True
-    assert incremental_result.counts["sessions"] == 1
+        def acquire_0() -> str:
+            bootstrap_archive_root(root)
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CHATGPT,
+                    payload=json.dumps(initial_payload, sort_keys=True).encode(),
+                    source_path=tmp_path / "source" / "chatgpt-media.json",
+                    native_id=initial.provider_session_id,
+                    generation=0,
+                    acquired_at_ms=1800000000000,
+                )
+
+        first_raw_id = await run_archive_fixture_write(root, acquire_0)
+        first = (await owner.ingest_retained_raw_ids((first_raw_id,))).require_complete()
+        assert any(receipt.changed_session_ids for receipt in first)
+
+        def acquire_1() -> str:
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CHATGPT,
+                    payload=json.dumps(initial_payload, indent=2).encode(),
+                    source_path=tmp_path / "source" / "chatgpt-media.json",
+                    native_id=initial.provider_session_id,
+                    generation=1,
+                    acquired_at_ms=1800000000001,
+                )
+
+        clean_result_raw_id = await run_archive_fixture_write(root, acquire_1)
+        clean_result = (await owner.ingest_retained_raw_ids((clean_result_raw_id,))).require_complete()
+
+        def acquire_2() -> str:
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CHATGPT,
+                    payload=json.dumps(incremental_payload, sort_keys=True).encode(),
+                    source_path=tmp_path / "source" / "chatgpt-media.json",
+                    native_id=initial.provider_session_id,
+                    generation=2,
+                    acquired_at_ms=1800000000002,
+                )
+
+        incremental_result_raw_id = await run_archive_fixture_write(root, acquire_2)
+        incremental_result = (await owner.ingest_retained_raw_ids((incremental_result_raw_id,))).require_complete()
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        envelope = archive.read_session(session_id)
+
+    assert not any(receipt.changed_session_ids for receipt in clean_result)
+    assert sum(receipt.written_counts.get("skipped_sessions", 0) for receipt in clean_result) == 1
+    assert any(receipt.changed_session_ids for receipt in incremental_result)
+    assert sum(receipt.written_counts.get("sessions", 0) for receipt in incremental_result) == 1
     assert len(envelope.messages) == 2
     assert sum(len(message.attachments) for message in envelope.messages) == len(final_pointers)
     assert all(
@@ -384,7 +423,7 @@ def test_chatgpt_media_pointers_survive_archive_write_public_read_and_replay(tmp
     with sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True) as conn:
         construct_rows = conn.execute(
             "SELECT asset_pointer, mime_type FROM web_content_constructs WHERE session_id = ?",
-            (first.session_id,),
+            (session_id,),
         ).fetchall()
         attachment_rows = conn.execute(
             """
@@ -393,7 +432,7 @@ def test_chatgpt_media_pointers_survive_archive_write_public_read_and_replay(tmp
             JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id
             WHERE r.session_id = ?
             """,
-            (first.session_id,),
+            (session_id,),
         ).fetchall()
     assert {str(pointer) for pointer, _mime_type in construct_rows} == final_pointers
     assert len(attachment_rows) == len(final_pointers)
@@ -402,11 +441,11 @@ def test_chatgpt_media_pointers_survive_archive_write_public_read_and_replay(tmp
     async def read_public_attachments() -> list[AttachmentRecord]:
         backend = SQLiteBackend(db_path=root / "index.db")
         try:
-            return list(await backend.get_attachments(first.session_id))
+            return list(await backend.get_attachments(session_id))
         finally:
             await backend.close()
 
-    public_attachments = asyncio.run(read_public_attachments())
+    public_attachments = await read_public_attachments()
     assert {attachment.attachment_native_id for attachment in public_attachments} == final_pointers
     assert {attachment.file_native_id for attachment in public_attachments} == {
         "file-replay-audio",
@@ -638,14 +677,15 @@ def _long_dom_fallback_payload() -> JSONDocument:
 
 
 @pytest.mark.parametrize("arrival_order", [("dom", "native"), ("native", "dom")])
-def test_native_full_fidelity_replaces_or_resists_longer_dom_fallback_and_keeps_raw_fields(
+@pytest.mark.asyncio
+async def test_native_full_fidelity_replaces_or_resists_longer_dom_fallback_and_keeps_raw_fields(
     tmp_path: Path,
     arrival_order: tuple[str, str],
 ) -> None:
     """Real parser flags drive archive replacement in both arrival orders.
 
     Production dependencies: browser_capture.parse emits fidelity flags and
-    ArchiveStore.write_raw_and_parsed_result applies them. Removing native
+    the retained resident owner applies them. Removing native
     replacement, allowing fallback replacement, or relinking the retained
     session to fallback raw bytes makes this survivor fail.
     """
@@ -661,36 +701,73 @@ def test_native_full_fidelity_replaces_or_resists_longer_dom_fallback_and_keeps_
     assert DOM_FALLBACK_INGEST_FLAG in parsed["dom"].ingest_flags
 
     root = tmp_path / "archive"
-    outcomes: dict[str, ArchiveRawParsedWriteResult] = {}
-    with ArchiveStore(root) as archive:
-        for acquired_at_ms, kind in enumerate(arrival_order, start=1_800_000_000_000):
-            outcomes[kind] = archive.write_raw_and_parsed_result(
-                parsed[kind],
-                payload=json.dumps(payloads[kind], sort_keys=True, separators=(",", ":")).encode(),
-                source_path=f"/fixture/{kind}-capture.json",
-                acquired_at_ms=acquired_at_ms,
-            )
+    outcomes: dict[str, tuple[PreparedRevisionReplayResult, ...]] = {}
+    raw_ids: dict[str, str] = {}
+    await run_archive_fixture_write(root, lambda: bootstrap_archive_root(root))
+    async with prepared_live_convergence_owner(root) as owner:
+        for generation, kind in enumerate(arrival_order):
+            acquired_at_ms = 1_800_000_000_000 + generation
 
-        # A still-newer, longer fallback must not relink or replace native data.
-        final_fallback = archive.write_raw_and_parsed_result(
-            parsed["dom"],
-            payload=json.dumps(payloads["dom"], indent=2).encode(),
-            source_path="/fixture/dom-capture-latest.json",
-            acquired_at_ms=1_800_000_000_100,
-        )
-        native_outcome = outcomes["native"]
-        retained = archive.read_session(native_outcome.session_id)
-        provider, raw_material, raw_source_path, _revision_kind = archive.raw_revision_material(native_outcome.raw_id)
+            def acquire(kind: str = kind, acquired_at_ms: int = acquired_at_ms, generation: int = generation) -> str:
+                with ArchiveStore.open_existing(root, read_only=False) as archive:
+                    return acquire_full_revision(
+                        archive,
+                        provider=Provider.CHATGPT,
+                        payload=json.dumps(payloads[kind], sort_keys=True, separators=(",", ":")).encode(),
+                        source_path=tmp_path / "source" / "chatgpt-capture.json",
+                        native_id=parsed[kind].provider_session_id,
+                        generation=generation,
+                        acquired_at_ms=acquired_at_ms,
+                    )
+
+            raw_ids[kind] = await run_archive_fixture_write(root, acquire)
+            outcomes[kind] = (await owner.ingest_retained_raw_ids((raw_ids[kind],))).require_complete()
+
+        def acquire_fallback() -> str:
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CHATGPT,
+                    payload=json.dumps(payloads["dom"], indent=2).encode(),
+                    source_path=tmp_path / "source" / "chatgpt-capture.json",
+                    native_id=parsed["dom"].provider_session_id,
+                    generation=2,
+                    acquired_at_ms=1_800_000_000_100,
+                )
+
+        fallback_raw_id = await run_archive_fixture_write(root, acquire_fallback)
+        final_fallback = (await owner.ingest_retained_raw_ids((fallback_raw_id,))).require_complete()
+    native_raw_id = raw_ids["native"]
+    session_id = str(make_session_id(parsed["native"].source_name, parsed["native"].provider_session_id))
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        retained = archive.read_session(session_id)
+        source = archive.source_connection
+        assert source is not None
+        row = source.execute(
+            "SELECT origin,blob_hash,source_path FROM raw_sessions WHERE raw_id=?", (native_raw_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == origin_from_provider(Provider.CHATGPT).value
+        provider = archive.raw_revision_descriptor(native_raw_id)[0]
+        raw_material = BlobStore(root / "blob").read_all(bytes(row[1]).hex())
+        raw_source_path = str(row[2])
 
     with sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True) as conn:
         retained_session_row = conn.execute(
             "SELECT raw_id, reported_duration_ms FROM sessions WHERE session_id = ?",
-            (native_outcome.session_id,),
+            (session_id,),
         ).fetchone()
         retained_message_rows = conn.execute(
             "SELECT native_id, model_effort, duration_ms FROM messages WHERE session_id = ?",
-            (native_outcome.session_id,),
+            (session_id,),
         ).fetchall()
+        retained_head_raw_ids = tuple(
+            str(row[0])
+            for row in conn.execute(
+                "SELECT accepted_raw_id FROM raw_revision_heads WHERE session_id = ?",
+                (session_id,),
+            )
+        )
     assert retained_session_row is not None
     retained_raw_id = str(retained_session_row[0])
     retained_reported_duration_ms = int(retained_session_row[1])
@@ -710,9 +787,10 @@ def test_native_full_fidelity_replaces_or_resists_longer_dom_fallback_and_keeps_
         "recap-active-message",
         "answer-active-message",
     }
-    assert final_fallback.content_changed is False
-    assert final_fallback.counts["skipped_sessions"] == 1
-    assert retained_raw_id == native_outcome.raw_id
+    assert not any(receipt.changed_session_ids for receipt in final_fallback)
+    assert sum(receipt.written_counts.get("skipped_sessions", 0) for receipt in final_fallback) == 1
+    assert retained_raw_id == native_raw_id
+    assert retained_head_raw_ids == (native_raw_id,)
     assert retained_reported_duration_ms == 5_190_000
     # One recap owns the branch's semantic duration (the generation-dedup
     # contract pinned above on the export fixture); sibling rows keep their
@@ -721,7 +799,7 @@ def test_native_full_fidelity_replaces_or_resists_longer_dom_fallback_and_keeps_
     assert retained_message_facts["thought-active-message"] == ("extended", None)
     assert retained_message_facts["answer-active-message"] == ("extended", None)
     assert provider is Provider.CHATGPT
-    assert raw_source_path == "/fixture/native-capture.json"
+    assert raw_source_path == str(tmp_path / "source" / "chatgpt-capture.json")
     assert b'"reasoning_start_time":1784164541.690012' in raw_material
     assert b'"reasoning_end_time":1784169732.588194' in raw_material
     assert b'"finished_duration_sec":5190' in raw_material

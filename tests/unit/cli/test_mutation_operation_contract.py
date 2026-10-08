@@ -40,7 +40,8 @@ from tests.infra.daemon_operations import accepted_operation_reference
 if TYPE_CHECKING:
     from polylogue.operations.audit import AuditRepository
     from polylogue.operations.daemon_protocol import DaemonOperationRequest
-    from polylogue.operations.operation_context import OperationContext, PinnedOperationRead
+    from polylogue.operations.operation_context import PinnedOperationRead
+    from polylogue.operations.operation_context_types import OperationContext
 
 
 def _env(*, plain: bool = True) -> MagicMock:

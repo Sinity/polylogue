@@ -204,16 +204,19 @@ async def test_ranked_composed_sort_ranks_the_complete_scoped_population(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A requested page does not bound the semantic candidate relation."""
+    from tests.infra.archive_templates import run_off_event_loop
     from tests.infra.scoped_semantic import ranking_archive
 
-    config, provider, identities, requests = ranking_archive(
-        tmp_path,
-        [
-            ("closest", "m", "Closest purchased occurrence has enough prose", 0.0),
-            ("largest", "m", "Later purchased occurrence " + "neutral " * 50, 10.0),
-        ],
-        query_axis=0.0,
-        monkeypatch=monkeypatch,
+    config, provider, identities, requests = run_off_event_loop(
+        lambda: ranking_archive(
+            tmp_path,
+            [
+                ("closest", "m", "Closest purchased occurrence has enough prose", 0.0),
+                ("largest", "m", "Later purchased occurrence " + "neutral " * 50, 10.0),
+            ],
+            query_axis=0.0,
+            monkeypatch=monkeypatch,
+        )
     )
     sessions = await list_archive(
         SessionQueryPlan(similar_text="anything", sort="words", limit=1, vector_provider=provider),

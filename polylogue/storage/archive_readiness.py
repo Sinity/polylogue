@@ -12,22 +12,18 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from polylogue.archive.raw_materialization import (
-    parsed_non_session_artifact_reason,
-    source_path_native_id_candidates,
-)
+from polylogue.archive.raw_materialization import source_path_native_id_candidates
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
-    durable_authority_logical_keys,
-    parser_census_is_complete,
+    parser_census_identity_measurement,
 )
 from polylogue.core.payload_coercion import row_int as _row_int
-from polylogue.core.sqlite_introspection import column_exists as _column_exists
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.sqlite_introspection import view_exists
 from polylogue.logging import get_logger
 from polylogue.storage.derived.session.status import session_insight_status_sync
-from polylogue.storage.raw_authority import parser_census_logical_keys
+from polylogue.storage.raw_authority import iter_parser_census_logical_keys, raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
@@ -295,17 +291,9 @@ def assess_raw_materialization(readiness: Mapping[str, Any] | object | None) -> 
             )
         blocking_counts.append((key, count))
     frozen_blocking_counts = tuple(blocking_counts)
-    if raw_artifact_count is None:
-        return RawMaterializationAssessment(
-            RawMaterializationAssessmentState.UNMEASURED,
-            "raw_artifact_count_unavailable",
-            None,
-            materialized_raw_artifact_count,
-            frozen_blocking_counts,
-        )
-    # An already-observed blocker remains a refutation when a separate debt
-    # classifier or census is unavailable. Unknown auxiliary evidence must
-    # never erase a measured reason this archive is not converged.
+    # An already-observed blocker remains a refutation when the denominator, a
+    # separate debt classifier or census is unavailable. Unknown auxiliary
+    # evidence must never erase a measured reason this archive is not converged.
     if any(count > 0 for _, count in frozen_blocking_counts):
         return RawMaterializationAssessment(
             RawMaterializationAssessmentState.POPULATED_UNCONVERGED,
@@ -314,6 +302,14 @@ def assess_raw_materialization(readiness: Mapping[str, Any] | object | None) -> 
             materialized_raw_artifact_count,
             frozen_blocking_counts,
             detail=str(payload.get("debt_classifier_error")) if payload.get("debt_classifier_error") else None,
+        )
+    if raw_artifact_count is None:
+        return RawMaterializationAssessment(
+            RawMaterializationAssessmentState.UNMEASURED,
+            "raw_artifact_count_unavailable",
+            None,
+            materialized_raw_artifact_count,
+            frozen_blocking_counts,
         )
     if raw_artifact_count == 0:
         return RawMaterializationAssessment(
@@ -371,7 +367,6 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
 def _pinned_parser_census_projection(
     conn: sqlite3.Connection,
     *,
-    raw_columns: frozenset[str],
     source_schema: str,
     index_conn: sqlite3.Connection,
 ) -> dict[str, object]:
@@ -383,52 +378,73 @@ def _pinned_parser_census_projection(
         "raw_membership_census",
         "raw_session_memberships",
     )
-    if any(not _table_columns(index_conn, source_schema, table) for table in required):
+    if any(not _table_exists(index_conn, table, schema=source_schema) for table in required):
         return {
             "available": False,
             "complete_count": 0,
+            "non_session_count": 0,
             "incomplete_count": 0,
             "incomplete_blob_bytes": 0,
             "missing_receipt_count": 0,
             "non_complete_receipt_count": 0,
             "incomplete_origin_summary": [],
         }
-    from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 
-    blob_size_expression = "COALESCE(r.blob_size, 0)" if "blob_size" in raw_columns else "0"
+    terminal_placeholders = ", ".join("(?, ?)" for _ in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS)
     rows = conn.execute(
         f"""
-        SELECT r.raw_id, r.origin, {blob_size_expression}, p.raw_id, p.parser_fingerprint,
+        SELECT r.raw_id, r.origin, COALESCE(r.blob_size, 0), p.raw_id, p.parser_fingerprint,
                p.status, p.logical_keys_json, r.logical_source_key, r.revision_kind,
-               m.logical_source_key,
-               EXISTS(SELECT 1 FROM {source_schema}.raw_artifacts a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
+               (r.parse_error IS NOT NULL OR r.validation_status = 'failed'),
+               EXISTS(
+                   SELECT 1 FROM {source_schema}.raw_artifacts a
+                   WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0
+                     AND a.schema_eligible = 0 AND a.decode_error IS NULL
+                     AND a.malformed_jsonl_lines = 0
+                     AND (a.artifact_kind, a.support_status) NOT IN ({terminal_placeholders})
+               ) AND NOT EXISTS(
+                   SELECT 1 FROM {source_schema}.raw_artifacts sibling
+                   WHERE sibling.raw_id = r.raw_id
+                     AND (sibling.parse_as_session <> 0 OR sibling.schema_eligible <> 0
+                          OR sibling.decode_error IS NOT NULL OR sibling.malformed_jsonl_lines <> 0
+                          OR (sibling.artifact_kind, sibling.support_status) IN ({terminal_placeholders}))
+               ),
                EXISTS(
                    SELECT 1 FROM {source_schema}.raw_membership_census mc
                    WHERE mc.raw_id = r.raw_id AND mc.parser_fingerprint = ? AND mc.status = 'non_session'
+                     AND mc.member_count = 0
                ),
                EXISTS(
                    SELECT 1 FROM {source_schema}.raw_membership_census mc
                    WHERE mc.raw_id = r.raw_id AND r.source_index < 0
                      AND mc.parser_fingerprint = ? AND mc.status = 'failed'
                      AND mc.revision_authority = ?
-               )
+               ),
+               COALESCE(r.validation_status, '') = 'skipped',
+               EXISTS(SELECT 1 FROM main.sessions s WHERE s.raw_id = r.raw_id)
         FROM {source_schema}.raw_sessions r
         LEFT JOIN {source_schema}.raw_authority_parser_census p ON p.raw_id = r.raw_id
-        LEFT JOIN {source_schema}.raw_session_memberships m ON m.raw_id = r.raw_id
-        ORDER BY r.raw_id, m.logical_source_key
+        ORDER BY r.raw_id
         """,
-        (RAW_AUTHORITY_PARSER_FINGERPRINT, RAW_AUTHORITY_PARSER_FINGERPRINT, RawRevisionAuthority.BYTE_PROVEN.value),
+        (
+            *(value for pair in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair),
+            *(value for pair in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair),
+            raw_authority_parser_fingerprint(),
+            raw_authority_parser_fingerprint(),
+            RawRevisionAuthority.BYTE_PROVEN.value,
+        ),
     )
-    complete_count = incomplete_count = incomplete_blob_bytes = missing_receipt_count = non_complete_receipt_count = 0
+    complete_count = non_session_count = incomplete_count = incomplete_blob_bytes = missing_receipt_count = (
+        non_complete_receipt_count
+    ) = 0
     incomplete_origins: Counter[str] = Counter()
     incomplete_origin_bytes: Counter[str] = Counter()
-    current_raw_id: str | None = None
     current_row: tuple[object, ...] | None = None
-    membership_keys: list[object] = []
 
     def assess() -> None:
         nonlocal \
             complete_count, \
+            non_session_count, \
             incomplete_count, \
             incomplete_blob_bytes, \
             missing_receipt_count, \
@@ -444,29 +460,49 @@ def _pinned_parser_census_projection(
             logical_keys_json,
             typed_key,
             revision_kind,
-            _membership_key,
+            validation_failed,
             typed_non_session,
             parser_confirmed_non_session,
             byte_governed_fragment,
+            is_skipped,
+            is_materialized,
         ) = current_row
-        complete = (
+        complete = False
+        if (
             receipt_raw_id is not None
-            and str(fingerprint) == RAW_AUTHORITY_PARSER_FINGERPRINT
+            and str(fingerprint) == raw_authority_parser_fingerprint()
             and str(status) == "complete"
-            and parser_census_is_complete(
-                recorded_keys=parser_census_logical_keys(logical_keys_json),
-                durable_keys=durable_authority_logical_keys(
+        ):
+            with (
+                closing(
+                    conn.execute(
+                        f"SELECT logical_source_key FROM {source_schema}.raw_session_memberships WHERE raw_id=? ORDER BY logical_source_key",
+                        (_raw_id,),
+                    )
+                ) as memberships,
+                parser_census_identity_measurement(
                     raw_logical_key=typed_key,
                     revision_kind=revision_kind,
-                    membership_logical_keys=membership_keys,
-                ),
-                typed_non_session=bool(typed_non_session),
-                parser_confirmed_non_session=bool(parser_confirmed_non_session),
-                byte_governed_fragment=bool(byte_governed_fragment),
-            )
-        )
+                    membership_logical_keys=(row[0] for row in memberships),
+                    observed_logical_keys=iter_parser_census_logical_keys(logical_keys_json),
+                    observed_are_receipt=True,
+                ) as measured,
+            ):
+                complete = measured.complete(
+                    typed_non_session=bool(typed_non_session),
+                    parser_confirmed_non_session=bool(parser_confirmed_non_session),
+                    byte_governed_fragment=bool(byte_governed_fragment),
+                )
         if complete:
             complete_count += 1
+            if (
+                bool(typed_non_session)
+                and bool(parser_confirmed_non_session)
+                and not bool(validation_failed)
+                and not bool(is_skipped)
+                and not bool(is_materialized)
+            ):
+                non_session_count += 1
             return
         incomplete_count += 1
         size = int(cast(int | None, blob_size) or 0)
@@ -479,21 +515,16 @@ def _pinned_parser_census_projection(
         else:
             non_complete_receipt_count += 1
 
-    for row in rows:
-        raw_id = str(row[0])
-        if current_raw_id is not None and raw_id != current_raw_id:
-            assess()
-            membership_keys = []
-        if raw_id != current_raw_id:
-            current_raw_id = raw_id
+    try:
+        for row in rows:
             current_row = tuple(row)
-        if row[9] is not None:
-            membership_keys.append(row[9])
-    if current_row is not None:
-        assess()
+            assess()
+    finally:
+        rows.close()
     return {
         "available": True,
         "complete_count": complete_count,
+        "non_session_count": non_session_count,
         "incomplete_count": incomplete_count,
         "incomplete_blob_bytes": incomplete_blob_bytes,
         "missing_receipt_count": missing_receipt_count,
@@ -520,7 +551,7 @@ def _pinned_authority_frontier_projection(
     answer to "is the accepted frontier authorized?" is the unresolved-blocker
     set, which every pass publishes and tombstones.
     """
-    if not _table_columns(index_conn, source_schema, "raw_authority_blockers"):
+    if not _table_exists(index_conn, "raw_authority_blockers", schema=source_schema):
         return {
             "raw_authority_frontier_remediation_refs": [],
             "raw_authority_blocker_count": 0,
@@ -608,19 +639,18 @@ def _raw_materialization_readiness_from_pinned_index(
     if source_schema not in {"source", "source_tier"}:
         raise ValueError(f"unsupported raw materialization source schema: {source_schema!r}")
     aliases = {str(row[1]) for row in index_conn.execute("PRAGMA database_list").fetchall()}
-    if source_schema not in aliases or not _table_columns(index_conn, source_schema, "raw_sessions"):
+    if source_schema not in aliases or not _table_exists(index_conn, "raw_sessions", schema=source_schema):
         return {"available": False, "error": "source.db or index.db missing"}
-    if not _table_columns(index_conn, "main", "sessions"):
+    if not _table_exists(index_conn, "sessions", schema="main"):
         return {"available": False, "error": "source.db or index.db missing"}
     conn = index_conn
-    raw_columns = _table_columns(index_conn, source_schema, "raw_sessions")
-    session_columns = _table_columns(index_conn, "main", "sessions")
+
     parser_census = _pinned_parser_census_projection(
         conn,
-        raw_columns=raw_columns,
         source_schema=source_schema,
         index_conn=index_conn,
     )
+    parser_non_session_count = int(cast(int, parser_census["non_session_count"])) if parser_census["available"] else 0
     authority_projection = _pinned_authority_frontier_projection(
         conn,
         source_schema=source_schema,
@@ -679,7 +709,7 @@ def _raw_materialization_readiness_from_pinned_index(
     if classify_gaps:
         gap_rows = conn.execute(
             f"""WITH raw_rows AS (
-                SELECT {_raw_gap_select_columns(raw_columns)},
+                SELECT {_raw_gap_select_columns()},
                        EXISTS (SELECT 1 FROM main.sessions s WHERE s.raw_id = r.raw_id) AS is_materialized
                 FROM {source_schema}.raw_sessions r WHERE COALESCE(r.validation_status, '') != 'skipped'
             ) SELECT * FROM raw_rows WHERE NOT is_materialized"""
@@ -688,15 +718,13 @@ def _raw_materialization_readiness_from_pinned_index(
             conn,
             archive_root,
             gap_rows,
-            raw_columns=raw_columns,
-            session_columns=session_columns,
-            has_revision_applications=bool(_table_columns(index_conn, "main", "raw_revision_applications")),
-            has_membership_census=bool(_table_columns(index_conn, source_schema, "raw_membership_census")),
-            has_session_memberships=bool(_table_columns(index_conn, source_schema, "raw_session_memberships")),
+            has_revision_applications=bool(_table_exists(index_conn, "raw_revision_applications", schema="main")),
+            has_membership_census=bool(_table_exists(index_conn, "raw_membership_census", schema=source_schema)),
+            has_session_memberships=bool(_table_exists(index_conn, "raw_session_memberships", schema=source_schema)),
             source_schema=source_schema,
         )
     adoption_deferred_count = 0
-    if _table_columns(index_conn, "main", "raw_revision_applications"):
+    if _table_exists(index_conn, "raw_revision_applications", schema="main"):
         adoption_deferred_count = int(
             conn.execute(
                 f"""
@@ -713,6 +741,8 @@ def _raw_materialization_readiness_from_pinned_index(
     total = int(row[4] or 0)
     parse_failed = int(row[5] or 0)
     classified = sum(count for category, count in classified_counts.items() if category not in _RAW_GAP_OWED_CATEGORIES)
+    cheap_non_session_count = 0 if classify_gaps else parser_non_session_count
+    classified += cheap_non_session_count
     affected_actionable = classified_counts.get("parse-failed", 0) + classified_counts.get(
         RAW_ALIAS_BLOB_MISSING_CATEGORY, 0
     )
@@ -724,6 +754,8 @@ def _raw_materialization_readiness_from_pinned_index(
         "raw_parse_failed": parse_failed,
         "parsed_without_index_session": int(row[6] or 0),
     }
+    if cheap_non_session_count:
+        category_counts["parsed-non-session-artifact"] = cheap_non_session_count
     if adoption_deferred_count:
         category_counts["adoption_deferred"] = adoption_deferred_count
     category_counts.update(
@@ -732,7 +764,7 @@ def _raw_materialization_readiness_from_pinned_index(
     return {
         "available": True,
         "classification": "cheap_projection"
-        if classify_gaps and (classified or adoption_deferred_count)
+        if (classify_gaps and (classified or adoption_deferred_count)) or cheap_non_session_count
         else "not_run",
         "precision": "raw_id_join_gap",
         "raw_artifact_count": int(row[0] or 0),
@@ -796,8 +828,7 @@ def raw_materialization_readiness_snapshot(
         with closing(open_readonly_connection(index_db, tier=ArchiveTier.INDEX)) as conn:
             conn.row_factory = sqlite3.Row
             attach_readonly_database(conn, source_db, alias="source")
-            raw_columns = _table_columns(conn, "source", "raw_sessions")
-            session_columns = _table_columns(conn, "main", "sessions")
+
             row = conn.execute(
                 """
                 WITH raw_rows AS (
@@ -866,7 +897,7 @@ def raw_materialization_readiness_snapshot(
             classified_counts: Counter[str] = Counter()
             parse_failed_origins: set[str] = set()
             if classify_gaps:
-                raw_select_columns = _raw_gap_select_columns(raw_columns)
+                raw_select_columns = _raw_gap_select_columns()
                 gap_rows = conn.execute(
                     f"""
                     WITH raw_rows AS (
@@ -889,14 +920,12 @@ def raw_materialization_readiness_snapshot(
                     conn,
                     active_archive,
                     gap_rows,
-                    raw_columns=raw_columns,
-                    session_columns=session_columns,
-                    has_revision_applications=bool(_table_columns(conn, "main", "raw_revision_applications")),
-                    has_membership_census=bool(_table_columns(conn, "source", "raw_membership_census")),
-                    has_session_memberships=bool(_table_columns(conn, "source", "raw_session_memberships")),
+                    has_revision_applications=bool(_table_exists(conn, "raw_revision_applications", schema="main")),
+                    has_membership_census=bool(_table_exists(conn, "raw_membership_census", schema="source")),
+                    has_session_memberships=bool(_table_exists(conn, "raw_session_memberships", schema="source")),
                 )
             adoption_deferred_count = 0
-            if _table_columns(conn, "main", "raw_revision_applications"):
+            if _table_exists(conn, "raw_revision_applications", schema="main"):
                 adoption_deferred_count = int(
                     conn.execute(
                         """
@@ -917,126 +946,27 @@ def raw_materialization_readiness_snapshot(
             authority_frontier_remediation_refs: list[dict[str, object]] = []
             parser_census_available = False
             parser_census_complete_count = 0
+            parser_census_non_session_count = 0
             parser_census_incomplete_count = 0
             parser_census_incomplete_blob_bytes = 0
             parser_census_missing_receipt_count = 0
             parser_census_non_complete_receipt_count = 0
             parser_census_origin_summary: list[dict[str, object]] = []
-            if _table_columns(conn, "source", "raw_authority_parser_census"):
-                from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
-
-                parser_census_available = True
-                blob_size_expression = "COALESCE(r.blob_size, 0)" if "blob_size" in raw_columns else "0"
-                parser_census_rows = conn.execute(
-                    f"""
-                    SELECT r.raw_id, r.origin, {blob_size_expression}, p.raw_id, p.parser_fingerprint,
-                           p.status, p.logical_keys_json, r.logical_source_key, r.revision_kind,
-                           m.logical_source_key,
-                           EXISTS(SELECT 1 FROM source.raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
-                           EXISTS(
-                               SELECT 1 FROM source.raw_membership_census AS mc
-                               WHERE mc.raw_id = r.raw_id
-                                 AND mc.parser_fingerprint = ?
-                                 AND mc.status = 'non_session'
-                           ),
-                           EXISTS(
-                               SELECT 1 FROM source.raw_membership_census AS mc
-                               WHERE mc.raw_id = r.raw_id
-                                 AND r.source_index < 0
-                                 AND mc.parser_fingerprint = ?
-                                 AND mc.status = 'failed'
-                                 AND mc.revision_authority = ?
-                           )
-                    FROM source.raw_sessions AS r
-                    LEFT JOIN source.raw_authority_parser_census AS p ON p.raw_id = r.raw_id
-                    LEFT JOIN source.raw_session_memberships AS m ON m.raw_id = r.raw_id
-                    ORDER BY r.raw_id, m.logical_source_key
-                    """,
-                    (
-                        RAW_AUTHORITY_PARSER_FINGERPRINT,
-                        RAW_AUTHORITY_PARSER_FINGERPRINT,
-                        RawRevisionAuthority.BYTE_PROVEN.value,
-                    ),
-                )
-                incomplete_origins: Counter[str] = Counter()
-                incomplete_origin_bytes: Counter[str] = Counter()
-                current_raw_id: str | None = None
-                current_row: tuple[object, ...] | None = None
-                membership_keys: list[object] = []
-
-                def assess_current_row() -> None:
-                    nonlocal parser_census_complete_count, parser_census_incomplete_count
-                    nonlocal parser_census_incomplete_blob_bytes, parser_census_missing_receipt_count
-                    nonlocal parser_census_non_complete_receipt_count
-                    assert current_row is not None
-                    (
-                        _raw_id,
-                        origin,
-                        blob_size,
-                        receipt_raw_id,
-                        fingerprint,
-                        status,
-                        logical_keys_json,
-                        typed_key,
-                        revision_kind,
-                        _membership_key,
-                        typed_non_session,
-                        parser_confirmed_non_session,
-                        byte_governed_fragment,
-                    ) = current_row
-                    recorded_keys = parser_census_logical_keys(logical_keys_json)
-                    durable_keys = durable_authority_logical_keys(
-                        raw_logical_key=typed_key,
-                        revision_kind=revision_kind,
-                        membership_logical_keys=membership_keys,
-                    )
-                    blob_size_value = cast(int | None, blob_size)
-                    complete = (
-                        receipt_raw_id is not None
-                        and str(fingerprint) == RAW_AUTHORITY_PARSER_FINGERPRINT
-                        and str(status) == "complete"
-                        and parser_census_is_complete(
-                            recorded_keys=recorded_keys,
-                            durable_keys=durable_keys,
-                            typed_non_session=bool(typed_non_session),
-                            parser_confirmed_non_session=bool(parser_confirmed_non_session),
-                            byte_governed_fragment=bool(byte_governed_fragment),
-                        )
-                    )
-                    if complete:
-                        parser_census_complete_count += 1
-                    else:
-                        parser_census_incomplete_count += 1
-                        parser_census_incomplete_blob_bytes += int(blob_size_value or 0)
-                        origin_key = str(origin)
-                        incomplete_origins[origin_key] += 1
-                        incomplete_origin_bytes[origin_key] += int(blob_size_value or 0)
-                        if receipt_raw_id is None:
-                            parser_census_missing_receipt_count += 1
-                        else:
-                            parser_census_non_complete_receipt_count += 1
-
-                for parser_row in parser_census_rows:
-                    raw_id = str(parser_row[0])
-                    if current_raw_id is not None and raw_id != current_raw_id:
-                        assess_current_row()
-                        membership_keys = []
-                    if raw_id != current_raw_id:
-                        current_raw_id = raw_id
-                        current_row = tuple(parser_row)
-                    if parser_row[9] is not None:
-                        membership_keys.append(parser_row[9])
-                if current_row is not None:
-                    assess_current_row()
-                parser_census_origin_summary = [
-                    {"origin": origin, "count": count, "blob_bytes": incomplete_origin_bytes[origin]}
-                    for origin, count in sorted(
-                        incomplete_origins.items(),
-                        key=lambda item: (-incomplete_origin_bytes[item[0]], -item[1], item[0]),
-                    )[:16]
-                ]
+            parser_summary = _pinned_parser_census_projection(
+                conn,
+                source_schema="source",
+                index_conn=conn,
+            )
+            parser_census_available = bool(parser_summary["available"])
+            parser_census_complete_count = int(cast(int, parser_summary["complete_count"]))
+            parser_census_non_session_count = int(cast(int, parser_summary["non_session_count"]))
+            parser_census_incomplete_count = int(cast(int, parser_summary["incomplete_count"]))
+            parser_census_incomplete_blob_bytes = int(cast(int, parser_summary["incomplete_blob_bytes"]))
+            parser_census_missing_receipt_count = int(cast(int, parser_summary["missing_receipt_count"]))
+            parser_census_non_complete_receipt_count = int(cast(int, parser_summary["non_complete_receipt_count"]))
+            parser_census_origin_summary = cast(list[dict[str, object]], parser_summary["incomplete_origin_summary"])
             authority_blocker_count = 0
-            if _table_columns(conn, "source", "raw_authority_blockers"):
+            if _table_exists(conn, "raw_authority_blockers", schema="source"):
                 authority_blocker_count = int(
                     conn.execute(
                         "SELECT COUNT(*) FROM source.raw_authority_blockers WHERE resolved_at_ms IS NULL"
@@ -1077,12 +1007,16 @@ def raw_materialization_readiness_snapshot(
     parsed_without_index_session = int(row["parsed_without_index_session"] or 0)
     parse_failed = classified_counts.get("parse-failed", 0)
     classified = sum(count for category, count in classified_counts.items() if category not in _RAW_GAP_OWED_CATEGORIES)
+    cheap_non_session_count = 0 if classify_gaps else parser_census_non_session_count
+    classified += cheap_non_session_count
     alias_blob_missing = classified_counts.get(RAW_ALIAS_BLOB_MISSING_CATEGORY, 0)
     actionable = len(parse_failed_origins)
     critical = actionable
     affected_actionable = parse_failed + alias_blob_missing
     unchecked = max(total - classified - affected_actionable - adoption_deferred_count, 0)
     classification = "cheap_projection" if classify_gaps and (classified or adoption_deferred_count) else "not_run"
+    if cheap_non_session_count:
+        classification = "cheap_projection"
     raw_id_join_gap_count = unchecked
     category_counts: dict[str, int] = {
         "raw_id_join_gap": raw_id_join_gap_count,
@@ -1091,6 +1025,8 @@ def raw_materialization_readiness_snapshot(
         "raw_parse_failed": raw_parse_failed,
         "parsed_without_index_session": parsed_without_index_session,
     }
+    if cheap_non_session_count:
+        category_counts["parsed-non-session-artifact"] = cheap_non_session_count
     if adoption_deferred_count:
         category_counts["adoption_deferred"] = adoption_deferred_count
     category_counts.update(
@@ -1165,7 +1101,9 @@ def missing_source_raw_session_evidence(active_archive: Path, *, limit: int = 10
         ) as conn:
             conn.row_factory = sqlite3.Row
             attach_readonly_database(conn, source_db, alias="source")
-            if not _table_columns(conn, "main", "sessions") or not _table_columns(conn, "source", "raw_sessions"):
+            if not _table_exists(conn, "sessions", schema="main") or not _table_exists(
+                conn, "raw_sessions", schema="source"
+            ):
                 return {
                     "available": False,
                     "reason": "sessions or raw_sessions table missing",
@@ -1200,8 +1138,7 @@ def _missing_source_raw_session_count(
     *,
     source_schema: str = "source",
 ) -> int:
-    session_columns = _table_columns(conn, "main", "sessions")
-    if "raw_id" not in session_columns:
+    if not _table_exists(conn, "sessions"):
         return 0
     return _readiness_scalar_int(
         conn,
@@ -1222,28 +1159,22 @@ def _missing_source_raw_session_samples(
     limit: int = 10,
     source_schema: str = "source",
 ) -> list[dict[str, object]]:
-    session_columns = _table_columns(conn, "main", "sessions")
-    if not {"session_id", "raw_id"} <= session_columns:
+    if not _table_exists(conn, "sessions"):
         return []
-    origin_expr = "s.origin" if "origin" in session_columns else "NULL"
-    native_id_expr = "s.native_id" if "native_id" in session_columns else "NULL"
-    message_count_expr = "s.message_count" if "message_count" in session_columns else "NULL"
-    updated_at_expr = "s.updated_at_ms" if "updated_at_ms" in session_columns else "NULL"
-    order_expr = "s.updated_at_ms DESC, s.session_id" if "updated_at_ms" in session_columns else "s.session_id"
     rows = conn.execute(
         f"""
         SELECT s.session_id,
-               {origin_expr} AS origin,
-               {native_id_expr} AS native_id,
+               s.origin AS origin,
+               s.native_id AS native_id,
                s.raw_id,
-               {message_count_expr} AS message_count,
-               {updated_at_expr} AS updated_at_ms
+               s.message_count AS message_count,
+               s.updated_at_ms AS updated_at_ms
         FROM sessions AS s
         WHERE s.raw_id IS NOT NULL
           AND NOT EXISTS (
             SELECT 1 FROM {source_schema}.raw_sessions AS r WHERE r.raw_id = s.raw_id
           )
-        ORDER BY {order_expr}
+        ORDER BY s.updated_at_ms DESC, s.session_id
         LIMIT ?
         """,
         (limit,),
@@ -1269,22 +1200,7 @@ def _readiness_scalar_int(conn: sqlite3.Connection, sql: str) -> int:
     return int(row[0] or 0) if row is not None else 0
 
 
-def _table_columns(conn: sqlite3.Connection, schema: str, table: str) -> frozenset[str]:
-    try:
-        # ``sessions.session_id`` and other identity columns are generated.
-        # table_info omits generated/hidden columns, which made exact lost-raw
-        # counts pair with empty samples on the canonical archive schema.
-        rows = conn.execute(f"PRAGMA {schema}.table_xinfo({table})").fetchall()
-    except sqlite3.Error as exc:
-        logger.warning("archive readiness table-columns probe failed for %s.%s: %s", schema, table, exc, exc_info=True)
-        return frozenset()
-    return frozenset(str(row["name"] if isinstance(row, sqlite3.Row) else row[1]) for row in rows)
-
-
-def _raw_gap_select_columns(raw_columns: frozenset[str]) -> str:
-    def column(name: str) -> str:
-        return f"r.{name}" if name in raw_columns else f"NULL AS {name}"
-
+def _raw_gap_select_columns() -> str:
     names = (
         "raw_id",
         "origin",
@@ -1296,8 +1212,10 @@ def _raw_gap_select_columns(raw_columns: frozenset[str]) -> str:
         "validation_status",
         "parse_error",
         "parsed_at_ms",
+        "logical_source_key",
+        "revision_kind",
     )
-    return ",\n                        ".join(column(name) for name in names)
+    return ",\n                        ".join(f"r.{name}" for name in names)
 
 
 #: A raw row whose logical session is present under an alias, but whose own
@@ -1311,14 +1229,12 @@ RAW_ALIAS_BLOB_MISSING_CATEGORY = "materialized-alias-blob-missing"
 _RAW_GAP_OWED_CATEGORIES = frozenset({"parse-failed", RAW_ALIAS_BLOB_MISSING_CATEGORY})
 
 
-def _raw_gap_blob_present(archive_root: Path, row: sqlite3.Row, *, raw_columns: frozenset[str]) -> bool:
+def _raw_gap_blob_present(archive_root: Path, row: sqlite3.Row) -> bool:
     """Report whether this row's own content-addressed blob exists on disk.
 
     An unreadable or absent hash is reported as "not present": an unmeasured
     blob is never allowed to stand in for a proven one.
     """
-    if "blob_hash" not in raw_columns:
-        return False
     blob_hash = row["blob_hash"]
     if blob_hash is None:
         return False
@@ -1333,8 +1249,6 @@ def _classify_raw_gap_rows(
     archive_root: Path,
     rows: list[sqlite3.Row],
     *,
-    raw_columns: frozenset[str],
-    session_columns: frozenset[str],
     has_revision_applications: bool,
     has_membership_census: bool,
     has_session_memberships: bool,
@@ -1349,8 +1263,6 @@ def _classify_raw_gap_rows(
             conn,
             archive_root,
             row,
-            raw_columns=raw_columns,
-            session_columns=session_columns,
             has_revision_applications=has_revision_applications,
             has_membership_census=has_membership_census,
             has_session_memberships=has_session_memberships,
@@ -1368,8 +1280,6 @@ def _raw_gap_category(
     archive_root: Path,
     row: sqlite3.Row,
     *,
-    raw_columns: frozenset[str],
-    session_columns: frozenset[str],
     has_revision_applications: bool,
     has_membership_census: bool,
     has_session_memberships: bool,
@@ -1379,26 +1289,32 @@ def _raw_gap_category(
     if can_reconcile_alias and _raw_gap_materialized_by_alias(
         conn,
         row,
-        session_columns=session_columns,
         source_schema=source_schema,
     ):
         # The alias proves a same-identity session is indexed; it does not
         # prove this artifact's bytes survive. Without its own blob the row is
         # a distinct, unrecoverable snapshot and stays reported as owed work.
-        if _raw_gap_blob_present(archive_root, row, raw_columns=raw_columns):
+        if _raw_gap_blob_present(archive_root, row):
             return "materialized-alias"
         return RAW_ALIAS_BLOB_MISSING_CATEGORY
     if can_reconcile_alias and _raw_gap_matches_missing_index_raw_link(
         conn,
         row,
-        session_columns=session_columns,
         source_schema=source_schema,
     ):
         return "lost-source-evidence-alias"
-    if _raw_gap_parsed_non_session_artifact(archive_root, row, raw_columns=raw_columns):
-        return "parsed-non-session-artifact"
-    if row["parse_error"]:
+    # Parser failures and explicit validation refusals remain visible even if
+    # their bytes or path would otherwise look like a non-session artifact.
+    if row["parse_error"] or row["validation_status"] == "failed":
         return "parse-failed"
+    if _raw_gap_current_typed_non_session(
+        conn,
+        row,
+        source_schema=source_schema,
+        has_membership_census=has_membership_census,
+        has_session_memberships=has_session_memberships,
+    ):
+        return "parsed-non-session-artifact"
     authority_category = _raw_gap_authority_category(
         conn,
         row,
@@ -1410,6 +1326,105 @@ def _raw_gap_category(
     if authority_category is not None:
         return authority_category
     return None
+
+
+def _raw_gap_current_typed_non_session(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    source_schema: str,
+    has_membership_census: bool,
+    has_session_memberships: bool,
+) -> bool:
+    """Use current typed artifact and parser receipts to settle a non-session gap.
+
+    The parser receipt and exact identity measurement are the same authority
+    used by the archive's parser-census projection. A filename or a second
+    content classifier cannot turn an unmeasured raw into a completed input.
+    """
+    if (
+        not has_membership_census
+        or not has_session_memberships
+        or not _table_exists(conn, "raw_authority_parser_census", schema=source_schema)
+        or not _table_exists(conn, "raw_artifacts", schema=source_schema)
+    ):
+        return False
+    raw_id = str(row["raw_id"])
+    fingerprint = raw_authority_parser_fingerprint()
+    terminal_pairs = RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS
+    terminal_placeholders = ", ".join("(?, ?)" for _ in terminal_pairs)
+    receipt = conn.execute(
+        f"""SELECT p.parser_fingerprint, p.status, p.logical_keys_json,
+                   c.parser_fingerprint, c.status, c.member_count
+            FROM {source_schema}.raw_authority_parser_census AS p
+            JOIN {source_schema}.raw_membership_census AS c ON c.raw_id=p.raw_id
+            WHERE p.raw_id=?
+              AND EXISTS (
+                  SELECT 1 FROM {source_schema}.raw_artifacts AS a
+                  WHERE a.raw_id=p.raw_id AND a.parse_as_session=0
+                    AND a.schema_eligible=0 AND a.decode_error IS NULL
+                    AND a.malformed_jsonl_lines=0
+                    AND (a.artifact_kind, a.support_status) NOT IN ({terminal_placeholders})
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM {source_schema}.raw_artifacts AS failure
+                  WHERE failure.raw_id=p.raw_id
+                    AND (failure.artifact_kind, failure.support_status) IN ({terminal_placeholders})
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM {source_schema}.raw_artifacts AS sibling
+                  WHERE sibling.raw_id=p.raw_id
+                    AND (sibling.parse_as_session<>0 OR sibling.schema_eligible<>0
+                         OR sibling.decode_error IS NOT NULL OR sibling.malformed_jsonl_lines<>0)
+              )""",
+        (
+            raw_id,
+            *(value for pair in terminal_pairs for value in pair),
+            *(value for pair in terminal_pairs for value in pair),
+        ),
+    ).fetchone()
+    if receipt is None:
+        return False
+    (
+        parser_fingerprint,
+        parser_status,
+        logical_keys_json,
+        membership_fingerprint,
+        membership_status,
+        member_count,
+    ) = receipt
+    if (
+        str(parser_fingerprint) != fingerprint
+        or str(parser_status) != "complete"
+        or str(membership_fingerprint) != fingerprint
+        or str(membership_status) != "non_session"
+        or int(member_count) != 0
+    ):
+        return False
+
+    def membership_keys() -> Any:
+        with closing(
+            conn.execute(
+                f"SELECT logical_source_key FROM {source_schema}.raw_session_memberships "
+                "WHERE raw_id=? ORDER BY logical_source_key",
+                (raw_id,),
+            )
+        ) as memberships:
+            for membership in memberships:
+                yield membership[0]
+
+    with parser_census_identity_measurement(
+        raw_logical_key=row["logical_source_key"],
+        revision_kind=row["revision_kind"],
+        membership_logical_keys=membership_keys(),
+        observed_logical_keys=iter_parser_census_logical_keys(logical_keys_json),
+        observed_are_receipt=True,
+    ) as measured:
+        return measured.complete(
+            typed_non_session=True,
+            parser_confirmed_non_session=True,
+            byte_governed_fragment=False,
+        )
 
 
 def _raw_gap_authority_category(
@@ -1486,11 +1501,8 @@ def _raw_gap_materialized_by_alias(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
     *,
-    session_columns: frozenset[str],
     source_schema: str = "source",
 ) -> bool:
-    if not {"origin", "native_id"} <= session_columns:
-        return False
     origin = str(row["origin"] or "")
     if not origin:
         return False
@@ -1526,11 +1538,8 @@ def _raw_gap_matches_missing_index_raw_link(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
     *,
-    session_columns: frozenset[str],
     source_schema: str = "source",
 ) -> bool:
-    if not {"origin", "native_id", "raw_id"} <= session_columns:
-        return False
     origin = str(row["origin"] or "")
     if not origin:
         return False
@@ -1563,27 +1572,6 @@ def _raw_gap_matches_missing_index_raw_link(
         if existing is not None:
             return True
     return False
-
-
-def _raw_gap_parsed_non_session_artifact(
-    archive_root: Path,
-    row: sqlite3.Row,
-    *,
-    raw_columns: frozenset[str],
-) -> bool:
-    if "blob_hash" not in raw_columns:
-        return False
-    if row["parse_error"] or row["parsed_at_ms"] is None:
-        return False
-    return (
-        parsed_non_session_artifact_reason(
-            archive_root=archive_root,
-            origin=str(row["origin"] or ""),
-            source_path=str(row["source_path"] or ""),
-            blob_hash=row["blob_hash"],
-        )
-        is not None
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1643,12 +1631,12 @@ def _archive_readiness_counts(
     session_count = _fast_count(conn, "SELECT COUNT(*) FROM sessions") if sessions_table_present else 0
     raw_link_count = (
         _fast_count(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
-        if _column_exists(conn, "sessions", "raw_id")
+        if _table_exists(conn, "sessions")
         else 0
     )
     missing_raw_session_count = 0
     missing_raw_session_samples: list[dict[str, Any]] = []
-    if source_check_available and source_conn is not None and _column_exists(conn, "sessions", "raw_id"):
+    if source_check_available and source_conn is not None and _table_exists(conn, "sessions"):
         raw_ids = {
             str(row[0])
             for row in source_conn.execute("SELECT raw_id FROM raw_sessions").fetchall()

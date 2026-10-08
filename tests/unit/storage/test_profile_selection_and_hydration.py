@@ -19,9 +19,9 @@ from polylogue.storage.derived.session.usage_rollup import (
 )
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -39,7 +39,7 @@ def _built_profile(root: Path) -> tuple[Path, str, SessionProfileDerivation]:
     builder.add_message(role="assistant", text="a real profile output")
     builder.save()
     session_id = builder.native_session_id()
-    with write_lease("test.w5.profile"), closing(_connection(index_path)) as conn:
+    with write_lease("test.w5.profile", archive_root=root), closing(_connection(index_path)) as conn:
         binding = session_input_bindings(conn, (session_id,))[session_id]
         publish_session_usage_rollup(
             conn,
@@ -53,6 +53,7 @@ def _built_profile(root: Path) -> tuple[Path, str, SessionProfileDerivation]:
         lambda: _connection(index_path),
         materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
         session_scope=lambda _frame: None,
+        archive_root=root,
     )
     assert adapter.inspect(object(), (session_id,))[session_id] == "valid"
     return index_path, session_id, adapter
@@ -62,7 +63,7 @@ def test_selected_profile_facts_do_not_certify_pending_demand(tmp_path: Path) ->
     """Ordinary inspection was stale while selected inspection certified the same rows valid."""
     index_path, session_id, adapter = _built_profile(tmp_path / "archive")
     assert adapter.selected_part_facts(object(), session_id).status == "valid"
-    with write_lease("test.w5.demand"), closing(_connection(index_path)) as conn:
+    with write_lease("test.w5.demand", archive_root=index_path.parent), closing(_connection(index_path)) as conn:
         conn.execute("INSERT INTO session_profile_demand(session_id, revision) VALUES (?, 1)", (session_id,))
         conn.commit()
     assert adapter.inspect(object(), (session_id,))[session_id] == "stale"
@@ -75,7 +76,7 @@ def test_required_profile_page_recovers_a_missing_latency_sibling(tmp_path: Path
     """No demand and an intact profile previously hid its missing mandatory sibling."""
     index_path, session_id, adapter = _built_profile(tmp_path / "archive")
     assert adapter.required_page(object(), cursor=None, limit=10) == ((), None)
-    with write_lease("test.w5.latency"), closing(_connection(index_path)) as conn:
+    with write_lease("test.w5.latency", archive_root=index_path.parent), closing(_connection(index_path)) as conn:
         conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (session_id,))
         conn.commit()
         profiles = conn.execute("SELECT count(*) FROM session_profiles WHERE session_id = ?", (session_id,))
@@ -91,8 +92,8 @@ def test_sync_hydration_preserves_stored_attachment_provenance(tmp_path: Path) -
     """The actual sync loader used None defaults despite non-null stored provenance."""
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
-    with write_lease("test.w5.hydrate"), closing(_connection(root / "index.db")) as conn:
-        session_id = write_parsed_session_to_archive(
+    with write_lease("test.w5.hydrate", archive_root=root), closing(_connection(root / "index.db")) as conn:
+        session_id = write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CHATGPT,

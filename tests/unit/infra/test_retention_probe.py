@@ -24,6 +24,7 @@ Anti-vacuity:
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,9 @@ from tests.infra.retention_probe import RetentionProbe, read_memory_kib
 class _Memory:
     """A scripted ``/proc/self/status`` reader with a real high-water rule."""
 
-    def __init__(self, anon_series: list[int]) -> None:
+    def __init__(self, anon_series: Sequence[int | tuple[int, int]]) -> None:
+        # An entry is the occupancy at the read, or ``(occupancy, transient
+        # peak since the previous read)`` for a test that rose and fell back.
         self._series = list(anon_series)
         self._hwm = 0
 
@@ -45,12 +48,16 @@ class _Memory:
         self._hwm = 0
 
     def __call__(self) -> dict[str, int]:
-        anon = self._series.pop(0) if self._series else 0
-        self._hwm = max(self._hwm, anon)
+        entry = self._series.pop(0) if self._series else 0
+        anon, peak = entry if isinstance(entry, tuple) else (entry, entry)
+        self._hwm = max(self._hwm, anon, peak)
         return {"VmRSS": anon, "RssAnon": anon, "RssFile": 0, "RssShmem": 0, "VmHWM": self._hwm}
 
 
 def _probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, anon_series: list[int]) -> RetentionProbe:
+    # The unqualified report path is the non-xdist name; the managed runner
+    # itself runs under xdist, so clear the worker id the probe would append.
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setattr(retention_probe, "read_memory_kib", _Memory(anon_series))
     monkeypatch.setattr(retention_probe, "_object_census", lambda: [])
     monkeypatch.setattr(retention_probe, "_malloc_trim", lambda: True)
@@ -114,6 +121,7 @@ def test_only_the_peak_setter_is_charged(tmp_path: Path, monkeypatch: pytest.Mon
 def test_a_watermark_reset_does_not_lower_the_peak(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Anti-vacuity: resetting VmHWM between tests must not charge the later test as a new peak setter."""
     reader = _Memory([0, 100, 900, 200, 200, 200, 200, 200])
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setattr(retention_probe, "read_memory_kib", reader)
     monkeypatch.setattr(retention_probe, "_object_census", lambda: [])
     monkeypatch.setattr(retention_probe, "_malloc_trim", lambda: True)
@@ -138,7 +146,9 @@ def test_worker_output_is_qualified_and_retention_ranking_is_separate(
 ) -> None:
     """Anti-vacuity: an exact .json path collides under xdist and HWM sorting hides later retainers."""
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
-    reader = _Memory([0, 100, 900, 200, 600, 600, 600, 600, 600])
+    # peak.py spikes the high-water mark to 900 but settles at 200 (+100
+    # retained); retainer.py stays below the mark but keeps 400 more.
+    reader = _Memory([0, 100, (200, 900), 600, 600, 600, 600, 600])
     monkeypatch.setattr(retention_probe, "read_memory_kib", reader)
     monkeypatch.setattr(retention_probe, "_object_census", lambda: [])
     monkeypatch.setattr(retention_probe, "_malloc_trim", lambda: True)

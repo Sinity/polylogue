@@ -16,6 +16,7 @@ Covers four shapes:
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -761,7 +762,7 @@ class TestListToolUsageInsightsEndToEnd:
         # actual subject -- an empty archive's insight envelope shape.
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-        initialize_active_archive_root(tmp_path)
+        await asyncio.to_thread(initialize_active_archive_root, tmp_path)
 
         result = await _archive(tmp_path).list_tool_usage_insights(ToolUsageInsightQuery())
         assert len(result) == 1

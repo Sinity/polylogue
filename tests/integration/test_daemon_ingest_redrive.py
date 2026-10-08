@@ -13,18 +13,31 @@ from typing import Any, NoReturn
 import pytest
 
 from polylogue.api import Polylogue
+from polylogue.core.enums import ValidationMode
 from polylogue.daemon.api_auth import resolve_api_auth_token
+from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 from polylogue.daemon.services import ServiceCapability, ServiceProfile
 from polylogue.daemon.socket_path import daemon_socket_path
 from polylogue.daemon_client import DaemonClient
 from polylogue.operations.audit import AuditRepository
-from polylogue.operations.daemon_ingest import IngestExecution
+from polylogue.operations.daemon_ingest import IngestExecution, SourceReceiptSpool
 from polylogue.operations.daemon_protocol import daemon_operation_spec
 from polylogue.operations.ingest_acceptance import INGEST_OPERATION
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.machine_receipts import IngestHistoricalReceiptV2
+from polylogue.operations.operation_context import PinnedOperationRead
+from polylogue.operations.raw_observation_owner import RetainedMaterializationResult
+from polylogue.sources.live import WatchSource
+from polylogue.sources.live.cold_build import (
+    ColdBuildGeneration,
+    clear_cold_build_generation,
+    register_cold_build_generation,
+)
+from polylogue.sources.prepared_jsonl import PreparedJsonl
+from polylogue.sources.revision_backfill import RetainedSessionRead
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.daemon_service_harness import ServiceHarness
 
 _DEAD_OWNER = "pid:999999999:0"
@@ -128,13 +141,12 @@ def _session_titles(archive_root: Path) -> list[str]:
         return [str(row[0]) for row in conn.execute("SELECT title FROM sessions ORDER BY title")]
 
 
-def _archive(tmp_path: Path) -> tuple[Path, Path]:
+async def _archive(tmp_path: Path) -> tuple[Path, Path]:
     source = tmp_path / "inputs" / "export.json"
     source.parent.mkdir()
     _chatgpt_export(source)
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root):
-        pass
+    await run_archive_fixture_write(archive_root, lambda: bootstrap_archive_root(archive_root))
     return archive_root, source
 
 
@@ -149,7 +161,7 @@ async def test_accepted_generation_materializes_after_restart_without_its_input(
     the HTTP server, and no session appears while the request stays failed or
     indeterminate.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     assert _session_titles(archive_root) == []
     source.unlink()
@@ -201,7 +213,7 @@ async def test_stopped_request_is_not_redriven(tmp_path: Path, monkeypatch: pyte
     Anti-vacuity: drop the ``stop_reason IS NULL`` condition from the owner's
     discovery and claim, and the cancelled request's sessions materialize.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     with sqlite3.connect(archive_root / "audit.db") as audit:
         audit.execute("UPDATE machine_requests SET stop_reason = 'cancelled', stopped_at_ms = 1")
@@ -223,7 +235,7 @@ async def test_undrivable_generation_fails_instead_of_waiting(tmp_path: Path, mo
     Anti-vacuity: leave a failed re-drive at ``mark_unknown`` and the run
     stays ``interrupted`` for every later start.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     monkeypatch.setattr(
         "polylogue.operations.daemon_ingest.retained_enumeration_fingerprint", lambda: "retired-decoder"
@@ -262,17 +274,19 @@ async def test_a_transient_refusal_retries_the_claimed_run(
     pinned identity fails the moved generation as ``archive_identity_stale``,
     and cleaning up through the saturated admission class escapes the retry.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
     from polylogue.operations.daemon_ingest import IngestReprepareRequiredError
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
-    original = IngestExecution.archive_write
+    # The run's archive publication is ``materialize`` (the resident Raw
+    # owner); the refusal lands where publication starts.
+    original = IngestExecution.materialize
     original_compute = DaemonOperationRuntime.compute_phase
     refusals = {"left": 1, "saturated": 0}
 
-    async def refuse_once(self: IngestExecution, work: Any) -> Any:
+    async def refuse_once(self: IngestExecution, generation_id: str) -> Any:
         if refusals["left"]:
             refusals["left"] -= 1
             refusals["saturated"] = 1
@@ -281,7 +295,7 @@ async def test_a_transient_refusal_retries_the_claimed_run(
                 self.observed_identity = "a-generation-since-promoted"
                 raise IngestReprepareRequiredError("ingest publication generation changed; reprepare required")
             raise DaemonBackpressureError("control admission is full")
-        return await original(self, work)
+        return await original(self, generation_id)
 
     async def saturated(self: DaemonOperationRuntime, work: Any) -> Any:
         # Admission stays full for the next submission after a refusal.
@@ -290,7 +304,7 @@ async def test_a_transient_refusal_retries_the_claimed_run(
             raise DaemonBackpressureError("control admission is still full")
         return await original_compute(self, work)
 
-    monkeypatch.setattr(IngestExecution, "archive_write", refuse_once)
+    monkeypatch.setattr(IngestExecution, "materialize", refuse_once)
     monkeypatch.setattr(DaemonOperationRuntime, "compute_phase", saturated)
     await _restart_and_settle(archive_root)
 
@@ -308,7 +322,7 @@ async def test_a_redrive_honors_the_accepted_deadline(tmp_path: Path, monkeypatc
     Anti-vacuity (Codex P1, #5717): consult only the owner's stop and
     cancellation and the expired request completes as a mutation.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     with sqlite3.connect(archive_root / "audit.db") as audit:
         audit.execute("UPDATE machine_requests SET accepted_deadline_unix_ms = 1")
@@ -330,7 +344,7 @@ async def test_a_redrive_after_partial_publication_is_indeterminate(
     Anti-vacuity (Codex P1, #5717): finalize the re-drive as applied and its
     receipt reports zero changed sessions although this request wrote one.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
 
     async def killed(self: IngestExecution, *_args: object, **_kwargs: object) -> None:
         with sqlite3.connect(archive_root / "audit.db") as audit:
@@ -381,7 +395,7 @@ async def test_a_stopped_partial_ingest_stays_indeterminate_across_restart(
     replayable and the next startup rewrites it as failed with no effect,
     although its sessions are in the archive.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
 
     async def killed(self: IngestExecution, *_args: object, **_kwargs: object) -> None:
         with sqlite3.connect(archive_root / "audit.db") as audit:
@@ -425,7 +439,7 @@ async def test_runs_are_claimed_before_the_listeners_serve(tmp_path: Path, monke
     """
     from polylogue.operations import daemon_ingest
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original_claim = daemon_ingest.claim_interrupted_ingest
 
@@ -456,9 +470,9 @@ async def test_a_retry_after_this_attempts_materialization_still_completes(
     retry, or count this attempt's own re-publication as unchanged, and the
     retry sees its own sessions as a dead attempt's and finalizes indeterminate.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original = IngestExecution.converge_profiles
     refusals = {"left": 1}
@@ -527,21 +541,21 @@ async def test_a_transient_refusal_of_a_fresh_ingest_stays_redrivable(
     Anti-vacuity (Codex P1, #5717): fence it as ``refused`` like a permanent
     failure and discovery excludes the stopped request, so it never materializes.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
 
-    archive_root, source = _archive(tmp_path)
-    original = IngestExecution.archive_write
+    archive_root, source = await _archive(tmp_path)
+    original = IngestExecution.materialize
     refusals = {"left": 1}
 
-    async def refuse_once(self: IngestExecution, work: Any) -> Any:
+    async def refuse_once(self: IngestExecution, generation_id: str) -> Any:
         if refusals["left"]:
             refusals["left"] -= 1
             raise DaemonBackpressureError("control admission is full")
-        return await original(self, work)
+        return await original(self, generation_id)
 
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     with monkeypatch.context() as patch:
-        patch.setattr(IngestExecution, "archive_write", refuse_once)
+        patch.setattr(IngestExecution, "materialize", refuse_once)
         with _serving(archive_root) as (harness, _api_server):
             try:
                 with pytest.raises(Exception):  # noqa: B017 - the surface's error type is not this contract
@@ -585,6 +599,7 @@ async def test_starting_the_redrive_on_its_owner_loop_does_not_block_it(
         tmp_path,
         write_bridge=cast(Any, object()),
         execution_kernel=cast(Any, object()),
+        raw_observation_owner=cast(Any, object()),
         owner_loop=asyncio.get_running_loop(),
         session_maintenance=cast(Any, object()),
     )
@@ -597,7 +612,7 @@ async def test_starting_the_redrive_on_its_owner_loop_does_not_block_it(
 async def _two_interrupted_ingests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     second = tmp_path / "inputs" / "second.json"
     export = json.loads(source.read_text(encoding="utf-8"))
@@ -648,7 +663,7 @@ async def test_a_cancel_committed_before_finalization_wins(tmp_path: Path, monke
     Anti-vacuity (Codex P1, #5717): finalize without rechecking the durable
     stop under the writer and the cancelled request completes as applied.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original = IngestExecution.historical_receipt
 
@@ -672,7 +687,7 @@ async def test_an_identity_moved_between_reads_retries(tmp_path: Path, monkeypat
     Anti-vacuity (Codex P1, #5717): raise the stale identity as a plain
     ``ValueError`` and the re-drive settles the accepted generation as failed.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original = IngestExecution.input_page
     moves = {"left": 1}
@@ -729,7 +744,7 @@ async def test_a_transient_storage_fault_retries_the_redrive(tmp_path: Path, mon
     Anti-vacuity (Codex P1, #5717): retry only the three typed transients and
     ``database is locked`` permanently fails the accepted generation.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original = IngestExecution.input_page
     faults = {"left": 1}
@@ -757,7 +772,7 @@ async def test_an_accepted_deadline_passing_before_finalization_wins(
     Anti-vacuity (Codex P1, #5717): recheck only a recorded ``stop_reason`` in
     the final writer and the expired request completes.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original = IngestExecution.historical_receipt
 
@@ -781,9 +796,9 @@ async def test_profile_receipts_survive_a_transient_retry(tmp_path: Path, monkey
     Anti-vacuity (Codex P1, #5717): reconverge on the retry and the published
     profiles come back ``already_satisfied``, conflicting with persisted pages.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original_converge = IngestExecution.converge_profiles
     original_receipt = IngestExecution.historical_receipt
@@ -815,13 +830,15 @@ def test_a_refusal_seen_by_two_drives_is_one_refusal(tmp_path: Path) -> None:
     retried drive reports the same refused membership twice."""
     from typing import cast
 
-    from polylogue.storage.ingest_governance import CohortMembershipRefusalError
+    from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind, RetainedRawDecodeRefusalError
 
     execution = IngestExecution.__new__(IngestExecution)
     execution._setup(cast(Any, None), tmp_path, cast(Any, None))
-    refusal = CohortMembershipRefusalError("key", "raw-1", "ambiguous")
-    execution.record_refusal(refusal)
-    execution.record_refusal(refusal)
+    refusal = RetainedRawDecodeRefusalError(
+        "raw-1", RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT, "neutral corrupt input"
+    )
+    execution.record_refusal("key", refusal)
+    execution.record_refusal("key", refusal)
     with sqlite3.connect(execution.state_path) as state:
         assert state.execute("SELECT COUNT(*) FROM refusals").fetchone() == (1,)
     execution.state_path.unlink(missing_ok=True)
@@ -837,10 +854,10 @@ async def test_a_refusal_before_authority_loads_leaves_no_running_attempt(
     authority is unloaded leaves the attempt ``running`` under this live
     process, which no owner reclaims.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     original_compute = DaemonOperationRuntime.compute_phase
     refusals = {"left": 1}
 
@@ -910,18 +927,340 @@ async def test_a_watcher_only_daemon_redrives_accepted_ingests(tmp_path: Path, m
     from polylogue.daemon.cli import compose_ingest_owner
     from polylogue.daemon.http import _StandaloneWriteRuntime
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     source.unlink()
 
-    writer = _StandaloneWriteRuntime(archive_root)
-    runtime, _profiles = compose_ingest_owner(archive_root, writer.bridge)
+    from polylogue.core.compute import BoundedComputeAdapter
+
+    kernel = BoundedComputeAdapter(max_workers=1, queue_units=1, queue_bytes=0)
+    writer = _StandaloneWriteRuntime(archive_root, compute_adapter=kernel)
+    runtime, _profiles = compose_ingest_owner(
+        archive_root,
+        writer.bridge,
+        compute_adapter=kernel,
+        validation_mode=ValidationMode.ADVISORY,
+    )
     try:
         await asyncio.to_thread(runtime.start_accepted_ingest_redrive)
         redrive = runtime._redrive
         assert redrive is not None
         await asyncio.wrap_future(redrive)
     finally:
-        await asyncio.to_thread(writer.close, before_drain=runtime.shutdown, after_drain=lambda: None)
+        await asyncio.to_thread(writer.close, before_drain=runtime.shutdown, after_drain=kernel.shutdown)
 
     assert _session_titles(archive_root) == ["Retained Redrive"]
+
+
+async def test_ingest_counts_sessions_convergence_published_before_its_materialize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Convergence publishing an accepted raw first still counts it for the ingest.
+
+    Single-pass convergence lets the daemon's raw owner publish the ingest's
+    raw before the ingest materializes it; the ingest then writes nothing, yet
+    its receipt reports what the archive holds for the input it introduced.
+    """
+    archive_root, source = await _archive(tmp_path)
+    original = IngestExecution.materialize
+    reached: list[str] = []
+
+    async def materialize(self: IngestExecution, generation_id: str) -> SourceReceiptSpool:
+        receipt = await self.receipt(generation_id)
+        try:
+            raw_ids = receipt.raw_page()
+        finally:
+            receipt.close()
+        assert len(raw_ids) == 1
+        runtime = self.runtime
+        assert isinstance(runtime, DaemonOperationRuntime)
+        owner = runtime.raw_observation_owner
+        await owner.converge_raw_id(raw_ids[0])
+
+        def original_state(pinned: PinnedOperationRead) -> tuple[int, int]:
+            source_conn = pinned.archive.source_connection
+            index_conn = pinned.archive.index_connection
+            assert index_conn is not None
+            census = source_conn.execute(
+                "SELECT COUNT(*) FROM raw_authority_parser_census WHERE raw_id=?", raw_ids
+            ).fetchone()[0]
+            return census, index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+
+        assert await self.read(original_state) == (1, 1)
+        reached.append(raw_ids[0])
+        return await original(self, generation_id)
+
+    monkeypatch.setattr(IngestExecution, "materialize", materialize)
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    with _serving(archive_root) as (harness, _server):
+        try:
+            result = await archive.parse_file(source, source_name="neutral-original-counts")
+        finally:
+            await harness.close()
+            await archive.close()
+    assert len(reached) == 1
+    assert result.counts["sessions"] == result.changed_counts["sessions"] == 1
+    assert result.counts["messages"] == result.changed_counts["messages"] == 2
+    assert len(result.processed_ids) == 1
+    operation_id, record = _only_request(archive_root)
+    audit = AuditRepository.for_archive_root(archive_root)
+    with audit.settled_machine_read():
+        history = audit.historical_machine_receipt(operation_id)
+    assert isinstance(history, IngestHistoricalReceiptV2)
+    assert history.summary.parse_projection_known
+    assert history.summary.changed_session_count == 1
+    assert history.summary.changed_message_count == history.summary.processed_message_count == 2
+    generation_id = str(record["artifact_ref"])
+    with sqlite3.connect(archive_root / "source.db") as source_db:
+        settled = source_db.execute(
+            "SELECT disposition, outcome_code, stage FROM source_items WHERE source_generation_id=?",
+            (generation_id,),
+        ).fetchall()
+        census = source_db.execute(
+            "SELECT pending, admitted, deliberate, unknown_blocking, sealable "
+            "FROM source_item_reconciliation WHERE source_generation_id=?",
+            (generation_id,),
+        ).fetchone()
+    assert settled == [("admitted", "success", "materialization")]
+    assert census == (0, 1, 0, 0, 1)
+
+
+@pytest.mark.timeout(300)
+async def test_ingest_settles_source_item_from_owned_cold_candidate_before_promotion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The receipt reads candidate rows while the active Index stays empty."""
+    from polylogue.storage.archive_identity import resolve_active_index_path
+
+    archive_root, source = await _archive(tmp_path)
+
+    def begin_candidate() -> ColdBuildGeneration:
+        return ColdBuildGeneration.begin(
+            archive_root,
+            reason="test-ingest-source-receipt",
+            observed=ColdBuildGeneration.observe_source_baseline(
+                (WatchSource("fixture", archive_root / "absent-source"),)
+            ),
+        )
+
+    candidate = await run_archive_fixture_write(archive_root, begin_candidate)
+    active_path = resolve_active_index_path(archive_root)
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    materializations: list[RetainedMaterializationResult] = []
+    original_materialize = DaemonOperationRuntime.materialize_retained_raw_ids
+
+    async def capture_destination(
+        self: DaemonOperationRuntime, *args: Any, **kwargs: Any
+    ) -> RetainedMaterializationResult:
+        result = await original_materialize(self, *args, **kwargs)
+        materializations.append(result)
+        return result
+
+    monkeypatch.setattr(DaemonOperationRuntime, "materialize_retained_raw_ids", capture_destination)
+    try:
+        with _serving(archive_root) as (harness, _server):
+            try:
+                register_cold_build_generation(candidate)
+                await archive.parse_file(source, source_name="neutral-cold-receipt")
+            finally:
+                await harness.close()
+
+        _operation_id, record = _only_request(archive_root)
+        generation_id = str(record["artifact_ref"])
+        with sqlite3.connect(archive_root / "source.db") as source_db:
+            items = source_db.execute(
+                "SELECT disposition, outcome_code, stage FROM source_items WHERE source_generation_id=?",
+                (generation_id,),
+            ).fetchall()
+            census = source_db.execute(
+                "SELECT pending, admitted, deliberate, unknown_blocking, sealable "
+                "FROM source_item_reconciliation WHERE source_generation_id=?",
+                (generation_id,),
+            ).fetchone()
+        assert items == [("admitted", "success", "materialization")]
+        assert census == (0, 1, 0, 0, 1)
+        assert materializations and materializations[0].index_destination is not None
+        assert materializations[0].index_destination.index_path == Path(candidate.generation.index_path)
+        assert materializations[0].outcome.receipts
+        assert any(receipt.written_session_ids for receipt in materializations[0].outcome.receipts)
+        assert resolve_active_index_path(archive_root) == active_path
+        with sqlite3.connect(active_path) as active:
+            assert active.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+        with ArchiveStore.open_owned_inactive_read(candidate.generation) as reader:
+            candidate_sessions = reader._conn.execute("SELECT session_id FROM sessions").fetchall()
+        candidate_session_ids = {str(row[0]) for row in candidate_sessions}
+        written_session_ids = {
+            session_id for receipt in materializations[0].outcome.receipts for session_id in receipt.written_session_ids
+        }
+        assert written_session_ids and written_session_ids <= candidate_session_ids
+    finally:
+        await archive.close()
+        clear_cold_build_generation()
+        await run_archive_fixture_write(archive_root, candidate.discard)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("refused_payload", "validation_mode", "parse_error", "expected_refusal"),
+    [
+        pytest.param(
+            b'{"fixture":"neutral schema rejection"}',
+            "strict",
+            None,
+            ("pending", "validation_rejected", "validation", 0),
+            id="strict-schema-refusal",
+        ),
+        pytest.param(
+            b"not json",
+            "strict",
+            "synthetic decoder failure",
+            ("pending", "interrupted", "manifest", None),
+            id="strict-decode-failure-is-not-schema-refusal",
+        ),
+        pytest.param(
+            b"not json",
+            "advisory",
+            "synthetic decoder failure",
+            ("pending", "interrupted", "manifest", None),
+            id="advisory-decode-failure-is-not-schema-refusal",
+        ),
+    ],
+)
+async def test_materialize_keeps_valid_subject_after_original_decode_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    refused_payload: bytes,
+    validation_mode: str,
+    parse_error: str | None,
+    expected_refusal: tuple[str, str, str, int | None],
+) -> None:
+    archive_root, source = await _archive(tmp_path)
+    (source.parent / "refused.json").write_bytes(refused_payload)
+    original = IngestExecution.materialize
+    reached: list[tuple[int, int]] = []
+    failures: list[BaseException] = []
+
+    async def materialize(self: IngestExecution, generation_id: str) -> SourceReceiptSpool:
+        receipt = await self.receipt(generation_id)
+        try:
+            raw_ids = receipt.raw_page()
+        finally:
+            receipt.close()
+        assert len(raw_ids) == 2
+        try:
+            result = await original(self, generation_id)
+        except BaseException as failure:
+            failures.append(failure)
+            raise
+        reached.append((len(raw_ids), len(result.session_page())))
+
+        def reject_strictly(connection: sqlite3.Connection) -> None:
+            row = connection.execute(
+                "SELECT raw_id FROM raw_sessions WHERE source_path LIKE ? ORDER BY raw_id LIMIT 1",
+                ("%/refused.json",),
+            ).fetchone()
+            assert row is not None
+            connection.execute(
+                "UPDATE raw_sessions SET validation_status='failed', validation_mode=?, parse_error=?, "
+                "validation_error='synthetic typed validation failure', validated_at_ms=1 WHERE raw_id=?",
+                (validation_mode, parse_error, row[0]),
+            )
+
+        # Inject the durable typed refusal through the same admitted Source
+        # writer used by production validation, before finalization consumes it.
+        await self.source_write(reject_strictly)
+        return result
+
+    monkeypatch.setattr(IngestExecution, "materialize", materialize)
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    with _serving(archive_root) as (harness, _server):
+        try:
+            try:
+                result = await archive.parse_file(source.parent, source_name="neutral-mixed")
+            except Exception as failure:
+                for original_failure in failures:
+                    failure.add_note(f"original materialize failure: {original_failure!r}")
+                raise
+        finally:
+            await harness.close()
+            await archive.close()
+    assert reached == [(2, 1)]
+    assert result.changed_counts["sessions"] == 1
+    assert result.changed_counts["messages"] == 2
+    assert _session_titles(archive_root) == ["Retained Redrive"]
+    operation_id, record = _only_request(archive_root)
+    generation_id = str(record["artifact_ref"])
+    with sqlite3.connect(archive_root / "source.db") as source_db:
+        items = source_db.execute(
+            "SELECT disposition, outcome_code, stage, retryable, evidence_ref FROM source_items "
+            "WHERE source_generation_id=? ORDER BY logical_coordinate",
+            (generation_id,),
+        ).fetchall()
+        census = source_db.execute(
+            "SELECT pending, admitted, deliberate, unknown_blocking, sealable "
+            "FROM source_item_reconciliation WHERE source_generation_id=?",
+            (generation_id,),
+        ).fetchone()
+    assert items[0] == ("admitted", "success", "materialization", 0, None)
+    assert items[1][:4] == expected_refusal
+    if expected_refusal[1] == "validation_rejected":
+        assert items[1][4].startswith("raw:")
+    else:
+        assert items[1][4] is None
+    assert census == (1, 1, 0, 0, 0)
+    audit = AuditRepository.for_archive_root(archive_root)
+    with audit.settled_machine_read():
+        history = audit.historical_machine_receipt(operation_id)
+        state = machine_request_state(audit, record)
+    assert isinstance(history, IngestHistoricalReceiptV2)
+    assert history.summary.source_complete is False
+    assert state["outcome"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_materialize_uses_original_non_json_carrier_and_writer_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources import revision_backfill
+
+    archive_root, source = await _archive(tmp_path)
+    captured = source.with_suffix(".capture")
+    source.rename(captured)
+    original = revision_backfill.prepare_retained_non_json_artifact
+    reached: list[str] = []
+
+    def prepare(
+        reader: RetainedSessionRead,
+        raw_id: str,
+        *,
+        directory: Path,
+        validation_mode: ValidationMode = ValidationMode.ADVISORY,
+    ) -> PreparedJsonl:
+        descriptor = reader.raw_revision_descriptor(raw_id)
+        assert Path(descriptor[2]).suffix == ".capture"
+        artifact = original(reader, raw_id, directory=directory, validation_mode=validation_mode)
+        verdict = artifact.validation_verdict
+        assert verdict is not None
+        assert verdict.raw_id == raw_id
+        assert verdict.revision_sha256 == descriptor[1]
+        assert verdict.mode is validation_mode
+        reached.append(raw_id)
+        return artifact
+
+    monkeypatch.setattr(revision_backfill, "prepare_retained_non_json_artifact", prepare)
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    with _serving(archive_root) as (harness, _server):
+        try:
+            result = await archive.parse_file(captured, source_name="neutral-original-carrier")
+        finally:
+            await harness.close()
+            await archive.close()
+    assert reached
+    assert result.changed_counts["sessions"] == 1
+    assert result.changed_counts["messages"] == 2
+    assert _session_titles(archive_root) == ["Retained Redrive"]
+    with sqlite3.connect(archive_root / "source.db") as source_db:
+        assert source_db.execute("SELECT validation_status, validation_mode FROM raw_sessions").fetchall() == [
+            ("passed", "advisory")
+        ]

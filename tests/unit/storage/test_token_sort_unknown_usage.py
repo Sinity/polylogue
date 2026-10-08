@@ -9,10 +9,11 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.archive import _summary_order_by
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
+from tests.infra.archive_templates import bootstrapped_tier_path
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _session(provider_session_id: str, *, timestamp: str, tokens: int | None) -> ParsedSession:
@@ -46,11 +47,10 @@ def test_ascending_token_sort_ranks_measured_zero_ahead_of_unmeasured(tmp_path: 
     returns to the front of the ascending band, making this red.
     """
     path = tmp_path / "index.db"
-    conn = sqlite3.connect(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        initialize_archive_tier(conn, ArchiveTier.INDEX)
         written: dict[str, str] = {}
         for name, timestamp, tokens in (
             ("unknown", "2026-01-01T00:00:00Z", None),
@@ -58,11 +58,11 @@ def test_ascending_token_sort_ranks_measured_zero_ahead_of_unmeasured(tmp_path: 
             ("measured-ten", "2026-01-03T00:00:00Z", 10),
         ):
             session = _session(name, timestamp=timestamp, tokens=tokens)
-            written[name] = write_parsed_session_to_archive(
+            written[name] = write_fixture_index_session(
                 conn,
                 session,
                 content_hash=str(session_content_hash(session)),
-                prepared=prepare_session_rows(session),
+                prepared_rows=prepare_session_rows(session),
             )
 
         order_by = _summary_order_by(sample=False, sort="tokens", reverse=True)

@@ -176,7 +176,7 @@ def test_a_value_outside_the_vocabulary_is_refused_by_name() -> None:
         _normalize_nested_for_hash({"outer": [object()]})
     message = str(caught.value)
     assert "object" in message
-    assert "payload.outer[]" in message
+    assert "payload.'outer'[]" in message
     assert issubclass(UnhashablePayloadValueError, TypeError)
 
 
@@ -288,7 +288,7 @@ def test_fast_walk_still_names_the_path_of_a_refused_value() -> None:
     """Anti-vacuity: re-raising the fast walk's internal signal loses the path."""
     with pytest.raises(UnhashablePayloadValueError) as caught:
         _normalize_nested_for_hash({"outer": {"inner": [1, {"leaf": object()}]}})
-    assert "payload.outer.inner[].leaf" in str(caught.value)
+    assert "payload.'outer'.'inner'[].'leaf'" in str(caught.value)
 
 
 def test_decimals_beyond_float_precision_keep_distinct_identities() -> None:
@@ -314,3 +314,38 @@ def test_a_mapping_cannot_construct_the_exact_decimal_tag(key: str) -> None:
     assert hash_payload(_normalize_nested_for_hash({key: 1})) != hash_payload(
         _normalize_nested_for_hash({"$" + key: 1})
     )
+
+
+def test_plain_key_ordering_equals_encoded_token_ordering() -> None:
+    """Ordering plain ``str`` keys as text orders their QUERY tokens identically.
+
+    Red if the plain-key fast path admits a key whose encoded token sorts
+    differently from its text (a space, a quote, a backslash, a control or
+    non-ASCII character), or if it sorts by the raw key rather than the legacy
+    token (the ``$decimal`` escape).
+    """
+    import itertools
+
+    from polylogue.core.digest import QUERY, canonical_bytes
+    from polylogue.pipeline import ids
+
+    alphabet = ["", "a", "b", "#", "~", "[", "]", " ", "!", '"', "\\", "\x01", "é", "$", "decimal", "$decimal", "A"]
+    keys = {"".join(parts) for parts in itertools.product(alphabet, repeat=2)} | {"$$decimal", "z" * 40}
+
+    def reference(value: dict[object, object]) -> list[tuple[object, object]]:
+        entries = list(value.items())
+        entries.sort(
+            key=lambda pair: (
+                canonical_bytes(ids._legacy_json_key(pair[0]), QUERY),
+                canonical_bytes(ids._typed_identity_value(pair[0]), QUERY),
+            )
+        )
+        return entries
+
+    mapping: dict[object, object] = dict.fromkeys(sorted(keys), 0)
+    plain: dict[object, object] = {key: 0 for key in sorted(keys) if ids._PLAIN_HASH_KEY.fullmatch(key)}
+    mixed: dict[object, object] = {1: "x", "1": "y", "a": "z"}
+    assert len(plain) > 20
+    assert ids._hash_ordered_entries(plain) == reference(plain)
+    assert ids._hash_ordered_entries(mapping) == reference(mapping)
+    assert ids._hash_ordered_entries(mixed) == reference(mixed)

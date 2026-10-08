@@ -122,5 +122,5 @@ def test_transplanted_baseline_tier_is_refused_by_its_immutable_birth_fingerprin
     with sqlite3.connect(source_path) as foreign:
         foreign.execute("CREATE TABLE foreign_lineage (id INTEGER PRIMARY KEY) STRICT")
         foreign.execute("PRAGMA user_version = 1")
-    with pytest.raises(RuntimeError, match="is not part of polylogue.archive-format.v5"):
+    with pytest.raises(RuntimeError, match="is not part of polylogue.archive-format.v6"):
         archive_plan.assert_archive_format_lineage(tmp_path)

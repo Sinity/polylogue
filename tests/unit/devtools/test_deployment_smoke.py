@@ -13,6 +13,7 @@ import pytest
 from devtools import deployment_smoke
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
 
 
 def _create_browser_source_db(
@@ -119,8 +120,10 @@ def _create_browser_index_db(
             ),
         )
         # The probe opens the index through the tier-guarded read profile, so
-        # a hand-built index must declare the version that profile expects.
+        # a hand-built index must declare the version and derived schema
+        # identity that profile expects.
         conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
+        stamp_derived_schema_identity(conn, ArchiveTier.INDEX.value)
 
 
 class _FakeResponse:
@@ -567,8 +570,10 @@ def test_deployment_smoke_reports_latest_browser_capture_missing_index_row(tmp_p
             """
         )
         # The probe opens the index through the tier-guarded read profile, so
-        # a hand-built index must declare the version that profile expects.
+        # a hand-built index must declare the version and derived schema
+        # identity that profile expects.
         conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
+        stamp_derived_schema_identity(conn, ArchiveTier.INDEX.value)
 
     probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
 

@@ -28,7 +28,6 @@ from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.models import SyntheticSchemaSelection
 from polylogue.schemas.synthetic.wire_formats import build_wire_support_receipt
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_canonical_snapshot import archive_snapshot, assert_archives_equivalent
@@ -40,6 +39,7 @@ from tests.infra.inferred_corpus import (
     read_inferred_corpus_manifest,
     write_inferred_corpus_manifest,
 )
+from tests.infra.retained_replay import replay_retained_components
 from tests.infra.wire_support import shared_wire_support_receipt
 
 
@@ -137,11 +137,12 @@ def _ingest_and_converge_sources(
                     provider=Provider.from_string(source.name),
                     payload=source.path.read_bytes(),
                     source_path=str(source.path),
+                    canonical_source_path=str(source.path),
                     source_index=source_index,
                     acquired_at_ms=source_index + 1,
                 )
             )
-    backfill = backfill_historical_revision_evidence(archive_root, selected_raw_ids=raw_ids, ingest_workers=1)
+    backfill = replay_retained_components(archive_root, selected_raw_ids=raw_ids)
     assert backfill.scanned == backfill.classified_full > 0
     assert backfill.quarantined == 0
     assert backfill.adoption_deferred == 0

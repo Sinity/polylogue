@@ -162,14 +162,19 @@ read from the per-session evidence rows rather than adjudicated for you.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, MutableSequence, Sequence
+import pickle
+from collections.abc import Callable, Generator, Iterable, Iterator, MutableSequence, Sequence
+from contextlib import AbstractContextManager, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import BlockType, BranchType, MaterialOrigin, Provider, SourceFidelityStatus
 from polylogue.core.json import JSONDocument, JSONValue, json_document, json_document_list
+from polylogue.sources.detection_projection import DetectorProjection
+from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
@@ -356,6 +361,7 @@ def parse_atof_stream(
     fallback_id: str,
     *,
     profile_root: Path | None = None,
+    profile_identity: str | None = None,
 ) -> list[ParsedSession]:
     """Normalize a raw Hermes NeMo Relay ATOF JSONL stream by session id.
 
@@ -405,109 +411,205 @@ def parse_atof_stream(
     as ``delegation_edge_asserted: false`` on the observing parent's own
     ``hermes_subagent_span`` event, never a guessed link.
     """
-    grouped: dict[str, list[ParsedSessionEvent]] = {}
-    seen: dict[str, set[tuple[str, str | None]]] = {}
-    skipped: dict[str, int] = {}
-    scope_phases: dict[str, dict[str, dict[str, tuple[str | None, str | None]]]] = {}
-    delegation_claims: dict[str, set[str]] = {}
-
-    for raw_record in records:
-        record = json_document(raw_record)
-        if not record or not looks_like_atof_payload(record):
-            continue
-        session_id = _atof_session_id(record) or fallback_id
-        uuid = str(record["uuid"])
-        scope_category = _optional_str(record.get("scope_category"))
-        event_key = (uuid, scope_category)
-        session_seen = seen.setdefault(session_id, set())
-        if event_key in session_seen:
-            continue
-        session_seen.add(event_key)
-        if record.get("kind") == "scope" and scope_category in {"start", "end"}:
-            phases = scope_phases.setdefault(session_id, {}).setdefault(uuid, {})
-            phases[scope_category] = (_optional_str(record.get("category")), _optional_str(record.get("timestamp")))
-        name = _optional_str(record.get("name")) or ""
-        if name.startswith("hermes.subagent."):
-            data = json_document(record.get("data")) or {}
-            child_session_id = _optional_str(data.get("child_session_id"))
-            if child_session_id and child_session_id != session_id:
-                delegation_claims.setdefault(child_session_id, set()).add(session_id)
-        event = _atof_event(record)
-        if event is None:
-            skipped[session_id] = skipped.get(session_id, 0) + 1
-            continue
-        grouped.setdefault(session_id, []).extend(event)
-
-    unpaired_events = {session_id: _unpaired_scope_events(phases) for session_id, phases in scope_phases.items()}
-    session_ids = sorted(set(grouped) | set(unpaired_events))
-    profile_key_value = _profile_key(profile_root) if profile_root is not None else None
-
-    # Only a producer-positive, unambiguous (single-parent) child id with a
-    # known profile qualifies for edge materialization -- fail closed on a
-    # conflicting or unqualified claim rather than guessing which parent (if
-    # any) is correct.
-    delegation_targets: dict[str, str] = (
-        {child: next(iter(parents)) for child, parents in delegation_claims.items() if len(parents) == 1}
-        if profile_key_value is not None
-        else {}
-    )
-    _mark_delegation_edges_on_subagent_events(grouped, delegation_targets)
-
-    sessions = [
-        _atof_session(
-            session_id,
-            [*grouped.get(session_id, []), *unpaired_events.get(session_id, [])],
-            skipped.get(session_id, 0),
-            profile_key=profile_key_value,
-            delegation_parent_raw_id=delegation_targets.get(session_id),
+    return list(
+        iter_atof_sessions(
+            records,
+            fallback_id,
+            profile_root=profile_root,
+            profile_identity=profile_identity,
         )
-        for session_id in session_ids
-    ]
-    stub_children = sorted(child for child in delegation_targets if child not in session_ids)
-    sessions.extend(
-        _atof_subagent_delegation_stub_session(child, delegation_targets[child], profile_key_value)
-        for child in stub_children
     )
-    return sessions
 
 
-def _mark_delegation_edges_on_subagent_events(
-    grouped: dict[str, list[ParsedSessionEvent]], delegation_targets: dict[str, str]
-) -> None:
-    """Record whether each observed subagent mark actually materialized an edge.
-
-    Mutates the already-built ``hermes_subagent_span`` events in place (the
-    per-mark materialization decision -- unambiguous single parent, known
-    profile -- is only known after every record has been scanned), so the
-    *observing parent's own* fidelity declaration can report how many of its
-    subagent references actually became real ``session_links`` edges, without
-    needing cross-session lookups.
-
-    ``delegation_targets`` is keyed by CHILD session id, so membership alone
-    (``child_session_id in delegation_targets``) is not sufficient here: a
-    session can emit a ``hermes_subagent_span`` whose ``child_session_id``
-    happens to equal a DIFFERENT session's (unambiguously claimed) child --
-    e.g. a self-referential mark from session S (S names itself as its own
-    child, correctly excluded from ``delegation_targets`` by the
-    self-reference guard) coexisting with an unrelated session P that
-    legitimately claims S as ITS child (``delegation_targets["S"] == "P"``).
-    Checking membership alone would mark S's own self-referential span
-    ``delegation_edge_asserted=True`` merely because "S" is a key in the map
-    -- contradicting the fail-closed self-reference guarantee. The owning
-    session id (the record's own ``session_id``, carried in the event's
-    ``session_id`` payload field via ``base_payload``) must match the
-    resolved parent for THIS specific child before the flag is set.
-    """
-    for owning_session_id, events in grouped.items():
-        for event in events:
-            if event.event_type != "hermes_subagent_span":
+def iter_atof_sessions(
+    records: Iterable[object],
+    fallback_id: str,
+    *,
+    profile_root: Path | None = None,
+    profile_identity: str | None = None,
+    new_events: Callable[[], MutableSequence[ParsedSessionEvent]] = list,
+) -> Generator[ParsedSession, None, None]:
+    """Use the canonical ATOF reducer with disk-backed cohort state."""
+    profile_key_value = (
+        profile_identity
+        if profile_identity is not None
+        else (_profile_key(profile_root) if profile_root is not None else None)
+    )
+    with scratch_connection_context(
+        prefix="polylogue-atof-", filename="cohort.db", directory=Path("/realm/tmp/work")
+    ) as scratch:
+        scratch.execute("PRAGMA temp_store=FILE")
+        scratch.executescript(
+            "CREATE TABLE owners (identity BLOB PRIMARY KEY, emit INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0);"
+            "CREATE TABLE seen (owner BLOB, uuid BLOB, phase BLOB, PRIMARY KEY(owner,uuid,phase)) WITHOUT ROWID;"
+            "CREATE TABLE phases (owner BLOB, uuid BLOB, phase TEXT, category BLOB, timestamp BLOB, ordinal INTEGER, "
+            "PRIMARY KEY(owner,uuid,phase)) WITHOUT ROWID;"
+            "CREATE TABLE claims (child BLOB,parent BLOB,PRIMARY KEY(child,parent)) WITHOUT ROWID;"
+            "CREATE TABLE events (ordinal INTEGER PRIMARY KEY,owner BLOB,payload BLOB);"
+            "CREATE INDEX event_owners ON events(owner,ordinal);"
+        )
+        for ordinal, raw_record in enumerate(records):
+            check_compute_cancelled()
+            record = json_document(raw_record)
+            if not record or not looks_like_atof_payload(record):
                 continue
-            child_session_id = event.payload.get("child_session_id")
-            event.payload["delegation_edge_asserted"] = bool(
-                isinstance(child_session_id, str)
-                and child_session_id
-                and delegation_targets.get(child_session_id) == owning_session_id
+            session_id = _atof_session_id(record) or fallback_id
+            owner = _atof_key(session_id)
+            uuid = _atof_key(str(record["uuid"]))
+            scope_category = _optional_str(record.get("scope_category"))
+            phase_key = b"\0" if scope_category is None else b"\1" + _atof_key(scope_category)
+            inserted = scratch.execute("INSERT OR IGNORE INTO seen VALUES (?,?,?)", (owner, uuid, phase_key)).rowcount
+            if not inserted:
+                continue
+            scratch.execute("INSERT OR IGNORE INTO owners(identity) VALUES (?)", (owner,))
+            if record.get("kind") == "scope" and scope_category in {"start", "end"}:
+                scratch.execute("UPDATE owners SET emit=1 WHERE identity=?", (owner,))
+                scratch.execute(
+                    "INSERT INTO phases VALUES (?,?,?,?,?,?)",
+                    (
+                        owner,
+                        uuid,
+                        scope_category,
+                        _atof_optional_key(_optional_str(record.get("category"))),
+                        _atof_optional_key(_optional_str(record.get("timestamp"))),
+                        ordinal,
+                    ),
+                )
+            name = _optional_str(record.get("name")) or ""
+            if name.startswith("hermes.subagent."):
+                data = json_document(record.get("data")) or {}
+                child_session_id = _optional_str(data.get("child_session_id"))
+                if child_session_id and child_session_id != session_id:
+                    scratch.execute("INSERT OR IGNORE INTO claims VALUES (?,?)", (_atof_key(child_session_id), owner))
+            events = _atof_event(record)
+            if events is None:
+                scratch.execute("UPDATE owners SET skipped=skipped+1 WHERE identity=?", (owner,))
+                continue
+            scratch.execute("UPDATE owners SET emit=1 WHERE identity=?", (owner,))
+            for event in events:
+                scratch.execute(
+                    "INSERT INTO events(owner,payload) VALUES (?,?)",
+                    (
+                        owner,
+                        pickle.dumps(event, protocol=pickle.HIGHEST_PROTOCOL),
+                    ),
+                )
+        scratch.commit()
+
+        def delegation_parent(child: str) -> str | None:
+            if profile_key_value is None:
+                return None
+            with closing(
+                scratch.execute("SELECT parent FROM claims WHERE child=? ORDER BY parent LIMIT 2", (_atof_key(child),))
+            ) as cursor:
+                candidates = cursor.fetchall()
+            return _atof_text(candidates[0][0]) if len(candidates) == 1 else None
+
+        after: bytes | None = None
+        while True:
+            check_compute_cancelled()
+            with closing(
+                scratch.execute(
+                    "SELECT identity,skipped FROM owners WHERE emit=1 AND (? IS NULL OR identity>?) ORDER BY identity LIMIT 1",
+                    (after, after),
+                )
+            ) as cursor:
+                row = cursor.fetchone()
+            if row is None:
+                break
+            after = bytes(row[0])
+            session_id = _atof_text(after)
+
+            def selected_events(owner_key: bytes = after, owning_id: str = session_id) -> Iterator[ParsedSessionEvent]:
+                cursor = scratch.execute("SELECT payload FROM events WHERE owner=? ORDER BY ordinal", (owner_key,))
+                try:
+                    for (payload,) in cursor:
+                        check_compute_cancelled()
+                        event: ParsedSessionEvent = pickle.loads(payload)
+                        _mark_delegation_edge(event, owning_id, delegation_parent)
+                        yield event
+                finally:
+                    cursor.close()
+                cursor = scratch.execute(
+                    "SELECT uuid FROM phases WHERE owner=? GROUP BY uuid ORDER BY MIN(ordinal)", (owner_key,)
+                )
+                try:
+                    for (uuid,) in cursor:
+                        check_compute_cancelled()
+                        phase_rows = scratch.execute(
+                            "SELECT phase,category,timestamp FROM phases WHERE owner=? AND uuid=? ORDER BY ordinal",
+                            (owner_key, uuid),
+                        )
+                        try:
+                            phases = {
+                                str(phase): (_atof_optional_text(category), _atof_optional_text(timestamp))
+                                for phase, category, timestamp in phase_rows
+                            }
+                        finally:
+                            phase_rows.close()
+                        yield from _unpaired_scope_events({_atof_text(uuid): phases})
+                finally:
+                    cursor.close()
+
+            yield _atof_session(
+                session_id,
+                selected_events(),
+                int(row[1]),
+                profile_key=profile_key_value,
+                delegation_parent_raw_id=delegation_parent(session_id),
+                new_events=new_events,
             )
+        # Stubs follow real owners in the original lexicographic child order.
+        after = None
+        while profile_key_value is not None:
+            check_compute_cancelled()
+            with closing(
+                scratch.execute(
+                    "SELECT c.child FROM claims c LEFT JOIN owners o ON o.identity=c.child AND o.emit=1 "
+                    "WHERE o.identity IS NULL AND (? IS NULL OR c.child>?) GROUP BY c.child "
+                    "HAVING COUNT(*)=1 ORDER BY c.child LIMIT 1",
+                    (after, after),
+                )
+            ) as cursor:
+                row = cursor.fetchone()
+            if row is None:
+                break
+            after = bytes(row[0])
+            child = _atof_text(after)
+            parent = delegation_parent(child)
+            assert parent is not None
+            yield _atof_subagent_delegation_stub_session(child, parent, profile_key_value)
+
+
+def _atof_key(value: str) -> bytes:
+    return value.encode("utf-8", "surrogatepass")
+
+
+def _atof_text(value: bytes) -> str:
+    return bytes(value).decode("utf-8", "surrogatepass")
+
+
+def _atof_optional_key(value: str | None) -> bytes | None:
+    return None if value is None else _atof_key(value)
+
+
+def _atof_optional_text(value: bytes | None) -> str | None:
+    return None if value is None else _atof_text(value)
+
+
+def _mark_delegation_edge(
+    event: ParsedSessionEvent,
+    owning_session_id: str,
+    parent_for_child: Callable[[str], str | None],
+) -> None:
+    if event.event_type != "hermes_subagent_span":
+        return
+    child_session_id = event.payload.get("child_session_id")
+    event.payload["delegation_edge_asserted"] = bool(
+        isinstance(child_session_id, str)
+        and child_session_id
+        and parent_for_child(child_session_id) == owning_session_id
+    )
 
 
 def _unpaired_scope_events(phases: dict[str, dict[str, tuple[str | None, str | None]]]) -> list[ParsedSessionEvent]:
@@ -631,7 +733,7 @@ def _atof_event(record: JSONDocument) -> list[ParsedSessionEvent] | None:
                     "child_session_id": _optional_str(data.get("child_session_id")),
                     "child_role": _optional_str(data.get("child_role")),
                     "status": _optional_str(data.get("status")) or _optional_str(metadata.get("status")),
-                    # Overwritten by _mark_delegation_edges_on_subagent_events once every
+                    # Overwritten by _mark_delegation_edge once every
                     # record in the batch has been scanned -- an unambiguous, profile-known
                     # child session_id materializes a real session_links edge; anything else
                     # (unknown profile, missing/self-referential id, contested by two
@@ -676,11 +778,12 @@ def _atof_event(record: JSONDocument) -> list[ParsedSessionEvent] | None:
 
 def _atof_session(
     session_id: str,
-    events: list[ParsedSessionEvent],
+    events: Iterable[ParsedSessionEvent],
     skipped: int,
     *,
     profile_key: str | None,
     delegation_parent_raw_id: str | None = None,
+    new_events: Callable[[], MutableSequence[ParsedSessionEvent]] = list,
 ) -> ParsedSession:
     del skipped  # counts live in session_events/import_fidelity_declaration, never in message text
     # Deliberately stable across every replay/revision of this session (never
@@ -725,7 +828,27 @@ def _atof_session(
             "state-db-ingested conversational session and any ATIF observer session "
             "(observer:atif:<id>[@profile-<key>]) sharing this raw Hermes session id."
         )
-    return ParsedSession(
+    selected_events = new_events()
+    selected_events.append(
+        ParsedSessionEvent(
+            event_type="hermes_observer_trace_correlation",
+            payload={
+                "hermes_conversation_session_id_prefix": session_id,
+                "join_key": "sessions.native_id",
+                "profile_qualified": profile_key is not None,
+                "asserted_parent_session_provider_id": parent_session_provider_id,
+                "delegated_from_session_id": delegation_parent_raw_id,
+                "note": correlation_note,
+            },
+        )
+    )
+    try:
+        selected_events.extend(events)
+    finally:
+        close_events = getattr(events, "close", None)
+        if callable(close_events):
+            close_events()
+    session = ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=provider_session_id,
         title=f"Hermes ATOF observer stream: {session_id}",
@@ -741,23 +864,14 @@ def _atof_session(
                 material_origin=MaterialOrigin.RUNTIME_CONTEXT,
             )
         ],
-        session_events=[
-            ParsedSessionEvent(
-                event_type="hermes_observer_trace_correlation",
-                payload={
-                    "hermes_conversation_session_id_prefix": session_id,
-                    "join_key": "sessions.native_id",
-                    "profile_qualified": profile_key is not None,
-                    "asserted_parent_session_provider_id": parent_session_provider_id,
-                    "delegated_from_session_id": delegation_parent_raw_id,
-                    "note": correlation_note,
-                },
-            ),
-            *events,
-        ],
+        session_events=selected_events if isinstance(selected_events, list) else [],
         parent_session_provider_id=parent_session_provider_id,
         branch_type=branch_type,
         ingest_flags=["hermes:atof-observer"],
+    )
+
+    return (
+        session if isinstance(selected_events, list) else session.model_copy(update={"session_events": selected_events})
     )
 
 
@@ -820,6 +934,7 @@ def parse_atif_document(
     fallback_id: str,
     *,
     profile_root: Path | None = None,
+    profile_identity: str | None = None,
 ) -> list[ParsedSession]:
     """Parse one Hermes ATIF trajectory document into a parent session plus
     any materialized subagent-delegation child sessions.
@@ -867,6 +982,7 @@ def parse_atif_document(
         (AtifSubagent.from_entry(entry) for entry in raw_subagents),
         fallback_id,
         profile_root=profile_root,
+        profile_identity=profile_identity,
     )
 
 
@@ -901,6 +1017,7 @@ def parse_atif_stream(
     fallback_id: str,
     *,
     profile_root: Path | None,
+    profile_identity: str | None = None,
     new_events: Callable[[], MutableSequence[ParsedSessionEvent]],
 ) -> list[ParsedSession]:
     """Lower a proved ATIF document without retaining its step arrays.
@@ -910,7 +1027,15 @@ def parse_atif_stream(
     from ``new_events``. Subagent entries arrive one at a time, each with its
     steps held apart from its fields.
     """
-    return _atif_sessions(envelope, steps, subagents, fallback_id, profile_root=profile_root, new_events=new_events)
+    return _atif_sessions(
+        envelope,
+        steps,
+        subagents,
+        fallback_id,
+        profile_root=profile_root,
+        profile_identity=profile_identity,
+        new_events=new_events,
+    )
 
 
 def _atif_sessions(
@@ -920,12 +1045,49 @@ def _atif_sessions(
     fallback_id: str,
     *,
     profile_root: Path | None,
+    profile_identity: str | None = None,
     new_events: Callable[[], MutableSequence[ParsedSessionEvent]] = list,
 ) -> list[ParsedSession]:
+    return list(
+        iter_atif_sessions(
+            payload,
+            raw_steps,
+            raw_subagents,
+            fallback_id,
+            profile_root=profile_root,
+            profile_identity=profile_identity,
+            new_events=new_events,
+        )
+    )
+
+
+@contextmanager
+def _collected_atif_children(children: Iterable[ParsedSession]) -> Iterator[Iterable[ParsedSession]]:
+    """Explicit in-process parser calls retain their requested list output."""
+    yield list(children)
+
+
+def iter_atif_sessions(
+    payload: JSONDocument,
+    raw_steps: Iterable[JSONValue],
+    raw_subagents: Iterable[AtifSubagent],
+    fallback_id: str,
+    *,
+    profile_root: Path | None,
+    profile_identity: str | None = None,
+    new_events: Callable[[], MutableSequence[ParsedSessionEvent]] = list,
+    retain_children: Callable[
+        [Iterable[ParsedSession]], AbstractContextManager[Iterable[ParsedSession]]
+    ] = _collected_atif_children,
+) -> Generator[ParsedSession, None, None]:
     session_id = str(payload.get("session_id") or fallback_id)
     agent = json_document(payload.get("agent")) or {}
     model_name = _optional_str(agent.get("model_name"))
-    profile_key_value = _profile_key(profile_root) if profile_root is not None else None
+    profile_key_value = (
+        profile_identity
+        if profile_identity is not None
+        else (_profile_key(profile_root) if profile_root is not None else None)
+    )
     provider_session_id = atif_session_provider_id(session_id, profile_key_value)
     parent_session_provider_id = _qualified_session_id(session_id, profile_key_value) if profile_key_value else None
 
@@ -971,17 +1133,19 @@ def _atif_sessions(
     # import_fidelity_declaration.
     summary_text = f"Hermes ATIF trajectory: {session_id}"
 
-    child_sessions: list[ParsedSession] = []
-    for index, subagent in enumerate(raw_subagents):
-        if not subagent.fields and subagent.step_count is None:
-            skipped += 1
-            continue
-        subagent_session_id = _optional_str(subagent.fields.get("session_id"))
-        delegation_edge_asserted = bool(profile_key_value and subagent_session_id and subagent_session_id != session_id)
-        events.append(_subagent_span_event(subagent, index, delegation_edge_asserted=delegation_edge_asserted))
-        if delegation_edge_asserted and subagent_session_id is not None:
-            child_sessions.append(
-                _atif_subagent_child_session(
+    def child_sessions() -> Iterator[ParsedSession]:
+        nonlocal skipped
+        for index, subagent in enumerate(raw_subagents):
+            if not subagent.fields and subagent.step_count is None:
+                skipped += 1
+                continue
+            subagent_session_id = _optional_str(subagent.fields.get("session_id"))
+            delegation_edge_asserted = bool(
+                profile_key_value and subagent_session_id and subagent_session_id != session_id
+            )
+            events.append(_subagent_span_event(subagent, index, delegation_edge_asserted=delegation_edge_asserted))
+            if delegation_edge_asserted and subagent_session_id is not None:
+                yield _atif_subagent_child_session(
                     subagent,
                     subagent_session_id,
                     parent_provider_session_id=provider_session_id,
@@ -989,31 +1153,32 @@ def _atif_sessions(
                     schema_version=_optional_str(payload.get("schema_version")),
                     events=new_events(),
                 )
-            )
 
-    parent_session = ParsedSession(
-        source_name=Provider.HERMES,
-        provider_session_id=provider_session_id,
-        title=f"Hermes ATIF trajectory: {session_id}",
-        messages=[
-            ParsedMessage(
-                provider_message_id=f"{provider_session_id}:trace-summary",
-                role=Role.SYSTEM,
-                text=summary_text,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=summary_text)],
-                position=0,
-                variant_index=0,
-                is_active_path=True,
-                material_origin=MaterialOrigin.RUNTIME_CONTEXT,
-            )
-        ],
-        session_events=events if isinstance(events, list) else [],
-        parent_session_provider_id=parent_session_provider_id,
-        ingest_flags=_atif_ingest_flags(payload, "hermes:atif-trajectory"),
-    )
-    if not isinstance(events, list):
-        parent_session = parent_session.model_copy(update={"session_events": events})
-    return [parent_session, *child_sessions]
+    with retain_children(child_sessions()) as children:
+        parent_session = ParsedSession(
+            source_name=Provider.HERMES,
+            provider_session_id=provider_session_id,
+            title=f"Hermes ATIF trajectory: {session_id}",
+            messages=[
+                ParsedMessage(
+                    provider_message_id=f"{provider_session_id}:trace-summary",
+                    role=Role.SYSTEM,
+                    text=summary_text,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=summary_text)],
+                    position=0,
+                    variant_index=0,
+                    is_active_path=True,
+                    material_origin=MaterialOrigin.RUNTIME_CONTEXT,
+                )
+            ],
+            session_events=events if isinstance(events, list) else [],
+            parent_session_provider_id=parent_session_provider_id,
+            ingest_flags=_atif_ingest_flags(payload, "hermes:atif-trajectory"),
+        )
+        if not isinstance(events, list):
+            parent_session = parent_session.model_copy(update={"session_events": events})
+        yield parent_session
+        yield from children
 
 
 def _atif_ingest_flags(payload: JSONDocument, *flags: str) -> list[str]:
@@ -1715,3 +1880,22 @@ __all__ = [
     "parse_atif_stream",
     "parse_atof_stream",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Keep the ATIF/ATOF signatures without materializing trajectory steps."""
+    return DetectorProjection(
+        fields={
+            name: DetectorProjection()
+            for name in (
+                "schema_version",
+                "session_id",
+                "steps",
+                "atof_version",
+                "kind",
+                "uuid",
+                "timestamp",
+                "name",
+            )
+        }
+    )

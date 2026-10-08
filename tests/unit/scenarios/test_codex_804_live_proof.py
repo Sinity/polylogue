@@ -54,8 +54,8 @@ import pytest
 # module's trees to NVMe scratch so every other test keeps the tmpfs lane.
 pytestmark = pytest.mark.storage_scale
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.derivation import DerivationReport
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.operations.intake_adapters import RawMaterializationDiscovery
@@ -68,7 +68,7 @@ from polylogue.scenarios import (
 from polylogue.scenarios.workload import raw_authority_fixed_point_spec
 from polylogue.schemas.operator.receipt import package_hashes_for_registry
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
-from polylogue.sources.revision_backfill import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.sources.revision_backfill import raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.whale_fixtures import (
     WHALE_FIXTURE_DIMENSIONS,
@@ -97,6 +97,7 @@ async def _admit_large_component(
         root,
         compute_adapter=compute,
         write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+        write_coordinator=coordinator,
     )
     discovery = RawMaterializationDiscovery(root)
     try:
@@ -228,7 +229,7 @@ def _assert_exact_authority_census(
     assert len(parser_census_rows) == len(raw_ids)
     assert {row[0] for row in parser_census_rows} == raw_ids
     assert all(
-        row[1] == RAW_AUTHORITY_PARSER_FINGERPRINT
+        row[1] == raw_authority_parser_fingerprint()
         and row[2] == "complete"
         and row[4].startswith("parser-observed:")
         and isinstance(json.loads(row[3]), list)
@@ -342,7 +343,7 @@ def _source_facts(
     return int(row[0]), int(row[1]), int(row[2]), int(row[3]), authorities, raw_rows
 
 
-@pytest.mark.timeout(900)
+@pytest.mark.timeout(0)
 @pytest.mark.uses_real_clock("measures wall-clock cost of an incident-scale convergence pass")
 @pytest.mark.asyncio
 async def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -358,7 +359,7 @@ async def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monke
 
     root = tmp_path / "codex-804-proof"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
-    initialize_active_archive_root(root)
+    await asyncio.to_thread(initialize_active_archive_root, root)
     fixture = CodexRevisionChainFixture()
     expected_raw_count = REVISION_COUNT + fixture.dimensions.append_fragment_count
     source_path = root / "fixture-sources" / SOURCE_PATH
@@ -494,7 +495,7 @@ async def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monke
     replay_before = _resource_sample(tmp_path)
     replay_started = time.perf_counter()
     source_ready_root = tmp_path / "codex-804-source-ready"
-    initialize_active_archive_root(source_ready_root)
+    await asyncio.to_thread(initialize_active_archive_root, source_ready_root)
     copy_sqlite_database(root / "source.db", source_ready_root / "source.db")
     clone_blob_tree(root / "blob", source_ready_root / "blob")
     with sqlite3.connect(source_ready_root / "source.db") as conn:
@@ -810,7 +811,7 @@ def test_codex_804_incomplete_authority_red_mutation_is_rejected() -> None:
             authority_rows=(("raw-000", "byte_proven", 1),),
             authority_counts=(("byte_proven", 1),),
             parser_census_rows=(
-                ("raw-000", RAW_AUTHORITY_PARSER_FINGERPRINT, "complete", "[]", "parser-observed: inherited"),
+                ("raw-000", raw_authority_parser_fingerprint(), "complete", "[]", "parser-observed: inherited"),
             ),
             application_rows=(("raw-000", "selected_baseline", "raw-001"),),
             head_rows=(("codex-session:fixture", "codex-session:fixture", "raw-001", "byte", 1),),

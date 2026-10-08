@@ -17,6 +17,7 @@ import asyncio
 import resource
 import sqlite3
 import threading
+from contextlib import ExitStack
 from pathlib import Path
 from time import perf_counter
 from typing import cast
@@ -118,8 +119,10 @@ class _MixedLoad:
         reaches its declared age, so no reader in this profile pins WAL frames
         for longer than the policy allows.
         """
-        frames = [read_frame(self.db, timeout_class="interactive-read") for _ in range(_READ_FRAMES)]
-        try:
+        with ExitStack() as stack:
+            frames = [
+                stack.enter_context(read_frame(self.db, timeout_class="interactive-read")) for _ in range(_READ_FRAMES)
+            ]
             while not stop.wait(0.01):
                 for frame in frames:
                     self.max_frame_age_s = max(self.max_frame_age_s, frame.age_s)
@@ -127,12 +130,9 @@ class _MixedLoad:
                         frame.rebind()
                         self.rebinds += 1
                     frame.connection.execute("SELECT count(*) FROM payload").fetchone()
-        finally:
-            for frame in frames:
-                frame.close()
 
     async def _run(self, tmp_path: Path) -> None:
-        coordinator = DaemonWriteCoordinator()
+        coordinator = DaemonWriteCoordinator(archive_root=self.db.parent)
         stop = threading.Event()
         reader = threading.Thread(target=self._interactive_reads, args=(stop,), daemon=True)
         reader.start()
@@ -165,7 +165,10 @@ class _MixedLoad:
 @pytest.mark.benchmark
 def test_bench_wal_mixed_load_profile(benchmark: BenchmarkFixture, tmp_path: Path) -> None:
     """Interactive reads, incremental ingest and candidate construction, then one checkpoint."""
-    db = tmp_path / "index.db"
+    # Not named after an archive tier: the profile's synthetic ``payload``
+    # table is no tier's schema, and a tier file name makes every read frame
+    # validate it as that tier and refuse it as skewed.
+    db = tmp_path / "mixed-load.db"
     _seed(db)
     before_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     wal_start = _wal_bytes(db)

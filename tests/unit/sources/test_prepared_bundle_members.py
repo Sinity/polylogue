@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 
@@ -22,17 +23,15 @@ from polylogue.sources.decoder_json import (
     scan_container_members,
 )
 from polylogue.sources.decoders import _iter_json_stream
-from polylogue.sources.dispatch import bundle_member_sessions, parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, bundle_member_sessions, parse_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.claude import common as claude_common
 from polylogue.sources.parsers.claude.lineage_graph import ClaudeLineageGraph, LineageNode
 from polylogue.sources.prepared_jsonl import PreparedJsonl, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import ClaudeChatEvidence
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
-from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.retained_jsonl import retained_parser_fixture
 from tests.infra.source_builders import ChatGPTExportBuilder
 from tests.unit.sources.test_prepared_claude_ai_object import _conversation
 
@@ -71,7 +70,7 @@ def _chatgpt(conversation_id: str, turns: int = 3) -> dict[str, object]:
 
 
 def _expected(provider: Provider, source: Path) -> list[ParsedSession]:
-    expected = require_positive_conversational_evidence(
+    expected = admit_parsed_sessions_for_publication(
         parse_payload(provider, list(_iter_json_stream(BytesIO(source.read_bytes()), source.name)), "fallback"),
         provider=provider,
         source_path=str(source),
@@ -107,7 +106,29 @@ def _assert_publication(artifact: PreparedJsonl, expected: list[ParsedSession], 
     assert artifact.sessions_path is not None
     with sqlite3.connect(artifact.sessions_path) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert tables == {"prepared_session", "prepared_message", "prepared_event", "prepared_attachment", "artifact_seal"}
+    required_tables = {
+        "prepared_session",
+        "prepared_message",
+        "prepared_event",
+        "prepared_attachment",
+        "artifact_seal",
+        "prepared_message_normalization",
+        "prepared_sidecar_publication",
+        "prepared_attachment_publication",
+        "prepared_classification",
+        "prepared_codex_state",
+        "prepared_codex_thread",
+        "prepared_codex_spawn",
+        "prepared_codex_state_part",
+        "prepared_streamed_json_array",
+        "prepared_streamed_json_array_value",
+    }
+    assert tables == required_tables
+    sessions_path = artifact.sessions_path
+    shard_path = artifact.shard_path
+    artifact.discard()
+    assert not sessions_path.exists()
+    assert not shard_path.exists()
 
 
 def _collected_members(monkeypatch: pytest.MonkeyPatch) -> list[int]:
@@ -352,33 +373,19 @@ def test_bundle_member_failure_after_spill_discards_scratch(tmp_path: Path, monk
     assert list(directory.iterdir()) == []
 
 
-def _retained(tmp_path: Path, payload: object, provider: Provider, source_path: Path) -> PreparedJsonl:
-    from polylogue.sources import revision_backfill
-
-    blob_root = tmp_path / "blob"
-    blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(payload).encode("utf-8"))
-    source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if not path.exists():
-            if tier is ArchiveTier.SOURCE:
-                initialize_runtime_source_fixture(path)
-            else:
-                with sqlite3.connect(path) as conn:
-                    initialize_archive_tier(conn, tier)
-    return revision_backfill.prepare_retained_jsonl_artifact(
-        f"synthetic-{source_path.stem}",
-        provider.value,
-        blob_hash,
-        str(source_path),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / f"prepared-{source_path.parent.name}-{source_path.stem}"),
-        "2025-01-02T03:04:05Z",
-    )
+@contextmanager
+def _retained(tmp_path: Path, payload: object, provider: Provider, source_path: Path) -> Iterator[PreparedJsonl]:
+    blob_hash, _size = BlobStore(tmp_path / "blob").write_from_bytes(json.dumps(payload).encode("utf-8"))
+    with retained_parser_fixture(
+        root=tmp_path,
+        provider=provider,
+        blob_hash=blob_hash,
+        source_path=str(source_path),
+        directory=BlobStore(tmp_path / "blob")._ensure_private_staging_root()
+        / f"prepared-{source_path.parent.name}-{source_path.stem}",
+        file_mtime="2025-01-02T03:04:05Z",
+    ) as (artifact, _reader):
+        yield artifact
 
 
 def test_retained_bundle_streams_members_and_keeps_artifact_taxonomy(
@@ -386,7 +393,7 @@ def test_retained_bundle_streams_members_and_keeps_artifact_taxonomy(
 ) -> None:
     payload = [_conversation(20), {**_conversation(9), "uuid": "second"}]
     source_path = tmp_path / "claude" / "conversations.json"
-    expected = require_positive_conversational_evidence(
+    expected = admit_parsed_sessions_for_publication(
         parse_payload(Provider.CLAUDE_AI, payload, source_path.stem),
         provider=Provider.CLAUDE_AI,
         source_path=str(source_path),
@@ -395,18 +402,25 @@ def test_retained_bundle_streams_members_and_keeps_artifact_taxonomy(
         normalize_session_timestamps(session, fallback_timestamp="2025-01-02T03:04:05Z") for session in expected
     ]
     collected = _collected_members(monkeypatch)
-    artifact = _retained(tmp_path, payload, Provider.CLAUDE_AI, source_path)
-    assert artifact.error is None
-    assert [(session.provider_session_id, session.created_at) for session in artifact.iter_sessions()] == [
-        (session.provider_session_id, session.created_at) for session in expected
-    ]
-    assert collected == []
-    artifact.discard()
+    with _retained(tmp_path, payload, Provider.CLAUDE_AI, source_path) as artifact:
+        assert artifact.error is None
+        assert [(session.provider_session_id, session.created_at) for session in artifact.iter_sessions()] == [
+            (session.provider_session_id, session.created_at) for session in expected
+        ]
+        assert collected == []
 
-    sidecar = _retained(tmp_path, payload, Provider.CLAUDE_AI, tmp_path / "agent-neutral.meta.json")
-    assert sidecar.error is None
-    assert list(sidecar.iter_sessions()) == []
-    sidecar.discard()
+    # An ``agent-*.meta.json`` path is a content-blind sidecar marker: unlike
+    # an OriginSpec ``fact`` path, session-shaped content there stays refused.
+    with _retained(tmp_path, payload, Provider.CLAUDE_AI, tmp_path / "agent-neutral.meta.json") as sidecar:
+        assert sidecar.error is None
+        assert list(sidecar.iter_sessions()) == []
+
+    fact_payload = {"agent": "neutral", "facts": [{"key": "status", "value": "ready"}]}
+    with _retained(tmp_path, fact_payload, Provider.CLAUDE_AI, tmp_path / "agent-fact.meta.json") as fact:
+        assert fact.error is None
+        assert list(fact.iter_sessions()) == []
+        proof = fact.stream_classification()
+        assert proof is not None and proof.proved_non_session
 
 
 def test_claude_lineage_graph_and_attachments_stay_in_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -419,7 +433,7 @@ def test_claude_lineage_graph_and_attachments_stay_in_scratch(tmp_path: Path, mo
     payload["attachments"] = [{"file_name": "brief.txt", "file_type": "text/plain"}, {"file_name": "loose.txt"}]
     source = tmp_path / "conversation.json"
     source.write_text(json.dumps(payload), encoding="utf-8")
-    [expected] = require_positive_conversational_evidence(
+    [expected] = admit_parsed_sessions_for_publication(
         parse_payload(Provider.CLAUDE_AI, [payload], "fallback"), provider=Provider.CLAUDE_AI, source_path=str(source)
     )
     expected.content_hash = session_content_hash(expected)
@@ -467,7 +481,7 @@ def test_claude_non_array_conversation_attachments_keep_streaming(tmp_path: Path
     assert object_result is not None
     assert object_result[0]["attachments"] == {"not": "a list"}
     assert object_result[1] == ("files",)
-    [expected] = require_positive_conversational_evidence(
+    [expected] = admit_parsed_sessions_for_publication(
         parse_payload(Provider.CLAUDE_AI, [payload], "fallback"), provider=Provider.CLAUDE_AI, source_path=str(source)
     )
     expected.content_hash = session_content_hash(expected)
@@ -491,18 +505,22 @@ _HOOK_OVERLAP = {
 }
 
 
-def test_grok_root_with_hook_markers_streams_once_the_provider_is_grok(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("hook_record", [False, True])
+def test_grok_root_admission_preserves_hook_taxonomy_and_provider_streaming(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hook_record: bool
 ) -> None:
-    raw = json.dumps(_HOOK_OVERLAP).encode()
-    # Detection still weighs such a root whole; a Grok route streams it.
-    assert grok_export_item_count(BytesIO(raw)) is None
+    payload = _HOOK_OVERLAP if hook_record else {"conversations": _HOOK_OVERLAP["conversations"]}
+    raw = json.dumps(payload).encode()
+    # Low-level parser selection does not override canonical artifact admission.
+    assert grok_export_item_count(BytesIO(raw)) == (None if hook_record else 1)
     assert grok_export_item_count(BytesIO(raw), detect=False) == 1
     source = tmp_path / "prod-grok-backend.json"
     source.write_bytes(raw)
-    expected = require_positive_conversational_evidence(
-        parse_payload(Provider.GROK, _HOOK_OVERLAP, "fallback"), provider=Provider.GROK, source_path=str(source)
+    expected = admit_parsed_sessions_for_publication(
+        parse_payload(Provider.GROK, payload, "fallback"), provider=Provider.GROK, source_path=str(source)
     )
+    if hook_record:
+        expected = []
     for session in expected:
         session.content_hash = session_content_hash(session)
 
@@ -510,7 +528,7 @@ def test_grok_root_with_hook_markers_streams_once_the_provider_is_grok(
         raise AssertionError("Grok root decoded as a whole document")
 
     monkeypatch.setattr(prepared_jsonl, "_iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr(prepared_jsonl, "parse_payload", refuse_whole_document)
+    monkeypatch.setattr(prepared_jsonl, "iter_parsed_payload", refuse_whole_document)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -523,6 +541,11 @@ def test_grok_root_with_hook_markers_streams_once_the_provider_is_grok(
     assert [(session.provider_session_id, session.content_hash) for session in artifact.iter_sessions()] == [
         (session.provider_session_id, session.content_hash) for session in expected
     ]
+
+    if hook_record:
+        proof = artifact.stream_classification()
+        assert proof is not None and proof.proved_non_session
+        assert proof.classification.kind.value == "hook_event"
 
 
 def test_grok_replay_classifies_a_bounded_root_witness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -547,10 +570,11 @@ def test_grok_replay_classifies_a_bounded_root_witness(tmp_path: Path, monkeypat
         raise AssertionError("retained Grok root decoded as a whole document")
 
     monkeypatch.setattr(prepared_jsonl, "_iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr(prepared_jsonl, "parse_payload", refuse_whole_document)
+    monkeypatch.setattr(prepared_jsonl, "iter_parsed_payload", refuse_whole_document)
     # The hook-shaped root is judged by taxonomy on the stream route, not by
     # a whole-document fallback, and stays a non-session artifact.
-    artifact = _retained(tmp_path, _HOOK_OVERLAP, Provider.GROK, tmp_path / "prod-grok-backend.json")
-    assert artifact.error is None
-    assert list(artifact.iter_sessions()) == []
-    artifact.discard()
+    with _retained(tmp_path, _HOOK_OVERLAP, Provider.GROK, tmp_path / "prod-grok-backend.json") as artifact:
+        assert artifact.error is None
+        assert list(artifact.iter_sessions()) == []
+        proof = artifact.stream_classification()
+        assert proof is not None and proof.proved_non_session

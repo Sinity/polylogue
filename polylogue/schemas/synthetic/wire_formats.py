@@ -25,7 +25,7 @@ from polylogue.schemas.synthetic.conservation import (
 
 if TYPE_CHECKING:
     from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticGenerationBatch
-    from polylogue.sources.parsers.base_models import ParsedSession
+    from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedSession
 
 WireEncoding: TypeAlias = Literal["json", "jsonl"]
 WireCapabilityStatus: TypeAlias = Literal["supported", "unsupported"]
@@ -440,14 +440,54 @@ def _runtime_coverage_path(path: str) -> str:
     return path
 
 
+def _route_excluded_root_properties(provider: str, schema: Mapping[str, object] | None) -> dict[str, str]:
+    """Root properties the schema declares never co-occur with the route's message container.
+
+    The route renders its messages into one root container (a linear
+    ``messages_path`` or a tree ``container_path``), and the generator keeps
+    each document to the one coherent shape holding that container. A root
+    property the schema's own ``x-polylogue-mutually-exclusive`` evidence
+    separates from the container belongs to another observed shape (a
+    capture envelope, another product's export) and never appears in a
+    document this route renders.
+    """
+    wire_format = PROVIDER_WIRE_FORMATS.get(provider)
+    if wire_format is None or not isinstance(schema, Mapping):
+        return {}
+    container = (
+        wire_format.messages_path.split(".", 1)[0]
+        if wire_format.messages_path
+        else (wire_format.tree.container_path if wire_format.tree is not None else None)
+    )
+    groups = schema.get("x-polylogue-mutually-exclusive")
+    if container is None or not isinstance(groups, list):
+        return {}
+    excluded: dict[str, str] = {}
+    for group in groups:
+        if not isinstance(group, Mapping) or group.get("parent") != "$":
+            continue
+        fields = group.get("fields")
+        if not isinstance(fields, list) or container not in fields:
+            continue
+        for name in fields:
+            if isinstance(name, str) and name != container:
+                excluded[f"$.properties.{name}"] = (
+                    f"declared mutually exclusive with the route's message container {container!r}; "
+                    "the route renders only the shape that container belongs to"
+                )
+    return excluded
+
+
 def _route_nonrepresentable_reasons(
     provider: str,
     missing_keywords: Collection[str],
     *,
     package_version: str,
+    schema: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
     """Prove nodes discarded by a provider's wire normalizer are unreachable."""
     reasons: dict[str, str] = {}
+    excluded_roots = _route_excluded_root_properties(provider, schema)
     prefixes: tuple[tuple[str, str], ...]
     if provider == "codex":
         prefixes = (("$.properties.payload", "Codex flat-record shaping removes the payload envelope"),)
@@ -504,6 +544,13 @@ def _route_nonrepresentable_reasons(
     )
     for keyword in missing_keywords:
         path = keyword.split("@", 1)[1] if "@" in keyword else "$"
+        excluded_root = next(
+            (root for root in excluded_roots if path == root or path.startswith((f"{root}.", f"{root}["))),
+            None,
+        )
+        if excluded_root is not None:
+            reasons[keyword] = excluded_roots[excluded_root]
+            continue
         if provider == "codex" and keyword == "type:null@$.properties.content":
             reasons[keyword] = "Codex flat message shaping requires nonempty content for conversational evidence"
             continue
@@ -838,7 +885,7 @@ def generate_coverage_witnesses(
         if (keyword := obligation.split("@", 1)[0]).startswith("type:") or keyword in {"anyOf", "oneOf"}
     }
     nonrepresentable = _route_nonrepresentable_reasons(
-        corpus.provider, obligations, package_version=corpus.package_version
+        corpus.provider, obligations, package_version=corpus.package_version, schema=original_schema
     )
     exercised: set[str] = set()
 
@@ -1449,25 +1496,60 @@ def _parser_artifact_node_message_type(
             return MessageType.PROTOCOL
         return MessageType.MESSAGE
     if provider == "codex":
-        # Protocol text takes precedence over the system/developer envelope,
-        # exactly as it does on the production Codex message route.
+        # Protocol text takes precedence over the system/developer envelope and
+        # over structure, exactly as on the production Codex message route; a
+        # record whose text names no type is typed by its content blocks (a
+        # tool-result-only record is a tool result).
         from polylogue.archive.message.artifacts import classify_message_type
 
-        return classify_message_type(
+        text = "\n".join(_parser_artifact_node_content_texts(provider, node))
+        return classify_text_message_type(text) or classify_message_type(
             role=_parser_artifact_node_role(provider, node),
             message_type=MessageType.MESSAGE,
-            text="\n".join(_parser_artifact_node_content_texts(provider, node)),
+            text=_codex_node_block_text(node, text),
+            block_types=_codex_node_block_types(node, text),
         )
     if provider == "chatgpt":
-        if _parser_artifact_node_role(provider, node) is Role.TOOL:
+        role = _parser_artifact_node_role(provider, node)
+        if role is Role.TOOL:
             return MessageType.TOOL_RESULT
-        text = "\n".join(_parser_artifact_node_content_texts(provider, node))
-        return classify_text_message_type(text) or MessageType.MESSAGE
+        from polylogue.archive.message.artifacts import classify_message_type
+
+        # The ChatGPT parser classifies from role, text and the blocks it
+        # built, so a turn carrying a tool call (``metadata.command``/``args``)
+        # is a tool_use message whatever its role.
+        return classify_message_type(
+            role=role,
+            message_type=MessageType.MESSAGE,
+            text="\n".join(_parser_artifact_node_content_texts(provider, node)),
+            block_types=tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node)),
+        )
     block_types = tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
     if block_message_type := classify_block_message_type(block_types):
         return block_message_type
     text = "\n".join(_parser_artifact_node_content_texts(provider, node))
     return classify_text_message_type(text) or MessageType.MESSAGE
+
+
+def _codex_node_content_blocks(node: Mapping[str, JSONValue], text: str) -> list[ParsedContentBlock]:
+    """The content blocks the Codex parser builds for one message record."""
+    from polylogue.sources.parsers.base_models import ParsedContentBlock
+    from polylogue.sources.parsers.base_support import content_blocks_from_segments
+
+    blocks = content_blocks_from_segments(node.get("content"), lower_transport_text=True)
+    if not blocks and text:
+        blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
+    return blocks
+
+
+def _codex_node_block_types(node: Mapping[str, JSONValue], text: str) -> tuple[BlockType, ...]:
+    return tuple(block.type for block in _codex_node_content_blocks(node, text))
+
+
+def _codex_node_block_text(node: Mapping[str, JSONValue], text: str) -> str | None:
+    """The TEXT-block projection the parsed message model classifies."""
+    blocks = _codex_node_content_blocks(node, text)
+    return "\n".join(block.text for block in blocks if block.type is BlockType.TEXT and block.text) or None
 
 
 def _parser_artifact_node_material_origin(
@@ -1480,15 +1562,24 @@ def _parser_artifact_node_material_origin(
     from polylogue.sources.parsers.base_support import human_authored_override
 
     message_type = _parser_artifact_node_message_type(provider, node)
-    # Codex message records retain their message type from their role/text;
-    # inline content segments do not reclassify the whole record into a tool
-    # turn.  Its parser makes the same deliberately narrow distinction.
-    block_types = (
-        ()
-        if provider == "codex"
-        else tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
-    )
     text = "\n".join(_parser_artifact_node_content_texts(provider, node))
+    if provider == "codex":
+        # The Codex parser classifies authoredness from role and text; only a
+        # record that leaves it unknown is classified by its final type and
+        # content blocks, as the parsed message model does.
+        from polylogue.archive.message.artifacts import classify_text_message_type
+        from polylogue.sources.parsers.codex import _codex_material_origin
+
+        origin = _codex_material_origin(role, classify_text_message_type(text) or MessageType.MESSAGE, text)
+        if origin is not MaterialOrigin.UNKNOWN:
+            return origin
+        return classify_material_origin(
+            role=role,
+            message_type=message_type,
+            text=_codex_node_block_text(node, text),
+            block_types=_codex_node_block_types(node, text),
+        )
+    block_types = tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
     material_origin = classify_material_origin(
         role=role,
         message_type=message_type,
@@ -1839,7 +1930,7 @@ def build_wire_support_receipt(
     from polylogue.schemas.synthetic.core import SyntheticCorpus
     from polylogue.schemas.synthetic.selection import select_synthetic_schema
     from polylogue.schemas.validator import SchemaValidator, ValidationResult
-    from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+    from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 
     catalog_providers = tuple(
         sorted(dict.fromkeys(registry.list_providers() if providers is None else providers))  # type: ignore[attr-defined]
@@ -2016,7 +2107,7 @@ def build_wire_support_receipt(
                             f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
                             schema_resolution=schema_resolution,
                         )
-                        artifact_sessions = require_positive_conversational_evidence(
+                        artifact_sessions = admit_parsed_sessions_for_publication(
                             parsed_sessions_for_artifact,
                             provider=provider,
                             source_path=f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
@@ -2092,6 +2183,7 @@ def build_wire_support_receipt(
                     provider,
                     witnessed.missing_keywords,
                     package_version=package.version,
+                    schema=selection.schema,
                 )
                 coverage = construct_coverage(
                     selection.schema,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import stat
@@ -27,6 +28,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DurableChangeTrainState
+from polylogue.storage.sqlite.write_lease import ARCHIVE_WRITE_CUSTODY_LOCK_NAME
 
 _HISTORY = Path(".maintenance-state/durable-change-trains")
 _PROVENANCE = Path(".archive-population-provenance")
@@ -137,7 +139,7 @@ def _populate_authenticated_archive(
     }
     # These exact files belong to the held destination offline/physical owner,
     # including callers that reserved the fence before copying the recipe.
-    replaced.update({"daemon.pid", ".archive-ownership.lock"})
+    replaced.update({"daemon.pid", ".archive-ownership.lock", ARCHIVE_WRITE_CUSTODY_LOCK_NAME})
     with ExitStack() as stack:
         sources: dict[ArchiveTier, sqlite3.Connection] = {}
         evidence: dict[ArchiveTier, tuple[str, str]] = {}
@@ -237,7 +239,11 @@ def _populate_authenticated_archive(
                 for item in source_files
                 if Path(item[0]).is_relative_to(_HISTORY) or item[0] == ARCHIVE_FORMAT_MARKER_NAME
             )
-            if retained_artifact_reference:
+            if not os.path.lexists(original_history):
+                # A source that copied no released train and no bootstrap
+                # receipt carries no history directory; nothing is detached.
+                pass
+            elif retained_artifact_reference:
                 # Cached recipes already retain these immutable bytes in their
                 # authenticated artifact owner; keep its reference rather than a
                 # separate per-clone copy of the complete train history.
@@ -268,6 +274,21 @@ def _populate_authenticated_archive(
                 for suffix in ("-wal", "-shm"):
                     path.with_name(path.name + suffix).unlink(missing_ok=True)
             invalidate_active_archive_bootstrap(destination)
+            backup_root = destination / ".maintenance-state" / "pre-migration-backups"
+
+            def backup_files() -> set[str]:
+                if backup_root.is_symlink():
+                    raise ArchivePopulationError("invalid_literal_file")
+                files: set[str] = set()
+                for path in backup_root.rglob("*"):
+                    if path.is_symlink():
+                        raise ArchivePopulationError("invalid_literal_file")
+                    if path.is_file():
+                        _literal_file_evidence(path)
+                        files.add(str(path.relative_to(destination)))
+                return files
+
+            original_backup_paths = backup_files()
             _initialize_population_archive_stage(destination)
             # Canonical ownership admission rewrites this exact lock's owner
             # record for the destination. Other locks and fixture files retain
@@ -295,6 +316,9 @@ def _populate_authenticated_archive(
             # This is the ordinary released-state consumer, after real source
             # population; copied original receipts never participate in admission.
             initialize_active_archive_root(destination)
+            # Both canonical constructor phases own their new verified backup
+            # packages. Existing detached backup bytes retain source authority.
+            replaced.update(backup_files() - original_backup_paths)
     replaced.update(
         str(path.relative_to(destination))
         for root in (destination / _HISTORY, provenance)

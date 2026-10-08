@@ -43,6 +43,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.core.stats import percentile
 from polylogue.core.timestamps import to_epoch_ms
 from polylogue.core.write_lease import write_lease
@@ -232,6 +233,7 @@ def _record_archive_cursor_lag_samples(
     if not rows:
         return 0
     ops_db.parent.mkdir(parents=True, exist_ok=True)
+
     # Taken under an explicit lease because two of this module's three callers
     # reach it without one. The daemon arms
     # ``arm_write_lease_enforcement(process_wide=True)`` for its whole
@@ -250,7 +252,10 @@ def _record_archive_cursor_lag_samples(
     # does not weaken the single-writer boundary: the bounded 0.1s connection
     # timeout below remains what limits real SQLite contention, and the
     # coordinator-held caller re-enters the lease it already owns.
-    try:
+    #
+    # The daemon's periodic health check runs off the writer and binds a stage
+    # write admission, so this section alone hops onto the writer there.
+    def write() -> None:
         with (
             write_lease("daemon.cursor_lag.sample", archive_root=ops_db.parent),
             closing(
@@ -269,6 +274,9 @@ def _record_archive_cursor_lag_samples(
                     severity="warning",
                     sampled_at_ms=observed_at_ms,
                 )
+
+    try:
+        admit_stage_write("daemon.cursor_lag.sample", write)
     except sqlite3.OperationalError as exc:
         if _database_is_locked(exc):
             return 0
@@ -285,7 +293,8 @@ def _gc_archive_cursor_lag_samples(
     if not ops_db.exists():
         return 0
     cutoff_ms = to_epoch_ms((now or datetime.now(UTC)) - timedelta(days=retention_days), numeric_unit="milliseconds")
-    try:
+
+    def delete() -> int:
         with (
             write_lease("daemon.cursor_lag.gc", archive_root=ops_db.parent),
             closing(
@@ -295,6 +304,9 @@ def _gc_archive_cursor_lag_samples(
             cur = conn.execute("DELETE FROM cursor_lag_samples WHERE sampled_at_ms < ?", (cutoff_ms,))
             conn.commit()
             return cur.rowcount or 0
+
+    try:
+        return admit_stage_write("daemon.cursor_lag.gc", delete)
     except sqlite3.OperationalError as exc:
         if _database_is_locked(exc):
             return 0
@@ -317,9 +329,6 @@ def _load_archive_family_baseline(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cursor_lag_samples'"
             ).fetchone()
             if has_table is None:
-                return None
-            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(cursor_lag_samples)")}
-            if "family" not in columns:
                 return None
             rows = conn.execute(
                 """

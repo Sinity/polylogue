@@ -10,19 +10,22 @@ names the condition once so every ingest boundary can let it escape as
 
 Classification keys off SQLite's typed result codes and ``errno``, never off
 message text, and follows the explicit ``__cause__``/``__context__`` chain so a
-fault wrapped by an intermediate layer is still recognized.
+fault wrapped by an intermediate layer or grouped with cleanup failures is
+still recognized.
 """
 
 from __future__ import annotations
 
 import errno
 import sqlite3
+from builtins import BaseExceptionGroup
+from collections.abc import Iterator
 from enum import StrEnum
+from itertools import chain
 
 from polylogue.core.errors import PolylogueError
 
 _SQLITE_PRIMARY_RESULT_CODE_MASK = 0xFF
-_MAX_CHAIN_DEPTH = 16
 
 
 class StorageFaultKind(StrEnum):
@@ -68,17 +71,24 @@ def _own_fault(exc: BaseException) -> StorageFaultKind | None:
 
 
 def storage_fault_kind(exc: BaseException) -> StorageFaultKind | None:
-    """Return the storage fault carried by ``exc`` or its cause chain, if any."""
+    """Return a typed storage fault in the full causal/cleanup exception graph."""
     seen: set[int] = set()
-    current: BaseException | None = exc
-    for _ in range(_MAX_CHAIN_DEPTH):
-        if current is None or id(current) in seen:
-            return None
+    pending: list[Iterator[BaseException]] = [iter((exc,))]
+    while pending:
+        current = next(pending[-1], None)
+        if current is None:
+            pending.pop()
+            continue
+        if id(current) in seen:
+            continue
         seen.add(id(current))
         kind = _own_fault(current)
         if kind is not None:
             return kind
-        current = current.__cause__ if current.__cause__ is not None else current.__context__
+        cause = current.__cause__ if current.__cause__ is not None else current.__context__
+        causes = () if cause is None else (cause,)
+        children = current.exceptions if isinstance(current, BaseExceptionGroup) else ()
+        pending.append(iter(chain(causes, children)))
     return None
 
 

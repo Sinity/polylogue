@@ -55,7 +55,7 @@ def _value(value: object) -> str:
     return str(getattr(value, "value", value))
 
 
-def _chronicle_edges(
+def chronicle_edges(
     archive: ArchiveStore,
     session_id: str,
     edge_limit: int,
@@ -316,7 +316,7 @@ def execute_chronicle_read(
     edge_limit = _edge_limit(payload)
     sessions = []
     for summary in summaries:
-        first, last, total = _chronicle_edges(
+        first, last, total = chronicle_edges(
             archive,
             str(summary.id),
             edge_limit,

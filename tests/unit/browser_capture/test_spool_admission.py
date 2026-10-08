@@ -202,6 +202,63 @@ def test_content_carrier_cannot_disagree_with_existing_inline_bytes(tmp_path: Pa
     assert result.convergence is CaptureConvergence.SUPERSEDED
 
 
+def test_inline_carrier_cannot_be_replaced_by_newer_turn_snapshot(tmp_path: Path) -> None:
+    """Inline/data bytes are carrier evidence too, not replaceable descriptors."""
+    for field_name in ("inline_base64", "data"):
+        root = tmp_path / field_name
+        resident: dict[str, Any] = _payload(
+            turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+        )
+        resident["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", field_name: "YQ=="}]
+        incoming = copy.deepcopy(resident)
+        incoming["provenance"]["captured_at"] = "2026-04-24T00:01:00Z"
+        incoming["session"]["updated_at"] = "2026-04-24T00:01:00Z"
+        incoming["session"]["turns"].append(_turn("t2", ordinal=1))
+        incoming["session"]["turns"][0]["attachments"][0][field_name] = "YWI="
+
+        _write(resident, root)
+        result = _write(incoming, root)
+
+        assert result.convergence is CaptureConvergence.SUPERSEDED
+
+
+def test_malformed_inline_carrier_cannot_replace_a_retained_snapshot(tmp_path: Path) -> None:
+    """Malformed inline/data bytes cannot evade the invalid-carrier refusal."""
+    for field_name in ("inline_base64", "data"):
+        root = tmp_path / field_name
+        resident: dict[str, Any] = _payload(
+            turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+        )
+        resident["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", field_name: "YQ=="}]
+        incoming = copy.deepcopy(resident)
+        incoming["provenance"]["captured_at"] = "2026-04-24T00:01:00Z"
+        incoming["session"]["updated_at"] = "2026-04-24T00:01:00Z"
+        incoming["session"]["turns"].append(_turn("t2", ordinal=1))
+        incoming["session"]["turns"][0]["attachments"][0][field_name] = "not-base64!"
+
+        _write(resident, root)
+        result = _write(incoming, root)
+
+        assert result.convergence is CaptureConvergence.SUPERSEDED
+
+
+def test_inline_carrier_enrichment_is_accepted_at_same_observation(tmp_path: Path) -> None:
+    """An inline/data body can enrich an unchanged attachment without newer timestamps."""
+    for field_name in ("inline_base64", "data"):
+        root = tmp_path / field_name
+        observed: dict[str, Any] = _payload(
+            turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+        )
+        observed["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A"}]
+        acquired = copy.deepcopy(observed)
+        acquired["session"]["turns"][0]["attachments"][0][field_name] = "YQ=="
+
+        _write(observed, root)
+        result = _write(acquired, root)
+
+        assert result.convergence is CaptureConvergence.PUBLISH
+
+
 def test_self_declared_wrong_identity_is_not_acknowledged_as_native(tmp_path: Path) -> None:
     """Anti-vacuity: copying observation fidelity alone incorrectly returns native."""
     payload: dict[str, Any] = _payload(
@@ -252,6 +309,267 @@ def test_duplicate_attachment_ids_in_one_scope_are_all_retained(tmp_path: Path) 
     incoming["session"]["turns"][0]["attachments"] = [
         {"provider_attachment_id": "A", "inline_base64": "YQ==", "content_base64": "YQ=="}
     ]
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.SUPERSEDED
+
+
+def test_native_snapshot_replay_ignores_raw_attachment_coordinates_but_keeps_occurrences(tmp_path: Path) -> None:
+    """Changed plan coordinates and acquired coverage do not contradict stable owners."""
+    older: dict[str, Any] = _payload(
+        turn_ids=["t1", "t2"],
+        captured_at="2026-04-24T00:00:00Z",
+        updated_at="2026-04-24T00:00:00Z",
+        native=True,
+    )
+    older["session"]["turns"][0]["attachments"] = [
+        {
+            "provider_attachment_id": "shared-file",
+            "message_provider_id": "m1",
+            "attachment_kind": "sandbox_file",
+            "name": "result.bin",
+            "mime_type": "application/octet-stream",
+            "provider_meta": {
+                "provider_file_id": "file-1",
+                "native_attachment_ordinal": 9,
+                "native_turn_ordinal": 0,
+                "native_raw_position": 40,
+                "asset_acquisition": {"status": "recovered_bytes_unavailable"},
+            },
+        }
+    ]
+    older["session"]["turns"][1]["attachments"] = [
+        {
+            **older["session"]["turns"][0]["attachments"][0],
+            "message_provider_id": "m2",
+            "provider_meta": {
+                "provider_file_id": "file-1",
+                "native_attachment_ordinal": 10,
+                "native_turn_ordinal": 1,
+                "native_raw_position": 41,
+                "asset_acquisition": {"status": "recovered_bytes_unavailable"},
+            },
+        }
+    ]
+    _write(older, tmp_path)
+
+    newer = copy.deepcopy(older)
+    newer["provenance"]["captured_at"] = "2026-04-24T00:01:00Z"
+    newer["session"]["updated_at"] = "2026-04-24T00:01:00Z"
+    newer["session"]["turns"].append(_turn("t3", ordinal=2))
+    for owner, attachment_ordinal, raw_position in (("m1", 35, 33), ("m2", 36, 34)):
+        attachment = next(
+            attachment
+            for turn in newer["session"]["turns"]
+            for attachment in turn.get("attachments", [])
+            if attachment.get("message_provider_id") == owner
+        )
+        attachment["size_bytes"] = 1
+        attachment["content_base64"] = "YQ=="
+        attachment["provider_meta"].update(
+            {
+                "native_attachment_ordinal": attachment_ordinal,
+                "native_turn_ordinal": 0 if owner == "m1" else 1,
+                "native_raw_position": raw_position,
+                "asset_acquisition": {"status": "acquired"},
+                "content_sha256": "a" * 64,
+            }
+        )
+
+    accepted = _write(newer, tmp_path)
+
+    assert accepted.convergence is CaptureConvergence.PUBLISH
+    assert accepted.accepted_identities
+    assert [str(identity.message_ref).rsplit(":", 1)[-1] for identity in accepted.accepted_identities] == [
+        "t1",
+        "t2",
+        "t3",
+    ]
+    stored = BrowserCaptureEnvelope.model_validate_json(accepted.path.read_bytes())
+    assert stored.session.turns[0].attachments[0].provider_meta["asset_acquisition"] == {"status": "acquired"}
+    assert stored.session.turns[1].attachments[0].provider_meta["native_raw_position"] == 34
+
+    stale = _write(older, tmp_path)
+
+    assert stale.convergence is CaptureConvergence.SUPERSEDED
+    assert [str(identity.message_ref).rsplit(":", 1)[-1] for identity in stale.accepted_identities] == [
+        "t1",
+        "t2",
+        "t3",
+    ]
+
+
+def test_same_revision_acquisition_enrichment_needs_no_newer_observation(tmp_path: Path) -> None:
+    """Carrier receipt metadata and an absent size can be enriched at the same observation."""
+    unavailable: dict[str, Any] = _payload(
+        turn_ids=["t1"],
+        captured_at="2026-04-24T00:00:00Z",
+        updated_at="2026-04-24T00:00:00Z",
+        native=True,
+    )
+    unavailable["session"]["turns"][0]["attachments"] = [
+        {
+            "provider_attachment_id": "file-1",
+            "message_provider_id": "m1",
+            "attachment_kind": "sandbox_file",
+            "provider_meta": {
+                "provider_file_id": "file-1",
+                "native_attachment_ordinal": 7,
+                "native_turn_ordinal": 0,
+                "native_raw_position": 21,
+                "asset_acquisition": {"status": "recovered_bytes_unavailable"},
+            },
+        }
+    ]
+    _write(unavailable, tmp_path)
+    acquired = copy.deepcopy(unavailable)
+    acquired_attachment = acquired["session"]["turns"][0]["attachments"][0]
+    acquired_attachment["size_bytes"] = 1
+    acquired_attachment["content_base64"] = "YQ=="
+    acquired_attachment["provider_meta"].update(
+        {
+            "native_attachment_ordinal": 3,
+            "native_raw_position": 15,
+            "asset_acquisition": {"status": "acquired"},
+            "content_sha256": "a" * 64,
+        }
+    )
+
+    result = _write(acquired, tmp_path)
+
+    assert result.convergence is CaptureConvergence.PUBLISH
+    assert result.deduplicated is False
+
+
+def test_known_attachment_size_change_remains_a_conflict(tmp_path: Path) -> None:
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["turns"][0]["attachments"] = [
+        {
+            "provider_attachment_id": "A",
+            "message_provider_id": "m1",
+            "size_bytes": 1,
+            "content_base64": "YQ==",
+        }
+    ]
+    incoming = copy.deepcopy(resident)
+    incoming["session"]["updated_at"] = "2026-04-24T00:01:00Z"
+    incoming["session"]["turns"].append(_turn("t2", ordinal=1))
+    incoming["session"]["turns"][0]["attachments"][0]["size_bytes"] = 2
+    incoming["session"]["turns"][0]["attachments"][0]["content_base64"] = "YWI="
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.SUPERSEDED
+
+
+def test_stable_provider_attachment_metadata_remains_a_conflict(tmp_path: Path) -> None:
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["turns"][0]["attachments"] = [
+        {
+            "provider_attachment_id": "A",
+            "message_provider_id": "m1",
+            "content_base64": "YQ==",
+            "provider_meta": {"provider_file_id": "provider-file-1"},
+        }
+    ]
+    incoming = copy.deepcopy(resident)
+    incoming["session"]["updated_at"] = "2026-04-24T00:01:00Z"
+    incoming["session"]["turns"].append(_turn("t2", ordinal=1))
+    incoming["session"]["turns"][0]["attachments"][0]["provider_meta"]["provider_file_id"] = "provider-file-2"
+    incoming["session"]["turns"][0]["attachments"][0]["content_base64"] = "YWI="
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.SUPERSEDED
+
+
+def test_idless_attachment_keeps_declared_raw_ordinal_identity(tmp_path: Path) -> None:
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["turns"][0]["attachments"] = [
+        {
+            "provider_attachment_id": "A",
+            "provider_meta": {"native_turn_ordinal": 0, "native_attachment_ordinal": 0},
+        }
+    ]
+    incoming = copy.deepcopy(resident)
+    incoming["session"]["updated_at"] = "2026-04-24T00:01:00Z"
+    incoming["session"]["turns"].append(_turn("t2", ordinal=1))
+    incoming_attachment = incoming["session"]["turns"][0]["attachments"][0]
+    incoming_attachment["content_base64"] = "YQ=="
+    incoming_attachment["provider_meta"]["native_turn_ordinal"] = 1
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.SUPERSEDED
+
+
+def test_newer_metadata_only_attachment_revision_keeps_freshness_admission(tmp_path: Path) -> None:
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", "name": "temporary.bin"}]
+    incoming = copy.deepcopy(resident)
+    incoming["provenance"]["captured_at"] = "2026-04-24T00:01:00Z"
+    incoming["session"]["updated_at"] = "2026-04-24T00:01:00Z"
+    incoming["session"]["turns"][0]["attachments"][0]["name"] = "final.bin"
+    incoming["session"]["turns"].append(_turn("t2", ordinal=1))
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.PUBLISH
+
+
+def test_session_attachment_owner_insertion_does_not_shift_existing_carriers(tmp_path: Path) -> None:
+    """A new owner's repeated ID does not re-pair other session-level occurrences."""
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1", "t2"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["attachments"] = [
+        {"provider_attachment_id": "shared", "message_provider_id": owner, "content_base64": "YQ=="}
+        for owner in ("m1", "m2")
+    ]
+    incoming = copy.deepcopy(resident)
+    incoming["provenance"]["captured_at"] = "2026-04-24T00:01:00Z"
+    incoming["session"]["updated_at"] = "2026-04-24T00:01:00Z"
+    incoming["session"]["attachments"].insert(
+        0,
+        {"provider_attachment_id": "shared", "message_provider_id": "m0", "content_base64": "Yg=="},
+    )
+    incoming["session"]["turns"].append(_turn("t3", ordinal=2))
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.PUBLISH
+
+
+def test_empty_message_owner_keeps_declared_ordinal_identity(tmp_path: Path) -> None:
+    """An empty owner ID is id-less; changing its ordinal cannot enrich bytes."""
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["attachments"] = [
+        {
+            "provider_attachment_id": "shared",
+            "message_provider_id": "",
+            "provider_meta": {"native_attachment_ordinal": 0, "native_turn_ordinal": 0},
+        }
+    ]
+    incoming = copy.deepcopy(resident)
+    incoming["session"]["attachments"][0]["provider_meta"]["native_attachment_ordinal"] = 1
+    incoming["session"]["attachments"][0]["content_base64"] = "YQ=="
 
     _write(resident, tmp_path)
     result = _write(incoming, tmp_path)

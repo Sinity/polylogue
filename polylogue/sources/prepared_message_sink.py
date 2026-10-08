@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import threading
 import uuid
 from bisect import bisect_left
@@ -24,15 +25,20 @@ from collections.abc import (
     Set,
 )
 from contextlib import closing, contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, fields, is_dataclass
+from enum import Enum
 from pathlib import Path
-from typing import BinaryIO, TypeVar, overload
+from typing import BinaryIO, TypeVar, cast, overload
 from urllib.parse import quote
 
 import ijson
+from pydantic import BaseModel
 
+from polylogue.core.enums import Origin
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.sql_settlement import current_native_sql_lifetimes
+from polylogue.core.work_progress import advance_work_progress
 from polylogue.sources import value_bounds
 from polylogue.sources.decoder_json import _json_subtree, normalize_ijson_stdlib_numbers
 from polylogue.sources.live.tool_result_sidecars import (
@@ -44,7 +50,16 @@ from polylogue.sources.parsers.base_models import SINK_JSON_CONTEXT
 from polylogue.sources.parsers.claude.common import _ClaudeMessageEvidence
 from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope
+from polylogue.sources.streamed_event_payload import (
+    StreamedJsonArray,
+    ensure_streamed_json_array_table,
+)
+from polylogue.sources.streamed_event_payload import (
+    _open_reader as _open_streamed_array_reader,
+)
 from polylogue.sources.value_bounds import require_storable_string
+from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
 # The occurrence a parent id names (see the active-branch meaning below):
 # the nearest earlier occurrence, else the last one.
@@ -130,10 +145,48 @@ def _write_row(conn: sqlite3.Connection, sql: str, parameters: tuple[object, ...
         raise value_bounds.ValueBoundRefusedError(kind, observed, value_bounds.MAX_STORABLE_VALUE_BYTES) from exc
 
 
-#: Byte budget, counted in sealed ``message_json`` bytes, for decoded sessions
-#: kept across passes. A session larger than half of it is never retained and
-#: keeps streaming from disk, so whale memory stays bounded as before.
+#: Byte budget for decoded sessions kept across passes, counted in the
+#: memory their decoded messages hold (:func:`_decoded_size`), not in their
+#: sealed JSON bytes: a decoded message holds several times its JSON. A
+#: session larger than half of it is never retained and keeps streaming from
+#: disk, so whale memory stays bounded.
 DECODED_SESSION_BUDGET_BYTES = 64 * 1024 * 1024
+
+
+def _decoded_size(root: object) -> int:
+    """Bytes one decoded message holds: the deep ``sys.getsizeof`` of its object graph.
+
+    The shared singletons a decode never allocates (``None``, booleans, enum
+    members) and the interned field names of a model's attribute dictionary
+    are not charged.
+    """
+    total = 0
+    stack = [root]
+    while stack:
+        value = stack.pop()
+        if value is None or isinstance(value, (bool, Enum)):
+            continue
+        total += sys.getsizeof(value)
+        if isinstance(value, BaseModel):
+            state = value.__dict__
+            total += sys.getsizeof(state) + sys.getsizeof(value.__pydantic_fields_set__)
+            stack.extend(state.values())
+            if value.__pydantic_extra__:
+                stack.append(value.__pydantic_extra__)
+            if value.__pydantic_private__:
+                stack.append(value.__pydantic_private__)
+        elif isinstance(value, Mapping):
+            for key, item in value.items():
+                stack.append(key)
+                stack.append(item)
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            stack.extend(value)
+        elif is_dataclass(value):
+            if hasattr(value, "__dict__"):
+                total += sys.getsizeof(value.__dict__)
+            stack.extend(getattr(value, field.name) for field in fields(value))
+    return total
+
 
 _DecodedKey = tuple[str, int, int, int, int, int, int]
 
@@ -252,6 +305,23 @@ class _DecodedSpools:
 _DECODED_SPOOLS = _DecodedSpools(DECODED_SPOOL_SLOTS)
 
 
+class _HeldWalk:
+    """The decoded walk of one unsealed session held immutable by its producer."""
+
+    __slots__ = ("spool", "building", "depth")
+
+    def __init__(self) -> None:
+        self.spool: PickleSpool[ParsedMessage] | None = None
+        self.building = False
+        self.depth = 1
+
+
+#: Unsealed sessions whose producer declared them immutable for a window
+#: (:meth:`SqliteMessageSink.held_walks`), by (writer connection, ordinal).
+_HELD_WALKS: dict[tuple[int, int], _HeldWalk] = {}
+_HELD_WALKS_LOCK = threading.Lock()
+
+
 def discard_decoded_sessions(path: Path) -> None:
     """Release retained decodes of one sealed carrier before it is removed."""
     _DECODED_SESSIONS.discard_path(str(path))
@@ -276,9 +346,59 @@ def _message_json(value: ParsedMessage) -> str:
 
 
 def _event_json(value: ParsedSessionEvent) -> str:
-    payload = value.model_dump(mode="json")
+    streamed_arrays = {key: item.array_id for key, item in value.payload.items() if isinstance(item, StreamedJsonArray)}
+    ordinary_payload = {key: item for key, item in value.payload.items() if key not in streamed_arrays}
+    payload = value.model_dump(mode="json", exclude={"payload"})
+    payload["payload"] = ordinary_payload
     payload["boundary_message_position"] = value.boundary_message_position
+    payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
+    if streamed_arrays:
+        payload = {
+            "$polylogue_prepared_event": 1,
+            "event": payload,
+            "streamed_arrays": streamed_arrays,
+        }
     return require_storable_string(_text_json(payload), kind="serialized event")
+
+
+def _event_from_json(encoded: str, path: Path, connection: sqlite3.Connection | None = None) -> ParsedSessionEvent:
+    """Restore explicitly tagged streamed payload arrays from the prepared store."""
+    payload = json.loads(encoded)
+    if not isinstance(payload, dict) or payload.get("$polylogue_prepared_event") != 1:
+        return ParsedSessionEvent.model_validate(payload)
+    event = payload.get("event")
+    arrays = payload.get("streamed_arrays")
+    if not isinstance(event, dict) or not isinstance(arrays, dict):
+        raise ValueError("invalid streamed prepared event envelope")
+    owner = connection
+    if owner is None:
+        with _open_streamed_array_reader(path) as reader:
+            _restore_streamed_arrays(event, arrays, path, reader, marker_connection=None)
+    else:
+        _restore_streamed_arrays(event, arrays, path, owner, marker_connection=owner)
+    return ParsedSessionEvent.model_validate(event)
+
+
+def _restore_streamed_arrays(
+    event: dict[str, object],
+    arrays: dict[str, object],
+    path: Path,
+    connection: sqlite3.Connection,
+    *,
+    marker_connection: sqlite3.Connection | None,
+) -> None:
+    event_payload = event.get("payload")
+    if not isinstance(event_payload, dict):
+        raise ValueError("streamed prepared event payload is not an object")
+    for key, raw_array_id in arrays.items():
+        if not isinstance(raw_array_id, str):
+            raise ValueError("streamed prepared event array reference is malformed")
+        row = connection.execute(
+            "SELECT item_count FROM prepared_streamed_json_array WHERE array_id = ?", (raw_array_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("streamed prepared event array disappeared")
+        event_payload[key] = StreamedJsonArray(marker_connection, path, raw_array_id, int(row[0]))
 
 
 def _attachment_json(value: ParsedAttachment) -> str:
@@ -302,9 +422,11 @@ def _attachment_from_json(encoded: str) -> ParsedAttachment:
 
 
 def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
-    return _attachment_from_json(encoded).model_copy(
-        update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)}
-    )
+    attachment = _attachment_from_json(encoded)
+    # Acquisition lookup belongs to this physical carrier row. A cohort
+    # copy captures its own claim at this row; former spool paths are not
+    # publication locators for the new artifact.
+    return attachment.model_copy(update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)})
 
 
 # The envelope's pointer line, and the bare path as it also appears inside the
@@ -500,7 +622,10 @@ class GeminiToolOutputIndex:
                 byte_size=entry.byte_size,
                 content_hash=hash_text(full_text),
                 was_truncated=was_truncated,
-                full_text=full_text,
+                # The validated copy was hashed and stored in the disk-backed
+                # replacement table above. Keep only a re-open handle here;
+                # a match must not retain one full output per sidecar.
+                read_text=entry.read_text,
                 file_mtime_ms=entry.file_mtime_ms,
             )
         for filename, tool_id in self.conn.execute(
@@ -613,11 +738,13 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         *,
         writer: sqlite3.Connection | None = None,
         count: int = 0,
+        store: SqliteMessageStore | None = None,
     ) -> None:
         self.path = path
         self.session_ordinal = session_ordinal
         self._writer = writer
         self._count = count
+        self._store = store
 
     def __len__(self) -> int:
         return self._count
@@ -648,7 +775,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             decoded = _DECODED_SESSIONS.get(key) if key is not None else None
             if decoded is not None:
                 return decoded[ordinal]
-            with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+            with _prepared_reader(self.path) as conn:
                 row = conn.execute(
                     "SELECT message_json FROM prepared_message WHERE session_ordinal = ? AND message_ordinal = ?",
                     (self.session_ordinal, ordinal),
@@ -670,6 +797,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             raise TypeError("prepared message sink does not support slice replacement")
         if not isinstance(value, ParsedMessage):
             raise TypeError("prepared message replacement must be a ParsedMessage")
+        self._require_not_held()
         ordinal = self._ordinal(index)
         self._writer.execute(
             "UPDATE prepared_message SET message_json = ?, provider_id = ?, parent_id = ?, active_leaf = ? "
@@ -692,6 +820,8 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             raise TypeError("sealed prepared messages are immutable")
         if index != self._count:
             raise TypeError("prepared messages can only be appended")
+        self._require_not_held()
+        advance_work_progress(messages=1)
         _write_row(
             self._writer,
             "INSERT INTO prepared_message VALUES (?, ?, ?, ?, ?, ?)",
@@ -709,6 +839,84 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
 
     def __iter__(self) -> Iterator[ParsedMessage]:
         yield from self.iter_from(0)
+
+    def _held_key(self) -> tuple[int, int] | None:
+        return None if self._writer is None else (id(self._writer), self.session_ordinal)
+
+    def _require_not_held(self) -> None:
+        key = self._held_key()
+        if key is not None and key in _HELD_WALKS:
+            raise RuntimeError("prepared messages are held immutable while their walks are retained")
+
+    @contextmanager
+    def held_walks(self) -> Iterator[None]:
+        """Declare this unsealed session immutable and reuse its decoded walk meanwhile.
+
+        Preparing one session walks its messages several times (content
+        identities, owners, rows, blocks, tool outcomes), and each walk re-ran
+        pydantic validation of every stored message. Inside this window the
+        first complete walk is spooled and later walks replay the spool, with
+        memory still bounded by one message; each replay yields fresh
+        objects, as a decode does. Any edit of the session inside the window
+        raises instead of being silently missed by a replay. A sealed sink is
+        immutable already and keeps its own decoded cache.
+        """
+        key = self._held_key()
+        if key is None:
+            yield
+            return
+        with _HELD_WALKS_LOCK:
+            held = _HELD_WALKS.get(key)
+            if held is None:
+                _HELD_WALKS[key] = _HeldWalk()
+            else:
+                held.depth += 1
+        try:
+            yield
+        finally:
+            with _HELD_WALKS_LOCK:
+                held = _HELD_WALKS[key]
+                held.depth -= 1
+                if not held.depth:
+                    del _HELD_WALKS[key]
+                    if held.spool is not None:
+                        held.spool.close()
+
+    def _iter_writer_rows(self, start: int) -> Iterator[ParsedMessage]:
+        assert self._writer is not None
+        cursor = self._writer.execute(
+            "SELECT message_json FROM prepared_message WHERE session_ordinal = ? "
+            "AND message_ordinal >= ? ORDER BY message_ordinal",
+            (self.session_ordinal, start),
+        )
+        for row in cursor:
+            yield _from_text_json(ParsedMessage, row[0])
+
+    def _iter_held(self, held: _HeldWalk, start: int) -> Iterator[ParsedMessage]:
+        spool = held.spool
+        if spool is not None and len(spool) == self._count:
+            yield from spool.iter_from(start)
+            return
+        with _HELD_WALKS_LOCK:
+            build = start == 0 and spool is None and not held.building
+            if build:
+                held.building = True
+        if not build:
+            yield from self._iter_writer_rows(start)
+            return
+        building = PickleSpool[ParsedMessage](indexed=True)
+        kept = False
+        try:
+            for message in self._iter_writer_rows(0):
+                building.append(message)
+                yield message
+            if len(building) == self._count:
+                held.spool = building
+                kept = True
+        finally:
+            held.building = False
+            if not kept:
+                building.close()
 
     def provider_message_ids(self, *, include_none: bool) -> Set[str | None]:
         """A disk-backed set for membership comparison of large sessions."""
@@ -728,23 +936,23 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         if self._writer is not None:
             row = self._writer.execute(sql, (self.session_ordinal,)).fetchone()
         else:
-            with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+            with _prepared_reader(self.path) as conn:
                 row = conn.execute(sql, (self.session_ordinal,)).fetchone()
         low, high = row if row is not None else (None, None)
         return (int(low) if low is not None else None, int(high) if high is not None else None)
 
     def iter_from(self, start: int) -> Iterator[ParsedMessage]:
         """Stream a suffix without decoding or scanning its inherited prefix."""
+        for message in self._iter_from(start):
+            advance_work_progress(messages=1)
+            yield message
+
+    def _iter_from(self, start: int) -> Iterator[ParsedMessage]:
         if start < 0 or start > self._count:
             raise IndexError(start)
         if self._writer is not None:
-            cursor = self._writer.execute(
-                "SELECT message_json FROM prepared_message WHERE session_ordinal = ? "
-                "AND message_ordinal >= ? ORDER BY message_ordinal",
-                (self.session_ordinal, start),
-            )
-            for row in cursor:
-                yield _from_text_json(ParsedMessage, row[0])
+            held = _HELD_WALKS.get((id(self._writer), self.session_ordinal))
+            yield from (self._iter_held(held, start) if held is not None else self._iter_writer_rows(start))
             return
         key = self._decoded_key()
         decoded = _DECODED_SESSIONS.get(key) if key is not None else None
@@ -758,30 +966,29 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         retained: list[ParsedMessage] | None = [] if key is not None and start == 0 else None
         spool: PickleSpool[ParsedMessage] | None = None
         retained_bytes = 0
-        with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
-            # The budget is in stored bytes: ``len`` of the decoded text
-            # counts code points and undercounts non-ASCII transcripts.
-            cursor = conn.execute(
-                "SELECT message_json, length(CAST(message_json AS BLOB)) FROM prepared_message "
-                "WHERE session_ordinal = ? AND message_ordinal >= ? ORDER BY message_ordinal",
-                (self.session_ordinal, start),
-            )
-            for row in cursor:
-                message = _from_text_json(ParsedMessage, row[0])
-                if retained is not None:
-                    retained_bytes += int(row[1])
-                    if retained_bytes > _DECODED_SESSIONS.budget_bytes // 2:
-                        # Too large to keep decoded in memory: the rest of
-                        # this walk goes to a spool the next walks replay.
-                        spool = PickleSpool[ParsedMessage](indexed=True)
-                        for earlier in retained:
-                            spool.append(earlier)
-                        retained = None
-                    else:
-                        retained.append(message)
-                if spool is not None:
-                    spool.append(message)
-                yield message
+        for row in _prepared_ordinal_rows(
+            self.path,
+            table="prepared_message",
+            ordinal="message_ordinal",
+            columns="message_json",
+            session=self.session_ordinal,
+            start=start,
+        ):
+            message = _from_text_json(ParsedMessage, cast(str, row[0]))
+            if retained is not None:
+                retained_bytes += _decoded_size(message)
+                if retained_bytes > _DECODED_SESSIONS.budget_bytes // 2:
+                    # Too large to keep decoded in memory: the rest of
+                    # this walk goes to a spool the next walks replay.
+                    spool = PickleSpool[ParsedMessage](indexed=True)
+                    for earlier in retained:
+                        spool.append(earlier)
+                    retained = None
+                else:
+                    retained.append(message)
+            if spool is not None:
+                spool.append(message)
+            yield message
         # Only a walk that reached the end holds the whole session.
         # An empty session costs nothing to decode and would occupy an LRU
         # entry the byte budget never charges for.
@@ -809,9 +1016,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
     def normalize_active_path(self) -> SqliteMessageSink:
         """Lower leaf and path values as ``normalize_active_branch`` does, without a message list."""
         if self._writer is None:
-            # Publication artifacts are immutable. The worker has already
-            # normalized them before sealing.
-            return self
+            raise ValueError("active-path normalization requires the original mutable scratch operand")
         if not self._count:
             return self
         leaves = self._writer.execute(
@@ -900,6 +1105,42 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         else:
             self._writer.execute(f"RELEASE {name}")
 
+    def normalized_messages(self, events: Sequence[ParsedSessionEvent], *, origin: Origin) -> SqliteMessageSink:
+        """Borrow this artifact's separately retained canonical writer operand."""
+        if self._writer is None:
+            with _prepared_reader(self.path) as connection:
+                row = connection.execute(
+                    "SELECT normalized_ordinal FROM prepared_message_normalization WHERE original_ordinal=?",
+                    (self.session_ordinal,),
+                ).fetchone()
+            if row is None:
+                raise ValueError("sealed parser messages lack their canonical normalized operand")
+            return SqliteMessageSink(self.path, int(row[0]), count=self._count)
+        row = self._writer.execute(
+            "SELECT normalized_ordinal FROM prepared_message_normalization WHERE original_ordinal=?",
+            (self.session_ordinal,),
+        ).fetchone()
+        if row is not None:
+            return SqliteMessageSink(self.path, int(row[0]), writer=self._writer, count=self._count, store=self._store)
+        if self._store is None or self._store.conn is not self._writer:
+            raise ValueError("message normalization requires its original scratch store")
+        from polylogue.sources.tool_outcomes import derive_tool_outcomes
+
+        normalized = self._store.new_sink()
+        # One pass: each original message is decoded once and appended in its
+        # normalized form. Active-path normalization only sets leaf flags,
+        # which tool-outcome normalization neither reads nor writes.
+        derive_tool_outcomes(self, events, origin=origin, into=normalized)
+        normalized.normalize_active_path()
+        self._writer.executemany(
+            "INSERT INTO prepared_message_normalization VALUES (?,?)",
+            (
+                (self.session_ordinal, normalized.session_ordinal),
+                (normalized.session_ordinal, normalized.session_ordinal),
+            ),
+        )
+        return normalized
+
 
 class SqliteProviderMessageIds(Set[str | None]):
     """Native IDs backed by the prepared-message provider index."""
@@ -908,8 +1149,13 @@ class SqliteProviderMessageIds(Set[str | None]):
         self.messages = messages
         self.include_none = include_none
 
-    def _connection(self) -> sqlite3.Connection:
-        return self.messages._writer or sqlite3.connect(_read_uri(self.messages.path), uri=True)
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        if self.messages._writer is not None:
+            yield self.messages._writer
+        else:
+            with _prepared_reader(self.messages.path) as connection:
+                yield connection
 
     def _where(self, alias: str = "") -> str:
         prefix = f"{alias}." if alias else ""
@@ -920,47 +1166,59 @@ class SqliteProviderMessageIds(Set[str | None]):
             return False
         if value is not None and not isinstance(value, str):
             return False
-        conn = self._connection()
-        try:
+        with self._connection() as conn:
             row = conn.execute(
                 "SELECT 1 FROM prepared_message WHERE session_ordinal = ? AND provider_id IS ? LIMIT 1",
                 (self.messages.session_ordinal, value),
             ).fetchone()
             return row is not None
-        finally:
-            if conn is not self.messages._writer:
-                conn.close()
 
     def __iter__(self) -> Iterator[str | None]:
-        conn = self._connection()
-        try:
-            for (provider_id,) in conn.execute(
+        if self.messages._writer is not None:
+            for (provider_id,) in self.messages._writer.execute(
                 f"SELECT DISTINCT provider_id FROM prepared_message WHERE {self._where()} ORDER BY provider_id",
                 (self.messages.session_ordinal,),
             ):
                 yield provider_id
-        finally:
-            if conn is not self.messages._writer:
-                conn.close()
+            return
+        if self.include_none:
+            with _prepared_reader(self.messages.path) as connection:
+                has_none = (
+                    connection.execute(
+                        "SELECT 1 FROM prepared_message WHERE session_ordinal = ? AND provider_id IS NULL LIMIT 1",
+                        (self.messages.session_ordinal,),
+                    ).fetchone()
+                    is not None
+                )
+            if has_none:
+                yield None
+        after: str | None = None
+        while True:
+            with _prepared_reader(self.messages.path) as connection:
+                rows = connection.execute(
+                    "SELECT DISTINCT provider_id FROM prepared_message WHERE session_ordinal = ? "
+                    "AND provider_id IS NOT NULL AND (? IS NULL OR provider_id > ?) ORDER BY provider_id LIMIT 512",
+                    (self.messages.session_ordinal, after, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            for (provider_id,) in rows:
+                yield str(provider_id)
 
     def __len__(self) -> int:
-        conn = self._connection()
-        try:
+        with self._connection() as conn:
             row = conn.execute(
                 f"SELECT COUNT(*) FROM (SELECT DISTINCT provider_id FROM prepared_message WHERE {self._where()})",
                 (self.messages.session_ordinal,),
             ).fetchone()
             return int(row[0])
-        finally:
-            if conn is not self.messages._writer:
-                conn.close()
 
     def __le__(self, other: object) -> bool:
         if not isinstance(other, Set):
             return NotImplemented
         if isinstance(other, SqliteProviderMessageIds):
-            conn = sqlite3.connect(_read_uri(self.messages.path), uri=True)
-            try:
+            with _prepared_reader(self.messages.path) as conn:
                 other_table = "prepared_message"
                 if other.messages.path != self.messages.path:
                     conn.execute("ATTACH DATABASE ? AS other_prepared", (_read_uri(other.messages.path),))
@@ -973,8 +1231,6 @@ class SqliteProviderMessageIds(Set[str | None]):
                     (self.messages.session_ordinal, other.messages.session_ordinal),
                 ).fetchone()
                 return row is None
-            finally:
-                conn.close()
         return all(value in other for value in self)
 
 
@@ -1019,7 +1275,7 @@ class SqliteAttachmentSink(MutableSequence[ParsedAttachment]):
                 (self.session_ordinal, ordinal),
             ).fetchone()
         else:
-            with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+            with _prepared_reader(self.path) as conn:
                 row = conn.execute(
                     "SELECT attachment_json FROM prepared_attachment WHERE session_ordinal = ? AND attachment_ordinal = ?",
                     (self.session_ordinal, ordinal),
@@ -1062,6 +1318,35 @@ class SqliteAttachmentSink(MutableSequence[ParsedAttachment]):
         )
         self._count += 1
 
+    @contextmanager
+    def original_items_for_rewrite(self) -> Iterator[Iterator[ParsedAttachment]]:
+        """Keep exact original carrier rows while an expansion overwrites slots."""
+        if self._writer is None:
+            raise TypeError("sealed prepared attachments cannot be rewritten")
+        conn = self._writer
+        table = "attachment_rewrite_" + uuid.uuid4().hex
+        cursor = None
+        try:
+            conn.execute(
+                f"CREATE TEMP TABLE {table} AS SELECT attachment_ordinal, attachment_json "
+                "FROM prepared_attachment WHERE session_ordinal = ? ORDER BY attachment_ordinal",
+                (self.session_ordinal,),
+            )
+            cursor = conn.execute(
+                f"SELECT attachment_ordinal, attachment_json FROM {table} ORDER BY attachment_ordinal"
+            )
+
+            def items() -> Iterator[ParsedAttachment]:
+                while page := cursor.fetchmany(256):
+                    for ordinal, encoded in page:
+                        yield _decode_attachment(encoded, self.path, self.session_ordinal, ordinal)
+
+            yield items()
+        finally:
+            if cursor is not None:
+                cursor.close()
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+
     def __iter__(self) -> Iterator[ParsedAttachment]:
         if self._writer is not None:
             rows = self._writer.execute(
@@ -1071,13 +1356,14 @@ class SqliteAttachmentSink(MutableSequence[ParsedAttachment]):
             for ordinal, encoded in rows:
                 yield _decode_attachment(encoded, self.path, self.session_ordinal, ordinal)
             return
-        with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
-            rows = conn.execute(
-                "SELECT attachment_ordinal, attachment_json FROM prepared_attachment WHERE session_ordinal = ? ORDER BY attachment_ordinal",
-                (self.session_ordinal,),
-            )
-            for ordinal, encoded in rows:
-                yield _decode_attachment(encoded, self.path, self.session_ordinal, ordinal)
+        for ordinal, encoded in _prepared_ordinal_rows(
+            self.path,
+            table="prepared_attachment",
+            ordinal="attachment_ordinal",
+            columns="attachment_ordinal, attachment_json",
+            session=self.session_ordinal,
+        ):
+            yield _decode_attachment(cast(str, encoded), self.path, self.session_ordinal, cast(int, ordinal))
 
 
 class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
@@ -1117,7 +1403,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
         ordinal = self._ordinal(index)
         conn = self._writer
         if conn is None:
-            with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as reader:
+            with _prepared_reader(self.path) as reader:
                 row = reader.execute(
                     "SELECT event_json FROM prepared_event WHERE session_ordinal = ? AND event_ordinal = ?",
                     (self.session_ordinal, ordinal),
@@ -1129,7 +1415,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
             ).fetchone()
         if row is None:
             raise ValueError("prepared event row disappeared")
-        return _from_text_json(ParsedSessionEvent, row[0])
+        return _event_from_json(row[0], self.path, self._writer)
 
     @overload
     def __setitem__(self, index: int, value: ParsedSessionEvent) -> None: ...
@@ -1241,24 +1527,51 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
         writer.execute("DROP TABLE temp.prepared_event_insert")
 
     def __iter__(self) -> Iterator[ParsedSessionEvent]:
-        yield from self._iter_query("ORDER BY event_ordinal")
-
-    def _iter_query(self, order_sql: str, parameters: tuple[object, ...] = ()) -> Iterator[ParsedSessionEvent]:
-        sql = "SELECT event_json FROM prepared_event WHERE session_ordinal = ? " + order_sql
         if self._writer is not None:
-            cursor = self._writer.execute(sql, (self.session_ordinal, *parameters))
-            for row in cursor:
-                yield _from_text_json(ParsedSessionEvent, row[0])
+            for row in self._writer.execute(
+                "SELECT event_json FROM prepared_event WHERE session_ordinal = ? ORDER BY event_ordinal",
+                (self.session_ordinal,),
+            ):
+                yield _event_from_json(row[0], self.path, self._writer)
             return
-        with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
-            for row in conn.execute(sql, (self.session_ordinal, *parameters)):
-                yield _from_text_json(ParsedSessionEvent, row[0])
+        for (encoded,) in _prepared_ordinal_rows(
+            self.path,
+            table="prepared_event",
+            ordinal="event_ordinal",
+            columns="event_json",
+            session=self.session_ordinal,
+        ):
+            yield _event_from_json(cast(str, encoded), self.path)
 
     def iter_ordered(self, type_order_tier: Mapping[str, int]) -> Iterator[ParsedSessionEvent]:
         clauses = " ".join("WHEN ? THEN ?" for _ in type_order_tier)
-        order = "ORDER BY COALESCE(timestamp, ''), CASE event_type " + clauses + " ELSE 0 END, event_ordinal"
+        tier_sql = "CASE event_type " + clauses + " ELSE 0 END" if clauses else "0"
         parameters: tuple[object, ...] = tuple(item for pair in type_order_tier.items() for item in pair)
-        yield from self._iter_query(order, parameters)
+        base_sql = (
+            "WITH ordered AS (SELECT event_json, COALESCE(timestamp, '') AS stamp, "
+            + tier_sql
+            + " AS tier, event_ordinal FROM prepared_event WHERE session_ordinal = ?) "
+            "SELECT event_json, stamp, tier, event_ordinal FROM ordered"
+        )
+        if self._writer is not None:
+            for row in self._writer.execute(
+                base_sql + " ORDER BY stamp, tier, event_ordinal", (*parameters, self.session_ordinal)
+            ):
+                yield _event_from_json(row[0], self.path, self._writer)
+            return
+        after: tuple[str, int, int] | None = None
+        while True:
+            predicate = " WHERE (stamp, tier, event_ordinal) > (?, ?, ?)" if after is not None else ""
+            with _prepared_reader(self.path) as connection:
+                rows = connection.execute(
+                    base_sql + predicate + " ORDER BY stamp, tier, event_ordinal LIMIT 512",
+                    (*parameters, self.session_ordinal, *(after or ())),
+                ).fetchall()
+            if not rows:
+                return
+            after = (str(rows[-1][1]), int(rows[-1][2]), int(rows[-1][3]))
+            for row in rows:
+                yield _event_from_json(row[0], self.path, self._writer)
 
     def sort_in_place(self, type_order_tier: Mapping[str, int]) -> None:
         if self._writer is None:
@@ -1298,35 +1611,112 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
         self._writer.execute("DROP TABLE temp.prepared_event_order")
 
 
+@contextmanager
+def _prepared_reader(path: Path) -> Iterator[sqlite3.Connection]:
+    connection = connect_measured(_read_uri(path), uri=True)
+    owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
+    try:
+        yield owner.require_connection()
+    except BaseException as primary:
+        from polylogue.storage.sqlite.connection_profile import _close_failed_native_construction
+
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
+
+
+#: Serialized payload characters one page of prepared rows holds at most
+#: (beyond its first row): a memory bound on paging, never on what is read.
+_PAGE_PAYLOAD_CHARS = 1024 * 1024
+
+
+def _prepared_ordinal_rows(
+    path: Path, *, table: str, ordinal: str, columns: str, session: int | None, start: int = 0
+) -> Iterator[tuple[object, ...]]:
+    """Read indexed immutable pages and close SQL before yielding any row.
+
+    A page ends at 512 rows or once its rows' last column (the serialized
+    payload) reaches :data:`_PAGE_PAYLOAD_CHARS`, so a page of large messages
+    holds no more than one of small ones. Each row is released as it is
+    yielded, so the next page is never read while the previous one is held.
+    """
+    after = start - 1
+    while True:
+        rows: list[tuple[object, ...]] = []
+        held = 0
+        with (
+            _prepared_reader(path) as connection,
+            closing(
+                connection.execute(
+                    f"SELECT {ordinal}, {columns} FROM {table} WHERE "
+                    + ("session_ordinal = ? AND " if session is not None else "")
+                    + f"{ordinal} > ? ORDER BY {ordinal} LIMIT 512",
+                    (session, after) if session is not None else (after,),
+                )
+            ) as cursor,
+        ):
+            while held < _PAGE_PAYLOAD_CHARS and (fetched := cursor.fetchone()) is not None:
+                rows.append(tuple(fetched))
+                payload = fetched[-1]
+                held += len(payload) if isinstance(payload, (str, bytes)) else 0
+        if not rows:
+            return
+        after = int(cast(int, rows[-1][0]))
+        rows.reverse()
+        while rows:
+            row = rows.pop()
+            yield tuple(row[1:])
+            del row
+
+
 class SqliteMessageStore:
     """Own the unsealed scratch transaction until its producer has finished."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.conn = sqlite3.connect(path)
-        self.conn.execute("PRAGMA journal_mode = DELETE")
-        # The schema is created inside the store's one transaction: as separate
-        # autocommit statements each CREATE paid its own journal and fsync, per
-        # prepared artifact, before any row was spooled.
-        self.conn.execute("BEGIN IMMEDIATE")
-        self.conn.execute(
-            "CREATE TABLE prepared_message (session_ordinal INTEGER NOT NULL, message_ordinal INTEGER NOT NULL, message_json TEXT NOT NULL, provider_id TEXT, parent_id TEXT, active_leaf INTEGER NOT NULL, PRIMARY KEY (session_ordinal, message_ordinal)) WITHOUT ROWID"
+        self.conn = connect_measured(path)
+        self._sql_owner = NativeSQLCustodyOwner(
+            self.conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self)
         )
-        self.conn.execute(
-            "CREATE INDEX prepared_message_provider ON prepared_message(session_ordinal, provider_id, message_ordinal)"
-        )
-        self.conn.execute(
-            "CREATE TABLE prepared_event (session_ordinal INTEGER NOT NULL, event_ordinal INTEGER NOT NULL, timestamp TEXT, event_type TEXT NOT NULL, event_json TEXT NOT NULL, sort_tier INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (session_ordinal, event_ordinal)) WITHOUT ROWID"
-        )
-        self.conn.execute(
-            "CREATE TABLE prepared_attachment (session_ordinal INTEGER NOT NULL, attachment_ordinal INTEGER NOT NULL, attachment_json TEXT NOT NULL, PRIMARY KEY (session_ordinal, attachment_ordinal)) WITHOUT ROWID"
-        )
-        self._next_session_ordinal = 0
-        self._next_event_ordinal = 0
-        self._next_attachment_ordinal = 0
+        try:
+            self.conn.execute("PRAGMA journal_mode = DELETE")
+            # Scratch for one process: admission trusts the in-memory content
+            # seal of the closed file, never a store that outlived a crash, so
+            # syncing each commit to stable storage buys nothing.
+            self.conn.execute("PRAGMA synchronous = OFF")
+            # The schema is created inside the store's one transaction: as separate
+            # autocommit statements each CREATE paid its own journal and fsync, per
+            # prepared artifact, before any row was spooled.
+            self.conn.execute("PRAGMA temp_store = FILE")
+            self.conn.execute("BEGIN IMMEDIATE")
+            ensure_streamed_json_array_table(self.conn)
+            self.conn.execute(
+                "CREATE TABLE prepared_message (session_ordinal INTEGER NOT NULL, message_ordinal INTEGER NOT NULL, message_json TEXT NOT NULL, provider_id TEXT, parent_id TEXT, active_leaf INTEGER NOT NULL, PRIMARY KEY (session_ordinal, message_ordinal)) WITHOUT ROWID"
+            )
+            self.conn.execute(
+                "CREATE INDEX prepared_message_provider ON prepared_message(session_ordinal, provider_id, message_ordinal)"
+            )
+            self.conn.execute(
+                "CREATE TABLE prepared_event (session_ordinal INTEGER NOT NULL, event_ordinal INTEGER NOT NULL, timestamp TEXT, event_type TEXT NOT NULL, event_json TEXT NOT NULL, sort_tier INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (session_ordinal, event_ordinal)) WITHOUT ROWID"
+            )
+            self.conn.execute(
+                "CREATE TABLE prepared_attachment (session_ordinal INTEGER NOT NULL, attachment_ordinal INTEGER NOT NULL, attachment_json TEXT NOT NULL, PRIMARY KEY (session_ordinal, attachment_ordinal)) WITHOUT ROWID"
+            )
+            self.conn.execute(
+                "CREATE TABLE prepared_message_normalization (original_ordinal INTEGER PRIMARY KEY, normalized_ordinal INTEGER NOT NULL)"
+            )
+            self._next_session_ordinal = 0
+            self._next_event_ordinal = 0
+            self._next_attachment_ordinal = 0
+        except BaseException as primary:
+            from polylogue.storage.sqlite.connection_profile import _close_failed_native_construction
+
+            _close_failed_native_construction(self._sql_owner, primary)
+            raise
 
     def new_sink(self) -> SqliteMessageSink:
-        sink = SqliteMessageSink(self.path, self._next_session_ordinal, writer=self.conn)
+        sink = SqliteMessageSink(self.path, self._next_session_ordinal, writer=self.conn, store=self)
         self._next_session_ordinal += 1
         return sink
 
@@ -1341,7 +1731,7 @@ class SqliteMessageStore:
         return sink
 
     def close(self) -> None:
-        self.conn.close()
+        self._sql_owner.close()
 
 
 class ClaudeChatEvidence:
@@ -1442,8 +1832,9 @@ class ClaudeAttachmentScratch:
 class ChatGPTNodeMapping(Mapping[str, object]):
     """Keep node bytes, insertion order, and duplicate-key resolution in scratch."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: sqlite3.Connection, *, progress: Callable[[], None] | None = None) -> None:
         self.conn = conn
+        self._progress = progress
         conn.execute(
             "CREATE TABLE chatgpt_node (node_key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL UNIQUE, "
             "node_json TEXT NOT NULL, child_ordinal INTEGER, parent_key TEXT)"
@@ -1493,6 +1884,8 @@ class ChatGPTNodeMapping(Mapping[str, object]):
         self.conn.execute("UPDATE chatgpt_node SET child_ordinal = ? WHERE node_key = ?", (ordinal, key))
 
     def shallow_node(self, key: str) -> object:
+        if self._progress is not None:
+            self._progress()
         row = self.conn.execute("SELECT node_json FROM chatgpt_node WHERE node_key = ?", (key,)).fetchone()
         if row is None:
             raise KeyError(key)
@@ -1578,6 +1971,8 @@ class ChatGPTNodeMapping(Mapping[str, object]):
 
     def __iter__(self) -> Iterator[str]:
         for (key,) in self.conn.execute("SELECT node_key FROM chatgpt_node ORDER BY ordinal"):
+            if self._progress is not None:
+                self._progress()
             yield key
 
     def __len__(self) -> int:
@@ -1704,6 +2099,8 @@ class ScratchSessionSpill:
 
     def __init__(self, store: SqliteMessageStore) -> None:
         self.store = store
+        self._record_origins: _ScratchStringMap | None = None
+        self._attachment_origins: _ScratchStringMap | None = None
 
     def entries(self) -> _ScratchChatGPTEntries:
         return _ScratchChatGPTEntries(self.store.conn)
@@ -1725,6 +2122,31 @@ class ScratchSessionSpill:
 
     def connection(self) -> sqlite3.Connection:
         return self.store.conn
+
+    def set_record_origin(self, position: int, original_key: str) -> None:
+        """Retain private raw occurrence evidence, never a provider identity."""
+        if self._record_origins is None:
+            self._record_origins = _ScratchStringMap(self.store.conn)
+        self._record_origins[str(position)] = json.dumps(original_key, ensure_ascii=True)
+
+    def set_attachment_record_origin(self, ordinal: int, raw_position: int) -> None:
+        """Keep capture asset custody separate from message identity lowering."""
+        if self._attachment_origins is None:
+            self._attachment_origins = _ScratchStringMap(self.store.conn)
+        self._attachment_origins[str(ordinal)] = str(raw_position)
+
+    def attachment_record_origin(self, ordinal: int) -> int:
+        if self._attachment_origins is None:
+            raise KeyError(ordinal)
+        return int(self._attachment_origins[str(ordinal)])
+
+    def record_origin(self, position: int) -> str:
+        if self._record_origins is None:
+            raise KeyError(position)
+        value = json.loads(self._record_origins[str(position)])
+        if not isinstance(value, str):
+            raise ValueError("stored native raw occurrence is invalid")
+        return value
 
 
 class _ScratchStringSet(MutableSet[str]):
@@ -1937,11 +2359,20 @@ class _ScratchStringMap(MutableMapping[str, str]):
 
 
 def read_chatgpt_mapping_object(
-    handle: BinaryIO, conn: sqlite3.Connection
+    handle: BinaryIO,
+    conn: sqlite3.Connection,
+    *,
+    require_source_header: bool = True,
+    progress: Callable[[], None] | None = None,
 ) -> tuple[dict[str, object], ChatGPTNodeMapping] | None:
-    """Consume a complete native object while writing each mapping node immediately."""
+    """Extract mapping nodes without collecting the session in memory.
+
+    Source detection requires its native header witness. A receiver with an
+    authenticated declared provider instead delegates header/identity validity
+    to the ordinary canonical parser over the extracted original mapping.
+    """
     events = iter(ijson.parse(handle))
-    mapping = ChatGPTNodeMapping(conn)
+    mapping = ChatGPTNodeMapping(conn, progress=progress)
     if next(events, None) != ("", "start_map", None):
         return None
     envelope: dict[str, object] = {}
@@ -1977,6 +2408,8 @@ def read_chatgpt_mapping_object(
                 node = normalize_ijson_stdlib_numbers(_json_subtree(events, node_start[1], node_start[2]))
                 has_children = False
             mapping.put(node_key, node, ordinal)
+            if progress is not None:
+                progress()
             if has_children:
                 mapping.mark_children(node_key, ordinal)
             ordinal += 1  # noqa: SIM113  (nested value events are not node ordinals)
@@ -1985,10 +2418,13 @@ def read_chatgpt_mapping_object(
     if (
         mapping_count != 1
         or not mapping
-        or not isinstance(envelope.get("current_node"), str)
-        or not isinstance(envelope.get("create_time"), (int, float))
-        or not isinstance(envelope.get("conversation_id"), str)
-        and not isinstance(envelope.get("id"), str)
+        or require_source_header
+        and (
+            not isinstance(envelope.get("current_node"), str)
+            or not isinstance(envelope.get("create_time"), (int, float))
+            or not isinstance(envelope.get("conversation_id"), str)
+            and not isinstance(envelope.get("id"), str)
+        )
     ):
         return None
     envelope["mapping"] = mapping

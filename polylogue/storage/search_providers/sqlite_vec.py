@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 import threading
 from collections.abc import Callable
 from contextlib import closing
+from functools import partial
 from pathlib import Path
 from typing import TypeVar
 
+from polylogue.core.compute import compute_adapter
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
 from polylogue.paths import embeddings_db_path
 from polylogue.storage.embeddings.identity import EmbeddingRecipe
@@ -110,13 +111,21 @@ class SqliteVecProvider(
             return self._read_similarity(
                 index_path=index_path, project=project, text=text, seed_session_id=seed_session_id, limit=limit
             )
-        return await asyncio.to_thread(
-            self._read_similarity,
-            index_path=index_path,
-            project=project,
-            text=text,
-            seed_session_id=seed_session_id,
-            limit=limit,
+        return (
+            await compute_adapter()
+            .submit(
+                partial(
+                    self._read_similarity,
+                    index_path=index_path,
+                    project=project,
+                    text=text,
+                    seed_session_id=seed_session_id,
+                    limit=limit,
+                ),
+                admission_class="interactive-read",
+                estimated_bytes=len((text if text is not None else seed_session_id or "").encode("utf-8")),
+            )
+            .wait()
         )
 
     def _read_similarity(

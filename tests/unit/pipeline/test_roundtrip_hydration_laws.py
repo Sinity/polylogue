@@ -18,6 +18,7 @@ from hypothesis import strategies as st
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.synthetic.core import SyntheticCorpus
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.pipeline_roundtrip import parse_payload_roundtrip, write_and_hydrate
 from tests.infra.storage_records import db_setup
 
@@ -170,19 +171,18 @@ class TestIdempotentReimport:
         source_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
-        from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
             result = parse_payload_roundtrip(source_name, raw_bytes, unique_id)
 
-            session_id = write_parsed_session_to_archive(conn, result.parsed, content_hash=result.content_hash)
+            session_id = write_fixture_index_session(conn, result.parsed, content_hash=result.content_hash)
             first_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             first_messages = conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
             ).fetchone()[0]
 
-            write_parsed_session_to_archive(conn, result.parsed, content_hash=result.content_hash)
+            write_fixture_index_session(conn, result.parsed, content_hash=result.content_hash)
             second_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             second_messages = conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)

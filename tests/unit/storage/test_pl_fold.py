@@ -15,7 +15,10 @@ Covers the acceptance criteria on polylogue-9jsi:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
+
+import pytest
 
 from polylogue.storage.fts.pl_fold import PL_FOLD_TABLE, pl_fold, pl_fold_sql_expr, register_pl_fold
 from polylogue.storage.fts.sql import FTS_MESSAGES_TABLE_SQL, FTS_UNICODE_TOKENIZER
@@ -23,6 +26,21 @@ from polylogue.storage.search.query_support import escape_fts5_query, normalize_
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import rebuild_archive_messages_fts
 from tests.infra.identity import archive_message_id
+
+
+@pytest.fixture
+def test_conn(test_db: Path) -> Iterator[sqlite3.Connection]:
+    """Settle this module's caller-owned transaction before the write lease closes.
+
+    The cached connection refuses to close an open transaction; these laws
+    write through the fixture connection and commit as their caller would.
+    """
+    from polylogue.storage.sqlite.connection import open_connection
+
+    with open_connection(test_db) as conn:
+        yield conn
+        conn.commit()
+
 
 # ---------------------------------------------------------------------------
 # Python fold semantics

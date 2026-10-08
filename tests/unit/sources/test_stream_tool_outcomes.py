@@ -67,9 +67,11 @@ def test_disk_normalization_matches_collected_duplicate_and_owned_sidecar_outcom
         assert returned is sink
         assert _dumps(list(sink)) == _dumps(expected)
         assert [message.blocks[0].tool_outcome for message in sink] == [
+            # Three uses share one tool ID with no parent proof: an ID-only
+            # association is ambiguous, so no use borrows a result's verdict.
             ToolOutcome.UNKNOWN,
-            ToolOutcome.ERROR,
-            ToolOutcome.ERROR,
+            ToolOutcome.UNKNOWN,
+            ToolOutcome.UNKNOWN,
             ToolOutcome.UNKNOWN,
             ToolOutcome.ERROR,
             ToolOutcome.NO_RESULT,

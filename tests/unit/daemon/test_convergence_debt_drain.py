@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.sources.live.cursor import CursorStore
@@ -87,7 +88,9 @@ def _install(monkeypatch: pytest.MonkeyPatch, *stages: _Stage) -> None:
 
 
 def test_subject_independent_stage_runs_once_for_its_whole_backlog(
-    archive: Path, monkeypatch: pytest.MonkeyPatch
+    archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
 ) -> None:
     """Anti-vacuity: without the subject-independent collapse the stage runs
     once per page (three times for 250 rows)."""
@@ -95,38 +98,50 @@ def test_subject_independent_stage_runs_once_for_its_whole_backlog(
     _install(monkeypatch, stage)
     _seed(archive, "archive_wide", 250)
 
-    daemon_cli._drain_convergence_debt_backlog(archive / "index.db", budget_s=60.0)
+    daemon_cli._drain_convergence_debt_backlog(
+        archive / "index.db", budget_s=60.0, compute_adapter=bounded_compute_adapter
+    )
 
     assert len(stage.executions) == 1
     assert len(stage.executions[0]) == 1
     assert _rows(archive) == []
 
 
-def test_unconverged_subject_independent_stage_keeps_its_rows(archive: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unconverged_subject_independent_stage_keeps_its_rows(
+    archive: Path, monkeypatch: pytest.MonkeyPatch, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """A stage that is still pending settles nothing; its rows back off."""
     stage = _Stage("archive_wide", subject_independent=True, converges=False)
     _install(monkeypatch, stage)
     _seed(archive, "archive_wide", 30)
 
-    daemon_cli._drain_convergence_debt_backlog(archive / "index.db", budget_s=60.0)
+    daemon_cli._drain_convergence_debt_backlog(
+        archive / "index.db", budget_s=60.0, compute_adapter=bounded_compute_adapter
+    )
 
     assert len(stage.executions) == 1
     assert len(_rows(archive)) == 30
 
 
-def test_one_tick_drains_more_than_one_page_of_subject_debt(archive: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_one_tick_drains_more_than_one_page_of_subject_debt(
+    archive: Path, monkeypatch: pytest.MonkeyPatch, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """Anti-vacuity: a single page per tick leaves 150 of 250 rows behind."""
     stage = _Stage("per_subject", subject_independent=False)
     _install(monkeypatch, stage)
     _seed(archive, "per_subject", 250)
 
-    daemon_cli._drain_convergence_debt_backlog(archive / "index.db", budget_s=60.0)
+    daemon_cli._drain_convergence_debt_backlog(
+        archive / "index.db", budget_s=60.0, compute_adapter=bounded_compute_adapter
+    )
 
     assert _rows(archive) == []
     assert sum(len(paths) for paths in stage.executions) == 250
 
 
-def test_rows_owned_by_another_drain_do_not_fill_the_page(archive: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rows_owned_by_another_drain_do_not_fill_the_page(
+    archive: Path, monkeypatch: pytest.MonkeyPatch, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """Anti-vacuity: filtering owned stages after the LIMIT lets 100 newer
     ``raw_retention`` rows fill the page, so the generic row is never retried."""
     stage = _Stage("per_subject", subject_independent=False)
@@ -134,7 +149,7 @@ def test_rows_owned_by_another_drain_do_not_fill_the_page(archive: Path, monkeyp
     _seed(archive, "per_subject", 1)
     _seed(archive, "raw_retention", 150)
 
-    assert daemon_cli._drain_convergence_debt_once(archive / "index.db") == 1
+    assert daemon_cli._drain_convergence_debt_once(archive / "index.db", compute_adapter=bounded_compute_adapter) == 1
 
     remaining = _rows(archive)
     assert all(stage_name == "raw_retention" for stage_name, _target in remaining)
@@ -238,3 +253,31 @@ def test_a_row_re_recorded_after_the_run_started_survives_the_ledger(archive: Pa
     )
     assert retried == 1
     assert len(_rows(archive)) == 1
+
+
+@pytest.mark.parametrize("stage", ["lineage", "convergence"])
+def test_skipped_retry_preserves_unmeasured_debt(archive: Path, stage: str) -> None:
+    """Aggregate convergence cannot settle a stage which never evaluated its subject."""
+    from types import SimpleNamespace
+
+    cursor = CursorStore(archive / "index.db")
+    subject = "synthetic-session"
+    cursor.record_convergence_debt(stage=stage, subject_type="session_id", subject_id=subject, error="owed")
+    [debt] = cursor.list_convergence_debt(limit=10)
+    state = SimpleNamespace(converged=True, stages={"lineage": "skipped"}, last_error=None)
+    daemon_cli._record_convergence_debt_retries(cursor, [debt], {(stage, "session_id", subject): state})
+    assert _rows(archive) == [("lineage", subject)]
+
+
+def test_generic_retry_preserves_each_unevaluated_stage(archive: Path) -> None:
+    from types import SimpleNamespace
+
+    cursor = CursorStore(archive / "index.db")
+    subject = "synthetic-session"
+    cursor.record_convergence_debt(stage="convergence", subject_type="session_id", subject_id=subject, error="owed")
+    [debt] = cursor.list_convergence_debt(limit=10)
+    state = SimpleNamespace(
+        converged=False, stages={"lineage": "skipped", "titles": "failed", "summary": "done"}, last_error="pending"
+    )
+    daemon_cli._record_convergence_debt_retries(cursor, [debt], {("convergence", "session_id", subject): state})
+    assert _rows(archive) == [("lineage", subject), ("titles", subject)]

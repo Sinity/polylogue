@@ -8,7 +8,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from polylogue.daemon.execution import CancellationHandle
+from polylogue.core.compute import CancellationHandle
 
 
 @contextmanager

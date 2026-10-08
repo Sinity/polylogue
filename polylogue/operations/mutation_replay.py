@@ -4,13 +4,14 @@ An operation whose owner died between its durable intent and its terminal
 record is resolved at daemon startup (here) or when a later request overlaps
 its targets (the executor). Its actuator either re-applies the recorded plan
 convergently or, for an atomic apply, reports whether the commit is present.
-The outcome is a terminal :class:`RecoveryResolution`; none leaves an
-``unknown`` run or a barrier over the targets.
+An established effect produces a terminal :class:`RecoveryResolution`.
+Missing or conflicting exact-attempt evidence defers recovery and preserves
+the interrupted run and its target barrier.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
 
 from polylogue.operations.mutation_transaction import (
     RecoverableActuator,
+    RecoveryDeferredError,
     registered_recovery_routes,
     resolve_interrupted_operations,
 )
@@ -39,7 +41,13 @@ def recoverable_actuators() -> Mapping[str, RecoverableActuator]:
     return registered_recovery_routes()
 
 
-def recover_interrupted_operations(archive_root: Path) -> None:
+# Automated recovery has no human request principal. Keep its event identity stable.
+RECOVERY_SERVICE_ACTOR_REF = "daemon:recovery"
+
+
+def recover_interrupted_operations(
+    archive_root: Path, *, resolver_actor_ref: str, input_demand: Callable[[int], None]
+) -> None:
     """Resolve dead operations at the daemon's single-writer startup seam.
 
     This is deliberately not executor composition.  Request handlers construct
@@ -53,9 +61,10 @@ def recover_interrupted_operations(archive_root: Path) -> None:
 
     Every orphan is resolved from durable state by its actuator: re-applied
     convergently, or found committed or absent for an atomic apply.  No
-    outcome is ``unknown`` and none leaves a barrier over its targets
-    (:class:`RecoveryResolution`).  The exception is an accepted ingest whose
-    request was never stopped: it stays nonterminal for the daemon's ingest
+    completed resolution leaves an unknown run or a barrier over its targets.
+    Excision with missing or conflicting original-attempt evidence refuses
+    startup and preserves its barrier. An accepted ingest whose
+    request was never stopped stays nonterminal for the daemon's ingest
     owner, which re-drives it once this recovery has run
     (``DaemonOperationRuntime.start_accepted_ingest_redrive``).
     """
@@ -68,37 +77,115 @@ def recover_interrupted_operations(archive_root: Path) -> None:
         archive_root,
         attempt_owner_id=AuditRepository.current_process_attempt_owner(),
     )
-    audit.reconcile_continuity()
+    from polylogue.core.stage_admission import admit_stage_write
+
+    admit_stage_write("daemon.operation_recovery.continuity", audit.reconcile_continuity)
     # No handler can still be appending pages to a paged machine batch.
-    audit.fence_staged_machine_pages()
+    admit_stage_write("daemon.operation_recovery.machine-pages", audit.fence_staged_machine_pages)
     # Startup is the single-writer point where a dead ingest cannot still be
     # preparing pages. Continuity has promoted every accepted generation or
     # refused startup, so the remaining unpromoted headers are pre-accept work.
-    if (archive_root / "source.db").is_file():
-        from contextlib import closing
-
-        from polylogue.storage.sqlite.archive_tiers.source_items import reconcile_unaccepted_prepared_source_manifests
-        from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
-
-        with (
-            closing(
-                open_isolated_write_connection(
-                    archive_root / "source.db", purpose="startup ingest preparation recovery", archive_root=archive_root
-                )
-            ) as source,
-            source,
-        ):
-            source.execute("BEGIN IMMEDIATE")
-            reconcile_unaccepted_prepared_source_manifests(source)
+    _reconcile_startup_source_preparation(archive_root, input_demand=input_demand)
     # Terminalize dead attempts *before* discovering orphans so one startup
     # converges: otherwise a run this call marks interrupted would only be
     # classified by the next restart.
-    audit.recover_abandoned_attempts()
-    orphans = audit.orphaned_operations()
+    admit_stage_write("daemon.operation_recovery.abandoned", audit.recover_abandoned_attempts)
+    with audit.settled_machine_read():
+        orphans = audit.orphaned_operations()
     if not orphans:
         return
     recoverable_actuators()
-    resolve_interrupted_operations(audit, archive_root, orphans)
+    deferred = resolve_interrupted_operations(
+        audit, archive_root, orphans, resolver_actor_ref=resolver_actor_ref, input_demand=input_demand
+    )
+    if any(
+        operation.operation == "mutate-session-excision" and operation.operation_id in deferred for operation in orphans
+    ):
+        raise RecoveryDeferredError("startup Excision recovery lacks settled exact-attempt evidence")
+
+
+def _reconcile_startup_source_preparation(archive_root: Path, *, input_demand: Callable[[int], None]) -> None:
+    """Retain the canonical pre-accept cleanup under one original Source witness."""
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.storage.io_phase_metrics import connection_cursor
+    from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealError
+
+    source_path = archive_root / "source.db"
+    if not source_path.is_file():
+        raise ReferenceSealError("startup Source reconciliation lacks its declared durable tier")
+    orphan = (
+        "SELECT source_generation_id, publisher_id FROM prepared_source_manifests p "
+        "WHERE NOT EXISTS (SELECT 1 FROM source_generations g "
+        "WHERE g.source_generation_id=p.source_generation_id)"
+    )
+    # A genuine empty pre-accept set requires neither a writer nor a claim.
+    # This probe never certifies a nonempty cleanup: the original witness below
+    # independently selects and validates its exact rows before publication.
+    with (
+        readonly_connection_context(source_path) as source,
+        connection_cursor(source, f"SELECT 1 FROM ({orphan}) LIMIT 1") as cursor,
+    ):
+        if cursor.fetchone() is None:
+            return
+    with PreparedIndexMutation.source_only(archive_root=archive_root, input_demand=input_demand) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            selected = (
+                ("blob_publication_reservations", f"publisher_id IN (SELECT publisher_id FROM ({orphan}))"),
+                (
+                    "prepared_source_manifest_members",
+                    f"source_generation_id IN (SELECT source_generation_id FROM ({orphan}))",
+                ),
+                (
+                    "prepared_source_manifests",
+                    "NOT EXISTS (SELECT 1 FROM source_generations g "
+                    "WHERE g.source_generation_id=prepared_source_manifests.source_generation_id)",
+                ),
+            )
+            for table, predicate in selected:
+                columns, keys = seal._known_tier_table_shape("source", table)
+                after: int | None = None
+                while True:
+                    with seal.original_rows(
+                        "source",
+                        f'SELECT rowid FROM "{table}" WHERE ({predicate}) '
+                        "AND (? IS NULL OR rowid>?) ORDER BY rowid LIMIT 256",
+                        (after, after),
+                    ) as rows:
+                        page = tuple(int(row[0]) for row in rows)
+                    if not page:
+                        break
+                    for rowid in page:
+                        image = seal.retain_tier_row("source", table, rowid)
+                        if image is None:
+                            raise ReferenceSealError("original startup Source dependency disappeared")
+                        seal.load_source_row(image)
+                        expressions = [seal.source_literal_expression(image.cells[key]) for key in keys]
+                        where = " AND ".join(
+                            f'"{columns[key]}" IS {expression}'
+                            for key, (expression, _operands) in zip(keys, expressions, strict=True)
+                        )
+                        parameters = tuple(value for _expression, operands in expressions for value in operands)
+                        with seal.source_statement(
+                            f'DELETE FROM "{table}" WHERE {where}',
+                            parameters,
+                            table=table,
+                            writable_targets=((table, tuple(image.cells[key] for key in keys)),),
+                        ):
+                            pass
+                    after = page[-1]
+        permit = seal.prepare_source_mutation()
+
+        def publish() -> None:
+            with permit.hold_authority(), permit.mutation_connection() as source:
+                with seal._owned_cursor(source, "BEGIN IMMEDIATE"):
+                    pass
+                permit.apply_source_statements(source)
+                permit.allow_commit(source)
+                source.commit()
+                seal.accept_known_tier_commit(permit.committed())
+
+        admit_stage_write("daemon.operation_recovery.source-preparation", publish)
 
 
 def apply_staged_archive_resets(archive_root: Path) -> tuple[str, ...]:
@@ -136,7 +223,9 @@ def apply_staged_archive_resets(archive_root: Path) -> tuple[str, ...]:
     if not staged:
         return ()
     with archive_tiers_closed(archive_root):
-        deferred = set(resolve_interrupted_operations(audit, archive_root, staged))
+        deferred = set(
+            resolve_interrupted_operations(audit, archive_root, staged, resolver_actor_ref=RECOVERY_SERVICE_ACTOR_REF)
+        )
     return tuple(operation.operation_id for operation in staged if operation.operation_id not in deferred)
 
 

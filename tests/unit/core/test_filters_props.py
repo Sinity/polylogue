@@ -31,6 +31,7 @@ from polylogue.archive.filter.types import SortField
 from polylogue.archive.models import SessionSummary
 from polylogue.archive.session.domain_models import Session
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.storage_records import SessionBuilder
 from tests.infra.strategies.filters import (
     filter_chain_strategy,
@@ -1068,8 +1069,12 @@ class TestDeleteCascade:
 
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(root, read_only=False) as archive:
-            deleted = archive.delete_sessions((session_id,))
+        def delete() -> int:
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return archive.delete_sessions((session_id,))
+
+        # The writable store takes a synchronous write lease; run it off the loop.
+        deleted = run_off_event_loop(delete)
         assert deleted == 1
 
         # After delete the session and its messages are gone directly.

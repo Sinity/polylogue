@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
 from typing import cast
@@ -48,21 +50,42 @@ def _command_for_contract(entry: CliActionContract, commands: dict[tuple[str, ..
     return commands[entry.path]
 
 
-def _mutation_recorder(issued: list[tuple[str, dict[str, object]]]) -> object:
-    """Record declared CLI writes and report daemon success.
+@contextmanager
+def _resident_cli(archive_root: Path, monkeypatch: pytest.MonkeyPatch, natives: tuple[str, ...]) -> Iterator[list[str]]:
+    """Serve the CLI from a real resident daemon over sessions matching ``needle``.
 
-    Mutating verbs lower to declared operations rather than writing in process,
-    so a contract test that needs the write to succeed supplies the daemon's
-    answer at ``_submit_mutation_operation`` and reads the law off the recorded
-    (operation, payload) pairs.
+    Mutating verbs and query selection are daemon-owned: the resident selection
+    owner resolves the matched set and decides cardinality. Each native id
+    becomes one session holding the token, and the yielded list is their
+    archive session ids in seed order.
     """
+    from tests.infra.daemon_operations import cli_daemon_archive
+    from tests.infra.storage_records import SessionBuilder
 
-    def _served(_config: object, name: str, payload: dict[str, object]) -> dict[str, object]:
-        issued.append((name, dict(payload)))
-        selection = payload.get("session_ids")
-        return {"status": "ok", "affected_count": len(selection) if isinstance(selection, list) else 1}
+    session_ids: list[str] = []
 
-    return _served
+    def seed(root: Path) -> None:
+        for native in natives:
+            builder = SessionBuilder(root / "index.db", native).provider("codex")
+            builder.add_message(text=f"needle neutral contract message for {native}")
+            builder.save()
+            session_ids.append(builder.native_session_id())
+
+    with cli_daemon_archive(archive_root, monkeypatch, seed_archive=seed):
+        yield session_ids
+
+
+def _active_tag_targets(archive_root: Path, tag: str) -> set[str]:
+    """The session targets carrying ``tag`` as an active user assertion."""
+    from polylogue.core.enums import AssertionKind
+    from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+
+    with readonly_connection_context(archive_root / "user.db") as user:
+        rows = user.execute(
+            "SELECT target_ref FROM assertions WHERE kind = ? AND status = 'active' AND key = ?",
+            (AssertionKind.TAG.value, tag),
+        ).fetchall()
+    return {str(row[0]).removeprefix("session:") for row in rows}
 
 
 def _assert_contract_declares_guard(path: tuple[str, ...], guard: str) -> None:
@@ -156,20 +179,23 @@ def test_declared_machine_formats_are_supported_by_click_options() -> None:
     assert not unsupported, f"Contracts declare unsupported machine formats: {unsupported}"
 
 
-def test_empty_terminal_query_unit_is_an_explicit_outcome(workspace_env: dict[str, Path]) -> None:
-    """The CLI's daemon/local adapter cannot emit a bare empty terminal page."""
+@pytest.mark.uses_real_clock("serves the query unit from a real resident daemon over its UDS socket")
+def test_empty_terminal_query_unit_is_an_explicit_outcome(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI's resident query adapter cannot emit a bare empty terminal page."""
 
-    result = CliRunner().invoke(
-        cli,
-        [
-            "--plain",
-            "--no-daemon",
-            "find",
-            "messages where text:no-such-contract-token",
-            "--format",
-            "json",
-        ],
-    )
+    with _resident_cli(workspace_env["archive_root"], monkeypatch, ()):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "find",
+                "messages where text:no-such-contract-token",
+                "--format",
+                "json",
+            ],
+        )
 
     assert result.exit_code == 2, result.output
     payload = json.loads(result.output)
@@ -245,21 +271,19 @@ def test_mutation_contracts_have_published_schema() -> None:
 
 
 def test_delete_contract_guard_refuses_plain_forceless_delete(workspace_env: dict[str, Path]) -> None:
-    """`dry_run_or_yes_required` is enforced by the public delete CLI."""
+    """`dry_run_or_yes_required` is enforced by the public delete CLI.
+
+    The guard refuses before any daemon contact: with no daemon serving this
+    archive, a refusal naming the daemon would mean the guard ran too late.
+    """
     _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
 
-    runner = CliRunner()
-    with (
-        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb") as resolve,
-        patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute_delete,
-    ):
-        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete"])
+    result = CliRunner().invoke(cli, ["--plain", "find", "needle", "then", "delete"])
 
     assert result.exit_code != 0
     assert "--yes" in result.output
     assert "--dry-run" in result.output
-    resolve.assert_not_called()
-    execute_delete.assert_not_called()
+    assert "polylogued run" not in result.output
 
 
 def test_delete_contract_plain_forceless_delete_does_not_emit_mutation(
@@ -268,26 +292,23 @@ def test_delete_contract_plain_forceless_delete_does_not_emit_mutation(
     """The destructive-action guard rejects before mutation envelope execution."""
     _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
 
-    runner = CliRunner()
-    with patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute_delete:
-        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete"])
+    with patch("polylogue.cli.archive_query._submit_mutation_operation") as submit:
+        result = CliRunner().invoke(cli, ["--plain", "find", "needle", "then", "delete"])
 
     assert result.exit_code != 0
     assert "confirmation_required" not in result.output
-    execute_delete.assert_not_called()
+    submit.assert_not_called()
 
 
-def test_delete_contract_guard_allows_dry_run_preview(workspace_env: dict[str, Path]) -> None:
+@pytest.mark.uses_real_clock("prepares the delete preview on a real resident daemon over its UDS socket")
+def test_delete_contract_guard_allows_dry_run_preview(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`dry_run_or_yes_required` permits previewing the full resolved set."""
     _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
 
-    session_ids = ["session-1", "session-2"]
-    runner = CliRunner()
-    with (
-        patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=session_ids[:2]),
-        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=session_ids),
-    ):
-        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run", "--all"])
+    with _resident_cli(workspace_env["archive_root"], monkeypatch, ("preview-one", "preview-two")) as session_ids:
+        result = CliRunner().invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run", "--all"])
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
@@ -295,19 +316,19 @@ def test_delete_contract_guard_allows_dry_run_preview(workspace_env: dict[str, P
     assert payload["status"] == "preview"
     assert payload["session_count"] == len(session_ids)
     assert payload["affected_count"] == 0
-    assert payload["session_ids"] == session_ids
+    assert set(payload["session_ids_sample"]) == set(session_ids)
+    assert payload["reference"]["operation_name"] == "mutation.session.delete.preview"
 
 
-def test_delete_contract_dry_run_empty_preview_is_explicit(workspace_env: dict[str, Path]) -> None:
+@pytest.mark.uses_real_clock("prepares the delete preview on a real resident daemon over its UDS socket")
+def test_delete_contract_dry_run_empty_preview_is_explicit(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """An empty dry-run is a preview envelope, not a completed deletion."""
     _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
 
-    runner = CliRunner()
-    with (
-        patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=[]),
-        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=[]),
-    ):
-        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run"])
+    with _resident_cli(workspace_env["archive_root"], monkeypatch, ()):
+        result = CliRunner().invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run"])
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
@@ -315,42 +336,44 @@ def test_delete_contract_dry_run_empty_preview_is_explicit(workspace_env: dict[s
     assert payload["status"] == "preview"
     assert payload["session_count"] == 0
     assert payload["affected_count"] == 0
-    assert payload["session_ids"] == []
+    assert payload.get("session_ids_sample", []) == []
 
 
-def test_delete_contract_preview_payload_matches_mutation_schema(workspace_env: dict[str, Path]) -> None:
+@pytest.mark.uses_real_clock("prepares the delete preview on a real resident daemon over its UDS socket")
+def test_delete_contract_preview_payload_matches_mutation_schema(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The dry-run destructive action emits a schema-valid mutation preview."""
     import jsonschema
 
     _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
     schema = _load_cli_output_schema("mutation-result")
 
-    session_ids = ["session-1", "session-2"]
-    runner = CliRunner()
-    with (
-        patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=session_ids[:2]),
-        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=session_ids),
-    ):
-        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run", "--all"])
+    with _resident_cli(workspace_env["archive_root"], monkeypatch, ("schema-one", "schema-two")):
+        result = CliRunner().invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run", "--all"])
 
     assert result.exit_code == 0, result.output
     jsonschema.validate(instance=json.loads(result.output), schema=schema)
 
 
-def test_delete_contract_guard_requires_all_for_multi_match(workspace_env: dict[str, Path]) -> None:
+@pytest.mark.uses_real_clock("asks a real resident daemon to prepare the delete over its UDS socket")
+def test_delete_contract_guard_requires_all_for_multi_match(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`single_match_unless_all` is enforced before destructive deletion."""
     _assert_contract_declares_guard(("delete",), "single_match_unless_all")
 
-    runner = CliRunner()
-    with (
-        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1", "session-2"]),
-        patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute_delete,
-    ):
-        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--yes"])
+    from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+
+    archive_root = workspace_env["archive_root"]
+    with _resident_cli(archive_root, monkeypatch, ("multi-one", "multi-two")) as session_ids:
+        result = CliRunner().invoke(cli, ["--plain", "find", "needle", "then", "delete", "--yes"])
 
     assert result.exit_code != 0
     assert "--all" in result.output
-    execute_delete.assert_not_called()
+    with readonly_connection_context(archive_root / "index.db") as index:
+        survivors = {str(row[0]) for row in index.execute("SELECT session_id FROM sessions")}
+    assert set(session_ids) <= survivors
 
 
 def test_read_contract_guard_requires_out_for_file_destination(workspace_env: dict[str, Path]) -> None:
@@ -383,43 +406,46 @@ def test_read_contract_guard_allows_first_for_multi_match(workspace_env: dict[st
     assert invocation.session_id == "session-1"
 
 
-def test_mark_contract_guard_requires_all_or_first_for_multi_match(workspace_env: dict[str, Path]) -> None:
+@pytest.mark.uses_real_clock("asks a real resident daemon to resolve the mark selection over its UDS socket")
+def test_mark_contract_guard_requires_all_or_first_for_multi_match(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`single_match_unless_all_or_first` is enforced before mark mutation."""
     _assert_contract_declares_guard(("mark",), "single_match_unless_all_or_first")
 
-    runner = CliRunner()
-    with (
-        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1", "session-2"]),
-        patch("polylogue.api.sync.bridge.run_coroutine_sync") as run_coroutine_sync,
-    ):
-        result = runner.invoke(cli, ["find", "needle", "then", "mark", "--tag-add", "reviewed"])
+    archive_root = workspace_env["archive_root"]
+    with _resident_cli(archive_root, monkeypatch, ("guard-one", "guard-two")):
+        result = CliRunner().invoke(cli, ["find", "needle", "then", "mark", "--tag-add", "reviewed"])
 
     assert result.exit_code != 0
-    assert "--all" in result.output
-    assert "--first" in result.output
-    run_coroutine_sync.assert_not_called()
+    assert "--all" in result.output, result.output
+    assert "--first" in result.output, result.output
+    assert _active_tag_targets(archive_root, "reviewed") == set()
 
 
-def test_mark_contract_guard_allows_first_for_multi_match(workspace_env: dict[str, Path]) -> None:
+@pytest.mark.uses_real_clock("applies the mark through a real resident daemon over its UDS socket")
+def test_mark_contract_guard_allows_first_for_multi_match(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The mark guard permits the explicitly first-only multi-match path."""
     _assert_contract_declares_guard(("mark",), "single_match_unless_all_or_first")
 
-    issued: list[tuple[str, dict[str, object]]] = []
-
-    runner = CliRunner()
-    with (
-        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1", "session-2"]),
-        patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_mutation_recorder(issued)),
-    ):
-        result = runner.invoke(cli, ["find", "needle", "then", "mark", "--tag-add", "reviewed", "--first"])
+    archive_root = workspace_env["archive_root"]
+    with _resident_cli(archive_root, monkeypatch, ("first-one", "first-two")) as session_ids:
+        result = CliRunner().invoke(cli, ["find", "needle", "then", "mark", "--tag-add", "reviewed", "--first"])
 
     assert result.exit_code == 0, result.output
     assert "Marked 1 session" in result.output
-    # One declared write, carrying only the leading match.
-    assert issued == [("mutation.session.tag", {"session_ids": ["session-1"], "tags": ["reviewed"]})]
+    # One declared write, carrying only one of the matched sessions.
+    tagged = _active_tag_targets(archive_root, "reviewed")
+    assert len(tagged) == 1
+    assert tagged <= set(session_ids)
 
 
-def test_mark_contract_json_payload_matches_mutation_schema(workspace_env: dict[str, Path]) -> None:
+@pytest.mark.uses_real_clock("applies the mark through a real resident daemon over its UDS socket")
+def test_mark_contract_json_payload_matches_mutation_schema(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The mark action exposes the mutation envelope promised by its contract."""
     import jsonschema
 
@@ -428,14 +454,9 @@ def test_mark_contract_json_payload_matches_mutation_schema(workspace_env: dict[
     assert mark.machine_envelope == "mutation"
     schema = _load_cli_output_schema("mutation-result")
 
-    issued: list[tuple[str, dict[str, object]]] = []
-
-    runner = CliRunner()
-    with (
-        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1"]),
-        patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_mutation_recorder(issued)),
-    ):
-        result = runner.invoke(
+    archive_root = workspace_env["archive_root"]
+    with _resident_cli(archive_root, monkeypatch, ("schema-mark",)) as session_ids:
+        result = CliRunner().invoke(
             cli,
             ["find", "needle", "then", "mark", "--tag-add", "reviewed", "--format", "json"],
         )
@@ -447,7 +468,8 @@ def test_mark_contract_json_payload_matches_mutation_schema(workspace_env: dict[
     assert payload["operation"] == "mutate"
     assert payload["session_count"] == 1
     assert payload["affected_count"] == 1
-    assert payload["session_ids"] == ["session-1"]
+    assert payload["session_ids_sample"] == session_ids
+    assert _active_tag_targets(archive_root, "reviewed") == set(session_ids)
 
 
 def test_retired_mark_candidates_terms_remain_query_text() -> None:
@@ -500,7 +522,7 @@ def test_import_contract_guard_requires_daemon_acceptance(tmp_path: Path, worksp
     """`daemon_accepts_schedule` refuses to claim success on unreachable daemon.
 
     The source must be admissible. ``import`` runs the local
-    ``import_source_admissibility`` preflight *before* it submits the declared
+    ``prepare_import_source_admission`` preflight *before* it submits the declared
     ``ingest`` operation, so a placeholder ``{}`` is refused by that earlier
     guard and never reaches the daemon-acceptance guard under test here.
 
@@ -514,12 +536,12 @@ def test_import_contract_guard_requires_daemon_acceptance(tmp_path: Path, worksp
     """
     _assert_contract_declares_guard(("import",), "daemon_accepts_schedule")
 
-    from polylogue.operations.import_operations import import_source_admissibility
+    from polylogue.operations.import_operations import prepare_import_source_admission
     from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
 
     source = tmp_path / "session.json"
     source.write_text(json.dumps(_supported_import_payload()), encoding="utf-8")
-    assert import_source_admissibility(source).admissible, "fixture must reach the daemon guard"
+    assert prepare_import_source_admission(source).preflight.admissible, "fixture must reach the daemon guard"
 
     result = CliRunner().invoke(cli, ["import", str(source)])
 

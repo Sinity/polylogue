@@ -162,3 +162,72 @@ def test_a_holder_in_an_unrelated_pool_does_not_make_this_slot_wait(
     assert basis["admission_ledger"]["holders"] == 0
     assert not second._path(101).exists()
     first.release()
+
+
+def test_a_run_nested_inside_an_admitted_slot_runs_within_its_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``devtools test`` run by a test inside an admitted slot must not wait on that slot.
+
+    Anti-vacuity: count the enclosing run's reservation as another job's and
+    the nested run waits for memory only its own completion can release; the
+    ``sleep`` below then fails the test instead of deadlocking it.
+    """
+    pool = tmp_path / "pool.slice"
+    job = pool / "job.slice"
+    job.mkdir(parents=True)
+    (job / "memory.current").write_text("0", encoding="ascii")
+    proc = tmp_path / "proc"
+    # pid 101 (the nested run) is a child of 102 (the test), a child of 100 (the slot run).
+    for pid, parent in ((101, 102), (102, 100), (100, 1), (200, 1)):
+        (proc / str(pid)).mkdir(parents=True)
+        (proc / str(pid) / "stat").write_text(f"{pid} (py thon) S {parent} 0 0\n", encoding="ascii")
+    monkeypatch.setattr("devtools.pytest_memory_admission._process_start_ticks", lambda pid, *, proc: pid + 1000)
+    ledger_dir = tmp_path / "admission"
+    enclosing = AdmissionLedger(ledger_dir, proc=proc, pid=100)
+    nested = AdmissionLedger(ledger_dir, proc=proc, pid=101)
+    profile = ChargeProfile(worker_anon_mib=800, worker_cache_mib=200, controller_mib=0)
+
+    def size(
+        argv: Sequence[str],
+        *,
+        outstanding_mib: Callable[[Path], float] | None = None,
+        **_kwargs: Any,
+    ) -> tuple[list[str], dict[str, Any]]:
+        admitted = 1000 - (outstanding_mib(pool) if outstanding_mib is not None else 0) >= 1000
+        return list(argv), {
+            "admission": "admitted" if admitted else "resource_not_ready",
+            "cgroup_directory": str(job),
+            "predicted_charge_mib": 1000.0,
+            "workers": 1 if admitted else 0,
+            "narrowed": False,
+        }
+
+    _command, enclosing_basis = admit_width(
+        ["pytest"], size=size, profile=profile, max_workers=1, ledger=enclosing, report=lambda _message: None
+    )
+    assert enclosing_basis is not None and enclosing_basis["workers"] == 1
+    # An unrelated job in the same pool holds the rest of its memory.
+    other = AdmissionLedger(ledger_dir, proc=proc, pid=200)
+    with other.locked():
+        other.record(cgroup=str(job), reserved_mib=1000.0, state="admitted", ticket=9)
+
+    def no_wait(_delay: float) -> None:
+        raise AssertionError("the nested run waited on its enclosing slot's reservation")
+
+    _command, nested_basis = admit_width(
+        ["pytest"],
+        size=size,
+        profile=profile,
+        max_workers=1,
+        ledger=nested,
+        report=lambda _message: None,
+        sleep=no_wait,
+    )
+
+    assert nested_basis is not None and nested_basis["workers"] == 1
+    assert nested_basis["admission_ledger"]["holders"] == 0
+    assert nested_basis["admission_ledger"]["within_enclosing_reservation"] is True
+    nested.release()
+    other.release()
+    enclosing.release()

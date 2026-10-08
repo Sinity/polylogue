@@ -8,11 +8,13 @@ from pathlib import Path
 from typing_extensions import TypedDict
 
 from polylogue.core.enums import Provider
-from polylogue.core.provider_identity import canonical_acquisition_provider
+from polylogue.core.provider_identity import canonical_acquisition_provider, captured_hermes_profile_key
+from polylogue.core.raw_coordinates import captured_zip_member_raw_id
+from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
 from polylogue.sources.parsers.base import RawSessionData
-from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id, retained_content_revision
+from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.runtime import RawSessionRecord
@@ -37,24 +39,6 @@ class ScanResult:
             "errors": 0,
         }
         self.cursors: dict[str, CursorStatePayload] = {}
-
-
-def _hermes_content_revision(
-    blob_hash: str,
-    *,
-    blob_root: Path | None,
-    blob_store: BlobStore | None,
-) -> str:
-    """Resolve the content term for one Hermes acquisition's raw identity.
-
-    Hermes retains both SQLite databases and byte-immutable observer streams
-    under one source name, so the term is resolved from the retained blob
-    rather than assumed per source.
-    """
-    from polylogue.paths import blob_store_root
-
-    store = blob_store or BlobStore(blob_root or blob_store_root())
-    return retained_content_revision(store.blob_path(blob_hash), blob_hash)
 
 
 def make_raw_record(
@@ -98,11 +82,32 @@ def make_raw_record(
     capture_mode = source_capture_mode
     if capture_mode is Provider.UNKNOWN:
         capture_mode = Provider.from_string(source_name)
-    if source_name == "hermes":
+    if (
+        source_name == "hermes"
+        and raw_data.captured_zip_coordinate is None
+        and (raw_data.captured_profile_source_path is None or raw_data.captured_profile_key is None)
+    ):
+        raise MissingProfileIdentityError("Hermes acquisition is missing its captured profile identity")
+    if raw_data.captured_zip_coordinate is not None:
+        if source_name == "hermes":
+            namespace = raw_data.captured_zip_coordinate.profile_namespace
+            if namespace is None:
+                if raw_data.captured_profile_key is not None or raw_data.captured_profile_source_path is not None:
+                    raise ValueError("ZIP member has profile evidence without an accepted namespace")
+                # Exact member bytes and coordinate remain retained. The
+                # retained parser records the distinct typed profile gap.
+            elif captured_hermes_profile_key(Path(namespace)) != raw_data.captured_profile_key:
+                raise ValueError("Hermes ZIP acquisition has mismatched profile evidence")
+        raw_id = captured_zip_member_raw_id(raw_data.captured_zip_coordinate, blob_hash)
+    elif source_name == "hermes":
+        assert raw_data.captured_profile_source_path is not None
+        assert raw_data.captured_profile_key is not None
         raw_id = hermes_profile_raw_id(
             raw_data.source_path,
             raw_data.source_index or 0,
-            _hermes_content_revision(blob_hash, blob_root=blob_root, blob_store=blob_store),
+            blob_hash,
+            identity_path=Path(raw_data.captured_profile_source_path),
+            profile_identity=raw_data.captured_profile_key,
         )
     else:
         raw_id = deterministic_raw_session_id(
@@ -122,7 +127,15 @@ def make_raw_record(
         capture_mode=capture_mode,
         source_name=source_name,
         source_path=raw_data.source_path,
-        source_index=raw_data.source_index,
+        canonical_source_path=raw_data.canonical_source_path,
+        captured_profile_key=raw_data.captured_profile_key,
+        captured_zip_coordinate=raw_data.captured_zip_coordinate,
+        captured_file_observation=raw_data.captured_file_observation,
+        source_index=(
+            raw_data.captured_zip_coordinate.source_index
+            if raw_data.captured_zip_coordinate is not None
+            else raw_data.source_index
+        ),
         addressing_mode=raw_data.addressing_mode,
         content_identity=raw_data.content_identity,
         blob_size=blob_size,
@@ -160,6 +173,10 @@ def pending_pre_parse_raw_admission_request(
         origin=origin,
         capture_mode=record.capture_mode,
         source_path=record.source_path,
+        canonical_source_path=record.frozen_canonical_source_path(),
+        captured_profile_key=record.captured_profile_key,
+        captured_zip_coordinate=record.captured_zip_coordinate,
+        source_item=record.source_item,
         source_index=record.source_index or 0,
         blob_hash=blob_hash,
         blob_size=record.blob_size,
@@ -167,6 +184,7 @@ def pending_pre_parse_raw_admission_request(
         file_mtime_ms=file_mtime_ms,
         raw_id=record.raw_id,
         addressing_mode=record.addressing_mode,
+        content_identity=record.content_identity,
         blob_publication_receipt_id=record.blob_publication_receipt_id,
         policy_snapshot=policy_snapshot,
     )

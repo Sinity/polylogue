@@ -24,6 +24,7 @@ from polylogue.cli.shared.machine_errors import (
     success,
 )
 from polylogue.core.json import JSONDocument
+from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
 from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.json_contracts import envelope_result, extract_json_object, json_object_field, parse_json_object
 
@@ -113,7 +114,9 @@ class TestQueryShapedJsonMatrix:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],  # deterministic empty archive, no skip
     ) -> None:
-        parsed = _invoke_json_command(args, monkeypatch)
+        # Insight readiness is a daemon-owned read.
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            parsed = _invoke_json_command(args, monkeypatch)
         assert parsed["status"] == "ok"
         assert result_key in envelope_result(parsed, context="format json envelope")
 
@@ -129,7 +132,9 @@ class TestQueryShapedJsonMatrix:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],  # deterministic empty archive, no skip
     ) -> None:
-        parsed = _invoke_json_command(args, monkeypatch)
+        # Insight readiness is a daemon-owned read.
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            parsed = _invoke_json_command(args, monkeypatch)
         assert parsed["status"] == "ok"
         assert "result" in parsed
 
@@ -354,15 +359,24 @@ class TestAnalyzeJsonContract:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """polylogue analyze --format json returns an empty success envelope on empty archive."""
+        """polylogue analyze --format json reports an empty archive as a typed degraded read.
+
+        With no raw artifacts, raw materialization is undefined at a zero
+        denominator rather than converged, so the stats envelope names the
+        ``archive_not_converged`` gap and the exit follows the degraded outcome.
+        """
         _init_empty_archive(workspace_env)
         with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
             exit_code, output = _invoke_raw_json_command(["analyze", "--format", "json"], monkeypatch)
-        assert exit_code == 0, f"analyze --format json on empty archive: expected exit 0, got {exit_code}: {output!r}"
+        assert exit_code == OUTCOME_EXIT_CODES["degraded"], (
+            f"analyze --format json on empty archive: expected the degraded exit, got {exit_code}: {output!r}"
+        )
         assert TRACEBACK_SENTINEL not in output
         parsed = json.loads(output)
         assert isinstance(parsed, dict)
         assert parsed.get("total_sessions", 0) == 0
+        assert parsed["outcome"]["state"] == "degraded"
+        assert parsed["outcome"]["detail"]["gaps"] == ["archive_not_converged"]
 
     @pytest.mark.contract
     def test_stats_by_origin_json_empty_archive_returns_empty_envelope(
@@ -430,7 +444,8 @@ class TestStatusJsonContract:
             ["ops", "status", "--daemon-url", "not-a-url", "--format", "json"],
             monkeypatch,
         )
-        # May exit 0 (fallback) or non-zero; must not produce traceback
+        # A malformed URL is a transport failure: typed "unavailable", exit 1.
+        assert exit_code == 1, output
         assert TRACEBACK_SENTINEL not in output
 
 
@@ -484,7 +499,9 @@ class TestAllJsonCommandsProduceValidJson:
             (["ops", "doctor", "--format", "json"], "cli.doctor_json_matrix", False),
             # `mark candidates list` was consolidated into the root `judge`
             # command (#3138, db9447cf4); `judge --list` is its replacement.
-            (["judge", "--list", "--format", "json"], "cli.candidate_assertions_json_matrix", False),
+            # An empty archive's candidate listing is an ``empty`` terminal
+            # outcome; its exit code follows that outcome.
+            (["judge", "--list", "--format", "json"], "cli.candidate_assertions_json_matrix", True),
             (["config", "--format", "json"], "cli.config_json_matrix", False),
             # read --all browse on empty archive → exit 0 + empty archive envelope (valid JSON)
             (["read", "--all", "--format", "json"], "cli.read_all_json_matrix", False),

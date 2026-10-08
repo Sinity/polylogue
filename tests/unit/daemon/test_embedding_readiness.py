@@ -176,7 +176,16 @@ def _seed_archive_embedding_readiness_db(path: Path, *, error_message: str = "vo
             """
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL DEFAULT 'codex-session',
                 message_count INTEGER NOT NULL DEFAULT 0
+            );
+            -- Embeddable prose is reconstructed from text blocks, not messages.text.
+            CREATE TABLE blocks (
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                block_type TEXT NOT NULL,
+                text TEXT
             );
             CREATE TABLE messages (
                 message_id TEXT PRIMARY KEY,
@@ -188,9 +197,9 @@ def _seed_archive_embedding_readiness_db(path: Path, *, error_message: str = "vo
                 word_count INTEGER NOT NULL DEFAULT 8,
                 content_hash BLOB NOT NULL
             );
-            INSERT INTO sessions VALUES ('codex-session:complete', 1);
-            INSERT INTO sessions VALUES ('codex-session:pending', 2);
-            INSERT INTO sessions VALUES ('codex-session:error', 1);
+            INSERT INTO sessions (session_id, message_count) VALUES ('codex-session:complete', 1);
+            INSERT INTO sessions (session_id, message_count) VALUES ('codex-session:pending', 2);
+            INSERT INTO sessions (session_id, message_count) VALUES ('codex-session:error', 1);
             """
         )
         conn.execute(
@@ -208,6 +217,10 @@ def _seed_archive_embedding_readiness_db(path: Path, *, error_message: str = "vo
         conn.execute(
             "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, ?)",
             ("codex-session:error:m1", "codex-session:error", _READINESS_ERROR_TEXT, b"\x04" * 32),
+        )
+        conn.execute(
+            "INSERT INTO blocks (session_id, message_id, position, block_type, text) "
+            "SELECT session_id, message_id, 0, 'text', text FROM messages"
         )
         conn.commit()
 
@@ -334,7 +347,12 @@ def test_readiness_unconfigured_when_enabled_flag_off(
     db = workspace_env["data_root"] / "polylogue" / "index.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT NOT NULL DEFAULT 'codex-session')"
+        )
+        conn.execute(
+            "CREATE TABLE blocks (session_id TEXT, message_id TEXT, position INTEGER, block_type TEXT, text TEXT)"
+        )
         conn.execute(
             """
             CREATE TABLE messages (
@@ -343,13 +361,17 @@ def test_readiness_unconfigured_when_enabled_flag_off(
                 role TEXT NOT NULL DEFAULT 'user',
                 message_type TEXT NOT NULL DEFAULT 'message',
                 material_origin TEXT NOT NULL DEFAULT 'human_authored',
-                word_count INTEGER NOT NULL DEFAULT 8
+                word_count INTEGER NOT NULL DEFAULT 8,
+                content_hash BLOB NOT NULL DEFAULT (zeroblob(32))
             )
             """
         )
         conn.execute("CREATE TABLE embedding_status (session_id TEXT PRIMARY KEY, needs_reindex INTEGER)")
-        conn.execute("INSERT INTO sessions VALUES ('conv-1')")
+        conn.execute("INSERT INTO sessions (session_id) VALUES ('conv-1')")
         conn.execute("INSERT INTO messages (message_id, session_id) VALUES ('msg-1', 'conv-1')")
+        conn.execute(
+            "INSERT INTO blocks VALUES ('conv-1', 'msg-1', 0, 'text', 'Synthetic prose long enough to embed.')"
+        )
         conn.commit()
 
     cfg = _config(embedding_enabled=False, voyage_api_key="vk-live")

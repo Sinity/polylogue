@@ -1,55 +1,50 @@
 """Deterministic crash-injection matrix for the blob publication lifecycle.
 
-polylogue-0puw AC3: inject a failure after each publication boundary in the
-real acquire->publish->reference->commit->finalize chain (not a toy replica --
-these tests drive `_process_ingest_batch_sync` and `write_source_raw_session`,
-the actual production entry points) and assert the surviving state either (a)
-resumes safely on retry, or (b) lands in the exact classification bucket
-`reconcile_blob_publication_reservations` already names (missing / referenced
-/ unresolved) so polylogue-qs0a's reconciler has evidence for every reachable
-crash state instead of speculation.
+polylogue-0puw AC3: inject a failure at each publication boundary of the real
+canonical chain -- retained preparation reserves and publishes attachment
+bytes, the Index write references them, the Source durable-reference
+transaction consumes the reservation -- and assert the surviving state either
+resumes safely on retry or lands in a bucket
+``reconcile_blob_publication_reservations`` names (missing / referenced /
+unresolved). The chain is driven through the canonical retained owner
+(``RawObservationConvergenceOwner.ingest_retained_raw_ids``) with a real
+inline-attachment capture, not a replica.
 
-Boundaries covered, matching the design's named chain:
-1. reservation -> blob write        (test_crash_after_reservation...)
-2. blob write -> reference (index)  (test_crash_after_blob_write_before_index_write...)
-3. blob write -> reference (source) (test_crash_during_source_commit_transaction...)
-4. reference/commit -> finalize     (test_crash_after_index_commit_before_finalization...)
-5. finalize atomicity               (test_finalization_transaction_is_atomic...)
+Boundaries covered:
+1. reservation -> blob write        (BlobStore.publish_many fails)
+2. Source reference -> Index write (the Index attachment write fails)
+3. Source durable-reference commit (the receipt consumption fails)
+Atomic multi-receipt finalization is owned by
+tests/unit/storage/test_archive_tiers_source_write.py::
+test_source_reference_commit_atomically_consumes_publication_reservation.
 """
 
 from __future__ import annotations
 
-import os
+import base64
+import hashlib
+import json
 import sqlite3
-import time
-from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
-import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
-import polylogue.storage.sqlite.archive_tiers.source_write as source_write
-from polylogue.core.enums import Origin
-from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
-from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
-from polylogue.storage.blob_gc import run_blob_gc_report
+import polylogue.storage.blob_publication as blob_publication
+import polylogue.storage.sqlite.archive_tiers.write as archive_write
+from polylogue.core.enums import Provider
 from polylogue.storage.blob_publication import (
-    ArchiveBlobPublisher,
+    BlobPublicationReconciliation,
     abandon_blob_publication_receipts,
-    consume_blob_publication_receipt,
     exclude_archive_blob_publishers,
     reconcile_blob_publication_reservations,
 )
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.connection import open_connection
-from tests.unit.pipeline.test_ingest_batch import (
-    _attachment_ref_tuple,
-    _attachment_tuple,
-    _message_tuple,
-    _session_data,
-)
+from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write, run_off_event_loop
+from tests.infra.live_ingest import prepared_live_convergence_owner
+from tests.infra.live_provider_proof import native_proof_artifact
 
 
 def _reservation_rows(source_db: Path, blob_hash: bytes) -> list[tuple[str]]:
@@ -58,6 +53,114 @@ def _reservation_rows(source_db: Path, blob_hash: bytes) -> list[tuple[str]]:
             "SELECT publication_id FROM blob_publication_reservations WHERE blob_hash = ?",
             (blob_hash,),
         ).fetchall()
+
+
+def _all_reservations(source_db: Path) -> list[tuple[str, bytes]]:
+    with sqlite3.connect(source_db) as conn:
+        return [
+            (str(row[0]), bytes(row[1]))
+            for row in conn.execute("SELECT publication_id, blob_hash FROM blob_publication_reservations")
+        ]
+
+
+def _attachment_hashes(index_db: Path) -> set[bytes]:
+    with sqlite3.connect(index_db) as conn:
+        return {bytes(row[0]) for row in conn.execute("SELECT blob_hash FROM attachments WHERE blob_hash IS NOT NULL")}
+
+
+def _reconcile_excluded(root: Path) -> BlobPublicationReconciliation:
+    """Excluded reconciliation deletes Source rows, so it runs as the archive writer does."""
+
+    def reconcile() -> BlobPublicationReconciliation:
+        with (
+            write_lease("test.blob.reconcile", archive_root=root),
+            exclude_archive_blob_publishers(root / "source.db") as exclusion,
+        ):
+            return reconcile_blob_publication_reservations(
+                root / "source.db", root / "blob", index_db_path=root / "index.db", writer_exclusion=exclusion
+            )
+
+    return run_off_event_loop(reconcile)
+
+
+async def _acquire_inline_attachment_capture(tmp_path: Path) -> tuple[Path, str, dict[bytes, int]]:
+    """Acquire a real Grok capture whose canonical parse yields inline attachments."""
+    root = tmp_path / "archive"
+    envelope, _messages, attachments = native_proof_artifact(
+        tmp_path, "native-inline-attachment-v1.json", Provider.GROK
+    )
+    assert attachments > 0
+    contents = [base64.b64decode(entry["content_base64"]) for entry in envelope["session"]["attachments"]]
+    expected = {hashlib.sha256(content).digest(): len(content) for content in contents}
+    payload = json.dumps(envelope).encode()
+
+    def acquire() -> str:
+        bootstrap_archive_root(root)
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=Provider.GROK,
+                payload=payload,
+                source_path="neutral-grok-capture.json",
+                canonical_source_path="neutral-grok-capture.json",
+                acquired_at_ms=1,
+            )
+
+    raw_id = await run_archive_fixture_write(root, acquire)
+    return root, raw_id, expected
+
+
+async def _ingest(root: Path, raw_id: str) -> BaseException | None:
+    """Run the canonical owner once; return the surfaced failure, if any."""
+    try:
+        async with prepared_live_convergence_owner(root) as owner:
+            receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
+    except BaseException as exc:  # the crash under test may surface as any typed failure
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        return exc
+    if any(receipt.quarantined for receipt in receipts):
+        return RuntimeError("retained owner quarantined the raw")
+    return None
+
+
+def _assert_crash_consistent(root: Path, expected: dict[bytes, int]) -> None:
+    """The durable laws every reachable crash state must satisfy.
+
+    No Index row references bytes that are not on disk; every published
+    attachment blob is either referenced or still reserved (never an
+    unreserved orphan); unexcluded reconciliation classifies without deleting.
+    """
+    from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
+
+    store = BlobStore(root / "blob")
+    referenced = _attachment_hashes(root / "index.db")
+    reserved = {blob_hash for _publication, blob_hash in _all_reservations(root / "source.db")}
+    for blob_hash in referenced:
+        assert store.exists(blob_hash.hex()), "an Index attachment references missing bytes"
+    with sqlite3.connect(root / "source.db") as source, sqlite3.connect(root / "index.db") as index:
+        for blob_hash in expected:
+            if store.exists(blob_hash.hex()):
+                live = (
+                    inspect_blob_liveness(source, blob_hash.hex(), index_conn=index, require_index=True).state
+                    is LivenessState.LIVE
+                )
+                assert live or blob_hash in reserved, "published bytes are neither referenced nor reserved"
+    before = _all_reservations(root / "source.db")
+    retained = reconcile_blob_publication_reservations(root / "source.db", root / "blob")
+    assert retained.cleared_missing == 0
+    assert retained.cleared_referenced == 0
+    assert _all_reservations(root / "source.db") == before
+
+
+async def _assert_retry_converges(root: Path, raw_id: str, expected: dict[bytes, int]) -> None:
+    assert await _ingest(root, raw_id) is None
+    store = BlobStore(root / "blob")
+    with sqlite3.connect(root / "index.db") as conn:
+        rows = conn.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchall()
+    assert {bytes(row[0]): int(row[1]) for row in rows} == expected
+    assert all(row[2] == "acquired" for row in rows)
+    assert all(store.exists(blob_hash.hex()) for blob_hash in expected)
+    assert _all_reservations(root / "source.db") == []
 
 
 def test_reconciliation_keeps_same_hash_receipts_without_their_exact_consuming_transaction(tmp_path: Path) -> None:
@@ -80,10 +183,7 @@ def test_reconciliation_keeps_same_hash_receipts_without_their_exact_consuming_t
             (bytes.fromhex(blob_hash),),
         )
 
-    with exclude_archive_blob_publishers(source_db) as exclusion:
-        outcome = reconcile_blob_publication_reservations(
-            source_db, store.root, index_db_path=index_db, writer_exclusion=exclusion
-        )
+    outcome = _reconcile_excluded(archive_root)
 
     assert outcome.cleared_referenced == 0
     assert outcome.retained_referenced == 2
@@ -91,9 +191,10 @@ def test_reconciliation_keeps_same_hash_receipts_without_their_exact_consuming_t
 
     with sqlite3.connect(index_db) as index:
         index.execute("DELETE FROM attachments WHERE attachment_id = 'attachment'")
-    abandonment = abandon_blob_publication_receipts(
-        source_db, store.root, ["publication-a"], confirmed=True, index_db_path=index_db
-    )
+    with write_lease("test.blob.abandon", archive_root=archive_root):
+        abandonment = abandon_blob_publication_receipts(
+            source_db, store.root, ["publication-a"], confirmed=True, index_db_path=index_db
+        )
     assert abandonment.abandoned == 1
     assert _reservation_rows(source_db, bytes.fromhex(blob_hash)) == [("publication-b",)]
 
@@ -121,490 +222,123 @@ def test_reconciliation_retains_receipts_when_required_index_is_unavailable(tmp_
     assert _reservation_rows(source_db, bytes.fromhex(blob_hash)) == [("publication",)]
 
 
-def test_crash_after_reservation_before_blob_write_leaves_missing_classified_reservation(
+@pytest.mark.asyncio
+async def test_crash_after_reservation_before_blob_write_leaves_missing_classified_reservation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Boundary 1: reservation durably committed, blob write crashes.
+    """Boundary 1: reservation durably committed, the blob write crashes.
 
-    ``reserve_many`` commits the reservation row in its own transaction
-    before ``publish_many`` ever runs, so a crash here must never lose the
-    reservation -- and since no attachment row can exist yet, the blob is
-    provably unreferenced. Mutation-sensitive: without the crash, the
-    reservation is consumed and the table ends empty (see the retry
-    assertion below); the fault proves the row survives instead.
-
-    ``_write_session_entry`` catches and logs per-session write exceptions
-    (_core.py's "Error writing session" path) rather than propagating them,
-    so a raise here does NOT fail the whole batch -- it is recorded as a
-    parse failure for this raw_id and the batch call returns normally. That
-    swallowing is itself real production resilience (one bad session must
-    not abort an entire ingest batch); this test asserts against it rather
-    than a fabricated raise.
+    The reservation commits in its own transaction before ``publish_many``
+    runs, so the crash must not lose it, and no attachment can reference the
+    absent bytes. Excluded reconciliation clears the blob-missing obligation;
+    a retry without the fault converges. Anti-vacuity: without the fault the
+    reservation is consumed and the retry assertions alone hold.
     """
-    archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    db_path = archive_root / "index.db"
-    source_path = tmp_path / "raw.jsonl"
-    source_path.write_text("{}", encoding="utf-8")
-    raw_id = "raw-crash-reservation"
-    session_id = "codex-session:crash-reservation"
-    payload = b"crash after reservation, before blob write"
-    expected_hash = sha256(payload).digest()
-
-    def build_session() -> SessionWritePayload:
-        # A fresh payload per call: _process_ingest_batch_sync mutates (clears)
-        # session contents in place after draining it (discard_session_data_payload),
-        # so retrying with the SAME SessionWritePayload instance would silently
-        # see an already-emptied session -- not a production bug, a shared-fixture
-        # trap this harness must avoid to keep the retry assertion meaningful.
-        attachment = _attachment_tuple("att-1", mime_type="text/plain", inline_bytes=payload)
-        return _session_data(
-            session_id,
-            content_hash="crash-reservation",
-            raw_id=raw_id,
-            message_tuples=[_message_tuple("msg-1", session_id, role="user", text="x", content_hash="m", sort_key=0.0)],
-            attachment_tuples=[attachment],
-            attachment_ref_tuples=[_attachment_ref_tuple("att-1", session_id, "msg-1")],
-        )
-
-    raw_record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name="codex",
-        source_path=str(source_path),
-        blob_size=source_path.stat().st_size,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-
-    def fake_ingest_record(
-        record: RawSessionRecord,
-        archive_root_str: str,
-        validation_mode: str,
-        measure_ingest_result_size: bool,
-        *,
-        blob_root_str: str | None,
-    ) -> IngestRecordResult:
-        del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
-        assert record.raw_id == raw_id
-        return IngestRecordResult(raw_id=record.raw_id, sessions=[build_session()])
+    root, raw_id, expected = await _acquire_inline_attachment_capture(tmp_path)
 
     def boom_publish(_store: object, _prepared: object) -> None:
         raise RuntimeError("simulated crash: after reservation, before blob write")
 
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
+    with monkeypatch.context() as patch:
+        patch.setattr(BlobStore, "publish_many", boom_publish)
+        failure = await _ingest(root, raw_id)
 
-    with monkeypatch.context() as mp:
-        mp.setattr(BlobStore, "publish_many", boom_publish)
-        summary = _process_ingest_batch_sync(
-            [raw_record],
-            db_path=db_path,
-            archive_root_str=str(archive_root),
-            blob_root_str=str(archive_root / "blob"),
-            validation_mode="off",
-            ingest_workers=1,
-            measure_ingest_result_size=False,
-        )
+    assert failure is not None
+    store = BlobStore(root / "blob")
+    for blob_hash in expected:
+        assert not store.exists(blob_hash.hex())
+        assert len(_reservation_rows(root / "source.db", blob_hash)) == 1
+    assert not (_attachment_hashes(root / "index.db") & set(expected))
+    _assert_crash_consistent(root, expected)
 
-    assert raw_id in summary.failed_raw_ids
-    assert "after reservation, before blob write" in summary.failed_raw_ids[raw_id]
-    assert len(_reservation_rows(archive_root / "source.db", expected_hash)) == 1
-    assert not BlobStore(archive_root / "blob").exists(expected_hash.hex())
-    with open_connection(db_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash = ?", (expected_hash,)).fetchone()[0] == 0
+    cleared = _reconcile_excluded(root)
+    assert cleared.cleared_missing == len(expected)
+    assert _all_reservations(root / "source.db") == []
 
-    # Unexcluded reconciliation classifies but must not delete.
-    retained = reconcile_blob_publication_reservations(archive_root / "source.db", archive_root / "blob")
-    assert retained.retained_missing == 1
-    assert retained.cleared_missing == 0
-    assert retained.unresolved == 0
-    assert len(_reservation_rows(archive_root / "source.db", expected_hash)) == 1
-
-    # Excluded reconciliation clears the terminal, blob-missing obligation.
-    with exclude_archive_blob_publishers(archive_root / "source.db") as exclusion:
-        cleared = reconcile_blob_publication_reservations(
-            archive_root / "source.db",
-            archive_root / "blob",
-            index_db_path=db_path,
-            writer_exclusion=exclusion,
-        )
-    assert cleared.cleared_missing == 1
-    assert _reservation_rows(archive_root / "source.db", expected_hash) == []
-
-    # Safe resume: retrying the same attempt (fault removed) converges cleanly
-    # and its own finalization leaves zero outstanding reservations.
-    _process_ingest_batch_sync(
-        [raw_record],
-        db_path=db_path,
-        archive_root_str=str(archive_root),
-        blob_root_str=str(archive_root / "blob"),
-        validation_mode="off",
-        ingest_workers=1,
-        measure_ingest_result_size=False,
-    )
-    assert BlobStore(archive_root / "blob").exists(expected_hash.hex())
-    with open_connection(db_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash = ?", (expected_hash,)).fetchone()[0] == 1
-    assert _reservation_rows(archive_root / "source.db", expected_hash) == []
+    await _assert_retry_converges(root, raw_id, expected)
 
 
-def test_crash_after_blob_write_before_index_write_lands_in_unresolved_bucket(
+@pytest.mark.asyncio
+async def test_crash_after_blob_write_before_index_write_keeps_the_source_reference(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Boundary 2: blob durably published, the index reference write crashes.
+    """Boundary 2: blob published and Source reference committed, the Index write crashes.
 
-    Reproduces qs0a's named ambiguous case from real code: reservation
-    present, blob bytes present, nothing references it yet. Confirms
-    (as a regression, not speculation) that this bucket stays retained even
-    under full writer exclusion -- reconcile_blob_publication_reservations's
-    ``unresolved`` branch never checks ``may_clear`` -- so a future
-    classification change has a real fixture to change against.
-
-    Like boundary 1, this raise is caught per-session by
-    ``_write_session_entry`` -- the batch call itself does not raise; the
-    fault surfaces as a recorded parse failure for this raw_id instead.
+    The Source phase precedes Index publication: its transaction writes the
+    retained ``blob_refs`` attachment row and consumes the exact receipt
+    together. An Index crash therefore leaves no receipt, and the bytes stay
+    live through that durable Source reference (never an unreserved,
+    unreferenced orphan). A retry converges the Index from the same Source
+    evidence.
     """
-    archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    db_path = archive_root / "index.db"
-    source_path = tmp_path / "raw.jsonl"
-    source_path.write_text("{}", encoding="utf-8")
-    raw_id = "raw-crash-index-write"
-    session_id = "codex-session:crash-index-write"
-    payload = b"crash after blob write, before index reference"
-    expected_hash = sha256(payload).digest()
-    attachment = _attachment_tuple("att-1", mime_type="text/plain", inline_bytes=payload)
-    session = _session_data(
-        session_id,
-        content_hash="crash-index-write",
-        raw_id=raw_id,
-        message_tuples=[_message_tuple("msg-1", session_id, role="user", text="x", content_hash="m", sort_key=0.0)],
-        attachment_tuples=[attachment],
-        attachment_ref_tuples=[_attachment_ref_tuple("att-1", session_id, "msg-1")],
-    )
-    raw_record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name="codex",
-        source_path=str(source_path),
-        blob_size=source_path.stat().st_size,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
+    from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
 
-    def fake_ingest_record(
-        record: RawSessionRecord,
-        archive_root_str: str,
-        validation_mode: str,
-        measure_ingest_result_size: bool,
-        *,
-        blob_root_str: str | None,
-    ) -> IngestRecordResult:
-        del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
-        assert record.raw_id == raw_id
-        return IngestRecordResult(raw_id=record.raw_id, sessions=[session])
+    root, raw_id, expected = await _acquire_inline_attachment_capture(tmp_path)
 
-    def boom_write_parsed(*_args: object, **_kwargs: object) -> None:
+    def boom_attachments(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("simulated crash: after blob write, before index reference")
 
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
-    monkeypatch.setattr(ingest_batch_core, "write_parsed_session_to_archive", boom_write_parsed)
+    with monkeypatch.context() as patch:
+        patch.setattr(archive_write, "_write_attachments", boom_attachments)
+        failure = await _ingest(root, raw_id)
 
-    summary = _process_ingest_batch_sync(
-        [raw_record],
-        db_path=db_path,
-        archive_root_str=str(archive_root),
-        blob_root_str=str(archive_root / "blob"),
-        validation_mode="off",
-        ingest_workers=1,
-        measure_ingest_result_size=False,
-    )
+    assert failure is not None
+    store = BlobStore(root / "blob")
+    assert not (_attachment_hashes(root / "index.db") & set(expected))
+    assert _all_reservations(root / "source.db") == []
+    with sqlite3.connect(root / "source.db") as source, sqlite3.connect(root / "index.db") as index:
+        for blob_hash in expected:
+            assert store.exists(blob_hash.hex())
+            liveness = inspect_blob_liveness(source, blob_hash.hex(), index_conn=index, require_index=True)
+            assert liveness.state is LivenessState.LIVE
+            assert liveness.surfaces == ("source.db.blob_refs",)
+    _assert_crash_consistent(root, expected)
 
-    assert raw_id in summary.failed_raw_ids
-    assert "after blob write, before index reference" in summary.failed_raw_ids[raw_id]
-    assert len(_reservation_rows(archive_root / "source.db", expected_hash)) == 1
-    assert BlobStore(archive_root / "blob").exists(expected_hash.hex())
-    with open_connection(db_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash = ?", (expected_hash,)).fetchone()[0] == 0
-
-    with exclude_archive_blob_publishers(archive_root / "source.db") as exclusion:
-        outcome = reconcile_blob_publication_reservations(
-            archive_root / "source.db",
-            archive_root / "blob",
-            index_db_path=db_path,
-            writer_exclusion=exclusion,
-        )
-    assert outcome.unresolved == 1
-    assert outcome.cleared_missing == 0
-    assert outcome.cleared_referenced == 0
-    # The unresolved bucket is retained even under full exclusion -- current,
-    # deliberate behavior (see reconcile_blob_publication_reservations), not
-    # a bug this bead fixes; this is the evidence qs0a's classification work
-    # consumes.
-    assert len(_reservation_rows(archive_root / "source.db", expected_hash)) == 1
+    await _assert_retry_converges(root, raw_id, expected)
 
 
-def test_crash_during_source_commit_transaction_rolls_back_atomically_to_unresolved(
+@pytest.mark.asyncio
+async def test_crash_during_durable_reference_consumption_keeps_a_classified_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Boundary 3: the source-tier "source commit" step crashes mid-transaction.
+    """Boundary 3: the Source durable-reference consumption crashes.
 
-    write_source_raw_session runs the raw_sessions insert and the receipt
-    consumption (_insert_blob_ref) inside one ``with conn:`` block; a crash
-    between them must roll back BOTH atomically, not just skip the receipt
-    consumption -- proving the raw-acquisition path lands in the exact same
-    classification bucket (unresolved) as the index-attachment path above,
-    from an independent code path.
+    The Source transaction rolls back atomically, so each reservation is still
+    present. If the Index reference committed first, the receipt lands in the
+    referenced bucket and its bytes survive; otherwise it is unresolved. Either
+    way nothing is deleted without exclusion and a retry converges.
+
+    The claim identity is derived from the retained raw, the attachment
+    coordinate and the blob, so the retry re-adopts the crashed attempt's
+    exact reservations and its reference transaction consumes them.
+    Anti-vacuity: a random per-attempt identity leaves the crashed receipts
+    behind the retry's own, and the converged reservation set is not empty.
     """
-    archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    source_db = archive_root / "source.db"
-    payload = b"crash mid source-commit transaction"
-    publisher = ArchiveBlobPublisher(source_db, archive_root / "blob")
-    blob_hash_hex, _size = publisher.write_from_bytes(payload)
-    receipt_id = publisher.receipt_id(blob_hash_hex)
-    assert receipt_id is not None
-    publisher.flush()
-    expected_hash = bytes.fromhex(blob_hash_hex)
-
-    def boom_insert_blob_ref(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("simulated crash: during source commit transaction")
-
-    monkeypatch.setattr(source_write, "_insert_blob_ref", boom_insert_blob_ref)
-
-    with sqlite3.connect(source_db) as conn, pytest.raises(RuntimeError, match="during source commit transaction"):
-        source_write.write_source_raw_session(
-            conn,
-            origin=Origin.CODEX_SESSION,
-            source_path="raw.jsonl",
-            source_index=0,
-            payload=payload,
-            acquired_at_ms=1,
-            raw_id="raw-source-commit-crash",
-            blob_publication_receipt_id=receipt_id,
-        )
-
-    with sqlite3.connect(source_db) as conn:
-        assert (
-            conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", ("raw-source-commit-crash",)).fetchone()[
-                0
-            ]
-            == 0
-        )
-        assert conn.execute("SELECT COUNT(*) FROM blob_refs WHERE blob_hash = ?", (expected_hash,)).fetchone()[0] == 0
-    assert len(_reservation_rows(source_db, expected_hash)) == 1
-    assert BlobStore(archive_root / "blob").exists(blob_hash_hex)
-
-    with exclude_archive_blob_publishers(source_db) as exclusion:
-        outcome = reconcile_blob_publication_reservations(source_db, archive_root / "blob", writer_exclusion=exclusion)
-    assert outcome.unresolved == 1
-    assert len(_reservation_rows(source_db, expected_hash)) == 1
-
-
-@pytest.mark.uses_real_clock("backdates the physical blob before canonical GC")
-def test_crash_after_index_commit_keeps_receipt_until_explicit_terminal_abandonment(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Boundary 4: index commit durable, finalization (receipt consumption) crashes.
-
-    The attachment row is committed through ArchiveWriteGateway before
-    ``pending_attachment_receipts`` is drained (_core.py), so a crash in that
-    drain leaves a referenced-but-unconsumed reservation. This is exactly the
-    startup-reconciliation leak polylogue-qs0a's PR #3104 fixed: proves the
-    now-fixed ``reconcile_blob_publication_reservations_under_exclusion``
-    path actually clears this specific crash's residue.
-    """
-    archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    db_path = archive_root / "index.db"
-    source_path = tmp_path / "raw.jsonl"
-    source_path.write_text("{}", encoding="utf-8")
-    raw_id = "raw-crash-finalization"
-    session_id = "codex-session:crash-finalization"
-    payload = b"crash after index commit, before finalization"
-    expected_hash = sha256(payload).digest()
-    attachment = _attachment_tuple("att-1", mime_type="text/plain", inline_bytes=payload)
-    session = _session_data(
-        session_id,
-        content_hash="crash-finalization",
-        raw_id=raw_id,
-        message_tuples=[_message_tuple("msg-1", session_id, role="user", text="x", content_hash="m", sort_key=0.0)],
-        attachment_tuples=[attachment],
-        attachment_ref_tuples=[_attachment_ref_tuple("att-1", session_id, "msg-1")],
-    )
-    raw_record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name="codex",
-        source_path=str(source_path),
-        blob_size=source_path.stat().st_size,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-
-    def fake_ingest_record(
-        record: RawSessionRecord,
-        archive_root_str: str,
-        validation_mode: str,
-        measure_ingest_result_size: bool,
-        *,
-        blob_root_str: str | None,
-    ) -> IngestRecordResult:
-        del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
-        assert record.raw_id == raw_id
-        return IngestRecordResult(raw_id=record.raw_id, sessions=[session])
+    root, raw_id, expected = await _acquire_inline_attachment_capture(tmp_path)
 
     def boom_consume(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("simulated crash: after index commit, before finalization")
+        raise RuntimeError("simulated crash: during durable reference consumption")
 
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
-    monkeypatch.setattr(ingest_batch_core, "consume_blob_publication_receipt", boom_consume)
+    with monkeypatch.context() as patch:
+        patch.setattr(blob_publication, "blob_publication_receipt_delete", boom_consume)
+        failure = await _ingest(root, raw_id)
 
-    with pytest.raises(RuntimeError, match="after index commit, before finalization"):
-        _process_ingest_batch_sync(
-            [raw_record],
-            db_path=db_path,
-            archive_root_str=str(archive_root),
-            blob_root_str=str(archive_root / "blob"),
-            validation_mode="off",
-            ingest_workers=1,
-            measure_ingest_result_size=False,
-        )
+    assert failure is not None
+    store = BlobStore(root / "blob")
+    for blob_hash in expected:
+        assert store.exists(blob_hash.hex())
+        assert len(_reservation_rows(root / "source.db", blob_hash)) == 1
+    _assert_crash_consistent(root, expected)
+    crashed_receipts = _all_reservations(root / "source.db")
+    assert crashed_receipts and all(publication.startswith("claim-") for publication, _hash in crashed_receipts)
+    referenced = _attachment_hashes(root / "index.db") & set(expected)
+    outcome = _reconcile_excluded(root)
+    assert outcome.cleared_missing == 0
+    assert outcome.unresolved + outcome.cleared_referenced + outcome.retained_referenced == len(expected)
+    if not referenced:
+        assert outcome.unresolved == len(expected)
 
-    # The index commit itself is unaffected by the later finalization crash --
-    # verify against a fresh connection so a would-be uncommitted rollback of
-    # the *finalization* transaction can't be mistaken for the index write.
-    with open_connection(db_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash = ?", (expected_hash,)).fetchone()[0] == 1
-    assert len(_reservation_rows(archive_root / "source.db", expected_hash)) == 1
-
-    with exclude_archive_blob_publishers(archive_root / "source.db") as exclusion:
-        outcome = reconcile_blob_publication_reservations(
-            archive_root / "source.db",
-            archive_root / "blob",
-            index_db_path=db_path,
-            writer_exclusion=exclusion,
-        )
-    assert outcome.cleared_referenced == 0
-    assert outcome.retained_referenced == 1
-    rows = _reservation_rows(archive_root / "source.db", expected_hash)
-    assert len(rows) == 1
-
-    # The crash receipt is not a fifth owner. Once its sole referent is later
-    # deleted, exact-ID abandonment revalidates absence under writer exclusion
-    # and releases this publication only; GC can then collect the bytes.
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("DELETE FROM attachments WHERE blob_hash = ?", (expected_hash,))
-    abandonment = abandon_blob_publication_receipts(
-        archive_root / "source.db",
-        archive_root / "blob",
-        [rows[0][0]],
-        confirmed=True,
-        index_db_path=db_path,
-    )
-    assert abandonment.abandoned == 1
-    os.utime(BlobStore(archive_root / "blob").blob_path(expected_hash.hex()), (time.time() - 3600,) * 2)
-    assert run_blob_gc_report(archive_root / "source.db", archive_root / "blob").deleted_count == 1
-    assert not BlobStore(archive_root / "blob").exists(expected_hash.hex())
-
-
-def test_finalization_transaction_is_atomic_across_multiple_receipts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Boundary 5: a crash mid-finalization-loop rolls back every receipt, not just the failing one.
-
-    Two inline attachments in one session share the deferred finalization
-    loop (_core.py:~1315-1319). A crash on the second receipt must not leave
-    the first one silently consumed while the second survives -- the whole
-    drain runs in one ``BEGIN IMMEDIATE`` transaction. Mutation-sensitive:
-    narrowing the finalization loop to commit per-receipt instead of once
-    would make this test observe exactly one surviving row instead of two.
-    """
-    archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    db_path = archive_root / "index.db"
-    source_path = tmp_path / "raw.jsonl"
-    source_path.write_text("{}", encoding="utf-8")
-    raw_id = "raw-crash-finalization-atomic"
-    session_id = "codex-session:crash-finalization-atomic"
-    payload_a = b"finalization atomicity attachment a"
-    payload_b = b"finalization atomicity attachment b"
-    hash_a = sha256(payload_a).digest()
-    hash_b = sha256(payload_b).digest()
-    attachment_a = _attachment_tuple("att-a", mime_type="text/plain", inline_bytes=payload_a)
-    attachment_b = _attachment_tuple("att-b", mime_type="text/plain", inline_bytes=payload_b)
-    session = _session_data(
-        session_id,
-        content_hash="crash-finalization-atomic",
-        raw_id=raw_id,
-        message_tuples=[_message_tuple("msg-1", session_id, role="user", text="x", content_hash="m", sort_key=0.0)],
-        attachment_tuples=[attachment_a, attachment_b],
-        attachment_ref_tuples=[
-            _attachment_ref_tuple("att-a", session_id, "msg-1"),
-            _attachment_ref_tuple("att-b", session_id, "msg-1"),
-        ],
-    )
-    raw_record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name="codex",
-        source_path=str(source_path),
-        blob_size=source_path.stat().st_size,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-
-    def fake_ingest_record(
-        record: RawSessionRecord,
-        archive_root_str: str,
-        validation_mode: str,
-        measure_ingest_result_size: bool,
-        *,
-        blob_root_str: str | None,
-    ) -> IngestRecordResult:
-        del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
-        assert record.raw_id == raw_id
-        return IngestRecordResult(raw_id=record.raw_id, sessions=[session])
-
-    call_count = 0
-
-    def boom_on_second(conn: sqlite3.Connection, publication_id: str | None, blob_hash: bytes) -> None:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise RuntimeError("simulated crash: mid-finalization-loop")
-        consume_blob_publication_receipt(conn, publication_id, blob_hash)
-
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
-    monkeypatch.setattr(ingest_batch_core, "consume_blob_publication_receipt", boom_on_second)
-
-    with pytest.raises(RuntimeError, match="mid-finalization-loop"):
-        _process_ingest_batch_sync(
-            [raw_record],
-            db_path=db_path,
-            archive_root_str=str(archive_root),
-            blob_root_str=str(archive_root / "blob"),
-            validation_mode="off",
-            ingest_workers=1,
-            measure_ingest_result_size=False,
-        )
-
-    assert call_count == 2
-    # Both receipts survive -- the first call's DELETE was never committed
-    # because the second call's raise rolled back the whole transaction.
-    assert len(_reservation_rows(archive_root / "source.db", hash_a)) == 1
-    assert len(_reservation_rows(archive_root / "source.db", hash_b)) == 1
-    with open_connection(db_path) as conn:
-        assert (
-            conn.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash IN (?, ?)", (hash_a, hash_b)).fetchone()[0]
-            == 2
-        )
-
-    with exclude_archive_blob_publishers(archive_root / "source.db") as exclusion:
-        outcome = reconcile_blob_publication_reservations(
-            archive_root / "source.db",
-            archive_root / "blob",
-            index_db_path=db_path,
-            writer_exclusion=exclusion,
-        )
-    assert outcome.cleared_referenced == 0
-    assert outcome.retained_referenced == 2
-    assert len(_reservation_rows(archive_root / "source.db", hash_a)) == 1
-    assert len(_reservation_rows(archive_root / "source.db", hash_b)) == 1
+    await _assert_retry_converges(root, raw_id, expected)

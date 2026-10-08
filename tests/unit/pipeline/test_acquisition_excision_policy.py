@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sqlite3
@@ -20,7 +21,7 @@ from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 async def test_acquire_sources_passes_snapshot_to_raw_admission(tmp_path: Path) -> None:
     """The production acquisition entrypoint refuses an excised source payload."""
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     source_path = tmp_path / "source.json"
     payload = b'{"title":"removed","mapping":{}}'
     source_path.write_bytes(payload)

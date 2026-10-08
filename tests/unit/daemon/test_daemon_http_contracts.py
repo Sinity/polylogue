@@ -34,6 +34,7 @@ import os
 import re
 import sqlite3
 import threading
+from collections.abc import Awaitable, Callable
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
@@ -43,7 +44,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.daemon.execution import BoundedComputeAdapter, DaemonBackpressureError
+from polylogue.core.compute import BoundedComputeAdapter, DaemonBackpressureError
 from polylogue.operations import build_declared_operation_catalog, build_runtime_operation_catalog
 
 if TYPE_CHECKING:
@@ -1032,26 +1033,31 @@ class TestBoundedArchiveQueryExecutor:
         assert kernel.snapshot().used_units == 0
         assert kernel.snapshot().by_class("interactive-read").used_units == 0
 
-    def test_mutating_route_carries_the_control_admission_class(self) -> None:
-        """A route holding the writer lease is scheduled as control, not as a read.
+    @pytest.mark.uses_real_clock("an admitted mutation uses the actual writer worker")
+    def test_mutating_route_uses_writer_worker_without_compute_admission(
+        self, tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+    ) -> None:
+        from polylogue.daemon.http import _StandaloneWriteRuntime
 
-        Anti-vacuity: dropping the class selection in ``_sync_run`` records the
-        work under ``interactive-read`` and this assertion fails.
-        """
-
+        runtime = _StandaloneWriteRuntime(tmp_path, compute_adapter=bounded_compute_adapter)
         handler = _make_handler("POST", "/api/user/tags")
+        handler.server.write_bridge = runtime.bridge
         kernel = handler.server.execution_kernel
         before = kernel.snapshot().by_class("control").admitted
-        handler._write_gate_depth = 1
 
-        async def _mutation(poly: object) -> object:
+        async def run_direct(operation: Callable[[object], Awaitable[object]]) -> object:
+            return await operation(None)
+
+        async def mutation(_poly: object) -> object:
             return {"written": True}
 
+        object.__setattr__(handler, "_run_archive_query", run_direct)
         try:
-            assert handler._sync_run(_mutation) == {"written": True}
+            with handler._write_gate("test.http.contract"):
+                assert handler._sync_run(mutation) == {"written": True}
+            assert kernel.snapshot().by_class("control").admitted == before
         finally:
-            handler._write_gate_depth = 0
-        assert kernel.snapshot().by_class("control").admitted == before + 1
+            runtime.close()
 
     @pytest.mark.uses_real_clock("waits for real daemon-owned writer and compute threads to exit")
     def test_server_close_shuts_down_archive_query_executor(self, tmp_path: Path) -> None:
@@ -1105,7 +1111,9 @@ class TestBoundedArchiveQueryExecutor:
 
         assert asyncio.run(harness.close()).clean
 
-    def test_server_close_preserves_borrowed_write_runtime(self, tmp_path: Path) -> None:
+    def test_server_close_preserves_borrowed_write_runtime(
+        self, tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+    ) -> None:
         from polylogue.daemon.http import _StandaloneWriteRuntime
         from polylogue.daemon.services import ServiceCapability, ServiceProfile
         from tests.infra.daemon_service_harness import ServiceHarness
@@ -1115,9 +1123,16 @@ class TestBoundedArchiveQueryExecutor:
             capabilities={ServiceCapability.API},
         )
         harness.require_selected("api_server")
-        borrowed_runtime = _StandaloneWriteRuntime(tmp_path / "borrowed")
+        from tests.infra.archive_templates import bootstrap_archive_root
+
+        # The standalone writer prepares its operation journals in a real archive.
+        borrowed_runtime = _StandaloneWriteRuntime(
+            bootstrap_archive_root(tmp_path / "borrowed"), compute_adapter=bounded_compute_adapter
+        )
         try:
-            server = harness.api_server(tmp_path / "server", write_bridge=borrowed_runtime.bridge)
+            server = harness.api_server(
+                bootstrap_archive_root(tmp_path / "server"), write_bridge=borrowed_runtime.bridge
+            )
             server.server_close()
             server.server_close()
             assert borrowed_runtime.thread.is_alive()

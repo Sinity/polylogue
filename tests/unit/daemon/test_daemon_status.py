@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     upsert_ingest_cursor,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.fts import completed_fts_readiness
 from tests.infra.session_profiles import write_session_profile
 
@@ -68,6 +69,8 @@ def test_status_fingerprint_changes_when_source_tier_changes(monkeypatch: pytest
     assert _daemon_status_fingerprint(index) != before
 
 
+from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
 
@@ -597,7 +600,7 @@ def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) ->
     failed = tmp_path / "failed.jsonl"
     failed.write_text('{"bad":true}\n')
     cursor = CursorStore(db)
-    cursor.mark_failed(failed)
+    cursor.mark_failed(failed, authority=fixture_cursor_authority(failed))
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=db.parent),
@@ -900,7 +903,7 @@ def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: P
     failed = tmp_path / "failed.jsonl"
     failed.write_text('{"bad":true}\n')
     cursor = CursorStore(db)
-    cursor.mark_failed(failed)
+    cursor.mark_failed(failed, authority=fixture_cursor_authority(failed))
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=db.parent),
@@ -941,7 +944,7 @@ def test_daemon_status_failing_files_listing_labels_excluded_rows_with_age(tmp_p
     excluded.write_text('{"bad":true}\n')
     cursor = CursorStore(db)
     for _ in range(5):
-        cursor.mark_failed(excluded)
+        cursor.mark_failed(excluded, authority=fixture_cursor_authority(excluded))
     record = cursor.get_record(excluded)
     assert record is not None and record.excluded
 
@@ -1251,7 +1254,7 @@ def test_daemon_status_prefers_archive_ops_live_cursor(tmp_path: Path) -> None:
     failed = tmp_path / "failed.jsonl"
     failed.write_text('{"bad":true}\n')
     cursor = CursorStore(db)
-    cursor.mark_failed(failed)
+    cursor.mark_failed(failed, authority=fixture_cursor_authority(failed))
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=db.parent),
@@ -1295,7 +1298,7 @@ def test_daemon_status_caps_failed_file_samples(tmp_path: Path) -> None:
     for index in range(55):
         failed = tmp_path / f"failed-{index:02d}.jsonl"
         failed.write_text('{"bad":true}\n')
-        cursor.mark_failed(failed)
+        cursor.mark_failed(failed, authority=fixture_cursor_authority(failed))
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=db.parent),
@@ -2101,24 +2104,36 @@ def test_build_daemon_status_claim_guard_keeps_registry_debt_health_separate(
     assert claim_guard["converged"]["reason"] == "ready"
 
 
+def _inspect_raw_frontier(root: Path) -> None:
+    """Run the production frontier inspection on its supplied convergence owner."""
+    import asyncio
+
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async def run() -> None:
+        async with prepared_live_convergence_owner(root) as owner:
+            await owner.run_convergence_sync(
+                "fixture.status.frontier",
+                inspect_prepared_raw_authority_frontier,
+                root,
+                input_demand=owner._compute_adapter.amend_current_input_demand,
+            )
+
+    asyncio.run(run())
+
+
 def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_path: Path) -> None:
     """polylogue-yla8.7 AC: a current accepted append head whose predecessor
     chain is broken must surface through ``raw_frontier_integrity``, render
     ``component_readiness`` as ``poisoned``, and block claim-guard
     ``converged`` end-to-end through ``build_daemon_status()`` — the same
-    authority gap yla8.6 found only through manual SQL."""
-    for tier in (
-        ArchiveTier.SOURCE,
-        ArchiveTier.INDEX,
-        ArchiveTier.EMBEDDINGS,
-        ArchiveTier.USER,
-        ArchiveTier.OPS,
-        ArchiveTier.AUDIT,
-    ):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
-        else:
-            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+    authority gap yla8.6 found only through manual SQL.
+
+    Status reports the completed frontier inspection rather than re-scanning
+    the corpus, so the fixture runs the production inspection producer after
+    seeding the broken chain."""
+    bootstrap_archive_root(tmp_path)
 
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
@@ -2163,6 +2178,7 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
             (bytes(32),),
         )
         conn.commit()
+    _inspect_raw_frontier(tmp_path)
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
@@ -2232,7 +2248,9 @@ def test_zero_head_unavailable_ops_semantics_and_no_direct_status_route(tmp_path
     with patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"):
         daemon_payload = _raw_frontier_integrity_info(readiness).model_dump()
 
-    assert daemon_payload["broken_head_status"] == "healthy"
+    # Status reads the inspection certificate from ops; with ops unavailable
+    # no category is measurable, so none may read as healthy.
+    assert daemon_payload["broken_head_status"] == "unknown"
     assert daemon_payload["cursor_ahead_status"] == "unknown"
     assert daemon_payload["overall_status"] == "unknown"
 
@@ -2854,8 +2872,8 @@ def test_daemon_status_summarizes_retry_due_and_excluded_live_cursor_files(tmp_p
     excluded = tmp_path / "excluded.jsonl"
     excluded.write_text('{"skip":true}\n')
     cursor = CursorStore(db)
-    cursor.mark_failed(failed)
-    cursor.set(excluded, excluded.stat().st_size)
+    cursor.mark_failed(failed, authority=fixture_cursor_authority(failed))
+    cursor.set(excluded, excluded.stat().st_size, authority=fixture_cursor_authority(excluded))
     cursor.mark_excluded(excluded)
 
     with sqlite3.connect(db.with_name("ops.db")) as conn:
@@ -2898,7 +2916,7 @@ def test_daemon_status_never_reports_excluded_cursor_as_retry_due(tmp_path: Path
     poison.write_text('{"bad":true}\n')
     cursor = CursorStore(db)
     for _ in range(6):
-        cursor.mark_failed(poison)
+        cursor.mark_failed(poison, authority=fixture_cursor_authority(poison))
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=db.parent),
@@ -3229,7 +3247,8 @@ def test_blob_publication_reservation_info_reports_unresolved_bucket(tmp_path: P
     initialize_active_archive_root(archive_root_dir)
     publisher = ArchiveBlobPublisher(archive_root_dir / "source.db", archive_root_dir / "blob")
     publisher.write_from_bytes(b"unresolved status probe payload")
-    publisher.flush()
+    with write_lease("test.status-fixture", archive_root=archive_root_dir):
+        publisher.flush()
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=archive_root_dir),
@@ -4027,7 +4046,8 @@ def test_publication_surfaces_preserve_blocked_liveness(
     initialize_active_archive_root(root)
     publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
     blob_hash, _size = publisher.write_from_bytes(b"blocked publication surface control")
-    receipt = publisher.flush()[0]
+    with write_lease("test.status-fixture", archive_root=root):
+        receipt = publisher.flush()[0]
     if not blob_present:
         BlobStore(root / "blob").blob_path(blob_hash).unlink()
     (root / "index.db").unlink()

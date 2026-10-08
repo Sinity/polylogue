@@ -24,6 +24,7 @@ import pytest
 from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 from polylogue.daemon.notifications import (
     WEBHOOK_TIMEOUT_S,
+    ConfiguredNotificationBackend,
     WebhookConfigError,
     WebhookNotificationBackend,
     _resolve_backend,
@@ -217,7 +218,7 @@ def test_send_notifications_dispatches_through_webhook_from_config() -> None:
 def test_send_notifications_webhook_missing_url_raises_at_resolve_time() -> None:
     """No silent fallback to log when webhook is selected without a URL."""
     with pytest.raises(WebhookConfigError):
-        send_notifications(
+        ConfiguredNotificationBackend().notify(
             [_alert()],
             config={"notification_backend": "webhook"},
         )

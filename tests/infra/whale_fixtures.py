@@ -376,15 +376,18 @@ def acquire_codex_revision_chain(
     snapshot-only so callers can retain the 804 transition assertions.
     """
     from polylogue.config import Source
+    from polylogue.core.enums import Provider
+    from polylogue.daemon.drive_catchup import DriveCatchupExecution
     from polylogue.pipeline.services.acquisition import AcquisitionService
-    from polylogue.sources.live.append_ingest import ingest_append_plans
     from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.batch_support import _AppendPlan
+    from polylogue.sources.live.batch_support import _AppendPlan, classify_pre_writer_admissions
     from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
     from polylogue.storage.archive_identity import ArchiveLocation
     from polylogue.storage.sqlite import SQLiteBackend
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.live_ingest import prepared_live_convergence_owner, run_owned_append_plans
 
     async def _run() -> tuple[tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
         from polylogue.archive.revision_authority import (
@@ -399,171 +402,210 @@ def acquire_codex_revision_chain(
         planner_source_backup: Path | None = None
         planner_ops_backup: Path | None = None
         try:
-            service = AcquisitionService(backend)
             raw_ids: list[str] = []
             sizes: list[int] = []
             sha256s: list[str] = []
-            for revision, size, sha256 in fixture.iter_revisions(source_path):
-                if revision_observer is not None:
-                    revision_observer(revision, source_path)
-                result = await service.acquire_sources([Source(name="codex", path=source_path)])
-                if result.errors:
-                    raise AssertionError(
-                        f"acquisition reported {result.errors} error(s) at revision {revision}: {result.counts}"
-                    )
-                raw_ids.extend(result.raw_ids)
-                sizes.append(size)
-                sha256s.append(sha256)
-
-            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-                full_payloads = tuple(
-                    archive.raw_revision_material(raw_id)[1]
-                    for raw_id in raw_ids[: fixture.dimensions.append_fragment_count + 1]
-                )
-                terminal_payload = archive.raw_revision_material(raw_ids[-1])[1]
-
-            active_index_path = ArchiveLocation.resolve(archive_root).active_index_path
-            planner_index_backup = archive_root / ".codex-804-planner-index.db"
-            planner_source_backup = archive_root / ".codex-804-planner-source.db"
-            planner_ops_backup = archive_root / ".codex-804-planner-ops.db"
-            copy_sqlite_database(active_index_path, planner_index_backup)
-            copy_sqlite_database(archive_root / "source.db", planner_source_backup)
-            copy_sqlite_database(archive_root / "ops.db", planner_ops_backup)
-            source_path.write_bytes(terminal_payload)
-            cursor = CursorStore(archive_root / "index.db", ops_db_path=archive_root / "ops.db")
-            processor = LiveBatchProcessor(
-                cast(
-                    Any,
-                    SimpleNamespace(
-                        archive_root=archive_root,
-                        backend=SimpleNamespace(db_path=archive_root / "index.db"),
-                    ),
-                ),
-                (WatchSource(name="codex", root=source_path.parent),),
-                cursor=cursor,
-                parser_fingerprint=_PARSER_FINGERPRINT,
-            )
-            full_result = processor._ingest_full_paths_sync([source_path], source_name="codex")
-            if full_result.failed or full_result.succeeded != [source_path]:
-                raise AssertionError(f"production planner baseline ingest failed: {full_result!r}")
-            processor._record_full_cursor(
-                source_path,
-                raw_fingerprint=full_result.raw_fingerprints.get(source_path),
-                raw_byte_size=full_result.raw_byte_sizes.get(source_path),
-                source_name=full_result.raw_source_names.get(source_path),
-                source_revision=full_result.raw_source_revisions.get(source_path),
-                captured_content_hash=full_result.captured_content_hashes.get(source_path),
-                captured_file_observation=full_result.captured_file_observations.get(source_path),
-            )
-            source_path.write_bytes(full_payloads[0])
-            # Production-shaped for a JSONL source: ``source_revision`` is the
-            # SQLite-snapshot discriminator, and passing it here routed this
-            # cursor down the snapshot branch where the NFC content hash was
-            # recorded as the byte-prefix authority — which sha256-of-bytes in
-            # ``plan_append`` can never match. The JSONL branch derives the
-            # prefix authority from the rewound on-disk bytes themselves.
-            # The JSONL prefix authority is the SHA-256 of the file's bytes,
-            # which is the blob hash -- not the raw id: source admission mints
-            # a source-scoped raw id distinct from the content hash.
-            processor._record_full_cursor(
-                source_path,
-                raw_fingerprint=raw_ids[0],
-                raw_byte_size=len(full_payloads[0]),
-                source_name="codex",
-                captured_content_hash=hashlib.sha256(full_payloads[0]).hexdigest(),
-            )
-            owner = SimpleNamespace(
-                _cursor=SimpleNamespace(_db_path=archive_root / "source.db"),
-                _polylogue=SimpleNamespace(archive_root=archive_root),
-            )
-            plans: list[_AppendPlan] = []
-            planned_indices: list[int] = []
-            for fragment_index, payload in fixture.iter_append_fragments(full_payloads):
-                with source_path.open("ab") as handle:
-                    handle.write(payload)
-                source_index = fixture.dimensions.revision_count + fragment_index
-                plan = processor.plan_append(source_path, source_index=source_index)
-                if not isinstance(plan, _AppendPlan):
-                    raise AssertionError(f"production append planner did not return a plan: {plan!r}")
-                if plan.source_index != source_index:
-                    raise AssertionError(f"production append planner lost source index {source_index}")
-                plans.append(plan)
-                planned_indices.append(plan.source_index)
-                if not processor._record_append_cursor(plan):
-                    raise AssertionError(f"production append cursor update failed for source index {source_index}")
-            if planned_indices != list(
-                range(
-                    fixture.dimensions.revision_count,
-                    fixture.dimensions.revision_count + fixture.dimensions.append_fragment_count,
-                )
-            ):
-                raise AssertionError(f"production append planner calls were incomplete: {planned_indices!r}")
-            append_ranges = tuple((plan.start_offset, plan.last_complete_newline) for plan in plans)
-            if len(append_ranges) != fixture.dimensions.append_fragment_count:
-                raise AssertionError(f"production append cursor ranges were incomplete: {append_ranges!r}")
-            if any(
-                start_offset < 0 or last_complete_newline <= start_offset
-                for start_offset, last_complete_newline in append_ranges
-            ):
-                raise AssertionError(f"production append cursor ranges were invalid: {append_ranges!r}")
-            if any(
-                next_start_offset != previous_last_complete_newline
-                for (_previous_start_offset, previous_last_complete_newline), (
-                    next_start_offset,
-                    _next_last_complete_newline,
-                ) in zip(append_ranges, append_ranges[1:], strict=False)
-            ):
-                raise AssertionError(f"production append cursor ranges were not contiguous: {append_ranges!r}")
-
-            copy_sqlite_database(planner_index_backup, active_index_path)
-            copy_sqlite_database(planner_source_backup, archive_root / "source.db")
-            planner_source_backup.unlink()
-            copy_sqlite_database(planner_ops_backup, archive_root / "ops.db")
-            planner_ops_backup.unlink()
-            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-                archive.bind_raw_revision(
-                    raw_ids[0],
-                    RawRevisionEnvelope(
-                        logical_source_key=f"codex-session:{fixture.session_native_id}",
-                        kind=RawRevisionKind.FULL,
-                        source_revision=raw_ids[0],
-                        acquisition_generation=0,
-                        authority=RawRevisionAuthority.BYTE_PROVEN,
+            # Acquisition publishes raw rows and blobs through the daemon's
+            # admitted writer, exactly as configured-source catch-up does.
+            async with prepared_live_convergence_owner(archive_root) as acquisition_owner:
+                service = AcquisitionService(
+                    backend,
+                    execution=DriveCatchupExecution(
+                        acquisition_owner._write_coordinator,
+                        compute_adapter=acquisition_owner._compute_adapter,
                     ),
                 )
-            for plan in plans:
-                append_result = ingest_append_plans(owner, [plan])
-                if append_result.failed or (append_result.succeeded != [plan] and append_result.deferred != [plan]):
-                    raise AssertionError(f"append ingestion changed fixture authority state: {append_result!r}")
-                with sqlite3.connect(archive_root / "source.db") as conn:
-                    row = conn.execute(
-                        "SELECT raw_id, source_revision FROM raw_sessions WHERE source_index = ?",
-                        (plan.source_index,),
-                    ).fetchone()
-                if row is None:
-                    raise AssertionError(f"append ingestion dropped source index {plan.source_index}")
-                raw_ids.append(str(row[0]))
-            append_raw_ids = tuple(raw_ids[fixture.dimensions.revision_count :])
-            with sqlite3.connect(active_index_path) as conn:
-                append_application_rows = tuple(
-                    (str(row[0]), str(row[1]), None if row[2] is None else str(row[2]))
-                    for row in conn.execute(
-                        "SELECT raw_id, decision, accepted_raw_id FROM raw_revision_applications "
-                        "WHERE raw_id IN (" + ",".join("?" for _ in append_raw_ids) + ")",
-                        append_raw_ids,
+                for revision, size, sha256 in fixture.iter_revisions(source_path):
+                    if revision_observer is not None:
+                        revision_observer(revision, source_path)
+                    result = await service.acquire_sources([Source(name="codex", path=source_path)])
+                    if result.errors:
+                        raise AssertionError(
+                            f"acquisition reported {result.errors} error(s) at revision {revision}: {result.counts}"
+                        )
+                    raw_ids.extend(result.raw_ids)
+                    sizes.append(size)
+                    sha256s.append(sha256)
+
+            def plan_and_bind() -> tuple[tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
+                # Ordinary synchronous archive writes and the owned append
+                # route (its own event loop) run off this acquisition loop.
+                nonlocal active_index_path, planner_index_backup, planner_source_backup, planner_ops_backup
+                with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                    full_payloads = tuple(
+                        archive.raw_revision_material(raw_id)[1]
+                        for raw_id in raw_ids[: fixture.dimensions.append_fragment_count + 1]
                     )
+                    terminal_payload = archive.raw_revision_material(raw_ids[-1])[1]
+
+                active_index_path = ArchiveLocation.resolve(archive_root).active_index_path
+                planner_index_backup = archive_root / ".codex-804-planner-index.db"
+                planner_source_backup = archive_root / ".codex-804-planner-source.db"
+                planner_ops_backup = archive_root / ".codex-804-planner-ops.db"
+                copy_sqlite_database(active_index_path, planner_index_backup)
+                copy_sqlite_database(archive_root / "source.db", planner_source_backup)
+                copy_sqlite_database(archive_root / "ops.db", planner_ops_backup)
+                source_path.write_bytes(terminal_payload)
+                cursor = CursorStore(archive_root / "index.db", ops_db_path=archive_root / "ops.db")
+                processor = LiveBatchProcessor(
+                    cast(
+                        Any,
+                        SimpleNamespace(
+                            archive_root=archive_root,
+                            backend=SimpleNamespace(db_path=archive_root / "index.db"),
+                        ),
+                    ),
+                    (WatchSource(name="codex", root=source_path.parent),),
+                    cursor=cursor,
+                    parser_fingerprint=_PARSER_FINGERPRINT,
                 )
-            assert_planner_append_authority(
-                append_raw_ids=append_raw_ids,
-                application_rows=append_application_rows,
-            )
-            # The planner index and cursor snapshots above are temporary proof
-            # inputs. The final authority assertion runs after restart and
-            # candidate promotion against the resulting postflight ledger.
-            copy_sqlite_database(planner_index_backup, active_index_path)
-            planner_index_backup.unlink()
-            source_path.write_bytes(terminal_payload)
-            return tuple(raw_ids), tuple(sizes), tuple(sha256s)
+                # Admission is classified off the lease, as the live pre-writer
+                # stage does; the Source-writing body runs under the archive
+                # lease, as the daemon's writer runs it.
+                admissions = classify_pre_writer_admissions([source_path], fallback_provider=Provider.CODEX)
+                with write_lease("test.live_ingest.full", archive_root=archive_root):
+                    full_result = processor._ingest_full_paths_sync(
+                        [source_path],
+                        source_name="codex",
+                        pre_writer_admissions=admissions,
+                    )
+                if full_result.failed or full_result.succeeded != [source_path]:
+                    raise AssertionError(f"production planner baseline ingest failed: {full_result!r}")
+                processor._record_full_cursor(
+                    source_path,
+                    raw_fingerprint=full_result.raw_fingerprints.get(source_path),
+                    raw_byte_size=full_result.raw_byte_sizes.get(source_path),
+                    source_name=full_result.raw_source_names.get(source_path),
+                    source_revision=full_result.raw_source_revisions.get(source_path),
+                    captured_content_hash=full_result.captured_content_hashes.get(source_path),
+                    captured_file_observation=full_result.captured_file_observations.get(source_path),
+                )
+                source_path.write_bytes(full_payloads[0])
+                # Production-shaped for a JSONL source: ``source_revision`` is the
+                # SQLite-snapshot discriminator, and passing it here routed this
+                # cursor down the snapshot branch where the NFC content hash was
+                # recorded as the byte-prefix authority — which sha256-of-bytes in
+                # ``plan_append`` can never match. The JSONL branch derives the
+                # prefix authority from the rewound on-disk bytes themselves.
+                # The JSONL prefix authority is the SHA-256 of the file's bytes,
+                # which is the blob hash -- not the raw id: source admission mints
+                # a source-scoped raw id distinct from the content hash.
+                processor._record_full_cursor(
+                    source_path,
+                    raw_fingerprint=raw_ids[0],
+                    raw_byte_size=len(full_payloads[0]),
+                    source_name="codex",
+                    captured_content_hash=hashlib.sha256(full_payloads[0]).hexdigest(),
+                )
+                owner = SimpleNamespace(
+                    _cursor=SimpleNamespace(_db_path=archive_root / "source.db"),
+                    _polylogue=SimpleNamespace(archive_root=archive_root),
+                )
+                plans: list[_AppendPlan] = []
+                planned_indices: list[int] = []
+                for fragment_index, payload in fixture.iter_append_fragments(full_payloads):
+                    with source_path.open("ab") as handle:
+                        handle.write(payload)
+                    source_index = fixture.dimensions.revision_count + fragment_index
+                    plan = processor.plan_append(source_path, source_index=source_index)
+                    if not isinstance(plan, _AppendPlan):
+                        raise AssertionError(f"production append planner did not return a plan: {plan!r}")
+                    if plan.source_index != source_index:
+                        raise AssertionError(f"production append planner lost source index {source_index}")
+                    plans.append(plan)
+                    planned_indices.append(plan.source_index)
+                    if not processor._record_append_cursor(plan):
+                        raise AssertionError(f"production append cursor update failed for source index {source_index}")
+                if planned_indices != list(
+                    range(
+                        fixture.dimensions.revision_count,
+                        fixture.dimensions.revision_count + fixture.dimensions.append_fragment_count,
+                    )
+                ):
+                    raise AssertionError(f"production append planner calls were incomplete: {planned_indices!r}")
+                append_ranges = tuple((plan.start_offset, plan.last_complete_newline) for plan in plans)
+                if len(append_ranges) != fixture.dimensions.append_fragment_count:
+                    raise AssertionError(f"production append cursor ranges were incomplete: {append_ranges!r}")
+                if any(
+                    start_offset < 0 or last_complete_newline <= start_offset
+                    for start_offset, last_complete_newline in append_ranges
+                ):
+                    raise AssertionError(f"production append cursor ranges were invalid: {append_ranges!r}")
+                if any(
+                    next_start_offset != previous_last_complete_newline
+                    for (_previous_start_offset, previous_last_complete_newline), (
+                        next_start_offset,
+                        _next_last_complete_newline,
+                    ) in zip(append_ranges, append_ranges[1:], strict=False)
+                ):
+                    raise AssertionError(f"production append cursor ranges were not contiguous: {append_ranges!r}")
+
+                copy_sqlite_database(planner_index_backup, active_index_path)
+                copy_sqlite_database(planner_source_backup, archive_root / "source.db")
+                planner_source_backup.unlink()
+                copy_sqlite_database(planner_ops_backup, archive_root / "ops.db")
+                planner_ops_backup.unlink()
+                with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                    archive.bind_raw_revision(
+                        raw_ids[0],
+                        RawRevisionEnvelope(
+                            logical_source_key=f"codex-session:{fixture.session_native_id}",
+                            kind=RawRevisionKind.FULL,
+                            source_revision=raw_ids[0],
+                            acquisition_generation=0,
+                            authority=RawRevisionAuthority.BYTE_PROVEN,
+                        ),
+                    )
+
+                async def publish_restored_planner_baseline() -> None:
+                    # The snapshots above intentionally restore the all-raw,
+                    # unpublished acquisition state. Re-establish the selected
+                    # full baseline on that state before asking the append
+                    # planner to classify suffixes; otherwise every append is
+                    # correctly deferred behind the unbound acquisition rows.
+                    async with prepared_live_convergence_owner(archive_root) as retained_owner:
+                        result = await retained_owner.converge_raw_id(raw_ids[0])
+                        while result.pending and not result.done and not result.failed:
+                            result = await retained_owner.converge_raw_id(raw_ids[0])
+                        if result.failed or result.pending or result.done != 1:
+                            raise AssertionError(f"restored planner baseline convergence did not settle: {result!r}")
+
+                asyncio.run(publish_restored_planner_baseline())
+                for plan in plans:
+                    append_result = run_owned_append_plans(archive_root, owner, [plan])
+                    if append_result.failed or (append_result.succeeded != [plan] and append_result.deferred != [plan]):
+                        raise AssertionError(f"append ingestion changed fixture authority state: {append_result!r}")
+                    with sqlite3.connect(archive_root / "source.db") as conn:
+                        row = conn.execute(
+                            "SELECT raw_id, source_revision FROM raw_sessions WHERE source_index = ?",
+                            (plan.source_index,),
+                        ).fetchone()
+                    if row is None:
+                        raise AssertionError(f"append ingestion dropped source index {plan.source_index}")
+                    raw_ids.append(str(row[0]))
+                append_raw_ids = tuple(raw_ids[fixture.dimensions.revision_count :])
+                with sqlite3.connect(active_index_path) as conn:
+                    append_application_rows = tuple(
+                        (str(row[0]), str(row[1]), None if row[2] is None else str(row[2]))
+                        for row in conn.execute(
+                            "SELECT raw_id, decision, accepted_raw_id FROM raw_revision_applications "
+                            "WHERE raw_id IN (" + ",".join("?" for _ in append_raw_ids) + ")",
+                            append_raw_ids,
+                        )
+                    )
+                assert_planner_append_authority(
+                    append_raw_ids=append_raw_ids,
+                    application_rows=append_application_rows,
+                )
+                # The planner index and cursor snapshots above are temporary proof
+                # inputs. The final authority assertion runs after restart and
+                # candidate promotion against the resulting postflight ledger.
+                copy_sqlite_database(planner_index_backup, active_index_path)
+                planner_index_backup.unlink()
+                source_path.write_bytes(terminal_payload)
+                return tuple(raw_ids), tuple(sizes), tuple(sha256s)
+
+            return await asyncio.to_thread(plan_and_bind)
         finally:
             if planner_index_backup is not None and planner_index_backup.exists() and active_index_path is not None:
                 copy_sqlite_database(planner_index_backup, active_index_path)

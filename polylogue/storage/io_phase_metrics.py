@@ -13,7 +13,7 @@ import threading
 import time
 import weakref
 from builtins import BaseExceptionGroup
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,7 +64,8 @@ def _inside_writer_lease() -> bool:
         # archive of its own to assert, it only wants to know whether a
         # lease is held. Passing None here would otherwise read as an
         # omission on an archive-bound lease and misreport every sample as
-        # unowned (see write_guard.py's identical rationale).
+        # unowned; the lease API treats a missing archive root as an omitted
+        # identity on an archive-bound lease.
         return require_write_lease("I/O phase ownership sample", archive_root=lease.archive_root) is not None
     except UnleasedWriteError:
         return False
@@ -166,21 +167,51 @@ class _MeasuredCursor(sqlite3.Cursor):
         phase = _transaction_phase(sql)
         connection = cast(_MeasuredConnection, self.connection)
         tier = getattr(connection, "_metric_tier", None)
-        if phase is None:
-            return super().execute(sql, parameters)
-        connection._metric_statement_phase = phase
+        # One epoch per statement compile: an authorizer may verify facts
+        # that cannot vary across one compile once per epoch instead of once
+        # per callback. Nested execution gets its own epoch.
+        connection._compile_epoch_counter += 1
+        enclosing = connection._compile_epoch
+        connection._compile_epoch = connection._compile_epoch_counter
         try:
-            with timed_io_phase(tier, phase):
+            if phase is None:
                 return super().execute(sql, parameters)
+            connection._metric_statement_phase = phase
+            try:
+                with timed_io_phase(tier, phase):
+                    return super().execute(sql, parameters)
+            finally:
+                connection._metric_statement_phase = None
         finally:
-            connection._metric_statement_phase = None
+            connection._compile_epoch = enclosing
 
 
 class _MeasuredConnection(sqlite3.Connection):
+    _native_creator: tuple[int, threading.Thread] | None = None
     _metric_tier: Tier | None = None
     _metric_context_exit = False
     _metric_statement_phase: Phase | None = None
+    #: The statement compile in progress on this connection, or ``None``
+    #: outside a measured ``execute`` (executemany, executescript, Blob opens).
+    _compile_epoch: int | None = None
+    _compile_epoch_counter = 0
     _native_closed = False
+    _incremental_blobs_readonly = False
+    _incremental_blob_register: Callable[[sqlite3.Blob], None] | None = None
+    _incremental_blob_admit: Callable[[], object] | None = None
+
+    def blobopen(
+        self, table: str, column: str, row: int, /, *, readonly: bool = False, name: str = "main"
+    ) -> sqlite3.Blob:
+        if getattr(self, "_incremental_blobs_readonly", False) and not readonly:
+            raise sqlite3.OperationalError("guarded tier connections prohibit writable incremental blobs")
+        if self._incremental_blob_admit is not None:
+            self._incremental_blob_admit()
+        blob = super().blobopen(table, column, row, readonly=readonly, name=name)
+        register = self._incremental_blob_register
+        if register is not None:
+            register(blob)
+        return blob
 
     @overload
     def cursor(self, factory: None = None) -> sqlite3.Cursor: ...
@@ -335,6 +366,21 @@ class _MeasuredConnection(sqlite3.Connection):
             self._metric_context_exit = False
 
 
+def bind_readonly_incremental_blob_custody(
+    connection: sqlite3.Connection, register: Callable[[sqlite3.Blob], None], admit: Callable[[], object]
+) -> None:
+    """Keep guarded incremental handles with the existing actual SQL owner."""
+    measured = cast(_MeasuredConnection, connection)
+    measured._incremental_blobs_readonly = True
+    measured._incremental_blob_register = register
+    measured._incremental_blob_admit = admit
+
+
+def native_connection_physically_closed(connection: sqlite3.Connection) -> bool:
+    """Use only this factory's successful native-close and statement proof."""
+    return isinstance(connection, _MeasuredConnection) and connection._native_closed and not connection.live_cursors()
+
+
 def settle_connection_cursors(connection: sqlite3.Connection) -> None:
     """Settle statements through the same measured connection's creator owner."""
     cast(_MeasuredConnection, connection).settle_cursors()
@@ -352,7 +398,38 @@ def close_connection_cursor(connection: sqlite3.Connection, cursor: sqlite3.Curs
         cursor.close()
 
 
-def connect_measured(database: str | Path, /, **kwargs: Any) -> sqlite3.Connection:
+@contextmanager
+def connection_cursor(
+    connection: sqlite3.Connection, sql: str, parameters: Sequence[object] | Mapping[str, object] = ()
+) -> Iterator[sqlite3.Cursor]:
+    """Retain a statement before execution and settle its actual native cursor."""
+    cursor = connection.cursor()
+    primary: BaseException | None = None
+    try:
+        cursor.execute(sql, parameters)
+        yield cursor
+    except BaseException as failure:
+        primary = failure
+        raise
+    finally:
+        try:
+            close_connection_cursor(connection, cursor)
+        except BaseException as cleanup:
+            if primary is not None:
+                raise BaseExceptionGroup("Statement and native cursor close failed", [primary, cleanup]) from primary
+            raise
+
+
+def native_connection_created_on_current_thread(connection: sqlite3.Connection) -> bool:
+    """Prove the original measured factory's creator without adopting a handle."""
+    return (
+        isinstance(connection, _MeasuredConnection)
+        and getattr(connection, "_native_creator", None) == (os.getpid(), threading.current_thread())
+        and not connection._native_closed
+    )
+
+
+def connect_measured(database: str | Path, /, *args: Any, **kwargs: Any) -> sqlite3.Connection:
     """Time an actual returned SQLite handle without altering its PRAGMA policy."""
     from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
@@ -362,8 +439,9 @@ def connect_measured(database: str | Path, /, **kwargs: Any) -> sqlite3.Connecti
     started = time.perf_counter_ns()
     succeeded = False
     try:
-        conn = sqlite3.connect(str(database), factory=_MeasuredConnection, **kwargs)
+        conn = sqlite3.connect(str(database), *args, factory=_MeasuredConnection, **kwargs)
         conn._metric_tier = tier
+        conn._native_creator = (os.getpid(), threading.current_thread())
         succeeded = True
         return conn
     finally:
@@ -382,6 +460,8 @@ __all__ = [
     "close_connection_cursor",
     "connect_measured",
     "live_connection_cursors",
+    "native_connection_physically_closed",
+    "native_connection_created_on_current_thread",
     "settle_connection_cursors",
     "io_phase_process_snapshot",
     "io_phase_snapshot",

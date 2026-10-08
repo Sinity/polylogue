@@ -12,7 +12,8 @@ import hashlib
 import itertools
 import json
 import sqlite3
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from builtins import BaseExceptionGroup
+from collections.abc import Collection, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -29,6 +30,7 @@ from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibi
 from polylogue.core.json import JSONValue
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.storage.io_phase_metrics import connection_cursor, live_connection_cursors
 from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE
 
 if TYPE_CHECKING:
@@ -117,7 +119,8 @@ def _ensure_foreign_keys_pragma(conn: sqlite3.Connection) -> None:
     re-auditing every write call site.
     """
     if not conn.in_transaction:
-        conn.execute("PRAGMA foreign_keys = ON")
+        with connection_cursor(conn, "PRAGMA foreign_keys = ON"):
+            pass
 
 
 @contextmanager
@@ -141,26 +144,43 @@ def _immediate_user_write_transaction(conn: sqlite3.Connection) -> Iterator[None
     nested call already ran this same upgrade), the forced write is a no-op.
     """
     if not conn.in_transaction:
-        conn.execute(f"PRAGMA busy_timeout = {WRITE_CONNECTION_PROFILE.busy_timeout_ms}")
-        conn.execute("BEGIN IMMEDIATE")
+        with connection_cursor(conn, f"PRAGMA busy_timeout = {WRITE_CONNECTION_PROFILE.busy_timeout_ms}"):
+            pass
+        with connection_cursor(conn, "BEGIN IMMEDIATE"):
+            pass
         try:
             yield
-        except BaseException:
-            conn.rollback()
+        except BaseException as primary:
+            if not live_connection_cursors(conn):
+                try:
+                    conn.rollback()
+                except BaseException as cleanup:
+                    raise BaseExceptionGroup("User assertion and rollback failed", [primary, cleanup]) from primary
             raise
         return
 
     savepoint = f"assertion_write_{next(_ASSERTION_WRITE_SAVEPOINTS)}"
-    conn.execute(f"SAVEPOINT {savepoint}")
+    with connection_cursor(conn, f"SAVEPOINT {savepoint}"):
+        pass
     try:
-        conn.execute("UPDATE assertions SET updated_at_ms = updated_at_ms WHERE 0")
+        with connection_cursor(conn, "UPDATE assertions SET updated_at_ms = updated_at_ms WHERE 0"):
+            pass
         yield
-    except BaseException:
-        conn.execute(f"ROLLBACK TO {savepoint}")
-        conn.execute(f"RELEASE {savepoint}")
+    except BaseException as primary:
+        if not live_connection_cursors(conn):
+            try:
+                with connection_cursor(conn, f"ROLLBACK TO {savepoint}"):
+                    pass
+                with connection_cursor(conn, f"RELEASE {savepoint}"):
+                    pass
+            except BaseException as cleanup:
+                raise BaseExceptionGroup(
+                    "User assertion and savepoint rollback failed", [primary, cleanup]
+                ) from primary
         raise
     else:
-        conn.execute(f"RELEASE {savepoint}")
+        with connection_cursor(conn, f"RELEASE {savepoint}"):
+            pass
 
 
 def _normalize_assertion_kind(kind: str | AssertionKind) -> AssertionKind:
@@ -825,6 +845,32 @@ def upsert_correction(
     return read_archive_correction_envelope(conn, correction_id)
 
 
+def correction_effect_matches(
+    conn: sqlite3.Connection,
+    target_type: str,
+    target_id: str,
+    correction_type: str,
+    payload: dict[str, object],
+    *,
+    author_ref: str | None = None,
+    author_kind: str | None = None,
+) -> bool:
+    """Inspect the exact current correction effect without restamping its assertion."""
+    assertion = read_assertion_envelope(
+        conn, assertion_id_for_correction(correction_id_for(target_type, target_id, correction_type))
+    )
+    return (
+        assertion is not None
+        and assertion.status != AssertionStatus.DELETED
+        and assertion.kind == AssertionKind.CORRECTION
+        and assertion.target_ref == normalize_object_ref_text(f"{target_type}:{target_id}")
+        and assertion.key == correction_type
+        and assertion.value == payload
+        and assertion.author_ref == normalize_object_ref_text(_normalize_assertion_author_ref(author_ref))
+        and assertion.author_kind == _normalize_assertion_author_kind(author_kind)
+    )
+
+
 def upsert_saved_view(
     conn: sqlite3.Connection,
     name: str,
@@ -1170,6 +1216,139 @@ def list_archive_blackboard_note_envelopes(
     return envelopes
 
 
+def prepare_assertion_row(
+    conn: sqlite3.Connection,
+    *,
+    assertion_id: str,
+    target_ref: str,
+    kind: str | AssertionKind,
+    scope_ref: str | None = None,
+    key: str | None = None,
+    value: object | None = None,
+    body_text: str | None = None,
+    author_ref: str | None = None,
+    author_kind: str | None = None,
+    evidence_refs: Sequence[str] | None = None,
+    status: str | AssertionStatus | None = None,
+    visibility: str | AssertionVisibility | None = None,
+    confidence: float | None = None,
+    staleness: Mapping[str, object] | None = None,
+    context_policy: Mapping[str, object] | AssertionContextPolicy | None = None,
+    supersedes: Sequence[str] | None = None,
+    now_ms: int | None = None,
+    require_promotion: bool = True,
+) -> tuple[int | float | str | None, ...]:
+    """Shape the complete canonical assertion row without writing it.
+
+    The original observer supplies existing creation time and judgment state;
+    actual writes and exact-effect preparation use this same normalization.
+    """
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    with connection_cursor(
+        conn, "SELECT created_at_ms, status FROM assertions WHERE assertion_id = ?", (assertion_id,)
+    ) as cursor:
+        existing = cursor.fetchone()
+    created_at_ms = int(existing[0]) if existing is not None else timestamp
+    existing_status = (
+        _normalize_assertion_status(existing[1]) if existing is not None and existing[1] is not None else None
+    )
+
+    normalized_target_ref = normalize_object_ref_text(target_ref)
+    normalized_scope_ref = normalize_object_ref_text(scope_ref) if scope_ref is not None else None
+    normalized_author_ref = (
+        normalize_object_ref_text(_normalize_assertion_author_ref(author_ref))
+        if author_ref is not None
+        else ASSERTION_DEFAULT_AUTHOR_REF
+    )
+    resolved_kind = _normalize_assertion_kind(kind)
+    resolved_value = _normalize_assertion_value(value)
+    resolved_staleness = _normalize_assertion_staleness(staleness)
+    normalized_evidence_refs = [normalize_public_ref_text(ref) for ref in evidence_refs or ()]
+    resolved_status = _normalize_assertion_status(status)
+    resolved_visibility = _normalize_assertion_visibility(visibility)
+    resolved_author_kind = _normalize_assertion_author_kind(author_kind)
+    resolved_context_policy = _normalize_assertion_context_policy(context_policy)
+
+    if require_promotion and resolved_author_kind != ASSERTION_DEFAULT_AUTHOR_KIND:
+        if existing_status is not None and existing_status in _ASSERTION_TERMINAL_JUDGED_STATUSES:
+            resolved_status = existing_status
+        else:
+            resolved_status = AssertionStatus.CANDIDATE
+            resolved_context_policy = AssertionContextPolicy.from_raw(_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY)
+
+    resolved_context_policy = constrain_assertion_context_policy(
+        resolved_context_policy,
+        author_kind=resolved_author_kind,
+        author_ref=normalized_author_ref,
+        status=resolved_status,
+    )
+
+    evidence_refs_json = _dumps_optional(normalized_evidence_refs)
+    supersedes_json = _dumps_optional(list(supersedes or ()))
+
+    return (
+        assertion_id,
+        normalized_scope_ref,
+        normalized_target_ref,
+        key,
+        resolved_kind.value,
+        _dumps_optional(resolved_value.as_json_value()),
+        body_text,
+        normalized_author_ref,
+        resolved_author_kind,
+        evidence_refs_json,
+        resolved_status.value,
+        resolved_visibility.value,
+        confidence,
+        _dumps_optional(
+            None if resolved_staleness is None else resolved_staleness.as_json_document(),
+        ),
+        _dumps_optional(resolved_context_policy.as_json_document()),
+        supersedes_json,
+        created_at_ms,
+        timestamp,
+    )
+
+
+_ASSERTION_UPSERT_SQL = """
+        INSERT INTO assertions (
+            rowid, assertion_id, scope_ref, target_ref, key, kind, value_json, body_text,
+            author_ref, author_kind, evidence_refs_json, status, visibility, confidence,
+            staleness_json, context_policy_json, supersedes_json, created_at_ms, updated_at_ms
+        ) VALUES ({values})
+        ON CONFLICT(assertion_id) DO UPDATE SET
+            scope_ref = excluded.scope_ref,
+            target_ref = excluded.target_ref,
+            key = excluded.key,
+            kind = excluded.kind,
+            value_json = excluded.value_json,
+            body_text = excluded.body_text,
+            author_ref = excluded.author_ref,
+            author_kind = excluded.author_kind,
+            evidence_refs_json = excluded.evidence_refs_json,
+            status = excluded.status,
+            visibility = excluded.visibility,
+            confidence = excluded.confidence,
+            staleness_json = excluded.staleness_json,
+            context_policy_json = excluded.context_policy_json,
+            supersedes_json = excluded.supersedes_json,
+            updated_at_ms = excluded.updated_at_ms
+        """
+
+
+def assertion_upsert_statement(value_expressions: tuple[str, ...]) -> str:
+    """Build the canonical assertion UPSERT with its explicit rowid operand.
+
+    The ordinary producer binds NULL for allocation. Native preparation uses
+    the same SQL and records SQLite's actual allocated rowid for publication.
+    Each expression belongs to a declared assertion cell; this helper does
+    not infer or rewrite placeholders in caller SQL.
+    """
+    if len(value_expressions) != 19:
+        raise ValueError("assertion UPSERT requires rowid and all eighteen declared cells")
+    return _ASSERTION_UPSERT_SQL.format(values=", ".join(value_expressions))
+
+
 def upsert_assertion(
     conn: sqlite3.Connection,
     *,
@@ -1219,97 +1398,29 @@ def upsert_assertion(
     """
     _ensure_foreign_keys_pragma(conn)
     with _immediate_user_write_transaction(conn):
-        timestamp = now_ms if now_ms is not None else _now_ms()
-        existing = conn.execute(
-            "SELECT created_at_ms, status FROM assertions WHERE assertion_id = ?",
-            (assertion_id,),
-        ).fetchone()
-        created_at_ms = int(existing[0]) if existing is not None else timestamp
-        existing_status = (
-            _normalize_assertion_status(existing[1]) if existing is not None and existing[1] is not None else None
+        row = prepare_assertion_row(
+            conn,
+            assertion_id=assertion_id,
+            target_ref=target_ref,
+            kind=kind,
+            scope_ref=scope_ref,
+            key=key,
+            value=value,
+            body_text=body_text,
+            author_ref=author_ref,
+            author_kind=author_kind,
+            evidence_refs=evidence_refs,
+            status=status,
+            visibility=visibility,
+            confidence=confidence,
+            staleness=staleness,
+            context_policy=context_policy,
+            supersedes=supersedes,
+            now_ms=now_ms,
+            require_promotion=require_promotion,
         )
-
-        normalized_target_ref = normalize_object_ref_text(target_ref)
-        normalized_scope_ref = normalize_object_ref_text(scope_ref) if scope_ref is not None else None
-        normalized_author_ref = (
-            normalize_object_ref_text(_normalize_assertion_author_ref(author_ref))
-            if author_ref is not None
-            else ASSERTION_DEFAULT_AUTHOR_REF
-        )
-        resolved_kind = _normalize_assertion_kind(kind)
-        resolved_value = _normalize_assertion_value(value)
-        resolved_staleness = _normalize_assertion_staleness(staleness)
-        normalized_evidence_refs = [normalize_public_ref_text(ref) for ref in evidence_refs or ()]
-        resolved_status = _normalize_assertion_status(status)
-        resolved_visibility = _normalize_assertion_visibility(visibility)
-        resolved_author_kind = _normalize_assertion_author_kind(author_kind)
-        resolved_context_policy = _normalize_assertion_context_policy(context_policy)
-
-        if require_promotion and resolved_author_kind != ASSERTION_DEFAULT_AUTHOR_KIND:
-            if existing_status is not None and existing_status in _ASSERTION_TERMINAL_JUDGED_STATUSES:
-                resolved_status = existing_status
-            else:
-                resolved_status = AssertionStatus.CANDIDATE
-                resolved_context_policy = AssertionContextPolicy.from_raw(_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY)
-
-        resolved_context_policy = constrain_assertion_context_policy(
-            resolved_context_policy,
-            author_kind=resolved_author_kind,
-            author_ref=normalized_author_ref,
-            status=resolved_status,
-        )
-
-        evidence_refs_json = _dumps_optional(normalized_evidence_refs)
-        supersedes_json = _dumps_optional(list(supersedes or ()))
-
-        conn.execute(
-            """
-        INSERT INTO assertions (
-            assertion_id, scope_ref, target_ref, key, kind, value_json, body_text,
-            author_ref, author_kind, evidence_refs_json, status, visibility, confidence,
-            staleness_json, context_policy_json, supersedes_json, created_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(assertion_id) DO UPDATE SET
-            scope_ref = excluded.scope_ref,
-            target_ref = excluded.target_ref,
-            key = excluded.key,
-            kind = excluded.kind,
-            value_json = excluded.value_json,
-            body_text = excluded.body_text,
-            author_ref = excluded.author_ref,
-            author_kind = excluded.author_kind,
-            evidence_refs_json = excluded.evidence_refs_json,
-            status = excluded.status,
-            visibility = excluded.visibility,
-            confidence = excluded.confidence,
-            staleness_json = excluded.staleness_json,
-            context_policy_json = excluded.context_policy_json,
-            supersedes_json = excluded.supersedes_json,
-            updated_at_ms = excluded.updated_at_ms
-        """,
-            (
-                assertion_id,
-                normalized_scope_ref,
-                normalized_target_ref,
-                key,
-                resolved_kind.value,
-                _dumps_optional(resolved_value.as_json_value()),
-                body_text,
-                normalized_author_ref,
-                resolved_author_kind,
-                evidence_refs_json,
-                resolved_status.value,
-                resolved_visibility.value,
-                confidence,
-                _dumps_optional(
-                    None if resolved_staleness is None else resolved_staleness.as_json_document(),
-                ),
-                _dumps_optional(resolved_context_policy.as_json_document()),
-                supersedes_json,
-                created_at_ms,
-                timestamp,
-            ),
-        )
+        with connection_cursor(conn, _ASSERTION_UPSERT_SQL.format(values=", ".join(("?",) * 19)), (None, *row)):
+            pass
         envelope = read_assertion_envelope(conn, assertion_id)
         assert envelope is not None
         return envelope
@@ -2511,10 +2622,10 @@ def read_assertion_envelope(
     if schema is not None and not schema.replace("_", "").isalnum():
         raise ValueError(f"invalid SQLite schema name: {schema!r}")
     table = f"{schema}.assertions" if schema is not None else "assertions"
-    row = conn.execute(
-        f"SELECT {_ASSERTION_COLUMNS} FROM {table} WHERE assertion_id = ?",
-        (assertion_id,),
-    ).fetchone()
+    with connection_cursor(
+        conn, f"SELECT {_ASSERTION_COLUMNS} FROM {table} WHERE assertion_id = ?", (assertion_id,)
+    ) as cursor:
+        row = cursor.fetchone()
     if row is None:
         return None
     return _assertion_row_to_envelope(row)
@@ -2566,30 +2677,16 @@ def assertion_envelope_to_payload(envelope: ArchiveAssertionEnvelope) -> dict[st
     }
 
 
-def list_assertions_for_export(
-    conn: sqlite3.Connection,
-    *,
-    kinds: Sequence[str | AssertionKind] | None = None,
-    statuses: Sequence[str | AssertionStatus] | None = None,
-    limit: int | None = None,
-) -> list[ArchiveAssertionEnvelope]:
-    """List assertion rows for durable user-tier export.
-
-    Unlike ``list_assertion_claims``, this is deliberately all-kinds and
-    all-statuses by default: backup/export must include marks, overlays,
-    accepted claims, deleted rows, and private transform candidates.
-    """
-
-    if not _table_exists(conn, "assertions"):
-        return []
-
+def _assertion_export_selection(
+    *, kinds: Sequence[str | AssertionKind] | None, statuses: Sequence[str | AssertionStatus] | None
+) -> tuple[str, tuple[object, ...]]:
     where: list[str] = []
     params: list[object] = []
 
     if kinds is not None:
         normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
         if not normalized_kinds:
-            return []
+            return " WHERE 0", ()
         placeholders = ", ".join("?" for _ in normalized_kinds)
         where.append(f"kind IN ({placeholders})")
         params.extend(normalized_kinds)
@@ -2597,22 +2694,39 @@ def list_assertions_for_export(
     if statuses is not None:
         normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
         if not normalized_statuses:
-            return []
+            return " WHERE 0", ()
         placeholders = ", ".join("?" for _ in normalized_statuses)
         where.append(f"COALESCE(status, ?) IN ({placeholders})")
         params.append(ASSERTION_DEFAULT_STATUS.value)
         params.extend(normalized_statuses)
 
-    sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY created_at_ms, assertion_id"
-    if limit is not None and limit >= 0:
-        sql += " LIMIT ?"
-        params.append(limit)
+    return (" WHERE " + " AND ".join(where) if where else ""), tuple(params)
 
-    rows = conn.execute(sql, tuple(params)).fetchall()
-    return [_assertion_row_to_envelope(row) for row in rows]
+
+def iter_assertions_for_export(
+    conn: sqlite3.Connection,
+    *,
+    kinds: Sequence[str | AssertionKind] | None = None,
+    statuses: Sequence[str | AssertionStatus] | None = None,
+    limit: int | None = None,
+    schema: str = "main",
+) -> Generator[ArchiveAssertionEnvelope, None, None]:
+    """Stream durable export rows, including every kind and status by default."""
+    if schema not in {"main", "user_tier"}:
+        raise ValueError(f"unsupported assertion export schema: {schema}")
+    if limit is not None and limit < 0:
+        raise ValueError("assertion export bounds must be nonnegative")
+    if not _table_exists(conn, "assertions", schema=schema):
+        return
+    where, params = _assertion_export_selection(kinds=kinds, statuses=statuses)
+    sql = f"SELECT {_ASSERTION_COLUMNS} FROM {schema}.assertions" + where
+    sql += " ORDER BY created_at_ms, assertion_id LIMIT ?"
+    cursor = conn.execute(sql, (*params, -1 if limit is None else limit))
+    try:
+        for row in cursor:
+            yield _assertion_row_to_envelope(row)
+    finally:
+        cursor.close()
 
 
 ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
@@ -2970,7 +3084,7 @@ __all__ = [
     "list_assertion_candidates",
     "list_assertion_candidate_reviews",
     "list_assertion_claims",
-    "list_assertions_for_export",
+    "iter_assertions_for_export",
     "list_assertions_by_kind",
     "list_assertions_for_target",
     "list_judgment_automation_receipt_outbox",

@@ -43,6 +43,8 @@ from polylogue.archive.query.source_freshness import NamedSourceStage, project_n
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 _STATE_DB_SCHEMA = """
 CREATE TABLE schema_version(version INTEGER NOT NULL);
@@ -98,14 +100,13 @@ INSERT INTO meta(key, value) VALUES ('schema_version', '1');
 """
 
 
-def _make_processor(
-    workspace_env: dict[str, Path], root_name: str, db_name: str
-) -> tuple[Polylogue, LiveBatchProcessor, Path]:
+def _make_processor(workspace_env: dict[str, Path], root_name: str) -> tuple[Polylogue, LiveBatchProcessor, Path]:
     root = workspace_env["data_root"] / root_name
     root.mkdir(parents=True)
-    db_path = workspace_env["data_root"] / db_name
-    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
-    cursor = CursorStore(db_path)
+    archive_root = workspace_env["archive_root"]
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    cursor = CursorStore(archive_root / "ops.db")
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="hermes", root=root),),
@@ -124,7 +125,7 @@ async def test_hermes_state_db_single_session_full_ingest_reaches_indexed_throug
     UnicodeDecodeError (_parse_one had no SQLite awareness). This is the
     real-world common case for a brand-new Hermes install."""
 
-    archive, processor, root = _make_processor(workspace_env, "hermes-home-single", "hermes-state-single.db")
+    archive, processor, root = _make_processor(workspace_env, "hermes-home-single")
     source_path = root / "state.db"
     try:
         with sqlite3.connect(source_path) as conn:
@@ -137,7 +138,7 @@ async def test_hermes_state_db_single_session_full_ingest_reaches_indexed_throug
                 "INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (1, 'root', 'user', 'hi', 2.0)"
             )
 
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert metrics.failed_file_count == 0
         assert metrics.ingested_session_count == 1
 
@@ -156,9 +157,7 @@ async def test_hermes_verification_evidence_db_single_session_full_ingest_reache
     verification_evidence.db with exactly one session hit the same
     SQLite-unaware _parse_one branch."""
 
-    archive, processor, root = _make_processor(
-        workspace_env, "hermes-home-verification-single", "hermes-verification-single.db"
-    )
+    archive, processor, root = _make_processor(workspace_env, "hermes-home-verification-single")
     source_path = root / "verification_evidence.db"
     try:
         with sqlite3.connect(source_path) as conn:
@@ -171,7 +170,7 @@ async def test_hermes_verification_evidence_db_single_session_full_ingest_reache
                 "'test', 'targeted', 'passed', 0, 'ok')"
             )
 
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert metrics.failed_file_count == 0
         assert metrics.ingested_session_count == 1
 
@@ -191,7 +190,7 @@ async def test_hermes_state_db_multi_session_source_reaches_indexed_through_name
     proves the EXISTING named-source freshness surface already covers Hermes
     state.db correctly once ingestion itself succeeds."""
 
-    archive, processor, root = _make_processor(workspace_env, "hermes-home-multi", "hermes-state-multi.db")
+    archive, processor, root = _make_processor(workspace_env, "hermes-home-multi")
     source_path = root / "state.db"
     try:
         with sqlite3.connect(source_path) as conn:
@@ -212,7 +211,7 @@ async def test_hermes_state_db_multi_session_source_reaches_indexed_through_name
                 "VALUES (2, 'child', 'user', 'hi2', 3.0)"
             )
 
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert metrics.failed_file_count == 0
         assert metrics.ingested_session_count == 2
 
@@ -227,7 +226,7 @@ async def test_hermes_state_db_multi_session_source_reaches_indexed_through_name
 async def test_hermes_atof_source_reaches_indexed_through_named_freshness(
     workspace_env: dict[str, Path],
 ) -> None:
-    _archive, processor, root = _make_processor(workspace_env, "hermes-observability", "hermes-atof-freshness.db")
+    _archive, processor, root = _make_processor(workspace_env, "hermes-observability")
     source_path = root / "events.jsonl"
     archive = _archive
     try:
@@ -241,7 +240,7 @@ async def test_hermes_atof_source_reaches_indexed_through_named_freshness(
         }
         source_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert metrics.failed_file_count == 0
         assert metrics.ingested_session_count == 1
 

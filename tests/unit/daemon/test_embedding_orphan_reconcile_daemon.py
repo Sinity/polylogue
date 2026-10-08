@@ -34,12 +34,15 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import (
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 def _build_fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
     session_id = "codex-session:daemon-fixture"
     orphan_message_id = f"{session_id}:orphaned"
 
+    # Promotion proves durable references against the archive's active Index.
+    bootstrap_archive_root(tmp_path)
     generation_store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = generation_store.create(owner_id="embedding-orphan-test", source_snapshot="fixture-snapshot")
     conn = sqlite3.connect(generation.index_path)
@@ -168,7 +171,7 @@ def test_reconcile_embedding_orphans_once_refuses_stale_index_schema(tmp_path: P
 def test_daemon_coordinator_owns_real_orphan_reconcile_mutation(tmp_path: Path) -> None:
     """Production-route proof; bypassing run_sync or its authority token makes this fail."""
     index_db, embeddings_db, session_id, orphan_message_id = _build_fixture(tmp_path)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
 
     async def run() -> EmbeddingOrphanReconcileReport | None:
         with patch("polylogue.daemon.convergence_stages.load_polylogue_config") as mock_cfg:
@@ -231,3 +234,35 @@ def test_scanned_session_count_pages_past_the_host_parameter_limit(tmp_path: Pat
 
     with patch("polylogue.daemon.status.open_readonly_connection", limited_reader):
         assert embedding_owner._distinct_message_sessions(index_db, ids) == 3
+
+
+@pytest.mark.parametrize("populated", [False, True])
+def test_daemon_orphan_reconcile_requires_index_readiness_only_for_paid_state(tmp_path: Path, populated: bool) -> None:
+    """An empty fresh tier settles before Index promotion; paid rows still refuse."""
+    if populated:
+        index_db, embeddings_db, _session_id, _orphan_id = _build_fixture(tmp_path)
+        for metadata in (tmp_path / ".index-generations").glob("*/generation.json"):
+            metadata.unlink()
+    else:
+        bootstrap_archive_root(tmp_path)
+        index_db = tmp_path / "index.db"
+        embeddings_db = tmp_path / "embeddings.db"
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+
+    async def run() -> EmbeddingOrphanReconcileReport | None:
+        return await coordinator.run_sync(
+            "maintenance.embedding_orphan_reconcile", reconcile_embedding_orphans_once, index_db
+        )
+
+    if populated:
+        with pytest.raises(RuntimeError, match="generation readiness evidence"):
+            asyncio.run(run())
+        with sqlite3.connect(embeddings_db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone()[0] == 1
+    else:
+        result = asyncio.run(run())
+        assert result is not None
+        assert result.ok and not result.more_pending
+        assert result.scanned_vector_rows == result.scanned_message_meta_rows == result.scanned_status_rows == 0
+        assert result.removed_message_rows == result.removed_vector_rows == result.removed_status_rows == 0
+        assert result.samples == ()

@@ -14,6 +14,7 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
 from polylogue.core.enums import Origin, Provider
 from polylogue.sources.assembly import get_assembly_spec
 from polylogue.sources.detection import DetectorBinding, DetectorBindingError, compile_detector_registry
@@ -26,12 +27,12 @@ from polylogue.sources.origin_specs import (
     OriginSpecRegistry,
     TopologyCapabilities,
     TopologyCapability,
-    artifact_suffixes_for_provider,
     check_dropped_value_vocabularies,
     database_capability_for_provider,
     detector_registry,
     lowering_fingerprint,
     parser_fingerprint_for_origin,
+    parser_semantic_authority_fingerprint,
     public_origin_descriptions,
     public_origin_meanings,
     public_origin_tokens,
@@ -113,28 +114,35 @@ def test_source_class_recognition_defers_zip_members_to_archive_extraction(tmp_p
 
 
 def test_hermes_root_census_accounts_for_every_candidate_without_parsing(tmp_path: Path) -> None:
-    """A broad root has one declared disposition for every enumerated file.
+    """A broad root has one declared disposition for every file its layout places.
 
     Anti-vacuity: dropping a candidate from the walk or admitting every JSON
-    by suffix changes the denominator or the typed disposition counts.
+    by suffix (the 40 shipped skill templates, the stray cache database)
+    changes the denominator or the typed disposition counts.
     """
 
+    templates = tmp_path / "hermes-agent" / "optional-skills" / "skill" / "templates"
+    templates.mkdir(parents=True)
     for index in range(40):
-        (tmp_path / f"template-{index}.json").write_text('{"name":"optional skill"}', encoding="utf-8")
-    (tmp_path / "moved-atif.json").write_text(
+        (templates / f"template-{index}.json").write_text('{"name":"optional skill"}', encoding="utf-8")
+    relay = tmp_path / "observability" / "nemo-relay"
+    (relay / "atif").mkdir(parents=True)
+    (relay / "atof").mkdir(parents=True)
+    (relay / "atif" / "trajectory-1.json").write_text(
         '{"schema_version":"ATIF-v1.7","session_id":"s-1","steps":[]}', encoding="utf-8"
     )
-    (tmp_path / "moved-atof.jsonl").write_text(
+    (relay / "atof" / "events.jsonl").write_text(
         '{"atof_version":"0.1","kind":"mark","uuid":"u-1",'
         '"timestamp":"2026-08-26T00:00:00Z","name":"hermes.turn.start"}\n',
         encoding="utf-8",
     )
     (tmp_path / "cache.sqlite").write_bytes(b"not sqlite")
+    (tmp_path / "state.db").write_bytes(b"not sqlite")
 
     census = census_source_root(tmp_path, provider=Provider.HERMES)
 
-    assert census.candidate_count == 43
-    assert census.disposition_counts == {"session": 2, "non_session": 0, "unsupported": 41}
+    assert census.candidate_count == 3
+    assert census.disposition_counts == {"session": 2, "non_session": 0, "unsupported": 1}
     assert census.accounted_count == census.candidate_count
     assert census.unexplained_candidates == ()
     assert census.is_complete
@@ -187,17 +195,8 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
         "prompt_history_log",
         "hook_event_carrier",
     }
-    # Membership, not order. The projection dedups with ``dict.fromkeys`` over
-    # ``artifact_rules`` declaration order, so adding or reordering a rule
-    # permutes the tuple -- and every consumer tests membership only
-    # (``any(name.endswith(suffix) for suffix in self.suffixes)`` in
-    # sources/live/watcher.py). Asserting the tuple made this line red the
-    # moment polylogue-k3ahm declared the carrier rule first, which is a
-    # declaration-order change, not a behaviour change.
-    assert set(artifact_suffixes_for_provider(Provider.CLAUDE_CODE)) == {".json", ".jsonl", ".ndjson"}
     tool_result_rule = next(rule for rule in claude.artifact_rules if rule.kind == "tool_result_sidecar")
     assert tool_result_rule.path_suffixes == (".json", ".txt", ".html", "")
-    assert tool_result_rule.watch_suffixes == (".json",)
     assert claude.detector_tightness == 60
     assert chatgpt.detector_tightness == 70
     assert chatgpt.acquisition_modes == ("takeout-json", "bundle", "browser-capture")
@@ -217,14 +216,6 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
         "brain_metadata_sidecar",
         "brain_document",
     }
-    assert artifact_suffixes_for_provider(Provider.ANTIGRAVITY) == (
-        ".pb",
-        ".db",
-        ".sqlite",
-        ".sqlite3",
-        ".metadata.json",
-        ".md",
-    )
     assert set(by_origin) == set(Origin)
     assert by_origin[Origin.UNKNOWN_EXPORT].lifecycle == "compatibility-only"
     assert by_origin[Origin.AISTUDIO_DRIVE].provider_wires == (Provider.GEMINI, Provider.DRIVE)
@@ -499,6 +490,145 @@ def test_parser_fingerprint_changes_when_a_normalizing_parser_helper_changes(tmp
     assert before != after
 
 
+def test_dispatch_closure_traverses_implicit_parser_namespace_imports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Namespace-imported parser modules contribute to shared lowering identity."""
+    import polylogue.sources.origin_specs as origin_specs
+
+    source_root = tmp_path / "source-root"
+    sources = source_root / "polylogue" / "sources"
+    parser_namespace = sources / "parsers"
+    parser_namespace.mkdir(parents=True)
+    dispatch = sources / "dispatch.py"
+    dispatch.write_text(
+        "from .parsers import alpha, beta\n\ndef route(value):\n    return alpha.parse(value), beta.parse(value)\n"
+    )
+    alpha = parser_namespace / "alpha.py"
+    beta = parser_namespace / "beta.py"
+    alpha.write_text("def parse(value):\n    return value\n", encoding="utf-8")
+    beta.write_text("def parse(value):\n    return {'beta': value}\n", encoding="utf-8")
+
+    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", source_root)
+    monkeypatch.setattr(origin_specs, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/dispatch.py",))
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
+
+    closure = set(origin_specs._semantic_source_paths(("polylogue/sources/dispatch.py",)))
+    assert alpha.resolve() in closure
+    assert beta.resolve() in closure
+    before = origin_specs.lowering_fingerprint()
+
+    beta.write_text("def parse(value):\n    return {'beta': value, 'changed': True}\n", encoding="utf-8")
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
+    assert origin_specs.lowering_fingerprint() != before
+
+
+def test_composed_raw_authority_fingerprint_tracks_origin_spec_parser_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The persisted authority stamp includes the executable OriginSpec parser closure."""
+    import polylogue.sources.origin_specs as origin_specs
+
+    parser = tmp_path / "parser.py"
+    helper = tmp_path / "helper.py"
+    parser.write_text(
+        "from .helper import normalize\n\ndef parse(value):\n    return normalize(value)\n", encoding="utf-8"
+    )
+    helper.write_text("def normalize(value):\n    return value.strip()\n", encoding="utf-8")
+    target = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CODEX_SESSION)
+    monkeypatch.setattr(
+        origin_specs,
+        "ORIGIN_SPECS",
+        tuple(replace(spec, parser_paths=(str(parser),)) if spec is target else spec for spec in ORIGIN_SPECS),
+    )
+    origin_specs.parser_semantic_authority_fingerprint.cache_clear()
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
+    before = parser_semantic_authority_fingerprint()
+
+    helper.write_text("def normalize(value):\n    return value.casefold()\n", encoding="utf-8")
+    origin_specs.parser_semantic_authority_fingerprint.cache_clear()
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
+    assert parser_semantic_authority_fingerprint() != before
+
+
+def test_composed_raw_authority_fingerprint_tracks_declared_database_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A changed database member contract changes which retained source bytes mean parser input."""
+    import polylogue.sources.origin_specs as origin_specs
+
+    target = next(spec for spec in ORIGIN_SPECS if spec.lifecycle == "executable" and spec.database_capability)
+    assert target.database_capability is not None
+    changed_capability = replace(
+        target.database_capability,
+        revision_identity=f"{target.database_capability.revision_identity}:changed",
+    )
+    monkeypatch.setattr(
+        origin_specs,
+        "ORIGIN_SPECS",
+        tuple(
+            replace(spec, database_capability=changed_capability) if spec is target else spec for spec in ORIGIN_SPECS
+        ),
+    )
+    origin_specs.parser_semantic_authority_fingerprint.cache_clear()
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
+    changed = parser_semantic_authority_fingerprint()
+
+    monkeypatch.undo()
+    origin_specs.parser_semantic_authority_fingerprint.cache_clear()
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
+    current = parser_semantic_authority_fingerprint()
+    assert changed != current
+
+
+def test_database_consumer_implementation_is_in_origin_parser_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Executable database consumers are parser routes even when their module is not imported by dispatch."""
+    import polylogue.sources.origin_specs as origin_specs
+
+    source_root = tmp_path / "source-root"
+    package = source_root / "polylogue" / "sources"
+    package.mkdir(parents=True)
+    reader = package / "database_reader.py"
+    reader.write_text("def read(connection):\n    return connection.execute('select 1')\n", encoding="utf-8")
+    capability_origin = next(spec for spec in ORIGIN_SPECS if spec.database_capability is not None)
+    assert capability_origin.database_capability is not None
+    # The synthetic closure contains only the synthetic consumer: other members'
+    # consumers and the origin's own parser modules are absent from this root.
+    capability = replace(
+        capability_origin.database_capability,
+        members=(
+            replace(
+                capability_origin.database_capability.members[0], consumer="polylogue/sources/database_reader.py:read"
+            ),
+            *(replace(member, consumer=None) for member in capability_origin.database_capability.members[1:]),
+        ),
+    )
+    synthetic = replace(
+        capability_origin,
+        database_capability=capability,
+        parser_paths=(),
+        stream_parser_path=None,
+        assembly_paths=(),
+        assembly_spec_path=None,
+        artifact_rules=(),
+    )
+    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", source_root)
+    origin_specs._invalidate_source_signatures()
+
+    before = synthetic.parser_fingerprint()
+    reader.write_text("def read(connection):\n    return connection.execute('select 2')\n", encoding="utf-8")
+    origin_specs._invalidate_source_signatures()
+    after = synthetic.parser_fingerprint()
+
+    assert before != after
+
+
 def test_parser_fingerprints_ignore_diagnostic_module_but_lowering_and_materializer_do_not(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -543,6 +673,8 @@ def test_parser_fingerprints_ignore_diagnostic_module_but_lowering_and_materiali
         assembly_paths=(),
         assembly_spec_path=None,
         artifact_rules=(),
+        # Database consumers are parser routes; this synthetic closure has none.
+        database_capability=None,
     )
     second = replace(
         next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CHATGPT_EXPORT),
@@ -639,6 +771,8 @@ def test_production_fingerprints_are_stable_across_a_fresh_interpreter() -> None
 
     assert restarted == current_parser
     assert len(lowering_fingerprint()) == 64
+    assert raw_authority_parser_fingerprint() == parser_semantic_authority_fingerprint()
+    assert raw_authority_parser_fingerprint() != "revision-membership-v5"
 
 
 def test_origin_specs_compile_the_production_detector_registry() -> None:
@@ -2031,12 +2165,10 @@ def test_exact_fields_settle_on_a_container_duplicate_and_skip_array_roots() -> 
 
 
 def test_json_document_recognition_matches_the_record_parser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Recognition refuses what the whole-document record parser cannot hold or admit.
+    """Recognition drains the complete record stream without a document-size cap.
 
-    Anti-vacuity: drop the document bound and an over-bound document is
-    admitted into a whole-document ``json.load``; scan a scalar root and its
-    body is read; check only JSON syntax on the drained tail and a non-ATOF
-    member past the sample is admitted.
+    A foreign tail or scalar root still refuses; aggregate width does not
+    turn valid individually bounded records into an unsupported document.
     """
     import polylogue.core.json_envelope as json_envelope
     from polylogue.sources import origin_specs
@@ -2061,12 +2193,17 @@ def test_json_document_recognition_matches_the_record_parser(tmp_path: Path, mon
     refused = recognize_source_class(Provider.HERMES, scalar)
     assert refused is not None and refused.source_class == "unsupported" and not opened
 
-    monkeypatch.setattr(json_envelope, "sqlite_value_limit", lambda: 64)
-    monkeypatch.setattr(origin_specs, "sqlite_value_limit", lambda: 64)
+    import json
+
+    from polylogue.sources.decoders import _iter_json_stream
+
     large = tmp_path / "large.json"
-    large.write_text("[" + record + "]", encoding="utf-8")
-    refused = recognize_source_class(Provider.HERMES, large)
-    assert refused is not None and "record bound" in refused.reason
+    large.write_text("[" + ",".join([record] * 1201) + "]", encoding="utf-8")
+    recognition = recognize_source_class(Provider.HERMES, large)
+    assert recognition is not None and recognition.source_class == "session"
+    with large.open("rb") as handle:
+        records = _iter_json_stream(handle, str(large))
+        assert sum(1 for value in records if value == json.loads(record)) == 1201
 
 
 def test_array_decoder_reads_provider_surrogates_through_the_stdlib_fallback() -> None:
@@ -2153,8 +2290,10 @@ def test_root_census_accounts_for_rejected_nonregular_candidates(tmp_path: Path)
     """The regular-file filter used to remove links and FIFOs from the denominator."""
     target = tmp_path / "target.txt"
     target.write_text("neutral", encoding="utf-8")
-    (tmp_path / "linked.jsonl").symlink_to(target)
-    os.mkfifo(tmp_path / "pipe.jsonl")
+    project = tmp_path / "-home-user-repo"
+    project.mkdir()
+    (project / "linked.jsonl").symlink_to(target)
+    os.mkfifo(project / "pipe.jsonl")
 
     census = census_source_root(tmp_path, provider=Provider.CLAUDE_CODE)
 
@@ -2174,7 +2313,8 @@ def test_source_walk_keeps_uninspectable_candidate_and_census_records_it(
     from polylogue.config import Source
     from polylogue.sources.source_walk import _resolve_source_paths
 
-    source = tmp_path / "unreadable.jsonl"
+    source = tmp_path / "-home-user-repo" / "unreadable.jsonl"
+    source.parent.mkdir()
     source.write_text("{}\n", encoding="utf-8")
     real_stat = os.stat
 
@@ -2189,3 +2329,18 @@ def test_source_walk_keeps_uninspectable_candidate_and_census_records_it(
     assert census.candidate_count == 1
     assert census.unexplained_candidates == (source,)
     assert not census.is_complete
+
+
+def test_claude_history_rule_only_admits_the_install_root() -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.sources.origin_specs import artifact_rule_for_path
+
+    rule = artifact_rule_for_path(Provider.CLAUDE_CODE, "/neutral/install/.claude/history.jsonl")
+    assert rule is not None and rule.kind == "prompt_history_log" and rule.parse_policy == "raw-only"
+    for path in (
+        "/neutral/install/.claude/plugins/example/history.jsonl",
+        "/neutral/install/.claude/projects/example/history.jsonl",
+        "/neutral/history.jsonl",
+    ):
+        found = artifact_rule_for_path(Provider.CLAUDE_CODE, path)
+        assert found is None or found.kind != "prompt_history_log"

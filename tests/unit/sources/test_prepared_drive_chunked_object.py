@@ -13,16 +13,14 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import drive_chunked_prompt_envelope
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from polylogue.sources.parsers import drive
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
-from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.retained_jsonl import retained_raw_fixture
 
 
 def _chunks(count: int) -> list[object]:
@@ -85,7 +83,7 @@ def _prompt(count: int = 300, *, wrapped: bool = True) -> dict[str, object]:
 
 
 def _expected(provider: Provider, payload: dict[str, object], source: Path) -> ParsedSession:
-    [expected] = require_positive_conversational_evidence(
+    [expected] = admit_parsed_sessions_for_publication(
         parse_payload(provider, [payload], "fallback"), provider=provider, source_path=str(source)
     )
     expected.content_hash = session_content_hash(expected)
@@ -124,7 +122,7 @@ def _refuse_whole_document(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError("whole-document decode or parse was used")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse)
 
 
 @pytest.mark.parametrize("provider", [Provider.DRIVE, Provider.GEMINI])
@@ -287,33 +285,25 @@ def test_retained_chunked_prompt_uses_streamed_replay_route(tmp_path: Path, monk
     payload = _prompt()
     blob_root = tmp_path / "blob"
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(payload).encode())
-    source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
-    _refuse_whole_document(monkeypatch)
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-raw",
-        Provider.DRIVE.value,
-        blob_hash,
-        str(tmp_path / "drive" / "Neutral prompt.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "prepared"),
-        "2025-01-02T03:04:05Z",
-    )
-    assert artifact.error is None
-    assert artifact.positive_evidence_filtered
-    [actual] = artifact.iter_sessions()
-    assert actual.provider_session_id == "neutral-prompt"
-    assert len(actual.messages) == 306
+    with retained_raw_fixture(
+        root=tmp_path,
+        provider=Provider.DRIVE,
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "drive" / "Neutral prompt.json"),
+        file_mtime="2025-01-02T03:04:05Z",
+    ) as (reader, raw_id):
+        _refuse_whole_document(monkeypatch)
+        artifact = revision_backfill.prepare_retained_jsonl_artifact(
+            reader, raw_id, directory=BlobStore(blob_root)._ensure_private_staging_root() / "prepared"
+        )
+        try:
+            assert artifact.error is None, artifact.error
+            assert artifact.positive_evidence_filtered
+            [actual] = artifact.iter_sessions()
+            assert actual.provider_session_id == "neutral-prompt"
+            assert len(actual.messages) == 306
+        finally:
+            artifact.discard()
 
 
 def test_repeated_ancestor_key_keeps_the_document_on_the_object_parser() -> None:

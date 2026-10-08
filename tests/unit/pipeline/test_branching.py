@@ -21,7 +21,7 @@ from polylogue.sources import iter_source_sessions
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.sqlite.connection import open_read_connection
 from tests.infra.archive_scenarios import archive_for_scenario_db
 from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import ingest_session
@@ -639,7 +639,7 @@ class TestBranchPipelinePersistence:
             )
             branch_id = _archive_session_id(Provider.CHATGPT, "conv-1")
 
-        with open_connection(db_path) as conn:
+        with open_read_connection(db_path) as conn:
             child_row = conn.execute(
                 "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                 (child_id,),

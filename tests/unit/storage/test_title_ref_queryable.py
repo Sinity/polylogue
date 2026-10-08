@@ -19,19 +19,19 @@ from polylogue.archive.filter.filters import SessionFilter
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role, TitleSource
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.io_phase_metrics import connect_measured
+from tests.infra.archive_templates import bootstrapped_tier_path, seeds_off_event_loop
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import db_setup
 
 _TITLE_REF = "codex-history:codex-tr-native"
 
 
+@seeds_off_event_loop
 def _write_codex_session(db_path: Path, *, native_id: str, title: str) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = connect_measured(bootstrapped_tier_path(db_path))
     conn.row_factory = sqlite3.Row
     try:
-        initialize_archive_tier(conn, ArchiveTier.INDEX)
         session = ParsedSession(
             source_name=Provider.CODEX,
             provider_session_id=native_id,
@@ -48,7 +48,7 @@ def _write_codex_session(db_path: Path, *, native_id: str, title: str) -> None:
                 ),
             ],
         )
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.commit()
     finally:
         conn.close()
@@ -100,6 +100,22 @@ async def test_session_filter_full_session_exposes_title_ref(workspace_env: dict
     sessions = await SessionFilter(archive_root=archive_root, query_plan=plan).list()
     assert len(sessions) == 1
     assert sessions[0].title_ref == _TITLE_REF
+
+
+@pytest.mark.asyncio
+async def test_repository_get_hydrates_title_provenance_from_session_row(tmp_path: Path) -> None:
+    """The repository's Session read keeps provenance fields from its row record."""
+    from polylogue.storage.repository import SessionRepository
+
+    db_path = tmp_path / "index.db"
+    _write_codex_session(db_path, native_id="codex-repository-title", title="Keep title evidence")
+
+    async with SessionRepository(db_path=bootstrapped_tier_path(db_path)) as repository:
+        session = await repository.get("codex-session:codex-repository-title")
+
+    assert session is not None
+    assert session.title_source is TitleSource.ORIGIN
+    assert session.title_ref == _TITLE_REF
 
 
 def test_session_list_row_payload_carries_title_ref() -> None:
@@ -208,7 +224,7 @@ def test_canonical_index_ddl_declares_no_retired_session_columns() -> None:
 
 def test_fresh_index_database_has_no_retired_session_columns(tmp_path: Path) -> None:
     """The same retirement, proven against a materialized fresh archive."""
-    db_path = tmp_path / "fresh-index.db"
+    db_path = tmp_path / "index.db"
     _write_codex_session(db_path, native_id="codex-tr-ddl", title="Ship the release")
     conn = sqlite3.connect(db_path)
     try:

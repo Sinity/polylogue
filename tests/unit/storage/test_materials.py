@@ -11,34 +11,37 @@ import pytest
 from polylogue.storage.blob_liveness import inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.materials import (
-    acquire_material,
-    admit_material,
-    admit_material_file,
     link_material,
     list_material_links,
     list_materials,
+    prepare_material,
+    prepare_material_acquisition,
+    prepare_material_file,
     read_material,
 )
-from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.material_preparation import apply_material_preparation, material_publisher
 
 
-def _source_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(SOURCE_DDL)
-    return conn
+def _source_db(tmp_path: Path) -> sqlite3.Connection:
+    with ArchiveStore(tmp_path, initialize=True, read_only=False):
+        pass
+    return sqlite3.connect(tmp_path / "source.db")
 
 
 def test_material_retains_bytes_and_links_without_session(tmp_path: Path) -> None:
-    conn = _source_db()
-    observation = admit_material(
+    conn = _source_db(tmp_path)
+    observation = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="https://example.test/result.zip",
-        referrer_ref="message:codex-session:abc:m1",
+        prepared=prepare_material(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="https://example.test/result.zip",
+            referrer_ref="message:codex-session:abc:m1",
+            payload=b"not a session export",
+            media_type="application/zip",
+            privacy_classification="private",
+        ),
         observed_at_ms=100,
-        payload=b"not a session export",
-        media_type="application/zip",
-        privacy_classification="private",
     )
     link_material(
         conn,
@@ -48,6 +51,10 @@ def test_material_retains_bytes_and_links_without_session(tmp_path: Path) -> Non
         authority="provider",
         confidence=0.8,
         observed_at_ms=101,
+        source_diagnostic="linked detail " * 2000 + "exact linked terminus",
+    )
+    assert list_material_links(conn, observation.material_id)[0].source_diagnostic == (
+        "linked detail " * 2000 + "exact linked terminus"
     )
     row = conn.execute("SELECT acquisition_state, custody, byte_size, blob_hash FROM material_observations").fetchone()
     assert row[:3] == ("malformed", "retained", len(b"not a session export"))
@@ -59,56 +66,65 @@ def test_material_retains_bytes_and_links_without_session(tmp_path: Path) -> Non
     assert list_materials(conn, evidence_ref="work-attempt:attempt-1")[0].material_id == observation.material_id
 
 
-def test_failed_claim_is_queryable_and_synthetic_raw_bytes_are_rejected(tmp_path: Path) -> None:
-    conn = _source_db()
-    observation = admit_material(
+@pytest.mark.parametrize("diagnostic", ["HTTP 410 Gone", "detail " * 3000 + "exact terminal detail"])
+def test_failed_claim_is_queryable_and_synthetic_raw_bytes_are_rejected(tmp_path: Path, diagnostic: str) -> None:
+    conn = _source_db(tmp_path)
+    observation = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="https://expired.example/file",
-        referrer_ref="agent:worker-1",
+        prepared=prepare_material(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="https://expired.example/file",
+            referrer_ref="agent:worker-1",
+            state="expired",
+            diagnostic=diagnostic,
+            retryable=True,
+        ),
         observed_at_ms=200,
-        state="expired",
-        diagnostic="HTTP 410 Gone",
-        retryable=True,
     )
     assert observation.blob_hash is None
     assert conn.execute("SELECT acquisition_state, diagnostic, retryable FROM material_observations").fetchone() == (
         "expired",
-        "HTTP 410 Gone",
+        diagnostic,
         1,
     )
     with pytest.raises(ValueError, match="synthetic"):
-        admit_material(
+        apply_material_preparation(
             conn,
-            blob_store=BlobStore(tmp_path / "blobs"),
-            source_uri="synthetic:test",
-            referrer_ref="test",
+            prepared=prepare_material(
+                blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+                source_uri="synthetic:test",
+                referrer_ref="test",
+                payload=b"raw",
+                privacy_classification="synthetic",
+            ),
             observed_at_ms=201,
-            payload=b"raw",
-            privacy_classification="synthetic",
         )
 
 
 def test_duplicate_bytes_remain_separate_observations_and_are_liveness_protected(tmp_path: Path) -> None:
-    conn = _source_db()
+    conn = _source_db(tmp_path)
     store = BlobStore(tmp_path / "blobs")
-    first = admit_material(
+    first = apply_material_preparation(
         conn,
-        blob_store=store,
-        source_uri="https://one.example/file",
-        referrer_ref="message:one",
+        prepared=prepare_material(
+            blob_store=material_publisher(conn, store),
+            source_uri="https://one.example/file",
+            referrer_ref="message:one",
+            payload=b"same bytes",
+            media_type="text/plain",
+        ),
         observed_at_ms=1,
-        payload=b"same bytes",
-        media_type="text/plain",
     )
-    second = admit_material(
+    second = apply_material_preparation(
         conn,
-        blob_store=store,
-        source_uri="https://two.example/file",
-        referrer_ref="message:two",
+        prepared=prepare_material(
+            blob_store=material_publisher(conn, store),
+            source_uri="https://two.example/file",
+            referrer_ref="message:two",
+            payload=b"same bytes",
+            media_type="text/plain",
+        ),
         observed_at_ms=2,
-        payload=b"same bytes",
-        media_type="text/plain",
     )
     assert first.material_id != second.material_id
     assert second.acquisition_state == "duplicate"
@@ -124,15 +140,17 @@ def test_duplicate_bytes_remain_separate_observations_and_are_liveness_protected
 
 
 def test_text_manifest_does_not_copy_raw_content(tmp_path: Path) -> None:
-    conn = _source_db()
-    observation = admit_material(
+    conn = _source_db(tmp_path)
+    observation = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="file:///private/notes.txt",
-        referrer_ref="agent:worker",
+        prepared=prepare_material(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="file:///private/notes.txt",
+            referrer_ref="agent:worker",
+            payload=b"secret text that must remain in the blob",
+            media_type="text/plain",
+        ),
         observed_at_ms=3,
-        payload=b"secret text that must remain in the blob",
-        media_type="text/plain",
     )
     assert "text_prefix" not in observation.extraction_manifest
     assert observation.extraction_manifest["text"] == {"available": True, "encoding": "text/plain"}
@@ -216,12 +234,14 @@ def test_url_acquisition_keeps_redirect_provenance_and_bytes(monkeypatch: pytest
 
     _public_resolver(monkeypatch)
     monkeypatch.setattr("polylogue.storage.materials._open_url", fake_open)
-    conn = _source_db()
-    observation = acquire_material(
+    conn = _source_db(tmp_path)
+    observation = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="https://example.test/result.md",
-        referrer_ref="message:codex:1",
+        prepared=prepare_material_acquisition(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="https://example.test/result.md",
+            referrer_ref="message:codex:1",
+        ),
         observed_at_ms=10,
     )
     assert hops == ["https://example.test/result.md", "https://cdn.example/result.md"]
@@ -239,12 +259,14 @@ def test_loopback_material_url_is_permanently_refused_without_connecting(
     opener raise AssertionError (a connection attempt), turning this red.
     """
     _refuse_connections(monkeypatch)
-    conn = _source_db()
-    observation = acquire_material(
+    conn = _source_db(tmp_path)
+    observation = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="http://127.0.0.1:9/secrets",
-        referrer_ref="message:codex:1",
+        prepared=prepare_material_acquisition(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="http://127.0.0.1:9/secrets",
+            referrer_ref="message:codex:1",
+        ),
         observed_at_ms=10,
     )
     assert observation.acquisition_state == "access_denied"
@@ -262,12 +284,14 @@ def test_link_local_metadata_url_is_permanently_refused(monkeypatch: pytest.Monk
     stubbed opener raise on a connection attempt, turning this red.
     """
     _refuse_connections(monkeypatch)
-    conn = _source_db()
-    observation = acquire_material(
+    conn = _source_db(tmp_path)
+    observation = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="http://169.254.169.254/latest/meta-data/",
-        referrer_ref="message:codex:1",
+        prepared=prepare_material_acquisition(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="http://169.254.169.254/latest/meta-data/",
+            referrer_ref="message:codex:1",
+        ),
         observed_at_ms=11,
     )
     assert observation.acquisition_state == "access_denied"
@@ -283,23 +307,27 @@ def test_ipv6_loopback_and_mapped_ipv4_hosts_are_refused(monkeypatch: pytest.Mon
     lets one of these connect and raise AssertionError.
     """
     _refuse_connections(monkeypatch)
-    conn = _source_db()
+    conn = _source_db(tmp_path)
     monkeypatch.setattr(
         "polylogue.storage.materials._resolve_addresses",
         lambda host, port: ["::ffff:10.0.0.5"] if host == "mapped.example" else [host],
     )
-    mapped = acquire_material(
+    mapped = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="https://mapped.example/resource",
-        referrer_ref="message:codex:1",
+        prepared=prepare_material_acquisition(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="https://mapped.example/resource",
+            referrer_ref="message:codex:1",
+        ),
         observed_at_ms=12,
     )
-    literal = acquire_material(
+    literal = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="http://[::1]:9/resource",
-        referrer_ref="message:codex:1",
+        prepared=prepare_material_acquisition(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="http://[::1]:9/resource",
+            referrer_ref="message:codex:1",
+        ),
         observed_at_ms=13,
     )
     assert mapped.acquisition_state == "access_denied"
@@ -328,12 +356,14 @@ def test_redirect_to_private_address_is_refused_at_the_hop(monkeypatch: pytest.M
         lambda host, port: ["93.184.216.34"] if host == "example.test" else [host],
     )
     monkeypatch.setattr("polylogue.storage.materials._open_url", fake_open)
-    conn = _source_db()
-    observation = acquire_material(
+    conn = _source_db(tmp_path)
+    observation = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="https://example.test/start",
-        referrer_ref="message:codex:1",
+        prepared=prepare_material_acquisition(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="https://example.test/start",
+            referrer_ref="message:codex:1",
+        ),
         observed_at_ms=14,
     )
     assert opened == ["https://example.test/start"]
@@ -348,24 +378,28 @@ def test_url_and_file_failures_are_queryable(monkeypatch: pytest.MonkeyPatch, tm
     Anti-vacuity: routing HTTP status failures through the permanent refusal
     path would change ``expired``/``unavailable`` and turn this red.
     """
-    conn = _source_db()
+    conn = _source_db(tmp_path)
     _public_resolver(monkeypatch)
     monkeypatch.setattr(
         "polylogue.storage.materials._open_url",
         lambda *args, **kwargs: (_ for _ in ()).throw(urllib.error.HTTPError("url", 410, "Gone", Message(), None)),
     )
-    expired = acquire_material(
+    expired = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="https://example.test/old",
-        referrer_ref="agent:a",
+        prepared=prepare_material_acquisition(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="https://example.test/old",
+            referrer_ref="agent:a",
+        ),
         observed_at_ms=1,
     )
-    missing = admit_material_file(
+    missing = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        path=tmp_path / "missing.patch",
-        referrer_ref="agent:a",
+        prepared=prepare_material_file(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            path=tmp_path / "missing.patch",
+            referrer_ref="agent:a",
+        ),
         observed_at_ms=2,
     )
     assert expired.acquisition_state == "expired"
@@ -375,18 +409,10 @@ def test_url_and_file_failures_are_queryable(monkeypatch: pytest.MonkeyPatch, tm
     assert all(material_ids)
 
 
-def test_material_boundaries_validate_link_targets_and_acquisition_limits(tmp_path: Path) -> None:
-    conn = _source_db()
+def test_material_boundaries_validate_link_targets(tmp_path: Path) -> None:
+    conn = _source_db(tmp_path)
     with pytest.raises(KeyError, match="missing"):
         link_material(conn, "missing", "message:1", relation="refers_to", observed_at_ms=1)
-    with pytest.raises(ValueError, match="max_bytes"):
-        acquire_material(
-            conn,
-            source_uri="https://example.test/file",
-            referrer_ref="message:1",
-            observed_at_ms=1,
-            max_bytes=0,
-        )
 
 
 def test_short_body_against_a_declared_length_is_partial(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -397,7 +423,7 @@ def test_short_body_against_a_declared_length_is_partial(monkeypatch: pytest.Mon
     bytes as ``acquired`` -- authoritative retained evidence for bytes that were
     never sent.
 
-    Anti-vacuity: reverting the declared-length branch in ``acquire_material``
+    Anti-vacuity: reverting the declared-length branch in ``prepare_material_acquisition``
     makes the first assertion read ``acquired``. The undeclared-length case
     below pins the other direction, so classifying every response as partial
     cannot pass.
@@ -407,12 +433,14 @@ def test_short_body_against_a_declared_length_is_partial(monkeypatch: pytest.Mon
         "polylogue.storage.materials._open_url",
         lambda url, address, timeout: _StubResponse(body=b"# short", content_length="1000"),
     )
-    conn = _source_db()
-    truncated = acquire_material(
+    conn = _source_db(tmp_path)
+    truncated = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="https://example.test/truncated.md",
-        referrer_ref="message:codex:1",
+        prepared=prepare_material_acquisition(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="https://example.test/truncated.md",
+            referrer_ref="message:codex:1",
+        ),
         observed_at_ms=10,
     )
     assert truncated.acquisition_state == "partial"
@@ -423,11 +451,13 @@ def test_short_body_against_a_declared_length_is_partial(monkeypatch: pytest.Mon
         "polylogue.storage.materials._open_url",
         lambda url, address, timeout: _StubResponse(body=b"# whole", content_length="7"),
     )
-    complete = acquire_material(
+    complete = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="https://example.test/whole.md",
-        referrer_ref="message:codex:1",
+        prepared=prepare_material_acquisition(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="https://example.test/whole.md",
+            referrer_ref="message:codex:1",
+        ),
         observed_at_ms=11,
     )
     assert complete.acquisition_state == "acquired"
@@ -436,11 +466,13 @@ def test_short_body_against_a_declared_length_is_partial(monkeypatch: pytest.Mon
         "polylogue.storage.materials._open_url",
         lambda url, address, timeout: _StubResponse(body=b"# undeclared"),
     )
-    undeclared = acquire_material(
+    undeclared = apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri="https://example.test/undeclared.md",
-        referrer_ref="message:codex:1",
+        prepared=prepare_material_acquisition(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri="https://example.test/undeclared.md",
+            referrer_ref="message:codex:1",
+        ),
         observed_at_ms=12,
     )
     assert undeclared.acquisition_state == "acquired"
@@ -449,14 +481,14 @@ def test_short_body_against_a_declared_length_is_partial(monkeypatch: pytest.Mon
 def test_admission_keeps_bytes_in_own_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A byte-bearing admission must write into *this* connection's archive.
 
-    ``blob_store=None`` used to fall through to the process-wide active store,
+    An unspecified publisher previously fell through to the process-wide active store,
     so a scratch, probe or test source tier committed a durable
     ``material_observations`` row in one archive while its bytes landed in
     another: archive-local reads, backup, integrity checks and GC could not
     treat the pair consistently, and private bytes leaked into the operator's
     live archive.
 
-    Anti-vacuity: restore ``get_blob_store()`` as the default and the bytes
+    Anti-vacuity: resolve the publisher from the active archive and the bytes
     appear under ``active/blob`` instead of ``scratch/blob``, and the
     ``read_material`` assertion below fails because the scratch archive has no
     such blob. The opposite direction -- ignoring an explicitly supplied store
@@ -468,16 +500,19 @@ def test_admission_keeps_bytes_in_own_archive(tmp_path: Path, monkeypatch: pytes
     (active / "blob").mkdir(parents=True)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(active))
 
+    with ArchiveStore(scratch, initialize=True, read_only=False):
+        pass
     conn = sqlite3.connect(scratch / "source.db")
     try:
-        conn.executescript(SOURCE_DDL)
-        observation = admit_material(
+        observation = apply_material_preparation(
             conn,
-            blob_store=None,
-            source_uri="https://example.test/private.bin",
-            referrer_ref="message:codex-session:abc:m1",
+            prepared=prepare_material(
+                blob_store=material_publisher(conn, BlobStore(scratch / "blob")),
+                source_uri="https://example.test/private.bin",
+                referrer_ref="message:codex-session:abc:m1",
+                payload=b"private scratch bytes",
+            ),
             observed_at_ms=100,
-            payload=b"private scratch bytes",
         )
         assert observation.blob_hash is not None
         assert read_material(conn, observation.material_id) == b"private scratch bytes"
@@ -486,3 +521,36 @@ def test_admission_keeps_bytes_in_own_archive(tmp_path: Path, monkeypatch: pytes
 
     assert list((scratch / "blob").rglob("*")), "scratch archive retained no bytes"
     assert not [path for path in (active / "blob").rglob("*") if path.is_file()], "bytes leaked into the active archive"
+
+
+def test_acquisition_above_former_size_cap_retains_complete_stream(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    total = 65 * 1024 * 1024 + 7
+
+    class GeneratedResponse(_StubResponse):
+        def __init__(self) -> None:
+            super().__init__(body=b"", content_length=str(total))
+            self.remaining = total
+
+        def read(self, size: int) -> bytes:
+            assert 0 < size <= 1024 * 1024
+            count = min(size, self.remaining)
+            self.remaining -= count
+            return b"x" * count
+
+    response = GeneratedResponse()
+    _public_resolver(monkeypatch)
+    monkeypatch.setattr("polylogue.storage.materials._open_url", lambda *args, **kwargs: response)
+    conn = _source_db(tmp_path)
+    publisher = material_publisher(conn, BlobStore(tmp_path / "blobs"))
+    prepared = prepare_material_acquisition(
+        blob_store=publisher, source_uri="https://example.test/large", referrer_ref="message:synthetic-stream"
+    )
+    assert prepared.blob is not None
+    assert prepared.blob.size_bytes == total
+    observation = apply_material_preparation(conn, prepared=prepared, observed_at_ms=1)
+    assert observation.acquisition_state == "acquired"
+    assert observation.blob_hash == prepared.blob.hash_hex
+    assert response.remaining == 0
+    assert publisher.blob_path(prepared.blob.hash_hex).stat().st_size == total

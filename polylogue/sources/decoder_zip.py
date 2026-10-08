@@ -2,26 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import zipfile
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING
 
-from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact_path
+from polylogue.archive.artifact_taxonomy import ArtifactClassification, ArtifactKind, classify_artifact_path
 from polylogue.archive.zip_admission import (
     _ZIP_READ_CHUNK_SIZE,
-    MAX_AGGREGATE_UNCOMPRESSED_SIZE,
-    MAX_COMPRESSION_RATIO,
-    MAX_UNCOMPRESSED_SIZE,
     ZIP_JSON_SUFFIXES,
     ZipAdmission,
-    ZipBombError,
-    open_bounded_zip_entry,
+    open_zip_entry,
 )
 from polylogue.core.content_identity import ContentIdentityRefusal, stream_payload_content_identity
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONDecodeError
-from polylogue.core.json import loads as json_loads
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.blob_store import BlobStore
@@ -31,14 +29,11 @@ from .assembly import SidecarData
 from .cursor import _record_cursor_failure
 from .parsers.base import ParsedSession, RawSessionData
 
-logger = get_logger(__name__)
+if TYPE_CHECKING:
+    from .prepared_jsonl import PreparedJsonl
+    from .source_staging import SourceInputBinding
 
-# A classification probe asks only whether a member's decoded content overrides
-# a non-session path rule. It needs the head of a conversation document, not the
-# archival ceiling: reusing ``MAX_UNCOMPRESSED_SIZE`` here turns one ``read()``
-# into a 10 GiB allocation for a member a 1000:1 compression ratio lets a ~10 MB
-# download declare. Real provider conversation documents sit far below this.
-ZIP_PROBE_MAX_BYTES = 256 * 1024 * 1024
+logger = get_logger(__name__)
 
 
 def is_declared_artifact_path(source_path: str) -> bool:
@@ -97,11 +92,10 @@ class ZipEntryValidator:
 
     def filter_entries(
         self,
-        entries: list[zipfile.ZipInfo],
+        entries: Iterable[zipfile.ZipInfo],
         *,
         allowed_suffixes: Collection[str] | None = None,
         allowed_path: Callable[[str], bool] | None = None,
-        on_rejected: Callable[[zipfile.ZipInfo, str], None] | None = None,
         on_unselected: Callable[[zipfile.ZipInfo, str], None] | None = None,
     ) -> Iterable[zipfile.ZipInfo]:
         """Yield safe, relevant entries and record failures in cursor state.
@@ -109,26 +103,12 @@ class ZipEntryValidator:
         ``allowed_suffixes`` selects which member kinds a caller needs, while
         this validator remains the sole owner of the security checks. The
         yielded object is the exact central-directory ``ZipInfo`` that was
-        admitted. Callers must pass it through to ``open_bounded_zip_entry``;
+        admitted. Callers must pass it through to ``open_zip_entry``;
         reopening by filename can select a different duplicate member.
 
-        ``on_rejected`` lets read-only surfaces report the same admission
-        decisions without duplicating the security checks. ``on_unselected``
-        is the separate relevance channel: a member neither matching a
-        requested suffix nor owned by an artifact declaration. It is not a
-        cursor failure -- an ordinary export ships members this filter is not
-        asking for -- but a caller that must account for every physical member
-        needs to see it instead of having it silently disappear.
+        ``on_unselected`` reports relevance decisions. Actual read, decode,
+        CRC and physical storage failures are reported by their consumers.
         """
-
-        def reject(info: zipfile.ZipInfo, reason: str) -> None:
-            _record_cursor_failure(
-                self._cursor_state,
-                f"{self._zip_path}:{info.filename}",
-                reason.capitalize() if reason.startswith("aggregate") else reason,
-            )
-            if on_rejected is not None:
-                on_rejected(info, reason)
 
         infer_declared_paths = allowed_suffixes is None and allowed_path is None
         if allowed_suffixes is None:
@@ -142,9 +122,48 @@ class ZipEntryValidator:
             entries,
             allowed_suffixes=allowed_suffixes,
             allowed_path=allowed_path,
-            on_rejected=reject,
             on_unselected=on_unselected,
         )
+
+
+@contextmanager
+def prepare_zip_entry(
+    zf: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    provider: Provider,
+    source_path: str,
+    profile_identity: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+) -> Iterator[PreparedJsonl]:
+    """Prepare the complete exact member with the existing streamed parser owner."""
+    from .dispatch import is_stream_record_provider
+    from .prepared_jsonl import prepare_jsonl_blob
+
+    with TemporaryDirectory(prefix="polylogue-zip-entry-") as directory:
+        root = Path(directory)
+        member = root / "input"
+        digest = hashlib.sha256()
+        with open_zip_entry(zf, info) as source, member.open("wb") as destination:
+            while chunk := source.read(_ZIP_READ_CHUNK_SIZE):
+                destination.write(chunk)
+                digest.update(chunk)
+        artifact = prepare_jsonl_blob(
+            str(member),
+            source_path,
+            provider.value,
+            Path(info.filename).stem,
+            is_stream=is_stream_record_provider(info.filename, provider),
+            profile_identity=profile_identity,
+            shard_directory=str(root),
+            strict_jsonl_records=True,
+            source_sha256=digest.hexdigest(),
+            captured_zip_coordinate=captured_zip_coordinate,
+        )
+        try:
+            yield artifact
+        finally:
+            artifact.discard()
 
 
 def zip_entry_session_artifact(
@@ -152,82 +171,40 @@ def zip_entry_session_artifact(
     info: zipfile.ZipInfo,
     *,
     provider: Provider,
+    profile_identity: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
 ) -> ArtifactClassification | None:
-    """Decode a member before applying a terminal artifact path rule."""
-    from polylogue.archive.raw_payload.decode import (
-        JSONL_RECORD_INSPECTION_BYTES,
-        scan_jsonl_session_artifact,
-    )
+    """Override a weak path rule only with complete positive parsed evidence."""
+    from .dispatch import is_stream_record_provider
+    from .prepared_jsonl import PreparedJsonl
 
-    lower_name = info.filename.lower()
-    if lower_name.endswith((".jsonl", ".jsonl.txt", ".ndjson")):
-        with open_bounded_zip_entry(zf, info) as handle:
-            scan = scan_jsonl_session_artifact(
-                handle,
-                provider=provider,
-                max_record_bytes=JSONL_RECORD_INSPECTION_BYTES,
-            )
-        if scan.artifact is None:
+    if not info.filename.lower().endswith(ZIP_JSON_SUFFIXES):
+        return None
+    with prepare_zip_entry(
+        zf,
+        info,
+        provider=provider,
+        source_path=info.filename,
+        profile_identity=profile_identity,
+        captured_zip_coordinate=captured_zip_coordinate,
+    ) as prepared:
+        assert isinstance(prepared, PreparedJsonl)
+        if prepared.error is not None or prepared.deferred or prepared.blob_hash is None:
             return None
-        if scan.sample:
-            return scan.artifact
-        # Unresolved evidence, not positive evidence. ``scan`` reaches here
-        # only through its oversized-record retention branch: no record was
-        # small enough to inspect, so it synthesised a parse-as-session
-        # classification for the streaming-parser providers. That retention
-        # rule is for a raw whose *only* classifier is a weak path heuristic;
-        # this caller asks a narrower question -- may decoded content override
-        # an OriginSpec-declared terminal artifact rule -- and an inspection
-        # that read nothing has not answered it. Overriding here reclassifies
-        # the member as a session, which the positive-conversational-evidence
-        # refusal (polylogue-9ykn) then drops entirely, losing the bytes the
-        # artifact rule would have retained. Same posture as the ZIP probe
-        # ceiling above: the path rule stands and the skipped inspection is
-        # named rather than silently reclassifying the member.
-        emit(
-            "sources.zip.artifact_probe_unbounded",
-            level=WARNING,
-            outcome="degraded",
-            reason="record_size_exceeded",
-            entry=info.filename,
-            declared_bytes=info.file_size,
-            probe_ceiling_bytes=JSONL_RECORD_INSPECTION_BYTES,
-        )
+        found = False
+        for _session in prepared.iter_sessions():
+            found = True
+    if not found:
         return None
-    if not lower_name.endswith(".json"):
-        return None
-    try:
-        # This is a classification probe, not archival retention, so it gets
-        # its own small ceiling rather than reusing the 10 GiB per-member
-        # archival cap as an in-memory limit. Admission allows a 1000:1
-        # compression ratio, so a ~10 MB crafted member could otherwise make
-        # this single ``read()`` allocate 10 GiB before any parse.
-        with open_bounded_zip_entry(zf, info, max_bytes=ZIP_PROBE_MAX_BYTES) as handle:
-            payload = json_loads(handle.read())
-    except JSONDecodeError:
-        return None
-    except ZipBombError:
-        # Not a silent reclassification: the path rule stands, and the event
-        # names the member whose content evidence was never examined. The
-        # structured event is the whole report -- a parallel prose log would
-        # duplicate it and add a `legacy-prose-logging` match.
-        emit(
-            "sources.zip.artifact_probe_unbounded",
-            level=WARNING,
-            outcome="degraded",
-            reason="probe_size_exceeded",
-            entry=info.filename,
-            declared_bytes=info.file_size,
-            probe_ceiling_bytes=ZIP_PROBE_MAX_BYTES,
-        )
-        return None
-    # Deliberately omit source_path. The caller is asking whether decoded
-    # content can override a non-session path rule, so reapplying that rule
-    # here would make the evidence check circular.
-    from polylogue.archive.artifact_taxonomy import classify_artifact
-
-    artifact = classify_artifact(payload, provider=provider)
-    return artifact if artifact.parse_as_session else None
+    stream = is_stream_record_provider(info.filename, provider)
+    return ArtifactClassification(
+        provider=provider,
+        kind=ArtifactKind.SESSION_RECORD_STREAM if stream else ArtifactKind.SESSION_DOCUMENT,
+        parse_as_session=True,
+        schema_eligible=True,
+        default_priority=120,
+        reason="complete member has positive conversational evidence",
+    )
 
 
 def zip_entry_provider_hint(entry_name: str, fallback_provider: str | Provider) -> Provider:
@@ -246,6 +223,7 @@ def process_zip(
     blob_root: Path | None = None,
     blob_store: BlobStore | None = None,
     sidecar_data: SidecarData | None = None,
+    source_binding: SourceInputBinding | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Process a ZIP file, yielding sessions from its entries.
 
@@ -266,6 +244,7 @@ def process_zip(
 
     from .acquisition_boundary import (
         capture_bound_stream,
+        open_bound_container,
         open_bound_member,
         release_captures_on_refusal,
         release_refused_capture,
@@ -285,18 +264,99 @@ def process_zip(
         zip_path=zip_path,
     )
 
-    with zipfile.ZipFile(zip_path) as zf:
-        for info in validator.filter_entries(zf.infolist()):
+    from polylogue.config import Source
+    from polylogue.core.provider_identity import captured_hermes_profile_key
+
+    from .parsers.hermes_identity import CapturedHermesProfile
+    from .source_acquisition_components import (
+        ZipEntryReadContext,
+        _captured_zip_record,
+        zip_acquisition_fingerprint,
+        zip_member_admission,
+    )
+    from .source_staging import bind_source_input
+
+    with ExitStack() as custody:
+        binding = source_binding or custody.enter_context(bind_source_input(zip_path))
+        physical = custody.enter_context(open_bound_container(store, binding))
+        zf = custody.enter_context(zipfile.ZipFile(physical.stream))
+        entries = zf.infolist()
+        admission = zip_member_admission(zf, zip_path, entries, provider_hint)
+
+        def member_skipped(entry: zipfile.ZipInfo, reason: str) -> None:
+            # Every member the parse route does not turn into sessions gets
+            # the same typed disposition the acquisition route records.
+            emit(
+                "sources.zip.member_skipped",
+                outcome="skipped",
+                reason=reason,
+                source_path=f"{zip_path}:{entry.filename}",
+            )
+
+        for entry_ordinal, info in enumerate(entries):
+            if (
+                next(
+                    iter(
+                        validator.filter_entries(
+                            (info,), allowed_path=admission.allowed_path, on_unselected=member_skipped
+                        )
+                    ),
+                    None,
+                )
+                is None
+            ):
+                continue
             name = info.filename
-            entry_provider_hint = zip_entry_provider_hint(name, provider_hint)
+            entry_provider_hint = admission.entry_provider_hint(zf, info)
+            member_context = ZipEntryReadContext(
+                source=Source(name=provider_hint.value, path=zip_path),
+                zip_path=zip_path,
+                entry=info,
+                file_mtime=file_mtime,
+                provider_hint=entry_provider_hint,
+                blob_store=store,
+                bound_provider=bound_location_provider(provider_hint),
+                captured_input_identity=binding.captured_identity,
+                container_blob_hash=physical.blob_hash,
+                decoder_fingerprint=zip_acquisition_fingerprint(provider_hint),
+                entry_ordinal=entry_ordinal,
+            )
+            namespace = binding.captured_identity.member_profile_identity(name)
+            profile = (
+                None
+                if namespace is None
+                else CapturedHermesProfile(
+                    namespace[0],
+                    captured_hermes_profile_key(namespace[0]),
+                    namespace[1],
+                )
+            )
             path_classification = classify_artifact_path(name, provider=entry_provider_hint)
             session_artifact: ArtifactClassification | None = None
             if path_classification is not None and not path_classification.parse_as_session:
                 if path_declaration_refuses_session(entry_provider_hint, name):
                     # Declared raw-only evidence is never probed for sessions.
+                    member_skipped(info, "declared raw-only artifact")
                     continue
-                session_artifact = zip_entry_session_artifact(zf, info, provider=entry_provider_hint)
+                from .source_acquisition_components import captured_zip_member_coordinate
+
+                session_coordinate = captured_zip_member_coordinate(
+                    member_context.captured_input_identity,
+                    entry_name=name,
+                    entry_ordinal=entry_ordinal,
+                    split_index=0,
+                    addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+                    container_blob_hash=member_context.container_blob_hash,
+                    decoder_fingerprint=member_context.decoder_fingerprint,
+                )
+                session_artifact = zip_entry_session_artifact(
+                    zf,
+                    info,
+                    provider=entry_provider_hint,
+                    captured_zip_coordinate=session_coordinate,
+                )
                 if session_artifact is None:
+                    member_skipped(info, "non-session path without positive session evidence")
                     continue
             entry_should_group = entry_provider_hint in GROUP_PROVIDERS
             ctx = _ParseContext(
@@ -315,11 +375,9 @@ def process_zip(
             precomputed_raw: RawSessionData | None = None
             try:
                 if capture_raw and entry_should_group:
-                    # The bounded member reader enforces a hard real-byte
-                    # ceiling during decompression, independent of the
-                    # entry's (forgeable) declared header sizes; the boundary
-                    # refuses a foreign record before the member is retained.
-                    with open_bound_member(zf, info, ctx.bound_provider) as handle:
+                    # The complete member boundary refuses foreign records
+                    # before publishing grouped bytes.
+                    with open_bound_member(zf, info, ctx.bound_provider, profile_identity=profile) as handle:
                         blob_hash, blob_size = capture_bound_stream(store, handle)
                     try:
                         with store.open(blob_hash) as stored_handle:
@@ -347,13 +405,22 @@ def process_zip(
                 with release_captures_on_refusal(store) as captures:
                     if precomputed_raw is not None and precomputed_raw.blob_hash is not None:
                         captures.append((precomputed_raw.blob_hash, precomputed_raw.blob_publication_receipt_id))
-                    with open_bound_member(zf, info, ctx.bound_provider) as handle:
-                        yield from emitter.emit(
+                    emitted_sessions = 0
+                    with open_bound_member(zf, info, ctx.bound_provider, profile_identity=profile) as handle:
+                        for raw, session in emitter.emit(
                             handle,
                             name,
                             precomputed_raw=precomputed_raw,
                             session_artifact=session_artifact,
-                        )
+                        ):
+                            if raw is not None:
+                                if raw.addressing_mode is None:
+                                    raw = raw.model_copy(update={"addressing_mode": MemberAddressingMode.WHOLE_MEMBER})
+                                raw = _captured_zip_record(raw, member_context)
+                            emitted_sessions += 1
+                            yield raw, session
+                    if not emitted_sessions:
+                        member_skipped(info, "member parsed to no sessions")
             except ContentExcisedError as exc:
                 # An excised member is skipped; the archive's other members
                 # still ingest. Not a cursor failure: nothing to retry.
@@ -365,7 +432,7 @@ def process_zip(
                     blob_hash=exc.blob_hash.hex(),
                 )
                 continue
-            except (ZipBombError, ContentIdentityRefusal) as exc:
+            except ContentIdentityRefusal as exc:
                 # A refused member is a recorded gap; the rest of the ZIP
                 # is still acquired.
                 logger.warning(
@@ -396,13 +463,9 @@ def process_zip(
 
 __all__ = [
     "_ZIP_READ_CHUNK_SIZE",
-    "MAX_AGGREGATE_UNCOMPRESSED_SIZE",
-    "MAX_COMPRESSION_RATIO",
-    "MAX_UNCOMPRESSED_SIZE",
     "ZIP_JSON_SUFFIXES",
-    "ZipBombError",
     "ZipEntryValidator",
-    "open_bounded_zip_entry",
+    "open_zip_entry",
     "process_zip",
     "zip_entry_session_artifact",
     "zip_entry_provider_hint",

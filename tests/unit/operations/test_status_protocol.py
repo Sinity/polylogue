@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from datetime import UTC, datetime
+from pathlib import Path
 from time import sleep
 
 import pytest
@@ -12,6 +13,7 @@ from polylogue.operations.status_protocol import (
     ComponentUnavailableError,
     StatusComponentRegistry,
     StatusComponentSpec,
+    _Attempt,
 )
 
 
@@ -23,6 +25,142 @@ def test_healthy_component_reports_fresh() -> None:
     assert snap.state == "fresh"
     assert snap.value == 42
     assert snap.error is None
+
+
+@pytest.mark.parametrize("old_failure", [False, True])
+def test_concurrent_fts_readers_finalize_one_attempt_and_preserve_its_successor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old_failure: bool
+) -> None:
+    """Waiters adopt their attempt while older completion cannot roll cache back.
+
+    The tracked event gates both waiters after the original collector has
+    completed. A newer refresh is then completed and observed through the
+    production FTS reader before the older waiters finalize, exercising
+    idempotence, exact-attempt ownership, and cache ordering without sleeps.
+    """
+    old_started = threading.Event()
+    release_old = threading.Event()
+    both_waiting = threading.Event()
+    both_completed_waits = threading.Event()
+    allow_finalize = threading.Event()
+    new_started = threading.Event()
+    release_new = threading.Event()
+    wait_count_lock = threading.Lock()
+    waiting_threads: set[int] = set()
+    completed_wait_threads: set[int] = set()
+    original_event = threading.Event
+
+    class TrackedEvent:
+        def __init__(self) -> None:
+            self.inner = original_event()
+
+        def set(self) -> None:
+            self.inner.set()
+
+        def is_set(self) -> bool:
+            return self.inner.is_set()
+
+        def wait(self, timeout: float | None = None) -> bool:
+            thread_id = threading.get_ident()
+            with wait_count_lock:
+                waiting_threads.add(thread_id)
+                if len(waiting_threads) == 2:
+                    both_waiting.set()
+            result = self.inner.wait(timeout)
+            if result:
+                with wait_count_lock:
+                    completed_wait_threads.add(thread_id)
+                    if len(completed_wait_threads) == 2:
+                        both_completed_waits.set()
+                assert allow_finalize.wait(2)
+            return result
+
+    calls = 0
+
+    def collect() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            old_started.set()
+            assert release_old.wait(2)
+            if old_failure:
+                raise RuntimeError("collector failed")
+            return "old snapshot"
+        new_started.set()
+        assert release_new.wait(2)
+        return "new snapshot"
+
+    class TrackingRegistry(StatusComponentRegistry):
+        attempts = 0
+
+        def _start_attempt_locked(self, spec: StatusComponentSpec, fingerprint: str | None) -> _Attempt:
+            attempt = super()._start_attempt_locked(spec, fingerprint)
+            self.attempts += 1
+            if self.attempts == 1:
+                # The collector is gated above, so replacing only its signal
+                # is safe; production registry state and synchronization are
+                # unchanged. This exposes the precise waiter schedule.
+                attempt.done = TrackedEvent()  # type: ignore[assignment]
+            return attempt
+
+    import polylogue.daemon.fts_status as fts_status
+
+    dbf = tmp_path / f"index-{old_failure}.db"
+
+    def collect_fts(_dbf: Path, *, exact: bool) -> dict[str, object]:
+        assert exact is False
+        value = collect()
+        return {
+            "payload": {"probe_value": value, "messages_ready": True, "invariant_ready": True},
+            "source_fingerprint": fts_status._fts_readiness_fingerprint(dbf),
+        }
+
+    monkeypatch.setattr(fts_status, "StatusComponentRegistry", TrackingRegistry)
+    monkeypatch.setattr(fts_status, "_collect_fts_readiness_component", collect_fts)
+    registry = fts_status._fts_readiness_registry(dbf)
+    results: list[dict[str, object]] = []
+    failures: list[BaseException] = []
+
+    def read() -> None:
+        try:
+            results.append(fts_status.fts_readiness_info(dbf))
+        except BaseException as exc:  # retain the thread failure for assertion below
+            failures.append(exc)
+
+    first = threading.Thread(target=read)
+    second = threading.Thread(target=read)
+    first.start()
+    assert old_started.wait(2)
+    second.start()
+    assert both_waiting.wait(2)
+    release_old.set()
+    assert both_completed_waits.wait(2)
+    try:
+        registry.request_refresh("fts_readiness")
+        assert new_started.wait(2)
+        release_new.set()
+        assert registry._pending["fts_readiness"].done.wait(2)
+        newer = fts_status.fts_readiness_info(dbf)
+        assert newer["inspection_state"] == "fresh"
+        assert newer["probe_value"] == "new snapshot"
+    finally:
+        allow_finalize.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert not first.is_alive() and not second.is_alive()
+    assert failures == []
+    assert len(results) == 2
+    assert results[0] == results[1]
+    if old_failure:
+        assert results[0]["inspection_state"] == "degraded"
+        assert results[0]["messages_ready"] is False
+        assert results[0]["message_indexed_count"] is None
+    else:
+        assert results[0]["inspection_state"] == "fresh"
+        assert results[0]["probe_value"] == "old snapshot"
+    latest = fts_status.fts_readiness_info(dbf)
+    assert latest["inspection_state"] == "fresh"
+    assert latest["probe_value"] == "new snapshot"
 
 
 def test_stalled_component_times_out_without_blocking_healthy_components() -> None:

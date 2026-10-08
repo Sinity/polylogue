@@ -14,6 +14,24 @@ from typing import Any
 from polylogue.core.errors import SchemaRefusalError, SchemaSkewError, SchemaVersionMismatchError
 
 
+def schema_refusal_lifecycle_action(exc: SchemaRefusalError) -> str | None:
+    """The operator route a schema refusal declares, in one read vocabulary.
+
+    ``SchemaVersionMismatchError`` carries its action. A ``SchemaSkew`` is
+    translated here: a version stamp newer than this runtime needs a runtime
+    upgrade, and any other Index skew (older stamp or stale derived identity)
+    is reconverged by the daemon. Other tiers declare no lifecycle route.
+    """
+    if isinstance(exc, SchemaVersionMismatchError):
+        return exc.lifecycle_action
+    if isinstance(exc, SchemaSkewError):
+        if type(exc.expected) is int and type(exc.found) is int and exc.found > exc.expected:
+            return "upgrade_runtime"
+        if exc.tier == "index":
+            return "rebuild_index"
+    return None
+
+
 def schema_refusal_details(exc: SchemaRefusalError) -> dict[str, object]:
     """Return bounded, machine-readable degradation evidence for ``exc``.
 
@@ -59,7 +77,7 @@ def schema_refusal_details(exc: SchemaRefusalError) -> dict[str, object]:
         "percent": None,
         "reason": "no convergence progress measurement was available at read refusal",
     }
-    action = getattr(exc, "lifecycle_action", None)
+    action = schema_refusal_lifecycle_action(exc)
     return {
         "code": code,
         "tier": tier,

@@ -1,149 +1,43 @@
-# Convergence simplification inventory (polylogue-m6tp)
+# Convergence simplification inventory
 
-Deletion/collapse inventory for the daemon convergence redesign (polylogue-m6tp,
-related P0 polylogue-5jak). This document is deliberately scoped: it lists what
-later phases of the redesign will delete or collapse, verified against the
-current tree, and states why. **It deletes nothing itself** — phase (a)
-(this PR) only adds the parse-stage extraction behind a config flag. Phases
-(b)-(d) are tracked follow-up work on polylogue-m6tp.
+This inventory distinguishes retired compute mechanisms from convergence
+changes that still require their own production evidence. Current runtime
+behavior is described in [daemon.md](../daemon.md).
 
-Read `docs/architecture.md`/`docs/internals.md` for the daemon's general
-shape before reading this table; each row assumes the reader already knows
-the census -> replay -> materialize pipeline.
+## Retired pure compute mechanisms
 
-**2026-07-29 update:** `daemon_parse_stage_split` (the phase-(a) flag) has
-been deleted -- the daemon raw-materialization parse-stage prefetch
-(`_maybe_warm_raw_materialization_parse_stage` in `polylogue/daemon/cli.py`)
-now always runs; there was no situation where the always-correct in-hold
-fallback was actually preferable (it never regresses even under a GIL build,
-per `polylogue/daemon/parse_prefetch.py`'s module docstring). References
-below to the flag being "off (today's default)" describe the pre-deletion
-state and are historical.
+The process-pool factory, spawn setup, process termination, runtime/GIL
+branching and size-tier dispatch plans are removed. Ingest, validation,
+retained-raw census, live preparation, source evidence and insights submit
+pure units to the shared bounded adapter in `polylogue/core/compute.py`.
+Per-source thread pools and the optional replay spill producer are removed
+with their callers. Their replacement uses one admission authority; nested
+units retain their parent's reservation and cannot submit-and-wait on a
+second worker from the same saturated adapter.
 
-**2026-09-29 update:** the daemon parse stage (`DaemonParseStage`,
-`polylogue/daemon/parse_prefetch.py`, `CensusParseStage`) and its
-`daemon_parse_stage_*` settings are deleted; they had no production caller
-after the manual rebuild engine went. Every reference to them below is
-historical.
+The old `POLYLOGUE_INGEST_PARSE_WORKERS` environment-only setting is removed.
+Retained caller window settings bound outstanding units within the shared
+adapter's class capacity. They do not select a runtime or create a pool.
 
-## Sequencing recap (from polylogue-m6tp's design sketch)
+Archive reads retain a separate, process-shared SQLite I/O owner because its
+physical future owns the read lease and creator-thread native handles.
+Transport and observation workers have named I/O/control responsibilities.
+This retirement does not establish a measured throughput improvement or
+complete the separate daemon lifecycle retirement.
 
-1. **(a) parse-stage extraction behind a flag on the standard build** — this
-   PR. Proves the parse/apply seam works and is equivalence-safe; ships at
-   reduced benefit on a GIL build.
-2. **(b) 3.14t (free-threaded) daemon deploy** — the same thread-pool code
-   path becomes a real 3.9x-9.6x parse speedup once the GIL is provably off
-   (`parallel_threads_effective()` gates this; see
-   `polylogue/pipeline/services/process_pool.py:62`).
-3. **(c) bulk-scale routing** — candidate count/bytes above the
-   polylogue-m6tp threshold route to an in-process blue-green generation
-   build instead of the trickle conveyor.
-4. **(d) deletions** — this table. Each mechanism below exists to work
-   around a constraint (process-pool spawn cost, GIL-era writer-starvation
-   risk, per-pass bounded-batch orchestration) that (b)/(c) remove.
+## Retired deferred write-effect queue
 
-## Inventory
+The unused `async_deferred` phase, queue, settlement scheduler and receipt
+state are removed. Registered effects run inside the transaction or after a
+successful commit. Post-commit cache invalidation and event delivery keep
+their existing ordering and failure receipts; no asynchronous consumer is
+implied by them.
 
-### 1. Process-pool machinery + spawn workarounds
+## Remaining convergence inventory
 
-**Status (2026-08-02, polylogue-iiu6r audit / polylogue-gzyqk): reinvestigated,
-STILL NEEDED — this row's "deletable once phase (b) lands" framing is stale.**
-Phase (b) (polylogue-dcz5, the 3.14t free-threaded daemon deploy) has landed,
-and it is true that the *one* call site this row explicitly names —
-`_parse_unique_retained_raws` in `polylogue/sources/revision_backfill.py`
-(`parallel_threads_effective()`-gated) — was retired; the module's own
-docstring now speaks of "the retired process-pool alternative" in past tense.
-But `process_pool_context()`/`process_pool_executor()`/`terminate_process_pool()`
-remain live, **unconditional** (not gated on `parallel_threads_effective()`)
-call sites in two other places: `polylogue/pipeline/services/ingest_batch/_core.py`
-(initial ingest-record decode/validate/transform) and
-`polylogue/pipeline/services/validation_flow.py` (schema validation — its
-own code comment cites a measured `Threads(24)=160MB/s` vs `Process(8)=605MB/s`,
-a 3.7x win independent of the GIL/free-threaded-build argument this row
-originally used to justify deletion). The third former caller,
-`pipeline/services/archive_ingest.py` (source file-walk ingest), was deleted
-with its dispatcher when CLI ingest moved onto the canonical daemon route.
-Neither remaining caller is conditioned on the free-threaded build, so the
-3.14t deploy does not collapse them the way this row predicted. Deleting
-`process_pool.py` today would break both. The text below is the
-original design-time reasoning and is retained for history; treat its
-"what makes it deletable" / "which phase deletes it" claims as superseded by
-this status line until each of the remaining call sites is itself
-re-justified or migrated.
-
-**What it is:** `polylogue/pipeline/services/process_pool.py` — the shared
-`ProcessPoolExecutor` helpers used by every CPU-bound parse dispatch on a
-standard (GIL) build:
-
-- `process_pool_context()` (`polylogue/pipeline/services/process_pool.py:23`)
-  — forces the `spawn` start method specifically to avoid the forkserver
-  deadlock found in production (polylogue-p0pw: 17 minutes with zero parse
-  workers ever spawned, parent parked in `as_completed`).
-- `process_pool_executor()` (`polylogue/pipeline/services/process_pool.py:93`)
-  — constructs a pool with `_initialize_worker_logging` as the per-worker
-  initializer, needed only because a spawned worker starts with a fresh,
-  unconfigured logging stack.
-- `terminate_process_pool()` (`polylogue/pipeline/services/process_pool.py:102`)
-  — bounded-timeout cancel/terminate/kill sequence, needed only because a
-  process (unlike a thread) cannot be cooperatively interrupted from the
-  parent.
-- `resolve_parse_worker_count()` (`polylogue/pipeline/services/process_pool.py:43`)
-  — resolves `POLYLOGUE_INGEST_PARSE_WORKERS` / cpu-1 default; the worker
-  *count* concept survives past this deletion (a thread pool still wants a
-  bound), only the process-specific plumbing goes.
-
-**Why it exists today:** on a standard CPython build, `ThreadPoolExecutor`
-gives no CPU-bound parse speedup (the GIL serializes it) and, worse, running
-parse threads concurrently with an actively write-holding thread measured
-~5000x commit-latency inflation (the polylogue-7mtf control-run finding cited
-throughout `revision_backfill.py`). `ProcessPoolExecutor` is the only way to
-get real parallelism on this build, at the cost of spawn tax, pickling, and
-no shared memory.
-
-**What makes it deletable:** phase (b)'s free-threaded 3.14t deploy makes a
-plain `ThreadPoolExecutor` both safe (no writer-thread contention, since
-phase (a) already sequences parse-then-apply so no writer thread is ever
-active *during* parse) and fast (proven 3.9x-9.6x, zero writer interference
-in the 7mtf control run). Once the daemon's runtime is provably free-threaded,
-every process-pool call site collapses to the thread-pool call site that
-phase (a) already introduces for the daemon's own conveyor
-(`polylogue/daemon/parse_prefetch.py`) and that `revision_backfill.py`
-already has for `parallel_threads_effective()`-gated callers
-(`_parse_unique_retained_raws_via_threads`,
-`polylogue/sources/revision_backfill.py:989`).
-
-**Which phase deletes it:** (b) removes the `ProcessPoolExecutor` branch from
-every call site that currently gates on `parallel_threads_effective()`
-(`polylogue/sources/revision_backfill.py:1066` `_parse_unique_retained_raws`);
-`process_pool.py`'s process-specific helpers (`process_pool_context`,
-`process_pool_executor`, `terminate_process_pool`) are deleted once no caller
-remains. `resolve_parse_worker_count()`'s bound survives, retargeted at
-thread-pool sizing.
-
-### 2. Pool-amortization heuristics (dispatch-size + aggregate-bytes floors) — DELETED
-
-**Status: done.** Both guards, their two constants, their two config
-properties (`revision_parse_dispatch_max_bytes`,
-`revision_parse_pool_min_bytes`) and their two environment overrides
-(`POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES`,
-`POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES`) are removed, together with the
-process-pool branch in `_parse_unique_retained_raws` that they gated.
-
-They existed only to keep a `ProcessPoolExecutor` a net win under the GIL: a
-256 KiB payload ceiling (pickling `ParsedSession` graphs back across the
-process boundary measured 0.63x, a net loss, polylogue-amg1/#3136) and a
-48 MiB aggregate floor (per-worker spawn+import measured ~1.5-2.0s, #3149).
-A free-threaded `ThreadPoolExecutor` shares object graphs by reference and
-reuses the already-imported interpreter, so neither cost exists and neither
-guard has a caller.
-
-Measured cost of keeping them: on the reference archive the 256 KiB ceiling
-sent 16,417 of 41,363 raws — 90.84 GiB of 92.22 GiB, **98.5% of all bytes** —
-to a single-core sequential parse, which is what made a full index rebuild a
-~9-hour job on a 24-thread machine.
-
-`resolve_parse_worker_count()` survives as the single knob bounding parse
-width, retargeted at thread-pool sizing.
+The following entries describe the convergence campaign's separate scope;
+the compute retirement above supplies no proof that those obligations are
+satisfied.
 
 ### 3. The 64 MiB daemon parse envelope narrowing
 

@@ -19,13 +19,19 @@ import io
 import os
 import sqlite3
 import stat
+import zipfile
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import IO
 
+from polylogue.archive.revision_authority import raw_receipt_order_sql
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.raw_coordinates import (
+    read_captured_zip_coordinate_receipt,
+)
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError, PreparedBlob
 
@@ -121,7 +127,8 @@ class RetainedBlobSource:
     window: SourceByteWindow | None = None
 
 
-_RAW_SOURCE_EVIDENCE_COLUMNS = """
+_RAW_SOURCE_EVIDENCE_COLUMNS = f"""
+    {raw_receipt_order_sql("raw_sessions")} AS receipt_order,
     lower(hex(raw_sessions.blob_hash)) AS blob_hash,
     raw_sessions.raw_id AS raw_id,
     raw_sessions.raw_id AS ref_id,
@@ -138,7 +145,8 @@ _RAW_SOURCE_EVIDENCE_COLUMNS = """
     coordinate.entry_ordinal AS entry_ordinal,
     coordinate.split_index AS split_index,
     coordinate.addressing_mode AS addressing_mode,
-    coordinate.content_identity AS content_identity
+    coordinate.content_identity AS content_identity,
+    coordinate.captured_coordinate AS captured_coordinate
 """
 
 
@@ -174,6 +182,36 @@ def is_recorded_container_member(row: Mapping[str, object]) -> bool:
     )
 
 
+def retained_source_location(row: Mapping[str, object], root: Path) -> tuple[str, bool]:
+    """Resolve explicit retained coordinates or a literal loose-file path.
+
+    A member namespace is authority only when its acquisition receipt names it.
+    Colons and ZIP-looking suffixes in loose paths remain filename data.
+    """
+    source = str(row.get("source_path") or "")
+
+    def relocate(path: Path) -> Path:
+        for directory in ("inbox", "browser-capture", "hooks"):
+            if directory in path.parts:
+                candidate = root.joinpath(*path.parts[path.parts.index(directory) :])
+                try:
+                    candidate.stat()
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
+                else:
+                    return candidate
+        return path
+
+    receipt = row.get("captured_coordinate")
+    if receipt is not None:
+        if not isinstance(receipt, str):
+            raise ValueError("captured ZIP coordinate receipt must be text")
+        coordinate = read_captured_zip_coordinate_receipt(receipt)
+        return f"{relocate(Path(coordinate.canonical_container))}:{coordinate.member_name}", True
+
+    return str(relocate(Path(source))), is_recorded_container_member(row)
+
+
 def is_legacy_append_without_window(row: Mapping[str, object]) -> bool:
     """A pre-offset Codex or Claude Code append row: ``source_index`` -1 and no byte window."""
     provider = Provider.from_string(str(row.get("capture_mode") or ""))
@@ -186,6 +224,26 @@ def is_legacy_append_without_window(row: Mapping[str, object]) -> bool:
         and row.get("append_start_offset") is None
         and row.get("append_end_offset") is None
     )
+
+
+def read_prior_full_source_receipts(conn: sqlite3.Connection, row: Mapping[str, object]) -> tuple[tuple[int, int], ...]:
+    """The latest proven full receipt before this windowless append receipt."""
+    order = _optional_int(row.get("receipt_order"))
+    if order is None or not is_legacy_append_without_window(row):
+        return ()
+    rank = raw_receipt_order_sql("prior")
+    cursor = conn.execute(
+        f"SELECT {rank}, prior.blob_size FROM raw_sessions AS prior "
+        "WHERE prior.source_path = ? AND prior.source_index = 0 "
+        "AND prior.revision_kind IN ('full', 'unknown') "
+        f"AND {rank} < ? ORDER BY {rank} DESC LIMIT 1",
+        (row["source_path"], order),
+    )
+    try:
+        predecessor = cursor.fetchone()
+        return () if predecessor is None else ((int(predecessor[0]), int(predecessor[1])),)
+    finally:
+        cursor.close()
 
 
 def retained_blob_source_candidates(
@@ -201,9 +259,10 @@ def retained_blob_source_candidates(
     one route can prove is one the other can restore. ``row`` is the raw's
     recorded evidence (:func:`read_raw_source_evidence`); ``container_member``
     is the caller's container decision (a relocated archive root can move
-    the container). ``prior_full_observations`` are ``(acquired_at_ms,
+    the container). ``prior_full_observations`` are ``(receipt_order,
     size)`` of the full observations at the same path, read only for a
-    legacy append row. Candidates are proofs only once the bytes read from
+    legacy append row. The order is the latest durable raw-payload receipt order, not their possibly inverted wall-clock timestamps.
+    Candidates are proofs only once the bytes read from
     them hash to the raw's recorded identity; the caller checks that.
     """
     if container_member:
@@ -221,10 +280,10 @@ def retained_blob_source_candidates(
             windows.append(SourceByteWindow(0, end))
         return tuple(RetainedBlobSource(RetainedBlobSourceKind.APPEND_WINDOW, window) for window in windows)
     if is_legacy_append_without_window(row):
-        acquired_at = _optional_int(row.get("acquired_at_ms"))
+        receipt_order = _optional_int(row.get("receipt_order"))
         predecessors = (
-            [(timestamp, full_size) for timestamp, full_size in prior_full_observations if timestamp < acquired_at]
-            if acquired_at is not None
+            [(order, full_size) for order, full_size in prior_full_observations if order < receipt_order]
+            if receipt_order is not None
             else []
         )
         if not predecessors:
@@ -317,8 +376,78 @@ __all__ = [
     "is_legacy_append_without_window",
     "is_recorded_container_member",
     "read_raw_source_evidence",
+    "read_prior_full_source_receipts",
     "source_window_holds_blob",
     "retained_blob_source_candidates",
+    "retained_source_location",
+    "stage_blob_from_recorded_source",
     "stage_exact_blob",
     "stage_exact_source_window_blob",
 ]
+
+
+def stage_blob_from_recorded_source(
+    conn: sqlite3.Connection,
+    archive_root: Path,
+    blob_store: BlobStore,
+    raw_id: str,
+    *,
+    blob_hash: str,
+    source_path: str,
+    stop: Callable[[], bool] | None = None,
+) -> tuple[PreparedBlob | None, str | None]:
+    """Stage one absent blob from the first recorded source window holding its exact bytes.
+
+    The candidate windows come from ``retained_blob_source_candidates``,
+    the owner backup recoverability reads too. A ZIP member is replayed
+    through acquisition's ZIP admission (``zip_reacquired_unit``)
+    and staged only when the replayed value is byte-identical to the
+    blob; a structural-only match is ``inexact_payload``. Returns the
+    staged blob, or ``None`` with the last candidate's refusal reason.
+    """
+    row = read_raw_source_evidence(conn, raw_id)
+    if row is None:
+        raise KeyError(raw_id)
+    prior_full_observations = read_prior_full_source_receipts(conn, row)
+    source_path, container_member = retained_source_location(row, archive_root)
+    candidates = retained_blob_source_candidates(
+        row,
+        container_member=container_member,
+        prior_full_observations=prior_full_observations,
+    )
+    if not candidates:
+        return None, "no_source_window"
+    reason: str | None = None
+    for candidate in candidates:
+        if candidate.window is not None:
+            prepared, reason = stage_exact_source_window_blob(
+                blob_store,
+                source_path=Path(source_path),
+                window=candidate.window,
+                blob_hash=blob_hash,
+                stop=stop,
+            )
+        else:
+            from polylogue.storage.source_zip_replay import zip_reacquired_unit
+
+            # The resolved unit streams from its member again: a preserved
+            # member can be gigabytes, so its bytes are never held whole.
+            unit, reason = zip_reacquired_unit(row, source_path=source_path, zip_payload_cache={})
+            prepared = None
+            if unit is not None and unit.open_payload is not None:
+                try:
+                    with unit.open_payload() as unit_stream:
+                        prepared = stage_exact_blob(
+                            blob_store,
+                            unit_stream,
+                            blob_hash=blob_hash,
+                            size_bytes=unit.size_bytes,
+                            stop=stop,
+                        )
+                except (OSError, zipfile.BadZipFile, LookupError, ContentIdentityRefusal) as exc:
+                    reason = f"error:{type(exc).__name__}"
+                else:
+                    reason = None if prepared is not None else "inexact_payload"
+        if prepared is not None:
+            return prepared, None
+    return None, reason

@@ -17,11 +17,6 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.security.excision import (
-    apply_session_excision,
-    plan_session_excision,
-    resolve_session_excision_target,
-)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
@@ -30,6 +25,11 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.excision import (
+    plan_session_excision_from_root,
+    resolve_session_excision_target_from_root,
+)
+from tests.infra.excision_execution import execute_excision
 
 _SESSION_UUID = "11111111-2222-3333-4444-555555555555"
 _OTHER_UUID = "99999999-8888-7777-6666-555555555555"
@@ -58,6 +58,7 @@ def _seed(tmp_path: Path) -> str:
             conn,
             origin="claude-code-session",
             source_path=f"/home/op/.claude/todos/{_SESSION_UUID}.json",
+            canonical_source_path=f"/home/op/.claude/todos/{_SESSION_UUID}.json",
             source_index=0,
             payload=_TODO_PAYLOAD,
             acquired_at_ms=1_000,
@@ -68,6 +69,7 @@ def _seed(tmp_path: Path) -> str:
             conn,
             origin="claude-code-session",
             source_path=f"/home/op/.claude/todos/{_OTHER_UUID}.json",
+            canonical_source_path=f"/home/op/.claude/todos/{_OTHER_UUID}.json",
             source_index=0,
             payload=_OTHER_PAYLOAD,
             acquired_at_ms=1_100,
@@ -143,17 +145,17 @@ def test_excision_removes_the_session_todo_plan_evidence(tmp_path: Path) -> None
     before = _readable_todo_session_ids(tmp_path)
     assert before == {_SESSION_UUID, _OTHER_UUID}
 
-    target = resolve_session_excision_target(tmp_path, session_id)
+    target = resolve_session_excision_target_from_root(tmp_path, session_id)
     assert target.fact_raw_ids == ("raw-todo",)
     assert {raw.raw_id for raw in target.raw_targets} == {"raw-todo"}
 
-    plan = plan_session_excision(tmp_path, session_id)
+    plan = plan_session_excision_from_root(tmp_path, session_id)
     assert plan.source_fact_rows == 1
     assert plan.source_raw_rows == 1
 
-    receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
-    assert receipt.found
-    assert receipt.counts["source_fact_rows"] == 1
+    receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:local")
+    assert receipt["found"]
+    assert receipt["counts"]["source_fact_rows"] == 1
 
     assert _raw_ids(tmp_path) == {"raw-todo-other"}, "the session's plan snapshot survived its excision"
     assert hashlib.sha256(_TODO_PAYLOAD).digest() in _excised_hashes(tmp_path)
@@ -169,6 +171,7 @@ def test_excision_removes_the_session_todo_plan_evidence(tmp_path: Path) -> None
                 conn,
                 origin="claude-code-session",
                 source_path=f"/home/op/.claude/todos/{_SESSION_UUID}.json",
+                canonical_source_path=f"/home/op/.claude/todos/{_SESSION_UUID}.json",
                 source_index=0,
                 payload=_TODO_PAYLOAD,
                 acquired_at_ms=5_000,
@@ -199,6 +202,7 @@ def test_subagent_todo_snapshot_is_excised_with_its_parent_session(tmp_path: Pat
             conn,
             origin="claude-code-session",
             source_path=f"/home/op/.claude/todos/{_SESSION_UUID}-agent-{_OTHER_UUID}.json",
+            canonical_source_path=f"/home/op/.claude/todos/{_SESSION_UUID}-agent-{_OTHER_UUID}.json",
             source_index=0,
             payload=agent_payload,
             acquired_at_ms=1_200,
@@ -209,9 +213,9 @@ def test_subagent_todo_snapshot_is_excised_with_its_parent_session(tmp_path: Pat
     finally:
         conn.close()
 
-    target = resolve_session_excision_target(tmp_path, session_id)
+    target = resolve_session_excision_target_from_root(tmp_path, session_id)
     assert set(target.fact_raw_ids) == {"raw-todo", "raw-todo-agent"}
 
-    apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
+    execute_excision(tmp_path, session_id, reason="test", actor="user:local")
     assert _raw_ids(tmp_path) == {"raw-todo-other"}
     assert hashlib.sha256(agent_payload).digest() in _excised_hashes(tmp_path)

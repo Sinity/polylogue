@@ -17,15 +17,12 @@ import json
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
-from polylogue.daemon.convergence import DaemonConverger
-from polylogue.daemon.convergence_stages import make_default_convergence_stages
-from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource
+from tests.infra.live_batch import prepared_live_batch_processor
 
 
 def _write_claude_code_session(path: Path, session_id: str, n_messages: int) -> None:
@@ -76,7 +73,6 @@ def test_convergence_produces_consistent_final_archive_state(
     - No convergence debt remains
     """
     corpus_root = tmp_path / "corpus" / "proj"
-    db_path = tmp_path / "index.db"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
@@ -93,17 +89,17 @@ def test_convergence_produces_consistent_final_archive_state(
         _write_claude_code_session(p, session_id, n_msgs)
         files.append(p)
 
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
-    polylogue = _MinimalPolylogue(tmp_path, db_path)
-    processor = LiveBatchProcessor(
-        cast(Any, polylogue),
-        (WatchSource(name="test", root=corpus_root.parent),),
-        cursor=CursorStore(db_path),
-        parser_fingerprint="test-v1",
-        converger=converger,
-    )
+    # The supplied live owners: writer, retained publication and convergence
+    # runner, on an archive the fixture bootstraps with its Source tier.
+    async def ingest() -> Any:
+        async with prepared_live_batch_processor(
+            tmp_path,
+            (WatchSource(name="test", root=corpus_root.parent),),
+            parser_fingerprint="test-v1",
+        ) as processor:
+            return await processor.ingest_files(files, emit_event=False)
 
-    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
+    metrics = asyncio.run(ingest())
 
     # ── Ingest completeness ──────────────────────────────────────────
     assert metrics.failed_file_count == 0, f"Unexpected ingest failures: {metrics.failed_file_count}"
@@ -134,7 +130,8 @@ def _assert_no_convergence_debt(ops_db: Path) -> None:
     assert ops_db.is_file(), "Required ops tier is missing"
     with sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True) as conn:
         (debt_count,) = conn.execute("SELECT COUNT(*) FROM convergence_debt").fetchone()
-        assert debt_count == 0, f"Expected no convergence debt, found {debt_count} pending items"
+        owed = conn.execute("SELECT * FROM convergence_debt LIMIT 5").fetchall() if debt_count else []
+        assert debt_count == 0, f"Expected no convergence debt, found {debt_count} pending items: {owed}"
 
 
 @pytest.mark.parametrize("fault", ["missing-tier", "missing-table", "owed-debt"])

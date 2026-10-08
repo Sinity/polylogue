@@ -1,4 +1,4 @@
-"""Read-only census for every accepted raw-authority frontier.
+"""Canonical classification of accepted raw-authority inputs.
 
 This module classifies each accepted head against its durable evidence and
 publishes the blocking ones as durable ``raw_authority_blockers`` obligations.
@@ -13,24 +13,18 @@ import dataclasses
 import hashlib
 import json
 import sqlite3
-import time
-from collections import Counter
-from contextlib import closing
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 
-from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
-from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import (
     BLOCKER_ORIGIN_FRONTIER_OBLIGATION,
     BLOCKER_ORIGIN_KEY,
     RawReplayPlan,
 )
-from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
 logger = get_logger(__name__)
 
@@ -83,159 +77,68 @@ class RawAuthorityFrontierItem:
     evidence_ref: str | None = None
 
     def to_dict(self) -> JSONDocument:
-        return json_document(dataclasses.asdict(self))
+        fields = dataclasses.asdict(self)
+        fields["input_raw_ids"] = list(self.input_raw_ids)
+        fields["state"] = self.state.value
+        from polylogue.core.json import require_json_document
+
+        return require_json_document(fields, context="frontier classification")
 
 
-@dataclass(frozen=True, slots=True)
-class RawAuthorityFrontierCensus:
-    """One inspection pass over accepted heads plus terminal supersessions.
-
-    The pass itself is not durable. ``pass_id`` is a content address over the
-    inspected inventory, so two passes that observe the same frontier name the
-    same pass; the only rows this publishes are the durable obligations in
-    ``raw_authority_blockers``, which each item points at through
-    ``evidence_ref``.
-    """
-
-    pass_id: str
-    inventory_digest: str
-    plan_inventory_digest: str
-    state_counts: JSONDocument
-    accepted_head_count: int
-    terminal_superseded_count: int
-    plan_count: int
-    items: tuple[RawAuthorityFrontierItem, ...]
-
-    def to_dict(self, *, sample_limit: int = 100) -> JSONDocument:
-        sample = self.items[:sample_limit]
-        return json_document(
-            {
-                "schema": "polylogue.raw-authority-frontier-census.v1",
-                "pass_id": self.pass_id,
-                "inventory_digest": self.inventory_digest,
-                "plan_inventory_digest": self.plan_inventory_digest,
-                "state_counts": self.state_counts,
-                "accepted_head_count": self.accepted_head_count,
-                "terminal_superseded_count": self.terminal_superseded_count,
-                "plan_count": self.plan_count,
-                "returned_count": len(sample),
-                "items_truncated": len(sample) < len(self.items),
-                "items": [item.to_dict() for item in sample],
-            }
-        )
+_BLOB_RECEIPT_UPSERT_SQL = "\n        INSERT INTO verified_blob_receipts\n            (blob_hash, st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns, verified_at_ms)\n        VALUES (?, ?, ?, ?, ?, ?, ?)\n        ON CONFLICT(blob_hash) DO UPDATE SET\n            st_dev = excluded.st_dev,\n            st_ino = excluded.st_ino,\n            st_size = excluded.st_size,\n            st_mtime_ns = excluded.st_mtime_ns,\n            st_ctime_ns = excluded.st_ctime_ns,\n            verified_at_ms = excluded.verified_at_ms\n        "
 
 
-def _archive_root(config: Config) -> Path:
-    """Return the archive file-set root housing the currently active database.
-
-    Deliberately follows ``config.db_path`` (not ``config.archive_root``),
-    matching :func:`polylogue.config.active_archive_root`:
-    this reconciler inspects the database and blob store that are actually
-    live right now, which ``config.db_path`` already resolves correctly
-    (``.index-active-pointer``-aware, or an explicit override) inside
-    ``Config.__init__``.
-    """
-    return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
-
-
-def _rows(cursor: sqlite3.Cursor) -> list[dict[str, object]]:
-    names = tuple(column[0] for column in cursor.description or ())
-    return [{name: _json_value(value) for name, value in zip(names, row, strict=True)} for row in cursor.fetchall()]
-
-
-def _blob_receipt_fingerprint(conn: sqlite3.Connection, hash_hex: str) -> tuple[int, int, int, int, int] | None:
-    """Read the durably persisted verification-receipt fingerprint, if any."""
-    row = conn.execute(
-        """
-        SELECT st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns
-        FROM verified_blob_receipts WHERE blob_hash = ?
-        """,
-        (bytes.fromhex(hash_hex),),
-    ).fetchone()
-    if row is None:
-        return None
-    return (int(row[0]), int(row[1]), int(row[2]), int(row[3]), int(row[4]))
-
-
-def _record_blob_receipt(conn: sqlite3.Connection, hash_hex: str, fingerprint: tuple[int, int, int, int, int]) -> None:
-    """Upsert the verification receipt for *hash_hex* to its current fingerprint."""
-    st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns = fingerprint
-    conn.execute(
-        """
-        INSERT INTO verified_blob_receipts
-            (blob_hash, st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns, verified_at_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(blob_hash) DO UPDATE SET
-            st_dev = excluded.st_dev,
-            st_ino = excluded.st_ino,
-            st_size = excluded.st_size,
-            st_mtime_ns = excluded.st_mtime_ns,
-            st_ctime_ns = excluded.st_ctime_ns,
-            verified_at_ms = excluded.verified_at_ms
-        """,
-        (bytes.fromhex(hash_hex), st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns, int(time.time() * 1000)),
-    )
-
-
-def _verified_blob_bytes(conn: sqlite3.Connection, blob_store: BlobStore, hash_hex: str) -> bool:
-    """Hash once per stable on-disk inode state, then reuse the durable receipt.
-
-    polylogue-byw3y: this used to cache verification in a process-lifetime
-    dict, so every daemon restart re-hashed every accepted frontier blob from
-    scratch even when nothing had changed -- tens of GiB of wasted reads given
-    the corpus's size skew (top 5% of raws = 69% of bytes, polylogue-el374).
-    Receipts now persist in ``verified_blob_receipts`` (source.db), so a blob
-    verified in a prior census stays trusted across restarts.
-
-    Safety invariant (deliberately conservative -- this matters more than the
-    performance win): a receipt is trusted ONLY when every stat() field
-    matches the persisted fingerprint exactly. Any mismatch -- a changed
-    size/mtime/ctime, a different inode, or no receipt at all -- forces a
-    fresh ``blob_store.verify()`` re-hash; a stale receipt is never partially
-    trusted. On a successful fresh verify, the receipt is rewritten to the
-    blob's current fingerprint so the next census can trust it.
-    """
+def _verify_blob_bytes(
+    blob_store: BlobStore,
+    hash_hex: str,
+    *,
+    retained_fingerprint: tuple[int, int, int, int, int] | None,
+    record_receipt: Callable[[str, tuple[int, int, int, int, int]], None],
+) -> bool:
+    """Verify actual CAS bytes against the retained original receipt."""
     path = blob_store.blob_path(hash_hex)
     try:
         stat = path.stat()
     except OSError:
         return False
     fingerprint = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-    if _blob_receipt_fingerprint(conn, hash_hex) == fingerprint:
+    if retained_fingerprint == fingerprint:
         return True
     if not blob_store.verify(hash_hex):
         return False
-    _record_blob_receipt(conn, hash_hex, fingerprint)
+    record_receipt(hash_hex, fingerprint)
     return True
 
 
-def _frontier_rows(conn: sqlite3.Connection) -> list[dict[str, object]]:
-    return _rows(
-        conn.execute(
-            """
-            SELECT h.logical_source_key, h.session_id,
-                   COALESCE(s.raw_id, h.accepted_raw_id) AS accepted_raw_id,
-                   h.accepted_raw_id AS head_accepted_raw_id,
-                   h.accepted_source_revision,
-                   COALESCE(hex(s.content_hash), hex(h.accepted_content_hash)) AS accepted_content_hash,
-                   h.accepted_frontier_kind, h.accepted_frontier,
-                   h.decided_at_ms AS head_decided_at_ms,
-                   s.origin AS session_origin, s.raw_id AS session_raw_id,
-                   hex(s.content_hash) AS session_content_hash,
-                   s.message_count,
-                   r.origin AS raw_origin, r.capture_mode, r.native_id,
-                   r.source_path, r.source_index, hex(r.blob_hash) AS blob_hash,
-                   r.blob_size, r.logical_source_key AS raw_logical_source_key,
-                   r.revision_kind, r.source_revision, r.predecessor_raw_id,
-                   r.baseline_raw_id, r.append_start_offset, r.append_end_offset,
-                   r.acquisition_generation, r.revision_authority
-            FROM index_tier.raw_revision_heads AS h
-            LEFT JOIN index_tier.sessions AS s ON s.session_id = h.session_id
-            LEFT JOIN raw_sessions AS r ON r.raw_id = COALESCE(s.raw_id, h.accepted_raw_id)
-            ORDER BY h.logical_source_key
-            """
-        )
-    )
+_FRONTIER_INDEX_INPUT_SQL = """
+SELECT h.logical_source_key,h.session_id,
+       COALESCE(s.raw_id,h.accepted_raw_id) AS accepted_raw_id,
+       h.accepted_raw_id AS head_accepted_raw_id,h.accepted_source_revision,
+       hex(h.accepted_content_hash) AS accepted_content_hash,
+       h.accepted_frontier_kind,h.accepted_frontier,h.decided_at_ms AS head_decided_at_ms,
+       h.acquisition_generation AS head_acquisition_generation,h.append_end_offset AS head_append_end_offset,
+       s.origin AS session_origin,s.raw_id AS session_raw_id,
+       hex(s.content_hash) AS session_content_hash,s.message_count
+FROM raw_revision_heads h LEFT JOIN sessions s ON s.session_id=h.session_id
+WHERE h.logical_source_key=?
+"""
+
+_FRONTIER_SOURCE_INPUT_SQL = """
+SELECT r.origin AS raw_origin,r.capture_mode,r.native_id,r.source_path,r.source_index,
+       hex(r.blob_hash) AS blob_hash,r.blob_size,r.logical_source_key AS raw_logical_source_key,
+       r.revision_kind,r.source_revision,r.predecessor_raw_id,r.baseline_raw_id,
+       r.append_start_offset,r.append_end_offset,r.acquisition_generation,r.revision_authority,
+       m.source_revision AS membership_source_revision,hex(m.normalized_content_hash) AS membership_content_hash,
+       m.revision_authority AS membership_authority,m.decision AS membership_decision,
+       c.status AS membership_census_status,c.parser_fingerprint AS membership_parser_fingerprint,
+       pc.status AS parser_census_status,pc.parser_fingerprint AS authority_parser_fingerprint,
+       EXISTS(SELECT 1 FROM json_each(pc.logical_keys_json) WHERE type='text' AND value=?) AS parser_names_key
+FROM raw_sessions r
+LEFT JOIN raw_session_memberships m ON m.raw_id=r.raw_id AND m.logical_source_key=?
+LEFT JOIN raw_membership_census c ON c.raw_id=r.raw_id
+LEFT JOIN raw_authority_parser_census pc ON pc.raw_id=r.raw_id
+WHERE r.raw_id=?
+"""
 
 
 def _item(
@@ -265,6 +168,15 @@ def _item(
                 "append_end_offset",
                 "acquisition_generation",
                 "revision_authority",
+                "membership_source_revision",
+                "membership_content_hash",
+                "membership_authority",
+                "membership_decision",
+                "membership_census_status",
+                "membership_parser_fingerprint",
+                "parser_census_status",
+                "authority_parser_fingerprint",
+                "parser_names_key",
             )
         }
     )
@@ -312,10 +224,10 @@ def _item(
     )
 
 
-def _classify_frontier(
-    conn: sqlite3.Connection,
-    blob_store: BlobStore,
+def _classify_frontier_row(
     row: dict[str, object],
+    *,
+    verified_bytes: bool,
 ) -> RawAuthorityFrontierItem:
     """Classify one accepted head against its own durable evidence.
 
@@ -330,10 +242,7 @@ def _classify_frontier(
             row=row,
             reason="accepted head raw is absent from the durable source tier",
         )
-    blob_hash = str(row["blob_hash"]).lower()
-    blob_exists = blob_store.exists(blob_hash)
-    reacquisition_proven = blob_exists and _verified_blob_bytes(conn, blob_store, blob_hash)
-    if not blob_exists or not reacquisition_proven:
+    if not verified_bytes:
         return _item(
             state=RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE,
             row=row,
@@ -362,6 +271,44 @@ def _classify_frontier(
             state=RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
             row=row,
             reason="materialized session origin and durable raw origin disagree",
+        )
+    if row.get("accepted_frontier_kind") == "semantic":
+        from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
+
+        fingerprint = raw_authority_parser_fingerprint()
+        # A decided-ambiguous cohort keeps its last accepted head (#3282). The
+        # conflict is durable membership debt on the head's own row, not a
+        # provenance gap in the head that remains materialized.
+        retained_under_debt = (
+            row.get("membership_decision") == "ambiguous" and row.get("membership_authority") == "quarantined"
+        )
+        if (
+            not (
+                retained_under_debt
+                or (row.get("membership_decision") == "applied" and row.get("membership_authority") == "byte_proven")
+            )
+            or row.get("membership_source_revision") != row.get("accepted_source_revision")
+            or str(row.get("membership_content_hash") or "").lower()
+            != str(row.get("membership_source_revision") or "").lower()
+            or row.get("membership_census_status") != "complete"
+            or row.get("membership_parser_fingerprint") != fingerprint
+            or row.get("parser_census_status") != "complete"
+            or row.get("authority_parser_fingerprint") != fingerprint
+            or not row.get("parser_names_key")
+        ):
+            return _item(
+                state=RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
+                row=row,
+                reason="accepted semantic head lacks its original complete applied membership authority",
+            )
+        return _item(
+            state=RawAuthorityFrontierState.PROVEN_CURRENT,
+            row=row,
+            reason=(
+                "accepted head retained under ambiguous membership debt; source bytes and session agree"
+                if retained_under_debt
+                else "accepted source bytes, membership, head, and materialized session agree"
+            ),
         )
     if row.get("revision_authority") == "quarantined":
         return _item(
@@ -392,10 +339,15 @@ _OBLIGATION_STATES = {
 }
 
 
-def _open_frontier_blocker_id(conn: sqlite3.Connection, *, pass_id: str, plan_id: str) -> str:
+def _frontier_blocker_identity(
+    resolved_at: Callable[[str], tuple[object] | sqlite3.Row | None],
+    *,
+    pass_id: str,
+    plan_id: str,
+) -> str:
     """Return the id this pass must publish its obligation under.
 
-    ``resolve_raw_authority_blocker`` tombstones a frontier blocker on the
+    Prepared blocker acknowledgement tombstones a frontier blocker on the
     operator's acknowledgement alone: it discharges nothing, and for a frontier
     witness it does not even rebuild the plan from current evidence. ``pass_id``
     is a content address over the inspected inventory, so a later pass over
@@ -415,132 +367,66 @@ def _open_frontier_blocker_id(conn: sqlite3.Connection, *, pass_id: str, plan_id
 
     blocker_id = f"raw-authority-blocker:{_digest(['frontier', pass_id, plan_id])}"
     while True:
-        row = conn.execute(
-            "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id = ?",
-            (blocker_id,),
-        ).fetchone()
+        row = resolved_at(blocker_id)
         if row is None or row[0] is None:
             return blocker_id
         blocker_id = f"raw-authority-blocker:{_digest(['frontier', pass_id, plan_id, blocker_id])}"
 
 
-def _reconcile_frontier_obligations(
-    config: Config,
+_FRONTIER_BLOCKER_INSERT_SQL = """
+INSERT INTO raw_authority_blockers (
+    blocker_id, plan_input_digest, observed_pass_id, reason, expected_json,
+    observed_json, created_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING
+"""
+_FRONTIER_BLOCKER_RESOLVE_SQL = """
+UPDATE raw_authority_blockers SET resolved_at_ms=?, resolution=?
+WHERE blocker_id=? AND resolved_at_ms IS NULL
+"""
+
+
+def _frontier_obligation_values(
+    item: RawAuthorityFrontierItem,
+    *,
+    blocker_id: str,
     pass_id: str,
-    items: tuple[RawAuthorityFrontierItem, ...],
-) -> dict[str, str]:
-    """Publish current obligations and close only those a later pass disproved.
-
-    Returns the durable blocker id published for each still-blocking plan, so
-    the caller can bind every blocking item to the row that now carries its
-    evidence.
-    """
-    root = _archive_root(config)
-    now = int(time.time() * 1000)
-    blocking = tuple(item for item in items if item.state in _OBLIGATION_STATES)
-    current_ids = {item.plan_id for item in blocking}
-    published: dict[str, str] = {}
-    assert_population_admitted(root)
-    with closing(sqlite3.connect(root / "source.db")) as conn, conn:
-        for item in blocking:
-            blocker_id = _open_frontier_blocker_id(conn, pass_id=pass_id, plan_id=item.plan_id)
-            published[item.plan_id] = blocker_id
-            observed = {
-                "schema": "polylogue.raw-authority-frontier-obligation.v1",
-                # Writer-declared blocker class; automatic clearing selects on
-                # this positively (polylogue-l8tdh) and never clears a frontier
-                # obligation.
-                BLOCKER_ORIGIN_KEY: BLOCKER_ORIGIN_FRONTIER_OBLIGATION,
-                "state": item.state.value,
-                "reason": item.reason,
-                "evidence_digest": item.evidence_digest,
-            }
-            conn.execute(
-                """
-                INSERT INTO raw_authority_blockers (
-                    blocker_id, plan_input_digest, observed_pass_id, reason, expected_json,
-                    observed_json, created_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT DO NOTHING
-                """,
-                (
-                    blocker_id,
-                    _plan(item).input_digest,
-                    pass_id,
-                    item.reason,
-                    _canonical_json(_plan(item).to_dict()),
-                    _canonical_json(observed),
-                    now,
-                ),
-            )
-        open_rows = conn.execute(
-            """
-            SELECT b.blocker_id, json_extract(b.expected_json, '$.plan_id')
-            FROM raw_authority_blockers AS b
-            WHERE b.resolved_at_ms IS NULL
-              AND json_extract(b.expected_json, '$.authority_witness.schema') =
-                  'polylogue.raw-authority-frontier-plan.v1'
-            """
-        ).fetchall()
-        for blocker_id, plan_id in open_rows:
-            plan_id_text = str(plan_id)
-            if plan_id_text in current_ids:
-                continue
-            conn.execute(
-                """
-                UPDATE raw_authority_blockers
-                SET resolved_at_ms = ?, resolution = ?
-                WHERE blocker_id = ? AND resolved_at_ms IS NULL
-                """,
-                (
-                    now,
-                    _canonical_json(
-                        {
-                            "schema": "polylogue.raw-authority-obligation-resolution.v1",
-                            "reason": "a later complete frontier pass disproved the prior blocking state",
-                            "successor_pass_id": pass_id,
-                        }
-                    ),
-                    blocker_id,
-                ),
-            )
-    return published
-
-
-def _terminal_superseded_items(conn: sqlite3.Connection) -> list[RawAuthorityFrontierItem]:
-    rows = _rows(
-        conn.execute(
-            """
-            SELECT a.logical_source_key, a.session_id, a.raw_id AS accepted_raw_id,
-                   a.source_revision AS accepted_source_revision,
-                   hex(a.accepted_content_hash) AS accepted_content_hash,
-                   NULL AS accepted_frontier_kind, NULL AS accepted_frontier,
-                   a.decided_at_ms AS head_decided_at_ms,
-                   s.origin AS session_origin, s.raw_id AS session_raw_id,
-                   hex(s.content_hash) AS session_content_hash, s.message_count,
-                   r.origin AS raw_origin, r.capture_mode, r.native_id,
-                   r.source_path, r.source_index, hex(r.blob_hash) AS blob_hash,
-                   r.blob_size, r.logical_source_key AS raw_logical_source_key,
-                   r.revision_kind, r.source_revision, r.predecessor_raw_id,
-                   r.baseline_raw_id, r.append_start_offset, r.append_end_offset,
-                   r.acquisition_generation, r.revision_authority
-            FROM index_tier.raw_revision_applications AS a
-            JOIN raw_sessions AS r ON r.raw_id = a.raw_id
-            LEFT JOIN index_tier.sessions AS s ON s.session_id = a.session_id
-            LEFT JOIN index_tier.raw_revision_heads AS h ON h.accepted_raw_id = a.raw_id
-            WHERE a.decision = 'superseded' AND h.accepted_raw_id IS NULL
-            ORDER BY a.raw_id, a.logical_source_key
-            """
-        )
+    observed_at_ms: int,
+) -> tuple[object, ...]:
+    observed = {
+        "schema": "polylogue.raw-authority-frontier-obligation.v1",
+        BLOCKER_ORIGIN_KEY: BLOCKER_ORIGIN_FRONTIER_OBLIGATION,
+        "state": item.state.value,
+        "reason": item.reason,
+        "evidence_digest": item.evidence_digest,
+    }
+    return (
+        blocker_id,
+        _plan(item).input_digest,
+        pass_id,
+        item.reason,
+        _canonical_json(_plan(item).to_dict()),
+        _canonical_json(observed),
+        observed_at_ms,
     )
-    return [
-        _item(
-            state=RawAuthorityFrontierState.SUPERSEDED,
-            row=row,
-            reason="durable application receipt terminally supersedes this retained snapshot",
-        )
-        for row in rows
-    ]
+
+
+def _frontier_resolution_values(
+    blocker_id: str,
+    *,
+    pass_id: str,
+    observed_at_ms: int,
+) -> tuple[object, ...]:
+    return (
+        observed_at_ms,
+        _canonical_json(
+            {
+                "schema": "polylogue.raw-authority-obligation-resolution.v1",
+                "reason": "a later complete frontier pass disproved the prior blocking state",
+                "successor_pass_id": pass_id,
+            }
+        ),
+        blocker_id,
+    )
 
 
 def _plan(item: RawAuthorityFrontierItem) -> RawReplayPlan:
@@ -563,75 +449,7 @@ def _plan(item: RawAuthorityFrontierItem) -> RawReplayPlan:
     )
 
 
-def _frontier_items(config: Config) -> tuple[tuple[RawAuthorityFrontierItem, ...], int, int]:
-    root = _archive_root(config)
-    source_db = root / "source.db"
-    index_db = config.current_db_path()
-    assert_population_admitted(source_db)
-    assert_population_admitted(index_db)
-    if not source_db.is_file() or not index_db.is_file():
-        raise RuntimeError("raw authority frontier census requires initialized source and index tiers")
-    with closing(sqlite3.connect(source_db)) as conn, conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
-        head_rows = _frontier_rows(conn)
-        # _classify_frontier may persist a verified-blob receipt (polylogue-byw3y)
-        # through this same connection; the outer ``conn`` context manager commits
-        # those writes on clean exit (or rolls back on exception), so a receipt is
-        # never durably recorded for bytes this pass didn't finish inspecting.
-        blob_store = BlobStore(root / "blob")
-        head_items = [_classify_frontier(conn, blob_store, row) for row in head_rows]
-        superseded_items = _terminal_superseded_items(conn)
-    all_items = (*head_items, *superseded_items)
-    return (
-        tuple(sorted(all_items, key=lambda item: (item.raw_id, item.plan_id))),
-        len(head_items),
-        len(superseded_items),
-    )
-
-
-def inspect_raw_authority_frontier(config: Config) -> RawAuthorityFrontierCensus:
-    """Inspect the complete accepted frontier and publish its durable obligations.
-
-    The inspection itself is not recorded: a pass that observes an unchanged
-    frontier writes nothing, and its ``pass_id`` is a content address over the
-    inspected inventory rather than a new ledger row (polylogue-6kur ruling
-    2026-09-15). What it does publish is durable -- every blocking item gets a
-    ``raw_authority_blockers`` row, and an obligation the current evidence
-    disproves is tombstoned -- so this is not a read operation: offline callers
-    need the same daemon exclusion boundary as an apply, and daemon convergence
-    is admitted through its active write lease.
-    """
-    from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
-
-    block_reason = offline_maintenance_block_reason(config, active=True, dry_run=False)
-    if block_reason is not None:
-        raise RuntimeError(block_reason)
-    all_items, accepted_head_count, terminal_superseded_count = _frontier_items(config)
-    state_counts_counter = Counter(item.state.value for item in all_items)
-    state_counts = json_document(dict(sorted(state_counts_counter.items())))
-    inventory_digest = _digest([item.to_dict() for item in all_items])
-    gap_items = tuple(item for item in all_items if item.state in _OBLIGATION_STATES)
-    plans = tuple(_plan(item) for item in gap_items)
-    plan_inventory_digest = _digest([plan.to_dict() for plan in plans])
-    pass_id = f"raw-authority-frontier-pass:{inventory_digest}"
-    published = _reconcile_frontier_obligations(config, pass_id, all_items)
-    bound_items = tuple(dataclasses.replace(item, evidence_ref=published.get(item.plan_id)) for item in all_items)
-    return RawAuthorityFrontierCensus(
-        pass_id=pass_id,
-        inventory_digest=inventory_digest,
-        plan_inventory_digest=plan_inventory_digest,
-        state_counts=state_counts,
-        accepted_head_count=accepted_head_count,
-        terminal_superseded_count=terminal_superseded_count,
-        plan_count=len(plans),
-        items=bound_items,
-    )
-
-
 __all__ = [
-    "RawAuthorityFrontierCensus",
     "RawAuthorityFrontierItem",
     "RawAuthorityFrontierState",
-    "inspect_raw_authority_frontier",
 ]

@@ -5,11 +5,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.operations.archive_backup import _SQLITE_SIDECAR_SUFFIXES as BACKUP_SUFFIXES
 from polylogue.sources.sqlite_snapshot import (
     _SQLITE_SIDECAR_SUFFIXES,
     sqlite_database_for_sidecar,
 )
+from polylogue.storage.backup_package import _SQLITE_SIDECAR_SUFFIXES as BACKUP_SUFFIXES
 from polylogue.storage.sqlite.audit_leaf import _SQLITE_SIDECAR_SUFFIXES as AUDIT_SUFFIXES
 from polylogue.storage.sqlite.migration_runner import _SQLITE_SIDECAR_SUFFIXES as MIGRATION_SUFFIXES
 

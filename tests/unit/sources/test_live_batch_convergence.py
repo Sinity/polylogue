@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import sqlite3
 from collections.abc import AsyncIterator, Sequence
@@ -51,6 +52,7 @@ def test_live_batch_converges_known_paths_by_source_path(tmp_path: Path) -> None
             conn,
             origin="codex-session",
             source_path=str(source),
+            canonical_source_path=str(source),
             source_index=0,
             payload=b'{"a": 1}\n',
             acquired_at_ms=1_767_225_600_000,
@@ -84,7 +86,7 @@ def test_live_batch_converges_known_paths_by_source_path(tmp_path: Path) -> None
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
 
-    completed, elapsed, timings, debts = processor._converge_paths([source])
+    completed, elapsed, timings, debts, settlements = processor._converge_paths([source])
 
     assert completed == {source}
     assert elapsed >= 0.0
@@ -124,6 +126,53 @@ def test_hook_paste_failure_records_canonical_session_debt(
     assert debt[0].subject_type == "session_id"
     assert debt[0].subject_id == session_id
     assert debt[0].last_error == "temporary hook evidence read failure"
+
+
+@pytest.mark.parametrize("owner", ["engine", "hook_paste"])
+def test_post_ingest_cancellation_is_not_convergence_or_paste_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner: str
+) -> None:
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.daemon.convergence import ConvergenceStage, DaemonConverger
+
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    cursor = CursorStore(index_db)
+    cancellation = DaemonOperationCancelled("synthetic cancellation")
+
+    def cancel(_path: Path) -> bool:
+        raise cancellation
+
+    def cancel_paste(*_args: object, **_kwargs: object) -> int:
+        raise cancellation
+
+    converger = DaemonConverger(
+        [
+            ConvergenceStage(
+                name="actual_stage",
+                description="production engine cancellation",
+                check=cancel if owner == "engine" else lambda _path: False,
+                execute=lambda _path: True,
+                writer_admission="bridged",
+            )
+        ]
+    )
+    processor = LiveBatchProcessor(
+        MagicMock(archive_root=tmp_path),
+        (),
+        cursor=cursor,
+        converger=converger,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    cursor.record_convergence_debt(
+        stage="lineage_prefix_recompose", subject_type="session_id", subject_id="child", error="owed"
+    )
+    monkeypatch.setattr(hook_paste_enrichment, "enrich_paste_from_hooks", cancel_paste)
+    with pytest.raises(DaemonOperationCancelled) as raised:
+        processor._converge_paths([tmp_path / "session.jsonl"], session_ids=["child"])
+    assert raised.value is cancellation
+    debts = cursor.list_convergence_debt()
+    assert [(debt.stage, debt.subject_id) for debt in debts] == [("lineage_prefix_recompose", "child")]
 
 
 class _GateTrackingCoordinator:
@@ -179,7 +228,7 @@ async def test_page_admission_runs_lease_free_owners_outside_the_writer_gate(
     # Page admission's cursor-authority gate proves raw existence over both
     # the source and index tiers (#5657), so the page needs a whole archive.
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     source_root = tmp_path / "sources"
     source_root.mkdir()
     source = source_root / "session.jsonl"

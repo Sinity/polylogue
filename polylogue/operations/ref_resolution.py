@@ -486,6 +486,21 @@ def _resolve_message_object_ref(
         )
     session_id = str(row["session_id"])
     message_id = str(row["message_id"])
+    if evidence_ref is not None:
+        try:
+            evidence_session_id = archive.resolve_session_id(evidence_ref.session_id)
+        except (KeyError, ValueError):
+            evidence_session_id = None
+        if evidence_session_id is None or archive.locate_composed_message(evidence_session_id, message_id) is None:
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(
+                    ref,
+                    "message is not present in the referenced session transcript",
+                    normalized_ref=normalized_ref,
+                    kind="message",
+                ),
+            )
     summary = archive.read_summary(session_id)
     session = archive_envelope_to_session(
         archive.read_session(session_id),
@@ -557,6 +572,24 @@ def _resolve_block_object_ref(
             PublicRefResolutionPayload,
             _unresolved_ref_payload(ref, "block not found", normalized_ref=normalized_ref, kind="block"),
         )
+    if evidence_ref is not None:
+        try:
+            evidence_session_id = archive.resolve_session_id(evidence_ref.session_id)
+        except (KeyError, ValueError):
+            evidence_session_id = None
+        if (
+            evidence_session_id is None
+            or archive.locate_composed_message(evidence_session_id, str(row["message_id"])) is None
+        ):
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(
+                    ref,
+                    "block is not present in the referenced session transcript",
+                    normalized_ref=normalized_ref,
+                    kind="block",
+                ),
+            )
     payload = BlockQueryRowPayload.from_row(
         ArchiveBlockQueryRow(
             block_id=str(row["block_id"]),

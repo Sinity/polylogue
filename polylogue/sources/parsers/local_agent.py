@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterable, Mapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Mapping, MutableSequence, Sequence
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -12,8 +12,12 @@ from polylogue.archive.message.artifacts import classify_block_message_type, cla
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, BranchType, Provider
+from polylogue.core.hashing import hash_text
 from polylogue.core.json import JSONDocument, JSONValue, json_document
+from polylogue.core.provider_identity import profile_root_for_artifact as _profile_root_for_artifact
 from polylogue.core.timestamps import format_timestamp
+from polylogue.sources import value_bounds
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.live.gemini_tool_output_sidecars import (
     is_masked_tool_output,
     join_gemini_tool_output_sidecars,
@@ -35,7 +39,6 @@ from .base import (
 from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
 from .hermes_finish_reason import stop_reason_from_finish_reason as _stop_reason_from_finish_reason
 from .hermes_identity import profile_key as _profile_key
-from .hermes_identity import profile_root_for_artifact as _profile_root_for_artifact
 from .hermes_identity import qualified_session_id as _qualified_session_id
 
 
@@ -87,9 +90,8 @@ def gemini_cli_chat_identity(payload: JSONDocument, session_id: str) -> str:
     them separates sibling chats while keeping every save of one chat on one
     identity, which ``lastUpdated`` would not.
 
-    Path coordinates stay unused -- ``Provider.GEMINI_CLI`` is declared
-    path-independent for revision dedup
-    (``revision_backfill._PATH_INDEPENDENT_PARSE_PROVIDERS``).
+    Path coordinates stay unused: the identity derives only from the
+    checkpoint's own fields, so a moved file keeps its chat identity.
     """
     kind = _string(payload.get("kind"))
     start_time = _string(payload.get("startTime"))
@@ -135,19 +137,51 @@ def is_gemini_cli_checkpoint_stream(payload: Sequence[JSONValue]) -> bool:
     header = next(records, None)
     if not isinstance(header, dict) or "messages" in header or not looks_like_gemini_cli(header):
         return False
+    return all(_gemini_cli_checkpoint_record(record) for record in records)
+
+
+def _gemini_cli_checkpoint_record(record: JSONValue) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if set(record) == {"$set"} and isinstance(record["$set"], dict):
+        return True
+    return (
+        isinstance(record.get("id"), str)
+        and isinstance(record.get("type"), str)
+        and isinstance(record.get("timestamp"), str)
+        and "content" in record
+    )
+
+
+def fold_gemini_cli_checkpoint_records(
+    payload: Iterable[JSONValue],
+    *,
+    append_message: Callable[[JSONValue], None],
+    replace_messages: Callable[[Iterable[JSONValue]], None],
+) -> JSONDocument | None:
+    """Fold the canonical checkpoint law into caller-owned provisional messages.
+
+    The caller discards provisional messages when this returns None. Every
+    input record is consumed even after refusal, preserving suffix decode errors.
+    """
+    records = iter(payload)
+    header = next(records, None)
+    admitted = isinstance(header, dict) and "messages" not in header and looks_like_gemini_cli(header)
+    document: dict[str, JSONValue] = dict(header) if isinstance(header, dict) else {}
     for record in records:
-        if not isinstance(record, dict):
-            return False
-        if set(record) == {"$set"} and isinstance(record["$set"], dict):
+        admitted = admitted and _gemini_cli_checkpoint_record(record)
+        if not admitted or not isinstance(record, dict):
             continue
-        if not (
-            isinstance(record.get("id"), str)
-            and isinstance(record.get("type"), str)
-            and isinstance(record.get("timestamp"), str)
-            and "content" in record
-        ):
-            return False
-    return True
+        patch = record.get("$set")
+        if set(record) == {"$set"} and isinstance(patch, dict):
+            for key, value in patch.items():
+                if key == "messages":
+                    replace_messages(value if isinstance(value, list) else ())
+                else:
+                    document[key] = value
+        else:
+            append_message(record)
+    return json_document(document) if admitted else None
 
 
 def fold_gemini_cli_checkpoint_stream(payload: Sequence[JSONValue]) -> JSONDocument | None:
@@ -175,28 +209,18 @@ def fold_gemini_cli_checkpoint_stream(payload: Sequence[JSONValue]) -> JSONDocum
 
     Returns ``None`` when the payload is not this shape.
     """
-    if not is_gemini_cli_checkpoint_stream(payload):
-        return None
-    records = list(payload)
-    header = records[0]
-    if not isinstance(header, dict):
-        return None
-    document: dict[str, JSONValue] = dict(header)
     messages: list[JSONValue] = []
-    for record in records[1:]:
-        if not isinstance(record, dict):
-            continue
-        patch = record.get("$set")
-        if set(record) == {"$set"} and isinstance(patch, dict):
-            for key, value in patch.items():
-                if key == "messages":
-                    messages = list(value) if isinstance(value, list) else []
-                else:
-                    document[key] = value
-            continue
-        messages.append(record)
+
+    def replace_messages(values: Iterable[JSONValue]) -> None:
+        messages[:] = values
+
+    document = fold_gemini_cli_checkpoint_records(
+        payload, append_message=messages.append, replace_messages=replace_messages
+    )
+    if document is None:
+        return None
     document["messages"] = messages
-    return json_document(document)
+    return document
 
 
 #: Root fields :func:`looks_like_hermes` reads.
@@ -322,6 +346,8 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
         return session
 
     replacements = {match.tool_use_id: match for match in join_result.matched if match.was_truncated}
+    attached_hashes: dict[SidecarMatch, str] = {}
+    attachment_debt: dict[SidecarMatch, SidecarDebt] = {}
     messages = session.messages
     if replacements:
         updated_messages: list[ParsedMessage] = []
@@ -331,36 +357,59 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
             ):
                 updated_messages.append(message)
                 continue
-            updated_messages.append(
-                message.model_copy(
-                    update={
-                        "blocks": [
-                            block.model_copy(update={"text": replacements[block.tool_id].full_text})
-                            if block.type is BlockType.TOOL_RESULT and block.tool_id in replacements
-                            else block
-                            for block in message.blocks
-                        ]
-                    }
+            blocks = []
+            for block in message.blocks:
+                match = (
+                    replacements.get(block.tool_id)
+                    if block.type is BlockType.TOOL_RESULT and block.tool_id is not None
+                    else None
                 )
-            )
+                if match is None:
+                    blocks.append(block)
+                    continue
+                try:
+                    text = value_bounds.require_storable_string(match.read_text(), kind="gemini tool sidecar")
+                except OSError as exc:
+                    attachment_debt[match] = SidecarDebt(
+                        filename=match.filename,
+                        byte_size=match.byte_size,
+                        reason=f"read_error:{type(exc).__name__}",
+                        file_mtime_ms=match.file_mtime_ms,
+                    )
+                    blocks.append(block)
+                except value_bounds.ValueBoundRefusedError:
+                    attachment_debt[match] = SidecarDebt(
+                        filename=match.filename,
+                        byte_size=match.byte_size,
+                        reason=value_bounds.VALUE_BOUND_REFUSED,
+                        file_mtime_ms=match.file_mtime_ms,
+                    )
+                    blocks.append(block)
+                else:
+                    attached_hashes[match] = hash_text(text)
+                    blocks.append(block.model_copy(update={"text": text}))
+            updated_messages.append(message.model_copy(update={"blocks": blocks}))
         messages = updated_messages
 
     events = list(session.session_events)
     for match in join_result.matched:
-        events.append(gemini_sidecar_event(match))
+        if debt := attachment_debt.get(match):
+            events.append(gemini_sidecar_event(debt))
+        else:
+            events.append(gemini_sidecar_event(match, content_hash=attached_hashes.get(match)))
     for debt in join_result.debt:
         events.append(gemini_sidecar_event(debt))
     return session.model_copy(update={"messages": messages, "session_events": events})
 
 
-def gemini_sidecar_event(outcome: SidecarMatch | SidecarDebt) -> ParsedSessionEvent:
+def gemini_sidecar_event(outcome: SidecarMatch | SidecarDebt, *, content_hash: str | None = None) -> ParsedSessionEvent:
     if isinstance(outcome, SidecarMatch):
         payload = {
             "acquisition_status": "matched",
             "tool_use_id": outcome.tool_use_id,
             "filename": outcome.filename,
             "byte_size": outcome.byte_size,
-            "content_hash": outcome.content_hash,
+            "content_hash": content_hash or outcome.content_hash,
             "content_replaced": outcome.was_truncated,
         }
     else:
@@ -394,6 +443,7 @@ def parse_hermes(
     fallback_id: str,
     *,
     source_path: str | Path | None = None,
+    profile_identity: str | None = None,
 ) -> ParsedSession:
     """Parse one ``<hermes_root>/sessions/session_*.json`` snapshot.
 
@@ -405,7 +455,7 @@ def parse_hermes(
     assertable, so identity stays unqualified rather than inventing a key.
     """
     raw_session_id = _string(payload.get("session_id")) or fallback_id
-    session_id = _hermes_qualified_session_id(raw_session_id, source_path)
+    session_id = _hermes_qualified_session_id(raw_session_id, source_path, profile_identity)
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     system_prompt = _string(payload.get("system_prompt"))
@@ -459,10 +509,11 @@ def parse_hermes_snapshot_stream(
     messages: MutableSequence[ParsedMessage],
     session_events: MutableSequence[ParsedSessionEvent],
     source_path: str | Path | None = None,
+    profile_identity: str | None = None,
 ) -> ParsedSession:
     """Lower one validated snapshot with disk-backed message and event rows."""
     raw_session_id = _string(envelope.get("session_id")) or fallback_id
-    session_id = _hermes_qualified_session_id(raw_session_id, source_path)
+    session_id = _hermes_qualified_session_id(raw_session_id, source_path, profile_identity)
     model = _string(envelope.get("model"))
     system_prompt = _string(envelope.get("system_prompt"))
     if system_prompt:
@@ -518,7 +569,11 @@ def parse_hermes_snapshot_stream(
     )
 
 
-def _hermes_qualified_session_id(raw_session_id: str, source_path: str | Path | None) -> str:
+def _hermes_qualified_session_id(
+    raw_session_id: str, source_path: str | Path | None, profile_identity: str | None
+) -> str:
+    if profile_identity is not None:
+        return _qualified_session_id(raw_session_id, profile_identity)
     if source_path is None:
         return raw_session_id
     return _qualified_session_id(
@@ -1347,3 +1402,14 @@ __all__ = [
     "parse_gemini_cli",
     "parse_hermes",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Project the complete local-agent root signatures, including list types."""
+    fields: dict[str, DetectorProjection | None] = dict.fromkeys(
+        ("startTime", "lastUpdated", "session_start", "last_updated", "platform")
+    )
+    fields.update(
+        {name: DetectorProjection() for name in ("sessionId", "session_id", "messages", "projectHash", "kind")}
+    )
+    return DetectorProjection(fields=fields)

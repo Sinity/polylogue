@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -172,21 +173,23 @@ def test_seal_detects_a_same_size_edit_and_an_added_file(tmp_path: Path) -> None
 
 def test_explicit_corpus_admits_only_watched_transcripts(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    sessions = home / ".codex" / "sessions"
+    sessions = home / ".codex" / "sessions" / "2026" / "01" / "01"
     sessions.mkdir(parents=True)
-    (sessions / "rollout.jsonl").write_text("{}\n", encoding="utf-8")
+    (sessions / "rollout-a.jsonl").write_text("{}\n", encoding="utf-8")
     (sessions / "large.bin").write_bytes(b"x")
     with pytest.raises(ValueError, match="not a transcript"):
         corpus_from_files(tmp_path / "bad", [sessions / "large.bin"], home=home)
-    manifest = corpus_from_files(tmp_path / "good", [sessions / "rollout.jsonl"], home=home)
+    manifest = corpus_from_files(tmp_path / "good", [sessions / "rollout-a.jsonl"], home=home)
     assert manifest["kind"] == "files"
 
 
 def test_a_sample_that_draws_nothing_still_seals(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
-    (root / "one.jsonl").write_bytes(b"x" * 1000)
-    sources = (SampleSource("codex", root, "home/.codex/sessions", (".jsonl",)),)
+    day = root / "2026" / "01" / "01"
+    day.mkdir(parents=True)
+    (day / "rollout-one.jsonl").write_bytes(b"x" * 1000)
+    sources = (SampleSource("codex", root, "home/.codex/sessions"),)
     for seed in range(20):
         manifest = sample_real(tmp_path / f"s{seed}", seed=seed, fraction=0.01, sources=sources)
         assert manifest["file_count"] in {0, 1}
@@ -283,15 +286,16 @@ def test_sample_is_seeded_and_keeps_session_units_together(tmp_path: Path) -> No
     """Anti-vacuity: sampling files instead of session units separates a
     subagent transcript from its parent in some seed."""
     home = tmp_path / "home"
-    projects = home / ".claude" / "projects" / "proj"
+    projects = home / ".claude" / "projects" / "-proj"
     for index in range(20):
-        session = projects / f"s{index:02d}.jsonl"
+        session_id = f"00000000-0000-4000-8000-{index:012d}"
+        session = projects / f"{session_id}.jsonl"
         session.parent.mkdir(parents=True, exist_ok=True)
         session.write_bytes(b"x" * (1000 + index))
-        child = projects / f"s{index:02d}" / "subagents" / "agent-a.jsonl"
+        child = projects / session_id / "subagents" / "agent-a.jsonl"
         child.parent.mkdir(parents=True)
         child.write_bytes(b"y" * 500)
-    sources = (SampleSource("claude-code", home / ".claude" / "projects", "home/.claude/projects", (".jsonl",), True),)
+    sources = (SampleSource("claude-code", home / ".claude" / "projects", "home/.claude/projects", True),)
     first = sample_real(tmp_path / "a", seed=5, fraction=0.3, sources=sources)
     again = sample_real(tmp_path / "b", seed=5, fraction=0.3, sources=sources)
     assert first["digest"] == again["digest"]
@@ -362,9 +366,11 @@ def test_stratum_boundary_is_one_draw(tmp_path: Path) -> None:
     file in nearly every seed instead of about one in ten."""
     root = tmp_path / "src"
     root.mkdir()
+    day = root / "2026" / "01" / "01"
+    day.mkdir(parents=True)
     for index in range(50):
-        (root / f"f{index:02d}.jsonl").write_bytes(b"x" * 1000)
-    sources = (SampleSource("codex", root, "home/.codex/sessions", (".jsonl",)),)
+        (day / f"rollout-f{index:02d}.jsonl").write_bytes(b"x" * 1000)
+    sources = (SampleSource("codex", root, "home/.codex/sessions"),)
     seeds = 60
     selected = sum(
         sample_real(tmp_path / f"s{seed}", seed=seed, fraction=0.002, sources=sources)["file_count"]
@@ -414,13 +420,13 @@ def test_seal_detects_an_edited_population_parameter(tmp_path: Path) -> None:
 def test_private_corpora_are_owner_only(tmp_path: Path) -> None:
     """Anti-vacuity: default creation modes leave the copy world-readable."""
     home = tmp_path / "home"
-    sessions = home / ".codex" / "sessions"
+    sessions = home / ".codex" / "sessions" / "2026" / "01" / "01"
     sessions.mkdir(parents=True)
-    (sessions / "rollout.jsonl").write_text("{}\n", encoding="utf-8")
+    (sessions / "rollout-a.jsonl").write_text("{}\n", encoding="utf-8")
     out = tmp_path / "corpus"
-    corpus_from_files(out, [sessions / "rollout.jsonl"], home=home)
+    corpus_from_files(out, [sessions / "rollout-a.jsonl"], home=home)
     assert out.stat().st_mode & 0o077 == 0
-    copied = out / "home" / ".codex" / "sessions" / "rollout.jsonl"
+    copied = out / "home" / ".codex" / "sessions" / "2026" / "01" / "01" / "rollout-a.jsonl"
     assert copied.stat().st_mode & 0o077 == 0
 
 
@@ -570,10 +576,12 @@ def test_sampled_units_carry_their_sidecars(tmp_path: Path) -> None:
     from devtools.fresh_build_bench.corpus import default_sample_sources
 
     home = tmp_path / "home"
-    project = home / ".claude" / "projects" / "proj"
-    (project / "s1" / "tool-results").mkdir(parents=True)
-    (project / "s1.jsonl").write_text("{}\n", encoding="utf-8")
-    (project / "s1" / "tool-results" / "toolu_1.txt").write_text("full output", encoding="utf-8")
+    project = home / ".claude" / "projects" / "-proj"
+    (project / "11111111-1111-4111-8111-111111111111" / "tool-results").mkdir(parents=True)
+    (project / "11111111-1111-4111-8111-111111111111.jsonl").write_text("{}\n", encoding="utf-8")
+    (project / "11111111-1111-4111-8111-111111111111" / "tool-results" / "toolu_1.txt").write_text(
+        "full output", encoding="utf-8"
+    )
     gemini = home / ".gemini" / "tmp" / "hash1"
     (gemini / "chats").mkdir(parents=True)
     (gemini / "tool-outputs" / "session-x").mkdir(parents=True)
@@ -581,40 +589,8 @@ def test_sampled_units_carry_their_sidecars(tmp_path: Path) -> None:
     (gemini / "tool-outputs" / "session-x" / "shell_1.txt").write_text("output", encoding="utf-8")
     manifest = sample_real(tmp_path / "corpus", seed=1, fraction=1.0, sources=default_sample_sources(home))
     paths = {row[0] for row in manifest["files"]}
-    assert "home/.claude/projects/proj/s1/tool-results/toolu_1.txt" in paths
+    assert "home/.claude/projects/-proj/11111111-1111-4111-8111-111111111111/tool-results/toolu_1.txt" in paths
     assert "home/.gemini/tmp/hash1/tool-outputs/session-x/shell_1.txt" in paths
-
-
-def test_parse_component_uses_the_production_stream_predicate_and_times_only_the_worker(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Anti-vacuity: an exact ``.jsonl`` comparison parses ``rollout.JSONL``
-    as a document; timing the count loop charges its 0.3 s to the worker."""
-    import time
-    from types import SimpleNamespace
-
-    from devtools.fresh_build_bench import components
-
-    corpus = tmp_path / "corpus"
-    transcript = corpus / "home" / ".codex" / "sessions" / "rollout.JSONL"
-    transcript.parent.mkdir(parents=True)
-    transcript.write_text("{}\n", encoding="utf-8")
-    seal(corpus, kind="sample", parameters={})
-    seen: list[bool] = []
-
-    def slow_sessions() -> list[object]:
-        time.sleep(0.3)
-        return [SimpleNamespace(messages=[1, 2])]
-
-    def worker(_provider: str, _path: str, _stem: str, *, is_stream: bool, **_kwargs: object) -> object:
-        seen.append(is_stream)
-        return SimpleNamespace(error=None, iter_sessions=slow_sessions)
-
-    monkeypatch.setattr("polylogue.sources.live.parse_prefetch.live_parse_path_worker", worker)
-    result = components.bench_parse(corpus, tmp_path / "scratch", workers=1, origins=None, limit=None)
-    assert seen == [True]
-    assert result["counts"] == {"sessions": 1, "messages": 2}
-    assert result["by_origin"]["codex"]["seconds"] < 0.2
 
 
 def test_refresh_voids_cpu_to_promotion_when_promotion_moves(tmp_path: Path) -> None:
@@ -700,7 +676,12 @@ def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypa
         label="l",
         stall_timeout_s=7200.0,
     )
-    paths = {"daemon_log": tmp_path / "daemon.log", "archive": tmp_path, "receipt": tmp_path / "receipt.json"}
+    paths = {
+        "daemon_log": tmp_path / "daemon.log",
+        "archive": tmp_path,
+        "receipt": tmp_path / "receipt.json",
+        "events": tmp_path / "events.jsonl",
+    }
 
     receipt = run._measure_and_write_receipt(
         config,
@@ -713,6 +694,7 @@ def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypa
         daemon_env={},
         interrupted=[],
         progress=lambda _line: None,
+        hook_preparation=None,
     )
 
     assert receipt["outcome"] == "terminal"
@@ -731,25 +713,28 @@ def test_component_commands_refuse_a_corpus_inside_the_checkout(tmp_path: Path) 
 
 def _sidecar_corpus(tmp_path: Path) -> Path:
     corpus = tmp_path / "corpus"
-    project = corpus / "home" / ".claude" / "projects" / "proj"
-    (project / "s1" / "tool-results").mkdir(parents=True)
-    (project / "s1.jsonl").write_text("{}\n", encoding="utf-8")
-    (project / "s1" / "tool-results" / "toolu_1.txt").write_text("full output", encoding="utf-8")
+    project = corpus / "home" / ".claude" / "projects" / "-proj"
+    (project / "11111111-1111-4111-8111-111111111111" / "tool-results").mkdir(parents=True)
+    (project / "11111111-1111-4111-8111-111111111111.jsonl").write_text("{}\n", encoding="utf-8")
+    (project / "11111111-1111-4111-8111-111111111111" / "tool-results" / "toolu_1.txt").write_text(
+        "full output", encoding="utf-8"
+    )
     seal(corpus, kind="sample", parameters={})
     return corpus
 
 
-def test_blob_component_stores_sidecars_and_parse_skips_them(tmp_path: Path) -> None:
-    """Anti-vacuity (Codex P2, #5678): share the parse filter with the blob
-    component and the sidecar the acquisition route stores is never timed."""
+def test_blob_component_stores_sidecars(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): dropping retained sidecars omits real
+    acquisition work from the blob timing."""
     from devtools.fresh_build_bench import components
 
     corpus = _sidecar_corpus(tmp_path)
     manifest = load_manifest(corpus)
-    blob_files = components._corpus_files(corpus, manifest, None, None, sessions_only=False)
-    parse_files = components._corpus_files(corpus, manifest, None, None, sessions_only=True)
-    assert sorted(path.name for path, _origin, _size in blob_files) == ["s1.jsonl", "toolu_1.txt"]
-    assert [path.name for path, _origin, _size in parse_files] == ["s1.jsonl"]
+    blob_files = components._corpus_files(corpus, manifest, None, None)
+    assert sorted(path.name for path, _origin, _size in blob_files) == [
+        "11111111-1111-4111-8111-111111111111.jsonl",
+        "toolu_1.txt",
+    ]
 
 
 def test_an_empty_component_selection_fails(tmp_path: Path) -> None:
@@ -770,21 +755,40 @@ def test_seal_covers_sidecar_mtimes_and_a_sample_keeps_them(tmp_path: Path) -> N
     from devtools.fresh_build_bench.corpus import default_sample_sources
 
     corpus = _sidecar_corpus(tmp_path)
-    sidecar = corpus / "home" / ".claude" / "projects" / "proj" / "s1" / "tool-results" / "toolu_1.txt"
+    sidecar = (
+        corpus
+        / "home"
+        / ".claude"
+        / "projects"
+        / "-proj"
+        / "11111111-1111-4111-8111-111111111111"
+        / "tool-results"
+        / "toolu_1.txt"
+    )
     verify_manifest(corpus, load_manifest(corpus))
     os.utime(sidecar, ns=(sidecar.stat().st_atime_ns, sidecar.stat().st_mtime_ns + 10**9))
     with pytest.raises(ValueError, match="changed mtime"):
         verify_manifest(corpus, load_manifest(corpus))
 
     home = tmp_path / "home"
-    source = home / ".claude" / "projects" / "proj" / "s1" / "tool-results" / "toolu_1.txt"
+    source = (
+        home
+        / ".claude"
+        / "projects"
+        / "-proj"
+        / "11111111-1111-4111-8111-111111111111"
+        / "tool-results"
+        / "toolu_1.txt"
+    )
     source.parent.mkdir(parents=True)
-    (home / ".claude" / "projects" / "proj" / "s1.jsonl").write_text("{}\n", encoding="utf-8")
+    (home / ".claude" / "projects" / "-proj" / "11111111-1111-4111-8111-111111111111.jsonl").write_text(
+        "{}\n", encoding="utf-8"
+    )
     source.write_text("full output", encoding="utf-8")
     os.utime(source, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
     manifest = sample_real(tmp_path / "sampled", seed=1, fraction=1.0, sources=default_sample_sources(home))
     assert manifest["sidecar_mtimes_ns"] == {
-        "home/.claude/projects/proj/s1/tool-results/toolu_1.txt": 1_700_000_000_000_000_000
+        "home/.claude/projects/-proj/11111111-1111-4111-8111-111111111111/tool-results/toolu_1.txt": 1_700_000_000_000_000_000
     }
 
 
@@ -1027,7 +1031,12 @@ def _scripted_run(
     config = RunConfig(
         corpus=tmp_path, work=tmp_path, candidate=tmp_path, python="python", label="l", stall_timeout_s=stall_timeout_s
     )
-    paths = {"daemon_log": tmp_path / "daemon.log", "archive": tmp_path, "receipt": tmp_path / "receipt.json"}
+    paths = {
+        "daemon_log": tmp_path / "daemon.log",
+        "archive": tmp_path,
+        "receipt": tmp_path / "receipt.json",
+        "events": tmp_path / "events.jsonl",
+    }
     run._measure_and_write_receipt(
         config,
         manifest={},
@@ -1039,6 +1048,7 @@ def _scripted_run(
         daemon_env={},
         interrupted=interrupted,
         progress=lambda _line: None,
+        hook_preparation=None,
     )
     captured["clock"] = clock
     captured["observe_kwargs"] = observe_kwargs
@@ -1454,17 +1464,18 @@ def test_sampling_follows_symlinked_source_directories(tmp_path: Path) -> None:
     behind a linked directory are missing from the sample and its population."""
     from devtools.fresh_build_bench.corpus import SampleSource, _units
 
-    elsewhere = tmp_path / "mnt" / "sessions"
-    elsewhere.mkdir(parents=True)
-    (elsewhere / "rollout.jsonl").write_bytes(b"{}\n")
     root = tmp_path / "home" / ".codex" / "sessions"
-    root.mkdir(parents=True)
-    (root / "team").symlink_to(elsewhere, target_is_directory=True)
-    source = SampleSource("codex", root, "home/.codex/sessions", (".jsonl",))
+    # A link whose target stays inside the root is followed, as discovery
+    # follows it; the target itself sits where the layout never reaches.
+    elsewhere = root / ".store" / "2026"
+    (elsewhere / "01" / "01").mkdir(parents=True)
+    (elsewhere / "01" / "01" / "rollout-a.jsonl").write_bytes(b"{}\n")
+    (root / "2026").symlink_to(elsewhere, target_is_directory=True)
+    source = SampleSource("codex", root, "home/.codex/sessions")
 
     units = _units(source)
 
-    assert [Path(key).name for key, _paths, _size in units] == ["rollout.jsonl"]
+    assert [Path(key).name for key, _paths, _size in units] == ["rollout-a.jsonl"]
 
 
 def test_a_progressing_shutdown_is_never_killed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1604,15 +1615,16 @@ def test_sampling_skips_linked_files_and_refuses_unreadable_subtrees(tmp_path: P
     from devtools.fresh_build_bench.corpus import SampleSource, _units
 
     root = tmp_path / "sessions"
-    root.mkdir()
-    (root / "real.jsonl").write_bytes(b"{}\n")
+    day = root / "2026" / "01" / "01"
+    day.mkdir(parents=True)
+    (day / "rollout-real.jsonl").write_bytes(b"{}\n")
     (tmp_path / "elsewhere.jsonl").write_bytes(b"{}\n")
-    (root / "latest.jsonl").symlink_to(tmp_path / "elsewhere.jsonl")
-    source = SampleSource("codex", root, "home/.codex/sessions", (".jsonl",))
+    (day / "rollout-latest.jsonl").symlink_to(tmp_path / "elsewhere.jsonl")
+    source = SampleSource("codex", root, "home/.codex/sessions")
 
-    assert [Path(key).name for key, _paths, _size in _units(source)] == ["real.jsonl"]
+    assert [Path(key).name for key, _paths, _size in _units(source)] == ["rollout-real.jsonl"]
 
-    locked = root / "locked"
+    locked = root / "2026" / "02"
     locked.mkdir()
     (locked / "hidden.jsonl").write_bytes(b"{}\n")
     locked.chmod(0)
@@ -1655,42 +1667,45 @@ def test_named_transcripts_bring_their_sidecar_units(tmp_path: Path) -> None:
     from devtools.fresh_build_bench.corpus import corpus_from_files
 
     home = tmp_path / "home"
-    project = home / ".claude" / "projects" / "proj"
-    (project / "s1" / "tool-results").mkdir(parents=True)
-    transcript = project / "s1.jsonl"
+    project = home / ".claude" / "projects" / "-proj"
+    (project / "11111111-1111-4111-8111-111111111111" / "tool-results").mkdir(parents=True)
+    transcript = project / "11111111-1111-4111-8111-111111111111.jsonl"
     transcript.write_text('{"type": "user", "message": {"role": "user", "content": "hi"}}\n', encoding="utf-8")
-    (project / "s1" / "tool-results" / "toolu_1.txt").write_text("full output", encoding="utf-8")
+    (project / "11111111-1111-4111-8111-111111111111" / "tool-results" / "toolu_1.txt").write_text(
+        "full output", encoding="utf-8"
+    )
 
     corpus_from_files(tmp_path / "corpus", [transcript], home=home)
 
-    sealed = tmp_path / "corpus" / "home" / ".claude" / "projects" / "proj"
-    assert (sealed / "s1.jsonl").is_file()
-    assert (sealed / "s1" / "tool-results" / "toolu_1.txt").is_file()
+    sealed = tmp_path / "corpus" / "home" / ".claude" / "projects" / "-proj"
+    assert (sealed / "11111111-1111-4111-8111-111111111111.jsonl").is_file()
+    assert (sealed / "11111111-1111-4111-8111-111111111111" / "tool-results" / "toolu_1.txt").is_file()
 
 
 def test_a_file_below_a_linked_source_directory_is_a_member_by_its_lexical_path(tmp_path: Path) -> None:
     """``corpus files`` accepts a transcript production reaches through a linked directory.
 
     Anti-vacuity (Codex P2, #5678): resolve the file before the membership
-    check and ``/mnt/team/session.jsonl`` is outside the sessions root.
+    check and ``.store/team/...`` is outside the declared Codex layout.
     """
     from devtools.fresh_build_bench.corpus import corpus_from_files
 
     home = tmp_path / "home"
     sessions = home / ".codex" / "sessions"
     sessions.mkdir(parents=True)
-    team = tmp_path / "mnt" / "team"
-    team.mkdir(parents=True)
-    rollout = team / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl"
+    team = sessions / ".store" / "team"
+    (team / "01" / "01").mkdir(parents=True)
+    rollout = team / "01" / "01" / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl"
     rollout.write_text(
         json.dumps({"type": "session_meta", "payload": {"id": "00000000-0000-0000-0000-000000000001"}}) + "\n",
         encoding="utf-8",
     )
-    (sessions / "team").symlink_to(team, target_is_directory=True)
+    (sessions / "2026").symlink_to(team, target_is_directory=True)
+    linked = sessions / "2026" / "01" / "01" / rollout.name
 
-    corpus_from_files(tmp_path / "corpus", [sessions / "team" / rollout.name], home=home)
+    corpus_from_files(tmp_path / "corpus", [linked], home=home)
 
-    assert (tmp_path / "corpus" / "home" / ".codex" / "sessions" / "team" / rollout.name).is_file()
+    assert (tmp_path / "corpus" / "home" / ".codex" / "sessions" / "2026" / "01" / "01" / rollout.name).is_file()
 
 
 def test_a_cancellation_interrupts_the_fingerprint_sort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1873,12 +1888,26 @@ def test_shutdown_progress_ignores_the_stack_sampler_cpu(tmp_path: Path, monkeyp
         daemon_env={},
         interrupted=[],
         progress=lambda _line: None,
+        hook_preparation=None,
     )
     (probe,) = probes
     before = probe()
     Sampler.samples.append((1.0, 1, 99.0, 5, 6, 7))  # only CPU moved
 
     assert probe() == before
+
+    # A hung daemon's status readers and periodic events keep read I/O,
+    # threads, the event log and SQLite read marks moving: none of that is a
+    # draining shutdown, so a stalled run is still terminated (run5 sat past
+    # its stall timeout until cancelled when these counted).
+    Sampler.samples.append((2.0, 1, 99.0, 50, 6_000, 7_000))
+    (tmp_path / "events.jsonl").write_text('{"event":"source.hook_spool.skipped"}\n', encoding="utf-8")
+    (tmp_path / "index.db-shm").write_bytes(b"read marks")
+    assert probe() == before
+
+    # A checkpoint or drain writes the archive's database files.
+    (tmp_path / "index.db-wal").write_bytes(b"frames")
+    assert probe() != before
 
 
 def test_a_full_fraction_sample_takes_zero_byte_units(tmp_path: Path) -> None:
@@ -1888,9 +1917,11 @@ def test_a_full_fraction_sample_takes_zero_byte_units(tmp_path: Path) -> None:
     and the empty file is in the population but not the corpus.
     """
     root = tmp_path / "src"
-    root.mkdir()
-    (root / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl").write_bytes(b"")
-    sources = (SampleSource("codex", root, "home/.codex/sessions", (".jsonl",)),)
+    (root / "2026" / "01" / "01").mkdir(parents=True)
+    (
+        root / "2026" / "01" / "01" / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl"
+    ).write_bytes(b"")
+    sources = (SampleSource("codex", root, "home/.codex/sessions"),)
 
     manifest = sample_real(tmp_path / "corpus", seed=1, fraction=1.0, sources=sources)
 
@@ -1906,10 +1937,11 @@ def test_a_source_rewritten_after_its_copy_refuses_the_sample(tmp_path: Path, mo
     from devtools.fresh_build_bench import corpus
 
     root = tmp_path / "src"
-    root.mkdir()
-    first = root / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl"
+    day = root / "2026" / "01" / "01"
+    day.mkdir(parents=True)
+    first = day / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl"
     first.write_bytes(b"aaaa\n")
-    (root / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000002.jsonl").write_bytes(b"bbbb\n")
+    (day / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000002.jsonl").write_bytes(b"bbbb\n")
     real_copy = corpus._copy_private
     copies: list[Path] = []
 
@@ -1920,7 +1952,7 @@ def test_a_source_rewritten_after_its_copy_refuses_the_sample(tmp_path: Path, mo
             first.write_bytes(b"cccc\n")
 
     monkeypatch.setattr(corpus, "_copy_private", copy_then_rewrite_the_first)
-    sources = (SampleSource("codex", root, "home/.codex/sessions", (".jsonl",)),)
+    sources = (SampleSource("codex", root, "home/.codex/sessions"),)
 
     with pytest.raises(ValueError, match="changed after it was copied"):
         sample_real(tmp_path / "corpus", seed=1, fraction=1.0, sources=sources)
@@ -2202,6 +2234,123 @@ def test_parse_failure_does_not_count_as_reduced_required_work() -> None:
     assert _useful_progress(pending, accepted)
 
 
+def test_advancing_work_progress_events_are_useful_progress_and_a_frozen_unit_is_not(tmp_path: Path) -> None:
+    """Long preparation that changes no archive row is judged by the work it reports.
+
+    Red if the observer ignores ``daemon.work.progress`` (a 13-minute
+    preparation reads as stalled), or if a repeated event with unchanged
+    counters still counts (a hung unit reads as progressing).
+    """
+    import json
+
+    from devtools.fresh_build_bench.run import WorkProgressTail, _useful_progress
+
+    events = tmp_path / "events.jsonl"
+
+    def append(*records: dict[str, object]) -> None:
+        with events.open("a", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record) + "\n")
+
+    def progress(
+        unit_id: str,
+        messages: int,
+        byte_count: int = 0,
+        *,
+        productive_id: str = "raw-a:revision-1:advisory",
+    ) -> dict[str, object]:
+        return {
+            "event": "daemon.work.progress",
+            "phase": "source_preparation",
+            "unit_id": unit_id,
+            "productive_id": productive_id,
+            "messages": messages,
+            "bytes": byte_count,
+        }
+
+    tail = WorkProgressTail(events)
+    append({"event": "daemon.started"}, progress("attempt-a", 100))
+    before = Observation(0.0, work_progress=0)
+    advanced = Observation(1.0, work_progress=tail.poll())
+    assert _useful_progress(before, advanced)
+
+    append(progress("attempt-a", 100))
+    frozen = Observation(2.0, work_progress=tail.poll())
+    assert not _useful_progress(advanced, frozen)
+
+    # A retry is a new unit whose zeroed counters do not make progress just
+    # because they differ from the previous unit's completed counters.
+    append(progress("attempt-b", 0))
+    reset = Observation(3.0, work_progress=tail.poll())
+    assert not _useful_progress(frozen, reset)
+
+    # Once the new unit reports real work, its own counters advance normally.
+    append(progress("attempt-b", 10))
+    retry_advanced = Observation(4.0, work_progress=tail.poll())
+    assert not _useful_progress(reset, retry_advanced)
+
+    # Distinct parser work gets its own baseline even when its counters are lower.
+    append(progress("attempt-c", 10, productive_id="raw-b:revision-1:advisory"))
+    repeated_reset = Observation(5.0, work_progress=tail.poll())
+    assert _useful_progress(retry_advanced, repeated_reset)
+
+    # The same productive work counts again only after exceeding its prior high-water.
+    append(progress("attempt-d", 101))
+    same_work_advanced = Observation(6.0, work_progress=tail.poll())
+    assert _useful_progress(repeated_reset, same_work_advanced)
+
+    # A record split across two writes is read once it is complete.
+    line = json.dumps(progress("attempt-d", 102, 64)) + "\n"
+    with events.open("a", encoding="utf-8") as handle:
+        handle.write(line[:10])
+    assert tail.poll() == same_work_advanced.work_progress
+    with events.open("a", encoding="utf-8") as handle:
+        handle.write(line[10:])
+    assert _useful_progress(same_work_advanced, Observation(7.0, work_progress=tail.poll()))
+    tail.close()
+
+
+def test_work_progress_tail_spills_high_water_and_streams_appended_event_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from devtools.fresh_build_bench import run
+
+    monkeypatch.setattr(run, "_WORK_PROGRESS_READ_CHUNK_BYTES", 128)
+    events = tmp_path / "many-progress-events.jsonl"
+    event_count = 1_200
+    with events.open("w", encoding="utf-8") as handle:
+        for index in range(event_count):
+            handle.write(
+                json.dumps(
+                    {
+                        "event": "daemon.work.progress",
+                        "phase": "source_preparation",
+                        "unit_id": f"unit-{index}",
+                        "productive_id": f"recipe-{index}",
+                        "messages": 1,
+                        "bytes": 0,
+                    }
+                )
+                + "\n"
+            )
+
+    tail = run.WorkProgressTail(events, state_root=tmp_path)
+    state_directory = Path(tail._state_directory.name)
+    try:
+        assert tail.poll() == event_count
+        assert tail._pending == b""
+        assert not hasattr(tail, "_high_water")
+        assert tail._connection.execute("PRAGMA cache_size").fetchone() == (-256,)
+        assert tail._connection.execute("SELECT count(*) FROM productive_high_water").fetchone() == (event_count,)
+        assert (state_directory / "high-water.sqlite3").is_file()
+    finally:
+        tail.close()
+
+    assert not state_directory.exists()
+
+
 @pytest.mark.parametrize("with_debt", [False, True])
 def test_observation_preserves_scheduled_retry_evidence_without_counting_activity_as_progress(
     tmp_path: Path, with_debt: bool, frozen_clock: FrozenClock
@@ -2436,3 +2585,113 @@ def test_actual_runtime_profile_environment_never_walks_free_threaded_frames(
     assert document["process_cpu_ticks"] is not None
     if free_threaded:
         assert document["stacks"] == []
+
+
+def test_explicit_corpus_seals_and_stages_hook_spool_tree(tmp_path: Path) -> None:
+    from devtools.fresh_build_bench.run import _prepare_paths
+
+    source = tmp_path / "operator-hooks"
+    (source / "carriers" / "codex").mkdir(parents=True)
+    (source / "carriers" / "codex" / "events.jsonl").write_text('{"event_id":"e1"}\n', encoding="utf-8")
+    (source / "pending").mkdir()
+    (source / "pending" / "e2.json").write_text('{"event_id":"e2"}', encoding="utf-8")
+    corpus = tmp_path / "corpus"
+    manifest = corpus_from_files(corpus, [], home=tmp_path / "empty-home", hooks=source)
+    verify_manifest(corpus, manifest)
+
+    paths = _prepare_paths(RunConfig(corpus, tmp_path / "run", Path(__file__).resolve().parents[3], "python", "test"))
+
+    assert (paths["archive"] / "hooks" / "carriers" / "codex" / "events.jsonl").read_text() == '{"event_id":"e1"}\n'
+    assert (paths["archive"] / "hooks" / "pending" / "e2.json").exists()
+
+
+def test_production_progress_events_reach_benchmark_high_water(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    """Registry omissions cannot erase the producer identity before the monitor."""
+    from devtools.fresh_build_bench.run import WorkProgressTail, _useful_progress
+    from polylogue import logging as plog
+    from polylogue.core.work_progress import advance_work_progress, work_progress
+
+    events = tmp_path / "production-progress.jsonl"
+    tail = WorkProgressTail(events, state_root=tmp_path)
+    previous_level = plog.set_level("info")
+    try:
+        with plog.capture() as records:
+            with work_progress("source_preparation", productive_id="neutral-recipe") as unit:
+                advance_work_progress(messages=100, bytes=64)
+                frozen_clock.advance(11)
+                advance_work_progress(messages=1, bytes=1)
+            first_unit = unit.unit_id
+        assert not any(record["event"] == "log.field_rejected" for record in records)
+        progress = [record for record in records if record["event"] == "daemon.work.progress"]
+        assert progress and all(record["unit_id"] == first_unit for record in progress)
+        assert all(record["productive_id"] == "neutral-recipe" for record in progress)
+        events.write_text("".join(json.dumps(record) + "\n" for record in records))
+        first = Observation(0.0, work_progress=0)
+        advanced = Observation(1.0, work_progress=tail.poll())
+        assert _useful_progress(first, advanced)
+        assert advanced.work_progress == 1  # unchanged final emission is not work
+
+        with plog.capture() as retry_records:
+            with work_progress("source_preparation", productive_id="neutral-recipe") as retry:
+                advance_work_progress(messages=10, bytes=10)
+        assert retry.unit_id != first_unit
+        with events.open("a") as stream:
+            stream.writelines(json.dumps(record) + "\n" for record in retry_records)
+        retry_frame = Observation(2.0, work_progress=tail.poll())
+        assert not _useful_progress(advanced, retry_frame)
+    finally:
+        plog.set_level(previous_level)
+        tail.close()
+
+
+def test_shutdown_write_stamp_checks_writer_locations_without_walking_payloads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from devtools.fresh_build_bench.run import _archive_write_stamp
+    from polylogue.storage.archive_identity import TIER_FILENAMES
+
+    expected: set[str] = set()
+    for _, filename in TIER_FILENAMES:
+        for suffix in ("", "-wal", "-journal"):
+            name = filename + suffix
+            (tmp_path / name).write_bytes(b"database")
+            expected.add(name)
+    for dirname, filename in (
+        (".index-generations/candidate", "index.db"),
+        (".embeddings-generations/candidate", "embeddings.db"),
+    ):
+        directory = tmp_path / dirname
+        directory.mkdir(parents=True)
+        for suffix in ("", "-wal", "-journal"):
+            name = f"{dirname}/{filename}{suffix}"
+            (tmp_path / name).write_bytes(b"generation")
+            expected.add(name)
+    blob = tmp_path / "blob" / "nested"
+    blob.mkdir(parents=True)
+    (blob / "unrelated.db").write_bytes(b"payload")
+    (tmp_path / "index.db-shm").write_bytes(b"reader marks")
+    visited: list[Path] = []
+    real_iterdir = Path.iterdir
+
+    def direct_generation_members(path: Path) -> Iterator[Path]:
+        assert path in {tmp_path / ".index-generations", tmp_path / ".embeddings-generations"}
+        visited.append(path)
+        return real_iterdir(path)
+
+    def refuse_recursive_walk(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("shutdown observer traversed the archive payload tree")
+
+    monkeypatch.setattr(Path, "iterdir", direct_generation_members)
+    monkeypatch.setattr(Path, "rglob", refuse_recursive_walk)
+    before = _archive_write_stamp(tmp_path)
+    assert {name for name, _, _ in before} == expected
+    assert len(visited) == 2
+    (tmp_path / ".index-generations/candidate/index.db-wal").write_bytes(b"checkpoint progress")
+    assert _archive_write_stamp(tmp_path) != before
+    stable = _archive_write_stamp(tmp_path)
+    (blob / "unrelated.db").write_bytes(b"changed payload")
+    (tmp_path / "index.db-shm").write_bytes(b"changed reader marks")
+    assert _archive_write_stamp(tmp_path) == stable

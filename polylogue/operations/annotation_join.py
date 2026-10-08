@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,6 +11,7 @@ from polylogue.annotations.join import AnnotationStructuralJoinError, join_typed
 from polylogue.annotations.join_contracts import AnnotationStructuralJoinRequest
 from polylogue.archive.hydration import archive_summary_to_domain
 from polylogue.archive.query.execution_control import QueryExecutionContext
+from polylogue.core.async_bridge import complete_without_suspension
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.operations.ref_resolution import resolve_ref_against_archive
 from polylogue.surfaces.outcome import decide_outcome
@@ -50,7 +50,7 @@ def execute_annotation_join(
     if connection is None or "user" not in (archive.operation_schema_versions or {}):
         raise AnnotationStructuralJoinError("annotation user tier is not initialized")
     checkpoint()
-    result = asyncio.run(
+    result = complete_without_suspension(
         join_typed_annotations(
             _PinnedAnnotationReader(archive),
             request,

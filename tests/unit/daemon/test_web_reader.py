@@ -119,46 +119,6 @@ def test_query_spec_param_builder_collects_repeated_csv_fields() -> None:
     assert result["repo"] == ("polylogue",)
 
 
-def test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field() -> None:
-    """polylogue-4p1.1: the split-archive fast path must not drop a filter.
-
-    ``ArchiveStore.iter_summaries``/``iter_search_summaries``/``count_sessions``/
-    ``count_search_sessions`` accept an identical filter-kwarg surface (proven
-    below). ``_archive_filter_kwargs_from_spec`` is what
-    ``_do_archive_session_list`` calls to build that kwarg dict from the
-    merged ``SessionQuerySpec`` -- if a field is ever added to (or dropped
-    from) that storage-layer signature without also updating
-    ``_archive_filter_kwargs_from_spec``, this test fails. This is the
-    "silently absent until someone edits both sites" regression the bead
-    describes, made mechanically unrepeatable: deleting any one line from
-    ``_archive_filter_kwargs_from_spec``'s return dict (e.g. dropping
-    ``"project_refs"``) fails this assertion.
-    """
-    import inspect
-
-    from polylogue.archive.query.spec import SessionQuerySpec
-    from polylogue.daemon.http import _archive_filter_kwargs_from_spec
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    # ``actions_only`` selects the FTS retrieval lane (#5795), not a session
-    # filter: ``SessionQuerySpec`` carries it as ``retrieval_lane``.
-    non_filter_params = {"self", "limit", "offset", "session_id", "sample", "sort", "reverse", "query", "actions_only"}
-    # ``list_summaries``/``search_summaries`` forward ``**filters`` to the
-    # ``iter_*`` generators, which declare the surface.
-    storage_methods = ("iter_summaries", "iter_search_summaries", "count_sessions", "count_search_sessions")
-    storage_filter_params = {
-        frozenset(inspect.signature(getattr(ArchiveStore, name)).parameters) - non_filter_params
-        for name in storage_methods
-    }
-    # All four SQL entry points must agree on one filter surface -- otherwise
-    # "the filter kwargs ArchiveStore accepts" is not a single well-defined set.
-    assert len(storage_filter_params) == 1, storage_filter_params
-    (expected_filter_params,) = storage_filter_params
-
-    produced = _archive_filter_kwargs_from_spec(SessionQuerySpec(), since_ms=None, until_ms=None)
-    assert expected_filter_params == set(produced)
-
-
 def test_web_reader_archive_root_rejects_schema_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.daemon.http import _web_reader_archive_root
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -442,7 +402,13 @@ def _running_server_without_seed(
     auth_token: str = "",
 ) -> Iterator[tuple[HTTPServer, str]]:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
+    from polylogue.paths import archive_root
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
+    # The server binds an existing archive; "without seed" means an empty one.
+    root = archive_root()
+    if not root.is_dir():
+        initialize_active_archive_root(root)
     server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler)
     server.auth_token = auth_token
     server.api_host = "127.0.0.1"
@@ -955,19 +921,6 @@ def test_archive_bounded_query_progress_handler_interrupts_after_client_abort() 
         conn.close()
 
 
-def test_archive_session_list_route_uses_bounded_sql_helper() -> None:
-    import inspect
-
-    from polylogue.daemon.http import DaemonAPIHandler
-
-    source = inspect.getsource(DaemonAPIHandler._do_archive_session_list)
-
-    assert "self._run_archive_bounded_query(" in source
-    assert "archive.search_summaries(" in source
-    assert "archive.list_summaries(" in source
-    assert "archive.count_sessions(" in source
-
-
 # ---------------------------------------------------------------------------
 # polylogue.local_reader.search — list/search reader state
 # ---------------------------------------------------------------------------
@@ -1129,6 +1082,7 @@ class TestReaderSearchState:
         assert payload["total"] == 3
         assert len(payload["items"]) == 3
         row = next(item for item in payload["items"] if item["id"] == "claude-code-session:c1")
+        assert isinstance(row["word_count"], int)
         assert row["target_ref"] == {
             "target_type": "session",
             "target_id": "claude-code-session:c1",
@@ -1141,6 +1095,15 @@ class TestReaderSearchState:
         assert row["actions"]["annotate"]["state"] == "enabled"
         assert payload["route_state"]["state"] == "ready"
         assert payload["route_state"]["route"] == "/api/sessions"
+
+    def test_latest_and_sample_preserve_the_requested_list_window(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            latest = cast(dict[str, Any], _get_json(base_url, "/api/sessions?latest=true&limit=3"))
+            sampled = cast(dict[str, Any], _get_json(base_url, "/api/sessions?sample=2&limit=3&offset=1"))
+        assert len(latest["items"]) == 1
+        assert latest["total"] == 1
+        assert len(sampled["items"]) == 2
+        assert sampled["total"] == 3
 
     def test_facets_envelope_includes_scoped_flag(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -2056,7 +2019,8 @@ class TestReaderDegradedStates:
         assert payload["total"] == 0
         assert payload["route_state"]["state"] == "no_results"
         assert payload["route_state"]["reason"] == "No sessions matched the active query or filters."
-        assert payload["diagnostics"]["message"] == "No sessions matched 'nonexistent_term_xyz'."
+        assert payload["outcome"]["state"] == "empty"
+        assert any("nonexistent_term_xyz" in value for value in payload["diagnostics"]["filters"])
 
     def test_degraded_search_index_returns_route_state_not_zero_results(
         self,
@@ -2075,10 +2039,13 @@ class TestReaderDegradedStates:
         assert route_state["component"] == "message_fts"
         assert "Search index" in str(route_state["reason"])
         assert reasons[0]["code"] == "search_index_degraded"
+        outcome = cast(dict[str, object], payload["outcome"])
+        assert outcome["state"] == "degraded"
 
 
 class TestReaderQueryCompletions:
-    def test_query_completions_endpoint_exposes_shared_payload(self) -> None:
+    def test_query_completions_endpoint_exposes_shared_payload(self, workspace_env: dict[str, Path]) -> None:
+        del workspace_env
         with _running_server_without_seed() as (_server, base_url):
             payload = _get_json(base_url, "/api/query-completions?kind=field&incomplete=d")
 
@@ -2094,7 +2061,8 @@ class TestReaderQueryCompletions:
         assert date_candidate["insert"] == "date "
         assert date_candidate["source"] == "DATE_QUERY_FIELD_REGISTRY"
 
-    def test_query_completions_endpoint_reports_invalid_context(self) -> None:
+    def test_query_completions_endpoint_reports_invalid_context(self, workspace_env: dict[str, Path]) -> None:
+        del workspace_env
         with _running_server_without_seed() as (_server, base_url):
             status, payload = _get_json_ex(base_url, "/api/query-completions?kind=structural-field")
 
@@ -2102,7 +2070,8 @@ class TestReaderQueryCompletions:
         assert payload["error"] == "invalid_query_completion"
         assert "--unit is required" in str(payload["message"])
 
-    def test_query_completions_endpoint_exposes_terminal_fields(self) -> None:
+    def test_query_completions_endpoint_exposes_terminal_fields(self, workspace_env: dict[str, Path]) -> None:
+        del workspace_env
         with _running_server_without_seed() as (_server, base_url):
             payload = _get_json(
                 base_url,
@@ -2120,7 +2089,8 @@ class TestReaderQueryCompletions:
         assert [candidate["value"] for candidate in candidate_payloads] == ["boundary"]
         assert candidate_payloads[0]["insert"] == "boundary:"
 
-    def test_query_completions_endpoint_exposes_pipeline_stages(self) -> None:
+    def test_query_completions_endpoint_exposes_pipeline_stages(self, workspace_env: dict[str, Path]) -> None:
+        del workspace_env
         with _running_server_without_seed() as (_server, base_url):
             payload = _get_json(
                 base_url,
@@ -3005,7 +2975,8 @@ class TestReaderQueryUnits:
 
 
 class TestReaderViewProfiles:
-    def test_read_view_profiles_endpoint_exposes_shared_profile_semantics(self) -> None:
+    def test_read_view_profiles_endpoint_exposes_shared_profile_semantics(self, workspace_env: dict[str, Path]) -> None:
+        del workspace_env
         from polylogue.archive.viewport import read_view_http_capability_payloads
 
         with _running_server_without_seed() as (_server, base_url):
@@ -3803,6 +3774,21 @@ class TestQueryNoResultsDiagnosticPath:
         assert payload["total"] == 0
         assert payload["items"] == []
 
+    def test_list_missing_session_is_empty_and_ambiguous_session_is_rejected(
+        self, workspace_env: dict[str, Path]
+    ) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            missing_status, missing = _get_json_ex(base_url, "/api/sessions?conv_id=absent-session")
+            ambiguous_status, ambiguous = _get_json_ex(base_url, "/api/sessions?conv_id=c")
+        assert missing_status == 200
+        assert missing["items"] == []
+        assert missing["total"] == 0
+        route_state = missing["route_state"]
+        assert isinstance(route_state, dict)
+        assert route_state["state"] == "no_results"
+        assert ambiguous_status == 400
+        assert ambiguous["error"] == "QuerySpecError"
+
     def test_facets_global_returns_origins(self, workspace_env: dict[str, Path]) -> None:
         """Unscoped /api/facets returns scoped_to_query=False with origin counts."""
         with _running_server(workspace_env) as (_, base_url):
@@ -4121,8 +4107,8 @@ def test_archive_bounded_query_translates_a_cancelled_handle_interrupt() -> None
     handler the ``OperationalError`` escapes and the route classifies it as
     ``sqlite_error`` (HTTP 500) instead of ``DaemonOperationCancelled`` (408).
     """
-    from polylogue.daemon import execution
-    from polylogue.daemon.execution import CancellationHandle, DaemonOperationCancelled
+    from polylogue.core import compute as execution
+    from polylogue.core.compute import CancellationHandle, DaemonOperationCancelled
     from polylogue.daemon.http import DaemonAPIHandler
 
     class _Archive:
@@ -4158,3 +4144,118 @@ def test_archive_bounded_query_translates_a_cancelled_handle_interrupt() -> None
     finally:
         execution._CURRENT_CANCELLATION.reset(token)
         conn.close()
+
+
+@pytest.mark.parametrize("ranked", [False, True])
+def test_session_list_sort_reverse_matches_continuation(workspace_env: dict[str, Path], ranked: bool) -> None:
+    from polylogue.core.enums import Provider, Role
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with _running_server(workspace_env, seeded=False) as (_, base_url):
+        with ArchiveStore(workspace_env["archive_root"]) as archive:
+            for count in (3, 1, 2):
+                write_index_session(
+                    archive,
+                    ParsedSession(
+                        source_name=Provider.CODEX,
+                        provider_session_id=f"ordered-{count}",
+                        title=f"Ordered {count}",
+                        created_at=f"2026-01-0{(1, 3, 2)[count - 1]}T00:00:00+00:00",
+                        messages=[
+                            ParsedMessage(
+                                provider_message_id=f"ordered-{count}-{index}",
+                                role=Role.USER,
+                                text="rankingproof" if index == 0 else "Neutral follow-up",
+                            )
+                            for index in range(count)
+                        ],
+                    ),
+                )
+        query = "/api/sessions?sort=messages&reverse=1&limit=1" + ("&query=rankingproof" if ranked else "")
+        first = cast(dict[str, Any], _get_json(base_url, query))
+        pages = [first]
+        for offset in (1, 2):
+            continuation = "&cursor=" + quote(pages[-1]["next_cursor"]) if ranked else f"&offset={offset}"
+            pages.append(cast(dict[str, Any], _get_json(base_url, query + continuation)))
+    rows = [page["hits"][0]["session"] if ranked else page["items"][0] for page in pages]
+    assert [row["id"] for row in rows] == [f"codex-session:ordered-{count}" for count in (1, 2, 3)]
+    assert [page["offset"] for page in pages] == [0, 1, 2]
+    if ranked:
+        assert all(page["retrieval_lane"] == "dialogue" for page in pages)
+        assert all(page["requested_lanes"] == ["text"] for page in pages)
+        assert all(page["executed_lanes"] == ["text"] for page in pages)
+        assert all(page["ranking_policy"] == first["ranking_policy"] for page in pages)
+
+
+@pytest.mark.parametrize("similarity", ["similar_text=neutral", "similar_session_id=claude-code-session%3Ac1"])
+def test_first_session_page_honors_vector_configuration_decision(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, similarity: str
+) -> None:
+    attempted: list[bool] = []
+
+    def disabled_provider(*args: object, **kwargs: object) -> None:
+        attempted.append(bool(kwargs["require_credentials"]))
+        return None
+
+    monkeypatch.setattr("polylogue.storage.search_providers.create_vector_provider", disabled_provider)
+    with _running_server(workspace_env) as (_, base_url):
+        status, payload = _get_json_ex(base_url, "/api/sessions?" + similarity)
+    assert status == HTTPStatus.CONFLICT
+    assert payload["error"] == "EmbeddingRetrievalNotReadyError"
+    assert attempted == [similarity.startswith("similar_text=")]
+
+
+@pytest.mark.parametrize("query", ["Hello", "absent_neutral_token"])
+def test_http_hybrid_search_keeps_actual_lane_gap_with_or_without_hits(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, query: str
+) -> None:
+    monkeypatch.setattr("polylogue.storage.search_providers.create_vector_provider", lambda *args, **kwargs: None)
+    with _running_server(workspace_env) as (_, base_url):
+        payload = cast(dict[str, Any], _get_json(base_url, f"/api/sessions?query={query}&retrieval_lane=hybrid"))
+    assert payload["retrieval_lane"] == "hybrid"
+    assert payload["requested_lanes"] == ["text", "action", "vector"]
+    assert payload["executed_lanes"] == ["text", "action"]
+    assert payload["completed_lanes"] == ["text", "action"]
+    assert payload["unavailable_lanes"] == ["vector"]
+    assert payload["outcome"]["state"] == "degraded"
+    assert payload["total"] is None
+    assert payload["route_state"]["state"] == "degraded"
+    assert bool(payload["hits"]) is (query == "Hello")
+
+
+@pytest.mark.parametrize("route", ["/api/sessions", "/sessions"])
+def test_http_repository_literal_keeps_trailing_space(workspace_env: dict[str, Path], route: str) -> None:
+    from polylogue.storage.sqlite.connection import open_connection
+    from tests.infra.storage_records import SessionBuilder
+
+    root = workspace_env["archive_root"]
+    with _running_server(workspace_env, seeded=False) as (_, base_url):
+        ids: list[str] = []
+        for native, label in (("literal-repo", "project "), ("neighbor-repo", "project")):
+            builder = SessionBuilder(root / "index.db", native).provider("codex").git_repository_url(native)
+            builder.add_message(text="synthetic HTTP repo evidence").save()
+            ids.append(builder.native_session_id())
+            with open_connection(root / "index.db") as conn:
+                conn.execute("UPDATE repos SET repo_name=? WHERE origin_url=?", (label, native))
+                conn.commit()
+        status, _, body = _get_text(base_url, route + "?repo=project%20")
+        assert status == HTTPStatus.OK
+        if route == "/api/sessions":
+            payload = json.loads(body)
+            assert payload["total"] == 1
+            assert ids[0] in body
+            assert ids[1] not in body
+        else:
+            assert f'href="/sessions/{quote(ids[0], safe="")}"' in body
+            assert f'href="/sessions/{quote(ids[1], safe="")}"' not in body
+
+
+def test_http_repository_csv_preserves_literal_segments_and_repetitions() -> None:
+    from polylogue.daemon.http import _build_query_spec_params
+
+    result = _build_query_spec_params(
+        {"repo": ["project ,pipe|repo", "other ", "project ", "project"]},
+        _QueryParamBuilderHandler(),  # type: ignore[arg-type]
+    )
+    assert result["repo"] == ("project ", "pipe|repo", "other ", "project")

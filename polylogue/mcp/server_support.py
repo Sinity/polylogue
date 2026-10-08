@@ -486,6 +486,7 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
     """
     from polylogue.api.facade_client import FacadeDaemonRequiredError
     from polylogue.archive.query.expression import ExpressionCompileError, UnknownQueryFieldError
+    from polylogue.daemon.derived_degradation import schema_refusal_lifecycle_action
     from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
     from polylogue.operations.daemon_errors import DaemonMutationIndeterminateError, DaemonOperationRejectedError
 
@@ -525,6 +526,7 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
             expected=exc.expected,
             found=exc.found,
             remedy=getattr(exc, "remedy", "daemon convergence"),
+            lifecycle_action=schema_refusal_lifecycle_action(exc),
         )
     elif isinstance(exc, SchemaVersionMismatchError):
         payload = MCPErrorPayload(

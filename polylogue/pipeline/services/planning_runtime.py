@@ -210,7 +210,13 @@ async def build_ingest_plan(
     # Raw rows are scoped by their configured-source filesystem path, not by
     # origin (which carries provider identity after the source_name→origin
     # column rename). Inbox roots are paths, so scope raw selection on them.
-    db_scope_paths = [str(source.path) for source in sources if source.path is not None] or None
+    from polylogue.sources.drive.witness import drive_source_prefix
+
+    db_scope_paths = [
+        drive_source_prefix(source.name) if source.is_drive else str(source.path)
+        for source in sources
+        if source.is_drive or source.path is not None
+    ] or None
 
     normalized_stage_names = normalize_stage_sequence(stage=stage, stage_sequence=stage_sequence)
     normalized_plan_stage_sequence = _normalize_plan_stage_sequence(normalized_stage_names)

@@ -70,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
                     provider=Provider.CHATGPT,
                     payload=_payload(index),
                     source_path=f"/synthetic/chatgpt/session-{index}.json",
+                    canonical_source_path=f"/synthetic/chatgpt/session-{index}.json",
                     acquired_at_ms=1_700_000_000_000 + index,
                     raw_id=f"synthetic-raw-{index}",
                 )

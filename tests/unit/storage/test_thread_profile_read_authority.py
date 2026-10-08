@@ -16,6 +16,7 @@ moved reads ``stale`` and the ordinary derivation converger re-materializes it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -30,9 +31,10 @@ from polylogue.storage.derived.session.rebuild import rebuild_session_insights_a
 from polylogue.storage.derived.session.threads import load_thread_profile_records_by_root_sync
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.sqlite.connection import open_connection, open_read_connection
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.index_writer import write_fixture_index_session
 
 _CHILD_ID = "codex-session:child"
 _PARENT_ID = "codex-session:parent"
@@ -71,7 +73,7 @@ def _parent() -> ParsedSession:
 
 
 def _stored_profile_lineage(index_db: Path) -> tuple[str | None, bool | None]:
-    with open_connection(index_db) as conn:
+    with open_read_connection(index_db) as conn:
         row = conn.execute(
             "SELECT evidence_payload_json FROM session_profiles WHERE session_id = ?",
             (_CHILD_ID,),
@@ -89,7 +91,7 @@ async def _materialize_child(index_db: Path) -> None:
 
 
 def _thread_lineage(index_db: Path, root_id: str) -> list[tuple[str, str | None, bool]]:
-    with open_connection(index_db) as conn:
+    with open_read_connection(index_db) as conn:
         grouped = load_thread_profile_records_by_root_sync(conn, [root_id])
     return [
         (str(record.session_id), record.evidence_payload.parent_id, record.evidence_payload.is_continuation)
@@ -113,32 +115,39 @@ async def test_thread_read_reports_a_stale_profile_as_written_not_as_recovered(t
     out.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     index_db = archive_root / "index.db"
 
-    with open_connection(index_db) as conn:
-        write_parsed_session_to_archive(conn, _subagent_child())
-        conn.commit()
+    def _seed_0() -> None:
+        with open_connection(index_db) as conn:
+            write_fixture_index_session(conn, _subagent_child())
+            conn.commit()
+
+    run_off_event_loop(_seed_0)
     await _materialize_child(index_db)
     assert _stored_profile_lineage(index_db) == (None, False)
 
-    with open_connection(index_db) as conn:
-        write_parsed_session_to_archive(conn, _parent())
-        conn.commit()
-        assert (
-            conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
-            == _PARENT_ID
-        )
-        root_id = str(
-            conn.execute("SELECT root_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
-        )
+    def _seed_parent_0() -> str:
+        with open_connection(index_db) as conn:
+            write_fixture_index_session(conn, _parent())
+            conn.commit()
+            assert (
+                conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
+                == _PARENT_ID
+            )
+            root_id = str(
+                conn.execute("SELECT root_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
+            )
+        return root_id
+
+    root_id = run_off_event_loop(_seed_parent_0)
 
     # The producer has not re-run. The read must not pretend otherwise.
     assert _stored_profile_lineage(index_db) == (None, False)
     assert _thread_lineage(index_db, root_id) == [(_CHILD_ID, None, False)]
 
     # ... and the drift is not lost: it is the converger's declared condition.
-    with open_connection(index_db) as conn:
+    with open_read_connection(index_db) as conn:
         assert inspect_session_profiles(
             conn, [_CHILD_ID], materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION
         ) == {_CHILD_ID: "stale"}
@@ -158,25 +167,33 @@ async def test_reconvergence_is_what_makes_the_profile_lineage_current(tmp_path:
     assertion here is the only thing that would have caught it.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     index_db = archive_root / "index.db"
 
-    with open_connection(index_db) as conn:
-        write_parsed_session_to_archive(conn, _subagent_child())
-        conn.commit()
+    def _seed_1() -> None:
+        with open_connection(index_db) as conn:
+            write_fixture_index_session(conn, _subagent_child())
+            conn.commit()
+
+    run_off_event_loop(_seed_1)
     await _materialize_child(index_db)
-    with open_connection(index_db) as conn:
-        write_parsed_session_to_archive(conn, _parent())
-        conn.commit()
-        root_id = str(
-            conn.execute("SELECT root_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
-        )
+
+    def _seed_parent_1() -> str:
+        with open_connection(index_db) as conn:
+            write_fixture_index_session(conn, _parent())
+            conn.commit()
+            root_id = str(
+                conn.execute("SELECT root_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
+            )
+        return root_id
+
+    root_id = run_off_event_loop(_seed_parent_1)
 
     await _materialize_child(index_db)
 
     assert _stored_profile_lineage(index_db) == (_PARENT_ID, False)
     assert _thread_lineage(index_db, root_id) == [(_CHILD_ID, _PARENT_ID, False)]
-    with open_connection(index_db) as conn:
+    with open_read_connection(index_db) as conn:
         assert inspect_session_profiles(
             conn, [_CHILD_ID], materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION
         ) == {_CHILD_ID: "valid"}

@@ -12,8 +12,9 @@ from __future__ import annotations
 import hashlib
 import itertools
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,14 +29,25 @@ from polylogue.storage.sqlite.agent_thread_state import (
     write_thread_state_graph,
 )
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+from polylogue.storage.sqlite.archive_tiers.write import ConnectionSessionSourceRead
 
 
-@pytest.fixture
-def index_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(INDEX_DDL)
-    return conn
+@pytest.fixture(params=["plain", "measured"])
+def index_conn(request: pytest.FixtureRequest) -> Iterator[sqlite3.Connection]:
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+    conn = connect_measured(":memory:") if request.param == "measured" else sqlite3.connect(":memory:")
+    owner = NativeSQLCustodyOwner(conn) if request.param == "measured" else None
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(INDEX_DDL)
+        yield owner.require_connection() if owner is not None else conn
+    finally:
+        if owner is not None:
+            owner.close()
+        else:
+            conn.close()
 
 
 def _write(conn: sqlite3.Connection, **kwargs: object) -> bool:
@@ -50,7 +62,8 @@ def _write(conn: sqlite3.Connection, **kwargs: object) -> bool:
         "export_order": lambda _raw_id: None,
     }
     defaults.update(kwargs)
-    return write_thread_state_graph(conn, **defaults)  # type: ignore[arg-type]
+    arguments: dict[str, Any] = defaults
+    return write_thread_state_graph(conn, **arguments)
 
 
 def test_graph_carries_titles_spawns_and_provenance(index_conn: sqlite3.Connection) -> None:
@@ -384,7 +397,7 @@ def test_projection_ranks_retained_rows_by_their_exports_durable_receipts(tmp_pa
 
     for raw_id in ("raw-3", "raw-2", "raw-1"):
         export = _EXPORTS[raw_id]
-        order = codex_state_projection.retained_export_order(source)(raw_id)
+        order = codex_state_projection.retained_export_order(ConnectionSessionSourceRead(source))(raw_id)
         assert order is not None
         snapshot = codex_state.CodexStateSnapshot(
             threads=tuple(
@@ -415,10 +428,215 @@ def test_projection_ranks_retained_rows_by_their_exports_durable_receipts(tmp_pa
             observed_at_ms=int(export["observed_at_ms"]),  # type: ignore[call-overload]
             observation_order=order,
             source_scope="/install",
-            source_conn=source,
+            source_read=ConnectionSessionSourceRead(source),
         )
 
     assert read_thread_titles(index, thread_ids=["kept-thread"]) == {"kept-thread": "Revised title"}
     assert read_thread_titles(index, thread_ids=["other-thread"]) == {"other-thread": "Other title"}
     provenance = read_provenance(index, source_scope="/install")
     assert provenance is not None and provenance.raw_id == "raw-3"
+
+
+@pytest.mark.parametrize("reader", [read_parent_thread_id, read_provenance, read_spawn_edges])
+def test_graph_authority_reads_propagate_interruption(index_conn: sqlite3.Connection, reader: object) -> None:
+    """A failed authority read cannot authorize a replacement graph as absent."""
+    _write(index_conn)
+    index_conn.set_progress_handler(lambda: 1, 1)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            if reader is read_parent_thread_id:
+                read_parent_thread_id(index_conn, "child-thread")
+            elif reader is read_provenance:
+                read_provenance(index_conn)
+            else:
+                read_spawn_edges(index_conn)
+    finally:
+        index_conn.set_progress_handler(None, 0)
+    assert read_parent_thread_id(index_conn, "child-thread") == "parent-thread"
+    assert read_thread_titles(index_conn) == {"parent-thread": "Curated title"}
+
+
+def test_thread_parent_accounts_each_exact_scope_winner_before_hydration(
+    index_conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import closing, contextmanager
+
+    from polylogue.storage.sqlite import agent_thread_state
+
+    first = "first-" + "x" * 20000
+    second = "second-" + "y" * 20000
+    _write(index_conn, source_scope="/one", spawn_edges=[SpawnRecord(first, "child-thread", "closed")])
+    _write(index_conn, source_scope="/two", spawn_edges=[SpawnRecord(second, "child-thread", "closed")])
+    index_conn.commit()
+    assert read_parent_thread_id(index_conn, "child-thread") is None
+    accounted: dict[int, int] = {}
+    from polylogue.storage.io_phase_metrics import connection_cursor as actual_cursor
+
+    def before_input(table: str, columns: tuple[str, ...], sql: str, parameters: tuple[object, ...]) -> None:
+        assert table == "work_evidence_edges" and columns == ("source_ref",)
+        with closing(index_conn.execute(sql, parameters)) as metadata:
+            rowid = metadata.fetchone()[0]
+        with closing(
+            index_conn.execute(
+                "SELECT length(CAST(source_ref AS BLOB)) FROM work_evidence_edges WHERE rowid=?", (rowid,)
+            )
+        ) as metadata:
+            accounted[rowid] = metadata.fetchone()[0]
+
+    @contextmanager
+    def guarded_cursor(
+        connection: sqlite3.Connection, sql: str, parameters: tuple[object, ...] = ()
+    ) -> Iterator[sqlite3.Cursor]:
+        if sql.startswith("SELECT source_ref FROM work_evidence_edges WHERE rowid="):
+            physical_rowid = parameters[0]
+            assert isinstance(physical_rowid, int)
+            assert accounted[physical_rowid] > 20000
+        with actual_cursor(connection, sql, parameters) as cursor:
+            yield cursor
+
+    monkeypatch.setattr(agent_thread_state, "connection_cursor", guarded_cursor)
+    assert read_parent_thread_id(index_conn, "child-thread", before_input=before_input) is None
+    assert len(accounted) == 2
+    assert not index_conn.in_transaction
+
+
+def test_title_candidate_stream_does_not_prefetch_the_complete_id_cohort(index_conn: sqlite3.Connection) -> None:
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.agent_thread_state import iter_thread_title_candidates
+
+    _write(index_conn)
+    consumed = 0
+
+    def identities() -> Iterator[str]:
+        nonlocal consumed
+        for _ in range(1201):
+            consumed += 1
+            yield "parent-thread"
+
+    expected = read_thread_titles(index_conn, thread_ids=["parent-thread"])
+    with closing(iter_thread_title_candidates(index_conn, thread_ids=identities())) as rows:
+        assert next(rows) == ("parent-thread", expected["parent-thread"])
+        assert 0 < consumed < 1201
+        observed = consumed
+    assert consumed == observed
+    assert index_conn.execute("SELECT COUNT(*) FROM work_evidence_nodes").fetchone()[0] > 0
+
+
+def test_title_candidate_stream_retains_scope_and_first_winner(index_conn: sqlite3.Connection) -> None:
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.agent_thread_state import iter_thread_title_candidates
+
+    _write(index_conn)
+    _write(
+        index_conn,
+        source_scope="/other-install",
+        raw_id="raw-2",
+        blob_hash="blob-2",
+        threads=[ThreadRecord("other-thread", "Other title", 2000)],
+    )
+    expected = read_thread_titles(index_conn, thread_ids=["parent-thread", "other-thread"], source_scope="/install")
+    selected: dict[str, str] = {}
+    with closing(
+        iter_thread_title_candidates(
+            index_conn, thread_ids=iter(["parent-thread", "other-thread", "parent-thread"]), source_scope="/install"
+        )
+    ) as rows:
+        for identity, title in rows:
+            selected.setdefault(identity, title)
+    assert selected == expected == {"parent-thread": "Curated title"}
+
+
+def test_title_candidate_stream_early_close_retires_its_original_read_frame(index_conn: sqlite3.Connection) -> None:
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.agent_thread_state import iter_thread_title_candidates
+
+    _write(index_conn)
+    index_conn.commit()
+    assert not index_conn.in_transaction
+    with closing(iter_thread_title_candidates(index_conn, thread_ids=iter(["parent-thread"]))) as rows:
+        assert next(rows) == ("parent-thread", "Curated title")
+        assert index_conn.in_transaction
+    assert not index_conn.in_transaction
+    assert read_thread_titles(index_conn, thread_ids=["parent-thread"]) == {"parent-thread": "Curated title"}
+
+
+def test_retained_title_tape_covers_full_original_id_scope_and_shared_digest(index_conn: sqlite3.Connection) -> None:
+    from contextlib import closing
+
+    from polylogue.sources.retained_title_index import RetainedTitleIndex
+    from polylogue.sources.revision_backfill import _enrichment_evidence_digest
+    from polylogue.storage.sqlite.agent_thread_state import iter_thread_title_candidates
+
+    threads = [ThreadRecord(f"thread-{index:04}", f"Title {index}", 2000) for index in range(1201)]
+    _write(index_conn, threads=threads)
+    identities = [thread.thread_id for thread in threads]
+    expected = read_thread_titles(index_conn, thread_ids=identities)
+    with closing(iter_thread_title_candidates(index_conn, thread_ids=iter(identities))) as selected:
+        titles = RetainedTitleIndex(selected)
+    path = titles._path
+    try:
+        assert len(titles) == 1201
+        assert titles[identities[0]] == expected[identities[0]]
+        assert titles[identities[-1]] == expected[identities[-1]]
+        assert dict(titles) == expected
+        actual_digest = _enrichment_evidence_digest({"retained_state_titles": titles, "neutral": [0, None]})
+        assert actual_digest == _enrichment_evidence_digest({"retained_state_titles": expected, "neutral": [0, None]})
+        changed = dict(expected)
+        changed[identities[-1]] += " changed"
+        assert actual_digest != _enrichment_evidence_digest({"retained_state_titles": changed, "neutral": [0, None]})
+    finally:
+        titles.close()
+    assert not path.exists()
+
+
+def test_retained_title_tape_preserves_first_selected_value_and_exact_strings() -> None:
+    from polylogue.sources.retained_title_index import RetainedTitleIndex
+
+    titles = RetainedTitleIndex(iter([("a", ""), ("a", "later"), ("b", "e\u0301"), ("c", "é")]))
+    try:
+        assert dict(titles) == {"a": "", "b": "e\u0301", "c": "é"}
+        assert len(titles) == 3
+    finally:
+        titles.close()
+
+
+def test_retained_title_tape_cancellation_settles_original_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import tempfile
+
+    from polylogue.core.prepared_file import VerificationCancelledError
+    from polylogue.sources import retained_title_index
+
+    actual_directory = tempfile.TemporaryDirectory
+    directories: list[Path] = []
+    failure = VerificationCancelledError("synthetic cancellation at retained title row")
+    visited = 0
+
+    def directory(
+        suffix: str | None = None,
+        prefix: str | None = None,
+        dir: str | None = None,
+        ignore_cleanup_errors: bool = False,
+        *,
+        delete: bool = True,
+    ) -> tempfile.TemporaryDirectory[str]:
+        owned = actual_directory(suffix, prefix, dir, ignore_cleanup_errors, delete=delete)
+        directories.append(Path(owned.name))
+        return owned
+
+    def cancelled() -> None:
+        nonlocal visited
+        visited += 1
+        if visited == 3:
+            raise failure
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", directory)
+    monkeypatch.setattr(retained_title_index, "check_compute_cancelled", cancelled)
+    with pytest.raises(VerificationCancelledError) as observed:
+        retained_title_index.RetainedTitleIndex((str(index), "neutral") for index in range(1201))
+    assert observed.value is failure
+    assert visited == 3
+    assert len(directories) == 1
+    assert not directories[0].exists()

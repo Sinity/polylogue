@@ -256,7 +256,7 @@ def test_prepared_compaction_event_keeps_boundary_coordinates(tmp_path: Path) ->
         store.close()
 
 
-def test_history_paste_enrichment_preserves_prepared_sink_and_matching_law(tmp_path: Path) -> None:
+def test_history_paste_enrichment_writes_past_sealed_sink_and_preserves_matching_law(tmp_path: Path) -> None:
     messages = [
         ParsedMessage(
             provider_message_id="u0",
@@ -287,16 +287,24 @@ def test_history_paste_enrichment_preserves_prepared_sink_and_matching_law(tmp_p
     assert all(not message.paste_spans for message in expected.messages[1:])
 
     store = SqliteMessageStore(tmp_path / "prepared.sqlite")
+    output_store = SqliteMessageStore(tmp_path / "enriched.sqlite")
     try:
-        sink = store.new_sink()
-        sink.extend(messages)
+        source_sink = store.new_sink()
+        source_sink.extend(messages)
+        sealed = SqliteMessageSink(store.path, source_sink.session_ordinal, count=len(source_sink))
+        store.conn.commit()
         prepared = ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="main", messages=[]).model_copy(
-            update={"messages": sink}
+            update={"messages": sealed}
         )
-        actual = _annotate_messages_with_history_paste(prepared, entries)
-        assert id(actual.messages) == id(sink)
+        actual = _annotate_messages_with_history_paste(prepared, entries, message_sink_factory=output_store.new_sink)
+        assert isinstance(actual.messages, SqliteMessageSink)
+        assert actual.messages.path == output_store.path
         assert [message.model_dump(mode="json") for message in actual.messages] == [
             message.model_dump(mode="json") for message in expected.messages
         ]
+        assert [message.model_dump(mode="json") for message in sealed] == [
+            message.model_dump(mode="json") for message in messages
+        ]
     finally:
+        output_store.close()
         store.close()

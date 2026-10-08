@@ -889,7 +889,9 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite", "Destructive"),
         safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
         executor_status="executor-routed",
-        allowed_surfaces=("cli",),
+        # ``internal``: a confirmed primary lifecycle request applies Excision
+        # on the request's behalf (``security.lifecycle``).
+        allowed_surfaces=("cli", "internal"),
         target_authority=(
             TargetAuthorityPolicy(
                 key="session-excision",

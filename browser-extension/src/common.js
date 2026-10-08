@@ -191,8 +191,8 @@
     createdAt = null,
     updatedAt = null,
     providerMeta = {},
-    rawProviderPayload = null,
-    attachments = []
+    attachments = [],
+    observationRef = null
   }) {
     const sourceUrl = window.location.href;
     const urlSessionId = providerSessionId || sessionIdFromUrl(provider, sourceUrl);
@@ -208,11 +208,7 @@
       ? stableProviderSessionId
       : `${provider}:${stableProviderSessionId}`;
     const sessionProviderMeta = {
-      // A compact bridge projection is native but not the full provider body;
-      // labelling it native_full would claim fidelity the receiver refuses.
-      capture_fidelity: rawProviderPayload
-        ? (rawProviderPayload?.polylogue_bridge_projection === "chatgpt-native-compact-v1" ? "native_compact" : "native_full")
-        : "dom_degraded",
+      capture_fidelity: "dom_degraded",
       ...providerMeta,
     };
     if (urlSessionId === "__polylogue_temporary_chat__" || stableProviderSessionId.startsWith("temporary:")) {
@@ -228,6 +224,7 @@
     const sessionTitle = title || document.title || stableProviderSessionId;
     const sessionTitleSource = title ? "provider" : document.title ? "page" : "session-id";
     const envelope = {
+      ...(observationRef ? { capture_observation_ref: observationRef } : {}),
       polylogue_capture_kind: CAPTURE_KIND,
       schema_version: SCHEMA_VERSION,
       capture_id: stableCaptureId,
@@ -271,25 +268,61 @@
         attachments: Array.isArray(attachments) ? attachments : []
       }
     };
-    if (rawProviderPayload && typeof rawProviderPayload === "object") {
-      envelope.raw_provider_payload = rawProviderPayload;
-    }
     return envelope;
   }
 
-  async function sendCapture(envelope, reason = null) {
-    const message = { type: "polylogue.capture", envelope };
+  async function sendCapture(envelope, reason = null, signal = null) {
+    signal?.throwIfAborted();
+    const requestId = crypto.randomUUID();
+    const message = { type: "polylogue.capture", request_id: requestId, envelope };
     if (reason) message.reason = reason;
-    const response = await chrome.runtime.sendMessage(message);
+    let cancellation = null;
+    let response;
+    const abort = () => { cancellation = chrome.runtime.sendMessage({ type: "polylogue.cancelCaptureDelivery", request_id: requestId }).then(
+      (result) => ({ result }), (error) => ({ error }),
+    ); };
+    signal?.addEventListener("abort", abort, { once: true });
+    let failure;
+    try {
+      response = await chrome.runtime.sendMessage(message);
+    } catch (error) {
+      failure = error;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
+    if (cancellation) {
+      const settled = await cancellation;
+      if (settled.error && !response?.ok) throw settled.error;
+    }
+    if (failure) throw failure;
     return response;
   }
 
   async function refreshArchiveState(provider, providerSessionId) {
-    return chrome.runtime.sendMessage({
-      type: "polylogue.archiveState",
-      provider,
-      provider_session_id: providerSessionId
-    });
+    try {
+      return await chrome.runtime.sendMessage({
+        type: "polylogue.archiveState",
+        provider,
+        provider_session_id: providerSessionId
+      });
+    } catch (error) {
+      // Every caller refreshes after an accepted capture. The read failure is
+      // explicit but cannot turn that delivery's ACK into a capture failure.
+      return { ok: false, error: "archive_state_refresh_failed", detail: String(error.message || error) };
+    }
+  }
+
+  function cacheCaptureIsNewer(current, incoming) {
+    if (!current || current.nativeId !== incoming.nativeId) return true;
+    const stamp = (value) => typeof value === "number" ? value * (value < 10_000_000_000 ? 1000 : 1) : Date.parse(value || "");
+    const prior = stamp(current.providerUpdatedAt); const next = stamp(incoming.providerUpdatedAt);
+    if (Number.isFinite(prior) && Number.isFinite(next) && prior !== next) return next > prior;
+    if (Number.isSafeInteger(current.acquisitionSequence) && Number.isSafeInteger(incoming.acquisitionSequence)) {
+      return incoming.acquisitionSequence >= current.acquisitionSequence;
+    }
+    const priorObserved = Date.parse(current.capturedAt || ""); const nextObserved = Date.parse(incoming.capturedAt || "");
+    if (Number.isFinite(priorObserved) && Number.isFinite(nextObserved) && priorObserved !== nextObserved) return nextObserved > priorObserved;
+    return current.bodyRef?.id === incoming.bodyRef?.id;
   }
 
   const existingCapture = window.polylogueCapture || {};
@@ -304,5 +337,6 @@
     temporarySessionId,
     visibleText,
     identityObservation,
+    cacheCaptureIsNewer,
   };
 })();

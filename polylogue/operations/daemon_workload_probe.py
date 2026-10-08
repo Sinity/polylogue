@@ -155,15 +155,6 @@ _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
 }
 
 
-def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    if not table_exists(conn, table):
-        return set()
-    try:
-        return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
-    except sqlite3.Error:
-        return set()
-
-
 def _scalar_int(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) -> Evidence[int]:
     """Read one scalar count, keeping "the query failed" out of the number.
 
@@ -189,7 +180,7 @@ def _cheap_archive_table_count(conn: sqlite3.Connection, table: str) -> Evidence
     maintained rollup columns.
     """
 
-    if table == "messages" and table_exists(conn, "sessions") and "message_count" in _columns(conn, "sessions"):
+    if table == "messages" and table_exists(conn, "sessions"):
         return _scalar_int(conn, "SELECT COALESCE(SUM(message_count), 0) FROM sessions")
     if table in {
         "sessions",
@@ -565,9 +556,6 @@ def _source_path_churn(
     has_sessions = table_exists(conn, "sessions")
     join = "LEFT JOIN sessions AS c ON c.raw_id = r.raw_id" if has_sessions else ""
     session_count = "COUNT(DISTINCT c.session_id)" if has_sessions else "0"
-    raw_columns = _columns(conn, "raw_sessions")
-    acquired_is_ms = "acquired_at_ms" in raw_columns
-    acquired_expr = "MAX(r.acquired_at_ms)" if acquired_is_ms else "MAX(r.acquired_at)"
     placeholders = ",".join("?" for _ in source_paths)
     rows = conn.execute(
         f"""
@@ -578,7 +566,7 @@ def _source_path_churn(
             SUM(CASE WHEN r.source_index = -1 THEN 1 ELSE 0 END) AS append_raw_count,
             {session_count} AS session_count,
             SUM(COALESCE(r.blob_size, 0)) AS total_blob_bytes,
-            {acquired_expr} AS latest_acquired_at
+            MAX(r.acquired_at_ms) AS latest_acquired_at
         FROM raw_sessions AS r
         {join}
         WHERE r.source_path IN ({placeholders})
@@ -602,7 +590,7 @@ def _source_path_churn(
                 "session_count": session_count_value,
                 "orphan_raw_count": max(0, raw_count - session_count_value),
                 "total_blob_bytes": int(row[5] or 0),
-                "latest_acquired_at": iso_from_epoch_ms(row[6]) if acquired_is_ms else row[6],
+                "latest_acquired_at": iso_from_epoch_ms(row[6]),
             }
         )
     return items
@@ -689,9 +677,6 @@ def _ops_cursor_lag_baselines(ops_db: Path) -> dict[str, Any] | None:
         conn = open_readonly_connection(ops_db)
         try:
             if not table_exists(conn, "cursor_lag_samples"):
-                return None
-            columns = _columns(conn, "cursor_lag_samples")
-            if "family" not in columns:
                 return None
             rows = conn.execute(
                 """
@@ -1273,15 +1258,13 @@ def _unchecked_user_overlay_orphans(reason: str) -> dict[str, Any]:
 
 def _cost_bearing_profile_count(conn: sqlite3.Connection) -> Evidence[int]:
     """Count sessions with cost evidence in the canonical usage projection."""
-    columns = _columns(conn, "session_model_usage")
-    lanes = [column for column in ("provider_cost_usd", "catalog_cost_usd", "cost_credits") if column in columns]
-    if not lanes:
-        return Unavailable(reason="cost_evidence_unavailable", detail="session_model_usage cost lanes are absent")
-    predicate = " OR ".join(f"{lane} IS NOT NULL" for lane in lanes)
-    per_model = f"SELECT session_id FROM session_model_usage WHERE {predicate}"
-    # A provider-reported session total with no model row is still cost
-    # evidence the cost projections expose; count that lane too.
-    if "reported_cost_usd" in _columns(conn, "sessions"):
+    if not table_exists(conn, "session_model_usage"):
+        return Unavailable(reason="cost_evidence_unavailable", detail="canonical cost relations are absent")
+    per_model = (
+        "SELECT session_id FROM session_model_usage WHERE provider_cost_usd IS NOT NULL "
+        "OR catalog_cost_usd IS NOT NULL OR cost_credits IS NOT NULL"
+    )
+    if table_exists(conn, "sessions"):
         per_model += " UNION SELECT session_id FROM sessions WHERE reported_cost_usd IS NOT NULL"
     return _scalar_int(conn, f"SELECT COUNT(*) FROM ({per_model})")
 

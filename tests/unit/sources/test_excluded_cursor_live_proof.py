@@ -13,6 +13,7 @@ import pytest
 import polylogue.sources.live.watcher as live_watcher
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.excluded_cursor_live_proof import run_excluded_cursor_live_proof, verify_receipt
 
 
@@ -31,11 +32,8 @@ def test_candidate_fixture_proves_all_cursor_outcomes_and_is_immutable(tmp_path:
         "deferred_partial": True,
     }
     deferred_partial = next(case for case in receipt["cases"] if case["case_id"] == "deferred-partial")
-    assert deferred_partial["failure_evidence"] == {
-        "artifact_kind": "deferred_hot_jsonl_capture",
-        "support_status": "partial_decode",
-        "parse_error_present": False,
-    }
+    assert deferred_partial["failure_evidence"] is None
+    assert deferred_partial["attempt"]["evidence_ref"] == "batch:partial_admission"
     assert receipt["execution"] == {
         "mode": "candidate_fixture",
         "live_census": "not_run",
@@ -48,10 +46,10 @@ def test_candidate_fixture_proves_all_cursor_outcomes_and_is_immutable(tmp_path:
         "LiveWatcher.classify_ingest_candidates -> page ingest"
     )
     assert receipt["anti_vacuity"] == {
-        "indexed_authority": "byte_proven_source_raw_and_revision_head",
+        "indexed_authority": "retained_source_raw",
         "indexed_session_count_before": 0,
         "indexed_session_count": 1,
-        "deferred_partial_artifact": "deferred_hot_jsonl_capture",
+        "deferred_partial_admission": "batch:partial_admission",
         "unchanged_excluded_attempt_present": False,
     }
 
@@ -78,6 +76,7 @@ def test_parser_fingerprint_revival_calls_real_actuator_and_excludes_unchanged_r
         mtime_ns=stat.st_mtime_ns,
         failure_count=5,
         excluded=True,
+        authority=fixture_cursor_authority(path),
     )
     watcher = LiveWatcher(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
@@ -122,6 +121,7 @@ def test_parser_fingerprint_revival_calls_real_actuator_and_excludes_unchanged_r
         mtime_ns=stat.st_mtime_ns,
         failure_count=5,
         excluded=True,
+        authority=fixture_cursor_authority(path),
     )
     unchanged_watcher = LiveWatcher(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
@@ -173,6 +173,7 @@ def test_full_retry_invalidation_clears_a_stale_exclusion(tmp_path: Path) -> Non
         st_ino=stale.st_ino,
         mtime_ns=stale.st_mtime_ns,
         excluded=True,
+        authority=fixture_cursor_authority(path),
     )
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),

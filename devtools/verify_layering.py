@@ -10,6 +10,12 @@ SQL mutation must be inventoried in ``docs/plans/layering.yaml`` and declare
 its owned tier(s) in its module docstring.  A module spanning two tiers is
 allowed only when the same manifest names a reviewed twin-write contract.
 
+The package pass also rejects direct SQLite opens when their locally resolved
+path names one of the six archive tiers and the owning function has no explicit
+archive admission. Read-only URI exemptions require ``uri=True``. This bounded
+check does not prove call dominance or infer dynamic path values; reviewed
+owner censuses remain responsible for those sinks.
+
 Usage:
   devtools gate layering
   devtools gate layering --json
@@ -23,6 +29,7 @@ import json
 import re
 import sys
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -59,7 +66,6 @@ _CREATE_TABLE_RE = re.compile(
     r"CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`\"\[]?([A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
-_SQL_EXECUTION_METHODS = frozenset({"execute", "executemany", "executescript"})
 _WRITER_SURFACE_CONTRACTS = {
     "source": ("durable", "atomic"),
     "index": ("rebuildable", "replayable"),
@@ -67,6 +73,7 @@ _WRITER_SURFACE_CONTRACTS = {
     "user": ("durable", "atomic"),
     "ops": ("disposable", "restartable"),
 }
+_SQLITE_TIER_DATABASES = frozenset({"source.db", "index.db", "embeddings.db", "user.db", "audit.db", "ops.db"})
 
 
 @dataclass(frozen=True)
@@ -305,11 +312,240 @@ class PackagePass:
     durable_write: durable_write.CensusObservation | None = None
     derived_sweep: derived_sweep.CensusObservation | None = None
     sqlite_degradation: Counter[DegradationAnchor] | None = None
+    sqlite_archive_open_violations: list[dict[str, object]] = field(default_factory=list)
 
 
 def _python_files(root: Path, *, ordered: bool = True) -> list[Path]:
     files = list(root.rglob("*.py"))
     return sorted(files) if ordered else files
+
+
+def _sqlite_archive_open_violations(tree: ast.Module, *, relative: str) -> list[dict[str, object]]:
+    """Find raw SQLite opens whose local path resolves to an archive tier.
+
+    This is a positive path check inside the package parse pass. It does not
+    infer arbitrary runtime values: literal tier filenames, simple path
+    expressions, and local aliases are the entire analysis boundary.
+    """
+
+    imported: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported[alias.asname or alias.name.split(".")[0]] = (
+                    alias.name if alias.asname else alias.name.split(".")[0]
+                )
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            for alias in node.names:
+                imported[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    imported_names = imported
+
+    def canonical_name(node: ast.expr, names: dict[str, str]) -> str | None:
+        if isinstance(node, ast.Name):
+            return names.get(node.id, node.id)
+        if isinstance(node, ast.Attribute):
+            base = canonical_name(node.value, names)
+            return f"{base}.{node.attr}" if base else None
+        return None
+
+    def scope_nodes(scope: ast.AST) -> list[ast.AST]:
+        result: list[ast.AST] = []
+
+        def walk(node: ast.AST, *, root: bool = False) -> None:
+            if not root and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                return
+            result.append(node)
+            for child in ast.iter_child_nodes(node):
+                walk(child)
+
+        walk(scope, root=True)
+        return sorted(result, key=lambda item: (getattr(item, "lineno", 0), getattr(item, "col_offset", 0)))
+
+    def expression_text(node: ast.expr, values: dict[str, str]) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return values.get(node.id)
+        if isinstance(node, ast.JoinedStr):
+            string_parts: list[str] = []
+            for item in node.values:
+                if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                    string_parts.append(item.value)
+                elif isinstance(item, ast.FormattedValue):
+                    value = expression_text(item.value, values)
+                    if value is None:
+                        string_parts.append("<dynamic>")
+                    else:
+                        string_parts.append(value)
+            return "".join(string_parts)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
+            left = expression_text(node.left, values)
+            right = expression_text(node.right, values)
+            if left is None or right is None:
+                return None
+            return f"{left}/{right}" if isinstance(node.op, ast.Div) else left + right
+        if isinstance(node, ast.Call):
+            name = canonical_name(node.func, imported_names)
+            if name in {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath"} and node.args:
+                return expression_text(node.args[0], values)
+            if name in {"os.path.join", "posixpath.join"} and node.args:
+                join_parts = [expression_text(item, values) for item in node.args]
+                return None if any(item is None for item in join_parts) else "/".join(str(item) for item in join_parts)
+        return None
+
+    def tier_name(node: ast.expr, values: dict[str, str]) -> str | None:
+        if any(isinstance(item, ast.Name) and item.id in scratch_names for item in ast.walk(node)):
+            return None
+        text = expression_text(node, values)
+        if text is None:
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+                right = expression_text(node.right, values)
+                return tier_from_text(right)
+            if isinstance(node, ast.Call) and node.args:
+                name = canonical_name(node.func, imported_names)
+                if name in {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath"}:
+                    return tier_name(node.args[0], values)
+                if name in {"os.path.join", "posixpath.join"}:
+                    return tier_name(node.args[-1], values)
+            return None
+        if text in {":memory:", "file::memory:"}:
+            return text
+        match = re.search(r"(?:^|[/\\])([^/\\?]+\.db)(?:\?|$)", text)
+        if match and match.group(1) in _SQLITE_TIER_DATABASES:
+            return match.group(1)
+        return None
+
+    def tier_from_text(text: str | None) -> str | None:
+        if text is None:
+            return None
+        match = re.search(r"(?:^|[/\\])([^/\\?]+\.db)(?:\?|$)", text)
+        return match.group(1) if match and match.group(1) in _SQLITE_TIER_DATABASES else None
+
+    def readonly(call: ast.Call, argument: ast.expr, values: dict[str, str]) -> bool:
+        uri_enabled = any(
+            keyword.arg == "uri" and isinstance(keyword.value, ast.Constant) and keyword.value.value is True
+            for keyword in call.keywords
+        )
+        if not uri_enabled:
+            return False
+        text = expression_text(argument, values)
+        if text is None:
+            fragments = [
+                item.value
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+                else values.get(item.id, "")
+                if isinstance(item, ast.Name)
+                else ""
+                for item in ast.walk(argument)
+            ]
+            text = "/".join(fragment for fragment in fragments if fragment)
+        return bool(
+            re.search(r"(?:[?&])mode=ro(?:&|$)", text)
+            or re.search(r"(?:[?&])immutable=1(?:&|$)", text)
+            or text in {":memory:", "file::memory:"}
+        )
+
+    sinks = {
+        "sqlite3.connect",
+        "polylogue.storage.sqlite.managed_connection.sqlite_connection",
+        "polylogue.storage.io_phase_metrics.connect_measured",
+    }
+
+    def is_sink(name: str | None) -> bool:
+        return name in sinks
+
+    def is_population_admission(name: str | None) -> bool:
+        return name == "polylogue.storage.sqlite.population_admission.require_population_admission"
+
+    def is_write_lease(name: str | None) -> bool:
+        return name in {
+            "polylogue.storage.sqlite.write_lease.require_write_lease",
+            "polylogue.core.write_lease.require_write_lease",
+        }
+
+    def is_scratch_directory_factory(name: str | None) -> bool:
+        return name in {"tempfile.TemporaryDirectory", "tempfile.mkdtemp"}
+
+    violations: list[dict[str, object]] = []
+    scopes: list[ast.AST] = [tree]
+    scopes.extend(node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)))
+    scopes.extend(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef))
+    scopes.extend(node for node in ast.walk(tree) if isinstance(node, ast.Lambda))
+    for scope in scopes:
+        names = dict(imported)
+        paths: dict[str, str] = {}
+        values: dict[str, str] = {}
+        scratch_names: set[str] = set()
+        guarded = False
+        for node in scope_nodes(scope):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    names[alias.asname or alias.name.split(".")[0]] = (
+                        alias.name if alias.asname else alias.name.split(".")[0]
+                    )
+            elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                for alias in node.names:
+                    names[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+            elif isinstance(node, ast.Assign | ast.AnnAssign):
+                value = node.value
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if value is None:
+                    continue
+                path = tier_name(value, values)
+                text = expression_text(value, values)
+                canonical = canonical_name(value, names)
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        paths.pop(target.id, None)
+                        values.pop(target.id, None)
+                        names.pop(target.id, None)
+                        scratch_names.discard(target.id)
+                        if path is not None:
+                            paths[target.id] = path
+                        if text is not None:
+                            values[target.id] = text
+                        if canonical is not None:
+                            names[target.id] = canonical
+                        if isinstance(value, ast.Call) and is_scratch_directory_factory(
+                            canonical_name(value.func, names)
+                        ):
+                            scratch_names.add(target.id)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if not isinstance(item.optional_vars, ast.Name) or not isinstance(item.context_expr, ast.Call):
+                        continue
+                    if is_scratch_directory_factory(canonical_name(item.context_expr.func, names)):
+                        scratch_names.add(item.optional_vars.id)
+            elif isinstance(node, ast.Call):
+                name = canonical_name(node.func, names)
+                guarded = (
+                    guarded
+                    or is_population_admission(name)
+                    or (is_write_lease(name) and any(keyword.arg == "archive_root" for keyword in node.keywords))
+                )
+                if not is_sink(name):
+                    continue
+                argument = (
+                    node.args[0]
+                    if node.args
+                    else next((keyword.value for keyword in node.keywords if keyword.arg == "database"), None)
+                )
+                if argument is None:
+                    continue
+                tier = paths.get(argument.id) if isinstance(argument, ast.Name) else tier_name(argument, values)
+                if tier not in _SQLITE_TIER_DATABASES or readonly(node, argument, values) or guarded:
+                    continue
+                violations.append(
+                    {
+                        "file": relative,
+                        "line": getattr(node, "lineno", 0),
+                        "rule": "sqlite_archive_open_without_factory",
+                        "detail": f"direct SQLite open resolves to {tier} without an earlier archive admission",
+                    }
+                )
+    # Function and class scopes can share a call through the module walk only
+    # for definitions; each executable call belongs to one actual owner scope.
+    return violations
 
 
 def _package_pass(
@@ -408,14 +644,20 @@ def _package_pass(
             continue
         if path in import_wanted:
             file_imports[path] = _module_imports(tree)
-        if path in census_files and result.census_mutation_files is not None and _mutation_calls(tree):
-            result.census_mutation_files[relative] = _mutation_tiers(tree)
+        if (
+            path in census_files
+            and result.census_mutation_files is not None
+            and _mutation_calls(tree, relative=relative)
+        ):
+            result.census_mutation_files[relative] = _mutation_tiers(tree, relative=relative)
         if durable is not None and path in durable_files:
             durable.observe(tree, path=path, relative=relative)
         if derived is not None and path in derived_files:
             derived.observe(tree, relative=relative)
         if path in sqlite_wanted:
             module_anchors[path] = module_degradation_anchors(source, tree, file_rel=relative)
+        if relative.startswith("polylogue/"):
+            result.sqlite_archive_open_violations.extend(_sqlite_archive_open_violations(tree, relative=relative))
         ast_cache.release(path)
 
     for target in import_roots:
@@ -668,10 +910,19 @@ def _string_fragments(expression: ast.expr, values: dict[str, tuple[str, ...]] |
     return ()
 
 
-def _string_assignments(tree: ast.AST) -> dict[str, tuple[str, ...]]:
-    values: dict[str, tuple[str, ...]] = {}
+def _string_assignments(
+    tree: ast.AST, inherited: dict[str, tuple[str, ...]] | None = None
+) -> dict[str, tuple[str, ...]]:
+    values = dict(inherited or {})
+    for node in _function_scope_nodes(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    values.pop(target.id, None)
+        elif isinstance(node, ast.arg):
+            values.pop(node.arg, None)
     for _ in range(3):
-        for node in walk_module(tree):
+        for node in _function_scope_nodes(tree):
             if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
                 continue
             fragments = _string_fragments(node.value, values)
@@ -680,12 +931,18 @@ def _string_assignments(tree: ast.AST) -> dict[str, tuple[str, ...]]:
     return values
 
 
-def _mutation_sql(node: ast.Call, *, values: dict[str, tuple[str, ...]]) -> str | None:
-    if not isinstance(node.func, ast.Attribute) or node.func.attr not in _SQL_EXECUTION_METHODS:
+def _mutation_sql(
+    node: ast.Call,
+    *,
+    values: dict[str, tuple[str, ...]],
+    executions: dict[ast.Call, durable_write.SQLExecution] | None = None,
+) -> str | None:
+    if executions is None:
+        executions = durable_write.sql_execution_calls(node)
+    execution = executions.get(node)
+    if execution is None:
         return None
-    if not node.args:
-        return None
-    sql = "".join(_string_fragments(node.args[0], values))
+    sql = "".join(_string_fragments(execution.argument, values))
     return sql if sql and _SQL_MUTATION_RE.search(sql) else None
 
 
@@ -703,29 +960,92 @@ def _archive_table_tiers() -> dict[str, str]:
     return table_tiers
 
 
-def _mutation_calls(tree: ast.AST) -> tuple[ast.Call, ...]:
-    values = _string_assignments(tree)
+def _scoped_mutation_calls(
+    tree: ast.AST,
+    inherited: dict[str, tuple[str, ...]] | None = None,
+    executions: dict[ast.Call, durable_write.SQLExecution] | None = None,
+) -> Iterator[tuple[ast.Call, str]]:
+    if executions is None:
+        executions = durable_write.sql_execution_calls(tree)
+    values = _string_assignments(tree, inherited)
+    for node in _function_scope_nodes(tree):
+        if (
+            isinstance(node, ast.Call)
+            and (sql := _mutation_sql(node, values=values, executions=executions)) is not None
+        ):
+            yield node, sql
+
+    def children(node: ast.AST) -> Iterator[ast.AST]:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                yield child
+            else:
+                yield from children(child)
+
+    for child in children(tree):
+        yield from _scoped_mutation_calls(child, inherited if isinstance(tree, ast.ClassDef) else values, executions)
+
+
+def _mutation_calls(tree: ast.AST, *, relative: str = "") -> tuple[ast.Call, ...]:
     return tuple(
         node
-        for node in walk_module(tree)
-        if isinstance(node, ast.Call) and _mutation_sql(node, values=values) is not None
+        for node, _ in _scoped_mutation_calls(
+            tree, executions=durable_write.sql_execution_calls(tree, relative=relative)
+        )
     )
 
 
-def _mutation_tiers(tree: ast.AST) -> frozenset[str]:
-    values = _string_assignments(tree)
+def _mutation_tiers(tree: ast.AST, *, relative: str = "") -> frozenset[str]:
+    executions = durable_write.sql_execution_calls(tree, relative=relative)
     table_tiers = _archive_table_tiers()
-    tiers: set[str] = set()
-    for node in walk_module(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        sql = _mutation_sql(node, values=values)
-        if sql is None:
-            continue
-        table = _mutation_table(sql)
-        if table is not None and (tier := table_tiers.get(table)) is not None:
-            tiers.add(tier)
-    return frozenset(tiers)
+    if isinstance(tree, ast.FunctionDef | ast.AsyncFunctionDef):
+        values = _string_assignments(tree)
+        sql_statements = (
+            sql
+            for node in _function_scope_nodes(tree)
+            if isinstance(node, ast.Call)
+            and (sql := _mutation_sql(node, values=values, executions=executions)) is not None
+        )
+    else:
+        sql_statements = (sql for _, sql in _scoped_mutation_calls(tree, executions=executions))
+    return frozenset(
+        tier
+        for sql in sql_statements
+        if (table := _mutation_table(sql)) is not None and (tier := table_tiers.get(table)) is not None
+    )
+
+
+def _function_mutation_tiers(tree: ast.Module, *, relative: str = "") -> dict[str, frozenset[str]]:
+    """Keep inherited SQL constants with their actual lexical body."""
+    executions = durable_write.sql_execution_calls(tree, relative=relative)
+    table_tiers = _archive_table_tiers()
+    result: dict[str, frozenset[str]] = {}
+
+    def visit(node: ast.AST, scope: tuple[str, ...], inherited: dict[str, tuple[str, ...]]) -> None:
+        values = _string_assignments(node, inherited)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            tiers: set[str] = set()
+            for expression in _function_scope_nodes(node):
+                if (
+                    isinstance(expression, ast.Call)
+                    and (sql := _mutation_sql(expression, values=values, executions=executions)) is not None
+                    and (table := _mutation_table(sql)) is not None
+                    and (tier := table_tiers.get(table)) is not None
+                ):
+                    tiers.add(tier)
+            result[".".join(scope)] = frozenset(tiers)
+
+        def children(body: ast.AST) -> None:
+            for child in ast.iter_child_nodes(body):
+                if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                    visit(child, (*scope, child.name), inherited if isinstance(node, ast.ClassDef) else values)
+                else:
+                    children(child)
+
+        children(node)
+
+    visit(tree, (), {})
+    return result
 
 
 def _parse_writer_module_declaration(tree: ast.Module, *, file: str, marker: str) -> WriterModuleDeclaration | None:
@@ -777,7 +1097,30 @@ def _writer_module_files(repo_root: Path, policy: WriterModulePolicy) -> dict[st
 
 
 def _function_definitions(tree: ast.Module) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
-    return {node.name: node for node in walk_module(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)}
+    """Keep lexical function and class names distinct throughout the call graph."""
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                visit(child, (*scope, child.name))
+            elif isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                qualified = (*scope, child.name)
+                functions[".".join(qualified)] = child
+                visit(child, qualified)
+            else:
+                visit(child, scope)
+
+    visit(tree, ())
+    return functions
+
+
+def _function_scope_nodes(function: ast.AST) -> Iterator[ast.AST]:
+    """Walk executable statements in one function without borrowing another body."""
+    yield function
+    for child in ast.iter_child_nodes(function):
+        if not isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            yield from _function_scope_nodes(child)
 
 
 def _imported_writer_modules(tree: ast.Module) -> dict[str, str]:
@@ -803,7 +1146,7 @@ def _imported_names(tree: ast.Module) -> set[str]:
     return names
 
 
-def _imported_sql_execution_lines(tree: ast.Module) -> list[int]:
+def _imported_sql_execution_lines(tree: ast.Module, *, relative: str = "") -> list[int]:
     """Find execute calls whose SQL text is hidden behind an import.
 
     The layering gate cannot classify an imported constant against this
@@ -811,28 +1154,151 @@ def _imported_sql_execution_lines(tree: ast.Module) -> list[int]:
     change to the statement cannot bypass the writer inventory.
     """
     imported = _imported_names(tree)
+    executions = durable_write.sql_execution_calls(tree, relative=relative)
     return sorted(
         node.lineno
         for node in walk_module(tree)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in _SQL_EXECUTION_METHODS
-        and node.args
-        and isinstance(node.args[0], ast.Name)
-        and node.args[0].id in imported
+        and (execution := executions.get(node)) is not None
+        and isinstance(execution.argument, ast.Name)
+        and execution.argument.id in imported
     )
 
 
-def _called_function_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
-    names: set[str] = set()
-    for node in ast.walk(function):
+def _receiver_calls(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    qualified: str,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    classes: set[str],
+    incoming: dict[str, dict[str, set[str]]],
+) -> dict[str, dict[str, set[str]]]:
+    """Carry evidenced receiver types through lexical capture and actual arguments."""
+
+    def resolve(name: str, scope: str, *, annotation: bool = False) -> str:
+        while scope:
+            candidate = f"{scope}.{name}"
+            # Executable method bodies close over functions, never class locals.
+            if (annotation or scope not in classes) and (candidate in functions or candidate in classes):
+                return candidate
+            scope = scope.rpartition(".")[0]
+        return name
+
+    def annotation_types(annotation: ast.AST | None, scope: str) -> set[str]:
+        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+            try:
+                annotation = ast.parse(annotation.value, mode="eval").body
+            except SyntaxError:
+                return set()
+        return (
+            {
+                resolved
+                for node in ast.walk(annotation)
+                if isinstance(node, ast.Name) and (resolved := resolve(node.id, scope, annotation=True)) in classes
+            }
+            if annotation is not None
+            else set()
+        )
+
+    def bindings_for(name: str, visiting: set[str]) -> dict[str, set[str]]:
+        if name in visiting:
+            return {}
+        visiting = visiting | {name}
+        body = functions[name]
+        parent = name.rpartition(".")[0]
+        bindings = bindings_for(parent, visiting) if parent in functions else {}
+        arguments = (*body.args.posonlyargs, *body.args.args, *body.args.kwonlyargs)
+        for argument in arguments:
+            bindings[argument.arg] = annotation_types(argument.annotation, name) | incoming.get(name, {}).get(
+                argument.arg, set()
+            )
+        is_static = any(
+            isinstance(decorator, ast.Name) and decorator.id == "staticmethod" for decorator in body.decorator_list
+        )
+        if parent in classes and arguments and not is_static:
+            receiver = arguments[0].arg
+            bindings[receiver] = {parent}
+            initializer = f"{parent}.__init__"
+            if initializer in functions and initializer not in visiting and name != initializer:
+                initial = bindings_for(initializer, visiting)
+                initial_args = (*functions[initializer].args.posonlyargs, *functions[initializer].args.args)
+                if initial_args:
+                    prefix = initial_args[0].arg + "."
+                    for field, types in initial.items():
+                        if field.startswith(prefix):
+                            bindings[receiver + field[len(prefix) - 1 :]] = types
+        nodes = tuple(_function_scope_nodes(body))
+        # Local assignment shadows captured names even when its type is unknown.
+        for node in nodes:
+            targets = (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else [node.target]
+                if isinstance(node, ast.AnnAssign)
+                else []
+            )
+            for target in targets:
+                bindings[ast.unparse(target)] = set()
+        for node in nodes:
+            if isinstance(node, ast.Assign):
+                types = value_types(node.value, name, bindings)
+                for target in node.targets:
+                    bindings[ast.unparse(target)].update(types)
+            elif isinstance(node, ast.AnnAssign):
+                types = annotation_types(node.annotation, name)
+                if node.value is not None:
+                    types.update(value_types(node.value, name, bindings))
+                bindings[ast.unparse(node.target)].update(types)
+        return bindings
+
+    def value_types(value: ast.AST, scope: str, bindings: dict[str, set[str]]) -> set[str]:
+        if isinstance(value, ast.Name) and (named_class := resolve(value.id, scope)) in classes:
+            return {named_class}
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+            called_name = resolve(value.func.id, scope)
+            if called_name in classes:
+                return {called_name}
+            called = functions.get(called_name)
+            if called is not None:
+                return annotation_types(called.returns, called_name)
+        return bindings.get(ast.unparse(value), set())
+
+    bindings = bindings_for(qualified, set())
+    calls: dict[str, dict[str, set[str]]] = {}
+    for node in _function_scope_nodes(function):
         if not isinstance(node, ast.Call):
             continue
+        targets: list[tuple[str, set[str] | None]] = []
         if isinstance(node.func, ast.Name):
-            names.add(node.func.id)
+            called_name = resolve(node.func.id, qualified)
+            targets.append((called_name, None))
+            if called_name in classes:
+                targets.extend((f"{called_name}.{method}", {called_name}) for method in ("__init__", "__new__"))
         elif isinstance(node.func, ast.Attribute):
-            names.add(node.func.attr)
-    return names
+            targets.extend(
+                (f"{receiver}.{node.func.attr}", {receiver})
+                for receiver in value_types(node.func.value, qualified, bindings)
+            )
+        for called_name, receiver_types in targets:
+            supplied = calls.setdefault(called_name, {})
+            called = functions.get(called_name)
+            if called is None:
+                continue
+            positional = (*called.args.posonlyargs, *called.args.args)
+            offset = 0
+            static = any(
+                isinstance(decorator, ast.Name) and decorator.id == "staticmethod"
+                for decorator in called.decorator_list
+            )
+            if receiver_types is not None and positional and not static:
+                supplied.setdefault(positional[0].arg, set()).update(receiver_types)
+                offset = 1
+            for argument, value in zip(positional[offset:], node.args, strict=False):
+                supplied.setdefault(argument.arg, set()).update(value_types(value, qualified, bindings))
+            for keyword in node.keywords:
+                if keyword.arg is not None:
+                    supplied.setdefault(keyword.arg, set()).update(value_types(keyword.value, qualified, bindings))
+    return calls
 
 
 def _entrypoint_tiers(
@@ -841,31 +1307,47 @@ def _entrypoint_tiers(
     specs: dict[str, WriterModuleSpec],
     *,
     follow_imports: bool = True,
+    relative: str = "",
     functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] | None = None,
     imported_modules: dict[str, str] | None = None,
     direct_tiers: dict[str, frozenset[str]] | None = None,
 ) -> frozenset[str]:
-    functions = functions or _function_definitions(tree)
-    imported_modules = imported_modules or _imported_writer_modules(tree)
-    direct_tiers = direct_tiers or {name: _mutation_tiers(function) for name, function in functions.items()}
-    pending = [entrypoint]
-    visited: set[str] = set()
+    if functions is None:
+        functions = _function_definitions(tree)
+    if imported_modules is None:
+        imported_modules = _imported_writer_modules(tree)
+    if direct_tiers is None:
+        direct_tiers = _function_mutation_tiers(tree, relative=relative)
+    classes = {
+        name.rpartition(".")[0] for name in functions if "." in name and name.rpartition(".")[0] not in functions
+    }
+    incoming: dict[str, dict[str, set[str]]] = {}
+    reached = {entrypoint}
     tiers: set[str] = set()
-    while pending:
-        name = pending.pop()
-        if name in visited:
-            continue
-        visited.add(name)
-        function = functions.get(name)
-        if function is None:
-            spec = specs.get(imported_modules.get(name, "")) if follow_imports else None
-            if spec is not None:
-                tiers.update(surface.tier for surface in spec.surfaces)
-            continue
-        tiers.update(direct_tiers[name])
-        for called_name in _called_function_names(function):
-            if called_name in functions or called_name in imported_modules:
-                pending.append(called_name)
+    # Facts grow only over this module's finite function/parameter/class sets.
+    changed = True
+    while changed:
+        changed = False
+        for name in tuple(reached):
+            function = functions.get(name)
+            if function is None:
+                spec = specs.get(imported_modules.get(name, "")) if follow_imports else None
+                if spec is not None:
+                    tiers.update(surface.tier for surface in spec.surfaces)
+                continue
+            tiers.update(direct_tiers.get(name, frozenset()))
+            calls = _receiver_calls(function, qualified=name, functions=functions, classes=classes, incoming=incoming)
+            for called_name, arguments in calls.items():
+                if called_name not in functions and called_name not in imported_modules:
+                    continue
+                if called_name not in reached:
+                    reached.add(called_name)
+                    changed = True
+                for argument, types in arguments.items():
+                    known = incoming.setdefault(called_name, {}).setdefault(argument, set())
+                    if not types.issubset(known):
+                        known.update(types)
+                        changed = True
     return frozenset(tiers)
 
 
@@ -946,9 +1428,9 @@ def _census_mutation_files(repo_root: Path, policy: WriterModulePolicy) -> dict[
                 tree = parse_path(py_file)
             except (SyntaxError, UnicodeDecodeError):
                 continue
-            if not _mutation_calls(tree):
+            if not _mutation_calls(tree, relative=rel):
                 continue
-            found[rel] = _mutation_tiers(tree)
+            found[rel] = _mutation_tiers(tree, relative=rel)
     return found
 
 
@@ -1010,7 +1492,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
     declarations = {
         rel: _parse_writer_module_declaration(tree, file=rel, marker=policy.marker) for rel, (_, tree) in files.items()
     }
-    mutation_files = {rel for rel, (_, tree) in files.items() if _mutation_calls(tree)}
+    mutation_files = {rel for rel, (_, tree) in files.items() if _mutation_calls(tree, relative=rel)}
 
     for rel in sorted(mutation_files):
         spec = specs.get(rel)
@@ -1068,7 +1550,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
             continue
 
         expected_tiers = tuple(surface.tier for surface in spec.surfaces)
-        for line in _imported_sql_execution_lines(tree):
+        for line in _imported_sql_execution_lines(tree, relative=spec.path):
             violations.append(
                 {
                     "file": spec.path,
@@ -1076,7 +1558,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
                     "rule": "writer_module_imported_sql_opaque",
                 }
             )
-        observed_tiers = _mutation_tiers(tree)
+        observed_tiers = _mutation_tiers(tree, relative=spec.path)
         unexpected_tiers = sorted(observed_tiers.difference(expected_tiers))
         if unexpected_tiers:
             violations.append(
@@ -1100,7 +1582,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
 
         functions = _function_definitions(tree)
         imported_modules = _imported_writer_modules(tree)
-        direct_tiers = {name: _mutation_tiers(function) for name, function in functions.items()}
+        direct_tiers = _function_mutation_tiers(tree, relative=spec.path)
 
         if len(declaration.tiers) > 1:
             if not _contract_is_audited(declaration, spec, policy):
@@ -1122,6 +1604,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
                         tree,
                         entrypoint,
                         specs,
+                        relative=spec.path,
                         functions=functions,
                         imported_modules=imported_modules,
                         direct_tiers=direct_tiers,
@@ -1149,12 +1632,17 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
         observed_entrypoints = {
             name
             for name in functions
-            if not name.startswith("_")
+            if all(not part.startswith("_") for part in name.split("."))
+            and not any(
+                parent in functions
+                for parent in (".".join(name.split(".")[:index]) for index in range(1, len(name.split("."))))
+            )
             and _entrypoint_tiers(
                 tree,
                 name,
                 specs,
                 follow_imports=False,
+                relative=spec.path,
                 functions=functions,
                 imported_modules=imported_modules,
                 direct_tiers=direct_tiers,
@@ -1184,6 +1672,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
                 entrypoint,
                 specs,
                 follow_imports=False,
+                relative=spec.path,
                 functions=functions,
                 imported_modules=imported_modules,
                 direct_tiers=direct_tiers,
@@ -1461,6 +1950,7 @@ def main(argv: list[str] | None = None) -> int:
         writer_modules=writer_modules,
         manifest=manifest,
     )
+    violations.extend(package_pass.sqlite_archive_open_violations)
     for target in import_roots:
         inspected_count += 1
         imports, unreadable = package_pass.imports_by_root[target]

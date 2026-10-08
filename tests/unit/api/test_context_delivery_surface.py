@@ -30,6 +30,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
 
@@ -48,7 +49,7 @@ def facade_daemon_writer(monkeypatch: pytest.MonkeyPatch) -> Callable[[Path], Ab
     return start
 
 
-def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
+def _seed_on_writer(archive_root: Path, *, provider_session_id: str, text: str) -> None:
     with ArchiveStore(archive_root) as archive:
         write_index_session(
             archive,
@@ -68,6 +69,11 @@ def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
                 ],
             ),
         )
+
+
+def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_on_writer(archive_root, provider_session_id=provider_session_id, text=text))
 
 
 async def test_compile_and_record_context_persists_the_exact_compiled_image(
@@ -242,8 +248,8 @@ async def test_record_context_delivery_requires_initialized_user_tier(tmp_path: 
     with sqlite3.connect(archive_root / "index.db") as index_conn:
         initialize_archive_tier(index_conn, ArchiveTier.INDEX)
 
+    from polylogue.archive.context_models import ContextImage
     from polylogue.config import Config
-    from polylogue.context.compiler import ContextImage
     from polylogue.operations.facade_writers import _archive_record_context_delivery
 
     with pytest.raises(ValueError, match="context-delivery user tier is not initialized"):
@@ -269,7 +275,7 @@ async def test_context_scheduler_ledger_has_a_facade_reader(
 
     with facade_daemon_writer(archive_root):
         async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
-            from polylogue.context.compiler import ContextSpec
+            from polylogue.archive.context_models import ContextSpec
 
             await poly.compile_context(ContextSpec(seed_refs=("session:codex-session:ledger-target",), max_tokens=100))
             records = await poly.list_context_injection_ledger(target_session="codex-session:ledger-target")

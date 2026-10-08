@@ -223,11 +223,22 @@ class _PrefixStringReader:
     :data:`_STRING_PREFIX_BYTES` raw bytes reaches the tokenizer cut at a
     boundary that splits no escape or character; the rest is skipped unread
     by the tokenizer. The root fields a signature reads keep their full
-    leading text.
+    leading text. ``syntax_only`` validates grammar without retaining token
+    truncation metadata or decoding large integer values; it cannot supply
+    record fields or identity evidence.
     """
 
-    def __init__(self, source: _Readable, *, whole_ordinals: frozenset[int] = frozenset()) -> None:
+    def __init__(
+        self,
+        source: _Readable,
+        *,
+        whole_ordinals: frozenset[int] = frozenset(),
+        scalar_values: bool = False,
+        syntax_only: bool = False,
+    ) -> None:
         self._source = source
+        self._scalar_values = scalar_values
+        self._syntax_only = syntax_only
         self._whole_ordinals = whole_ordinals
         self._in_string = False
         self._backslashes = 0
@@ -300,7 +311,10 @@ class _PrefixStringReader:
         if chunk_end and (partial := _NON_FINITE_PARTIAL.search(segment)) is not None:
             self._structure_carry = segment[partial.start() :]
             segment = segment[: partial.start()]
-        segment = _NON_FINITE.sub(_NON_FINITE_PLACEHOLDER, segment)
+        # Detector projections use numeric type, truth, and finite literal
+        # equality. A non-finite placeholder must remain truthy and cannot
+        # become a finite discriminator such as schema_version=1.
+        segment = _NON_FINITE.sub(b" 1e999 " if self._scalar_values else _NON_FINITE_PLACEHOLDER, segment)
         position = 0
         for run in _NUMBER_RUN.finditer(segment):
             if self._number_open and run.start() > 0:
@@ -346,7 +360,7 @@ class _PrefixStringReader:
                 self._number_is_integer = False
         if not self._number_long:
             self._number_view += token
-            if len(self._number_view) > _NUMBER_VIEW_BYTES:
+            if len(self._number_view) > _NUMBER_VIEW_BYTES and not self._scalar_values:
                 self._number_long = True
                 self._number_view = bytearray()
 
@@ -354,8 +368,23 @@ class _PrefixStringReader:
         self._number_open = False
         limit = sys.get_int_max_str_digits()
         oversized = self._number_long or self._number_exponent_digits > _NUMBER_EXPONENT_DIGITS
-        if self._number_is_integer and limit and self._number_digits > limit:
+        if not self._syntax_only and self._number_is_integer and limit and self._number_digits > limit:
             out += _INVALID_NUMBER_END
+        elif self._scalar_values:
+            token = bytes(self._number_view)
+            if not self._number_is_integer and self._number_state in _NUMBER_ACCEPTING:
+                # Decimal's exponent range is smaller than json.loads' float
+                # range. Normalize one complete float token before handing it
+                # to the event tokenizer, preserving zero and overflow.
+                number = float(token)
+                token = (
+                    b"-1e999"
+                    if number == float("-inf")
+                    else b"1e999"
+                    if number == float("inf")
+                    else repr(number).encode("ascii")
+                )
+            out += token
         elif oversized and self._number_state not in _NUMBER_ACCEPTING:
             # A malformed long token stays malformed: the placeholder must not
             # turn a document the decoder rejects into one it would accept.
@@ -394,7 +423,11 @@ class _PrefixStringReader:
                 self._validate_skipped(piece, out)
             else:
                 self._string += piece
-                if len(self._string) > _STRING_PREFIX_BYTES and self._ordinal not in self._whole_ordinals:
+                if (
+                    len(self._string) > _STRING_PREFIX_BYTES
+                    and self._ordinal not in self._whole_ordinals
+                    and not self._scalar_values
+                ):
                     cut = _prefix_cut(bytes(self._string[:_STRING_PREFIX_BYTES]))
                     self._emit_string(bytes(self._string[:cut]), out)
                     self._skipped_bytes = len(self._string)
@@ -425,7 +458,8 @@ class _PrefixStringReader:
                         # A UTF-8 sequence left incomplete by the closing quote.
                         self._skip_invalid = True
                         out += _INVALID_ESCAPE
-                self.truncated[self._ordinal] = self._skipped_bytes - self._skip_savings.saved
+                if not self._syntax_only:
+                    self.truncated[self._ordinal] = self._skipped_bytes - self._skip_savings.saved
             else:
                 self._emit_string(bytes(self._string), out)
             out += b'"'
@@ -434,8 +468,11 @@ class _PrefixStringReader:
             position = end + 1
 
     def _emit_string(self, content: bytes, out: bytearray) -> None:
+        if self._scalar_values:
+            out += content
+            return
         replaced, count = _SURROGATE_BYTES.subn(_SURROGATE_STAND_IN, content)
-        if count:
+        if count and not self._syntax_only:
             self.substituted.add(self._ordinal)
         out += replaced
 
@@ -878,11 +915,123 @@ def bounded_lines(handle: IO[bytes] | IO[str] | Iterable[bytes | str]) -> Iterat
         yield OversizedRecord(size)
 
 
+#: Bytes after which the python lexer has finished every lexeme of its
+#: buffer, outside any string: its unary structural lexemes and JSON
+#: whitespace. ``:`` is excluded: that lexer extends a buffer ending in it.
+_LEXEME_END_BYTES = b"[]{}, \t\r\n"
+
+
+class LexemeAlignedReader:
+    """Pass JSON bytes through in chunks that each end where a lexeme has ended.
+
+    ``ijson.backends.python`` is the exact tokenizer (it keeps lone surrogate
+    escapes that the C tokenizer refuses), but its lexer appends every chunk
+    to its buffer while a lexeme spans a chunk boundary and replaces the
+    buffer only once a chunk is consumed with no lexeme left over. Fed
+    arbitrary chunks, that buffer keeps the whole consumed document. Each
+    chunk this reader returns ends right after a closing quote, a structural
+    character or whitespace outside any string, so the lexer finishes every
+    chunk and starts the next with a fresh buffer. Only the chunking changes:
+    the bytes, and so the lexemes and events, are exactly the source's.
+
+    A source run with no lexeme end at all (one token longer than
+    ``flush_bytes``, which a valid JSON document passed through
+    :class:`_PrefixStringReader` cannot contain) is passed through as it is.
+    """
+
+    def __init__(self, source: _Readable, *, flush_bytes: int = 4 * _READ_BYTES) -> None:
+        self._source = source
+        self._flush_bytes = flush_bytes
+        self._pending = bytearray()
+        #: Bytes of ``_pending`` whose string state is known.
+        self._scanned = 0
+        self._in_string = False
+        self._eof = False
+
+    def read(self, size: int = -1) -> bytes:
+        if size == 0:
+            # The tokenizer probes with an empty read to learn the stream type.
+            return b""
+        while True:
+            cut = self._scan()
+            if not cut and self._eof:
+                cut = len(self._pending)
+            elif not cut and len(self._pending) >= self._flush_bytes:
+                # Everything whose string state is known; an escape whose
+                # escaped byte has not arrived stays behind.
+                cut = self._scanned or len(self._pending)
+            if cut or self._eof:
+                chunk = bytes(self._pending[:cut])
+                del self._pending[:cut]
+                self._scanned = max(0, self._scanned - cut)
+                return chunk
+            data = self._source.read(_READ_BYTES)
+            if data:
+                self._pending += data
+            else:
+                self._eof = True
+
+    def _scan(self) -> int:
+        """Advance string state over unscanned bytes; return the last lexeme end, or 0."""
+        data = self._pending
+        size = len(data)
+        position = self._scanned
+        in_string = self._in_string
+        cut = 0
+        # The last run of bytes outside any string; only its lexeme ends can
+        # follow the last closing quote.
+        span = (position, position) if not in_string else (0, 0)
+        while position < size:
+            if in_string:
+                quote = data.find(b'"', position)
+                limit = size if quote < 0 else quote
+                while (escape := data.find(b"\\", position, limit)) >= 0:
+                    if escape + 1 >= size:
+                        # The escaped byte has not arrived yet.
+                        self._scanned = escape
+                        self._in_string = True
+                        return max(cut, self._span_cut(span))
+                    position = escape + 2
+                    if position > limit:
+                        # That escape was the quote's: the string goes on.
+                        quote = data.find(b'"', position)
+                        limit = size if quote < 0 else quote
+                if quote < 0:
+                    position = size
+                    break
+                in_string = False
+                position = quote + 1
+                cut = position
+                span = (position, position)
+                continue
+            quote = data.find(b'"', position)
+            end = size if quote < 0 else quote
+            span = (position, end)
+            if quote < 0:
+                position = size
+                break
+            in_string = True
+            position = quote + 1
+        self._scanned = position
+        self._in_string = in_string
+        return max(cut, self._span_cut(span))
+
+    def _span_cut(self, span: tuple[int, int]) -> int:
+        start, end = span
+        if start >= end:
+            return 0
+        return max(self._pending.rfind(byte, start, end) for byte in _LEXEME_END_SINGLE_BYTES) + 1
+
+
+_LEXEME_END_SINGLE_BYTES = tuple(bytes((byte,)) for byte in _LEXEME_END_BYTES)
+
+
 __all__ = [
     "ENVELOPE_TEXT_PREFIX_CHARS",
     "UNDECLARED_FIELDS",
     "EnvelopeValueTooLargeError",
     "EnvelopeValueUnrepresentableError",
+    "LexemeAlignedReader",
     "OversizedRecord",
     "bounded_lines",
     "jsonl_record_envelopes",

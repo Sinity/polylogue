@@ -160,7 +160,24 @@ def reconcile_durable_change_trains_on_startup(root: Path) -> tuple[Path, ...]:
     return _reconcile_durable_change_train_startup(root)
 
 
+def pre_migration_backup(
+    archive_root: Path, migration: PendingDurableMigration, *, archive_owner: OwnedArchiveLocation
+) -> Path:
+    """Take and scratch-verify the backup a data-changing migration requires."""
+
+    from polylogue.storage.backup_package import create_pre_migration_backup
+
+    return create_pre_migration_backup(
+        archive_root,
+        tier=migration.tier.value,
+        current_version=migration.current_version,
+        target_version=migration.target_version,
+        archive_owner=archive_owner,
+    )
+
+
 __all__ = [
+    "pre_migration_backup",
     "acquire_durable_archive_ownership",
     "ArchiveOwnershipError",
     "DurableChangeTrainError",

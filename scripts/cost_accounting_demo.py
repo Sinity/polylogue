@@ -6,9 +6,9 @@ A stranger can run this with nothing but a checkout:
 
     uv run python scripts/cost_accounting_demo.py
 
-It builds a throwaway archive in a temp dir, ingests two crafted sessions
+It builds a throwaway archive in a temp dir, ingests one crafted session
 through Polylogue's *real* writer (`write_parsed_session_to_archive`, the same
-path the daemon uses), reads the materialized `session_model_usage` rollup back,
+lowering writer used by retained publication), reads the materialized `session_model_usage` rollup back,
 and prices it with the real catalog (`archive/semantic/pricing.py`). The token
 numbers are hand-checkable, so you can verify the math yourself.
 
@@ -43,17 +43,54 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.write import (
+    ConnectionSessionSourceRead,
+    PreparedSessionSourceRead,
+    prepare_session_write,
+    write_parsed_session_to_archive,
+)
+from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+from polylogue.storage.sqlite.write_lease import write_lease
 
 
-def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+def _write_demo_session(archive_root: Path, session: ParsedSession) -> str:
+    """Use the same prepared lowering and guarded publication as retained ingest."""
+    with ArchiveStore.open_existing(archive_root, read_only=False):
+        pass
+    index_path = archive_root / "index.db"
+    conn = connect_measured(index_path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, ArchiveTier.INDEX)
-    return conn
+    try:
+        with PreparedIndexMutation(index_path, archive_root=archive_root) as seal:
+            with seal.original_read_snapshot(), seal.source_producer():
+                prepared = prepare_session_write(
+                    seal.observer("index"),
+                    session,
+                    merge_append=False,
+                    source_read=PreparedSessionSourceRead(seal, blob_store=BlobStore(archive_root / "blob")),
+                )
+            try:
+                with (
+                    write_lease("cost-accounting-demo", archive_root=archive_root),
+                    seal.mutation_scope(conn) as scope,
+                ):
+                    return write_parsed_session_to_archive(
+                        conn,
+                        session,
+                        content_hash=prepared.input_content_hash.hex(),
+                        pending_input_content_hash=prepared.input_content_hash.hex(),
+                        prepared_write=prepared,
+                        source_read=ConnectionSessionSourceRead(seal.observer("source")),
+                        mutation_scope=scope,
+                        archive_root=archive_root,
+                    )
+            finally:
+                prepared.close()
+    finally:
+        conn.close()
 
 
 def _price(model: str, fresh_input: int, output: int, cache_read: int, cache_write: int) -> float:
@@ -117,15 +154,17 @@ def run_synthetic_demo() -> None:
     )
 
     with tempfile.TemporaryDirectory(prefix="polylogue-cost-demo-") as td:
-        conn = _connect(Path(td) / "index.db")
-        session_id = write_parsed_session_to_archive(conn, codex)
-        row = conn.execute(
-            """
-            SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
-            FROM session_model_usage WHERE session_id = ?
-            """,
-            (session_id,),
-        ).fetchone()
+        archive_root = Path(td)
+        session_id = _write_demo_session(archive_root, codex)
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+                FROM session_model_usage WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
 
     model = row["model_name"]
     fin, out, cr, cw = row["input_tokens"], row["output_tokens"], row["cache_read_tokens"], row["cache_write_tokens"]

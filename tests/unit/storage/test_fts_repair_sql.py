@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 import sqlite3
 from builtins import BaseExceptionGroup
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -34,6 +35,20 @@ from polylogue.storage.fts.sql import (
 from polylogue.storage.io_phase_metrics import close_connection_cursor, live_connection_cursors
 from tests.infra.identity import archive_message_id
 from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+
+@pytest.fixture
+def test_conn(test_db: Path) -> Iterator[sqlite3.Connection]:
+    """Settle this module's caller-owned transaction before the write lease closes.
+
+    The cached connection refuses to close an open transaction; these laws
+    write through the fixture connection and commit as their caller would.
+    """
+    from polylogue.storage.sqlite.connection import open_connection
+
+    with open_connection(test_db) as conn:
+        yield conn
+        conn.commit()
 
 
 def _seed_text_block(conn: sqlite3.Connection, *, native_session_id: str, native_message_id: str, text: str) -> str:

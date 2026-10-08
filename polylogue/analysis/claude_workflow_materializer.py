@@ -13,6 +13,7 @@ import json
 import sqlite3
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -36,8 +37,9 @@ from polylogue.sources.parsers.claude.orchestration import (
     ClaudeOrchestrationFact,
     parse_claude_orchestration_artifact,
 )
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.managed_connection import sqlite_connection
+from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
 from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
 logger = get_logger(__name__)
@@ -152,9 +154,7 @@ def materialize_claude_workflow_archive(archive_root: Path) -> ClaudeWorkflowMat
 
     # The projection above is archive-wide compute; only this replacement is
     # a write, so it is the only part that enters the daemon writer.
-    admit_stage_write(
-        "convergence.stage.claude_workflow.publish", lambda: _replace_graph_family(archive_root / "index.db", graphs)
-    )
+    admit_stage_write("convergence.stage.claude_workflow.publish", lambda: _replace_graph_family(archive_root, graphs))
     return _summarize(prepared, graphs)
 
 
@@ -187,19 +187,15 @@ def claude_workflow_reparse_plan(archive_root: Path) -> ClaudeWorkflowReparsePla
 
 def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
     source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
+    index_db = resolve_active_index_path(archive_root)
     if not source_db.exists() or not index_db.exists():
         raise FileNotFoundError("Claude Workflow materialization requires source.db and index.db")
 
     blob_store = BlobStore(archive_root / "blob")
-    # Both reads run on the stage check, outside writer admission. A writable
-    # open there raises ``UnleasedWriteError`` under the daemon's armed
-    # single-writer guard, so the stage never converged and its debt blocked
-    # every fresh build from reaching a terminal state (as polylogue-snhyj did
-    # for delegation evidence). Publication keeps its own admitted write.
-    with sqlite_connection(f"{source_db.absolute().as_uri()}?mode=ro", uri=True) as source_conn:
+    # Both reads run on the stage check, outside writer admission. Publication
+    # keeps its own admitted write.
+    with closing(open_readonly_connection(source_db, timeout_class="background-read")) as source_conn:
         source_conn.row_factory = sqlite3.Row
-        source_conn.execute("PRAGMA foreign_keys = ON")
         raw_artifacts = _load_current_artifacts(source_conn)
         retained_revisions = _count_retained_revisions(source_conn)
 
@@ -236,7 +232,7 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
             )
         parsed.append(value)
 
-    with sqlite_connection(f"{index_db.absolute().as_uri()}?mode=ro", uri=True) as index_conn:
+    with closing(open_readonly_connection(index_db, timeout_class="background-read")) as index_conn:
         index_conn.row_factory = sqlite3.Row
         coordinator_invocations = _load_coordinator_invocations(index_conn, raw_artifacts)
         sessions = _load_session_evidence(index_conn, raw_artifacts)
@@ -555,9 +551,14 @@ def _corpus_snapshot(
     )
 
 
-def _replace_graph_family(index_db: Path, graphs: Sequence[WorkEvidenceGraph]) -> None:
+def _replace_graph_family(archive_root: Path, graphs: Sequence[WorkEvidenceGraph]) -> None:
+    index_db = resolve_active_index_path(archive_root)
     assert_population_admitted(index_db)
-    conn = sqlite3.connect(index_db)
+    conn = open_isolated_write_connection(
+        index_db,
+        purpose="convergence.stage.claude_workflow.publish",
+        archive_root=archive_root,
+    )
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("BEGIN IMMEDIATE")

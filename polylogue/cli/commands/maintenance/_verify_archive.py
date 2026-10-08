@@ -75,20 +75,27 @@ def verify_archive_command(
         passes_strict_acceptance,
         verify_archive,
     )
+    from polylogue.maintenance.source_manifest_continuity import configured_source_frontier
 
     declared_names = archive_verification_names_for_route("live-archive")
 
+    needs_frontier = not selected_checks or "source-conservation" in selected_checks
+    frontier = None
     try:
+        if needs_frontier:
+            frontier = configured_source_frontier(archive_root())
         report = verify_archive(
             archive_root(),
             checks=selected_checks or None,
             sample_limit=sample_limit,
+            source_frontier=frontier,
+            require_source_frontier=needs_frontier,
         )
     except ValueError as exc:
-        raise click.BadParameter(
-            f"{exc}",
-            param_hint="--check",
-        ) from exc
+        raise click.ClickException(f"cannot establish configured source frontier: {exc}") from exc
+    finally:
+        if frontier is not None:
+            frontier.close()
 
     if output_format == "json":
         click.echo(json.dumps(report.to_json(), indent=2, sort_keys=True))

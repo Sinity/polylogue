@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
+from io import BytesIO
 from itertools import permutations
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -30,15 +33,28 @@ from polylogue.archive.session_revision_membership import (
 )
 from polylogue.core.enums import Provider
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
-from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import merge_parsed_session_chunks, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, parser_census_logical_keys
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.raw_authority import iter_parser_census_logical_keys, raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
-from tests.infra.thread_state import seed_thread_titles
+from tests.infra.prepared_membership import (
+    apply_prepared_aggregate_replay,
+    publish_prepared_membership_classification,
+    write_prepared_retained_session,
+)
+from tests.infra.prepared_replay import (
+    apply_prepared_revision_replay,
+    independent_source_connection,
+    open_independent_source,
+    publish_membership_census,
+    publish_prepared_source,
+    run_on_convergence_owner,
+    write_fixture_raw_session,
+)
 
 
 def _candidate(
@@ -70,6 +86,27 @@ def _candidate(
 
 def _decisions(candidates: list[RevisionCandidate]) -> dict[str, ApplicationDecision]:
     return {item.raw_id: item.decision for item in plan_revision_replay(candidates).applications}
+
+
+def _publish_membership(
+    archive: ArchiveStore,
+    logical_source_key: str,
+    classification: MembershipClassification,
+    parsed_by_raw_id: dict[str, ParsedSession],
+    projections_by_raw_id: dict[str, Any],
+    *,
+    acquired_at_ms: int,
+) -> str | None:
+    """Publish one supplied classification on the canonical prepared route."""
+    session_id, _decisions = publish_prepared_membership_classification(
+        archive,
+        logical_source_key,
+        classification,
+        parsed_by_raw_id,
+        projections_by_raw_id,
+        decided_at_ms=acquired_at_ms,
+    )
+    return session_id
 
 
 def test_partial_append_overlap_is_ambiguous() -> None:
@@ -231,6 +268,7 @@ def test_live_revision_binding_without_parser_evidence_does_not_issue_receipt(tm
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"live-receipt"}}\n',
             source_path="live/codex.jsonl",
+            canonical_source_path="live/codex.jsonl",
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -282,6 +320,7 @@ def test_parser_receipt_fails_when_observed_identity_differs_from_binding(tmp_pa
             provider=Provider.CODEX,
             payload=payload,
             source_path="historical/mismatch.jsonl",
+            canonical_source_path="historical/mismatch.jsonl",
             acquired_at_ms=1,
             source_index=0,
         )
@@ -296,18 +335,21 @@ def test_parser_receipt_fails_when_observed_identity_differs_from_binding(tmp_pa
             ),
         )
 
-        with archive._ensure_source_conn():
-            archive_revision_governance.record_current_parser_source_census(
-                archive._ensure_source_conn(),
-                raw_id,
-                parser_sessions=[
-                    ParsedSession(
-                        source_name=Provider.CODEX,
-                        provider_session_id="parser-observed-id",
-                        messages=[],
-                    )
-                ],
-            )
+    publish_prepared_source(
+        tmp_path,
+        "test.revision.parser-census",
+        lambda seal: archive_revision_governance.record_current_parser_source_census(
+            seal,
+            raw_id,
+            parser_sessions=[
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="parser-observed-id",
+                    messages=[],
+                )
+            ],
+        ),
+    )
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         receipt = conn.execute(
@@ -316,7 +358,7 @@ def test_parser_receipt_fails_when_observed_identity_differs_from_binding(tmp_pa
 
     assert receipt is not None
     assert receipt[0] == "failed"
-    assert parser_census_logical_keys(receipt[1]) == ("codex-session:parser-observed-id",)
+    assert tuple(iter_parser_census_logical_keys(receipt[1])) == ("codex-session:parser-observed-id",)
 
 
 def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path: Path) -> None:
@@ -328,6 +370,7 @@ def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path:
             provider=Provider.CODEX,
             payload=b"not valid codex jsonl",
             source_path="terminal-corrupt.jsonl",
+            canonical_source_path="terminal-corrupt.jsonl",
             acquired_at_ms=1,
         )
         archive.record_raw_failure_evidence(
@@ -344,11 +387,12 @@ def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path:
             error=ValueError("terminal corrupt input"),
             preserve_existing_failure_evidence=True,
         )
-        with archive._ensure_source_conn():
-            archive_revision_governance.record_current_parser_source_census(
-                archive._ensure_source_conn(),
-                raw_id,
-            )
+
+    publish_prepared_source(
+        tmp_path,
+        "test.revision.terminal-census",
+        lambda seal: archive_revision_governance.record_current_parser_source_census(seal, raw_id),
+    )
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         status, keys = conn.execute(
@@ -356,11 +400,14 @@ def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path:
             (raw_id,),
         ).fetchone()
     assert status == "complete"
-    assert parser_census_logical_keys(keys) == ()
+    assert tuple(iter_parser_census_logical_keys(keys)) == ()
 
-    from polylogue.sources.revision_backfill import require_current_parser_source_census
+    from polylogue.storage.source_generation_receipts import _raw_receipt
 
-    assert require_current_parser_source_census(tmp_path)[raw_id] == ()
+    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+        with _raw_receipt(source, index, raw_id, check_stop=None) as receipt:
+            assert receipt.parser_complete is True
+            assert tuple(receipt.logicals) == ()
 
 
 def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys(tmp_path: Path) -> None:
@@ -371,11 +418,11 @@ def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys
             provider=Provider.CODEX,
             payload=b'{"append":true}\n',
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=1,
         )
-        with archive._ensure_source_conn():
-            conn = archive._ensure_source_conn()
+        with independent_source_connection(archive) as conn:
             conn.execute(
                 """
                 INSERT INTO raw_session_memberships (
@@ -391,9 +438,14 @@ def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys
                     raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail, revision_authority
                 ) VALUES (?, ?, 'failed', 1, 1, ?, 'byte_proven')
                 """,
-                (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT, BYTE_AUTHORITY_CENSUS_DETAIL),
+                (raw_id, raw_authority_parser_fingerprint(), BYTE_AUTHORITY_CENSUS_DETAIL),
             )
-            archive_revision_governance.record_current_parser_source_census(conn, raw_id)
+
+    publish_prepared_source(
+        tmp_path,
+        "test.revision.byte-governed-census",
+        lambda seal: archive_revision_governance.record_current_parser_source_census(seal, raw_id),
+    )
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         receipt = conn.execute(
@@ -402,7 +454,7 @@ def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys
 
     assert receipt is not None
     assert receipt[0] == "complete"
-    assert parser_census_logical_keys(receipt[1]) == ("codex-session:durable-append",)
+    assert tuple(iter_parser_census_logical_keys(receipt[1])) == ("codex-session:durable-append",)
 
 
 def test_typed_non_session_receipt_preserves_durable_membership_on_restart(tmp_path: Path) -> None:
@@ -413,6 +465,7 @@ def test_typed_non_session_receipt_preserves_durable_membership_on_restart(tmp_p
             provider=Provider.CODEX,
             payload=b"not valid codex jsonl",
             source_path="terminal-corrupt.jsonl",
+            canonical_source_path="terminal-corrupt.jsonl",
             acquired_at_ms=1,
         )
         archive.record_raw_failure_evidence(
@@ -423,8 +476,7 @@ def test_typed_non_session_receipt_preserves_durable_membership_on_restart(tmp_p
             acquired_at_ms=1,
             kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
         )
-        with archive._ensure_source_conn():
-            conn = archive._ensure_source_conn()
+        with independent_source_connection(archive) as conn:
             conn.execute(
                 """
                 INSERT INTO raw_session_memberships (
@@ -434,7 +486,12 @@ def test_typed_non_session_receipt_preserves_durable_membership_on_restart(tmp_p
                 """,
                 (raw_id, "codex-session:typed-membership", "typed-membership", "revision-1", bytes(32), 1),
             )
-            archive_revision_governance.record_current_parser_source_census(conn, raw_id)
+
+    publish_prepared_source(
+        tmp_path,
+        "test.revision.typed-membership-census",
+        lambda seal: archive_revision_governance.record_current_parser_source_census(seal, raw_id),
+    )
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         receipt = conn.execute(
@@ -444,11 +501,14 @@ def test_typed_non_session_receipt_preserves_durable_membership_on_restart(tmp_p
     assert receipt is not None
     assert receipt[0] == "complete"
     expected_keys = ("codex-session:typed-membership",)
-    assert parser_census_logical_keys(receipt[1]) == expected_keys
+    assert tuple(iter_parser_census_logical_keys(receipt[1])) == expected_keys
 
-    from polylogue.sources.revision_backfill import require_current_parser_source_census
+    from polylogue.storage.source_generation_receipts import _raw_receipt
 
-    assert require_current_parser_source_census(tmp_path)[raw_id] == expected_keys
+    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+        with _raw_receipt(source, index, raw_id, check_stop=None) as raw_receipt:
+            assert raw_receipt.parser_complete is True
+            assert tuple(logical.logical_source_key for logical in raw_receipt.logicals) == expected_keys
 
 
 def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> None:
@@ -460,6 +520,7 @@ def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> N
             provider=Provider.CODEX,
             payload=b"not valid codex jsonl",
             source_path="terminal-replay-corrupt.jsonl",
+            canonical_source_path="terminal-replay-corrupt.jsonl",
             acquired_at_ms=1,
         )
         archive.record_raw_failure_evidence(
@@ -476,24 +537,33 @@ def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> N
             error=ValueError("terminal corrupt input"),
             preserve_existing_failure_evidence=True,
         )
-        with archive._ensure_source_conn():
-            archive_revision_governance.record_current_parser_source_census(archive._ensure_source_conn(), raw_id)
 
-        from polylogue.sources.revision_backfill import _load_frozen_revision_evidence, _ParsedSessionSpill
+    # The retired frozen-evidence loader is replaced by the canonical Raw
+    # derivation: its census phase must settle the typed terminal raw itself.
+    # Preparation commits that census in place on the writer and then reports
+    # the settled typed refusal instead of dispatching the malformed bytes.
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
+    from polylogue.operations.raw_observation_derivation import raw_observation_frame
+    from polylogue.storage.derived.raw import RawObservationDerivation
+    from tests.infra.prepared_replay import run_on_convergence_owner
 
-        with _ParsedSessionSpill(tmp_path, max_cached_payload_bytes=1024 * 1024) as spill:
-            census = _load_frozen_revision_evidence(
-                archive,
-                spill,
-                selected_raw_ids=None,
-                max_payload_bytes=None,
-                ingest_workers=1,
-            )
+    def census_rows() -> list[tuple[object, ...]]:
+        with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+            return conn.execute("SELECT * FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)).fetchall()
 
-    assert census.scanned == 1
-    assert census.censused == {raw_id}
-    assert census.classified == 0
-    assert census.quarantined == 0
+    assert census_rows() == []
+
+    def census_phase(compute: BoundedComputeAdapter) -> RetainedRawDecodeRefusalError:
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
+        frame = raw_observation_frame(tmp_path)
+        with pytest.raises(RetainedRawDecodeRefusalError) as refused:
+            adapter.compute(frame, raw_id)
+        return refused.value
+
+    refusal = run_on_convergence_owner(tmp_path, "test.revision.terminal-replay", census_phase)
+    assert refusal.kind is RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
+    assert len(census_rows()) == 1
 
 
 def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path) -> None:
@@ -510,14 +580,17 @@ def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path)
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"post-parse-receipt"}}\n',
             source_path="live/pending.jsonl",
+            canonical_source_path="live/pending.jsonl",
             acquired_at_ms=1,
             post_parse=True,
         )
-        archive.replace_raw_membership_census(
+        publish_membership_census(
+            archive,
             raw_id,
             [session],
-            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            parser_fingerprint=raw_authority_parser_fingerprint(),
             censused_at_ms=1,
+            revision_authority=None,
         )
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -526,7 +599,7 @@ def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path)
         ).fetchone()
 
     assert receipt is not None
-    assert parser_census_logical_keys(receipt[0]) == ("codex-session:post-parse-receipt",)
+    assert tuple(iter_parser_census_logical_keys(receipt[0])) == ("codex-session:post-parse-receipt",)
 
 
 def test_replay_selects_newest_full_and_exact_contiguous_suffix_independent_of_order() -> None:
@@ -570,21 +643,20 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
                 provider=Provider.CODEX,
                 payload=raw_id.encode(),
                 source_path=f"{raw_id}.jsonl",
+                canonical_source_path=f"{raw_id}.jsonl",
                 acquired_at_ms=1,
                 raw_id=raw_id,
             )
-            archive.replace_raw_membership_census(
-                raw_id,
-                [session],
-                parser_fingerprint="test-parser",
-                censused_at_ms=1,
+            publish_membership_census(
+                archive, raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
             )
             return MembershipRevision(raw_id, projection)
 
         members = [add_member("representative-b"), add_member("equivalent-z")]
         first = classify_membership_revisions(members)
         assert first.accepted_raw_ids == ("equivalent-z",)
-        archive.apply_raw_membership_classification(
+        _publish_membership(
+            archive,
             "codex-session:session",
             first,
             {member.raw_id: session for member in members},
@@ -595,7 +667,8 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
         members.append(add_member("accepted-a"))
         second = classify_membership_revisions(members)
         assert second.accepted_raw_ids == ("accepted-a",)
-        archive.apply_raw_membership_classification(
+        _publish_membership(
+            archive,
             "codex-session:session",
             second,
             {member.raw_id: session for member in members},
@@ -667,14 +740,12 @@ def test_headless_cohort_keeps_equivalents_quarantined_ambiguous(tmp_path: Path)
                 provider=Provider.CODEX,
                 payload=raw_id.encode(),
                 source_path=f"{raw_id}.jsonl",
+                canonical_source_path=f"{raw_id}.jsonl",
                 acquired_at_ms=1,
                 raw_id=raw_id,
             )
-            archive.replace_raw_membership_census(
-                raw_id,
-                [session],
-                parser_fingerprint="test-parser",
-                censused_at_ms=1,
+            publish_membership_census(
+                archive, raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
             )
             return MembershipRevision(raw_id, session_revision_projection(session))
 
@@ -695,7 +766,8 @@ def test_headless_cohort_keeps_equivalents_quarantined_ambiguous(tmp_path: Path)
         assert classification.equivalent_raw_ids
 
         session_by_raw = {"branch-a": branch_a, "branch-a-dup": branch_a, "branch-b": branch_b}
-        archive.apply_raw_membership_classification(
+        _publish_membership(
+            archive,
             "codex-session:session",
             classification,
             session_by_raw,
@@ -808,6 +880,7 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
             provider=Provider.CODEX,
             payload=b"suffix",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=1,
         )
@@ -828,6 +901,7 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
             provider=Provider.CODEX,
             payload=b"baseline",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=2,
         )
         archive.bind_raw_revision(
@@ -841,7 +915,7 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
             ),
         )
 
-        plan = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
 
     assert {item.raw_id: item.decision for item in plan.applications} == {
         baseline_raw_id: ApplicationDecision.SELECTED_BASELINE,
@@ -871,6 +945,7 @@ def _write_full_raw(archive: ArchiveStore, *, raw_id: str, payload: bytes, acqui
         provider=Provider.CODEX,
         payload=payload,
         source_path="session.jsonl",
+        canonical_source_path="session.jsonl",
         acquired_at_ms=acquired_at_ms,
         raw_id=raw_id,
     )
@@ -913,7 +988,7 @@ def test_duplicate_decision_mid_chain_gets_representative_generation_not_zero(tm
             archive, raw_id="raw-011-mid-dup", payload=b"a" * 10 + b"b" * 10, acquired_at_ms=4
         )
 
-        archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
+        archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
 
         assert _acquisition_generation(archive, base) == 0
         assert _acquisition_generation(archive, mid) == 1
@@ -955,7 +1030,7 @@ def test_duplicate_generation_copy_does_not_drop_the_chain_continuing_representa
         )
         assert mid < mid_duplicate  # guards the ordering assumption the collision case depends on
 
-        archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
+        archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
 
         assert _acquisition_generation(archive, base) == 0
         assert _acquisition_generation(archive, mid) == 1
@@ -992,7 +1067,7 @@ def test_duplicate_of_accepted_baseline_does_not_trip_membership_census_guard(tm
         baseline = _write_full_raw(archive, raw_id="raw-a-baseline", payload=b"hello world", acquired_at_ms=1)
         duplicate = _write_full_raw(archive, raw_id="raw-b-duplicate", payload=b"hello world", acquired_at_ms=2)
 
-        plan = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
 
         # The cohort has a unique byte-proven baseline -- the duplicate no
         # longer manufactures a false "multiple newest baselines" ambiguity.
@@ -1009,13 +1084,15 @@ def test_duplicate_of_accepted_baseline_does_not_trip_membership_census_guard(tm
         # baseline_raw_id column durably points at it -- a real dependent,
         # not a false one.
         with pytest.raises(archive_revision_governance.ActiveByteRevisionChainError):
-            archive.replace_raw_membership_census(
+            publish_membership_census(
+                archive,
                 baseline,
                 [],
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail="test-duplicate-guard",
                 retire_full_revision_governance=True,
+                revision_authority=None,
             )
         archive.rollback()
 
@@ -1035,7 +1112,11 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=b"a" * 10, source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=b"a" * 10,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -1047,6 +1128,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
             provider=Provider.CODEX,
             payload=b"b" * 5,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -1069,6 +1151,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
             provider=Provider.CODEX,
             payload=b"c" * 5,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=3,
         )
@@ -1090,8 +1173,9 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        append_plan = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
-        archive.apply_raw_revision_replay(
+        append_plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        apply_prepared_revision_replay(
+            archive,
             append_plan,
             {
                 baseline: parsed(("m0", "zero")),
@@ -1105,6 +1189,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
             provider=Provider.CODEX,
             payload=b"a" * 10 + b"b" * 5 + b"c" * 5,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=4,
         )
         archive.bind_raw_revision(
@@ -1117,7 +1202,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        folded_plan = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
+        folded_plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
         folded_session = parsed(("full-0", "zero"), ("full-1", "one"), ("full-2", "two"))
         before_hash = archive._conn.execute(
             "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = ?",
@@ -1125,7 +1210,8 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
         ).fetchone()
         assert before_hash is not None
         assert bytes(before_hash[0]) != bytes.fromhex(session_content_hash(folded_session))
-        archive.apply_raw_revision_replay(
+        apply_prepared_revision_replay(
+            archive,
             folded_plan,
             {folded: folded_session},
             acquired_at_ms=0,
@@ -1137,6 +1223,91 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
         ).fetchone()
         assert head is not None
         assert tuple(head) == (folded, 20)
+
+
+def test_native_winner_persists_independent_supersession_without_prefix_claim(tmp_path: Path) -> None:
+    """A unique native winner gives every dominated raw a durable terminal receipt."""
+    bootstrap_archive_root(tmp_path)
+    sessions = {
+        "old-a": _parsed_session(("m0", "opening"), ("m1", "older answer A")),
+        "old-b": _parsed_session(("m0", "opening"), ("m1", "older answer B")),
+        "winner": _parsed_session(("m0", "opening"), ("m1", "current answer"), ("m2", "later reply")),
+    }
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = {label: _write_quarantined_member(archive, label, session) for label, session in sessions.items()}
+        revisions = [
+            MembershipRevision(
+                raw_ids[label],
+                session_revision_projection(sessions[label]),
+                provider_updated_at=timestamp,
+                browser_snapshot_fidelity="native",
+                provider_message_ids=provider_ids,
+            )
+            for label, timestamp, provider_ids in (
+                ("old-a", "2026-10-01T00:00:00Z", frozenset({"m0", "m1"})),
+                ("old-b", "2026-10-01T00:00:00Z", frozenset({"m0", "m1"})),
+                ("winner", "2026-10-02T00:00:00Z", frozenset({"m0", "m1", "m2"})),
+            )
+        ]
+        classification = classify_membership_revisions(revisions, existing_accepted_raw_id=raw_ids["old-a"])
+        assert classification.accepted_raw_ids == (raw_ids["winner"],)
+        assert set(classification.superseded_raw_ids) == {raw_ids["old-a"], raw_ids["old-b"]}
+        sessions_by_raw_id = {raw_ids[label]: session for label, session in sessions.items()}
+        projections = {raw_id: session_revision_projection(session) for raw_id, session in sessions_by_raw_id.items()}
+        _publish_membership(
+            archive,
+            "codex-session:session",
+            classification,
+            sessions_by_raw_id,
+            projections,
+            acquired_at_ms=10,
+        )
+
+        source = archive._ensure_source_conn()
+        membership = source.execute(
+            "SELECT raw_id, decision, revision_authority FROM raw_session_memberships ORDER BY raw_id"
+        ).fetchall()
+        assert {str(row[0]): (str(row[1]), str(row[2])) for row in membership} == {
+            raw_ids["old-a"]: ("superseded_by_winner", "byte_proven"),
+            raw_ids["old-b"]: ("superseded_by_winner", "byte_proven"),
+            raw_ids["winner"]: ("applied", "byte_proven"),
+        }
+        applications = archive._conn.execute(
+            "SELECT raw_id, decision, accepted_raw_id FROM raw_revision_applications ORDER BY raw_id"
+        ).fetchall()
+        assert {str(row[0]): (str(row[1]), str(row[2])) for row in applications} == {
+            raw_ids["old-a"]: ("superseded", raw_ids["winner"]),
+            raw_ids["old-b"]: ("superseded", raw_ids["winner"]),
+            raw_ids["winner"]: ("selected_baseline", raw_ids["winner"]),
+        }
+        head = archive._conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key='codex-session:session'"
+        ).fetchone()
+        assert head is not None and tuple(head) == (raw_ids["winner"],)
+        message_count = archive._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id='codex-session:session'"
+        ).fetchone()
+        assert message_count is not None and int(message_count[0]) == 3
+
+    # New read handles prove that publication survives restart and that the
+    # terminal memberships certify actual applications pointing at the winner.
+    from polylogue.storage.raw_authority import (
+        build_raw_replay_plans,
+        raw_replay_application_receipt,
+        validate_raw_replay_application_receipt,
+    )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as restarted:
+        assert (
+            restarted._conn.execute(
+                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key='codex-session:session'"
+            ).fetchone()[0]
+            == raw_ids["winner"]
+        )
+    (plan,) = build_raw_replay_plans(tmp_path, (tuple(raw_ids.values()),))
+    receipt = raw_replay_application_receipt(tmp_path, plan)
+    valid, problems = validate_raw_replay_application_receipt(plan, receipt)
+    assert valid, problems
 
 
 def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: Path) -> None:
@@ -1180,7 +1351,11 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_a = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"aaa-left", source_path="a.json", acquired_at_ms=1
+            provider=Provider.CHATGPT,
+            payload=b"aaa-left",
+            source_path="a.json",
+            canonical_source_path="a.json",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             raw_a,
@@ -1189,7 +1364,11 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
             ),
         )
         raw_b = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"bbb-right", source_path="b.json", acquired_at_ms=2
+            provider=Provider.CHATGPT,
+            payload=b"bbb-right",
+            source_path="b.json",
+            canonical_source_path="b.json",
+            acquired_at_ms=2,
         )
         archive.bind_raw_revision(
             raw_b,
@@ -1198,7 +1377,7 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
             ),
         )
 
-        first_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
+        first_plan = archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:s1")
         assert first_plan.accepted_raw_ids == ()
 
         # Both siblings genuinely disagree (no byte-prefix relation) --
@@ -1209,18 +1388,24 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
             (raw_a, parsed_solo("s1", "base", "left")),
             (raw_b, parsed_solo("s1", "base", "right")),
         ):
-            archive.replace_raw_membership_census(
+            publish_membership_census(
+                archive,
                 raw_id,
                 [session],
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail="historical non-prefix full revision governance",
                 retire_full_revision_governance=True,
+                revision_authority=RawRevisionAuthority.QUARANTINED,
             )
 
         # A THIRD raw for the same logical identity, discovered afterward.
         raw_c = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"ccc-solo", source_path="c.json", acquired_at_ms=3
+            provider=Provider.CHATGPT,
+            payload=b"ccc-solo",
+            source_path="c.json",
+            canonical_source_path="c.json",
+            acquired_at_ms=3,
         )
         archive.bind_raw_revision(
             raw_c,
@@ -1228,7 +1413,7 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
                 "chatgpt-export:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
-        second_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
+        second_plan = archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:s1")
 
     # The isolated raw must not be promoted alone: this identity has known,
     # unresolved ambiguous siblings that a real classifier must weigh it
@@ -1268,7 +1453,11 @@ def test_precedence_write_refuses_a_raw_recorded_ambiguous(tmp_path: Path) -> No
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"aaa-left", source_path="a.json", acquired_at_ms=1
+            provider=Provider.CHATGPT,
+            payload=b"aaa-left",
+            source_path="a.json",
+            canonical_source_path="a.json",
+            acquired_at_ms=1,
         )
         # Durable evidence that this raw's identity was already judged
         # ambiguous -- the shape ``replace_raw_membership_census`` /
@@ -1276,8 +1465,7 @@ def test_precedence_write_refuses_a_raw_recorded_ambiguous(tmp_path: Path) -> No
         # genuinely divergent cohort (reproduced directly here so the test
         # isolates the WRITE-PATH guard from the classifier that produces
         # this state).
-        source_conn = archive._ensure_source_conn()
-        with source_conn:
+        with independent_source_connection(archive) as source_conn:
             source_conn.execute(
                 """
                 INSERT INTO raw_session_memberships (
@@ -1289,12 +1477,8 @@ def test_precedence_write_refuses_a_raw_recorded_ambiguous(tmp_path: Path) -> No
                 (raw_id, raw_id, bytes.fromhex(raw_id)),
             )
 
-        returned_raw_id, session_id = archive.write_parsed_for_retained_raw(
-            session,
-            raw_id=raw_id,
-            source_path="a.json",
-            acquired_at_ms=2,
-        )
+        result = write_prepared_retained_session(archive, session, raw_id=raw_id)
+        returned_raw_id, session_id = result.raw_id, result.session_id
 
     assert returned_raw_id == raw_id
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -1330,10 +1514,13 @@ def test_precedence_write_allows_a_non_ambiguous_sibling_membership_on_the_same_
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"two-sessions", source_path="bundle.json", acquired_at_ms=1
+            provider=Provider.CHATGPT,
+            payload=b"two-sessions",
+            source_path="bundle.json",
+            canonical_source_path="bundle.json",
+            acquired_at_ms=1,
         )
-        source_conn = archive._ensure_source_conn()
-        with source_conn:
+        with independent_source_connection(archive) as source_conn:
             # One raw, two memberships, arbitrated differently -- the live shape.
             source_conn.execute(
                 """
@@ -1356,12 +1543,8 @@ def test_precedence_write_allows_a_non_ambiguous_sibling_membership_on_the_same_
                 (raw_id, raw_id + "-b", bytes.fromhex(raw_id)),
             )
 
-        _, ambiguous_session_id = archive.write_parsed_for_retained_raw(
-            ambiguous_session, raw_id=raw_id, source_path="bundle.json", acquired_at_ms=2
-        )
-        _, settled_session_id = archive.write_parsed_for_retained_raw(
-            settled_session, raw_id=raw_id, source_path="bundle.json", acquired_at_ms=3
-        )
+        ambiguous_session_id = write_prepared_retained_session(archive, ambiguous_session, raw_id=raw_id).session_id
+        settled_session_id = write_prepared_retained_session(archive, settled_session, raw_id=raw_id).session_id
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
         # The ambiguous membership is still refused ...
@@ -1410,7 +1593,11 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
         raws = []
         for label, payload in (("a", b"aaa-left"), ("b", b"bbb-right")):
             raw_id = archive.write_raw_payload(
-                provider=Provider.CHATGPT, payload=payload, source_path=f"{label}.json", acquired_at_ms=1
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path=f"{label}.json",
+                canonical_source_path=f"{label}.json",
+                acquired_at_ms=1,
             )
             archive.bind_raw_revision(
                 raw_id,
@@ -1422,13 +1609,15 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
         raw_a, raw_b = raws
 
         with pytest.raises(ValueError, match="recognized governance marker"):
-            archive.replace_raw_membership_census(
+            publish_membership_census(
+                archive,
                 raw_a,
                 [parsed_solo("s1", "base", "left")],
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=unrecognized,
                 retire_full_revision_governance=True,
+                revision_authority=None,
             )
 
         # The refusal happens before any mutation: the raw keeps its identity
@@ -1445,13 +1634,15 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
 
         # A census that leaves no membership row has no logical identity to be
         # ambiguous about, so its detail stays free explanatory prose.
-        archive.replace_raw_membership_census(
+        publish_membership_census(
+            archive,
             raw_a,
             [],
-            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            parser_fingerprint=raw_authority_parser_fingerprint(),
             censused_at_ms=0,
             detail=unrecognized,
             retire_full_revision_governance=True,
+            revision_authority=None,
         )
 
     # Now the hazard the refusal prevents, reached by rewriting an accepted
@@ -1461,7 +1652,11 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
         retired = []
         for label, payload, tail in (("a", b"aaa-left", "left"), ("b", b"bbb-right", "right")):
             raw_id = archive.write_raw_payload(
-                provider=Provider.CHATGPT, payload=payload, source_path=f"{label}.json", acquired_at_ms=1
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path=f"{label}.json",
+                canonical_source_path=f"{label}.json",
+                acquired_at_ms=1,
             )
             archive.bind_raw_revision(
                 raw_id,
@@ -1469,18 +1664,24 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
                     "chatgpt-export:s1", RawRevisionKind.FULL, raw_id, 0, authority=RawRevisionAuthority.QUARANTINED
                 ),
             )
-            archive.replace_raw_membership_census(
+            publish_membership_census(
+                archive,
                 raw_id,
                 [parsed_solo("s1", "base", tail)],
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                 retire_full_revision_governance=True,
+                revision_authority=RawRevisionAuthority.QUARANTINED,
             )
             retired.append(raw_id)
 
         raw_c = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"ccc-solo", source_path="c.json", acquired_at_ms=3
+            provider=Provider.CHATGPT,
+            payload=b"ccc-solo",
+            source_path="c.json",
+            canonical_source_path="c.json",
+            acquired_at_ms=3,
         )
         archive.bind_raw_revision(
             raw_c,
@@ -1489,16 +1690,15 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
             ),
         )
         # With the recognized marker the isolated third raw stays refused.
-        assert archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1").accepted_raw_ids == ()
+        assert archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:s1").accepted_raw_ids == ()
 
-        conn = archive._ensure_source_conn()
-        with conn:
+        with independent_source_connection(archive) as conn:
             conn.executemany(
                 "UPDATE raw_membership_census SET detail = ? WHERE raw_id = ?",
                 [(unrecognized, raw_id) for raw_id in retired],
             )
         # Changing display wording cannot change the typed governance result.
-        promoted = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
+        promoted = archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:s1")
 
     assert promoted.accepted_raw_ids == ()
 
@@ -1528,7 +1728,11 @@ def test_retired_raw_stays_fail_closed_when_census_authority_is_unknown(tmp_path
         retired = []
         for label, payload, tail in (("a", b"aaa-left", "left"), ("b", b"bbb-right", "right")):
             raw_id = archive.write_raw_payload(
-                provider=Provider.CHATGPT, payload=payload, source_path=f"{label}.json", acquired_at_ms=1
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path=f"{label}.json",
+                canonical_source_path=f"{label}.json",
+                acquired_at_ms=1,
             )
             archive.bind_raw_revision(
                 raw_id,
@@ -1536,25 +1740,30 @@ def test_retired_raw_stays_fail_closed_when_census_authority_is_unknown(tmp_path
                     "chatgpt-export:s1", RawRevisionKind.FULL, raw_id, 0, authority=RawRevisionAuthority.QUARANTINED
                 ),
             )
-            archive.replace_raw_membership_census(
+            publish_membership_census(
+                archive,
                 raw_id,
                 [parsed_solo(tail)],
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                 retire_full_revision_governance=True,
+                revision_authority=RawRevisionAuthority.QUARANTINED,
             )
             retired.append(raw_id)
 
-        conn = archive._ensure_source_conn()
-        with conn:
+        with independent_source_connection(archive) as conn:
             conn.executemany(
                 "UPDATE raw_membership_census SET detail = ?, revision_authority = NULL WHERE raw_id = ?",
                 [("historical wording no longer classifies this row", raw_id) for raw_id in retired],
             )
 
         raw_c = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"ccc-solo", source_path="c.json", acquired_at_ms=3
+            provider=Provider.CHATGPT,
+            payload=b"ccc-solo",
+            source_path="c.json",
+            canonical_source_path="c.json",
+            acquired_at_ms=3,
         )
         archive.bind_raw_revision(
             raw_c,
@@ -1562,7 +1771,7 @@ def test_retired_raw_stays_fail_closed_when_census_authority_is_unknown(tmp_path
                 "chatgpt-export:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
-        plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:s1")
 
     assert plan.accepted_raw_ids == ()
 
@@ -1580,7 +1789,11 @@ def test_typed_retirement_authority_allows_detail_wording_to_change(
     )
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"payload", source_path="capture.json", acquired_at_ms=1
+            provider=Provider.CHATGPT,
+            payload=b"payload",
+            source_path="capture.json",
+            canonical_source_path="capture.json",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             raw_id,
@@ -1588,21 +1801,25 @@ def test_typed_retirement_authority_allows_detail_wording_to_change(
                 "chatgpt-export:s1", RawRevisionKind.FULL, raw_id, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
-        archive_revision_governance.replace_raw_membership_census(
-            archive,
+
+    publish_prepared_source(
+        tmp_path,
+        "test.revision.membership-census-detail",
+        lambda seal: archive_revision_governance.replace_raw_membership_census(
+            seal,
             raw_id,
             [session],
-            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            parser_fingerprint=raw_authority_parser_fingerprint(),
             censused_at_ms=0,
             detail="operator-facing wording may change",
             revision_authority=RawRevisionAuthority.QUARANTINED,
             retire_full_revision_governance=True,
-        )
-        row = (
-            archive._ensure_source_conn()
-            .execute("SELECT detail, revision_authority FROM raw_membership_census WHERE raw_id = ?", (raw_id,))
-            .fetchone()
-        )
+        ),
+    )
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        row = source.execute(
+            "SELECT detail, revision_authority FROM raw_membership_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
 
     assert tuple(row) == ("operator-facing wording may change", RawRevisionAuthority.QUARANTINED.value)
 
@@ -1628,7 +1845,11 @@ def test_same_source_path_full_siblings_under_different_keys_are_not_independent
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_enriched = archive.write_raw_payload(
-            provider=Provider.GEMINI, payload=b"enriched-bytes", source_path="doc.json", acquired_at_ms=1
+            provider=Provider.GEMINI,
+            payload=b"enriched-bytes",
+            source_path="doc.json",
+            canonical_source_path="doc.json",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             raw_enriched,
@@ -1641,7 +1862,11 @@ def test_same_source_path_full_siblings_under_different_keys_are_not_independent
             ),
         )
         raw_bare = archive.write_raw_payload(
-            provider=Provider.GEMINI, payload=b"bare-bytes", source_path="doc.json", acquired_at_ms=2
+            provider=Provider.GEMINI,
+            payload=b"bare-bytes",
+            source_path="doc.json",
+            canonical_source_path="doc.json",
+            acquired_at_ms=2,
         )
         archive.bind_raw_revision(
             raw_bare,
@@ -1679,7 +1904,11 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
             merge_parsed_session_chunks([baseline_session, append_session])[0]
         ) != session_content_hash(folded_session)
         baseline = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=baseline_payload, source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=baseline_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -1688,7 +1917,12 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
             ),
         )
         append = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=tail, source_path="session.jsonl", source_index=-1, acquired_at_ms=2
+            provider=Provider.CODEX,
+            payload=tail,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
         )
         append_revision = append_source_revision("base", hashlib.sha256(tail).hexdigest())
         archive.bind_raw_revision(
@@ -1706,13 +1940,18 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        archive.apply_raw_revision_replay(
+        apply_prepared_revision_replay(
+            archive,
             archive.raw_revision_replay_plan("codex-session:session"),
             {baseline: baseline_session, append: append_session},
             acquired_at_ms=0,
         )
         folded = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=folded_payload, source_path="session.jsonl", acquired_at_ms=3
+            provider=Provider.CODEX,
+            payload=folded_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=3,
         )
         archive.bind_raw_revision(
             folded,
@@ -1726,8 +1965,11 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
         ).fetchone()
         assert before_hash is not None
         assert bytes(before_hash[0]) != bytes.fromhex(session_content_hash(folded_session))
-        archive.apply_raw_revision_replay(
-            archive.raw_revision_replay_plan("codex-session:session"), {folded: folded_session}, acquired_at_ms=0
+        apply_prepared_revision_replay(
+            archive,
+            archive.raw_revision_replay_plan("codex-session:session"),
+            {folded: folded_session},
+            acquired_at_ms=0,
         )
         assert archive.raw_revision_head_raw_id("codex-session:session") == folded
 
@@ -1756,7 +1998,11 @@ def test_claude_full_append_replay_persists_reduced_coverage_and_receipts(tmp_pa
     append_session = parsed("m2", "append", seen=5, persisted=4)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = archive.write_raw_payload(
-            provider=Provider.CLAUDE_CODE, payload=b"base", source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CLAUDE_CODE,
+            payload=b"base",
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -1768,6 +2014,7 @@ def test_claude_full_append_replay_persists_reduced_coverage_and_receipts(tmp_pa
             provider=Provider.CLAUDE_CODE,
             payload=b"tail!",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -1788,7 +2035,8 @@ def test_claude_full_append_replay_persists_reduced_coverage_and_receipts(tmp_pa
         )
 
         plan = archive.raw_revision_replay_plan("claude-code:session")
-        session_id, applied_raw_ids = archive.apply_raw_revision_replay(
+        session_id, applied_raw_ids = apply_prepared_revision_replay(
+            archive,
             plan,
             {baseline: baseline_session, append: append_session},
             acquired_at_ms=0,
@@ -1840,7 +2088,11 @@ def test_fold_accepts_a_legacy_codex_append_payload_after_header_normalization(t
         folded_payload = baseline_payload + tail
         folded_session = _parse_codex_jsonl(folded_payload)
         baseline = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=baseline_payload, source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=baseline_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -1853,6 +2105,7 @@ def test_fold_accepts_a_legacy_codex_append_payload_after_header_normalization(t
             provider=Provider.CODEX,
             payload=legacy_append_payload,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -1871,13 +2124,18 @@ def test_fold_accepts_a_legacy_codex_append_payload_after_header_normalization(t
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        archive.apply_raw_revision_replay(
+        apply_prepared_revision_replay(
+            archive,
             archive.raw_revision_replay_plan("codex-session:session"),
             {baseline: baseline_session, append: append_session},
             acquired_at_ms=0,
         )
         folded = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=folded_payload, source_path="session.jsonl", acquired_at_ms=3
+            provider=Provider.CODEX,
+            payload=folded_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=3,
         )
         archive.bind_raw_revision(
             folded,
@@ -1885,8 +2143,11 @@ def test_fold_accepts_a_legacy_codex_append_payload_after_header_normalization(t
                 "codex-session:session", RawRevisionKind.FULL, "folded", 2, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
-        archive.apply_raw_revision_replay(
-            archive.raw_revision_replay_plan("codex-session:session"), {folded: folded_session}, acquired_at_ms=0
+        apply_prepared_revision_replay(
+            archive,
+            archive.raw_revision_replay_plan("codex-session:session"),
+            {folded: folded_session},
+            acquired_at_ms=0,
         )
 
         assert archive.raw_revision_head_raw_id("codex-session:session") == folded
@@ -1961,7 +2222,11 @@ def test_real_append_fold_proof_mutations_roll_back(
         assert len(candidate_payload) == len(baseline_payload + tail)
         folded_session = _parse_codex_jsonl(candidate_payload)
         baseline = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=baseline_payload, source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=baseline_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -1969,8 +2234,29 @@ def test_real_append_fold_proof_mutations_roll_back(
                 "codex-session:session", RawRevisionKind.FULL, "base", 0, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
+        folded_payload = candidate_payload
+        if mutation in {"baseline", "divergent"}:
+            folded_payload = (b"X" if mutation == "baseline" else baseline_payload[:5] + b"X") + folded_payload[
+                1 if mutation == "baseline" else 6 :
+            ]
+        # The folded snapshot is acquired before the append it claims to fold, so
+        # it is not a fresher selected FULL (which would replace the head on its
+        # own acquisition-order authority); only a byte-chain fold proof can
+        # accept it, and every mutation below must break that proof.
+        folded = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=folded_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=3,
+        )
         append = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=tail, source_path="session.jsonl", source_index=-1, acquired_at_ms=2
+            provider=Provider.CODEX,
+            payload=tail,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
         )
         append_revision = append_source_revision("base", hashlib.sha256(tail).hexdigest())
         archive.bind_raw_revision(
@@ -1989,14 +2275,8 @@ def test_real_append_fold_proof_mutations_roll_back(
             ),
         )
         chain = archive.raw_revision_replay_plan("codex-session:session")
-        archive.apply_raw_revision_replay(chain, {baseline: baseline_session, append: append_session}, acquired_at_ms=0)
-        folded_payload = candidate_payload
-        if mutation in {"baseline", "divergent"}:
-            folded_payload = (b"X" if mutation == "baseline" else baseline_payload[:5] + b"X") + folded_payload[
-                1 if mutation == "baseline" else 6 :
-            ]
-        folded = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=folded_payload, source_path="session.jsonl", acquired_at_ms=3
+        apply_prepared_revision_replay(
+            archive, chain, {baseline: baseline_session, append: append_session}, acquired_at_ms=0
         )
         archive.bind_raw_revision(
             folded,
@@ -2004,7 +2284,7 @@ def test_real_append_fold_proof_mutations_roll_back(
                 "codex-session:session", RawRevisionKind.FULL, "folded", 2, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
-        source = archive._ensure_source_conn()
+        source = open_independent_source(archive)
         if mutation == "gap":
             source.execute(
                 "UPDATE raw_sessions SET append_start_offset = ? WHERE raw_id = ?", (len(baseline_payload) + 1, append)
@@ -2018,22 +2298,14 @@ def test_real_append_fold_proof_mutations_roll_back(
         elif mutation == "missing":
             source.execute("UPDATE raw_sessions SET predecessor_raw_id = 'missing' WHERE raw_id = ?", (append,))
         elif mutation == "tail":
-            original = archive.raw_revision_material
-
-            def mutated_material(raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
-                provider, payload, source_path, kind = original(raw_id)
-                return (
-                    (provider, b"Z" * len(tail), source_path, kind)
-                    if raw_id == append
-                    else (provider, payload, source_path, kind)
-                )
-
-            monkeypatch.setattr(
-                archive,
-                "raw_revision_material",
-                mutated_material,
+            # The retained append bytes no longer extend the baseline.
+            tampered = b"Z" * len(tail)
+            BlobStore(tmp_path / "blob").write_from_bytes(tampered)
+            source.execute(
+                "UPDATE raw_sessions SET blob_hash = ? WHERE raw_id = ?", (hashlib.sha256(tampered).digest(), append)
             )
         source.commit()
+        source.close()
         before = state(archive)
         assert before["blocks"]
         assert before["session_events"]
@@ -2042,7 +2314,7 @@ def test_real_append_fold_proof_mutations_roll_back(
         assert not before["fts_candidate"]
         plan = archive.raw_revision_replay_plan("codex-session:session")
         with pytest.raises(RuntimeError, match="conflicting accepted head"):
-            archive.apply_raw_revision_replay(plan, {folded: folded_session}, acquired_at_ms=0)
+            apply_prepared_revision_replay(archive, plan, {folded: folded_session}, acquired_at_ms=0)
         assert state(archive) == before
 
 
@@ -2055,13 +2327,15 @@ def test_write_raw_and_parsed_persists_file_mtime_across_reopen(tmp_path: Path) 
         messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="no timeline")],
     )
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id, _session_id = archive.write_raw_and_parsed(
+        written = write_fixture_raw_session(
+            archive,
             session,
             payload=b"wrapper raw",
             source_path="wrapper-mtime.jsonl",
             acquired_at_ms=1,
             file_mtime_ms=file_mtime_ms,
         )
+        raw_id, _session_id = written.raw_id, written.session_id
         row = (
             archive._ensure_source_conn()
             .execute("SELECT file_mtime_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,))
@@ -2090,6 +2364,7 @@ def test_retained_replay_uses_persisted_file_mtime_for_timestamp_fallback(tmp_pa
             provider=Provider.CODEX,
             payload=b"retained raw",
             source_path="mtime-replay.jsonl",
+            canonical_source_path="mtime-replay.jsonl",
             acquired_at_ms=1,
             file_mtime_ms=file_mtime_ms,
         )
@@ -2103,7 +2378,8 @@ def test_retained_replay_uses_persisted_file_mtime_for_timestamp_fallback(tmp_pa
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        archive.apply_raw_revision_replay(
+        apply_prepared_aggregate_replay(
+            archive,
             plan_revision_replay([_candidate(raw_id, RawRevisionKind.FULL, 1, size=len(b"retained raw"))]),
             {raw_id: session},
             acquired_at_ms=0,
@@ -2144,6 +2420,7 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
             provider=Provider.CODEX,
             payload=label.encode(),
             source_path="session.json",
+            canonical_source_path="session.json",
             acquired_at_ms=generation,
         )
         archive.bind_raw_revision(
@@ -2180,7 +2457,8 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         base_session = parsed(("m0", "zero"), event_timestamp="2026-07-01T00:00:00Z")
         base = write_full(archive, "base", 1)
-        archive.apply_raw_membership_classification(
+        _publish_membership(
+            archive,
             "codex-session:session",
             MembershipClassification((base,), (), ()),
             {base: base_session},
@@ -2196,7 +2474,7 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
         later_session = parsed(("m0", "zero"), ("m1", "one"), ("m2", "two"))
         later = write_full(archive, "later", 2)
         later_plan = selected_full_plan(later, 2, len("later"))
-        archive.apply_raw_revision_replay(later_plan, {later: later_session}, acquired_at_ms=0)
+        apply_prepared_aggregate_replay(archive, later_plan, {later: later_session}, acquired_at_ms=0)
 
         semantic_head = archive._conn.execute(
             """SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier
@@ -2218,7 +2496,8 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
             rejected_raw = write_full(archive, label, generation)
             rejected_plan = selected_full_plan(rejected_raw, generation, len(label))
             with pytest.raises(RuntimeError, match=error):
-                archive.apply_raw_revision_replay(
+                apply_prepared_aggregate_replay(
+                    archive,
                     rejected_plan,
                     {rejected_raw: rejected_session},
                     acquired_at_ms=0,
@@ -2245,13 +2524,11 @@ def _write_quarantined_member(archive: ArchiveStore, label: str, session: Parsed
         provider=Provider.CODEX,
         payload=label.encode(),
         source_path=f"{label}.json",
+        canonical_source_path=f"{label}.json",
         acquired_at_ms=1,
     )
-    archive.replace_raw_membership_census(
-        raw_id,
-        [session],
-        parser_fingerprint="test-parser",
-        censused_at_ms=1,
+    publish_membership_census(
+        archive, raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
     )
     return raw_id
 
@@ -2261,6 +2538,7 @@ def _write_chain_full(archive: ArchiveStore, label: str, generation: int) -> str
         provider=Provider.CODEX,
         payload=label.encode(),
         source_path="session.json",
+        canonical_source_path="session.json",
         acquired_at_ms=generation,
     )
     archive.bind_raw_revision(
@@ -2277,7 +2555,8 @@ def _write_chain_full(archive: ArchiveStore, label: str, generation: int) -> str
 
 
 def _apply_membership_head(archive: ArchiveStore, raw_id: str, session: ParsedSession) -> None:
-    archive.apply_raw_membership_classification(
+    _publish_membership(
+        archive,
         "codex-session:session",
         MembershipClassification((raw_id,), (), ()),
         {raw_id: session},
@@ -2300,15 +2579,14 @@ def test_batched_membership_success_supersedes_deferred_cas_evidence(tmp_path: P
             acquired_at_ms=2,
             kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
         )
-        archive.apply_raw_membership_classification(
+        _publish_membership(
+            archive,
             "codex-session:session",
             MembershipClassification((raw_id,), (), ()),
             {raw_id: session},
             {raw_id: session_revision_projection(session)},
             acquired_at_ms=3,
-            manage_transaction=False,
         )
-        archive.commit()
 
         artifact = (
             archive._ensure_source_conn()
@@ -2336,17 +2614,7 @@ def test_retained_index_cas_failure_persists_evidence_with_first_failure_state(
 
         monkeypatch.setattr(archive_revision_governance, "_write_parsed_precedence_result", raise_conflict)
         with pytest.raises(archive_revision_governance.MembershipReplayConflictError):
-            archive._index_parsed_for_retained_raw(
-                session,
-                raw_id=raw_id,
-                source_index=0,
-                stage_timings_s=None,
-                stage_timing_prefix="test",
-                manage_transaction=False,
-                preacquired_attachment_blobs={},
-                finalize_raw_parse=False,
-                revision_authoritative=True,
-            )
+            write_prepared_retained_session(archive, session, raw_id=raw_id, revision_authoritative=True)
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         assert source_conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
@@ -2388,7 +2656,7 @@ def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_
         export_session = _parsed_session(("m0", "zero"), ("m1", "export flavour"))
         export = _write_chain_full(archive, "export", 2)
         plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 2, size=len("export"))])
-        session_id, applied = archive.apply_raw_revision_replay(plan, {export: export_session}, acquired_at_ms=0)
+        session_id, applied = apply_prepared_revision_replay(archive, plan, {export: export_session}, acquired_at_ms=0)
 
         assert applied == (export,)
         assert _head_row(archive) == (export, "semantic", 2)
@@ -2411,7 +2679,16 @@ def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_
             archive._conn, session_id=session_id, carried_key=current_key, current_key=current_key
         )
         archive.commit()
-    assert RawObservationDerivation(tmp_path).inspect(raw_observation_frame(tmp_path), (capture,))[capture] == "valid"
+    assert (
+        run_on_convergence_owner(
+            tmp_path,
+            "test.revision.capture-inspect",
+            lambda compute: RawObservationDerivation(tmp_path, compute_adapter=compute).inspect(
+                raw_observation_frame(tmp_path), (capture,)
+            )[capture],
+        )
+        == "valid"
+    )
 
 
 def test_chain_replay_supersedes_quarantined_membership_head_even_when_capture_has_more_units(tmp_path: Path) -> None:
@@ -2431,7 +2708,7 @@ def test_chain_replay_supersedes_quarantined_membership_head_even_when_capture_h
         export_session = _parsed_session(("m0", "zero"), ("m1", "one"))
         export = _write_chain_full(archive, "export", 2)
         plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 2, size=len("export"))])
-        session_id, applied = archive.apply_raw_revision_replay(plan, {export: export_session}, acquired_at_ms=0)
+        session_id, applied = apply_prepared_revision_replay(archive, plan, {export: export_session}, acquired_at_ms=0)
 
         assert applied == (export,)
         assert _head_row(archive) == (export, "semantic", 2)
@@ -2453,14 +2730,15 @@ def test_membership_replay_yields_to_chain_governed_head(tmp_path: Path) -> None
         export_session = _parsed_session(("m0", "zero"), ("m1", "export flavour"))
         export = _write_chain_full(archive, "export", 1)
         plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 1, size=len("export"))])
-        archive.apply_raw_revision_replay(plan, {export: export_session}, acquired_at_ms=0)
+        apply_prepared_revision_replay(archive, plan, {export: export_session}, acquired_at_ms=0)
         # A chain-first head is byte-kind: its frontier is never comparable to
         # a capture's semantic frontier, so the capture must always yield.
         assert _head_row(archive) == (export, "byte", 6)
 
         capture_session = _parsed_session(("m0", "zero"), ("m1", "capture flavour"))
         capture = _write_quarantined_member(archive, "capture", capture_session)
-        result = archive.apply_raw_membership_classification(
+        result = _publish_membership(
+            archive,
             "codex-session:session",
             MembershipClassification((capture,), (), ()),
             {capture: capture_session},
@@ -2502,7 +2780,7 @@ def test_membership_replay_yields_when_resumed_cohort_head_masks_byte_session(tm
         export_session = _parsed_session(("m0", "zero"), ("m1", "export flavour"))
         export = _write_chain_full(archive, "export", 1)
         plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 1, size=len("export"))])
-        archive.apply_raw_revision_replay(plan, {export: export_session}, acquired_at_ms=0)
+        apply_prepared_revision_replay(archive, plan, {export: export_session}, acquired_at_ms=0)
 
         capture_session = _parsed_session(("m0", "zero"), ("m1", "capture flavour"))
         capture = _write_quarantined_member(archive, "capture", capture_session)
@@ -2511,7 +2789,8 @@ def test_membership_replay_yields_when_resumed_cohort_head_masks_byte_session(tm
             (capture,),
         )
 
-        archive.apply_raw_membership_classification(
+        _publish_membership(
+            archive,
             "codex-session:session",
             MembershipClassification((capture,), (), ()),
             {capture: capture_session},
@@ -2539,7 +2818,7 @@ def test_membership_replay_yields_to_semantic_chain_head_even_when_capture_has_m
         export_session = _parsed_session(("m0", "zero"))
         export = _write_chain_full(archive, "export", 2)
         plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 2, size=len("export"))])
-        archive.apply_raw_revision_replay(plan, {export: export_session}, acquired_at_ms=0)
+        apply_prepared_revision_replay(archive, plan, {export: export_session}, acquired_at_ms=0)
         assert _head_row(archive) == (export, "semantic", 1)
 
         capture2_session = _parsed_session(("m0", "zero"), ("m1", "the conversation continued"))
@@ -2550,7 +2829,8 @@ def test_membership_replay_yields_to_semantic_chain_head_even_when_capture_has_m
         ]
         classification = classify_membership_revisions(revisions)
         assert capture2 in classification.accepted_raw_ids
-        archive.apply_raw_membership_classification(
+        _publish_membership(
+            archive,
             "codex-session:session",
             classification,
             {capture1: capture1_session, capture2: capture2_session},
@@ -2576,23 +2856,12 @@ def test_membership_replay_yields_to_semantic_chain_head_even_when_capture_has_m
         assert bytes(stored[0]).hex() == session_content_hash(export_session)
 
 
-def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """polylogue-de2a: the live watcher's per-append replay must not re-index
-    every historical append on every new one.
+def test_append_replay_reindexes_the_whole_composed_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An accepted append replays the chain's composed session, never a tail.
 
-    Simulates the exact live-watcher shape: baseline arrives, then two more
-    appends arrive one at a time, each replaying the WHOLE accumulated chain
-    (as the real ``append_ingest.py`` hot path always does -- it always
-    passes ``parsed_by_raw_id`` for the entire ``plan.accepted_raw_ids``).
-    With ``skip_already_applied=True``, only the newly accepted tail raw_id
-    should reach ``_index_parsed_for_retained_raw`` on the 2nd and 3rd calls
-    -- not the whole chain again. Without the fix, every call re-indexes
-    every position, an O(n) cost per append that made the daemon's writer
-    gate hold for minutes to hours as a session's append count grew
-    (confirmed root cause; see ``apply_raw_revision_replay``'s
-    ``skip_already_applied`` docstring).
+    Every replay route writes one composed session for the whole accepted
+    chain, so the stored projection is the chain's reduction (the composed
+    coverage law is ``test_claude_full_append_replay_persists_reduced_coverage_and_receipts``).
     """
     bootstrap_archive_root(tmp_path)
 
@@ -2629,7 +2898,11 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=b"a" * 10, source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=b"a" * 10,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -2637,17 +2910,15 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
                 "codex-session:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
-        plan0 = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
-        archive.apply_raw_revision_replay(
-            plan0, {baseline: parsed(("m0", "zero"))}, acquired_at_ms=0, skip_already_applied=True
-        )
-        assert indexed_writes == [(baseline, ("m0",))]
+        plan0 = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        apply_prepared_revision_replay(archive, plan0, {baseline: parsed(("m0", "zero"))}, acquired_at_ms=0)
         indexed_writes.clear()
 
         append_one = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=b"b" * 5,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -2666,164 +2937,14 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan1 = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
-        assert plan1.accepted_raw_ids == (baseline, append_one)
-        # The real live-watcher hot path always reparses+passes the FULL
-        # accepted chain (see append_ingest.py), not just the new tail.
-        archive.apply_raw_revision_replay(
-            plan1,
-            {baseline: parsed(("m0", "zero")), append_one: parsed(("m1", "one"))},
-            acquired_at_ms=0,
-            skip_already_applied=True,
-        )
-        # Only the NEW tail position was actually indexed -- the baseline
-        # was already durably written by the first call above.
-        assert indexed_writes == [(append_one, ("m1",))]
-        indexed_writes.clear()
-
-        append_two = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=b"c" * 5,
-            source_path="session.jsonl",
-            source_index=-1,
-            acquired_at_ms=3,
-        )
-        archive.bind_raw_revision(
-            append_two,
-            RawRevisionEnvelope(
-                "codex-session:session",
-                RawRevisionKind.APPEND,
-                append_source_revision(
-                    append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
-                    hashlib.sha256(b"c" * 5).hexdigest(),
-                ),
-                2,
-                predecessor_source_revision=append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
-                predecessor_raw_id=append_one,
-                baseline_raw_id=baseline,
-                append_start_offset=15,
-                append_end_offset=20,
-                authority=RawRevisionAuthority.BYTE_PROVEN,
-            ),
-        )
-        plan2 = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
-        assert plan2.accepted_raw_ids == (baseline, append_one, append_two)
-        archive.apply_raw_revision_replay(
-            plan2,
-            {
-                baseline: parsed(("m0", "zero")),
-                append_one: parsed(("m1", "one")),
-                append_two: parsed(("m2", "two")),
-            },
-            acquired_at_ms=0,
-            skip_already_applied=True,
-        )
-        # Again: only the newest position, not the two already-applied ones.
-        assert indexed_writes == [(append_two, ("m2",))]
-        indexed_writes.clear()
-
-        # Correctness is unaffected by skipping the already-applied writes:
-        # every message from every accepted position is still present.
-        rows = archive._conn.execute(
-            "SELECT block_type, search_text FROM blocks JOIN messages USING (message_id)"
-            " WHERE messages.session_id = 'codex-session:session' ORDER BY messages.position"
-        ).fetchall()
-        texts = [str(row[1]) for row in rows]
-        assert any("zero" in text for text in texts)
-        assert any("one" in text for text in texts)
-        assert any("two" in text for text in texts)
-
-        head = archive._conn.execute(
-            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex-session:session'"
-        ).fetchone()
-        assert head is not None
-        assert head[0] == append_two
-
-
-def test_skip_already_applied_default_false_still_reindexes_whole_chain(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Backfill/restore/membership callers do not pass ``skip_already_applied``
-    and must keep the full self-healing re-apply of every historical position
-    -- only the live-append hot path opts into the fast tail-only mode.
-    """
-    bootstrap_archive_root(tmp_path)
-
-    def parsed(*messages: tuple[str, str]) -> ParsedSession:
-        return ParsedSession(
-            source_name=Provider.CODEX,
-            provider_session_id="session",
-            messages=[
-                ParsedMessage(provider_message_id=message_id, role=Role.USER, text=text)
-                for message_id, text in messages
-            ],
-        )
-
-    indexed_writes: list[tuple[str, tuple[str, ...]]] = []
-    # polylogue-1r9c: _index_parsed_for_retained_raw's real implementation
-    # moved to revision_governance.py, and apply_raw_revision_replay (also in
-    # that module) calls it as a direct module-internal function reference,
-    # not through `self.` dynamic dispatch -- so the spy must patch the
-    # revision_governance module attribute, not the ArchiveStore delegator
-    # method (which only intercepts *external* callers).
-    original = archive_revision_governance._index_parsed_for_retained_raw
-
-    def spy(
-        store: archive_revision_governance.RawRevisionGovernanceHost,
-        session: ParsedSession,
-        *,
-        raw_id: str,
-        **kwargs: object,
-    ) -> object:
-        indexed_writes.append((raw_id, tuple(message.provider_message_id or "" for message in session.messages)))
-        return original(store, session, raw_id=raw_id, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(archive_revision_governance, "_index_parsed_for_retained_raw", spy)
-
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        baseline = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=b"a" * 10, source_path="session.jsonl", acquired_at_ms=1
-        )
-        archive.bind_raw_revision(
-            baseline,
-            RawRevisionEnvelope(
-                "codex-session:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
-            ),
-        )
-        plan0 = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
-        archive.apply_raw_revision_replay(plan0, {baseline: parsed(("m0", "zero"))}, acquired_at_ms=0)
-        indexed_writes.clear()
-
-        append_one = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=b"b" * 5,
-            source_path="session.jsonl",
-            source_index=-1,
-            acquired_at_ms=2,
-        )
-        archive.bind_raw_revision(
-            append_one,
-            RawRevisionEnvelope(
-                "codex-session:session",
-                RawRevisionKind.APPEND,
-                append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
-                1,
-                predecessor_source_revision="full-0",
-                predecessor_raw_id=baseline,
-                baseline_raw_id=baseline,
-                append_start_offset=10,
-                append_end_offset=15,
-                authority=RawRevisionAuthority.BYTE_PROVEN,
-            ),
-        )
-        plan1 = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
-        archive.apply_raw_revision_replay(
+        plan1 = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        apply_prepared_revision_replay(
+            archive,
             plan1,
             {baseline: parsed(("m0", "zero")), append_one: parsed(("m1", "one"))},
             acquired_at_ms=0,
         )
-        # Default (no skip): the whole chain's composed content is written,
-        # not just the newly accepted tail.
+        # The whole chain's composed content is written, not the new tail.
         assert indexed_writes == [(append_one, ("m0", "m1"))]
 
 
@@ -2863,7 +2984,11 @@ def test_accepted_chain_indexes_one_composed_session_not_one_per_chunk(tmp_path:
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = archive.write_raw_payload(
-            provider=Provider.CLAUDE_CODE, payload=b"a" * 10, source_path="chat.jsonl", acquired_at_ms=1
+            provider=Provider.CLAUDE_CODE,
+            payload=b"a" * 10,
+            source_path="chat.jsonl",
+            canonical_source_path="chat.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -2879,6 +3004,7 @@ def test_accepted_chain_indexes_one_composed_session_not_one_per_chunk(tmp_path:
             provider=Provider.CLAUDE_CODE,
             payload=b"b" * 5,
             source_path="chat.jsonl",
+            canonical_source_path="chat.jsonl",
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -2898,9 +3024,10 @@ def test_accepted_chain_indexes_one_composed_session_not_one_per_chunk(tmp_path:
             ),
         )
 
-        plan = archive.classify_raw_revision_cohort_for_live_watch("claude-code-session:chat")
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("claude-code-session:chat")
         assert plan.accepted_raw_ids == (baseline, append_one)
-        session_id, _ = archive.apply_raw_revision_replay(
+        session_id, _ = apply_prepared_revision_replay(
+            archive,
             plan,
             {baseline: baseline_chunk, append_one: append_chunk},
             acquired_at_ms=0,
@@ -2938,175 +3065,6 @@ def test_accepted_chain_indexes_one_composed_session_not_one_per_chunk(tmp_path:
         assert bytes(stored_hash[0]).hex() == session_content_hash(composed[0])
 
 
-def test_tail_only_replay_stores_the_chain_reduction_not_the_prefix_summary_row(tmp_path: Path) -> None:
-    """polylogue-ylrba: the live-append path persists the reduced event projection.
-
-    ``sources/live/append_ingest.py`` replays with ``skip_already_applied``, so
-    only the newly accepted tail is written while the prefix's
-    ``claude_parse_coverage`` row -- a complete-input summary -- is already
-    stored. ``sessions.content_hash`` describes the chain's reduction, which
-    carries the chain's totals, the chain's newest timestamp, and a position
-    after every point-in-conversation event. All three must be what the index
-    holds.
-
-    Anti-vacuity: reconciling the summary row's payload alone leaves it at the
-    prefix's position (before the tail's ``claude_session_kind`` event) and
-    stamped with the prefix's ``updated_at``, so the persisted projection
-    differs from the reduction the stored hash describes in both order and
-    timestamp, and this test is red.
-    """
-    bootstrap_archive_root(tmp_path)
-
-    baseline_chunk = ParsedSession(
-        source_name=Provider.CLAUDE_CODE,
-        provider_session_id="chat",
-        created_at="2026-01-01T00:00:00Z",
-        updated_at="2026-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(provider_message_id="m0", role=Role.USER, text="zero", timestamp="2026-01-01T00:00:00Z")
-        ],
-        session_events=[
-            ParsedSessionEvent(
-                event_type="claude_parse_coverage",
-                timestamp="2026-01-01T00:00:00Z",
-                payload={
-                    "sidecar_seen": {"user": 1},
-                    "sidecar_persisted": {"user": 1},
-                    "empty_dropped_by_record_type": {},
-                },
-            )
-        ],
-    )
-    # A tail that carries no coverage of its own is the ordinary live append:
-    # the parser emits the event only when the chunk saw sidecar records.
-    append_chunk = ParsedSession(
-        source_name=Provider.CLAUDE_CODE,
-        provider_session_id="chat",
-        created_at="2026-01-02T00:00:00Z",
-        updated_at="2026-01-02T00:00:00Z",
-        messages=[
-            ParsedMessage(provider_message_id="m1", role=Role.USER, text="one", timestamp="2026-01-02T00:00:00Z")
-        ],
-        session_events=[
-            ParsedSessionEvent(
-                event_type="claude_session_kind",
-                timestamp="2026-01-02T00:00:00Z",
-                payload={"session_kind": "resume"},
-            )
-        ],
-    )
-
-    def stored_event_projection(archive: ArchiveStore, session_id: str) -> list[tuple[str, int | None, object]]:
-        return [
-            (str(row[0]), None if row[1] is None else int(row[1]), json.loads(str(row[2])))
-            for row in archive._conn.execute(
-                "SELECT event_type, occurred_at_ms, payload_json FROM session_events"
-                " WHERE session_id = ? ORDER BY position",
-                (session_id,),
-            ).fetchall()
-        ]
-
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        baseline = archive.write_raw_payload(
-            provider=Provider.CLAUDE_CODE, payload=b"a" * 10, source_path="chat.jsonl", acquired_at_ms=1
-        )
-        archive.bind_raw_revision(
-            baseline,
-            RawRevisionEnvelope(
-                "claude-code-session:chat",
-                RawRevisionKind.FULL,
-                "full-0",
-                0,
-                authority=RawRevisionAuthority.BYTE_PROVEN,
-            ),
-        )
-        archive.apply_raw_revision_replay(
-            archive.classify_raw_revision_cohort_for_live_watch("claude-code-session:chat"),
-            {baseline: baseline_chunk},
-            acquired_at_ms=0,
-            skip_already_applied=True,
-        )
-
-        append_one = archive.write_raw_payload(
-            provider=Provider.CLAUDE_CODE,
-            payload=b"b" * 5,
-            source_path="chat.jsonl",
-            source_index=-1,
-            acquired_at_ms=2,
-        )
-        archive.bind_raw_revision(
-            append_one,
-            RawRevisionEnvelope(
-                "claude-code-session:chat",
-                RawRevisionKind.APPEND,
-                append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
-                1,
-                predecessor_source_revision="full-0",
-                predecessor_raw_id=baseline,
-                baseline_raw_id=baseline,
-                append_start_offset=10,
-                append_end_offset=15,
-                authority=RawRevisionAuthority.BYTE_PROVEN,
-            ),
-        )
-        plan = archive.classify_raw_revision_cohort_for_live_watch("claude-code-session:chat")
-        assert plan.accepted_raw_ids == (baseline, append_one)
-        session_id, _ = archive.apply_raw_revision_replay(
-            plan,
-            {baseline: baseline_chunk, append_one: append_chunk},
-            acquired_at_ms=0,
-            skip_already_applied=True,
-        )
-
-        composed = merge_parsed_session_chunks([baseline_chunk, append_chunk])
-        assert len(composed) == 1
-        expected_events = [
-            (event.event_type, timestamp_millis(event.timestamp), event.payload) for event in composed[0].session_events
-        ]
-        assert stored_event_projection(archive, session_id) == expected_events
-
-        stored_hash = archive._conn.execute(
-            "SELECT content_hash FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        assert stored_hash is not None
-        assert bytes(stored_hash[0]).hex() == session_content_hash(composed[0])
-
-        # Raw provenance and the accepted-chain receipts survive the projection fix.
-        head = archive._conn.execute(
-            "SELECT accepted_raw_id, session_id FROM raw_revision_heads WHERE logical_source_key = ?",
-            ("claude-code-session:chat",),
-        ).fetchone()
-        assert head is not None
-        assert (str(head[0]), str(head[1])) == (append_one, session_id)
-        applied = {
-            (str(row[0]), str(row[1]))
-            for row in archive._conn.execute(
-                "SELECT raw_id, decision FROM raw_revision_applications WHERE logical_source_key = ?",
-                ("claude-code-session:chat",),
-            ).fetchall()
-        }
-        assert applied == {
-            (baseline, ApplicationDecision.SELECTED_BASELINE.value),
-            (append_one, ApplicationDecision.APPLIED_APPEND.value),
-        }
-
-        # Replaying the same accepted chain again changes nothing.
-        archive.apply_raw_revision_replay(
-            archive.classify_raw_revision_cohort_for_live_watch("claude-code-session:chat"),
-            {baseline: baseline_chunk, append_one: append_chunk},
-            acquired_at_ms=0,
-            skip_already_applied=True,
-        )
-        assert stored_event_projection(archive, session_id) == expected_events
-        replayed_hash = archive._conn.execute(
-            "SELECT content_hash FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        assert replayed_hash is not None
-        assert bytes(replayed_hash[0]) == bytes(stored_hash[0])
-
-
 def test_terminal_failure_carrier_survives_ordinary_reclassification(tmp_path: Path) -> None:
     """An ordinary path classification may not take back a terminal failure carrier.
 
@@ -3129,6 +3087,7 @@ def test_terminal_failure_carrier_survives_ordinary_reclassification(tmp_path: P
             provider=Provider.CLAUDE_CODE,
             payload=b'{"type":"summary","summary":"only a summary"}\n',
             source_path=source_path,
+            canonical_source_path=source_path,
             acquired_at_ms=1,
         )
         archive.record_raw_failure_evidence(
@@ -3153,9 +3112,12 @@ def test_terminal_failure_carrier_survives_ordinary_reclassification(tmp_path: P
         assert carrier_id.startswith("raw-failure:")
         assert carrier_kind == RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value
 
-        # The ordinary Claude path rule re-observing the exact same carrier id.
+    # The ordinary Claude path rule re-observing the exact same carrier id. The
+    # archive's own Source handle admits only its declared producers, so the
+    # upsert law runs on a fixture connection.
+    with sqlite3.connect(tmp_path / "source.db") as fixture_source:
         upsert_raw_artifact(
-            archive._ensure_source_conn(),
+            fixture_source,
             raw_id,
             ArchiveSourceArtifact(
                 artifact_id=carrier_id,
@@ -3201,14 +3163,12 @@ def _headless_ambiguous_cohort(
             provider=Provider.CODEX,
             payload=raw_id.encode(),
             source_path=f"{raw_id}.jsonl",
+            canonical_source_path=f"{raw_id}.jsonl",
             acquired_at_ms=1,
             raw_id=raw_id,
         )
-        archive.replace_raw_membership_census(
-            raw_id,
-            [session],
-            parser_fingerprint="test-parser",
-            censused_at_ms=1,
+        publish_membership_census(
+            archive, raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
         )
         return MembershipRevision(raw_id, session_revision_projection(session))
 
@@ -3234,19 +3194,17 @@ def _membership_authority(conn: sqlite3.Connection) -> list[tuple[str, str | Non
     ).fetchall()
 
 
-def test_incomplete_cohort_correction_does_not_commit_batched_source_authority(tmp_path: Path) -> None:
-    """The incomplete-cohort correction must not commit the caller's batch.
+def test_incomplete_cohort_publishes_ambiguous_decisions_with_its_parse_correction(tmp_path: Path) -> None:
+    """An incomplete cohort's Source outcome lands as one publication.
 
-    Production dependency: ``apply_raw_membership_classification`` with
-    ``manage_transaction=False`` -- the batched membership decisions stay
-    uncommitted until the index head write lands, and the incomplete-cohort
-    parse-state correction runs in a SAVEPOINT inside that same transaction
-    (polylogue-upua6).
+    Production dependency: ``prepare_membership_classification_source`` stages
+    the ambiguous decisions together with the parse-state correction on the
+    original seal; ``publish_prepared_revision_source`` commits them together
+    (polylogue-upua6 invariant on the canonical route).
 
-    Anti-vacuity: restoring the pre-fix ``with conn:`` around the correction
-    commits the whole open implicit transaction, so ``in_transaction`` is
-    already False here and the ``rollback()`` below no longer restores the
-    undecided memberships -- the decided rows stay durably written.
+    Anti-vacuity: dropping the correction from the staged Source mutation
+    leaves ``parsed_at_ms`` set, and recording decisions without their
+    authority leaves them NULL.
     """
     bootstrap_archive_root(tmp_path)
 
@@ -3254,210 +3212,167 @@ def test_incomplete_cohort_correction_does_not_commit_batched_source_authority(t
         classification, session_by_raw = _headless_ambiguous_cohort(archive)
         source_conn = archive._ensure_source_conn()
         source_conn.commit()
-        assert not source_conn.in_transaction
         undecided = _membership_authority(source_conn)
         assert all(decision is None for _raw, decision, _authority in undecided)
 
-        archive.apply_raw_membership_classification(
+        session_id = _publish_membership(
+            archive,
             "codex-session:session",
             classification,
             session_by_raw,
             {raw_id: session_revision_projection(s) for raw_id, s in session_by_raw.items()},
             acquired_at_ms=1,
-            manage_transaction=False,
         )
 
-        # The batch is still open: nothing on this path committed it.
-        assert source_conn.in_transaction
-        assert _membership_authority(source_conn) == [
+    assert session_id is None
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert _membership_authority(source) == [
             ("branch-a", "ambiguous", "quarantined"),
             ("branch-a-dup", "ambiguous", "quarantined"),
             ("branch-b", "ambiguous", "quarantined"),
         ]
-        # The correction itself is visible inside the same transaction.
-        assert source_conn.execute(
+        assert source.execute(
             "SELECT count(*) FROM raw_sessions"
             " WHERE parsed_at_ms IS NOT NULL"
             " AND raw_id IN ('branch-a', 'branch-a-dup', 'branch-b')"
         ).fetchone() == (0,)
 
-        # Aborting the batch must take the durable authority with it.
-        source_conn.rollback()
-        assert _membership_authority(source_conn) == undecided
 
+def test_incomplete_cohort_correction_failure_publishes_no_decision(tmp_path: Path) -> None:
+    """A refused correction leaves the cohort's Source authority undecided.
 
-def test_incomplete_cohort_correction_failure_keeps_the_batch_open(tmp_path: Path) -> None:
-    """A failed correction rolls back to its savepoint, not to the batch.
+    Production dependency: the staged Source mutation applies decisions and
+    the parse-state correction in one transaction on the dedicated writer
+    (polylogue-upua6 invariant on the canonical route).
 
-    Production dependency: the SAVEPOINT failure path in
-    ``apply_raw_membership_classification`` (polylogue-upua6).
-
-    Anti-vacuity: with a pre-fix ``with conn:`` correction the batch is
-    committed before the trigger aborts, so the ``rollback()`` below no longer
-    restores the undecided memberships; dropping the failure path's
-    ``ROLLBACK TO SAVEPOINT``/``RELEASE`` pair instead leaves that savepoint
-    frame open, and the ``no such savepoint`` assertion below goes red.
+    Anti-vacuity: publishing decisions in a separate commit before the
+    correction leaves decided rows behind when the correction is refused.
     """
     bootstrap_archive_root(tmp_path)
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         classification, session_by_raw = _headless_ambiguous_cohort(archive)
-        source_conn = archive._ensure_source_conn()
-        source_conn.execute(
-            """
-            CREATE TEMP TRIGGER reject_incomplete_cohort_correction
-            BEFORE UPDATE OF parsed_at_ms ON raw_sessions
-            WHEN NEW.parsed_at_ms IS NULL
-            BEGIN
-                SELECT RAISE(ABORT, 'correction refused');
-            END
-            """
-        )
-        source_conn.commit()
-        assert not source_conn.in_transaction
-        undecided = _membership_authority(source_conn)
+        with independent_source_connection(archive) as source:
+            source.execute(
+                """
+                CREATE TRIGGER reject_incomplete_cohort_correction
+                BEFORE UPDATE OF parsed_at_ms ON raw_sessions
+                WHEN NEW.parsed_at_ms IS NULL
+                BEGIN
+                    SELECT RAISE(ABORT, 'correction refused');
+                END
+                """
+            )
+            undecided = _membership_authority(source)
         assert all(decision is None for _raw, decision, _authority in undecided)
 
-        # Watch the savepoint the failing correction opens, so the unwind
-        # itself is observable and not merely inferred from row state.
-        savepoints: list[str] = []
-        source_conn.set_trace_callback(
-            lambda statement: (
-                savepoints.append(statement.split()[-1]) if statement.strip().upper().startswith("SAVEPOINT ") else None
-            )
-        )
-
         with pytest.raises(sqlite3.IntegrityError, match="correction refused"):
-            archive.apply_raw_membership_classification(
+            _publish_membership(
+                archive,
                 "codex-session:session",
                 classification,
                 session_by_raw,
                 {raw_id: session_revision_projection(s) for raw_id, s in session_by_raw.items()},
                 acquired_at_ms=1,
-                manage_transaction=False,
             )
 
-        source_conn.set_trace_callback(None)
-        # Released on the way out: the failed correction left no savepoint
-        # frame behind for a later RELEASE/ROLLBACK TO to land on by accident.
-        assert savepoints, "the batched correction must open a savepoint"
-        with pytest.raises(sqlite3.OperationalError, match="no such savepoint"):
-            source_conn.execute(f"RELEASE SAVEPOINT {savepoints[-1]}")
-
-        # The caller's transaction survived the failed correction, and the
-        # savepoint stack unwound: a plain rollback still discards everything.
-        assert source_conn.in_transaction
-        assert _membership_authority(source_conn) == [
-            ("branch-a", "ambiguous", "quarantined"),
-            ("branch-a-dup", "ambiguous", "quarantined"),
-            ("branch-b", "ambiguous", "quarantined"),
-        ]
-        source_conn.rollback()
-        assert not source_conn.in_transaction
-        assert _membership_authority(source_conn) == undecided
-        source_conn.execute("DROP TRIGGER temp.reject_incomplete_cohort_correction")
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert _membership_authority(source) == undecided
+        source.execute("DROP TRIGGER reject_incomplete_cohort_correction")
 
 
-def test_prefetch_reparse_enriches_identically_to_the_inline_path(tmp_path: Path) -> None:
-    """Both replay decode paths resolve the same durable Codex evidence.
-
-    polylogue-sqy57: ``_replay_safe_enrich_sessions`` is the one enrichment
-    entry point, but the spill prefetcher's reparse passed it NO connections
-    and ``_ParsedSessionSpill.for_raw`` passed only ``index_conn``. The curated
-    Codex title lives in the projected thread-state graph, so on those
-    cache-miss paths the title silently degraded to the content heuristic --
-    replay output then depended on cache state, not on durable evidence.
-
-    Anti-vacuity: revert the prefetcher's ``_decode`` to call
-    ``_replay_safe_enrich_sessions`` without ``index_conn`` (as before the fix)
-    and the prefetched title falls back to the first user message, so the
-    equality against the inline path goes red.
-    """
-    import threading
-
-    from polylogue.core.enums import TitleSource
-    from polylogue.sources.codex_state_projection import codex_state_source_scope
-    from polylogue.sources.revision_backfill import (
-        _ParsedSessionSpill,
-        _ReplaySpillPrefetcher,
-    )
-
-    bootstrap_archive_root(tmp_path)
-    source_path = str(tmp_path / "codex" / "sessions" / "rollout-prefetch.jsonl")
-    thread_id = "prefetch-codex-thread"
-    payload = _codex_jsonl(
-        [
-            {"type": "session_meta", "payload": {"id": thread_id, "timestamp": "2026-07-12T00:00:00Z"}},
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "id": "m1",
-                    "role": "user",
-                    "timestamp": "2026-07-12T00:00:01Z",
-                    "content": [{"type": "input_text", "text": "heuristic first prompt"}],
-                },
-            },
-        ]
-    )
-    logical_key = f"codex-session:{thread_id}"
-
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=payload,
-            source_path=source_path,
-            acquired_at_ms=1,
-            source_index=0,
-        )
-        archive.bind_raw_revision(
-            raw_id,
-            RawRevisionEnvelope(logical_key, RawRevisionKind.FULL, "revision-1", 0),
-        )
-        index_conn = archive.index_connection
-        assert index_conn is not None
-        seed_thread_titles(
-            index_conn,
-            [(thread_id, "Curated thread title")],
-            source_scope=codex_state_source_scope(source_path),
-            observed_at_ms=1,
-        )
-
-        # Inline path: an empty spill with no prefetcher attached reparses the
-        # retained raw through ``for_raw``'s own fallback.
-        inline_spill = _ParsedSessionSpill(tmp_path, max_cached_payload_bytes=1 << 20)
-        inline_sessions, _payload_bytes = inline_spill.for_raw(archive, raw_id)
-
-        # Prefetch path: the worker thread opens its own connections and must
-        # reach the same evidence.
-        prefetch_spill = _ParsedSessionSpill(tmp_path, max_cached_payload_bytes=1 << 20)
-        prefetcher = _ReplaySpillPrefetcher(
-            prefetch_spill,
-            archive_root=tmp_path,
-            index_db_path=archive.index_db_path,
-        )
-        prefetch_spill.attach_prefetcher(prefetcher)
-        try:
-            prefetcher.start_phase([logical_key], {logical_key: {raw_id}})
-            prefetched = None
-            for _attempt in range(200):
-                prefetched = prefetcher.pop(raw_id)
-                if prefetched is not None:
-                    break
-                threading.Event().wait(0.05)
-            assert prefetched is not None, "the prefetch worker never produced a decode"
-            prefetch_sessions, _prefetch_bytes, from_reparse, needs_enrichment = prefetched
-            # A readable (WAL) index handle means the worker enriched the tree
-            # itself; only an EXCLUSIVE-locked owned generation defers that to
-            # the writer's pop (polylogue-cz17d).
-            assert needs_enrichment is False
-        finally:
-            prefetcher.close()
-
-    assert from_reparse, "the prefetch decode must be the reparse path, not a spill hit"
-    assert inline_sessions[0].title == "Curated thread title"
-    assert inline_sessions[0].title_source is TitleSource.ORIGIN
-    assert [session.title for session in prefetch_sessions] == [session.title for session in inline_sessions]
-    assert [session.title_source for session in prefetch_sessions] == [
-        session.title_source for session in inline_sessions
+@pytest.mark.parametrize("later", [b"divergent", b"a", b"abcd", b"abcdef"])
+def test_full_byte_classifier_preserves_original_source_anchor(later: bytes) -> None:
+    original = b"abcd"
+    payloads = {"anchor": original, "later": later}
+    rows = [
+        ("anchor", "anchor-hash", len(original), "byte_proven", "prior", "root", 7),
+        ("later", "later-hash" if later != original else "anchor-hash", len(later), "quarantined", None, None, 0),
     ]
+    updates = {
+        row[0]: row[1:]
+        for row in archive_revision_governance._classify_full_revision_byte_inputs(
+            rows, lambda raw_id, _blob_hash: BytesIO(payloads[raw_id])
+        )
+    }
+    assert updates["anchor"] == ("byte_proven", "prior", "root", 7)
+    if later == original:
+        assert updates["later"] == ("byte_proven", None, "root", 7)
+    elif later.startswith(original):
+        assert updates["later"] == ("byte_proven", "anchor", "root", 8)
+    else:
+        assert updates["later"] == ("quarantined", None, None, 0)
+
+
+def test_full_byte_classifier_preserves_proved_chain_when_late_fork_arrives() -> None:
+    payloads = {"base": b"a", "head": b"ab", "fork": b"ac"}
+    rows = [
+        ("base", "base-hash", 1, "byte_proven", None, "base", 0),
+        ("head", "head-hash", 2, "byte_proven", "base", "base", 1),
+        ("fork", "fork-hash", 2, "quarantined", None, None, 0),
+    ]
+    updates = archive_revision_governance._classify_full_revision_byte_inputs(
+        rows, lambda raw_id, _blob_hash: BytesIO(payloads[raw_id])
+    )
+    assert updates == (
+        ("base", "byte_proven", None, "base", 0),
+        ("head", "byte_proven", "base", "base", 1),
+        ("fork", "quarantined", None, None, 0),
+    )
+
+
+def test_full_byte_classifier_quarantines_late_interior_prefix_without_rebinding_head() -> None:
+    payloads = {"base": b"a", "head": b"abcd", "late": b"ab"}
+    rows = [
+        ("base", "base-hash", 1, "byte_proven", None, "base", 0),
+        ("head", "head-hash", 4, "byte_proven", "base", "base", 1),
+        ("late", "late-hash", 2, "quarantined", None, None, 0),
+    ]
+    assert archive_revision_governance._classify_full_revision_byte_inputs(
+        rows, lambda raw_id, _blob_hash: BytesIO(payloads[raw_id])
+    ) == (
+        ("base", "byte_proven", None, "base", 0),
+        ("head", "byte_proven", "base", "base", 1),
+        ("late", "quarantined", None, None, 0),
+    )
+
+
+def test_full_byte_classifier_initial_chain_duplicate_inherits_generation() -> None:
+    payloads = {"base": b"a", "middle": b"ab", "duplicate": b"ab", "head": b"abc"}
+    rows = [
+        (
+            raw_id,
+            "middle-hash" if raw_id in {"middle", "duplicate"} else raw_id + "-hash",
+            len(payload),
+            "quarantined",
+            None,
+            None,
+            0,
+        )
+        for raw_id, payload in payloads.items()
+    ]
+    actual = {
+        row[0]: row[1:]
+        for row in archive_revision_governance._classify_full_revision_byte_inputs(
+            rows, lambda raw_id, _blob_hash: BytesIO(payloads[raw_id])
+        )
+    }
+    assert actual["base"] == ("byte_proven", None, "base", 0)
+    assert actual["head"][0] == "byte_proven"
+    assert actual["head"][2:] == ("base", 2)
+    assert actual["middle"][2:] == ("base", 1)
+    assert actual["duplicate"][2:] == ("base", 1)
+
+
+def test_full_byte_classifier_preserves_asserted_baseline_without_extension_grant() -> None:
+    payloads = {"baseline": b"a", "later": b"ab"}
+    rows = [
+        ("baseline", "baseline-hash", 1, "asserted", None, None, 0),
+        ("later", "later-hash", 2, "quarantined", None, None, 0),
+    ]
+    assert archive_revision_governance._classify_full_revision_byte_inputs(
+        rows, lambda raw_id, _blob_hash: BytesIO(payloads[raw_id])
+    ) == (
+        ("baseline", "asserted", None, None, 0),
+        ("later", "quarantined", None, None, 0),
+    )

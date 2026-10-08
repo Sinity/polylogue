@@ -13,7 +13,7 @@ from polylogue.daemon.health import HealthSeverity, _check_schema_version_fast
 from polylogue.daemon.status import _derived_identity_mismatches
 from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL, DaemonOperationRequest
 from polylogue.operations.mutation_transaction import MutationPrincipal
-from polylogue.operations.operation_context import OperationContext
+from polylogue.operations.operation_context_types import OperationContext
 
 
 def test_schema_skew_details_preserve_provenance_and_unknown_progress() -> None:

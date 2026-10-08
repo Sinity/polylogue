@@ -359,7 +359,7 @@ GLOBAL_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--no-daemon",
         is_flag=True,
         default=False,
-        help="Refuse daemon-served reads for this invocation (reads will fail if they require the daemon).",
+        help="Refuse daemon-served reads; daemon-only reads fail.",
     ),
     click.option("-v", "--verbose", is_flag=True, help="Verbose output"),
     click.option(

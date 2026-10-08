@@ -9,14 +9,17 @@ advancing that position commit in the same transaction.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
-from polylogue.storage.accepted_marker_inputs import AcceptedMarkerInput, AcceptedMarkerInputRefusedError
+from polylogue.storage.accepted_marker_inputs import (
+    AcceptedMarkerInput,
+    AcceptedMarkerInputRefusedError,
+    VerifiedAcceptedMarkerPayload,
+    verified_marker_payload_from_blob,
+)
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     accepted_marker_delivery_cursor,
     advance_accepted_marker_delivery_cursor,
@@ -40,27 +43,6 @@ _VALID = "valid"
 _MISSING = "missing"
 
 
-class _SyncSourceCursor:
-    def __init__(self, cursor: sqlite3.Cursor) -> None:
-        self._cursor = cursor
-
-    async def fetchone(self) -> object:
-        return self._cursor.fetchone()
-
-    async def fetchall(self) -> list[object]:
-        return list(self._cursor.fetchall())
-
-
-class _SyncSourceConnection:
-    """Adapt a profiled synchronous source read to the shared async reader."""
-
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
-
-    async def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> _SyncSourceCursor:
-        return _SyncSourceCursor(self._conn.execute(sql, parameters))
-
-
 @dataclass(frozen=True, slots=True)
 class SessionMarkerReplacement:
     """One immutable accepted batch, bound to its source stream position."""
@@ -68,9 +50,15 @@ class SessionMarkerReplacement:
     stream_id: str
     sequence: int
     identity: str
-    payload: tuple[MarkerCandidate, ...]
+    payload: Iterator[MarkerCandidate]
     #: Earlier child-owned candidates this batch's re-extraction re-owned.
-    retired: tuple[str, ...] = ()
+    retired: Iterator[str]
+    carrier: VerifiedAcceptedMarkerPayload | None = None
+
+    def close(self) -> None:
+        """Close the bounded private spool retained through publication."""
+        if self.carrier is not None:
+            self.carrier.close()
 
     @property
     def key(self) -> str:
@@ -84,7 +72,7 @@ class SessionMarkerReplacement:
     @property
     def empty(self) -> bool:
         """An accepted batch with no markers still advances the source cursor."""
-        return not self.payload and not self.retired
+        return self.carrier is None or not self.carrier.candidate_count and not self.carrier.retirement_count
 
 
 def _key(stream_id: str, sequence: int) -> str:
@@ -121,25 +109,16 @@ def marker_assertions_present(conn: sqlite3.Connection, assertion_ids: Sequence[
     return row is not None and int(row[0]) == len(unique_ids)
 
 
-def _retired(batch: AcceptedMarkerInput) -> tuple[str, ...]:
-    """Decode the sealed retirements a late-parent re-extraction recorded."""
-    try:
-        value = json.loads(batch.batch.payload)
-        retired: list[str] = []
-        for session in value["sessions"]:
-            if not isinstance(session, dict):
-                raise TypeError("session is not an object")
-            ids = session.get("retired_assertions", [])
-            if not isinstance(ids, list) or not all(isinstance(item, str) and item for item in ids):
-                raise TypeError("retired assertions are not a list of ids")
-            retired.extend(ids)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise AcceptedMarkerInputRefusedError("accepted marker carrier has an invalid retirement payload") from exc
-    return tuple(dict.fromkeys(retired))
+def _retirements(carrier: VerifiedAcceptedMarkerPayload) -> Iterator[str]:
+    """Yield sealed retirements one at a time without collecting the batch."""
+    for value in carrier.iter_items("sessions.item.retired_assertions.item"):
+        if not isinstance(value, str) or not value:
+            raise AcceptedMarkerInputRefusedError("accepted marker carrier has an invalid retirement payload")
+        yield value
 
 
-def _candidates(batch: AcceptedMarkerInput) -> tuple[MarkerCandidate, ...]:
-    """Decode sealed prepared-write candidates without reparsing current text."""
+def _candidate(raw_candidate: object) -> MarkerCandidate:
+    """Decode one canonical prepared-write candidate."""
     from polylogue.core.enums import AssertionKind
     from polylogue.markers.models import MarkerCandidate, MarkerMatch, MarkerProvenance
 
@@ -159,55 +138,44 @@ def _candidates(batch: AcceptedMarkerInput) -> tuple[MarkerCandidate, ...]:
         return value
 
     try:
-        value = json.loads(batch.batch.payload)
-        sessions = value["sessions"]
-        if not isinstance(sessions, list):
-            raise TypeError("sessions are not a list")
-        result: list[MarkerCandidate] = []
-        for session in sessions:
-            if not isinstance(session, dict):
-                raise TypeError("session is not an object")
-            raw_candidates = session.get("candidates", [])
-            if not isinstance(raw_candidates, list):
-                raise TypeError("candidates are not a list")
-            for raw_candidate in raw_candidates:
-                if not isinstance(raw_candidate, dict):
-                    raise TypeError("candidate is not an object")
-                raw_match = raw_candidate["match"]
-                raw_provenance = raw_candidate["provenance"]
-                if not isinstance(raw_match, dict) or not isinstance(raw_provenance, dict):
-                    raise TypeError("candidate coordinates are not objects")
-                arguments = raw_match["arguments"]
-                if not isinstance(arguments, dict) or not all(
-                    isinstance(key, str) and isinstance(item, str) for key, item in arguments.items()
-                ):
-                    raise TypeError("candidate arguments are invalid")
-                assertion_kind = raw_candidate.get("assertion_kind")
-                result.append(
-                    MarkerCandidate(
-                        MarkerMatch(
-                            kind=string(raw_match["kind"], field="candidate kind"),
-                            body=string(raw_match["body"], field="candidate body"),
-                            arguments=cast(dict[str, str], arguments),
-                            raw_text=string(raw_match["raw_text"], field="candidate raw text"),
-                            start=integer(raw_match["start"], field="candidate start"),
-                            end=integer(raw_match["end"], field="candidate end"),
-                            inline=boolean(raw_match.get("inline", False), field="candidate inline flag"),
-                            malformed=boolean(raw_match.get("malformed", False), field="candidate malformed flag"),
-                        ),
-                        MarkerProvenance(
-                            message_id=string(raw_provenance["message_id"], field="candidate message id"),
-                            block_id=string(raw_provenance["block_id"], field="candidate block id"),
-                        ),
-                        None
-                        if assertion_kind is None
-                        else AssertionKind(string(assertion_kind, field="candidate assertion kind")),
-                        authority=string(raw_candidate.get("authority", "agent-declared"), field="candidate authority"),
-                    )
-                )
+        if not isinstance(raw_candidate, dict):
+            raise TypeError("candidate is not an object")
+        raw_match = raw_candidate["match"]
+        raw_provenance = raw_candidate["provenance"]
+        if not isinstance(raw_match, dict) or not isinstance(raw_provenance, dict):
+            raise TypeError("candidate coordinates are not objects")
+        arguments = raw_match["arguments"]
+        if not isinstance(arguments, dict) or not all(
+            isinstance(key, str) and isinstance(item, str) for key, item in arguments.items()
+        ):
+            raise TypeError("candidate arguments are invalid")
+        assertion_kind = raw_candidate.get("assertion_kind")
+        return MarkerCandidate(
+            MarkerMatch(
+                kind=string(raw_match["kind"], field="candidate kind"),
+                body=string(raw_match["body"], field="candidate body"),
+                arguments=cast(dict[str, str], arguments),
+                raw_text=string(raw_match["raw_text"], field="candidate raw text"),
+                start=integer(raw_match["start"], field="candidate start"),
+                end=integer(raw_match["end"], field="candidate end"),
+                inline=boolean(raw_match.get("inline", False), field="candidate inline flag"),
+                malformed=boolean(raw_match.get("malformed", False), field="candidate malformed flag"),
+            ),
+            MarkerProvenance(
+                message_id=string(raw_provenance["message_id"], field="candidate message id"),
+                block_id=string(raw_provenance["block_id"], field="candidate block id"),
+            ),
+            None if assertion_kind is None else AssertionKind(string(assertion_kind, field="candidate assertion kind")),
+            authority=string(raw_candidate.get("authority", "agent-declared"), field="candidate authority"),
+        )
     except (KeyError, TypeError, ValueError) as exc:
         raise AcceptedMarkerInputRefusedError("accepted marker carrier has an invalid candidate payload") from exc
-    return tuple(result)
+
+
+def _candidates(carrier: VerifiedAcceptedMarkerPayload) -> Iterator[MarkerCandidate]:
+    """Yield sealed prepared-write candidates without reparsing current text."""
+    for raw_candidate in carrier.iter_items("sessions.item.candidates.item"):
+        yield _candidate(raw_candidate)
 
 
 class SessionMarkerDerivation:
@@ -241,14 +209,12 @@ class SessionMarkerDerivation:
             conn.close()
 
     def _accepted_page(self, *, after_sequence: int, limit: int) -> tuple[AcceptedMarkerInput, ...]:
-        from polylogue.storage.accepted_marker_inputs import read_accepted_marker_inputs
+        from polylogue.storage.accepted_marker_inputs import read_accepted_marker_inputs_sync
 
         conn = self._source_read_connection()
         try:
-            return asyncio.run(
-                read_accepted_marker_inputs(
-                    _SyncSourceConnection(conn), after_sequence=after_sequence, limit=min(limit, self._page_size)
-                )
+            return read_accepted_marker_inputs_sync(
+                conn, after_sequence=after_sequence, limit=min(limit, self._page_size)
             )
         finally:
             conn.close()
@@ -312,22 +278,31 @@ class SessionMarkerDerivation:
         del frame, key
         return False
 
-    def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, tuple[str, ...]]:
+    def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, Iterator[str]]:
         """Map each carrier key to every session its accepted batch names.
 
         A carrier lowers markers for several sessions at once, so the
         publication barrier holds the whole batch when any of them waits.
         """
-        from polylogue.storage.accepted_marker_inputs import marker_input_session_ids
-
         del frame
-        sessions: dict[str, tuple[str, ...]] = {}
+        sessions: dict[str, Iterator[str]] = {}
         for key in dict.fromkeys(keys):
             stream_id, sequence = _parse_key(key)
             page = self._accepted_page(after_sequence=sequence - 1, limit=1)
             if len(page) == 1 and page[0].stream_id == stream_id and page[0].sequence == sequence:
-                sessions[key] = tuple(sorted(marker_input_session_ids(page[0].batch)))
+                sessions[key] = self._session_ids(page[0])
         return sessions
+
+    def _session_ids(self, accepted: AcceptedMarkerInput) -> Iterator[str]:
+        conn = self._source_read_connection()
+        try:
+            carrier = verified_marker_payload_from_blob(conn, accepted)
+        finally:
+            conn.close()
+        try:
+            yield from carrier.iter_session_ids()
+        finally:
+            carrier.close()
 
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         """The user cursor, not current assertions or index rows, is authority."""
@@ -354,26 +329,41 @@ class SessionMarkerDerivation:
             tombstone = self._tombstone_at(sequence, stream_id=stream_id)
             if tombstone is None:
                 raise AcceptedMarkerInputRefusedError("accepted marker batch is absent or no longer contiguous")
-            return SessionMarkerReplacement(stream_id=stream_id, sequence=sequence, identity=tombstone[1], payload=())
+            return SessionMarkerReplacement(
+                stream_id=stream_id, sequence=sequence, identity=tombstone[1], payload=iter(()), retired=iter(())
+            )
         batch = page[0]
+        conn = self._source_read_connection()
+        try:
+            carrier = verified_marker_payload_from_blob(conn, batch)
+        finally:
+            conn.close()
+        try:
+            for _candidate_value in _candidates(carrier):
+                pass
+            for _retirement in _retirements(carrier):
+                pass
+        except BaseException:
+            carrier.close()
+            raise
         return SessionMarkerReplacement(
             stream_id=stream_id,
             sequence=sequence,
             identity=batch.batch.identity,
-            payload=_candidates(batch),
-            retired=_retired(batch),
+            payload=_candidates(carrier),
+            retired=_retirements(carrier),
+            carrier=carrier,
         )
 
     def publish(self, frame: object, replacement: object) -> bool:
         """Commit canonical assertion lowering and the matching cursor together."""
         del frame
         assert isinstance(replacement, SessionMarkerReplacement)
-        from polylogue.markers import lower_markers
-        from polylogue.markers.lowering import retire_marker_assertions
         from polylogue.storage.sqlite.archive_tiers.user_write import _now_ms
 
-        conn = self._marker_write_connection()
+        conn: sqlite3.Connection | None = None
         try:
+            conn = self._marker_write_connection()
             conn.execute("BEGIN IMMEDIATE")
             applied = accepted_marker_delivery_cursor(conn)
             if applied is not None and applied[0] == replacement.stream_id and applied[1] >= replacement.sequence:
@@ -388,8 +378,12 @@ class SessionMarkerDerivation:
             # tombstone is authoritative under writer admission and prevents
             # publishing content after the source carrier was erased.
             if self._tombstone_at(replacement.sequence, stream_id=replacement.stream_id) is None:
-                lower_markers(conn, replacement.payload)
-                retire_marker_assertions(conn, replacement.retired)
+                from polylogue.markers.lowering import iter_lower_markers, iter_retire_marker_assertions
+
+                for _assertion_id in iter_lower_markers(conn, replacement.payload):
+                    pass
+                for _assertion_id in iter_retire_marker_assertions(conn, replacement.retired):
+                    pass
             advance_accepted_marker_delivery_cursor(
                 conn,
                 stream_id=replacement.stream_id,
@@ -399,8 +393,13 @@ class SessionMarkerDerivation:
             )
             conn.commit()
         except BaseException:
-            conn.rollback()
+            if conn is not None:
+                conn.rollback()
             raise
         finally:
-            conn.close()
+            try:
+                if conn is not None:
+                    conn.close()
+            finally:
+                replacement.close()
         return True

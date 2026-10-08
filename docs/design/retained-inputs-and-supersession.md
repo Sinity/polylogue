@@ -187,7 +187,7 @@ outcome. Where they differ, §6 names the defect and its owner.
 | S4 | A-B-A database values | A's second observation re-mints A's content hash and adds no blob; currency follows receipt order (R5) | Two blobs for three observations | Holds: every latest-value selection ranks by `raw_receipt_order_sql`; `test_retained_state_export_follows_receipt_order_across_a_clock_rollback` |
 | S5 | Row missing from a newer export | The object stays archived and readable; its presence in that scope becomes absent-as-of-R | No byte change | **Defect D2** — `write_thread_state_projection` deletes every projected row |
 | S6 | Incomplete observation | Never an assertion of absence. A declared table the source lacked is carried in the export header's `missing` list; an item that could not be completed keeps a `pending`/`unknown_blocking` disposition and supersedes nothing | Retained, non-superseding | Partly: the export header records `missing` (`sqlite_export.py:228`); the projection does not consult it |
-| S7 | Two source roots with disjoint objects | Two scopes, two current values; neither supersedes the other, in either acquisition order | Both retained | Holds: `latest_retained_state_exports` returns one newest export per scope, and no archive-wide newest selector remains |
+| S7 | Two source roots with disjoint objects | Two scopes, two current values; neither supersedes the other, in either acquisition order | Both retained | Holds: canonical retained preparation and graph publication keep each scope current in durable receipt order |
 | S8 | Late or orphan sidecar | Joins by durable coordinate and reconverges; no duplicate message, and a still-missing sidecar stays an explicit outcome | One copy of the sidecar bytes | **Defect D3** — sidecar text is resolved from the original filesystem at parse time |
 | S10 | One thread ID under two source roots, with different titles | One archived session; each scope's state stays its own object, and the session reads the scope of the rollout that produced it (R3) | Both exports retained | Holds: scope-keyed thread-state graph; `test_one_thread_id_in_two_scopes_keeps_each_scopes_title` |
 | S9 | Original source disappears after acquisition | Absence observation only; archived bytes and every derived read are unchanged | Nothing retired | Holds for acquired raw payloads; **fails** for anything only resolvable through a live sibling file (D3) |
@@ -229,8 +229,8 @@ It does **not** extend to a declared database member, and nothing here has
 measured one. A `MUTABLE_SQLITE` member has no delta representation: every
 observation retains a complete logical export
 (`sources/source_snapshot.py::_default_policy` selects
-`SnapshotMode.SQLITE_LOGICAL_EXPORT`, and `retained_content_revision` returns
-that export's own blob hash). Content addressing collapses only *identical*
+`SnapshotMode.SQLITE_LOGICAL_EXPORT`, and raw admission uses
+that export's own blob hash as its content term). Content addressing collapses only *identical*
 revisions, so a `state_5.sqlite` whose title column changes once per
 observation retains one full export per observation — roughly 40 copies of
 the unchanged rows for 40 perfectly continuous observations. That is exactly
@@ -411,10 +411,8 @@ capture writes a cursor afterwards cannot affect their totals — the
 measurement isolates the continuity proof, not the cursor write.
 
 A full capture is modeled at the archive write boundary
-(`write_raw_payload` with a FULL envelope plus
-`classify_raw_revision_cohort_for_live_watch`) rather than through
-`_process_ingest_batch_sync`; the append configurations drive the production
-route end to end.
+(`write_raw_payload` with a FULL envelope plus the live-watch cohort
+classifier); the append configurations drive the production route end to end.
 
 Convergence work is unchanged by the representation: every configuration
 replays 1,096,453 bytes, because replay parses the accepted chain's content

@@ -15,12 +15,13 @@ from pathlib import Path
 import pytest
 
 from polylogue import Polylogue
+from polylogue.archive.context_models import ContextImage, ContextSpec
 from polylogue.archive.message.roles import Role
-from polylogue.context.compiler import ContextImage, ContextSpec
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 
 
@@ -29,26 +30,31 @@ def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
 
 
 def _seed_messages(archive_root: Path, *, provider_session_id: str, texts: tuple[str, ...]) -> None:
-    with ArchiveStore(archive_root) as archive:
-        write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id=provider_session_id,
-                title="Archive context image",
-                created_at="2026-01-01T00:00:00+00:00",
-                updated_at="2026-01-01T00:01:00+00:00",
-                messages=[
-                    ParsedMessage(
-                        provider_message_id=f"m{index}",
-                        role=Role.USER,
-                        text=text,
-                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
-                    )
-                    for index, text in enumerate(texts, start=1)
-                ],
-            ),
-        )
+    def write() -> None:
+        with ArchiveStore(archive_root) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=provider_session_id,
+                    title="Archive context image",
+                    created_at="2026-01-01T00:00:00+00:00",
+                    updated_at="2026-01-01T00:01:00+00:00",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id=f"m{index}",
+                            role=Role.USER,
+                            text=text,
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                        )
+                        for index, text in enumerate(texts, start=1)
+                    ],
+                ),
+            )
+
+    # Async laws seed before awaiting; the synchronous writer lease may not
+    # block their running event loop.
+    run_off_event_loop(write)
 
 
 @pytest.mark.asyncio
@@ -233,31 +239,35 @@ async def test_context_image_query_preserves_matched_message_window(tmp_path: Pa
 async def test_context_image_payload_includes_injectable_assertions_via_context_image(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     _seed(archive_root, provider_session_id="context-image-assertions", text="assertion context image")
-    with ArchiveStore(archive_root) as archive:
-        with sqlite3.connect(archive.user_db_path) as conn:
-            upsert_assertion(
-                conn,
-                assertion_id="inject-decision",
-                target_ref="session:codex-session:context-image-assertions",
-                scope_ref="repo:polylogue",
-                kind=AssertionKind.DECISION,
-                body_text="Use the shared assertion facade in context surfaces.",
-                status="active",
-                context_policy={"inject": True},
-                now_ms=1_700_000_000_000,
-            )
-            upsert_assertion(
-                conn,
-                assertion_id="private-caveat",
-                target_ref="session:codex-session:context-image-assertions",
-                scope_ref="repo:polylogue",
-                kind=AssertionKind.CAVEAT,
-                body_text="This private caveat should stay out of context.",
-                status="active",
-                context_policy={"inject": False},
-                now_ms=1_700_000_000_100,
-            )
-            conn.commit()
+
+    def seed_assertions() -> None:
+        with ArchiveStore(archive_root) as archive:
+            with sqlite3.connect(archive.user_db_path) as conn:
+                upsert_assertion(
+                    conn,
+                    assertion_id="inject-decision",
+                    target_ref="session:codex-session:context-image-assertions",
+                    scope_ref="repo:polylogue",
+                    kind=AssertionKind.DECISION,
+                    body_text="Use the shared assertion facade in context surfaces.",
+                    status="active",
+                    context_policy={"inject": True},
+                    now_ms=1_700_000_000_000,
+                )
+                upsert_assertion(
+                    conn,
+                    assertion_id="private-caveat",
+                    target_ref="session:codex-session:context-image-assertions",
+                    scope_ref="repo:polylogue",
+                    kind=AssertionKind.CAVEAT,
+                    body_text="This private caveat should stay out of context.",
+                    status="active",
+                    context_policy={"inject": False},
+                    now_ms=1_700_000_000_100,
+                )
+                conn.commit()
+
+    run_off_event_loop(seed_assertions)
 
     async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
         image = await poly.context_image_payload(

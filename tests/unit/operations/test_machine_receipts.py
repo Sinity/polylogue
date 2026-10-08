@@ -10,6 +10,7 @@ from polylogue.operations.machine_receipts import (
     IngestInputPageHistoricalReceipt,
     IngestInputRawMemberHistorical,
     IngestInputRawPageHistoricalReceipt,
+    IngestInputRawPagesDigest,
     IngestInsightPageHistoricalReceipt,
     IngestRefusedMembershipHistorical,
     IngestTerminalSummaryHistorical,
@@ -20,6 +21,29 @@ from polylogue.operations.machine_receipts import (
     ingest_input_raw_pages_digest,
     ingest_insight_pages_digest,
 )
+
+
+def test_streamed_input_raw_pages_preserve_the_authenticated_historical_digest() -> None:
+    import hashlib
+    import json
+
+    pages = [
+        IngestInputRawPageHistoricalReceipt(
+            source_item_id="source-item:non-ascii-α",
+            ordinal=ordinal,
+            raws=[IngestInputRawMemberHistorical(raw_id=f"raw:{ordinal}:α", unresolved=bool(ordinal))],
+        )
+        for ordinal in range(3)
+    ]
+    expected = hashlib.sha256(
+        json.dumps([page.model_dump(mode="json") for page in pages], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    digest = IngestInputRawPagesDigest()
+    for page in pages:
+        digest.update(page)
+    assert digest.hexdigest() == expected
+    assert ingest_input_raw_pages_digest(iter(pages)) == expected
+    assert IngestInputRawPagesDigest().hexdigest() == hashlib.sha256(b"[]").hexdigest()
 
 
 def test_ingest_history_keeps_known_unresolved_ids_in_bounded_input_page() -> None:
@@ -491,3 +515,29 @@ def test_refusal_page_digest_streams_to_the_canonical_array_digest() -> None:
         streamed.update(page)
     canonical = json.dumps([page.model_dump(mode="json") for page in pages], sort_keys=True, separators=(",", ":"))
     assert streamed.hexdigest() == hashlib.sha256(canonical.encode()).hexdigest()
+
+
+@pytest.mark.parametrize("suppressed,deleted,absent", [(0, 0, 0), (3, 1, 1), (3, 0, 0)])
+def test_reset_history_round_trips_only_completed_apply_counts(suppressed: int, deleted: int, absent: int) -> None:
+    from polylogue.operations.machine_receipts import IdentityResetHistoricalReceipt, encode_machine_receipt
+
+    history = IdentityResetHistoricalReceipt(
+        suppressed_count=suppressed, deleted_archive_rows=deleted, tombstoned_without_index_row_count=absent
+    )
+    assert decode_machine_receipt(encode_machine_receipt(history)) == history
+    assert history.count_scope == "completing-apply"
+    with pytest.raises(ValueError):
+        decode_machine_receipt({**encode_machine_receipt(history), "session_ids": ["neutral-session"]})
+
+
+@pytest.mark.parametrize("deleted,absent", [(4, 0), (0, 4), (-1, 0)])
+def test_reset_history_refuses_impossible_completed_counts(deleted: int, absent: int) -> None:
+    with pytest.raises(ValueError):
+        decode_machine_receipt(
+            {
+                "kind": "identity-reset/v1",
+                "suppressed_count": 3,
+                "deleted_archive_rows": deleted,
+                "tombstoned_without_index_row_count": absent,
+            }
+        )

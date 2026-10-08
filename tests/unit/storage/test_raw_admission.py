@@ -22,6 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     bind_source_raw_revision,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.write_lease import write_lease
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -66,13 +67,17 @@ def test_non_post_parse_blob_ref_persists_file_mtime(tmp_path: Path) -> None:
     file_mtime_ms = 1_767_225_600_000
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         assert archive._blob_publisher is not None
-        blob_hash, blob_size = archive._blob_publisher.write_from_bytes(payload)
-        archive._blob_publisher.flush()
+        # Blob publication writes Source rows; it runs under the archive's
+        # write lease as the store's own raw routes do.
+        with write_lease("test.raw-admission.blob-publication", archive_root=tmp_path):
+            blob_hash, blob_size = archive._blob_publisher.write_from_bytes(payload)
+            archive._blob_publisher.flush()
         raw_id = archive.write_raw_blob_ref(
             provider=Provider.CODEX,
             blob_hash_hex=blob_hash,
             blob_size=blob_size,
             source_path="non-post-parse.jsonl",
+            canonical_source_path="non-post-parse.jsonl",
             acquired_at_ms=1,
             file_mtime_ms=file_mtime_ms,
             post_parse=False,
@@ -94,6 +99,7 @@ def test_same_raw_identity_fills_null_file_mtime_on_later_observation(tmp_path: 
             provider=Provider.CODEX,
             payload=payload,
             source_path="same-raw.jsonl",
+            canonical_source_path="same-raw.jsonl",
             acquired_at_ms=1,
             post_parse=False,
         )
@@ -107,6 +113,7 @@ def test_same_raw_identity_fills_null_file_mtime_on_later_observation(tmp_path: 
             provider=Provider.CODEX,
             payload=payload,
             source_path="same-raw.jsonl",
+            canonical_source_path="same-raw.jsonl",
             acquired_at_ms=2,
             file_mtime_ms=file_mtime_ms,
             post_parse=False,
@@ -128,6 +135,7 @@ def test_capture_mode_is_unknown_when_writer_has_no_route_observation(tmp_path: 
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","id":"route-unknown"}\n',
             source_path="route-unknown.jsonl",
+            canonical_source_path="route-unknown.jsonl",
             acquired_at_ms=1,
             post_parse=True,
         )
@@ -154,6 +162,7 @@ def test_revision_bearing_raw_payload_uses_typed_admission(tmp_path: Path) -> No
             provider=Provider.CODEX,
             payload=b"revision-bearing payload",
             source_path="revision-bearing.jsonl",
+            canonical_source_path="revision-bearing.jsonl",
             acquired_at_ms=1,
             revision=envelope,
             post_parse=False,
@@ -172,6 +181,7 @@ def test_admit_raw_observation_baseline_when_no_prior_head(tmp_path: Path) -> No
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=b"line-1\n",
         acquired_at_ms=1_767_000_000_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -193,6 +203,7 @@ def test_admit_raw_observation_post_parse_arm_binds_typed_revision(tmp_path: Pat
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/live.jsonl",
+        canonical_source_path="/tmp/live.jsonl",
         payload=payload,
         acquired_at_ms=1_767_000_000_000,
         logical_source_key=None,
@@ -237,6 +248,7 @@ def test_archive_store_write_raw_payload_post_parse_is_deterministic_and_restart
             provider=Provider.CODEX,
             payload=payload,
             source_path=source_path,
+            canonical_source_path=source_path,
             source_index=-1,
             native_id="append-session",
             acquired_at_ms=10,
@@ -309,8 +321,9 @@ def test_archive_store_write_raw_blob_ref_post_parse_preserves_explicit_batch_id
     source_path = str(tmp_path / "batch.jsonl")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
         assert store._blob_publisher is not None
-        published_hash, published_size = store._blob_publisher.write_from_bytes(payload)
-        store._blob_publisher.flush()
+        with write_lease("test.raw-admission.blob-publication", archive_root=tmp_path):
+            published_hash, published_size = store._blob_publisher.write_from_bytes(payload)
+            store._blob_publisher.flush()
         assert published_hash == blob_hash.hex()
         assert published_size == len(payload)
         assert (
@@ -319,6 +332,7 @@ def test_archive_store_write_raw_blob_ref_post_parse_preserves_explicit_batch_id
                 blob_hash_hex=blob_hash.hex(),
                 blob_size=len(payload),
                 source_path=source_path,
+                canonical_source_path=source_path,
                 source_index=7,
                 raw_id=raw_id,
                 acquired_at_ms=20,
@@ -374,6 +388,7 @@ def test_admit_raw_observation_arm1_skip_duplicate(tmp_path: Path) -> None:
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=head_payload,
         acquired_at_ms=1_767_000_000_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -389,6 +404,7 @@ def test_admit_raw_observation_arm1_skip_duplicate(tmp_path: Path) -> None:
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=head_payload,
         acquired_at_ms=1_767_000_001_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -409,6 +425,7 @@ def test_admit_raw_observation_arm2_append_extends_head(tmp_path: Path) -> None:
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=head_payload,
         acquired_at_ms=1_767_000_000_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -426,6 +443,7 @@ def test_admit_raw_observation_arm2_append_extends_head(tmp_path: Path) -> None:
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=extended_payload,
         acquired_at_ms=1_767_000_002_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -451,6 +469,7 @@ def test_admit_raw_observation_arm3_supersede_when_new_bytes_are_prefix_of_head(
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=fuller_payload,
         acquired_at_ms=1_767_000_000_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -467,6 +486,7 @@ def test_admit_raw_observation_arm3_supersede_when_new_bytes_are_prefix_of_head(
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=shorter_payload,
         acquired_at_ms=1_767_000_003_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -488,6 +508,7 @@ def test_admit_raw_observation_arm5_refuses_ambiguous_bytes_with_no_reacquire(tm
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=head_payload,
         acquired_at_ms=1_767_000_000_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -504,6 +525,7 @@ def test_admit_raw_observation_arm5_refuses_ambiguous_bytes_with_no_reacquire(tm
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=unrelated_payload,
         acquired_at_ms=1_767_000_004_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -530,6 +552,7 @@ def test_admit_raw_observation_arm5_opportunistic_reacquire_resolves_to_append(t
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=head_payload,
         acquired_at_ms=1_767_000_000_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -546,6 +569,7 @@ def test_admit_raw_observation_arm5_opportunistic_reacquire_resolves_to_append(t
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=b"torn-mid-rewrite-garbage",
         acquired_at_ms=1_767_000_005_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -569,6 +593,7 @@ def test_admit_raw_observation_arm5_reacquire_returns_none_when_source_vanished(
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=head_payload,
         acquired_at_ms=1_767_000_000_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -580,6 +605,7 @@ def test_admit_raw_observation_arm5_reacquire_returns_none_when_source_vanished(
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=b"unrelated-bytes",
         acquired_at_ms=1_767_000_006_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -610,6 +636,7 @@ def test_admit_raw_observation_arm4_artifact_never_materializes_a_session(tmp_pa
         conn,
         origin=Origin.CLAUDE_CODE_SESSION,
         source_path="/tmp/tool-results/abc.json",
+        canonical_source_path="/tmp/tool-results/abc.json",
         payload=b'{"tool":"bash","output":"ok"}',
         acquired_at_ms=1_767_000_000_000,
         logical_source_key="claude-code:/tmp/tool-results/abc.json",
@@ -647,6 +674,7 @@ def test_admit_raw_observation_requires_logical_source_key(tmp_path: Path) -> No
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="/tmp/rollout.jsonl",
+            canonical_source_path="/tmp/rollout.jsonl",
             payload=b"x",
             acquired_at_ms=1_767_000_000_000,
             logical_source_key="",
@@ -669,6 +697,7 @@ def test_admit_raw_observation_baseline_honors_caller_supplied_raw_id(tmp_path: 
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/tmp/rollout.jsonl",
+        canonical_source_path="/tmp/rollout.jsonl",
         payload=b"line-1\n",
         acquired_at_ms=1_767_000_000_000,
         logical_source_key="codex:/tmp/rollout.jsonl",
@@ -700,6 +729,7 @@ def test_admit_raw_observation_grouped_shares_one_raw_across_sessions(tmp_path: 
         conn,
         origin=Origin.CLAUDE_CODE_SESSION,
         source_path="/tmp/grouped.jsonl",
+        canonical_source_path="/tmp/grouped.jsonl",
         payload=b'{"a": 1}\n{"b": 2}\n',
         acquired_at_ms=1_767_000_000_000,
         logical_source_key="claude-code-session:/tmp/grouped.jsonl",
@@ -734,6 +764,7 @@ def test_admit_raw_observation_rejects_grouped_with_prior_head(tmp_path: Path) -
             conn,
             origin=Origin.CLAUDE_CODE_SESSION,
             source_path="/tmp/grouped.jsonl",
+            canonical_source_path="/tmp/grouped.jsonl",
             payload=b"x\n",
             acquired_at_ms=1_767_000_000_000,
             logical_source_key="claude-code-session:/tmp/grouped.jsonl",

@@ -26,12 +26,13 @@ from polylogue.core.enums import BlockType, DisplayLabelSource, Provider, Role, 
 from polylogue.mcp.payloads import MCPArchiveSessionSummaryPayload
 from polylogue.operations.daemon_reads import _session_list_row
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.surfaces.payloads import (
     session_list_envelope_from_summary,
     session_summary_envelope_from_summary,
 )
+from tests.infra.index_writer import close_fixture_index_connection, write_fixture_index_session
 
 ECHOED_PROMPT = "please look at the failing test in the parser and tell me what is wrong"
 
@@ -44,7 +45,8 @@ def _write_session(
     title_source: TitleSource | None,
     tool_calls: tuple[str, ...] = (),
 ) -> None:
-    conn = sqlite3.connect(db_path)
+    # The Index writer admits only connections from its measured creator.
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     try:
         messages = [
@@ -73,7 +75,7 @@ def _write_session(
                     ],
                 )
             )
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -85,7 +87,7 @@ def _write_session(
         )
         conn.commit()
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
 def _bootstrap(tmp_path: Path) -> Path:

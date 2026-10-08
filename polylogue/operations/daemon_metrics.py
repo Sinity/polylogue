@@ -394,10 +394,6 @@ def _attached_table_name(conn: sqlite3.Connection, schema_name: str, table: str)
     return ""
 
 
-def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-
-
 def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
     row = conn.execute(sql).fetchone()
     if row is None or row[0] is None:
@@ -1624,16 +1620,14 @@ def _emit_hook_flow_metrics(lines: list[str], configured_root: Path) -> None:
 
 
 def _emit_archive_index_metrics(lines: list[str], conn: sqlite3.Connection) -> None:
-    session_cols = _columns(conn, "sessions") if _table_exists(conn, "sessions") else set()
-    if "origin" in session_cols:
+    has_sessions = _table_exists(conn, "sessions")
+    if has_sessions:
         session_rows = conn.execute("SELECT origin, COUNT(*) FROM sessions GROUP BY origin ORDER BY origin").fetchall()
         session_samples: list[tuple[dict[str, str] | None, int | float]] = [
             ({"source": str(row[0])}, int(row[1])) for row in session_rows
         ]
     else:
-        session_samples = [
-            (None, _scalar_int(conn, "SELECT COUNT(*) FROM sessions") if _table_exists(conn, "sessions") else 0)
-        ]
+        session_samples = [(None, 0)]
     _emit_metric(
         lines,
         name="polylogue_archive_sessions_total",
@@ -1642,7 +1636,7 @@ def _emit_archive_index_metrics(lines: list[str], conn: sqlite3.Connection) -> N
         samples=session_samples,
     )
 
-    if "origin" in session_cols and "message_count" in session_cols:
+    if has_sessions:
         message_rows = conn.execute(
             """
             SELECT origin, COALESCE(SUM(message_count), 0)
@@ -1655,14 +1649,7 @@ def _emit_archive_index_metrics(lines: list[str], conn: sqlite3.Connection) -> N
             ({"source": str(row[0])}, int(row[1])) for row in message_rows
         ]
     elif _table_exists(conn, "messages"):
-        message_cols = _columns(conn, "messages")
-        if "origin" in message_cols:
-            message_rows = conn.execute(
-                "SELECT origin, COUNT(*) FROM messages GROUP BY origin ORDER BY origin"
-            ).fetchall()
-            message_samples = [({"source": str(row[0])}, int(row[1])) for row in message_rows]
-        else:
-            message_samples = [(None, _scalar_int(conn, "SELECT COUNT(*) FROM messages"))]
+        message_samples = [(None, _scalar_int(conn, "SELECT COUNT(*) FROM messages"))]
     else:
         message_samples = [(None, 0)]
     _emit_metric(
@@ -2000,17 +1987,6 @@ def _emit_archive_source_index_link_metrics(
         )
         return
 
-    session_cols = _columns(conn, "sessions")
-    if "raw_id" not in session_cols:
-        _emit_metric(
-            lines,
-            name="polylogue_archive_source_index_links_total",
-            help_text="Raw source rows by index materialization state.",
-            metric_type="gauge",
-            samples=[],
-        )
-        return
-
     source_db = db_path.with_name("source.db")
     if not source_db.exists():
         raw_links = (
@@ -2164,16 +2140,14 @@ def _emit_archive_raw_record_metrics(lines: list[str], conn: sqlite3.Connection)
         ],
     )
 
-    raw_cols = _columns(conn, "raw_sessions")
-    if "origin" in raw_cols:
-        rows = conn.execute("SELECT origin, COUNT(*) FROM raw_sessions GROUP BY origin ORDER BY origin").fetchall()
-        _emit_metric(
-            lines,
-            name="polylogue_raw_records_by_source",
-            help_text="Raw session records by source family.",
-            metric_type="gauge",
-            samples=[({"source": str(row[0])}, int(row[1])) for row in rows],
-        )
+    rows = conn.execute("SELECT origin, COUNT(*) FROM raw_sessions GROUP BY origin ORDER BY origin").fetchall()
+    _emit_metric(
+        lines,
+        name="polylogue_raw_records_by_source",
+        help_text="Raw session records by source family.",
+        metric_type="gauge",
+        samples=[({"source": str(row[0])}, int(row[1])) for row in rows],
+    )
 
 
 # ---------------------------------------------------------------------------

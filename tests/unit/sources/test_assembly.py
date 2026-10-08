@@ -1237,3 +1237,39 @@ def test_codex_state_titles_keep_every_row_and_every_title_length(tmp_path: Path
     titles = assembly_codex._parse_state_db_file(state_path)
 
     assert titles == {"t0": "short title", "t1": long_title.strip(), "t2": "third"}
+
+
+@pytest.mark.parametrize(
+    ("source_path", "expected"),
+    [
+        (
+            r"C:\Users\neutral\.codex\sessions\2026\rollout.jsonl",
+            (r"C:\Users\neutral\.codex\session_index.jsonl", r"C:\Users\neutral\.codex\history.jsonl"),
+        ),
+        (
+            "C:/Users/neutral/.codex/sessions/2026/rollout.jsonl",
+            ("C:/Users/neutral/.codex/session_index.jsonl", "C:/Users/neutral/.codex/history.jsonl"),
+        ),
+        (
+            r"\\server\share\.codex\sessions\rollout.jsonl",
+            (r"\\server\share\.codex\session_index.jsonl", r"\\server\share\.codex\history.jsonl"),
+        ),
+        (
+            "/neutral/.codex/sessions/rollout:one.jsonl",
+            ("/neutral/.codex/session_index.jsonl", "/neutral/.codex/history.jsonl"),
+        ),
+        (
+            r"/neutral/.codex/sessions/rollout\one.jsonl",
+            ("/neutral/.codex/session_index.jsonl", "/neutral/.codex/history.jsonl"),
+        ),
+        ("/other/.codex/sessions/rollout.jsonl", ("/other/.codex/session_index.jsonl", "/other/.codex/history.jsonl")),
+        ("/neutral/no-session-tree/rollout.jsonl", None),
+        ("", None),
+    ],
+)
+def test_retained_codex_sidecar_coordinates_preserve_acquired_path_flavor(
+    source_path: str, expected: tuple[str, str] | None
+) -> None:
+    from polylogue.sources.retained_assembly import codex_sidecar_coordinates
+
+    assert codex_sidecar_coordinates(source_path) == expected

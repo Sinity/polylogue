@@ -1,145 +1,144 @@
-"""Acknowledging a frontier blocker does not discharge the evidence behind it.
-
-``resolve_raw_authority_blocker`` tombstones the row on the operator's
-acknowledgement alone -- for a frontier witness it does not even rebuild the
-plan from current evidence. ``pass_id`` is a content address over the inspected
-inventory, so a later pass over *unchanged* blocking evidence derives the same
-pass, plan and blocker ids, and the publishing
-``INSERT ... ON CONFLICT DO NOTHING`` then found the resolved row and wrote
-nothing. ``raw_authority_blocker_count`` read zero while the same missing,
-quarantined or corrupt evidence still existed.
-
-Anti-vacuity: put the plain
-``f"raw-authority-blocker:{_digest(['frontier', pass_id, item.plan_id])}"``
-back in ``_reconcile_frontier_obligations`` and
-``test_acknowledged_obligation_reopens_...`` goes red -- the second pass
-publishes nothing and readiness reports a clean archive. The remaining cases
-pin the opposite direction: an unchanged pass must not mint a second open row,
-and a genuinely disproved obligation must stay closed.
-"""
+"""Acknowledgement preserves evidence: blocking evidence reopens, disproof closes."""
 
 from __future__ import annotations
 
-import sqlite3
+import hashlib
+import json
+from contextlib import closing
 from pathlib import Path
 
-from polylogue.config import Config
-from polylogue.core.json import json_document
+import pytest
+
+from polylogue.core.enums import Provider
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
-from polylogue.storage.raw_authority import resolve_raw_authority_blocker
-from polylogue.storage.raw_reconciler import (
-    RawAuthorityFrontierItem,
-    RawAuthorityFrontierState,
-    _open_frontier_blocker_id,
-    _reconcile_frontier_obligations,
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.frontier_inspection import (
+    inspect_prepared_raw_authority_frontier,
+    prepared_frontier_blocker_acknowledgement,
 )
-from tests.infra.archive_templates import bootstrap_archive_root
-
-_PASS_ID = "raw-authority-frontier-pass:" + "a" * 64
-
-
-def _config(root: Path) -> Config:
-    return Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "index.db")
-
-
-def _blocking_item() -> RawAuthorityFrontierItem:
-    """One frontier item whose evidence is missing and stays missing."""
-    return RawAuthorityFrontierItem(
-        state=RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE,
-        raw_id="raw-1",
-        logical_source_key="codex-session:key-1",
-        session_id="codex-session:s1",
-        reason="accepted raw payload bytes are absent from the blob store",
-        evidence_digest="d" * 64,
-        input_raw_ids=("raw-1",),
-        source_preconditions=json_document({}),
-        index_preconditions=json_document({}),
-        plan_id="raw-replay:frontier-1",
-    )
+from polylogue.storage.raw_reconciler import _frontier_blocker_identity
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
 def _blocker_rows(root: Path) -> list[tuple[str, bool]]:
-    with sqlite3.connect(root / "source.db") as conn:
+    with closing(open_readonly_connection(root / "source.db")) as conn:
         return [
             (str(blocker_id), resolved_at_ms is None)
             for blocker_id, resolved_at_ms in conn.execute(
-                "SELECT blocker_id, resolved_at_ms FROM raw_authority_blockers ORDER BY created_at_ms, blocker_id"
+                "SELECT blocker_id,resolved_at_ms FROM raw_authority_blockers ORDER BY created_at_ms,blocker_id"
             )
         ]
 
 
 class TestFrontierObligationReopen:
-    def test_acknowledgement_chain_has_no_arbitrary_cap(self, tmp_path: Path) -> None:
-        """Repeated acknowledgements continue to produce an open successor.
+    def test_acknowledgement_chain_has_no_arbitrary_cap(self) -> None:
+        resolved: dict[str, tuple[object]] = {}
+        last = None
+        for index in range(70):
+            blocker_id = _frontier_blocker_identity(
+                resolved.get, pass_id="raw-authority-frontier-pass:" + "a" * 64, plan_id="raw-replay:frontier-1"
+            )
+            assert blocker_id != last
+            resolved[blocker_id] = (index,)
+            last = blocker_id
+        assert len(resolved) == 70
+        successor = _frontier_blocker_identity(
+            resolved.get, pass_id="raw-authority-frontier-pass:" + "a" * 64, plan_id="raw-replay:frontier-1"
+        )
+        assert successor not in resolved and successor.startswith("raw-authority-blocker:")
 
-        Anti-vacuity: restore the 64-row cap and the 65th acknowledged row
-        raises instead of returning the next obligation id.
-        """
-        bootstrap_archive_root(tmp_path)
-        with sqlite3.connect(tmp_path / "source.db") as conn:
-            blocker_id = _open_frontier_blocker_id(conn, pass_id=_PASS_ID, plan_id="raw-replay:frontier-1")
-            for index in range(70):
-                conn.execute(
-                    "INSERT INTO raw_authority_blockers(blocker_id, plan_input_digest, observed_pass_id, reason, "
-                    "expected_json, observed_json, created_at_ms, resolved_at_ms, resolution) "
-                    "VALUES (?, ?, ?, 'still blocking', '{}', '{}', ?, ?, 'acknowledged')",
-                    (
-                        blocker_id,
-                        "a" * 64,
-                        _PASS_ID,
-                        index,
-                        index,
-                    ),
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(0)
+    @pytest.mark.parametrize("case", ["acknowledged_reopens", "unchanged_converges", "disproved_stays_closed"])
+    async def test_real_prepared_obligation_lifecycle(self, tmp_path: Path, case: str) -> None:
+        root = tmp_path / "archive"
+        payload = json.dumps(
+            [
+                {
+                    "id": "neutral-reopen",
+                    "current_node": "m",
+                    "mapping": {
+                        "m": {
+                            "id": "m",
+                            "parent": None,
+                            "children": [],
+                            "message": {
+                                "id": "m",
+                                "author": {"role": "user"},
+                                "create_time": 1,
+                                "content": {"content_type": "text", "parts": ["neutral"]},
+                            },
+                        }
+                    },
+                }
+            ]
+        ).encode()
+
+        def acquire() -> str:
+            bootstrap_archive_root(root)
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return archive.write_raw_payload(
+                    provider=Provider.CHATGPT,
+                    payload=payload,
+                    source_path="neutral.json",
+                    canonical_source_path="neutral.json",
+                    acquired_at_ms=1,
                 )
-                blocker_id = _open_frontier_blocker_id(conn, pass_id=_PASS_ID, plan_id="raw-replay:frontier-1")
-        assert blocker_id.startswith("raw-authority-blocker:")
 
-    def test_acknowledged_obligation_reopens_while_evidence_blocks(self, tmp_path: Path) -> None:
-        bootstrap_archive_root(tmp_path)
-        item = _blocking_item()
-        config = _config(tmp_path)
+        raw_id = await run_archive_fixture_write(root, acquire)
+        async with prepared_live_convergence_owner(root) as owner:
+            receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
+            assert sum(len(receipt.written_session_ids) for receipt in receipts) == 1
+            blob = BlobStore(root / "blob").blob_path(hashlib.sha256(payload).hexdigest())
+            blob.write_bytes(payload + b"neutral-corruption")
 
-        first = _reconcile_frontier_obligations(config, _PASS_ID, (item,))
-        original_id = first[item.plan_id]
-        assert _blocker_rows(tmp_path) == [(original_id, True)]
-        assert raw_materialization_readiness_snapshot(tmp_path)["raw_authority_blocker_count"] == 1
+            async def inspect() -> None:
+                await owner.run_convergence_sync(
+                    "fixture.frontier.reopen",
+                    inspect_prepared_raw_authority_frontier,
+                    root,
+                    input_demand=owner._compute_adapter.amend_current_input_demand,
+                    check_physical_dependencies=True,
+                )
 
-        resolve_raw_authority_blocker(tmp_path, original_id, resolution="acknowledged, will reacquire later")
-        assert raw_materialization_readiness_snapshot(tmp_path)["raw_authority_blocker_count"] == 0
+            await inspect()
+            original_rows = _blocker_rows(root)
+            assert len(original_rows) == 1 and original_rows[0][1]
+            original_id = original_rows[0][0]
+            assert raw_materialization_readiness_snapshot(root)["raw_authority_blocker_count"] == 1
+            if case == "acknowledged_reopens":
 
-        # The evidence has not changed, so the next pass is byte-identical.
-        second = _reconcile_frontier_obligations(config, _PASS_ID, (item,))
-        successor_id = second[item.plan_id]
-        assert successor_id != original_id
-        assert _blocker_rows(tmp_path) == [(original_id, False), (successor_id, True)]
-        assert raw_materialization_readiness_snapshot(tmp_path)["raw_authority_blocker_count"] == 1
+                def acknowledge() -> None:
+                    with prepared_frontier_blocker_acknowledgement(
+                        root,
+                        original_id,
+                        resolution="acknowledged; reacquire later",
+                        input_demand=owner._compute_adapter.amend_current_input_demand,
+                    ) as prepared:
+                        assert prepared.found
+                        receipt = admit_stage_write("fixture.frontier.ack", prepared.publish)
+                        assert receipt["blocker_id"] == original_id
 
-    def test_an_unchanged_pass_does_not_multiply_open_rows(self, tmp_path: Path) -> None:
-        """Opposite direction: minting a fresh obligation every pass would fail."""
-        bootstrap_archive_root(tmp_path)
-        item = _blocking_item()
-        config = _config(tmp_path)
-
-        first = _reconcile_frontier_obligations(config, _PASS_ID, (item,))
-        second = _reconcile_frontier_obligations(config, _PASS_ID, (item,))
-        third = _reconcile_frontier_obligations(config, _PASS_ID, (item,))
-
-        assert first == second == third
-        assert _blocker_rows(tmp_path) == [(first[item.plan_id], True)]
-
-    def test_a_disproved_obligation_stays_closed(self, tmp_path: Path) -> None:
-        """Opposite direction: a pass that no longer sees the item must not reopen it."""
-        bootstrap_archive_root(tmp_path)
-        item = _blocking_item()
-        config = _config(tmp_path)
-
-        published = _reconcile_frontier_obligations(config, _PASS_ID, (item,))
-        original_id = published[item.plan_id]
-
-        clean_pass = "raw-authority-frontier-pass:" + "b" * 64
-        _reconcile_frontier_obligations(config, clean_pass, ())
-        assert _blocker_rows(tmp_path) == [(original_id, False)]
-
-        _reconcile_frontier_obligations(config, clean_pass, ())
-        assert _blocker_rows(tmp_path) == [(original_id, False)]
-        assert raw_materialization_readiness_snapshot(tmp_path)["raw_authority_blocker_count"] == 0
+                await owner.run_convergence_sync("fixture.frontier.ack", acknowledge)
+                assert raw_materialization_readiness_snapshot(root)["raw_authority_blocker_count"] == 0
+                await inspect()
+                rows = _blocker_rows(root)
+                assert len(rows) == 2 and (original_id, False) in rows
+                assert sum(opened for _, opened in rows) == 1
+                assert next(key for key, opened in rows if opened) != original_id
+            elif case == "disproved_stays_closed":
+                blob.write_bytes(payload)
+                await inspect()
+                assert _blocker_rows(root) == [(original_id, False)]
+                await inspect()
+                assert _blocker_rows(root) == [(original_id, False)]
+                assert raw_materialization_readiness_snapshot(root)["raw_authority_blocker_count"] == 0
+            else:
+                await inspect()
+                await inspect()
+                assert _blocker_rows(root) == original_rows
+                assert raw_materialization_readiness_snapshot(root)["raw_authority_blocker_count"] == 1

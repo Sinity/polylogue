@@ -19,12 +19,14 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from polylogue.archive.filter.filters import SessionFilter
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
 from tests.infra.storage_records import SessionBuilder, make_message, make_session, save_current_archive_records
 
 # =============================================================================
@@ -211,6 +213,22 @@ class TestConnectionManagement:
 # =============================================================================
 
 
+async def _save_converging(repo: SessionRepository, **records: Any) -> None:
+    """Save once, retrying only the typed refusal a concurrent commit causes.
+
+    Preparation reads a sealed snapshot outside the writer; when another save
+    commits first the seal is stale and the write is refused, never applied
+    on stale evidence. The production converger retries that refusal; each
+    retry follows another writer's progress, so concurrent saves settle.
+    """
+    while True:
+        try:
+            await save_current_archive_records(repo, **records)
+            return
+        except ReferenceSealStaleError:
+            continue
+
+
 class TestConcurrentSaveGuards:
     """Multiple concurrent saves must not corrupt data."""
 
@@ -237,7 +255,7 @@ class TestConcurrentSaveGuards:
                 content_hash=f"mhash-{idx}",
                 version=1,
             )
-            await save_current_archive_records(repo, session=conv, messages=[msg], attachments=[])
+            await _save_converging(repo, session=conv, messages=[msg], attachments=[])
 
         # Run 10 concurrent saves
         await asyncio.gather(*[_save_one(i) for i in range(10)])
@@ -272,7 +290,7 @@ class TestConcurrentSaveGuards:
                 content_hash=f"mhash-v{version}",
                 version=version,
             )
-            await save_current_archive_records(repo, session=conv, messages=[msg], attachments=[])
+            await _save_converging(repo, session=conv, messages=[msg], attachments=[])
 
         # Run 5 concurrent upserts to the same session
         await asyncio.gather(*[_upsert(i) for i in range(5)])
@@ -299,7 +317,7 @@ class TestConcurrentSaveGuards:
                 content_hash=f"hash-{idx}",
                 version=1,
             )
-            await save_current_archive_records(repo, session=conv, messages=[], attachments=[])
+            await _save_converging(repo, session=conv, messages=[], attachments=[])
 
         async def _read() -> int:
             async with backend.read_connection() as conn:

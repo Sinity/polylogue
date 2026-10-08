@@ -38,8 +38,6 @@ def test_projection_uses_the_finalized_step_and_aggregate_counts() -> None:
         "terminal_count": 2,
         "terminal_green": False,
         "complete_corpus_covered": None,
-        # #5720 projects the aggregate's named flakes; this run named none.
-        "flaky": [],
         "corpus_digest": None,
         "outcomes": {"failed": 1, "passed": 1},
         "outcomes_truncated": False,

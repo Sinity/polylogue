@@ -14,11 +14,13 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers import antigravity, browser_capture, chatgpt, codex, drive, grok, local_agent
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.hydrators import message_from_record
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
 from polylogue.storage.sqlite.queries.mappers_archive import bind_message_row_mapper
 from polylogue.surfaces.payloads import message_render_envelope_from_domain
+from tests.infra.index_writer import close_fixture_index_connection, write_fixture_index_session
 
 
 def test_supported_json_usage_extractors_preserve_missing_and_zero() -> None:
@@ -69,16 +71,17 @@ def test_unknown_and_measured_zero_survive_prepared_write_and_public_message(tmp
         ],
     )
     path = tmp_path / "index.db"
-    conn = sqlite3.connect(path)
+    # The Index writer admits only connections from its measured creator.
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         initialize_archive_tier(conn, ArchiveTier.INDEX)
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepare_session_rows(session),
+            prepared_rows=prepare_session_rows(session),
         )
         rows = conn.execute(
             "SELECT message_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens "
@@ -106,7 +109,7 @@ def test_unknown_and_measured_zero_survive_prepared_write_and_public_message(tmp
         assert envelopes[0].input_tokens is None
         assert envelopes[1].input_tokens == 0
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
 def _chatgpt_payload() -> dict[str, object]:
@@ -244,6 +247,7 @@ async def test_composed_and_bounded_message_reads_carry_stored_usage(workspace_e
     from polylogue.api import Polylogue
     from polylogue.archive.hydration import archive_message_query_row_to_domain
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import run_off_event_loop
     from tests.infra.live_ingest import write_session_sync
     from tests.infra.storage_records import db_setup
 
@@ -277,7 +281,8 @@ async def test_composed_and_bounded_message_reads_carry_stored_usage(workspace_e
         ],
     )
     archive_root = workspace_env["archive_root"]
-    session_id = write_session_sync(db_setup(workspace_env), session)
+    # Seeding takes a synchronous write lease, which may not block this test's loop.
+    session_id = run_off_event_loop(lambda: write_session_sync(db_setup(workspace_env), session))
     expected = [
         (None, None, None, None, None),
         ("claude-opus-5", 0, 0, 0, 0),

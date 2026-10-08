@@ -4,7 +4,7 @@ Blobs are content-addressed: two Claude Code sessions whose tool output
 overflowed into byte-identical ``tool-results/`` sidecars own one blob hash.
 The sidecar tests drive production acquisition (``LiveBatchProcessor``) for
 two such sessions, A and B, where A also overflowed a second output nobody
-else has, then excise A through ``apply_session_excision``.
+else has, then excise A through the audited Excision operation.
 
 Excision reaches the sidecar raws a session owns (polylogue-8j9rh): the
 forgets-its-own test removes and marks A's own sidecar while naming the one it
@@ -26,29 +26,24 @@ Synthetic fixtures only: invented tool output, invented paths.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
-from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.pipeline.ids import session_content_hash
-from polylogue.pipeline.services.ingest_batch._core import _write_session
-from polylogue.pipeline.services.ingest_worker import SessionWritePayload
-from polylogue.security.excision import apply_session_excision, plan_session_excision
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
-from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceBlobRef,
@@ -56,7 +51,13 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     is_blob_hash_excised,
     write_source_raw_session,
 )
-from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.excision import (
+    plan_session_excision_from_root,
+)
+from tests.infra.excision_execution import execute_excision
+from tests.infra.index_writer import fixture_index_connection, write_fixture_index_session
+from tests.infra.live_batch import prepared_live_batch_processor
+from tests.infra.retained_jsonl import prepared_source_fixture
 
 _SESSION_A = "5c3d1e40-0000-4000-8000-00000000a001"
 _SESSION_B = "5c3d1e40-0000-4000-8000-00000000b002"
@@ -132,18 +133,37 @@ def _session_tree(root: Path, session_id: str, outputs: list[tuple[str, str]]) -
     return paths
 
 
-async def _ingest(workspace_env: dict[str, Path], root: Path, files: list[Path], *, cursor_name: str) -> None:
-    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "index.db")
-    processor = LiveBatchProcessor(
-        archive,
-        (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
-        cursor=CursorStore(workspace_env["data_root"] / cursor_name),
+async def _ingest(
+    workspace_env: dict[str, Path],
+    root: Path,
+    files: list[Path],
+    *,
+    fresh_cursor: bool = False,
+    source: WatchSource | None = None,
+) -> None:
+    """Ingest through the real live batch processor and its canonical Raw owner.
+
+    ``fresh_cursor`` forgets these files' watcher cursors first (the disposable
+    ops tier), so an unchanged file is genuinely reacquired rather than skipped
+    at end-of-file: re-ingest then depends on the excision marker, not on the
+    cursor, to keep excised content out.
+    """
+    archive_root = workspace_env["archive_root"]
+    if fresh_cursor:
+        spellings = [str(path) for path in files] + [str(path.resolve()) for path in files]
+        marks = ",".join("?" for _ in spellings)
+        with closing(sqlite3.connect(archive_root / "ops.db")) as ops:
+            ops.execute(
+                f"DELETE FROM ingest_cursor WHERE source_path IN ({marks}) OR canonical_source_path IN ({marks})",
+                (*spellings, *spellings),
+            )
+            ops.commit()
+    async with prepared_live_batch_processor(
+        archive_root,
+        (source or WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
-    try:
+    ) as processor:
         await processor.ingest_files(files, emit_event=False)
-    finally:
-        await archive.close()
 
 
 def _sha(text: str) -> bytes:
@@ -184,8 +204,8 @@ def _sidecar_payloads(archive_root: Path, session_id: str) -> list[dict[str, obj
 
 def _rederived_hash(archive_root: Path, raw_id: str) -> str:
     """The identity of the session the archive re-derives from its retained bytes."""
-    with ArchiveStore(archive_root, initialize=False, read_only=False) as store:
-        [session] = parse_retained_raw_sessions(store, raw_id)
+    with prepared_source_fixture(archive_root) as source_read:
+        [session] = parse_retained_raw_sessions(source_read, raw_id)
     return str(session_content_hash(session))
 
 
@@ -203,7 +223,6 @@ async def _ingest_a_and_b(workspace_env: dict[str, Path]) -> tuple[Path, dict[st
             tree_a["transcript"],
             tree_b["transcript"],
         ],
-        cursor_name="cursor.db",
     )
     return root, tree_a, tree_b
 
@@ -221,16 +240,18 @@ async def test_excising_a_forgets_the_tool_output_only_it_had(workspace_env: dic
     session_a = _session_row(archive_root, _SESSION_A)
     assert session_a is not None
 
-    plan = plan_session_excision(archive_root, session_a[0])
+    plan = plan_session_excision_from_root(archive_root, session_a[0])
     assert plan.source_sidecar_rows == 2
-    receipt = apply_session_excision(archive_root, session_a[0], reason="synthetic secret", actor="user:local")
+    receipt = await asyncio.to_thread(
+        execute_excision, archive_root, session_a[0], reason="synthetic secret", actor="user:local"
+    )
 
-    assert receipt.counts["source_sidecar_rows"] == 2
+    assert receipt["counts"]["source_sidecar_rows"] == 2
     assert _excised(archive_root, _sha(_A_ONLY_TEXT))
-    assert _sha(_A_ONLY_TEXT).hex() in receipt.removed_blob_hashes
+    assert _sha(_A_ONLY_TEXT).hex() in receipt["removed_blob_hashes"]
     assert _raw_hash(archive_root, tree_a["toolu_a_only"]) is None
     assert _raw_hash(archive_root, tree_a["toolu_a_shared"]) is None
-    assert _sha(_SHARED_TEXT).hex() in receipt.shared_blob_hashes
+    assert _sha(_SHARED_TEXT).hex() in receipt["shared_blob_hashes"]
     assert not _excised(archive_root, _sha(_SHARED_TEXT))
     assert _raw_hash(archive_root, tree_b["toolu_b_shared"]) == _sha(_SHARED_TEXT)
 
@@ -286,15 +307,16 @@ async def test_excising_a_parent_keeps_its_subagents_sidecar(workspace_env: dict
         workspace_env,
         root,
         [parent_sidecar, subagent_sidecar, orphan_sidecar, parent, subagent],
-        cursor_name="cursor.db",
     )
     session = _session_row(archive_root, _SESSION_A)
     assert session is not None
     assert _raw_hash(archive_root, subagent_sidecar) == _sha(_SUBAGENT_TEXT)
 
-    receipt = apply_session_excision(archive_root, session[0], reason="synthetic secret", actor="user:local")
+    receipt = await asyncio.to_thread(
+        execute_excision, archive_root, session[0], reason="synthetic secret", actor="user:local"
+    )
 
-    assert receipt.counts["source_sidecar_rows"] == 1
+    assert receipt["counts"]["source_sidecar_rows"] == 1
     assert _raw_hash(archive_root, parent_sidecar) is None
     assert _excised(archive_root, _sha(_PARENT_TEXT))
     assert _raw_hash(archive_root, subagent_sidecar) == _sha(_SUBAGENT_TEXT)
@@ -381,17 +403,12 @@ async def test_excising_a_gemini_chat_forgets_its_tool_output_sidecar(workspace_
     snapshot.parent.mkdir(parents=True)
     snapshot.write_text(json.dumps(_gemini_snapshot(sidecar)), encoding="utf-8")
 
-    archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "index.db")
-    processor = LiveBatchProcessor(
-        archive,
-        (WatchSource(name="gemini-cli", root=root, suffixes=(".json",)),),
-        cursor=CursorStore(workspace_env["data_root"] / "cursor.db"),
-        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    await _ingest(
+        workspace_env,
+        root,
+        [sidecar, unclaimed, snapshot],
+        source=WatchSource(name="gemini-cli", root=root, layout=export_drop_layout((".json",))),
     )
-    try:
-        await processor.ingest_files([sidecar, unclaimed, snapshot], emit_event=False)
-    finally:
-        await archive.close()
     with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
         [(session_id,)] = conn.execute(
             "SELECT session_id FROM sessions WHERE origin = ?", (Origin.GEMINI_CLI_SESSION.value,)
@@ -399,9 +416,11 @@ async def test_excising_a_gemini_chat_forgets_its_tool_output_sidecar(workspace_
     assert _raw_hash(archive_root, sidecar) == _sha(_GEMINI_TEXT)
     assert _raw_hash(archive_root, unclaimed) == _sha(_ORPHAN_TEXT)
 
-    receipt = apply_session_excision(archive_root, str(session_id), reason="synthetic secret", actor="user:local")
+    receipt = await asyncio.to_thread(
+        execute_excision, archive_root, str(session_id), reason="synthetic secret", actor="user:local"
+    )
 
-    assert receipt.counts["source_sidecar_rows"] == 1
+    assert receipt["counts"]["source_sidecar_rows"] == 1
     assert _raw_hash(archive_root, sidecar) is None
     assert _excised(archive_root, _sha(_GEMINI_TEXT))
     assert _raw_hash(archive_root, unclaimed) == _sha(_ORPHAN_TEXT)
@@ -425,17 +444,19 @@ async def test_excising_a_keeps_the_sidecar_it_shares_with_b(workspace_env: dict
     assert b_event["acquisition_status"] == "matched"
     # The stored identity is the one the archive re-derives from B's
     # retained bytes.
-    assert session_b[2] == _rederived_hash(archive_root, session_b[1])
+    assert session_b[2] == await asyncio.to_thread(_rederived_hash, archive_root, session_b[1])
 
-    receipt = apply_session_excision(archive_root, session_a[0], reason="synthetic secret", actor="user:local")
+    receipt = await asyncio.to_thread(
+        execute_excision, archive_root, session_a[0], reason="synthetic secret", actor="user:local"
+    )
 
-    assert receipt.found is True
+    assert receipt["found"] is True
     assert _session_row(archive_root, _SESSION_A) is None
     # A is forgotten: its transcript is marked.
     assert _excised(archive_root, a_payload_hash)
     # B keeps the blob it shares with A: unmarked, still retained, readable.
     assert not _excised(archive_root, _sha(_SHARED_TEXT))
-    assert _sha(_SHARED_TEXT).hex() not in receipt.removed_blob_hashes
+    assert _sha(_SHARED_TEXT).hex() not in receipt["removed_blob_hashes"]
     assert _raw_hash(archive_root, tree_b["toolu_b_shared"]) == _sha(_SHARED_TEXT)
     assert BlobStore(archive_root / "blob").read_all(_sha(_SHARED_TEXT).hex()) == _SHARED_TEXT.encode("utf-8")
     assert _session_row(archive_root, _SESSION_B) == session_b
@@ -449,7 +470,7 @@ async def test_excising_a_keeps_the_sidecar_it_shares_with_b(workspace_env: dict
         workspace_env,
         root,
         [tree_c["toolu_c_shared"], tree_a["transcript"], tree_c["transcript"]],
-        cursor_name="cursor-reingest.db",
+        fresh_cursor=True,
     )
 
     assert _session_row(archive_root, _SESSION_A) is None, "re-ingesting A's export resurrected it"
@@ -460,7 +481,7 @@ async def test_excising_a_keeps_the_sidecar_it_shares_with_b(workspace_env: dict
         ("toolu_c_shared", "matched")
     ], events
     assert _raw_hash(archive_root, tree_c["toolu_c_shared"]) == _sha(_SHARED_TEXT)
-    assert stored_c[2] == _rederived_hash(archive_root, stored_c[1])
+    assert stored_c[2] == await asyncio.to_thread(_rederived_hash, archive_root, stored_c[1])
     with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
         texts = [
             str(row[0])
@@ -487,12 +508,17 @@ def _attachment_ref(content: bytes) -> ArchiveSourceBlobRef:
 
 
 def _acquire(archive_root: Path, native_id: str, payload: bytes, refs: tuple[bytes, ...]) -> str:
+    blob_store = BlobStore(archive_root / "blob")
+    for content in refs:
+        blob_hash, _size = blob_store.write_from_bytes(content)
+        assert blob_hash == hashlib.sha256(content).hexdigest()
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         return write_source_raw_session(
             conn,
             origin=Origin.CLAUDE_AI_EXPORT.value,
             source_path=f"/synthetic/{native_id}.json",
+            canonical_source_path=f"/synthetic/{native_id}.json",
             source_index=0,
             payload=payload,
             acquired_at_ms=1_000,
@@ -501,8 +527,8 @@ def _acquire(archive_root: Path, native_id: str, payload: bytes, refs: tuple[byt
         )
 
 
-def _attachment_session(native_id: str, raw_id: str, attachments: dict[str, bytes]) -> SessionWritePayload:
-    session = ParsedSession(
+def _attachment_session(native_id: str, attachments: dict[str, bytes]) -> ParsedSession:
+    return ParsedSession(
         source_name=Provider.CLAUDE_AI,
         provider_session_id=native_id,
         title="Synthetic",
@@ -516,19 +542,10 @@ def _attachment_session(native_id: str, raw_id: str, attachments: dict[str, byte
                 name=name,
                 mime_type="text/plain",
                 size_bytes=len(content),
-                inline_bytes=content,
+                precomputed_blob=(hashlib.sha256(content).hexdigest(), len(content)),
             )
             for name, content in attachments.items()
         ],
-    )
-    bound = str(session_content_hash(session))
-    return SessionWritePayload(
-        session_id=f"{Origin.CLAUDE_AI_EXPORT.value}:{native_id}",
-        content_hash=bound,
-        parsed_session=session.model_copy(update={"content_hash": bound}),
-        message_count=1,
-        attachment_count=len(attachments),
-        raw_id=raw_id,
     )
 
 
@@ -538,26 +555,45 @@ def test_excising_a_keeps_the_attachment_it_shares_with_b(tmp_path: Path) -> Non
     payload_a = b'{"uuid": "att-a", "synthetic": "session a"}'
     raw_a = _acquire(archive_root, "att-a", payload_a, (_SHARED_ATTACHMENT, _A_ONLY_ATTACHMENT))
     raw_b = _acquire(archive_root, "att-b", b'{"uuid": "att-b", "synthetic": "session b"}', ())
-    publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
-    with open_connection(archive_root / "index.db") as conn:
+    with (
+        fixture_index_connection(archive_root / "index.db") as conn,
+        sqlite3.connect(archive_root / "source.db") as source,
+    ):
         for payload in (
-            _attachment_session("att-a", raw_a, {"shared.txt": _SHARED_ATTACHMENT, "own.txt": _A_ONLY_ATTACHMENT}),
-            _attachment_session("att-b", raw_b, {"shared.txt": _SHARED_ATTACHMENT}),
+            ("att-a", raw_a, {"shared.txt": _SHARED_ATTACHMENT, "own.txt": _A_ONLY_ATTACHMENT}),
+            ("att-b", raw_b, {"shared.txt": _SHARED_ATTACHMENT}),
         ):
-            changed, _counts = _write_session(conn, payload, blob_publisher=publisher)
-            assert changed is True
-        conn.commit()
-        session_a = str(conn.execute("SELECT session_id FROM sessions WHERE native_id = 'att-a'").fetchone()[0])
+            native_id, raw_id, attachments = payload
+            session = _attachment_session(native_id, attachments)
+            preacquired = {
+                attachment.acquisition_key: (
+                    bytes.fromhex(attachment.precomputed_blob[0]),
+                    attachment.precomputed_blob[1],
+                    "acquired",
+                )
+                for attachment in session.attachments
+                if attachment.precomputed_blob is not None
+            }
+            session_id = write_fixture_index_session(
+                conn,
+                session,
+                raw_id=raw_id,
+                source_conn=source,
+                preacquired_attachment_blobs=preacquired,
+            )
+            assert session_id == f"{Origin.CLAUDE_AI_EXPORT.value}:{native_id}"
+            conn.commit()
+        session_a = f"{Origin.CLAUDE_AI_EXPORT.value}:att-a"
 
     shared = hashlib.sha256(_SHARED_ATTACHMENT).digest()
     own = hashlib.sha256(_A_ONLY_ATTACHMENT).digest()
-    receipt = apply_session_excision(archive_root, session_a, reason="synthetic secret", actor="user:local")
+    receipt = execute_excision(archive_root, session_a, reason="synthetic secret", actor="user:local")
 
-    assert receipt.found is True
+    assert receipt["found"] is True
     assert _excised(archive_root, hashlib.sha256(payload_a).digest())
     assert _excised(archive_root, own)
     assert not _excised(archive_root, shared)
-    assert receipt.shared_blob_hashes == (shared.hex(),)
+    assert receipt["shared_blob_hashes"] == [shared.hex()]
     with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
         kept = conn.execute(
             "SELECT a.acquisition_status FROM attachments AS a JOIN attachment_refs AS r "

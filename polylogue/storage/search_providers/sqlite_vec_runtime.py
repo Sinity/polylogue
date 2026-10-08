@@ -12,6 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.core.compute import current_cancellation
 from polylogue.core.errors import SchemaSkewError, SessionNotFoundError
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.embeddings.identity import (
@@ -423,12 +424,20 @@ class SqliteVecRuntimeMixin:
             admitted_name.relative_to(self.archive_root.resolve(strict=True))
         except ValueError as exc:
             raise SqliteVecError("selected index is outside the provider's trusted archive root") from exc
+        cancellation = current_cancellation()
+
+        def configure_owned(connection: sqlite3.Connection) -> None:
+            if cancellation is not None:
+                cancellation.register_connection(connection)
+            if configure_connection is not None:
+                configure_connection(connection)
+
         return open_vector_read_snapshot(
+            configure_connection=configure_owned,
             embeddings_path=self.db_path,
             index_path=selected,
             recipe=EmbeddingRecipe.current(model=self.model, dimensions=self.dimension),
             index_connection=index_connection,
-            configure_connection=configure_connection,
         )
 
     def _release_connection(self, conn: sqlite3.Connection) -> None:
@@ -436,6 +445,9 @@ class SqliteVecRuntimeMixin:
 
         if conn is not self._snapshot_connection:
             conn.close()
+            cancellation = current_cancellation()
+            if cancellation is not None:
+                cancellation.unregister_connection(conn)
 
     def _ensure_vec_available(self) -> None:
         """Ensure sqlite-vec is available, raising error if not."""
@@ -461,11 +473,8 @@ class SqliteVecRuntimeMixin:
 
         Uses the canonical archive_tiers DDL (:mod:`polylogue.storage.sqlite.
         archive_tiers.embeddings`) rather than a duplicate hand-rolled schema
-        -- a second, drifted declaration here previously created ``+source_name``
-        / message_id-keyed shapes that mismatched what the archive_tiers
-        bootstrap (and the daemon catch-up path) actually writes, silently
-        breaking this provider's own :meth:`SqliteVecQueryMixin.upsert` when
-        both ran against the same ``embeddings.db``.
+        so the tables match what the archive_tiers bootstrap and the session
+        embedding route write to the same ``embeddings.db``.
         """
         conn = self._get_connection()
         try:

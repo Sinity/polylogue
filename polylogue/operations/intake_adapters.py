@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
+from polylogue.core.compute_cancel import raise_if_operation_cancelled
 from polylogue.core.durable_fs import DurableFilesystemError
 from polylogue.core.storage_faults import ArchiveStorageFaultError
 from polylogue.daemon.intake import (
@@ -40,6 +41,7 @@ from polylogue.logging import ERROR, WARNING, emit
 from polylogue.maintenance.candidate_capacity import ArchiveCapacityError, InsufficientCapacityError
 from polylogue.maintenance.receipt_fs import MaintenanceReceiptPathError
 from polylogue.operations.cold_build_coverage import ColdBuildCoverageError, promote_cold_build_covering_active_index
+from polylogue.operations.drive_readiness import DriveCatchupReport, DriveCatchupState
 from polylogue.sources.live.batch import CursorAuthorityBlockedError
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
@@ -60,6 +62,8 @@ from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 from polylogue.storage.archive_identity import ArchiveLocationError
+from polylogue.storage.sqlite.reference_seal import ReferenceSealError, ReferenceSealStaleError
+from polylogue.storage.sqlite.write_lease import UnleasedWriteError
 
 _T = TypeVar("_T")
 
@@ -115,6 +119,10 @@ def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] |
         exc = exc.__cause__
     if isinstance(exc, ColdBuildCoverageError):
         return "active_coverage_incomplete", False
+    if isinstance(exc, ReferenceSealStaleError):
+        return "promotion_evidence_changed", True
+    if isinstance(exc, ReferenceSealError):
+        return "durable_reference_preservation", False
     if isinstance(exc, ProductionBaselineReadUnavailableError):
         return "source_integrity", True
     if isinstance(exc, ProductionBaselineError):
@@ -197,6 +205,9 @@ class FileIntakeAdapter(IntakeAdapter):
         self._fresh_page_paths: tuple[Path, ...] = ()
         self._fresh_page_pending = False
         self._fresh_attempted_paths: set[Path] = set()
+        # One admission page's deferrals that have no durable retry cursor.
+        # Acknowledgement must leave these in the existing fresh/local retry walk.
+        self._deferred_without_cursor: set[Path] = set()
         self._root_refused_pending = False
         self._retry_state_lock = threading.Lock()
         self._fresh_retry_debt: dict[Path, float] = {}
@@ -548,7 +559,7 @@ class FileIntakeAdapter(IntakeAdapter):
                     if path in internal_paths:
                         continue
                     if not (
-                        (entry.is_dir() and not self.source.ignores_directory(path))
+                        (entry.is_dir() and self.source.admits_directory(path))
                         or (entry.is_file(follow_symlinks=False) and self.source.accepts(path))
                     ):
                         continue
@@ -713,8 +724,8 @@ class FileIntakeAdapter(IntakeAdapter):
         bootstrap, the retention scan, the archive-wide convergence pass and
         the parse stage's own warm -- is paid once per call. Admitting one
         file per call made each of those a per-file cost over a corpus of
-        tens of thousands of files, and handed ``LiveParseStage`` a single
-        path per batch, which is no parallelism at all.
+        tens of thousands of files, and gave preparation a single path per
+        batch, which is no parallelism at all.
 
         The batch is one call; the *outcomes* stay per item, read back from
         ``LiveBatchMetrics`` by path, so the dispatcher's deficit,
@@ -757,6 +768,7 @@ class FileIntakeAdapter(IntakeAdapter):
         # Bookkeeping below assumes the page is attempted; a late degradation
         # (after this entry check) must restore it, since nothing was.
         retry_after_before = self._retry_after
+        self._deferred_without_cursor.clear()
         offered_local_retries = self._retry_page_paths if self._local_retry_page else ()
         for item in items:
             self._consume_retry_item(item)
@@ -834,9 +846,12 @@ class FileIntakeAdapter(IntakeAdapter):
             # the cursor rows, so doing it first would touch (and create) the
             # store outside the writer lease.
             cursor = getattr(self.context.watcher, "_cursor", None)
-            run_writer_sync = getattr(self.context.watcher, "_run_writer_sync", None)
-            if cursor is not None and callable(run_writer_sync):
-                await run_writer_sync("watcher.intake.cursor_initialize", cursor.initialize)
+            if cursor is not None:
+                if not self.context.watcher.has_write_coordinator:
+                    raise UnleasedWriteError(
+                        "watcher.intake.cursor_initialize writes the cursor store and requires the daemon write coordinator"
+                    )
+                await self.context.watcher._run_writer_sync("watcher.intake.cursor_initialize", cursor.initialize)
             # Narrow the page before it costs anything more: a bounded walk
             # re-offers files whose cursor already accounts for them, and
             # handing those to the batch buys a planning pass per file per
@@ -850,12 +865,12 @@ class FileIntakeAdapter(IntakeAdapter):
                 # The selection is a read that can decide to write: an
                 # incomplete-append deferral, an archived-cursor
                 # reconciliation and a device-drift rebase all correct cursor
-                # rows in place. Those are ordinary archive writes, so they
-                # run through the writer admission like every other one --
-                # under process-wide lease enforcement an unadmitted cursor
-                # write is refused, which turned the whole page retryable.
-                if callable(run_writer_sync):
-                    selected, pending = await run_writer_sync("watcher.intake.select", classify, paths)
+                # rows in place. It runs with the writer released (its
+                # reconciliation hashes whole files); each of those writes is
+                # admitted onto the writer on its own, after re-checking the
+                # observation it was decided from.
+                if self.context.watcher.has_write_coordinator:
+                    selected, pending = await self.context.watcher.classify_ingest_candidates_off_writer(paths)
                 else:
                     selected, pending = classify(paths)
                 needed = set(selected)
@@ -878,12 +893,6 @@ class FileIntakeAdapter(IntakeAdapter):
             if not batch:
                 return outcomes
             paths = [Path(cast(Any, item.payload)) for item in batch]
-            # Skipped paths belong to this page too; they must not stand in
-            # for the next page in the lookahead slice.
-            page = set(paths) | {Path(cast(Any, item.payload)) for item in skipped}
-            # The current page is warmed by its own ingest. What overlaps its
-            # publication is the next page, sampled off the admission path.
-            self._offer_parse_lookahead([path for path in self._fresh_pending if path not in page][: len(paths)])
             metrics = await self.context.watcher._ingest_files(
                 paths,
                 queued_file_count=len(paths) + len(skipped),
@@ -910,6 +919,7 @@ class FileIntakeAdapter(IntakeAdapter):
                 outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.RETRYABLE, reason=str(exc))
             return outcomes
         except (OSError, ValueError, RuntimeError) as exc:
+            raise_if_operation_cancelled(exc)
             # A cursor-authority refusal lands here too: it is retryable for
             # every item in the page, and nothing in the archive changed. Say
             # so once per page: a class that reports only ``retried`` counts
@@ -934,12 +944,10 @@ class FileIntakeAdapter(IntakeAdapter):
             return outcomes
 
         stale_cursor_writes = int(getattr(metrics, "stale_cursor_write_count", 0) or 0)
-        if stale_cursor_writes:
-            # A stale cursor write means this batch raced another authority
-            # for the same source rows; the whole page is retried rather than
-            # acknowledged, even where some files reported success, because a
-            # cursor advanced under a losing write is not evidence about any
-            # item in the page.
+        stale_cursor_paths = {str(path) for path in (getattr(metrics, "stale_cursor_paths", ()) or ())}
+        if stale_cursor_writes and (not stale_cursor_paths or len(stale_cursor_paths) > stale_cursor_writes):
+            # An incomplete per-path report cannot establish which rows lost
+            # freshness, so retain the old fail-closed page result.
             for item in batch:
                 outcomes[item.item_id] = AdmissionResult(
                     AdmissionOutcome.RETRYABLE, reason="source cursor write was stale"
@@ -949,6 +957,15 @@ class FileIntakeAdapter(IntakeAdapter):
         succeeded = {str(path) for path in (getattr(metrics, "succeeded_paths", ()) or ())}
         failed = set(getattr(metrics, "failed_paths", ()) or ())
         deferred = set(getattr(metrics, "deferred_paths", ()) or ())
+        get_records = getattr(cursor, "get_records", None)
+        deferred_records = (
+            await asyncio.to_thread(get_records, tuple(Path(path) for path in deferred))
+            if deferred and callable(get_records)
+            else {}
+        )
+        self._deferred_without_cursor.update(
+            Path(path) for path in deferred if not self._has_durable_retry_record(deferred_records.get(Path(path)))
+        )
         # ``failed_paths`` carries the retry projection, deferrals included.
         # A deferral is its own outcome, so it must not be reported as a
         # failure here.
@@ -978,7 +995,11 @@ class FileIntakeAdapter(IntakeAdapter):
             key = str(Path(cast(Any, item.payload)))
             item_estimate = max(1, int(item.estimated_cost))
             actual_cost = max(1, round(read_bytes * item_estimate / estimated_total)) if read_bytes else item_estimate
-            if key in settled:
+            if key in stale_cursor_paths:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE, reason="source cursor write was stale"
+                )
+            elif key in settled:
                 # Acquired, but nothing admissible came of it (no session, or
                 # corrupt input): the raw carries the typed terminal outcome,
                 # and reporting ADMITTED counted a file that produced nothing
@@ -1077,18 +1098,6 @@ class FileIntakeAdapter(IntakeAdapter):
                 await converge_profiles(tuple(getattr(metrics, "changed_session_ids", ()) or ()))
         return outcomes
 
-    def _offer_parse_lookahead(self, paths: Sequence[Path]) -> None:
-        """Offer the next page's files for read-ahead parsing.
-
-        Nothing is read here. The next full ingest keeps only cursorless
-        files, the ones certain to be ingested in full, and the parse stage
-        samples and prepares them in workers it can reap, so a slow or
-        unavailable lookahead file never delays the page being admitted.
-        """
-        offer = getattr(self.context.watcher, "offer_parse_lookahead", None)
-        if callable(offer) and paths:
-            offer(tuple(paths), source_name=self.source.name)
-
     async def acknowledge(self, item: IntakeItem) -> None:
         # Files remain retained source carriers.  The live batch's durable
         # cursor/raw commit is the acknowledgement projection.  The scheduling
@@ -1096,6 +1105,13 @@ class FileIntakeAdapter(IntakeAdapter):
         # deficit is rediscovered on the next pass instead of being skipped.
         # Retry rows may be ahead of ordinary discovery. They cannot advance
         # that walk past files it has not offered yet.
+        if isinstance(item.payload, (str, Path)) and Path(item.payload) in self._deferred_without_cursor:
+            # The batch admitted the deferral, not unread source bytes. Keep
+            # its unacknowledged fresh page/local retry until a coordinate can
+            # be captured; a durable cursor does not yet own this obligation.
+            self._deferred_without_cursor.discard(Path(item.payload))
+            self._consume_retry_item(item)
+            return
         if self._retry_page:
             self._consume_retry_item(item, acknowledged=True)
             return
@@ -1381,6 +1397,59 @@ class CallbackIntakeAdapter(IntakeAdapter):
             self._next_poll_at = time.monotonic() + self._poll_interval_s
 
 
+class DriveIntakeAdapter(CallbackIntakeAdapter):
+    """A listing checkpoint yields fairly; only completion starts hourly polling."""
+
+    def __init__(self, callback: Callable[[], Awaitable[DriveCatchupReport] | DriveCatchupReport]) -> None:
+        super().__init__("configured_remote", lambda: 0, poll_interval_s=3600.0)
+        self._drive_callback = callback
+        self._drive_state = DriveCatchupState.UNKNOWN
+
+    @property
+    def discovery_pending(self) -> bool:
+        return self._drive_state is DriveCatchupState.PENDING
+
+    async def admit(self, item: IntakeItem) -> AdmissionResult:
+        try:
+            report = self._drive_callback()
+            if isinstance(report, Awaitable):
+                report = await report
+            self._drive_state = report.state
+            if report.state is DriveCatchupState.RETRYABLE:
+                return AdmissionResult(
+                    AdmissionOutcome.RETRYABLE,
+                    reason="drive_retryable:" + ",".join(report.gaps),
+                    actual_cost=self.estimated_cost,
+                )
+            if report.state is DriveCatchupState.COMPLETE:
+                return AdmissionResult(
+                    AdmissionOutcome.ADMITTED if report.changed_count else AdmissionOutcome.DUPLICATE,
+                    actual_cost=self.estimated_cost,
+                )
+            return AdmissionResult(
+                AdmissionOutcome.DEFERRED, reason="drive_" + report.state.value, actual_cost=self.estimated_cost
+            )
+        except Exception as exc:
+            self._drive_state = DriveCatchupState.RETRYABLE
+            return AdmissionResult(
+                AdmissionOutcome.RETRYABLE,
+                reason=f"{type(exc).__name__}: configured_remote: {exc}",
+                transient=is_transient_admission_error(exc),
+            )
+
+    async def acknowledge(self, item: IntakeItem) -> None:
+        # Pending is a cooperative continuation, not a failed attempt or a
+        # settled poll. Blocked/unknown reobserve evidence on a short cadence.
+        delay = (
+            3600.0
+            if self._drive_state is DriveCatchupState.COMPLETE
+            else 60.0
+            if self._drive_state in {DriveCatchupState.BLOCKED, DriveCatchupState.UNKNOWN}
+            else 0.0
+        )
+        self._next_poll_at = time.monotonic() + delay
+
+
 class RawMaterializationIntakeAdapter(IntakeAdapter):
     """Bounded raw-id discovery delegated to the canonical derivation route."""
 
@@ -1567,12 +1636,11 @@ class RawMaterializationDiscovery:
             # log a whale-schedule warning every 30 s on an empty root.
             return ()
         from polylogue.operations.raw_observation_derivation import (
-            make_raw_observation_derivation,
-            raw_observation_frame,
+            raw_observation_inspection_frame,
         )
-        from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN
+        from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN, RawObservationInspection
 
-        frame = raw_observation_frame(self._archive_root)
+        frame = raw_observation_inspection_frame(self._archive_root)
         binding = _RawDiscoveryBinding(
             archive_root=frame.archive_root,
             source_revision=frame.source_revision,
@@ -1592,7 +1660,7 @@ class RawMaterializationDiscovery:
             self._last_sweep_finished_at = None
 
         inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
-        adapter = make_raw_observation_derivation(self._archive_root)
+        adapter = RawObservationInspection(self._archive_root)
         # Queued project dependents join the rotation only while a scan is
         # pending, so arrivals and the sweep otherwise keep alternating.
         rotation: tuple[Callable[[Any, Any, int], tuple[str, ...]], ...] = (
@@ -1615,7 +1683,8 @@ class RawMaterializationDiscovery:
             return ()
         self._queue_evidence_dependents(page)
         statuses = adapter.inspect(frame, page)
-        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+        refusals = adapter.terminal_decode_refusals(page)
+        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid" and raw_id not in refusals)
 
     def _dependents_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
         """Serve at most ``limit`` transcripts of the queued project scans.
@@ -1648,7 +1717,8 @@ class RawMaterializationDiscovery:
         if not page:
             return ()
         statuses = adapter.inspect(frame, tuple(page))
-        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+        refusals = adapter.terminal_decode_refusals(tuple(page))
+        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid" and raw_id not in refusals)
 
     def _queue_evidence_dependents(self, arrived: Sequence[str]) -> None:
         """Queue a scan of the project each newly admitted session index describes."""
@@ -1688,7 +1758,10 @@ class RawMaterializationDiscovery:
             selected: tuple[str, ...] = ()
             if page:
                 statuses = adapter.inspect(frame, page)
-                selected = tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+                refusals = adapter.terminal_decode_refusals(page)
+                selected = tuple(
+                    raw_id for raw_id in page if statuses.get(raw_id) != "valid" and raw_id not in refusals
+                )
             if not selected:
                 self._advance_sweep(next_cursor)
                 return ()
@@ -1765,13 +1838,12 @@ class DaemonIntakeService:
         self.budget = max(1, budget)
         self.idle_delay_s = max(0.05, idle_delay_s)
         self._wakeup = wakeup if wakeup is not None else asyncio.Event()
-        # polylogue-b7dkb: the one moment a cold build can be declared
-        # finished is a pass that found nothing to do AFTER a pass that did
-        # something. Fired once; a later backlog is ordinary live ingest.
+        # Settlement follows a fully observed quiescent pass. Candidate
+        # writes can arrive through the operation route without any successful
+        # watched-file admission. The callback owns promotion versus discard.
         self._on_backlog_drained = on_backlog_drained
         self._has_pending_backlog = has_pending_backlog
         self._on_pass_complete = on_pass_complete
-        self._progressed_once = False
         self._settlement: ColdBuildSettlement | None = None
         self._settlement_revision = settlement_revision
         self._settlement_external_revision = settlement_external_revision
@@ -1802,7 +1874,6 @@ class DaemonIntakeService:
                 # but keep the progress it did commit, which later cold-build
                 # settlement depends on.
                 if result.progressed:
-                    self._progressed_once = True
                     self._progress_since_blocked = True
                 continue
             schedulable = self.dispatcher.schedulable_classes()
@@ -1810,18 +1881,29 @@ class DaemonIntakeService:
             retry_delays = tuple(
                 delay for spec in schedulable if (delay := getattr(spec.adapter, "retry_due_in_s", None)) is not None
             )
-            if result.progressed:
-                self._progressed_once = True
+            # Cold promotion settles the local baseline. Remote completeness
+            # has its own configured-source witness and public claim gate.
+            settlement_result = IntakePass(
+                tuple(report for report in result.classes if report.name != "configured_remote"),
+                tuple(name for name in result.skipped_halted if name != "configured_remote"),
+            )
+            settlement_specs = tuple(spec for spec in schedulable if spec.name != "configured_remote")
+            settlement_discovery_pending = any(
+                bool(getattr(spec.adapter, "discovery_pending", False)) for spec in settlement_specs
+            )
+            settlement_retry_pending = any(
+                getattr(spec.adapter, "retry_due_in_s", None) is not None for spec in settlement_specs
+            )
+            if result.progressed and self._on_pass_complete is not None:
+                outcome = self._on_pass_complete(result)
+                if isinstance(outcome, Awaitable):
+                    await outcome
+            if settlement_result.progressed:
                 self._progress_since_blocked = True
-                if self._on_pass_complete is not None:
-                    outcome = self._on_pass_complete(result)
-                    if isinstance(outcome, Awaitable):
-                        await outcome
             elif (
-                self._progressed_once
-                and result.quiescent
-                and not discovery_pending
-                and not retry_delays
+                settlement_result.quiescent
+                and not settlement_discovery_pending
+                and not settlement_retry_pending
                 and self._on_backlog_drained is not None
             ):
                 pending = self._has_pending_backlog() if self._has_pending_backlog is not None else False
@@ -1884,7 +1966,7 @@ class DaemonIntakeService:
 def build_intake_adapters(
     context: DaemonIntakeContext,
     *,
-    remote_callback: Callable[[], Awaitable[int] | int] | None = None,
+    remote_callback: Callable[[], Awaitable[DriveCatchupReport] | DriveCatchupReport] | None = None,
     raw_callback: Callable[..., Awaitable[AdmissionResult | int] | AdmissionResult | int] | None = None,
     raw_discover: Callable[[int], Awaitable[Sequence[tuple[str, int]]] | Sequence[tuple[str, int]]] | None = None,
     raw_suspended: Callable[[], bool] | None = None,
@@ -1916,9 +1998,7 @@ def build_intake_adapters(
     if hook_carriers:
         result.append(("hook_carrier", MultiplexIntakeAdapter(hook_carriers, halts=source_halts)))
     if remote_callback is not None:
-        result.append(
-            ("configured_remote", CallbackIntakeAdapter("configured_remote", remote_callback, poll_interval_s=3600.0))
-        )
+        result.append(("configured_remote", DriveIntakeAdapter(remote_callback)))
     if raw_callback is not None:
         if raw_discover is None:
             result.append(("raw_materialization", CallbackIntakeAdapter("raw_materialization", raw_callback)))

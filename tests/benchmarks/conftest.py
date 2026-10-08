@@ -22,6 +22,27 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Run the full stratified rebuild-cost projection (real rebuild passes, ~minutes).",
     )
+    parser.addoption(
+        "--run-heavy-benchmarks",
+        action="store_true",
+        default=False,
+        help="Run benchmarks marked heavy_benchmark (genuine scale workloads; minutes to hours).",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Keep scale workloads out of every selection that did not ask for them.
+
+    Selecting a benchmark module runs its ordinary tiers. Its heavy tiers are
+    a separate lane: they carry a deadline sized to their declared workload
+    and run only under ``--run-heavy-benchmarks``.
+    """
+    if config.getoption("--run-heavy-benchmarks"):
+        return
+    skip = pytest.mark.skip(reason="heavy scale workload; run with --run-heavy-benchmarks")
+    for item in items:
+        if item.get_closest_marker("heavy_benchmark") is not None:
+            item.add_marker(skip)
 
 
 def _benchmark_db(tmp_path_factory: pytest.TempPathFactory, *, tier: BenchmarkWorkloadTier) -> Path:

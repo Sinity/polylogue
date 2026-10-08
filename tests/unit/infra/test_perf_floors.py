@@ -2,13 +2,14 @@
 
 Covers the pure comparison/serialization logic exhaustively (fast, no I/O)
 plus one end-to-end smoke run of the full curated measurement pipeline in
-``--quick`` shape. The smoke run exercises revision-backfill census/replay
+``--quick`` shape. The smoke run exercises canonical retained replay
 and route latency through ``compute_latency_percentiles``.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -177,7 +178,24 @@ def test_format_delta_table_marks_regressions_and_new_metrics() -> None:
     assert "NEW" in table
 
 
+@pytest.fixture(scope="session")
+def smoke_benchmark_artifact() -> Iterator[None]:
+    """Resolve the quick set's SMOKE benchmark archive before the measured test.
+
+    The artifact cache owns the build; a moved cache key means one cold build,
+    which belongs to setup rather than to the end-to-end run's own budget.
+    """
+    from tests.infra.benchmark_archives import _measured_benchmark_artifact
+    from tests.infra.workload_artifacts import seeded_archive_cache_lease
+    from tests.infra.workload_declarations import BenchmarkWorkloadTier
+
+    with seeded_archive_cache_lease():
+        _measured_benchmark_artifact(BenchmarkWorkloadTier.SMOKE, seed=42)
+        yield
+
+
 @pytest.mark.load_sensitive
+@pytest.mark.usefixtures("smoke_benchmark_artifact")
 def test_run_perf_floor_set_quick_measures_every_curated_metric(tmp_path: Path) -> None:
     """End-to-end smoke run in --quick shape over every measurement group.
 
@@ -195,8 +213,6 @@ def test_run_perf_floor_set_quick_measures_every_curated_metric(tmp_path: Path) 
     assert report["machine"]["cpu_count"]
 
     expected_metrics = {
-        "census_small_raws_per_s",
-        "census_chain_revisions_per_s",
         "replay_sessions_per_min",
         "query_search_summaries_p50_ms",
         "query_search_summaries_p95_ms",

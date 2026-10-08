@@ -28,7 +28,7 @@ from polylogue.cli import query_verbs
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.select import SelectSessionRow
 from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality
-from tests.infra.cli_selection import selection_for_ids, selection_for_rows
+from tests.infra.cli_selection import selection_for_rows
 from tests.infra.daemon_operations import cli_daemon_archive
 
 # ---------------------------------------------------------------------------
@@ -384,48 +384,37 @@ class TestDeleteVerbCardinality:
 
 
 # ---------------------------------------------------------------------------
-# resolve_session_ids_for_verb — --sample is rejected, never silently ignored
+# require_exact_mutation_selection — --sample is rejected, never silently ignored
 # ---------------------------------------------------------------------------
 
 
 class TestSampleRejectedForMutatingVerbs:
     """``--sample`` must not silently widen a mutating verb's blast radius.
 
-    ``--sample N`` is a display-window random subset; the verb resolution path
-    deliberately resolves the COMPLETE matched set. Honoring it would mean a
-    destructive ``delete``/``mark`` operated on every match while the operator
-    believed only N rows were in scope. The shared resolver rejects the
+    ``--sample N`` is a display-window random subset; the resident selection
+    walk deliberately resolves the COMPLETE matched set. Honoring it would mean
+    a destructive ``delete``/``mark`` operated on every match while the
+    operator believed only N rows were in scope. The verb guard rejects the
     combination up front rather than ignoring it.
     """
 
-    def test_resolver_rejects_sample(self) -> None:
-        from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
+    def test_guard_rejects_sample(self) -> None:
+        from polylogue.cli.verb_cardinality import require_exact_mutation_selection
 
         request = RootModeRequest.from_params({"sample": 5})
         assert request.query_spec().sample == 5
 
-        with patch("polylogue.cli.session_rows.query_complete_session_selection") as mock_resolve:
-            with pytest.raises(click.UsageError, match="--sample"):
-                resolve_session_ids_for_verb(cast(object, MagicMock()), request)  # type: ignore[arg-type]
+        with pytest.raises(click.UsageError, match="--sample"):
+            require_exact_mutation_selection(request, allow_all=True, operation="delete")
 
-        # The guard fires before any read.
-        mock_resolve.assert_not_called()
-
-    def test_resolver_allows_absent_sample(self) -> None:
-        """Without --sample the resolver proceeds to the declared read."""
-        from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
+    def test_guard_allows_absent_sample(self) -> None:
+        """Without --sample the guard lets the verb reach its resident walk."""
+        from polylogue.cli.verb_cardinality import require_exact_mutation_selection
 
         request = RootModeRequest.from_params({})
         assert request.query_spec().sample is None
 
-        with patch(
-            "polylogue.cli.session_rows.query_complete_session_selection",
-            return_value=selection_for_ids(["id1"]),
-        ) as mock_resolve:
-            result = resolve_session_ids_for_verb(cast(object, MagicMock()), request)  # type: ignore[arg-type]
-
-        assert result == ["id1"]
-        mock_resolve.assert_called_once()
+        require_exact_mutation_selection(request, allow_all=True, operation="delete")
 
 
 # ---------------------------------------------------------------------------
@@ -602,3 +591,39 @@ class TestDeleteCardinalityLargeNonMocked:
 
             # The archive no longer matches the query: deleted set == guard set.
             assert query_complete_session_selection(env.config, request).ids == []
+
+
+def test_temporal_cli_first_with_text_keeps_only_the_resolved_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.storage_records import SessionBuilder
+
+    bootstrap_archive_root(tmp_path)
+    for index in range(2):
+        builder = SessionBuilder(tmp_path / "index.db", f"temporal-{index}").provider("codex")
+        builder.created_at(f"2026-01-0{index + 1}T00:00:00Z").updated_at(f"2026-01-0{index + 1}T00:00:00Z")
+        builder.add_message(
+            text="needle temporal evidence",
+            blocks=[
+                {"type": "text", "text": "needle temporal evidence"},
+                {"type": "tool_use", "tool_name": "Bash", "tool_id": f"shell-{index}", "input": {"command": "pwd"}},
+            ],
+        ).save()
+    with cli_daemon_archive(tmp_path, monkeypatch) as stack:
+        with patch.object(stack.runtime, "call", wraps=stack.runtime.call) as calls:
+            result = _resident_verb(tmp_path, "needle", "read", "--view", "temporal", "--first")
+        selected = [
+            call.args[0].payload["session_id"]
+            for call in calls.call_args_list
+            if call.args[0].operation == "read.temporal"
+        ]
+    assert result.exit_code == 0, result.output
+    assert len(selected) == 1 and selected[0], (
+        result.output,
+        [call.args[0].operation for call in calls.call_args_list],
+    )
+    events = json.loads(result.output)["temporal_window"]["events"]
+    refs = {ref for event in events for ref in event["evidence_refs"] if ref.startswith("session:")}
+    assert refs == {f"session:{selected[0]}"}
+    assert {event["family"] for event in events} == {"archive-session", "archive-message", "archive-action"}

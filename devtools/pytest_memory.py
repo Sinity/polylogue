@@ -35,7 +35,7 @@ __all__ = [
 #: spikes that get a run killed; a coarser interval reports the plateau the
 #: kill did not happen at.
 SAMPLE_INTERVAL_S: Final = 0.5
-#: A fresh actual-launch identity, inherited only by its children and rerun.
+#: A fresh actual-launch identity, inherited only by its children.
 CUSTODY_ENV: Final = "POLYLOGUE_PYTEST_CUSTODY"
 #: How many processes the receipt names, worst first. A corpus run forks
 #: thousands of short-lived children over hours, and a receipt that grows with
@@ -184,21 +184,6 @@ class ProcessGroupMemorySampler:
         self.persist()
         self._thread = threading.Thread(target=self._loop, name="pytest-memory-sampler", daemon=True)
         self._thread.start()
-
-    def follow(self, pgid: int) -> None:
-        """Sample a later process group of the same run from now on.
-
-        A slot job that reruns its failures starts the rerun in a new session;
-        following it keeps that attempt's memory in the run's peaks and
-        per-process attribution rather than leaving it unmeasured.
-        """
-        with self._sample_lock, self._lock:
-            leader = _identity(pgid, proc=self._proc)
-            self._pgid = pgid
-            self._leader_start = leader.start_ticks if leader is not None else None
-        # Observed at once: a rerun that ends within one interval would
-        # otherwise never be sampled.
-        self.sample()
 
     def stop(self) -> dict[str, Any]:
         """End sampling and return the run's attribution."""

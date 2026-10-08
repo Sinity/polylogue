@@ -11,11 +11,12 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.core.enums import Provider
-from polylogue.operations.operation_context import open_operation_read
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult, ArchiveStore
+from tests.infra.raw_owner_routes import LiveOwnerSet, live_owner_set
 
 
 def _claude_message(
@@ -94,15 +95,15 @@ async def _admit(watcher: LiveWatcher, path: Path) -> dict[str, object]:
     return dict(await adapter.admit_page(await adapter.discover(limit=8)))
 
 
-def _watcher(archive: Polylogue, root: Path) -> LiveWatcher:
+def _watcher(archive: Polylogue, root: Path, owners: LiveOwnerSet | None = None) -> LiveWatcher:
+    # The daemon's intake owners. Without them full-route preparation never
+    # publishes, the write never runs, and the injected lock these tests exist
+    # to exercise is never reached.
     return LiveWatcher(
         archive,
-        (WatchSource(name="claude-code", root=root),),
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),),
         cursor=CursorStore(archive.archive_root / "index.db"),
-        # The daemon's read route. Without it off-writer preparation defers
-        # every full-route file, the write never runs, and the injected lock
-        # these tests exist to exercise is never reached.
-        read_snapshot=open_operation_read,
+        **(owners.watcher_kwargs() if owners is not None else {}),
     )
 
 
@@ -130,33 +131,34 @@ async def test_full_ingest_lock_keeps_raw_pending_and_requeues_without_eof_recon
         archive_root=workspace_env["archive_root"],
         db_path=workspace_env["archive_root"] / "index.db",
     )
-    watcher = _watcher(archive, root)
-    _lock_first_index_persistence(monkeypatch)
+    async with live_owner_set(archive.archive_root) as owners:
+        watcher = _watcher(archive, root, owners)
+        _lock_first_index_persistence(monkeypatch)
 
-    try:
-        with pytest.raises(sqlite3.OperationalError):
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                await _admit(watcher, source_path)
+
+            assert watcher._cursor.get_record(source_path) is None
+            assert watcher._needs_work(source_path) is True
+            assert watcher._cursor.get_record(source_path) is None
+            assert _raw_parse_states(workspace_env["archive_root"], source_path) == [(None, None)]
+
             await _admit(watcher, source_path)
 
-        assert watcher._cursor.get_record(source_path) is None
-        assert watcher._needs_work(source_path) is True
-        assert watcher._cursor.get_record(source_path) is None
-        assert _raw_parse_states(workspace_env["archive_root"], source_path) == [(None, None)]
-
-        await _admit(watcher, source_path)
-
-        cursor = watcher._cursor.get_record(source_path)
-        session = await archive.get_session("claude-code:full-lock")
-        assert cursor is not None
-        assert cursor.byte_offset == source_path.stat().st_size
-        assert session is not None
-        assert [message.text for message in session.messages] == ["persist after retry"]
-        assert all(
-            parsed_at is not None and error is None
-            for parsed_at, error in _raw_parse_states(workspace_env["archive_root"], source_path)
-        )
-    finally:
-        watcher.stop()
-        await archive.close()
+            cursor = watcher._cursor.get_record(source_path)
+            session = await archive.get_session("claude-code:full-lock")
+            assert cursor is not None
+            assert cursor.byte_offset == source_path.stat().st_size
+            assert session is not None
+            assert [message.text for message in session.messages] == ["persist after retry"]
+            assert all(
+                parsed_at is not None and error is None
+                for parsed_at, error in _raw_parse_states(workspace_env["archive_root"], source_path)
+            )
+        finally:
+            watcher.stop()
+            await archive.close()
 
 
 @pytest.mark.asyncio
@@ -187,41 +189,42 @@ async def test_append_lock_preserves_prior_cursor_and_retries_tail_through_watch
         archive_root=workspace_env["archive_root"],
         db_path=workspace_env["archive_root"] / "index.db",
     )
-    watcher = _watcher(archive, root)
+    async with live_owner_set(archive.archive_root) as owners:
+        watcher = _watcher(archive, root, owners)
 
-    try:
-        await _admit(watcher, source_path)
-        prior_cursor = watcher._cursor.get_record(source_path)
-        assert prior_cursor is not None
+        try:
+            await _admit(watcher, source_path)
+            prior_cursor = watcher._cursor.get_record(source_path)
+            assert prior_cursor is not None
 
-        with source_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(second) + "\n")
-        _lock_first_index_persistence(monkeypatch)
-        with pytest.raises(sqlite3.OperationalError):
+            with source_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(second) + "\n")
+            _lock_first_index_persistence(monkeypatch)
+            with pytest.raises(sqlite3.OperationalError):
+                await _admit(watcher, source_path)
+
+            locked_cursor = watcher._cursor.get_record(source_path)
+            assert locked_cursor is not None
+            assert locked_cursor.byte_offset == prior_cursor.byte_offset
+            assert locked_cursor.failure_count == 0
+            assert watcher._needs_work(source_path) is True
+            assert (None, None) in _raw_parse_states(workspace_env["archive_root"], source_path)
+
             await _admit(watcher, source_path)
 
-        locked_cursor = watcher._cursor.get_record(source_path)
-        assert locked_cursor is not None
-        assert locked_cursor.byte_offset == prior_cursor.byte_offset
-        assert locked_cursor.failure_count == 0
-        assert watcher._needs_work(source_path) is True
-        assert (None, None) in _raw_parse_states(workspace_env["archive_root"], source_path)
-
-        await _admit(watcher, source_path)
-
-        cursor = watcher._cursor.get_record(source_path)
-        session = await archive.get_session("claude-code:append-lock")
-        assert cursor is not None
-        assert cursor.byte_offset == source_path.stat().st_size
-        assert session is not None
-        assert [message.text for message in session.messages] == ["before lock", "after retry"]
-        assert all(
-            parsed_at is not None and error is None
-            for parsed_at, error in _raw_parse_states(workspace_env["archive_root"], source_path)
-        )
-    finally:
-        watcher.stop()
-        await archive.close()
+            cursor = watcher._cursor.get_record(source_path)
+            session = await archive.get_session("claude-code:append-lock")
+            assert cursor is not None
+            assert cursor.byte_offset == source_path.stat().st_size
+            assert session is not None
+            assert [message.text for message in session.messages] == ["before lock", "after retry"]
+            assert all(
+                parsed_at is not None and error is None
+                for parsed_at, error in _raw_parse_states(workspace_env["archive_root"], source_path)
+            )
+        finally:
+            watcher.stop()
+            await archive.close()
 
 
 def test_archived_cursor_reconciliation_rejects_parsed_raw_without_index_materialization(
@@ -252,6 +255,7 @@ def test_archived_cursor_reconciliation_rejects_parsed_raw_without_index_materia
             provider=Provider.CLAUDE_CODE,
             payload=source_path.read_bytes(),
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             source_index=0,
             acquired_at_ms=1,
         )
@@ -262,3 +266,36 @@ def test_archived_cursor_reconciliation_rejects_parsed_raw_without_index_materia
         assert watcher._cursor.get_record(source_path) is None
     finally:
         watcher.stop()
+
+
+@pytest.mark.parametrize(
+    ("source_name", "keeps_profile_key"),
+    [("codex", False), ("claude-code", False), ("hermes", True)],
+)
+def test_cursor_records_profile_key_only_where_acquisition_declares_one(
+    tmp_path: Path, source_name: str, keeps_profile_key: bool
+) -> None:
+    """A cursor writer keeps the observed profile key only for Hermes inputs.
+
+    Acquisition captures a profile namespace only for Hermes and undetected
+    inputs (``declares_profile_identity``), and archived-cursor reconciliation
+    compares through the same rule. Persisting the observed key for any other
+    origin turns the non-Hermes cases red.
+    """
+    from polylogue.sources.live.cursor import CursorPathAuthority
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "sessions" / "session.jsonl"
+    source.parent.mkdir()
+    source.write_text("{}\n", encoding="utf-8")
+    authority = CursorPathAuthority.observe(source)
+    assert authority.captured_profile_key is not None
+    cursor = CursorStore(tmp_path / "ops.db")
+
+    cursor.set(source, source.stat().st_size, source_name=source_name, authority=authority)
+
+    record = cursor.get_record(source)
+    assert record is not None
+    assert record.captured_profile_key == (authority.captured_profile_key if keeps_profile_key else None)
+    assert record.canonical_source_path == authority.canonical_source_path

@@ -8,31 +8,35 @@ exercise retained source evidence and component isolation.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable, Iterable
+from contextlib import closing
+from functools import partial
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue.archive.revision_authority import append_source_revision
-from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
+from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode
 from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.derivation import (
     Budget,
     DerivationRegistry,
     DerivationReport,
-    PassCursor,
-    PendingReason,
     converge,
 )
 from polylogue.daemon.status import raw_failure_info_for_root
-from polylogue.operations.raw_observation_derivation import (
-    converge_raw_observations,
-    raw_observation_frame,
-)
-from polylogue.storage.derived.raw import RawObservationDerivation
+from polylogue.operations.intake_adapters import RawMaterializationDiscovery
+from polylogue.operations.raw_observation_derivation import raw_observation_frame
+from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.raw_retention import RawFrontierBlockedPaths
@@ -40,7 +44,12 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.reference_seal import ReferenceSealError, ReferenceSealStaleError
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.live_ingest import prepared_live_convergence_owner
+from tests.infra.prepared_replay import run_on_convergence_owner
+from tests.infra.raw_owner_routes import converge_pending_raws_async
 
 
 def _codex_conversation_bytes(session_id: str = "session", text: str = "hi") -> bytes:
@@ -108,6 +117,7 @@ def _admit(
             provider=provider,
             payload=_chatgpt_payload(names) if payload is None else payload,
             source_path=path,
+            canonical_source_path=path,
             acquired_at_ms=acquired_at_ms,
         )
 
@@ -115,21 +125,44 @@ def _admit(
 def _derive(
     root: Path,
     *,
-    source_roots: tuple[Path, ...] = (),
     limit: int = 128,
-    cursor: PassCursor | None = None,
+    discovery: RawMaterializationDiscovery | None = None,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
 ) -> DerivationReport:
-    return converge_raw_observations(
-        root,
-        source_roots=source_roots,
-        limit=limit,
-        cursor=cursor,
+    """One fair-intake pass: the daemon's discovery page, each raw through ``converge_raw_id``."""
+
+    async def run() -> DerivationReport:
+        async with prepared_live_convergence_owner(root, validation_mode=validation_mode) as owner:
+            return await converge_pending_raws_async(owner, root, limit=limit, discovery=discovery)
+
+    return asyncio.run(run())
+
+
+def _converge_raw(root: Path, compute: BoundedComputeAdapter, raw_id: str) -> DerivationReport:
+    """Converge one raw on the admitted creator exactly as ``converge_raw_id`` does."""
+    return converge(
+        DerivationRegistry((RawObservationDerivation(root, compute_adapter=compute),)),
+        raw_observation_frame(root, raw_ids=(raw_id,)),
+        budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
+        publisher=admit_stage_write,
     )
 
 
-def _inspect(root: Path, raw_id: str) -> str:
-    adapter = RawObservationDerivation(root)
-    return adapter.inspect(raw_observation_frame(root), (raw_id,))[raw_id]
+def _inspect(
+    root: Path,
+    raw_id: str,
+    *,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
+) -> str:
+    return run_on_convergence_owner(
+        root,
+        "test.raw.inspect",
+        lambda compute: RawObservationDerivation(
+            root,
+            compute_adapter=compute,
+            validation_mode=validation_mode,
+        ).inspect(raw_observation_frame(root, validation_mode=validation_mode), (raw_id,))[raw_id],
+    )
 
 
 def test_canonical_replay_replaces_lost_output_without_touching_foreign_output(tmp_path: Path) -> None:
@@ -181,16 +214,9 @@ def test_prepared_retained_replay_slices_fresh_and_same_raw_fork_prefix(tmp_path
         provider=Provider.CODEX,
         payload=_codex_fork_bytes("retained-child", "retained-parent", shared),
     )
+    # The committed source census re-prepares the fork within the same pass.
     first = _derive(tmp_path)
-    assert first.failed == 0 and first.pending == 1, first.outcomes
-    assert first.outcomes[0].reason is PendingReason.BINDING_MOVED
-    for _ in range(4):
-        retry = _derive(tmp_path)
-        assert retry.failed == 0, retry.outcomes
-        if retry.pending == 0 and _inspect(tmp_path, child_id) == "valid":
-            break
-    else:
-        pytest.fail("retained fork did not converge after its committed source census")
+    assert first.failed == first.pending == 0, first.outcomes
     assert _inspect(tmp_path, child_id) == "valid"
     with sqlite3.connect(tmp_path / "index.db") as conn:
         child_row = conn.execute(
@@ -228,7 +254,6 @@ def test_canonical_replay_cleans_orphaned_messages_before_replacement(tmp_path: 
     """Replacing a lost session cannot violate message uniqueness or touch a foreign session."""
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(
@@ -239,10 +264,11 @@ def test_canonical_replay_cleans_orphaned_messages_before_replacement(tmp_path: 
         payload=_codex_conversation_bytes("orphaned-current-cohort"),
     )
     assert _derive(tmp_path).failed == 0
-    with sqlite3.connect(tmp_path / "index.db") as conn:
+    # The fixture Index writer requires the production measured creator.
+    with closing(connect_measured(tmp_path / "index.db")) as conn:
         target_id = str(conn.execute("SELECT session_id FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0])
         conn.execute("PRAGMA foreign_keys = OFF")
-        foreign_id = write_parsed_session_to_archive(
+        foreign_id = write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -263,49 +289,6 @@ def test_canonical_replay_cleans_orphaned_messages_before_replacement(tmp_path: 
         assert conn.execute(
             "SELECT native_id, position FROM messages WHERE session_id = ? ORDER BY position", (foreign_id,)
         ).fetchall() == [("foreign-0", 0)]
-
-
-def test_canonical_scope_does_not_certify_or_rewrite_outside_observations(tmp_path: Path) -> None:
-    """A bounded source pass owns only its declared source-root scope."""
-    bootstrap_archive_root(tmp_path)
-    source = tmp_path / "selected"
-    selected = _admit(tmp_path, ("selected",), path=str(source / "one.json"))
-    outside = _admit(tmp_path, ("outside",), path=str(tmp_path / "outside.json"))
-
-    report = _derive(tmp_path, source_roots=(source,), limit=1)
-    assert report.failed == 0
-    assert _inspect(tmp_path, selected) == "valid"
-    assert _inspect(tmp_path, outside) == "missing"
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("selected",)]
-
-
-@pytest.mark.parametrize(
-    ("selected_directory", "outside_directory"),
-    (("100%", "1000"), ("Case", "case")),
-)
-def test_canonical_source_root_scope_is_literal_and_case_sensitive(
-    tmp_path: Path,
-    selected_directory: str,
-    outside_directory: str,
-) -> None:
-    """A source root selects its actual descendants, never a LIKE-expanded sibling.
-
-    Anti-vacuity: replacing the canonical source-path interval with a LIKE
-    prefix admits the ``1000`` or case-folded sibling into this scoped pass.
-    """
-    bootstrap_archive_root(tmp_path)
-    selected_root = tmp_path / selected_directory
-    selected = _admit(tmp_path, ("selected",), path=str(selected_root / "member.json"))
-    outside = _admit(tmp_path, ("outside",), path=str(tmp_path / outside_directory / "member.json"))
-
-    report = _derive(tmp_path, source_roots=(selected_root,), limit=2)
-
-    assert report.done == 1 and report.failed == report.pending == 0
-    assert _inspect(tmp_path, selected) == "valid"
-    assert _inspect(tmp_path, outside) == "missing"
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [("selected",)]
 
 
 def test_canonical_authority_refusal_blocks_only_its_raw_observation(
@@ -558,19 +541,27 @@ def test_canonical_reset_index_replays_only_when_parse_is_newer_than_validation_
     validation_offset: int,
     expected_materialized: int,
 ) -> None:
-    """A newer/equal validation failure cannot authorize raw replay on reset."""
+    """A newer/equal strict validation failure cannot authorize raw replay on reset."""
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(
         tmp_path,
         (),
-        path="validation-history.jsonl",
-        provider=Provider.CODEX,
-        payload=_codex_conversation_bytes("validation-history"),
+        path=".claude/projects/-synthetic-reset/session.jsonl",
+        provider=Provider.CLAUDE_CODE,
+        payload=(Path(__file__).parents[2] / "fixtures" / "claude-code" / "strict-reset-validation.jsonl").read_bytes(),
     )
-    assert _derive(tmp_path).failed == 0
+    assert _derive(tmp_path, validation_mode=ValidationMode.STRICT).failed == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        parsed_at_ms = int(
-            conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+        parsed_at_ms, validation_mode = conn.execute(
+            "SELECT parsed_at_ms, validation_mode FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+        assert validation_mode == ValidationMode.STRICT.value
+        assert (
+            conn.execute(
+                "SELECT 1 FROM raw_artifacts WHERE raw_id = ? AND parse_as_session = 1 AND schema_eligible = 1",
+                (raw_id,),
+            ).fetchone()
+            is not None
         )
         conn.execute(
             "UPDATE raw_sessions SET validation_status = 'failed', validation_error = ?, validated_at_ms = ? "
@@ -584,9 +575,10 @@ def test_canonical_reset_index_replays_only_when_parse_is_newer_than_validation_
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
 
     expected_state = "missing" if expected_materialized else "valid"
-    assert _inspect(tmp_path, raw_id) == expected_state
-    report = _derive(tmp_path)
-    assert report.failed == 0
+    actual_state = _inspect(tmp_path, raw_id, validation_mode=ValidationMode.STRICT)
+    assert actual_state == expected_state, (validation_offset, actual_state, expected_state)
+    report = _derive(tmp_path, validation_mode=ValidationMode.STRICT)
+    assert report.failed == 0, [(o.outcome.value, o.error) for o in report.outcomes]
     with sqlite3.connect(active_index) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
             expected_materialized,
@@ -637,12 +629,19 @@ def test_canonical_publish_rejects_rebuild_lease_conflict(tmp_path: Path) -> Non
 
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(tmp_path, ("lease-conflict",))
-    adapter = RawObservationDerivation(tmp_path)
-    frame = raw_observation_frame(tmp_path)
-    replacement = adapter.compute(frame, raw_id)
-    with RebuildLease(tmp_path):
-        with pytest.raises(RebuildLeaseUnavailableError):
-            adapter.publish(frame, replacement)
+
+    def exercise(compute: BoundedComputeAdapter) -> None:
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
+        frame = raw_observation_frame(tmp_path)
+        replacement = adapter.compute(frame, raw_id)
+        try:
+            with RebuildLease(tmp_path):
+                with pytest.raises(RebuildLeaseUnavailableError):
+                    adapter.publish(frame, replacement)
+        finally:
+            replacement.close()
+
+    run_on_convergence_owner(tmp_path, "test.raw.lease-conflict", exercise)
 
 
 def test_canonical_publish_revalidates_the_promoted_active_generation(tmp_path: Path) -> None:
@@ -651,17 +650,374 @@ def test_canonical_publish_revalidates_the_promoted_active_generation(tmp_path: 
     first_index = tmp_path / "generations" / "first" / "index.db"
     initialize_archive_database(first_index, ArchiveTier.INDEX)
     (tmp_path / ".index-active-pointer").write_text(f"{first_index}\n", encoding="utf-8")
-    adapter = RawObservationDerivation(tmp_path)
-    frame = raw_observation_frame(tmp_path)
-    replacement = adapter.compute(frame, raw_id)
-
     second_index = tmp_path / "generations" / "second" / "index.db"
-    initialize_archive_database(second_index, ArchiveTier.INDEX)
-    (tmp_path / ".index-active-pointer").write_text(f"{second_index}\n", encoding="utf-8")
 
-    assert adapter.publish(frame, replacement) is False
+    def exercise(compute: BoundedComputeAdapter) -> None:
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
+        frame = raw_observation_frame(tmp_path)
+        replacement = adapter.compute(frame, raw_id)
+        try:
+            initialize_archive_database(second_index, ArchiveTier.INDEX)
+            (tmp_path / ".index-active-pointer").write_text(f"{second_index}\n", encoding="utf-8")
+            # Publication revalidates the configured active Index and refuses
+            # the moved destination with a typed stale-seal error.
+            with pytest.raises(ReferenceSealStaleError):
+                admit_stage_write("test.raw.promoted-generation", partial(adapter.publish, frame, replacement))
+        finally:
+            replacement.close()
+
+    run_on_convergence_owner(tmp_path, "test.raw.promoted-generation", exercise)
     with sqlite3.connect(second_index) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+def test_codex_neutral_parse_survives_unrelated_source_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex parse and schema validation finish before a fresh Source binding."""
+    from polylogue.schemas import validate_retained_document as validate_original
+    from polylogue.sources import prepared_jsonl as prepared_jsonl_module
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+    bootstrap_archive_root(tmp_path)
+    target = _admit(
+        tmp_path,
+        (),
+        provider=Provider.CODEX,
+        path="codex/session.jsonl",
+        payload=_codex_conversation_bytes("neutral-target"),
+    )
+    parse_calls = 0
+    validation_raw_ids: list[str] = []
+    inserted: list[str] = []
+    prepare_original = cast(Callable[..., PreparedJsonl], prepared_jsonl_module.prepare_jsonl_blob)
+    validate_call = cast(Callable[..., object], validate_original)
+
+    def counted_prepare(*args: object, **kwargs: object) -> PreparedJsonl:
+        nonlocal parse_calls
+        parse_calls += 1
+        return prepare_original(*args, **kwargs)
+
+    def commit_during_validation(*args: object, **kwargs: object) -> object:
+        validation_raw_ids.append(str(kwargs["raw_id"]))
+        verdict = validate_call(*args, **kwargs)
+        if not inserted:
+            inserted.append(
+                _admit(
+                    tmp_path,
+                    (),
+                    provider=Provider.CODEX,
+                    path="codex/unrelated.jsonl",
+                    payload=_codex_conversation_bytes("neutral-unrelated"),
+                    acquired_at_ms=2,
+                )
+            )
+        return verdict
+
+    monkeypatch.setattr(prepared_jsonl_module, "prepare_jsonl_blob", counted_prepare)
+    monkeypatch.setattr("polylogue.schemas.validate_retained_document", commit_during_validation)
+
+    report = run_on_convergence_owner(
+        tmp_path,
+        "test.raw.codex-neutral-rebind",
+        lambda compute: converge(
+            DerivationRegistry((RawObservationDerivation(tmp_path, compute_adapter=compute),)),
+            raw_observation_frame(tmp_path, raw_ids=(target,)),
+            budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
+            publisher=admit_stage_write,
+        ),
+    )
+
+    assert report.failed == 0, report.outcomes
+    assert report.done == 1
+    assert parse_calls == 1
+    assert validation_raw_ids == [target], validation_raw_ids
+    assert len(inserted) == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [("neutral-target",)]
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (target,)).fetchone() == (1,)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (inserted[0],)).fetchone() == (1,)
+
+
+def test_mixed_default_retained_selection_neutralizes_only_eligible_codex_raw(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mixed acquired selection detaches eligible JSONL while fresh-binding opaque rows."""
+    from polylogue.operations.raw_observation_owner import RetainedMaterializationResult
+    from polylogue.schemas import validate_retained_document as validate_original
+    from polylogue.sources import prepared_jsonl as prepared_jsonl_module
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+    bootstrap_archive_root(tmp_path)
+    codex_raw = _admit(
+        tmp_path,
+        (),
+        provider=Provider.CODEX,
+        path="codex/mixed.jsonl",
+        payload=_codex_conversation_bytes("mixed-codex"),
+    )
+    opaque_raw = _admit(tmp_path, ("mixed-chatgpt",), path="chatgpt/mixed.json")
+    inserted: list[str] = []
+    parsed_codex_ids: list[str] = []
+    validation_raw_ids: list[str] = []
+    prepare_original = cast(Callable[..., PreparedJsonl], prepared_jsonl_module.prepare_jsonl_blob)
+    validate_call = cast(Callable[..., object], validate_original)
+
+    def counted_prepare(*args: object, **kwargs: object) -> PreparedJsonl:
+        if len(args) > 2 and args[2] == Provider.CODEX.value:
+            parsed_codex_ids.append(str(args[1]))
+        return prepare_original(*args, **kwargs)
+
+    def commit_during_validation(*args: object, **kwargs: object) -> object:
+        raw_id = str(kwargs["raw_id"])
+        validation_raw_ids.append(raw_id)
+        verdict = validate_call(*args, **kwargs)
+        if not inserted:
+            inserted.append(
+                _admit(
+                    tmp_path,
+                    ("unrelated-chatgpt",),
+                    path="chatgpt/unrelated.json",
+                    acquired_at_ms=2,
+                )
+            )
+        return verdict
+
+    monkeypatch.setattr(prepared_jsonl_module, "prepare_jsonl_blob", counted_prepare)
+    monkeypatch.setattr("polylogue.schemas.validate_retained_document", commit_during_validation)
+
+    async def materialize() -> RetainedMaterializationResult:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+            return await owner.materialize_retained_raw_ids((codex_raw, opaque_raw))
+
+    result = asyncio.run(materialize())
+    receipts = result.outcome.require_complete()
+
+    assert receipts
+    assert parsed_codex_ids == ["codex/mixed.jsonl"]
+    assert validation_raw_ids.count(codex_raw) == 1
+    assert len(inserted) == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute(
+            "SELECT native_id FROM sessions WHERE raw_id IN (?, ?) ORDER BY native_id",
+            (codex_raw, opaque_raw),
+        ).fetchall() == [("mixed-chatgpt",), ("mixed-codex",)]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        census = conn.execute(
+            "SELECT raw_id, parsed_at_ms FROM raw_sessions WHERE raw_id IN (?, ?)",
+            (codex_raw, opaque_raw),
+        ).fetchall()
+        assert len(census) == 2
+        assert {str(raw_id) for raw_id, parsed_at_ms in census if parsed_at_ms is not None} == {codex_raw, opaque_raw}
+
+
+@pytest.mark.parametrize("replace_sidecar", [False, True])
+def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replace_sidecar: bool,
+) -> None:
+    """Claude's detached parser consumes captured CAS sidecars, then binds current Source."""
+    from polylogue.schemas import validate_retained_document as validate_original
+    from polylogue.sources import prepared_jsonl as prepared_jsonl_module
+    from polylogue.sources import revision_backfill as revision_backfill_module
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+    bootstrap_archive_root(tmp_path)
+    session_id = "2c9fbada-0d07-4429-8728-63f70e3c672f"
+    project = tmp_path / "projects" / "-realm-project-polylogue"
+    owner_path = project / f"{session_id}.jsonl"
+    sidecar_path = project / session_id / "tool-results" / "toolu_capture.txt"
+    sidecar_text = "retained-output-only: " + ("synthetic output " * 40)
+    sidecar = _admit(
+        tmp_path,
+        (),
+        provider=Provider.UNKNOWN,
+        path=sidecar_path.as_posix(),
+        payload=sidecar_text.encode(),
+    )
+    sibling_sidecar_path = project / session_id / "tool-results" / "toolu_sibling.txt"
+    sibling_sidecar = _admit(
+        tmp_path,
+        (),
+        provider=Provider.UNKNOWN,
+        path=sibling_sidecar_path.as_posix(),
+        payload=b"sibling-owned output",
+    )
+    sibling_path = project / session_id / "subagents" / "agent-capture.jsonl"
+    sibling_payload = (
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "a-sibling",
+                "sessionId": session_id,
+                "timestamp": "2026-07-20T10:00:03Z",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "toolu_sibling", "content": "sibling output"}],
+                },
+            }
+        )
+        + "\n"
+    ).encode()
+    sibling_raw = _admit(
+        tmp_path,
+        (),
+        provider=Provider.CLAUDE_CODE,
+        path=sibling_path.as_posix(),
+        payload=sibling_payload,
+        acquired_at_ms=2,
+    )
+    pointer = f"<persisted-output>Output too large. Full output saved to: {sidecar_path}</persisted-output>"
+    owner_payload = (
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "u-capture",
+                "sessionId": session_id,
+                "timestamp": "2026-07-20T10:00:00Z",
+                "message": {"role": "user", "content": "run it"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "assistant",
+                "uuid": "a-capture",
+                "parentUuid": "u-capture",
+                "sessionId": session_id,
+                "timestamp": "2026-07-20T10:00:01Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "toolu_capture", "name": "Bash", "input": {}}],
+                },
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "user",
+                "uuid": "u-result",
+                "parentUuid": "a-capture",
+                "sessionId": session_id,
+                "timestamp": "2026-07-20T10:00:02Z",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "toolu_capture", "content": pointer}],
+                },
+            }
+        )
+        + "\n"
+    ).encode()
+    target = _admit(
+        tmp_path,
+        (),
+        provider=Provider.CLAUDE_CODE,
+        path=owner_path.as_posix(),
+        payload=owner_payload,
+        acquired_at_ms=3,
+    )
+    parse_calls = 0
+    validation_raw_ids: list[str] = []
+    neutral_sidecar_events: list[tuple[str, dict[str, object]]] = []
+    inserted: list[str] = []
+    replacement_sidecars: list[str] = []
+    enrichment_calls = 0
+    prepare_original = cast(Callable[..., PreparedJsonl], prepared_jsonl_module.prepare_jsonl_blob)
+    validate_call = cast(Callable[..., object], validate_original)
+    enrich_original = cast(
+        Callable[..., Iterable[object]], revision_backfill_module.iter_enriched_sessions_from_retained_read
+    )
+
+    def counted_prepare(*args: object, **kwargs: object) -> PreparedJsonl:
+        nonlocal parse_calls
+        parse_calls += 1
+        artifact = prepare_original(*args, **kwargs)
+        for session in artifact.iter_sessions():
+            neutral_sidecar_events.extend((event.event_type, event.payload) for event in session.session_events)
+        return artifact
+
+    def commit_during_validation(*args: object, **kwargs: object) -> object:
+        validation_raw_ids.append(str(kwargs["raw_id"]))
+        return validate_call(*args, **kwargs)
+
+    def commit_during_enrichment(*args: object, **kwargs: object) -> object:
+        nonlocal enrichment_calls
+        enrichment_calls += 1
+        yield from enrich_original(*args, **kwargs)
+        if not inserted:
+            if replace_sidecar:
+                replacement_sidecars.append(
+                    _admit(
+                        tmp_path,
+                        (),
+                        provider=Provider.UNKNOWN,
+                        path=sidecar_path.as_posix(),
+                        payload=b"new retained output after rebind",
+                        acquired_at_ms=4,
+                    )
+                )
+            inserted.append(
+                _admit(
+                    tmp_path,
+                    (),
+                    provider=Provider.CLAUDE_CODE,
+                    path="projects/unrelated.jsonl",
+                    payload=b'{"type":"queue-operation","operation":"compact"}\n',
+                    acquired_at_ms=3,
+                )
+            )
+
+    monkeypatch.setattr(prepared_jsonl_module, "prepare_jsonl_blob", counted_prepare)
+    monkeypatch.setattr("polylogue.schemas.validate_retained_document", commit_during_validation)
+    monkeypatch.setattr(revision_backfill_module, "iter_enriched_sessions_from_retained_read", commit_during_enrichment)
+
+    report = run_on_convergence_owner(
+        tmp_path,
+        "test.raw.claude-neutral-rebind",
+        lambda compute: converge(
+            DerivationRegistry((RawObservationDerivation(tmp_path, compute_adapter=compute),)),
+            raw_observation_frame(tmp_path, raw_ids=(target,)),
+            budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
+            publisher=admit_stage_write,
+        ),
+    )
+
+    assert report.failed == 0, report.outcomes
+    assert report.done == 1
+    expected_parser_calls = 2 if replace_sidecar else 1
+    assert parse_calls == expected_parser_calls
+    assert validation_raw_ids == [target] * expected_parser_calls, validation_raw_ids
+    assert enrichment_calls == 2
+    assert sum(event_type == "claude_tool_result_sidecar" for event_type, _ in neutral_sidecar_events) == (
+        expected_parser_calls
+    ), neutral_sidecar_events
+    assert len(inserted) == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        rows = conn.execute(
+            "SELECT b.text FROM blocks b JOIN sessions s ON s.session_id = b.session_id "
+            "WHERE s.raw_id = ? AND b.block_type = 'tool_result'",
+            (target,),
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == ("new retained output after rebind" if replace_sidecar else sidecar_text)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_events e JOIN sessions s ON s.session_id = e.session_id "
+            "WHERE s.raw_id = ? AND e.event_type = 'claude_tool_result_sidecar'",
+            (target,),
+        ).fetchone() == (1,), "the sibling-owned file is resolved from its retained tool_result record"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sidecar,)).fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sibling_sidecar,)).fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sibling_raw,)).fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (inserted[0],)).fetchone() == (1,)
+        assert all(
+            conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
+            for raw_id in replacement_sidecars
+        )
 
 
 def test_canonical_split_root_route_uses_the_explicit_archive_root(tmp_path: Path) -> None:
@@ -731,7 +1087,8 @@ def test_canonical_parse_failure_does_not_suppress_healthy_sibling(tmp_path: Pat
 
 
 def test_canonical_replay_refreshes_only_the_touched_derived_component(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One raw replay must not rebuild derived surfaces for unrelated sessions."""
     from polylogue.storage.fts import fts_lifecycle as fts_lifecycle_mod
@@ -755,12 +1112,14 @@ def test_canonical_replay_refreshes_only_the_touched_derived_component(
             provider=Provider.CODEX,
             payload=tool_call_payload("unrelated-existing"),
             source_path="unrelated-existing.jsonl",
+            canonical_source_path="unrelated-existing.jsonl",
             acquired_at_ms=1,
         )
         touched_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=tool_call_payload("touched-new"),
             source_path="touched-new.jsonl",
+            canonical_source_path="touched-new.jsonl",
             acquired_at_ms=2,
         )
 
@@ -784,10 +1143,15 @@ def test_canonical_replay_refreshes_only_the_touched_derived_component(
     monkeypatch.setattr(action_pairs_mod, "rebuild_all_action_pairs_sync", fail_archive_wide_rebuild)
     monkeypatch.setattr(delegation_facts_mod, "rebuild_all_delegation_facts_sync", fail_archive_wide_rebuild)
 
-    targeted = converge(
-        DerivationRegistry((RawObservationDerivation(tmp_path),)),
-        raw_observation_frame(tmp_path, raw_ids=(touched_raw_id,)),
-        budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
+    targeted = run_on_convergence_owner(
+        tmp_path,
+        "test.raw.touched-component",
+        lambda compute: converge(
+            DerivationRegistry((RawObservationDerivation(tmp_path, compute_adapter=compute),)),
+            raw_observation_frame(tmp_path, raw_ids=(touched_raw_id,)),
+            budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
+            publisher=admit_stage_write,
+        ),
     )
     assert targeted.failed == 0
     assert targeted.done == 1
@@ -800,19 +1164,21 @@ def test_canonical_replay_refreshes_only_the_touched_derived_component(
 
 
 def test_canonical_bounded_passes_reach_each_independent_component(tmp_path: Path) -> None:
-    """A bounded cursor advances across independent components without starvation."""
+    """The intake's bounded discovery advances across independent components without starvation.
+
+    A page whose raw just published is re-inspected once (valid) before the
+    traversal moves on, so ``2 * len(names)`` one-raw passes reach every
+    component.
+    """
     bootstrap_archive_root(tmp_path)
     names = tuple(f"bounded-{index}" for index in range(4))
     for name in names:
         _admit(tmp_path, (name,), path=f"{name}.json")
 
-    cursor: PassCursor | None = None
-    reports = []
-    for _ in names:
-        report = _derive(tmp_path, limit=1, cursor=cursor)
-        reports.append(report)
-        cursor = report.cursor
-    assert all(report.failed == 0 for report in reports)
+    discovery = RawMaterializationDiscovery(tmp_path)
+    reports = [_derive(tmp_path, limit=1, discovery=discovery) for _ in range(2 * len(names))]
+    assert all(report.failed == 0 and report.done <= 1 for report in reports)
+    assert sum(report.done for report in reports) == len(names)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [
             (name,) for name in names
@@ -820,22 +1186,20 @@ def test_canonical_bounded_passes_reach_each_independent_component(tmp_path: Pat
 
 
 def test_canonical_fairness_survives_ops_reset_with_a_process_cursor(tmp_path: Path) -> None:
-    """Deleting disposable ops state cannot reset the canonical bounded cursor."""
+    """Deleting disposable ops state cannot reset the intake's process-local discovery."""
     bootstrap_archive_root(tmp_path)
     names = tuple(f"ops-reset-{index}" for index in range(4))
     for name in names:
         _admit(tmp_path, (name,), path=f"{name}.json")
 
-    cursor: PassCursor | None = None
+    discovery = RawMaterializationDiscovery(tmp_path)
     reports = []
-    for _ in names:
-        report = _derive(tmp_path, limit=1, cursor=cursor)
-        reports.append(report)
-        cursor = report.cursor
+    for _ in range(2 * len(names)):
+        reports.append(_derive(tmp_path, limit=1, discovery=discovery))
         (tmp_path / "ops.db").unlink(missing_ok=True)
 
-    assert [report.done for report in reports] == [1, 1, 1, 1]
-    assert all(report.failed == 0 for report in reports)
+    assert all(report.failed == 0 and report.done <= 1 for report in reports)
+    assert sum(report.done for report in reports) == len(names)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [
             (name,) for name in names
@@ -843,7 +1207,8 @@ def test_canonical_fairness_survives_ops_reset_with_a_process_cursor(tmp_path: P
 
 
 def test_canonical_deadline_bounds_a_pass_without_substituting_a_count_limit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A wall-clock deadline stops between canonical components and preserves progress."""
     bootstrap_archive_root(tmp_path)
@@ -851,25 +1216,33 @@ def test_canonical_deadline_bounds_a_pass_without_substituting_a_count_limit(
     for name in names:
         _admit(tmp_path, (name,), path=f"{name}.json")
 
-    adapter = RawObservationDerivation(tmp_path)
     clock = [0.0]
     # Patch only the pass deadline clock: freezing ``time.monotonic`` itself
     # also froze the retained-preparation worker pool's waits, so the pass
     # hung instead of expiring.
     monkeypatch.setattr("polylogue.daemon.derivation._pass_clock", lambda: clock[0])
-    original_compute = adapter.compute
 
-    def compute_then_expire(frame: object, key: str) -> object:
-        replacement = original_compute(frame, key)  # type: ignore[arg-type]
-        clock[0] = 2.0
-        return replacement
+    def exercise(compute: BoundedComputeAdapter) -> DerivationReport:
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
+        original_compute = adapter.compute
 
-    monkeypatch.setattr(adapter, "compute", compute_then_expire)
-    bounded = converge(
-        DerivationRegistry((adapter,)),
-        raw_observation_frame(tmp_path),
-        budget=Budget(page=3, discovery=3, inspection=6, compute=3, publication=3, deadline_s=1.0),
-    )
+        def compute_then_expire(frame: object, key: str) -> object:
+            replacement = original_compute(frame, key)  # type: ignore[arg-type]
+            # Preparatory Source phases re-prepare within the same component;
+            # expire only once the component reaches its destination write.
+            if replacement.prepared_writes:
+                clock[0] = 2.0
+            return replacement
+
+        monkeypatch.setattr(adapter, "compute", compute_then_expire)
+        return converge(
+            DerivationRegistry((adapter,)),
+            raw_observation_frame(tmp_path),
+            budget=Budget(page=3, discovery=3, inspection=6, compute=3, publication=3, deadline_s=1.0),
+            publisher=admit_stage_write,
+        )
+
+    bounded = run_on_convergence_owner(tmp_path, "test.raw.deadline", exercise)
 
     assert bounded.done == 1
     assert bounded.pending >= 2
@@ -883,7 +1256,15 @@ def test_canonical_failed_publication_cannot_report_done(tmp_path: Path, monkeyp
     bootstrap_archive_root(tmp_path)
     _admit(tmp_path, ("publication-blocked",))
 
-    monkeypatch.setattr(RawObservationDerivation, "publish", lambda *_args, **_kwargs: False)
+    def refuse(
+        _self: RawObservationDerivation, _frame: object, replacement: RawObservationReplacement, **_kwargs: object
+    ) -> bool:
+        # Once publication starts the adapter owns its carrier and settles it
+        # on every outcome, exactly as the real publish does in its finally.
+        replacement.close()
+        return False
+
+    monkeypatch.setattr(RawObservationDerivation, "publish", refuse)
     report = _derive(tmp_path)
     assert report.done == 0
     assert report.pending + report.failed >= 1
@@ -907,36 +1288,48 @@ def test_canonical_replay_does_not_replace_newer_index_authority(tmp_path: Path)
         payload=old_payload,
         acquired_at_ms=1,
     )
-    adapter = RawObservationDerivation(tmp_path)
-    frame = raw_observation_frame(tmp_path)
-    old_replacement = adapter.compute(frame, old_raw_id)
-    assert adapter.publish(frame, old_replacement) is True
-    new_raw_id = _admit(
-        tmp_path,
-        (),
-        path="same-head.jsonl",
-        provider=Provider.CODEX,
-        payload=new_payload,
-        acquired_at_ms=2,
-    )
-    for _ in range(4):
-        report = _derive(tmp_path)
-        assert report.failed == 0, report.outcomes
-        if _inspect(tmp_path, new_raw_id) == "valid":
-            break
-    else:
-        pytest.fail("new retained raw did not converge after source classification")
 
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        head = conn.execute(
-            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
-            ("codex-session:same-head",),
-        ).fetchone()
-        assert head == (new_raw_id,)
-    try:
-        adapter.publish(frame, old_replacement)
-    except RawCASFrontierError:
-        pass
+    def exercise(compute: BoundedComputeAdapter) -> str:
+        # The stale replacement keeps its original creator; every later pass
+        # runs on that same admitted owner.
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
+        frame = raw_observation_frame(tmp_path)
+        # Each committed preparatory Source phase re-prepares, as the kernel
+        # does within its pass; the replacement that publishes is kept.
+        for _ in range(3):
+            old_replacement = adapter.compute(frame, old_raw_id)
+            if admit_stage_write("test.raw.stale-replacement.first", partial(adapter.publish, frame, old_replacement)):
+                break
+        else:
+            pytest.fail("the original raw did not publish after its preparatory phases")
+        new_raw_id = _admit(
+            tmp_path,
+            (),
+            path="same-head.jsonl",
+            provider=Provider.CODEX,
+            payload=new_payload,
+            acquired_at_ms=2,
+        )
+        # Source classification re-prepares the new raw within one pass.
+        report = _converge_raw(tmp_path, compute, new_raw_id)
+        assert report.failed == report.pending == 0, report.outcomes
+        assert adapter.inspect(raw_observation_frame(tmp_path), (new_raw_id,))[new_raw_id] == "valid"
+
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            head = conn.execute(
+                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
+                ("codex-session:same-head",),
+            ).fetchone()
+            assert head == (new_raw_id,)
+        try:
+            admit_stage_write("test.raw.stale-replacement.late", partial(adapter.publish, frame, old_replacement))
+        except (RawCASFrontierError, ReferenceSealError):
+            # A consumed replacement's seal is closed; either typed refusal
+            # leaves the newer head in place, which is asserted below.
+            pass
+        return new_raw_id
+
+    new_raw_id = run_on_convergence_owner(tmp_path, "test.raw.stale-replacement", exercise)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute(
             "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
@@ -962,6 +1355,7 @@ def test_canonical_append_fragment_does_not_livelock_component_discovery(tmp_pat
             provider=Provider.CODEX,
             payload=baseline,
             source_path="rollout.jsonl",
+            canonical_source_path="rollout.jsonl",
             acquired_at_ms=1,
         )
         store.bind_raw_revision(
@@ -978,6 +1372,7 @@ def test_canonical_append_fragment_does_not_livelock_component_discovery(tmp_pat
             provider=Provider.CODEX,
             payload=tail,
             source_path="rollout.jsonl",
+            canonical_source_path="rollout.jsonl",
             source_index=-1,
             native_id="growing-rollout",
             acquired_at_ms=3,
@@ -1035,6 +1430,7 @@ def test_canonical_quarantined_append_reconciles_from_retained_full_revisions(tm
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path="quarantined-rollout.jsonl",
+                canonical_source_path="quarantined-rollout.jsonl",
                 acquired_at_ms=index,
             )
             store.bind_raw_revision(
@@ -1052,6 +1448,7 @@ def test_canonical_quarantined_append_reconciles_from_retained_full_revisions(tm
             provider=Provider.CODEX,
             payload=tail,
             source_path="quarantined-rollout.jsonl",
+            canonical_source_path="quarantined-rollout.jsonl",
             source_index=-1,
             acquired_at_ms=3,
         )
@@ -1103,6 +1500,7 @@ def test_non_codex_cas_frontier_failure_persists_provider_neutral_evidence(tmp_p
             provider=Provider.CLAUDE_CODE,
             payload=_codex_conversation_bytes("cas-frontier"),
             source_path="rollout.jsonl",
+            canonical_source_path="rollout.jsonl",
             acquired_at_ms=1,
         )
         archive.mark_raw_parse_failed(
@@ -1125,6 +1523,7 @@ def test_generic_parse_state_failure_retires_prior_failure_authority(tmp_path: P
             provider=Provider.CODEX,
             payload=_codex_conversation_bytes("stale-authority"),
             source_path="stale-authority.jsonl",
+            canonical_source_path="stale-authority.jsonl",
             acquired_at_ms=1,
         )
         archive.mark_raw_parse_failed(raw_id, provider=Provider.CODEX, error=RawCASFrontierError("first frontier"))
@@ -1159,6 +1558,7 @@ def test_failed_raw_lifecycle_preserves_exact_evidence_for_same_coordinate(tmp_p
             provider=Provider.CODEX,
             payload=b'{"revision":"old"}',
             source_path="same-coordinate.jsonl",
+            canonical_source_path="same-coordinate.jsonl",
             source_index=0,
             acquired_at_ms=1,
         )
@@ -1166,6 +1566,7 @@ def test_failed_raw_lifecycle_preserves_exact_evidence_for_same_coordinate(tmp_p
             provider=Provider.CODEX,
             payload=b'{"revision":"new"}',
             source_path="same-coordinate.jsonl",
+            canonical_source_path="same-coordinate.jsonl",
             source_index=0,
             acquired_at_ms=2,
         )
@@ -1196,6 +1597,7 @@ def test_failed_raw_lifecycle_ignores_newer_ordinary_artifact_at_same_coordinate
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="coexisting.jsonl",
+            canonical_source_path="coexisting.jsonl",
             source_index=4,
             payload=b"unsupported",
             acquired_at_ms=1,
@@ -1249,6 +1651,7 @@ def test_cas_failure_evidence_rolls_back_with_parse_state(tmp_path: Path, monkey
             provider=Provider.CODEX,
             payload=b'{"revision":"atomic"}',
             source_path="atomic.jsonl",
+            canonical_source_path="atomic.jsonl",
             acquired_at_ms=1,
         )
 
@@ -1275,12 +1678,14 @@ def test_deferred_cas_evidence_is_superseded_after_resolution_and_non_cas_failur
             provider=Provider.CODEX,
             payload=b'{"name":"success"}',
             source_path="success.jsonl",
+            canonical_source_path="success.jsonl",
             acquired_at_ms=1,
         )
         raw_failure = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=b'{"name":"failure"}',
             source_path="failure.jsonl",
+            canonical_source_path="failure.jsonl",
             acquired_at_ms=2,
         )
     with sqlite3.connect(tmp_path / "source.db") as conn:

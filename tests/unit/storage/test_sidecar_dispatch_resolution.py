@@ -32,7 +32,7 @@ import pytest
 
 import polylogue.storage.sqlite.archive_tiers.write as write_mod
 from polylogue.core.enums import Origin
-from polylogue.storage.sqlite.archive_tiers.write import _sidecar_paths_dispatch_tool_ids
+from polylogue.storage.sqlite.archive_tiers.write import ConnectionSessionSourceRead, _sidecar_paths_dispatch_tool_ids
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _ORIGIN = Origin.CLAUDE_CODE_SESSION.value
@@ -94,7 +94,7 @@ def test_a_sibling_stem_is_not_matched_through_a_like_wildcard(
         store = _FakeBlobStore({wanted: _meta("toolu_wanted"), sibling: _meta("toolu_sibling")})
         monkeypatch.setattr(write_mod, "blob_store_for_connection", lambda _conn: store)
         tool_ids = _sidecar_paths_dispatch_tool_ids(
-            conn,
+            ConnectionSessionSourceRead(conn),
             origin=_ORIGIN,
             sidecar_paths={"/export/parent-1/subagents/agent-a_b.meta.json"},
             parent_values={"parent-1"},
@@ -124,7 +124,7 @@ def test_a_deeply_nested_sidecar_is_refused_instead_of_aborting_the_write(
         monkeypatch.setattr(write_mod, "blob_store_for_connection", lambda _conn: _FakeBlobStore({digest: nested}))
         # No raise: the writer records a refusal and keeps going.
         tool_ids = _sidecar_paths_dispatch_tool_ids(
-            conn,
+            ConnectionSessionSourceRead(conn),
             origin=_ORIGIN,
             sidecar_paths={"/export/parent-1/subagents/agent-deep.meta.json"},
             parent_values={"parent-1"},
@@ -159,7 +159,7 @@ def test_a_large_sidecar_is_streamed_to_its_dispatch_identity(
         store = _FakeBlobStore({digest: payload})
         monkeypatch.setattr(write_mod, "blob_store_for_connection", lambda _conn: store)
         tool_ids = _sidecar_paths_dispatch_tool_ids(
-            conn,
+            ConnectionSessionSourceRead(conn),
             origin=_ORIGIN,
             sidecar_paths={"/export/parent-1/subagents/agent-large.meta.json"},
             parent_values={"parent-1"},
@@ -191,7 +191,7 @@ def test_a_scalar_sidecar_root_carries_no_dispatch_identity(
         )
         monkeypatch.setattr(write_mod, "blob_store_for_connection", lambda _conn: _FakeBlobStore({digest: payload}))
         tool_ids = _sidecar_paths_dispatch_tool_ids(
-            conn,
+            ConnectionSessionSourceRead(conn),
             origin=_ORIGIN,
             sidecar_paths={"/export/parent-1/subagents/agent-scalar.meta.json"},
             parent_values={"parent-1"},

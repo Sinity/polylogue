@@ -305,7 +305,6 @@ def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatc
         provider: str,
         payload: object,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
@@ -316,7 +315,6 @@ def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatc
             provider,
             payload,
             fallback_id,
-            _depth,
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
@@ -342,7 +340,6 @@ def test_parser_witness_partial_output_is_not_accepted_as_complete(monkeypatch: 
         provider: str,
         payload: object,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
@@ -351,7 +348,6 @@ def test_parser_witness_partial_output_is_not_accepted_as_complete(monkeypatch: 
             provider,
             payload,
             fallback_id,
-            _depth,
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
@@ -384,7 +380,6 @@ def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids_for_ever
         parsed_provider: str,
         payload: object,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
@@ -393,7 +388,6 @@ def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids_for_ever
             parsed_provider,
             payload,
             fallback_id,
-            _depth,
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
@@ -444,7 +438,6 @@ def test_parser_witness_segment_loss_is_not_accepted_with_preserved_message_iden
         provider: str,
         payload: object,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
@@ -461,7 +454,6 @@ def test_parser_witness_segment_loss_is_not_accepted_with_preserved_message_iden
             provider,
             payload,
             fallback_id,
-            _depth,
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
@@ -515,7 +507,6 @@ def test_parser_witness_authoredness_loss_is_not_accepted_for_every_supported_ro
         parsed_provider: str,
         payload: object,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
@@ -525,7 +516,6 @@ def test_parser_witness_authoredness_loss_is_not_accepted_for_every_supported_ro
             parsed_provider,
             payload,
             fallback_id,
-            _depth,
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
@@ -581,7 +571,6 @@ def test_parser_witness_tool_identity_loss_is_not_accepted(
         parsed_provider: str,
         payload: object,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
@@ -591,7 +580,6 @@ def test_parser_witness_tool_identity_loss_is_not_accepted(
             parsed_provider,
             payload,
             fallback_id,
-            _depth,
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
@@ -641,7 +629,6 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
         parsed_provider: str,
         payload: object,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
@@ -695,7 +682,6 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
             parsed_provider,
             payload,
             fallback_id,
-            _depth,
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
@@ -750,7 +736,6 @@ def test_parser_witness_rejects_messages_rehomed_to_another_raw_identity(
         parsed_provider: str,
         payload: object,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
@@ -760,7 +745,6 @@ def test_parser_witness_rejects_messages_rehomed_to_another_raw_identity(
             parsed_provider,
             payload,
             fallback_id,
-            _depth,
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
@@ -810,7 +794,6 @@ def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
         provider: str,
         payload: object,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
@@ -873,7 +856,6 @@ def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
             provider,
             payload,
             fallback_id,
-            _depth,
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
@@ -898,7 +880,6 @@ def test_baseline_parser_failure_reaches_support_receipt(monkeypatch: pytest.Mon
         provider: str,
         payload: object,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
@@ -909,7 +890,6 @@ def test_baseline_parser_failure_reaches_support_receipt(monkeypatch: pytest.Mon
             provider,
             payload,
             fallback_id,
-            _depth,
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
@@ -1447,7 +1427,6 @@ def test_shared_wire_generation_reparses_mutable_production_results(
         provider: str | Provider,
         payload: object,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
@@ -1459,7 +1438,6 @@ def test_shared_wire_generation_reparses_mutable_production_results(
             provider,
             payload,
             fallback_id,
-            _depth,
             schema_resolution=schema_resolution,
             source_path=source_path,
             sidecar_resolver=sidecar_resolver,
@@ -1628,4 +1606,36 @@ def test_shared_wire_generation_observes_implicit_filesystem_sidecars(tmp_path: 
             for session in second
             for message in session.messages
             for block in message.blocks
+        )
+
+
+def test_claude_ai_v2_witnesses_render_one_coherent_shape_the_parser_reads() -> None:
+    """The v2 package unions the export, a capture envelope, and Claude Design.
+
+    Anti-vacuity: generate coverage witnesses without the root exclusion filter
+    and a witness carries ``uuid``/``chat_messages`` beside
+    ``raw_provider_payload``; the parser then reads the top-level messages
+    while message coverage reads the envelope's, and they disagree.
+    """
+    registry = SchemaRegistry()
+    schema = registry.get_element_schema("claude-ai", version="v2", element_kind="session_document")
+    assert schema is not None
+    groups = schema["x-polylogue-mutually-exclusive"]
+    assert isinstance(groups, list)
+    exclusions = [
+        {str(name) for name in group["fields"]}
+        for group in groups
+        if isinstance(group, dict) and group["parent"] == "$" and isinstance(group["fields"], list)
+    ]
+    assert exclusions
+    corpus = SyntheticCorpus(schema, wire_formats.PROVIDER_WIRE_FORMATS["claude-ai"], "claude-ai", package_version="v2")
+    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=7)
+    assert raw_items
+    for index, raw in enumerate(raw_items):
+        payload = json.loads(raw)
+        assert all(not group <= set(payload) for group in exclusions), sorted(payload)
+        assert "chat_messages" in payload and "raw_provider_payload" not in payload
+        sessions = dispatch_module.parse_payload("claude-ai", payload, f"coherent-{index}")
+        assert wire_formats._parser_artifact_has_complete_message_coverage(
+            sessions, "claude-ai", payload, f"coherent-{index}"
         )

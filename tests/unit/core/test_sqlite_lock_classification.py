@@ -9,12 +9,18 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Never, cast
 
 import pytest
 
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.cursor_lag_baseline import _database_is_locked
 from polylogue.daemon.http import _is_sqlite_busy_error
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
 
 _Predicate = Callable[[sqlite3.OperationalError], bool]
 
@@ -100,7 +106,7 @@ def test_search_index_reason_separates_corruption_and_contention_from_a_missing_
     "missing or degraded" sentence for every one of them and both inequality
     assertions go red.
     """
-    from polylogue.daemon.http import _search_index_degraded_reason
+    from polylogue.storage.fts.fts_lifecycle import search_index_read_refusal
 
     missing = _operational_error(
         "no such table: messages_fts", errorcode=sqlite3.SQLITE_ERROR, errorname="SQLITE_ERROR"
@@ -114,14 +120,14 @@ def test_search_index_reason_separates_corruption_and_contention_from_a_missing_
         "database is locked: messages_fts", errorcode=sqlite3.SQLITE_BUSY, errorname="SQLITE_BUSY"
     )
 
-    missing_reason = _search_index_degraded_reason(missing)
-    assert missing_reason is not None and "missing or degraded" in missing_reason
-    corrupt_reason = _search_index_degraded_reason(corrupt)
-    assert corrupt_reason is not None and "unreadable" in corrupt_reason
-    assert corrupt_reason != missing_reason
-    busy_reason = _search_index_degraded_reason(busy)
-    assert busy_reason is not None and "busy" in busy_reason
-    assert busy_reason != missing_reason
+    missing_reason = search_index_read_refusal(missing)
+    assert missing_reason is not None and missing_reason.reason == "fts_missing"
+    corrupt_reason = search_index_read_refusal(corrupt)
+    assert corrupt_reason is not None and corrupt_reason.reason == "archive_unreadable"
+    assert corrupt_reason.reason != missing_reason.reason
+    busy_reason = search_index_read_refusal(busy)
+    assert busy_reason is not None and busy_reason.reason == "archive_busy"
+    assert busy_reason.reason != missing_reason.reason
 
 
 def test_readiness_reports_unreadable_derived_models_instead_of_an_empty_mapping(
@@ -174,3 +180,51 @@ def test_protocol_name_is_transient_and_corruption_code_takes_precedence(predica
     for code in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB, sqlite3.SQLITE_IOERR):
         error = _operational_error("locking protocol", errorcode=code, errorname="SQLITE_PROTOCOL")
         assert predicate(error) is False
+
+
+@pytest.mark.parametrize(
+    ("message", "code", "reason"),
+    [
+        ("no such table: messages_fts", sqlite3.SQLITE_ERROR, "fts_missing"),
+        ("malformed messages_fts", sqlite3.SQLITE_CORRUPT, "archive_unreadable"),
+        ("locked messages_fts", sqlite3.SQLITE_BUSY, "archive_busy"),
+        ("no such table: unrelated", sqlite3.SQLITE_ERROR, None),
+        ("syntax error near messages_fts", sqlite3.SQLITE_ERROR, None),
+    ],
+)
+def test_canonical_search_read_classifies_index_failure_and_preserves_unknown_sql(
+    tmp_path: Path,
+    message: str,
+    code: int,
+    reason: str | None,
+) -> None:
+    from polylogue.archive.query.archive_execution import archive_search_hits
+    from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.core.errors import SearchIndexUnavailableError
+
+    original = _operational_error(message, errorcode=code, errorname=None)
+
+    class FailedReader:
+        def search_summaries(self, *args: object, **kwargs: object) -> Never:
+            raise original
+
+    plan = SessionQuerySpec.from_params({"query": "needle", "limit": 10}).to_plan()
+    with pytest.raises(SearchIndexUnavailableError if reason else sqlite3.OperationalError) as raised:
+        archive_search_hits(plan, archive_root=tmp_path, config=None, archive=cast("ArchiveStore", FailedReader()))
+    if reason:
+        assert isinstance(raised.value, SearchIndexUnavailableError)
+        assert raised.value.reason == reason
+        assert raised.value.__cause__ is original
+    else:
+        assert raised.value is original
+
+
+@pytest.mark.parametrize(("exists", "reason"), [(False, "fts_missing"), (True, "fts_incomplete")])
+def test_fts_readiness_raises_shared_typed_refusal(exists: bool, reason: str) -> None:
+    from polylogue.core.errors import SearchIndexUnavailableError
+    from polylogue.storage.fts.fts_lifecycle import check_fts_readiness
+
+    with pytest.raises(SearchIndexUnavailableError) as raised:
+        check_fts_readiness({"exists": exists, "ready": False})
+    assert raised.value.reason == reason
+    check_fts_readiness({"exists": True, "ready": True})

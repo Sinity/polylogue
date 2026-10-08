@@ -18,6 +18,9 @@ sibling session in the same replay is asserted to still be written.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -29,27 +32,18 @@ from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root,
     initialize_archive_database,
 )
 from polylogue.storage.sqlite.archive_tiers.session_suppression import (
-    reset_suppression_caches,
     suppression_refusal_scope,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
-from polylogue.storage.sqlite.archive_tiers.write import (
-    ArchiveWriteOutcome,
-    write_parsed_session_to_archive,
-)
-
-
-@pytest.fixture(autouse=True)
-def _drop_pooled_user_handles() -> object:
-    reset_suppression_caches()
-    yield
-    reset_suppression_caches()
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _parsed(native_id: str) -> ParsedSession:
@@ -98,10 +92,10 @@ def _tombstone(archive_root: Path, session_id: str) -> None:
 def _replay(archive_root: Path, session: ParsedSession) -> ArchiveWriteOutcome:
     """Write one parsed session exactly as a rebuild's replay does."""
     outcomes: list[ArchiveWriteOutcome] = []
-    conn = sqlite3.connect(_index_path(archive_root))
+    conn = connect_measured(_index_path(archive_root))
     conn.row_factory = sqlite3.Row
     try:
-        write_parsed_session_to_archive(conn, session, write_outcome=outcomes)
+        write_fixture_index_session(conn, session, write_outcome=outcomes)
     finally:
         conn.close()
     assert len(outcomes) == 1
@@ -190,71 +184,90 @@ def test_an_archive_without_a_user_tier_is_not_blocked(tmp_path: Path) -> None:
     index_db = tmp_path / "bare" / "index.db"
     index_db.parent.mkdir(parents=True)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     conn.row_factory = sqlite3.Row
     try:
         outcomes: list[ArchiveWriteOutcome] = []
-        write_parsed_session_to_archive(conn, _parsed("bare-one"), write_outcome=outcomes)
+        write_fixture_index_session(conn, _parsed("bare-one"), write_outcome=outcomes)
     finally:
         conn.close()
     assert outcomes[0].wrote is True
     assert outcomes[0].suppression_skipped is False
 
 
-def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(archive_root: Path) -> None:
-    """Receipts published before a suppression skip are still consumed with the batch.
+@pytest.mark.asyncio
+async def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(
+    archive_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retained attachment publication is consumed even when its session is suppressed.
 
-    Anti-vacuity: returning from the skip path before extending
-    ``pending_attachment_receipts`` leaves the reservation neither consumed nor
-    released, pinning the blob against GC on every suppressed replay.
+    The raw owner must settle each published blob receipt even though the guarded
+    Index writer refuses the tombstoned session. Anti-vacuity: the exact receipt
+    and bytes are present before consumption, the session stays absent, and no
+    publication reservation remains afterward.
     """
-    import hashlib
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+    from tests.infra.live_provider_proof import native_proof_artifact
 
-    from polylogue.pipeline.services.ingest_batch._core import _write_session
-    from polylogue.pipeline.services.ingest_worker import SessionWritePayload
-    from polylogue.sources.parsers.base_models import ParsedAttachment
-
-    class _Publisher:
-        def write_from_bytes(self, data: bytes) -> tuple[str, int]:
-            return hashlib.sha256(data).hexdigest(), len(data)
-
-        def receipt_id(self, blob_hash: str) -> str:
-            return f"receipt-{blob_hash[:8]}"
-
-        def flush(self) -> tuple[object, ...]:
-            return ()
-
-    parsed = _parsed("suppressed-attachment")
-    parsed = parsed.model_copy(
-        update={
-            "attachments": [
-                ParsedAttachment(
-                    provider_attachment_id="att-1",
-                    message_provider_id=parsed.messages[0].provider_message_id,
-                    name="a.bin",
-                    mime_type="application/octet-stream",
-                    size_bytes=3,
-                    inline_bytes=b"abc",
-                )
-            ]
-        }
+    envelope, _expected_messages, expected_attachments = native_proof_artifact(
+        tmp_path, "native-inline-attachment-v1.json", Provider.GROK
     )
-    session_id = _session_id("suppressed-attachment")
-    _tombstone(archive_root, session_id)
-    receipts: list[tuple[str, bytes]] = []
-    conn = sqlite3.connect(_index_path(archive_root))
-    conn.row_factory = sqlite3.Row
-    try:
-        changed, counts = _write_session(
-            conn,
-            SessionWritePayload(session_id=session_id, content_hash="00" * 32, parsed_session=parsed, message_count=1),
-            blob_publisher=_Publisher(),  # type: ignore[arg-type]
-            pending_attachment_receipts=receipts,
-        )
-    finally:
-        conn.close()
+    attachment_bytes = [base64.b64decode(entry["content_base64"]) for entry in envelope["session"]["attachments"]]
+    expected_hashes = {hashlib.sha256(content).digest() for content in attachment_bytes}
+    payload = json.dumps(envelope).encode()
 
-    assert changed is False
-    assert counts["skipped_sessions"] == 1
+    def acquire() -> str:
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.GROK,
+                payload=payload,
+                source_path="neutral-grok-capture.json",
+                canonical_source_path="neutral-grok-capture.json",
+                acquired_at_ms=1,
+            )
+            archive.commit()
+            return raw_id
+
+    raw_id = await run_archive_fixture_write(archive_root, acquire)
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        first = (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
+    session_ids = {session_id for receipt in first for session_id in receipt.written_session_ids}
+    assert len(session_ids) == 1
+    (session_id,) = tuple(session_ids)
+    assert _session_rows(archive_root, session_id) == 1
+
+    _tombstone(archive_root, session_id)
+    with sqlite3.connect(_index_path(archive_root)) as index:
+        index.execute("PRAGMA foreign_keys = ON")
+        index.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+
+    import polylogue.storage.blob_publication as publication
+
+    consume = publication.consume_blob_publication_receipt
+    consumed: list[tuple[str, bytes]] = []
+
+    def observe_consumption(source: sqlite3.Connection, publication_id: str, digest: bytes) -> None:
+        row = source.execute(
+            "SELECT publication_id,blob_hash FROM blob_publication_reservations WHERE publication_id=?",
+            (publication_id,),
+        ).fetchone()
+        assert row is not None and tuple(row) == (publication_id, digest)
+        assert digest in expected_hashes
+        assert publication.ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob").blob_path(
+            digest.hex()
+        ).read_bytes() == next(content for content in attachment_bytes if hashlib.sha256(content).digest() == digest)
+        consumed.append((publication_id, digest))
+        consume(source, publication_id, digest)
+
+    monkeypatch.setattr(publication, "consume_blob_publication_receipt", observe_consumption)
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        replay = await owner.replay_retained_raw_ids((raw_id,))
+        replay.require_complete()
+
+    assert {digest for _publication_id, digest in consumed} == expected_hashes
+    assert len(consumed) == expected_attachments
     assert _session_rows(archive_root, session_id) == 0
-    assert receipts == [(f"receipt-{hashlib.sha256(b'abc').hexdigest()[:8]}", hashlib.sha256(b"abc").digest())]
+    with sqlite3.connect(archive_root / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)

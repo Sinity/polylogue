@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -15,7 +16,7 @@ from typing import IO, BinaryIO, cast
 import ijson
 import pytest
 
-from polylogue.core.enums import Provider, Role
+from polylogue.core.enums import BlockType, Provider, Role
 from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
@@ -24,12 +25,13 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
 from polylogue.sources.decoder_json import claude_design_object_envelope, iter_grok_export_events
 from polylogue.sources.decoders import _iter_json_stream
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 from polylogue.sources.parsers import chatgpt, local_agent
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.base_models import ParsedContentBlock
 from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
-from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact, prepare_jsonl_blob
+from polylogue.sources.prepared_jsonl import PreparedJsonl, PreparedSessionSequence, _write_artifact, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import (
     _EARLIER_PARENT_OCCURRENCE_SQL,
     _LAST_PARENT_OCCURRENCE_SQL,
@@ -42,13 +44,157 @@ from polylogue.sources.prepared_message_sink import (
     read_chatgpt_mapping_object,
 )
 from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope
+
+
+def test_prepared_jsonl_retry_progress_keeps_source_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from devtools.fresh_build_bench.run import WorkProgressTail
+    from polylogue.core import work_progress
+
+    monkeypatch.setattr(work_progress, "PROGRESS_INTERVAL_S", 0)
+    emitted: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(work_progress, "emit", lambda event, **fields: emitted.append((event, fields)))
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"retry-progress"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m-1","role":"user",'
+        b'"content":[{"type":"input_text","text":"stable source"}]}}\n'
+    )
+    blob_hash = hashlib.sha256(payload).hexdigest()
+    events_path = tmp_path / "events.jsonl"
+    tail = WorkProgressTail(events_path)
+    counts: list[int] = []
+    unit_ids: set[str] = set()
+    productive_ids: set[str] = set()
+
+    for attempt in ("first", "retry"):
+        source = tmp_path / f"{attempt}.jsonl"
+        source.write_bytes(payload)
+        artifact = prepare_jsonl_blob(
+            str(source),
+            "codex/stable.jsonl",
+            Provider.CODEX.value,
+            "fallback",
+            is_stream=True,
+            shard_directory=str(tmp_path / f"{attempt}-shards"),
+            source_sha256=blob_hash,
+            strict_jsonl_records=True,
+        )
+        artifact.discard()
+        with events_path.open("a", encoding="utf-8") as handle:
+            for event, fields in emitted:
+                if event == "daemon.work.progress":
+                    unit_ids.add(str(fields["unit_id"]))
+                    productive_ids.add(str(fields["productive_id"]))
+                    handle.write(json.dumps({"event": event, **fields}) + "\n")
+        emitted.clear()
+        counts.append(tail.poll())
+
+    assert len(unit_ids) == 2
+    assert len(productive_ids) == 1
+    assert counts[0] > 0
+    assert counts[1] == counts[0]
+    tail.close()
+
+
 from polylogue.sources.value_bounds import MAX_STORABLE_VALUE_BYTES
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
-from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.retained_jsonl import prepared_source_fixture, retained_parser_fixture
 from tests.infra.source_builders import ChatGPTExportBuilder
+
+
+@pytest.mark.parametrize("late_conversation", [False, True])
+def test_prepared_stream_classification_uses_records_after_old_sample(tmp_path: Path, late_conversation: bool) -> None:
+    source = tmp_path / "session.jsonl"
+    payload = (json.dumps({"type": "file-history-snapshot"}) + "\n") * 65
+    if late_conversation:
+        payload += (
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "message",
+                    "sessionId": "session",
+                    "message": {"role": "user", "content": "hello"},
+                }
+            )
+            + "\n"
+        )
+    source.write_text(payload, encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_CODE.value,
+        "session",
+        is_stream=True,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    try:
+        assert artifact.error is None
+        proof = artifact.stream_classification()
+        assert proof is not None
+        assert proof.proved_non_session is not late_conversation
+        sessions = list(artifact.iter_sessions())
+        assert len(sessions) == int(late_conversation)
+        if sessions:
+            assert [message.text for message in sessions[0].messages] == ["hello"]
+    finally:
+        artifact.discard()
+
+
+@pytest.mark.parametrize("terminated", [False, True])
+def test_prepared_classification_obeys_parser_tail_boundary(tmp_path: Path, terminated: bool) -> None:
+    source = tmp_path / "session.jsonl"
+    payload = (json.dumps({"type": "file-history-snapshot"}) + "\n") * 65
+    source.write_text(payload + '{"broken":' + ("\n" if terminated else ""), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_CODE.value,
+        "session",
+        is_stream=True,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    try:
+        if terminated:
+            assert artifact.error is not None
+            assert artifact.sessions_path is None
+        else:
+            assert artifact.error is None
+            proof = artifact.stream_classification()
+            assert proof is not None and proof.proved_non_session
+            assert proof.record_count == 65
+            assert list(artifact.iter_sessions()) == []
+    finally:
+        artifact.discard()
+
+
+def test_prepared_beads_refusal_keeps_explicit_proof_with_unknown_kind(tmp_path: Path) -> None:
+    from polylogue.archive.artifact_taxonomy import ArtifactKind
+
+    source = tmp_path / "interactions.jsonl"
+    source.write_text(
+        json.dumps(
+            {"id": "interaction", "kind": "field_change", "created_at": "synthetic", "issue_id": "task", "extra": {}}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.UNKNOWN.value,
+        "interaction",
+        is_stream=True,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    try:
+        assert artifact.error is None
+        proof = artifact.stream_classification()
+        assert proof is not None and proof.proved_non_session
+        assert proof.classification.kind is ArtifactKind.UNKNOWN
+        assert list(artifact.iter_sessions()) == []
+    finally:
+        artifact.discard()
 
 
 def _prepared_artifact(tmp_path: Path) -> tuple[PreparedJsonl, MessageOwnerCoordinate]:
@@ -168,6 +314,32 @@ def test_prepared_artifact_preserves_private_linkage_and_refuses_changed_seal(tm
         list(artifact.iter_sessions())
 
 
+def test_composed_attachment_binds_current_carrier_and_preserves_original_evidence(tmp_path: Path) -> None:
+    artifact, coordinate = _prepared_artifact(tmp_path)
+    original = artifact.session_sequence()[0]
+    original_key = original.attachments[0].acquisition_key
+    composed_path = tmp_path / "composed.db"
+    store = SqliteMessageStore(composed_path)
+    try:
+        _write_artifact(
+            store,
+            "e" * 64,
+            [original],
+            enrichment_digest="c" * 64,
+            enrichment_index_path="/index.db",
+        )
+    finally:
+        store.close()
+    attachments = SqliteAttachmentSink(composed_path, 0, count=1)
+    restored = attachments[0]
+    assert restored.acquisition_key == (str(composed_path), 0, 0)
+    assert restored.acquisition_key != original_key
+    assert original.attachments[0].acquisition_key == original_key
+    assert restored.owner_coordinate == coordinate
+    assert restored.inline_bytes == original.attachments[0].inline_bytes
+    assert restored.precomputed_blob == original.attachments[0].precomputed_blob
+
+
 def test_prepared_artifact_refuses_same_count_row_change_and_file_replacement(tmp_path: Path) -> None:
     artifact, _coordinate = _prepared_artifact(tmp_path)
     assert artifact.sessions_path is not None
@@ -281,6 +453,86 @@ def test_oversized_session_walks_replay_a_spool_not_the_json(tmp_path: Path, mon
     assert decodes[0] == 2 * len(first)
 
 
+def _tool_turn(session: int, index: int) -> ParsedMessage:
+    return ParsedMessage(
+        provider_message_id=f"s{session}-m{index}",
+        role=Role.ASSISTANT,
+        text=f"turn {index}",
+        blocks=[
+            ParsedContentBlock(type=BlockType.TEXT, text="neutral narration " * 4),
+            ParsedContentBlock(
+                type=BlockType.TOOL_USE,
+                tool_name="shell",
+                tool_id=f"s{session}-t{index}",
+                tool_input={"command": "ls", "options": {"long": True, "paths": ["a", "b", "c"]}},
+            ),
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT, tool_id=f"s{session}-t{index}", text="out " * 40, is_error=False
+            ),
+        ],
+    )
+
+
+def test_decoded_session_cache_holds_no_more_memory_than_its_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The decoded-session LRU's real resident memory stays within its declared budget.
+
+    Sessions are walked until the LRU has evicted; the traced memory that
+    clearing it releases is what it held.
+
+    Anti-vacuity: charge each retained message its sealed JSON bytes instead
+    of :func:`_decoded_size` and the LRU keeps about four times its budget of
+    decoded messages.
+    """
+    import gc
+    import tracemalloc
+
+    from polylogue.sources import prepared_message_sink
+
+    budget = 1024 * 1024
+    path = tmp_path / "prepared.db"
+    store = SqliteMessageStore(path)
+    sessions: list[ParsedSession] = []
+    for ordinal in range(16):
+        messages = store.new_sink()
+        for index in range(30):
+            messages.append(_tool_turn(ordinal, index))
+        session = ParsedSession(
+            source_name=Provider.CODEX, provider_session_id=f"session-{ordinal}", messages=[]
+        ).model_copy(update={"messages": messages, "session_events": store.new_event_sink()})
+        session.content_hash = session_content_hash(session)
+        sessions.append(session)
+    shard = prepare_session_shard(tmp_path, sessions)
+    _write_artifact(store, "b" * 64, sessions, enrichment_digest="c" * 64, enrichment_index_path="/index.db")
+    store.close()
+    artifact = PreparedJsonl.seal(
+        "b" * 64, path, shard.path, enrichment_digest="c" * 64, enrichment_index_path="/index.db"
+    )
+    sealed = list(artifact.iter_sessions())
+    monkeypatch.setattr(prepared_message_sink._DECODED_SESSIONS, "budget_bytes", budget)
+    prepared_message_sink._DECODED_SESSIONS.clear()
+    gc.collect()
+    tracemalloc.start()
+    try:
+        for session in sealed:
+            for _message in session.messages:
+                pass
+        gc.collect()
+        retained_entries = len(prepared_message_sink._DECODED_SESSIONS._entries)
+        charged = prepared_message_sink._DECODED_SESSIONS._bytes
+        holding = tracemalloc.get_traced_memory()[0]
+        prepared_message_sink._DECODED_SESSIONS.clear()
+        gc.collect()
+        held = holding - tracemalloc.get_traced_memory()[0]
+    finally:
+        tracemalloc.stop()
+    # The LRU retained sessions and evicted others without exceeding its budget.
+    assert 0 < retained_entries < len(sealed), retained_entries
+    assert 0 < charged <= budget, (charged, budget, retained_entries)
+    assert held <= budget, (held, budget, retained_entries)
+
+
 def _claude_document(session_id: str) -> dict[str, object]:
     return {
         "uuid": session_id,
@@ -345,7 +597,7 @@ def test_bundle_worker_does_not_construct_a_whole_document_record_list(
         raise AssertionError("whole-document decode or parse was used")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -408,7 +660,7 @@ def test_claude_design_object_stream_matches_direct_parser_and_shard(
         raise AssertionError("whole-document decode or parse was used")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     decoded = 0
     first_written_after: int | None = None
     original_items = ijson.items
@@ -435,11 +687,10 @@ def test_claude_design_object_stream_matches_direct_parser_and_shard(
         "fallback",
         is_stream=False,
         shard_directory=str(tmp_path / "prepared"),
-        classify_claude_design_object=lambda envelope, sample: envelope["project"] is None and len(sample) == 64,
     )
     assert artifact.error is None
     assert artifact.positive_evidence_filtered
-    assert first_written_after == 65
+    assert first_written_after == 1
     [actual] = artifact.iter_sessions()
     assert isinstance(actual.messages, SqliteMessageSink)
     assert isinstance(actual.session_events, SqliteSessionEventSink)
@@ -515,7 +766,7 @@ def test_generic_single_object_stream_matches_parser_with_duplicate_ids(
         raise AssertionError("generic object decoded as a whole document")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.decoder_json.json.load", refuse_whole_document)
     decoded = 0
     first_appended_after: int | None = None
@@ -636,7 +887,7 @@ def test_hermes_snapshot_stream_matches_parser_and_spills_before_eof(
         raise AssertionError("Hermes snapshot decoded as a whole document")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     decoded = 0
     first_written_after: int | None = None
     original_items = ijson.items
@@ -721,8 +972,6 @@ def test_hermes_snapshot_retained_callbacks_discard_corrupt_suffix(tmp_path: Pat
         is_stream=False,
         shard_directory=str(directory),
         prepare_sessions=lambda sessions: sessions,
-        prepare_records=lambda records: records,
-        classify_hermes_object=lambda _envelope, _messages: True,
     )
     assert artifact.error is not None
     assert artifact.sessions_path is None
@@ -742,13 +991,7 @@ def test_hermes_snapshot_retained_callbacks_keep_stream_route(tmp_path: Path, mo
         raise AssertionError("retained Hermes snapshot decoded as a whole document")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
-    witnesses: list[tuple[dict[str, JSONValue], list[JSONValue]]] = []
-
-    def classify(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-        witnesses.append((envelope, list(messages)))
-        return True
-
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -757,11 +1000,12 @@ def test_hermes_snapshot_retained_callbacks_keep_stream_route(tmp_path: Path, mo
         is_stream=False,
         shard_directory=str(tmp_path / "prepared"),
         prepare_sessions=lambda sessions: sessions,
-        prepare_records=lambda records: records,
-        classify_hermes_object=classify,
     )
     assert artifact.error is None
-    assert witnesses == [({"session_id": "retained-hermes", "platform": "linux"}, record["messages"])]
+    proof = artifact.stream_classification()
+    assert proof is not None and not proof.proved_non_session
+    assert proof.classification.provider is Provider.HERMES
+    assert proof.record_count == 1
     assert [session.title for session in artifact.iter_sessions()] == ["retained-hermes"]
     artifact.discard()
 
@@ -801,8 +1045,8 @@ def test_hermes_snapshot_stream_refuses_source_mutation_after_spill(
 
 
 def test_retained_hermes_extracted_transcript_is_not_a_session(tmp_path: Path) -> None:
-    from polylogue.sources import revision_backfill
 
+    bootstrap_archive_root(tmp_path)
     record = {
         "session_id": "copied-extract",
         "platform": "linux",
@@ -813,29 +1057,16 @@ def test_retained_hermes_extracted_transcript_is_not_a_session(tmp_path: Path) -
     blob_root = tmp_path / "blob"
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode())
     source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-extract",
-        Provider.HERMES.value,
-        blob_hash,
-        str(tmp_path / "sessions" / "session_extract.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "prepared"),
-        None,
-    )
-    assert artifact.error is None
-    assert list(artifact.iter_sessions()) == []
-    artifact.discard()
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.HERMES.value),
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "sessions" / "session_extract.json"),
+        directory=Path(str(tmp_path / "prepared")),
+        file_mtime=None,
+    ) as (artifact, _reader):
+        assert artifact.error is None
+        assert list(artifact.iter_sessions()) == []
 
 
 def test_hermes_snapshot_stream_uses_parser_future_type_priority(tmp_path: Path) -> None:
@@ -1191,11 +1422,11 @@ def test_gemini_cli_sidecar_scope_streams_and_matches_object_parser(
     assert artifact.error is None
     assert appended == 2
     [actual] = artifact.iter_sessions()
-    assert actual.content_hash == session_content_hash(expected)
     assert _gemini_message_payloads(actual) == _gemini_message_payloads(expected)
     assert [event.model_dump(mode="json") for event in actual.session_events] == [
         event.model_dump(mode="json") for event in expected.session_events
     ]
+    assert actual.content_hash == session_content_hash(expected)
     sidecar_events = [
         event.payload for event in actual.session_events if event.event_type == "gemini_cli_tool_output_sidecar"
     ]
@@ -1214,6 +1445,12 @@ def test_gemini_cli_sidecar_scope_streams_and_matches_object_parser(
         ("run_1.txt", "run_1"),
         ("run_1.txt", "run_1"),
     ]
+    from polylogue.core.hashing import hash_text
+
+    assert [event["content_hash"] for event in sidecar_events[2:4]] == [
+        hash_text("first complete output"),
+        hash_text("second complete output"),
+    ]
     assert [event["reason"] for event in sidecar_events[4:]] == [
         # A sidecar no SQLite cell can hold; smaller ones are joined whole.
         "value_bound_refused",
@@ -1227,7 +1464,7 @@ def test_gemini_cli_sidecar_scope_streams_and_matches_object_parser(
 def test_retained_gemini_sidecar_replay_uses_sealed_preparation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.sources import revision_backfill
+    bootstrap_archive_root(tmp_path)
     from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
 
     record = {
@@ -1270,47 +1507,34 @@ def test_retained_gemini_sidecar_replay_uses_sealed_preparation(
     blob_root = tmp_path / "blob"
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode())
     source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
     monkeypatch.setattr(
         "polylogue.sources.prepared_jsonl._iter_json_stream", lambda *_a, **_k: pytest.fail("whole-object replay")
     )
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "retained-gemini",
-        Provider.GEMINI_CLI.value,
-        blob_hash,
-        source_path,
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "prepared"),
-        None,
-    )
-    assert artifact.error is None
-    [actual] = artifact.iter_sessions()
-    [expected] = parse_payload(
-        Provider.GEMINI_CLI,
-        record,
-        "session",
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.GEMINI_CLI.value),
+        blob_hash=blob_hash,
         source_path=source_path,
-        sidecar_resolver=RetainedSidecarResolver(tmp_path),
-    )
-    assert actual.provider_session_id == expected.provider_session_id
-    assert [message.provider_message_id for message in actual.messages] == [
-        message.provider_message_id for message in expected.messages
-    ]
-    assert _gemini_message_payloads(actual) == _gemini_message_payloads(expected)
-    assert [event.model_dump(mode="json") for event in actual.session_events] == [
-        event.model_dump(mode="json") for event in expected.session_events
-    ]
-    artifact.discard()
+        directory=Path(str(tmp_path / "prepared")),
+        file_mtime=None,
+    ) as (artifact, _reader):
+        assert artifact.error is None
+        [actual] = artifact.iter_sessions()
+        [expected] = parse_payload(
+            Provider.GEMINI_CLI,
+            record,
+            "session",
+            source_path=source_path,
+            sidecar_resolver=_reader.retained_sidecar_resolver(),
+        )
+        assert actual.provider_session_id == expected.provider_session_id
+        assert [message.provider_message_id for message in actual.messages] == [
+            message.provider_message_id for message in expected.messages
+        ]
+        assert _gemini_message_payloads(actual) == _gemini_message_payloads(expected)
+        assert [event.model_dump(mode="json") for event in actual.session_events] == [
+            event.model_dump(mode="json") for event in expected.session_events
+        ]
 
 
 def test_gemini_sidecar_join_failure_discards_unsealed_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1458,7 +1682,7 @@ def test_gemini_cli_turnless_stub_accepts_sidecar_resolver(tmp_path: Path) -> No
     session.unit_accounting.assert_conserved()
 
 
-def test_gemini_cli_object_honors_direct_record_transform(tmp_path: Path) -> None:
+def test_gemini_cli_complete_object_preserves_its_declared_messages(tmp_path: Path) -> None:
     source = tmp_path / "session.json"
     source.write_text(
         json.dumps({"sessionId": "process-1", "kind": "chat", "messages": [{"type": "user", "content": "Hi"}]}),
@@ -1471,10 +1695,15 @@ def test_gemini_cli_object_honors_direct_record_transform(tmp_path: Path) -> Non
         "fallback",
         is_stream=False,
         shard_directory=str(tmp_path / "prepared"),
-        prepare_records=lambda _records: iter(()),
     )
     assert artifact.error is None
-    assert list(artifact.iter_sessions()) == []
+    [session] = artifact.iter_sessions()
+    [expected] = parse_payload(Provider.GEMINI_CLI, json.loads(source.read_text()), "fallback")
+    assert session.provider_session_id == expected.provider_session_id
+    assert [message.model_dump(mode="json") for message in session.messages] == [
+        message.model_dump(mode="json") for message in expected.messages
+    ]
+    assert [message.text for message in session.messages] == ["Hi"]
     artifact.discard()
 
 
@@ -1495,7 +1724,7 @@ def test_generic_retained_callbacks_keep_bounded_message_preparation(
         raise AssertionError("retained generic object decoded as a whole document")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     first_written_after: int | None = None
     decoded = 0
     original_items = ijson.items
@@ -1517,7 +1746,7 @@ def test_generic_retained_callbacks_keep_bounded_message_preparation(
     monkeypatch.setattr(SqliteMessageSink, "append", tracked_append)
     finalized: list[str] = []
 
-    def finalize(sessions: list[ParsedSession]) -> list[ParsedSession]:
+    def finalize(sessions: PreparedSessionSequence) -> Iterable[ParsedSession]:
         finalized.extend(session.provider_session_id for session in sessions)
         return sessions
 
@@ -1528,12 +1757,10 @@ def test_generic_retained_callbacks_keep_bounded_message_preparation(
         "fallback",
         is_stream=False,
         shard_directory=str(tmp_path / "prepared"),
-        prepare_records=lambda records: records,
         prepare_sessions=finalize,
-        classify_generic_object=lambda _envelope, messages: bool(messages),
     )
     assert artifact.error is None
-    assert first_written_after == 65
+    assert first_written_after == 1
     assert finalized == ["retained-generic"]
     [actual] = artifact.iter_sessions()
     assert (actual.provider_session_id, actual.content_hash) == (
@@ -1545,8 +1772,8 @@ def test_generic_retained_callbacks_keep_bounded_message_preparation(
 
 
 def test_retained_generic_object_uses_streamed_replay_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import polylogue.sources.revision_backfill as revision_backfill
 
+    bootstrap_archive_root(tmp_path)
     record = {
         "id": "retained-drive",
         "messages": [{"id": "repeated", "role": "user", "text": f"Neutral prompt {index}"} for index in range(120)],
@@ -1554,42 +1781,29 @@ def test_retained_generic_object_uses_streamed_replay_route(tmp_path: Path, monk
     blob_root = tmp_path / "blob"
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode())
     source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
 
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("retained replay decoded the complete object")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-raw",
-        Provider.DRIVE.value,
-        blob_hash,
-        str(tmp_path / "session.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "prepared"),
-        "2025-01-02T03:04:05Z",
-    )
-    assert artifact.error is None
-    [actual] = artifact.iter_sessions()
-    [expected] = parse_payload(Provider.DRIVE, record, "session")
-    assert actual.provider_session_id == expected.provider_session_id
-    assert [message.provider_message_id for message in actual.messages] == [
-        message.provider_message_id for message in expected.messages
-    ]
-    assert [message.text for message in actual.messages] == [message.text for message in expected.messages]
-    assert actual.created_at == "2025-01-02T03:04:05+00:00"
-    artifact.discard()
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.DRIVE.value),
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "session.json"),
+        directory=Path(str(tmp_path / "prepared")),
+        file_mtime="2025-01-02T03:04:05Z",
+    ) as (artifact, _reader):
+        assert artifact.error is None
+        [actual] = artifact.iter_sessions()
+        [expected] = parse_payload(Provider.DRIVE, record, "session")
+        assert actual.provider_session_id == expected.provider_session_id
+        assert [message.provider_message_id for message in actual.messages] == [
+            message.provider_message_id for message in expected.messages
+        ]
+        assert [message.text for message in actual.messages] == [message.text for message in expected.messages]
+        assert actual.created_at == "2025-01-02T03:04:05+00:00"
 
 
 def test_grok_single_object_streams_responses_with_parser_parity(
@@ -1621,7 +1835,7 @@ def test_grok_single_object_streams_responses_with_parser_parity(
         raise AssertionError("Grok object decoded as a whole document")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     decoded = 0
     first_append_after: int | None = None
     original_events = iter_grok_export_events
@@ -1665,9 +1879,10 @@ def test_grok_single_object_streams_responses_with_parser_parity(
             )
     assert artifact.sessions_path is not None
     with sqlite3.connect(artifact.sessions_path) as prepared:
-        assert prepared.execute("SELECT COUNT(*) FROM prepared_message").fetchone()[0] == sum(
-            len(session.messages) for session in expected
-        )
+        assert prepared.execute(
+            "SELECT COUNT(*) FROM prepared_message WHERE session_ordinal IN "
+            "(SELECT message_ordinal FROM prepared_session)"
+        ).fetchone()[0] == sum(len(session.messages) for session in expected)
     artifact.discard()
 
 
@@ -1712,8 +1927,8 @@ def test_grok_empty_conversation_is_refused_at_preparation(tmp_path: Path) -> No
     assert artifact.positive_evidence_filtered is True
     assert list(artifact.iter_sessions()) == []
     direct = parse_payload(Provider.GROK, record, "fallback")
-    assert len(direct) == 1
-    assert require_positive_conversational_evidence(direct, provider=Provider.GROK, source_path=str(source)) == []
+    assert direct == []
+    assert admit_parsed_sessions_for_publication(direct, provider=Provider.GROK, source_path=str(source)) == []
     artifact.discard()
 
 
@@ -1773,7 +1988,7 @@ def test_grok_future_wire_type_keeps_parser_admission_event(tmp_path: Path, monk
         raise AssertionError("future-typed Grok export decoded as a whole document")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -1794,8 +2009,8 @@ def test_grok_future_wire_type_keeps_parser_admission_event(tmp_path: Path, monk
 
 
 def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from polylogue.sources import revision_backfill
 
+    bootstrap_archive_root(tmp_path)
     responses = [
         {"response": {"sender": "human" if index % 2 == 0 else "grok", "message": f"Turn {index}"}}
         for index in range(350)
@@ -1818,7 +2033,7 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
     }
     fallback_timestamp = "2025-01-02T03:04:05Z"
     source_path = str(tmp_path / "prod-grok-backend.json")
-    expected = require_positive_conversational_evidence(
+    expected = admit_parsed_sessions_for_publication(
         parse_payload(Provider.GROK, record, Path(source_path).stem),
         provider=Provider.GROK,
         source_path=source_path,
@@ -1830,19 +2045,12 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
     blob_root = tmp_path / "blob"
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode("utf-8"))
     source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
 
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("retained Grok object decoded as a whole document")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     decoded = 0
     first_append_after: int | None = None
     original_events = iter_grok_export_events
@@ -1863,173 +2071,142 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_grok_export_events", tracked_events)
     monkeypatch.setattr(SqliteMessageSink, "append", tracked_append)
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-grok-raw",
-        Provider.GROK.value,
-        blob_hash,
-        source_path,
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "prepared"),
-        fallback_timestamp,
-    )
-    assert artifact.error is None
-    assert artifact.positive_evidence_filtered is True
-    assert first_append_after == 1
-    actual = list(artifact.iter_sessions())
-    assert [(session.provider_session_id, session.content_hash) for session in actual] == [
-        (session.provider_session_id, session.content_hash) for session in expected
-    ]
-    assert [session.created_at for session in actual] == [session.created_at for session in expected]
-    assert artifact.shard_path is not None
-    with sqlite3.connect(expected_shard.path) as baseline, sqlite3.connect(artifact.shard_path) as prepared:
-        for table in ("messages", "blocks", "shard_session"):
-            assert (
-                prepared.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
-                == baseline.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
-            )
-    assert artifact.sessions_path is not None
-    with sqlite3.connect(artifact.sessions_path) as prepared:
-        assert prepared.execute("SELECT COUNT(*) FROM prepared_message").fetchone()[0] == len(responses)
-    artifact.discard()
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.GROK.value),
+        blob_hash=blob_hash,
+        source_path=source_path,
+        directory=Path(str(tmp_path / "prepared")),
+        file_mtime=fallback_timestamp,
+    ) as (artifact, _reader):
+        assert artifact.error is None
+        assert artifact.positive_evidence_filtered is True
+        assert first_append_after == 1
+        actual = list(artifact.iter_sessions())
+        assert [(session.provider_session_id, session.content_hash) for session in actual] == [
+            (session.provider_session_id, session.content_hash) for session in expected
+        ]
+        assert [session.created_at for session in actual] == [session.created_at for session in expected]
+        assert artifact.shard_path is not None
+        with sqlite3.connect(expected_shard.path) as baseline, sqlite3.connect(artifact.shard_path) as prepared:
+            for table in ("messages", "blocks", "shard_session"):
+                assert (
+                    prepared.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                    == baseline.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                )
+        assert artifact.sessions_path is not None
+        with sqlite3.connect(artifact.shard_path) as prepared:
+            assert prepared.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == len(responses)
 
-    sidecar = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-grok-sidecar",
-        Provider.GROK.value,
-        blob_hash,
-        str(tmp_path / "agent-neutral.meta.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "sidecar-prepared"),
-        fallback_timestamp,
-    )
-    assert sidecar.error is None
-    assert list(sidecar.iter_sessions()) == []
-    sidecar.discard()
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.GROK.value),
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "agent-neutral.meta.json"),
+        directory=Path(str(tmp_path / "sidecar-prepared")),
+        file_mtime=fallback_timestamp,
+    ) as (sidecar, _reader):
+        # ``agent-*.meta.json`` is a content-blind sidecar marker, not an
+        # OriginSpec ``fact`` path: session-shaped content there stays refused.
+        assert sidecar.error is None
+        assert list(sidecar.iter_sessions()) == []
 
-    analysis_artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-grok-analysis-path",
-        Provider.GROK.value,
-        blob_hash,
-        str(tmp_path / "analysis" / "prod-grok-backend.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "analysis-prepared"),
-        fallback_timestamp,
+    fact_hash, _ = BlobStore(Path(str(source_db)).parent / "blob").write_from_bytes(
+        b'{"agent":"neutral","facts":[{"key":"status","value":"ready"}]}'
     )
-    assert analysis_artifact.error is None
-    assert [(session.provider_session_id, session.content_hash) for session in analysis_artifact.iter_sessions()] == [
-        (session.provider_session_id, session.content_hash) for session in expected
-    ]
-    analysis_artifact.discard()
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.GROK,
+        blob_hash=fact_hash,
+        source_path=str(tmp_path / "agent-fact.meta.json"),
+        directory=tmp_path / "fact-prepared",
+        file_mtime=fallback_timestamp,
+    ) as (fact, _reader):
+        assert fact.error is None
+        assert list(fact.iter_sessions()) == []
+        proof = fact.stream_classification()
+        assert proof is not None and proof.proved_non_session
+
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.GROK.value),
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "analysis" / "prod-grok-backend.json"),
+        directory=Path(str(tmp_path / "analysis-prepared")),
+        file_mtime=fallback_timestamp,
+    ) as (analysis_artifact, _reader):
+        assert analysis_artifact.error is None
+        assert [
+            (session.provider_session_id, session.content_hash) for session in analysis_artifact.iter_sessions()
+        ] == [(session.provider_session_id, session.content_hash) for session in expected]
 
     beads_record = {**record, "extra": {}}
     beads_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(beads_record).encode("utf-8"))
-    beads_artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-grok-beads-overlap",
-        Provider.GROK.value,
-        beads_hash,
-        source_path,
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "beads-prepared"),
-        fallback_timestamp,
-    )
-    assert beads_artifact.error is None
-    assert [(session.provider_session_id, session.content_hash) for session in beads_artifact.iter_sessions()] == [
-        (session.provider_session_id, session.content_hash) for session in expected
-    ]
-    beads_artifact.discard()
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.GROK.value),
+        blob_hash=beads_hash,
+        source_path=source_path,
+        directory=Path(str(tmp_path / "beads-prepared")),
+        file_mtime=fallback_timestamp,
+    ) as (beads_artifact, _reader):
+        assert beads_artifact.error is None
+        assert list(beads_artifact.iter_sessions()) == []
+        assert beads_artifact.blob_hash == beads_hash
 
-    beads_analysis_artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-grok-beads-analysis-path",
-        Provider.GROK.value,
-        beads_hash,
-        str(tmp_path / "analysis" / "prod-grok-backend.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "beads-analysis-prepared"),
-        fallback_timestamp,
-    )
-    assert beads_analysis_artifact.error is None
-    assert list(beads_analysis_artifact.iter_sessions()) == []
-    beads_analysis_artifact.discard()
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.GROK.value),
+        blob_hash=beads_hash,
+        source_path=str(tmp_path / "analysis" / "prod-grok-backend.json"),
+        directory=Path(str(tmp_path / "beads-analysis-prepared")),
+        file_mtime=fallback_timestamp,
+    ) as (beads_analysis_artifact, _reader):
+        assert beads_analysis_artifact.error is None
+        assert list(beads_analysis_artifact.iter_sessions()) == []
 
     messages_record = {key: value for key, value in record.items() if key not in {"type", "version"}}
     messages_record["messages"] = [{"role": "user", "content": "Root metadata"}]
     messages_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(messages_record).encode("utf-8"))
-    messages_artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-grok-messages-overlap",
-        Provider.GROK.value,
-        messages_hash,
-        str(tmp_path / "analysis" / "prod-grok-backend.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "messages-prepared"),
-        fallback_timestamp,
-    )
-    assert messages_artifact.error is None
-    assert [(session.provider_session_id, session.content_hash) for session in messages_artifact.iter_sessions()] == [
-        (session.provider_session_id, session.content_hash) for session in expected
-    ]
-    messages_artifact.discard()
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.GROK.value),
+        blob_hash=messages_hash,
+        source_path=str(tmp_path / "analysis" / "prod-grok-backend.json"),
+        directory=Path(str(tmp_path / "messages-prepared")),
+        file_mtime=fallback_timestamp,
+    ) as (messages_artifact, _reader):
+        assert messages_artifact.error is None
+        assert [
+            (session.provider_session_id, session.content_hash) for session in messages_artifact.iter_sessions()
+        ] == [(session.provider_session_id, session.content_hash) for session in expected]
 
 
 def test_retained_grok_corrupt_suffix_leaves_no_publishable_artifact(tmp_path: Path) -> None:
-    from polylogue.sources import revision_backfill
 
+    bootstrap_archive_root(tmp_path)
     blob_root = tmp_path / "blob"
     payload = b'{"conversations":[{"conversation":{},"responses":[{"sender":"human","message":"Hi"}]}]} trailing'
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(payload)
     source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
     directory = tmp_path / "prepared"
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-corrupt-grok",
-        Provider.GROK.value,
-        blob_hash,
-        str(tmp_path / "prod-grok-backend.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(directory),
-        None,
-    )
-    assert artifact.error is not None
-    assert artifact.sessions_path is None
-    assert artifact.shard_path is None
-    assert list(directory.glob("*.db")) == []
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.GROK.value),
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "prod-grok-backend.json"),
+        directory=Path(str(directory)),
+        file_mtime=None,
+    ) as (artifact, _reader):
+        assert artifact.error is not None
+        assert artifact.sessions_path is None
+        assert artifact.shard_path is None
+        assert list(directory.glob("*.db")) == []
 
 
 def test_retained_grok_future_wire_keeps_parser_admission_event(tmp_path: Path) -> None:
-    from polylogue.sources import revision_backfill
 
+    bootstrap_archive_root(tmp_path)
     record = {
         "conversations": [
             {
@@ -2041,39 +2218,26 @@ def test_retained_grok_future_wire_keeps_parser_admission_event(tmp_path: Path) 
     blob_root = tmp_path / "blob"
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode("utf-8"))
     source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-future-grok",
-        Provider.GROK.value,
-        blob_hash,
-        str(tmp_path / "prod-grok-backend.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "prepared"),
-        None,
-    )
-    assert artifact.error is None
-    assert artifact.positive_evidence_filtered
-    [session] = artifact.iter_sessions()
-    [expected] = parse_payload(Provider.GROK, record, "fallback")
-    assert list(session.session_events) == expected.session_events
-    assert session.unit_accounting == expected.unit_accounting
-    assert [event.event_type for event in session.session_events] == ["grok_unknown_input"]
-    artifact.discard()
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.GROK.value),
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "prod-grok-backend.json"),
+        directory=Path(str(tmp_path / "prepared")),
+        file_mtime=None,
+    ) as (artifact, _reader):
+        assert artifact.error is None
+        assert artifact.positive_evidence_filtered
+        [session] = artifact.iter_sessions()
+        [expected] = parse_payload(Provider.GROK, record, "fallback")
+        assert list(session.session_events) == expected.session_events
+        assert session.unit_accounting == expected.unit_accounting
+        assert [event.event_type for event in session.session_events] == ["grok_unknown_input"]
 
 
 def test_retained_grok_hook_overlap_keeps_artifact_taxonomy(tmp_path: Path) -> None:
-    from polylogue.sources import revision_backfill
 
+    bootstrap_archive_root(tmp_path)
     record = {
         "conversations": [
             {"conversation": {"title": "Ambiguous"}, "responses": [{"sender": "human", "message": "Hi"}]}
@@ -2086,29 +2250,16 @@ def test_retained_grok_hook_overlap_keeps_artifact_taxonomy(tmp_path: Path) -> N
     blob_root = tmp_path / "blob"
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode("utf-8"))
     source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-ambiguous-grok",
-        Provider.GROK.value,
-        blob_hash,
-        str(tmp_path / "prod-grok-backend.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "prepared"),
-        None,
-    )
-    assert artifact.error is None
-    assert list(artifact.iter_sessions()) == []
-    artifact.discard()
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.GROK.value),
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "prod-grok-backend.json"),
+        directory=Path(str(tmp_path / "prepared")),
+        file_mtime=None,
+    ) as (artifact, _reader):
+        assert artifact.error is None
+        assert list(artifact.iter_sessions()) == []
 
 
 def test_chatgpt_bundle_worker_keeps_original_positions_after_skipped_siblings(tmp_path: Path) -> None:
@@ -2123,7 +2274,7 @@ def test_chatgpt_bundle_worker_keeps_original_positions_after_skipped_siblings(t
     expected = parse_payload(
         Provider.CHATGPT, list(_iter_json_stream(BytesIO(source.read_bytes()), source.name)), "fallback"
     )
-    expected = require_positive_conversational_evidence(expected, provider=Provider.CHATGPT, source_path=str(source))
+    expected = admit_parsed_sessions_for_publication(expected, provider=Provider.CHATGPT, source_path=str(source))
     for session in expected:
         session.content_hash = session_content_hash(session)
     artifact = prepare_jsonl_blob(
@@ -2162,7 +2313,6 @@ def test_whole_json_preparation_transforms_and_indexes_each_session_without_iter
         "fallback",
         is_stream=False,
         shard_directory=str(tmp_path / "prepared"),
-        prepare_records=lambda items: items,
         prepare_session=transform,
     )
     assert artifact.error is None
@@ -2180,6 +2330,7 @@ def test_whole_json_preparation_transforms_and_indexes_each_session_without_iter
 def test_retained_top_level_chatgpt_object_keeps_fallback_and_sidecar_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    bootstrap_archive_root(tmp_path)
     import polylogue.sources.revision_backfill as revision_backfill
     from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
 
@@ -2209,13 +2360,6 @@ def test_retained_top_level_chatgpt_object_keeps_fallback_and_sidecar_evidence(
     blob_root = tmp_path / "blob"
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(payload)
     source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
 
     evidence_providers: list[Provider] = []
     asset_index = ChatGPTAssetIndex.build(
@@ -2230,30 +2374,29 @@ def test_retained_top_level_chatgpt_object_keeps_fallback_and_sidecar_evidence(
         return {"chatgpt_asset_index": asset_index}
 
     monkeypatch.setattr(revision_backfill, "_retained_enrichment_sidecar_data", sidecar_evidence)
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-raw",
-        Provider.CHATGPT.value,
-        blob_hash,
-        str(tmp_path / "snapshot.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "prepared"),
-        "2025-01-02T03:04:05Z",
-    )
-    assert artifact.error is None
-    assert artifact.positive_evidence_filtered is True
-    sessions = list(artifact.session_sequence())
-    assert len(sessions) == 1
-    assert sessions[0].created_at == "2025-01-02T03:04:05+00:00"
-    assert sessions[0].updated_at == "2025-01-02T03:04:05+00:00"
-    assert len(sessions[0].attachments) == 1
-    assert sessions[0].attachments[0].name == "resolved-sidecar.png"
-    assert evidence_providers == [Provider.CHATGPT]
-    assert artifact.enrichment_digest is not None
-    artifact.discard()
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.CHATGPT.value),
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "snapshot.json"),
+        directory=Path(str(tmp_path / "prepared")),
+        file_mtime="2025-01-02T03:04:05Z",
+    ) as (artifact, _reader):
+        assert artifact.error is None
+        assert artifact.positive_evidence_filtered is True
+        sessions = list(artifact.session_sequence())
+        assert len(sessions) == 1
+        assert sessions[0].created_at == "2025-01-02T03:04:05+00:00"
+        assert sessions[0].updated_at == "2025-01-02T03:04:05+00:00"
+        assert len(sessions[0].attachments) == 1
+        assert sessions[0].attachments[0].name == "resolved-sidecar.png"
+        assert evidence_providers == [Provider.CHATGPT]
+        # The original seal owns retained evidence; a second artifact-level
+        # enrichment owner is refused by the prepared Raw publication route.
+        assert artifact.enrichment_digest is None
+        assert artifact.enrichment_index_path is None
+        assert artifact.blob_hash == blob_hash
+        assert tuple(artifact.iter_attachment_claims()) == ()
 
 
 def test_chatgpt_mapping_object_spills_before_eof_with_bounded_reader(
@@ -2516,8 +2659,8 @@ def test_chatgpt_text_nodes_spill_attachment_metadata_with_parser_parity(
 
 
 def test_retained_chatgpt_simple_mapping_replays_sealed_messages(tmp_path: Path) -> None:
-    import polylogue.sources.revision_backfill as revision_backfill
 
+    bootstrap_archive_root(tmp_path)
     record = (
         ChatGPTExportBuilder("retained-simple")
         .add_node("user", "Neutral prompt")
@@ -2528,33 +2671,20 @@ def test_retained_chatgpt_simple_mapping_replays_sealed_messages(tmp_path: Path)
     blob_root = tmp_path / "blob"
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(payload)
     source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-raw",
-        Provider.CHATGPT.value,
-        blob_hash,
-        str(tmp_path / "snapshot.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "prepared"),
-        "2025-01-02T03:04:05Z",
-    )
-    assert artifact.error is None
-    sessions = list(artifact.session_sequence())
-    assert len(sessions) == 1
-    assert isinstance(sessions[0].messages, SqliteMessageSink)
-    assert [message.text for message in sessions[0].messages] == ["Neutral prompt", "Neutral answer"]
-    assert sessions[0].content_hash == session_content_hash(sessions[0])
-    artifact.discard()
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.CHATGPT.value),
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "snapshot.json"),
+        directory=Path(str(tmp_path / "prepared")),
+        file_mtime="2025-01-02T03:04:05Z",
+    ) as (artifact, _reader):
+        assert artifact.error is None
+        sessions = list(artifact.session_sequence())
+        assert len(sessions) == 1
+        assert isinstance(sessions[0].messages, SqliteMessageSink)
+        assert [message.text for message in sessions[0].messages] == ["Neutral prompt", "Neutral answer"]
+        assert sessions[0].content_hash == session_content_hash(sessions[0])
 
 
 def test_chatgpt_object_finalizer_receives_disk_sidecars_and_empty_result_cleans_rows(tmp_path: Path) -> None:
@@ -2570,7 +2700,7 @@ def test_chatgpt_object_finalizer_receives_disk_sidecars_and_empty_result_cleans
     source.write_text(json.dumps(record), encoding="utf-8")
     observed: list[tuple[bool, bool]] = []
 
-    def reject_after_observation(sessions: list[ParsedSession]) -> list[ParsedSession]:
+    def reject_after_observation(sessions: PreparedSessionSequence) -> Iterable[ParsedSession]:
         session = sessions[0]
         observed.append(
             (
@@ -2638,17 +2768,20 @@ def test_chatgpt_object_finalizer_enriches_sealed_attachment_and_event_rows(tmp_
 def _stored_messages(session: ParsedSession) -> list[dict[str, object]]:
     """Messages as the writer stores them: active path settled, tool outcomes derived.
 
-    A scratch-backed session is lowered into its shard in place, so a sealed
-    carrier already holds this form; a collected parse reaches it only at
-    write time. Comparing this form compares what either route publishes.
+    Scratch retains the original parser fields and a separate normalized
+    writer operand. Compare that operand with the collecting writer lowering.
     """
     from polylogue.core.sources import origin_from_provider
     from polylogue.sources.prepared_message_sink import normalize_active_branch
     from polylogue.sources.tool_outcomes import derive_tool_outcomes
 
     if isinstance(session.messages, SqliteMessageSink):
-        # Already lowered in place when its shard was built.
-        return [message.model_dump(mode="json") for message in session.messages]
+        return [
+            message.model_dump(mode="json")
+            for message in session.messages.normalized_messages(
+                session.session_events, origin=origin_from_provider(session.source_name)
+            )
+        ]
     messages = derive_tool_outcomes(
         normalize_active_branch(list(session.messages)),
         list(session.session_events),
@@ -3142,8 +3275,8 @@ def test_singleton_chatgpt_array_keeps_existing_parse_identity(tmp_path: Path) -
 def test_retained_claude_design_object_uses_streamed_replay_route(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import polylogue.sources.revision_backfill as revision_backfill
 
+    bootstrap_archive_root(tmp_path)
     record = {
         "uuid": "design-retained",
         "project": {"uuid": "neutral-project"},
@@ -3164,40 +3297,28 @@ def test_retained_claude_design_object_uses_streamed_replay_route(
     blob_root = tmp_path / "blob"
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode())
     source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
 
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("retained Design object decoded as a whole document")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-raw",
-        Provider.CLAUDE_DESIGN.value,
-        blob_hash,
-        str(tmp_path / "design_chats" / "session.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "prepared"),
-        "2025-01-02T03:04:05Z",
-    )
-    assert artifact.error is None
-    assert artifact.positive_evidence_filtered
-    [actual] = artifact.iter_sessions()
-    assert actual.provider_session_id == "design-retained"
-    assert len(actual.messages) == 300
-    assert len(actual.session_events) == 300
-    assert actual.created_at == "2026-01-01T00:00:00+00:00"
-    assert actual.updated_at == "2026-01-01T00:00:59+00:00"
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
+    with retained_parser_fixture(
+        root=Path(str(source_db)).parent,
+        provider=Provider.from_string(Provider.CLAUDE_DESIGN.value),
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "design_chats" / "session.json"),
+        directory=Path(str(tmp_path / "prepared")),
+        file_mtime="2025-01-02T03:04:05Z",
+    ) as (artifact, _reader):
+        assert artifact.error is None
+        assert artifact.positive_evidence_filtered
+        [actual] = artifact.iter_sessions()
+        assert actual.provider_session_id == "design-retained"
+        assert len(actual.messages) == 300
+        assert len(actual.session_events) == 300
+        assert actual.created_at == "2026-01-01T00:00:00+00:00"
+        assert actual.updated_at == "2026-01-01T00:00:59+00:00"
 
 
 def test_event_sink_batch_insert_matches_sequential_inserts(tmp_path: Path) -> None:
@@ -3347,10 +3468,9 @@ def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
     missing; concatenate every append and ``toolu_branch`` appears; chain by
     offset alone and ``toolu_stale`` joins the newer revision of ``agent-c``.
     """
-    from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
 
+    bootstrap_archive_root(tmp_path)
     source_db = tmp_path / "source.db"
-    initialize_runtime_source_fixture(source_db)
     blob_root = tmp_path / "blob"
     store = BlobStore(blob_root)
     session_dir = tmp_path / "project" / "session-1"
@@ -3409,9 +3529,12 @@ def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
                 "acquired_at_ms) VALUES (?, ?, 'raw_payload', ?, ?, ?)",
                 (bytes.fromhex(blob_hash), raw_id, path, size, acquired),
             )
-    with sqlite3.connect(source_db) as conn:
-        resolver = RetainedSidecarResolver(tmp_path, blob_root=blob_root, source_conn=conn)
-        siblings = resolver._retained_siblings(conn, session_dir.parent / "session-1.jsonl")
+    with prepared_source_fixture(tmp_path) as reader:
+        resolver = reader.retained_sidecar_resolver()
+        from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+
+        assert isinstance(resolver, RetainedSidecarResolver)
+        siblings = resolver._retained_siblings(None, session_dir.parent / "session-1.jsonl")
         tool_ids = {
             sibling.coordinate: {
                 block["id"]
@@ -3435,10 +3558,9 @@ def test_a_historical_append_does_not_extend_a_reselected_baseline(tmp_path: Pat
     offsets match and ``toolu_x`` from the historical tail reappears, though
     the live ``A`` file holds no such call.
     """
-    from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
 
+    bootstrap_archive_root(tmp_path)
     source_db = tmp_path / "source.db"
-    initialize_runtime_source_fixture(source_db)
     blob_root = tmp_path / "blob"
     store = BlobStore(blob_root)
     session_dir = tmp_path / "project" / "session-1"
@@ -3481,9 +3603,12 @@ def test_a_historical_append_does_not_extend_a_reselected_baseline(tmp_path: Pat
                 "acquired_at_ms) VALUES (?, ?, 'raw_payload', ?, ?, ?)",
                 (bytes.fromhex(blob_hash), raw_id, sibling, size, observed_ms),
             )
-    with sqlite3.connect(source_db) as conn:
-        resolver = RetainedSidecarResolver(tmp_path, blob_root=blob_root, source_conn=conn)
-        (found,) = resolver._retained_siblings(conn, session_dir.parent / "session-1.jsonl")
+    with prepared_source_fixture(tmp_path) as reader:
+        resolver = reader.retained_sidecar_resolver()
+        from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+
+        assert isinstance(resolver, RetainedSidecarResolver)
+        (found,) = resolver._retained_siblings(None, session_dir.parent / "session-1.jsonl")
         tool_ids = {
             block["id"]
             for record in found.open_records()
@@ -3506,10 +3631,9 @@ def test_sibling_baseline_follows_the_newest_durable_receipt(tmp_path: Path) -> 
     ``raw_sessions.acquired_at_ms`` and the baseline is B, so the sibling
     index names ``toolu_b`` instead of the current file's ``toolu_a``.
     """
-    from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
 
+    bootstrap_archive_root(tmp_path)
     source_db = tmp_path / "source.db"
-    initialize_runtime_source_fixture(source_db)
     blob_root = tmp_path / "blob"
     store = BlobStore(blob_root)
     session_dir = tmp_path / "project" / "session-1"
@@ -3540,9 +3664,12 @@ def test_sibling_baseline_follows_the_newest_durable_receipt(tmp_path: Path) -> 
                 "acquired_at_ms) VALUES (?, ?, 'raw_payload', ?, ?, ?)",
                 (bytes.fromhex(blob_hash), raw_id, sibling, size, observed_ms),
             )
-    with sqlite3.connect(source_db) as conn:
-        resolver = RetainedSidecarResolver(tmp_path, blob_root=blob_root, source_conn=conn)
-        (resolved,) = resolver._retained_siblings(conn, session_dir.parent / "session-1.jsonl")
+    with prepared_source_fixture(tmp_path) as reader:
+        resolver = reader.retained_sidecar_resolver()
+        from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+
+        assert isinstance(resolver, RetainedSidecarResolver)
+        (resolved,) = resolver._retained_siblings(None, session_dir.parent / "session-1.jsonl")
         tool_ids = {
             block["id"]
             for record in resolved.open_records()
@@ -3705,6 +3832,7 @@ def test_gemini_sidecar_decoded_past_the_cell_limit_is_typed_debt(
     instead of a ``value_bound_refused`` debt row.
     """
     from polylogue.sources import value_bounds
+    from polylogue.sources.live.tool_result_sidecars import SidecarMatch
     from polylogue.sources.prepared_message_sink import GeminiToolOutputIndex
 
     monkeypatch.setattr(value_bounds, "MAX_STORABLE_VALUE_BYTES", 64)
@@ -3723,7 +3851,7 @@ def test_gemini_sidecar_decoded_past_the_cell_limit_is_typed_debt(
             available=True,
         )
         results = list(index.join(scope))
-        assert not any(getattr(result, "full_text", None) for result in results)
+        assert not any(isinstance(result, SidecarMatch) for result in results)
         assert conn.execute("SELECT filename, reason FROM gemini_tool_debt").fetchall() == [
             ("call-1.txt", "value_bound_refused")
         ]
@@ -3865,3 +3993,760 @@ def test_non_decode_stream_failures_remain_retryable(cause: BaseException) -> No
     assert classify_decode_failure(error) is None
     assert terminal_decode_evidence(error, provider=Provider.CHATGPT) is None
     assert terminal_decode_evidence(error, provider=Provider.UNKNOWN) is None
+
+
+@pytest.mark.parametrize("count", [24, 192])
+def test_gemini_checkpoint_preparation_spools_records_before_eof_without_retaining_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    count: int,
+) -> None:
+    import gc
+    import weakref
+    from collections.abc import Iterator
+
+    import polylogue.sources.prepared_jsonl as prepared
+
+    source = tmp_path / "checkpoint.jsonl"
+    header = {"sessionId": "bounded", "projectHash": "neutral", "kind": "main", "startTime": "2026-05-02T09:00:00.000Z"}
+    records = [
+        header,
+        *(
+            {
+                "id": f"message-{index}",
+                "type": "user",
+                "timestamp": "2026-05-02T09:00:01.000Z",
+                "content": f"neutral-{index}",
+            }
+            for index in range(count)
+        ),
+    ]
+    source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    del records
+    decoded = 0
+    live = 0
+    peak = 0
+    first_append: int | None = None
+    original_records = _iter_json_stream
+    original_append = prepared._append_gemini_raw_message
+
+    class TrackedRecord(dict[str, JSONValue]):
+        pass
+
+    def retired() -> None:
+        nonlocal live
+        live -= 1
+
+    def observe_records(
+        handle: BinaryIO | IO[bytes], path_name: str, unpack_lists: bool = True, *, fail_on_decode_error: bool = False
+    ) -> Iterator[object]:
+        nonlocal decoded, live, peak
+        for record in original_records(handle, path_name, unpack_lists, fail_on_decode_error=fail_on_decode_error):
+            assert isinstance(record, dict)
+            gc.collect()
+            tracked = TrackedRecord(record)
+            live += 1
+            peak = max(peak, live)
+            weakref.finalize(tracked, retired)
+            decoded += 1
+            yield tracked
+
+    def observe_append(conn: sqlite3.Connection, ordinal: int, item: object) -> None:
+        nonlocal first_append
+        if first_append is None:
+            first_append = decoded
+        original_append(conn, ordinal, item)
+
+    def refuse_collected(*args: object, **kwargs: object) -> object:
+        raise AssertionError("checkpoint fell back to whole-input parse")
+
+    monkeypatch.setattr(prepared, "_iter_json_stream", observe_records)
+    monkeypatch.setattr(prepared, "_append_gemini_raw_message", observe_append)
+    monkeypatch.setattr(prepared, "iter_parsed_payload", refuse_collected)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "unused",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        prepare_sessions=lambda sessions: sessions,
+    )
+    assert artifact.error is None, artifact.error
+    assert decoded == count + 1
+    assert first_append == 2
+    assert peak <= 4  # Header, parser's prior record, producer's current record.
+    [session] = artifact.iter_sessions()
+    assert session.provider_session_id == "bounded:main:2026-05-02T09:00:00.000Z"
+    assert [message.provider_message_id for message in session.messages] == [
+        f"message-{index}" for index in range(count)
+    ]
+    assert [message.text for message in session.messages] == [f"neutral-{index}" for index in range(count)]
+    artifact.discard()
+
+
+@pytest.mark.parametrize("suffix", ["valid", "invalid_record", "corrupt_json"])
+def test_gemini_checkpoint_preparation_preserves_replacement_patch_and_suffix_refusal(
+    tmp_path: Path, suffix: str
+) -> None:
+    header = {
+        "sessionId": "replacement",
+        "projectHash": "neutral",
+        "kind": "main",
+        "startTime": "2026-05-02T09:00:00.000Z",
+    }
+    before = {"id": "replaced", "type": "user", "timestamp": "2026-05-02T09:00:01.000Z", "content": "old"}
+    after = {"id": "retained", "type": "user", "timestamp": "2026-05-02T09:00:01.000Z", "content": "new"}
+    records = [header, before, {"$set": {"messages": [after], "lastUpdated": "2026-05-02T09:00:02.000Z"}}]
+    source = tmp_path / "checkpoint.jsonl"
+    text = "".join(json.dumps(record) + "\n" for record in records)
+    if suffix == "invalid_record":
+        text += '{"unrecognized":"neutral"}\n'
+    elif suffix == "corrupt_json":
+        text += '{"unfinished":\n'
+    source.write_text(text, encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "unused",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        strict_jsonl_records=True,
+    )
+    if suffix == "valid":
+        assert artifact.error is None, artifact.error
+        [session] = artifact.iter_sessions()
+        assert [message.provider_message_id for message in session.messages] == ["retained"]
+        assert [message.text for message in session.messages] == ["new"]
+        assert session.updated_at == "2026-05-02T09:00:02.000Z"
+    elif suffix == "invalid_record":
+        assert artifact.error is None, artifact.error
+        assert list(artifact.iter_sessions()) == []
+    else:
+        assert artifact.error is not None
+        assert artifact.sessions_path is None
+    artifact.discard()
+
+
+@pytest.mark.parametrize("replace_future", [False, True])
+def test_gemini_checkpoint_preparation_admits_only_final_transcript_wire_evidence(
+    tmp_path: Path, replace_future: bool
+) -> None:
+    header = {
+        "sessionId": "wire-evidence",
+        "projectHash": "neutral",
+        "kind": "main",
+        "startTime": "2026-05-02T09:00:00.000Z",
+    }
+    future = {
+        "id": "future",
+        "type": "future_neutral",
+        "timestamp": "2026-05-02T09:00:01.000Z",
+        "content": "future authored text",
+    }
+    known = {
+        "id": "known",
+        "type": "user",
+        "timestamp": "2026-05-02T09:00:02.000Z",
+        "content": "retained authored text",
+    }
+    records = [header, future, {"$set": {"messages": [known]}}] if replace_future else [header, known, future]
+    source = tmp_path / "checkpoint.jsonl"
+    source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "unused",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        strict_jsonl_records=True,
+    )
+    assert artifact.error is None, artifact.error
+    [actual] = artifact.iter_sessions()
+    [expected] = parse_payload(Provider.GEMINI_CLI, records, "unused", source_path=str(source))
+    assert actual.unit_accounting == expected.unit_accounting
+    assert [event.model_dump() for event in actual.session_events] == [
+        event.model_dump() for event in expected.session_events
+    ]
+    assert [message.provider_message_id for message in actual.messages] == [
+        message.provider_message_id for message in expected.messages
+    ]
+    assert actual.messages[0].text == "retained authored text"
+    assert any(event.event_type == "gemini_cli_unknown_input" for event in actual.session_events) is (
+        not replace_future
+    )
+    artifact.discard()
+
+
+@pytest.mark.parametrize("provider", [Provider.DRIVE, Provider.GEMINI])
+@pytest.mark.parametrize("count", [8, 64])
+def test_bare_drive_jsonl_preparation_reuses_chunk_stream_without_retaining_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider, count: int
+) -> None:
+    import gc
+    import weakref
+    from collections.abc import Iterator
+
+    import polylogue.sources.prepared_jsonl as prepared
+
+    records = [{"id": f"chunk-{index}", "role": "user", "text": f"neutral-{index}"} for index in range(count)]
+    expected = parse_payload(provider, records, "bare", source_path="bare.jsonl")[0]
+    source = tmp_path / "bare.jsonl"
+    source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    del records
+    live = 0
+    peak = 0
+    decoded = 0
+    original_records = _iter_json_stream
+
+    class TrackedRecord(dict[str, JSONValue]):
+        pass
+
+    def retired() -> None:
+        nonlocal live
+        live -= 1
+
+    def observe_records(
+        handle: BinaryIO | IO[bytes], path_name: str, unpack_lists: bool = True, *, fail_on_decode_error: bool = False
+    ) -> Iterator[object]:
+        nonlocal live, peak, decoded
+        for record in original_records(handle, path_name, unpack_lists, fail_on_decode_error=fail_on_decode_error):
+            assert isinstance(record, dict)
+            gc.collect()
+            tracked = TrackedRecord(record)
+            live += 1
+            peak = max(peak, live)
+            decoded += 1
+            weakref.finalize(tracked, retired)
+            yield tracked
+
+    def refuse_collected(*args: object, **kwargs: object) -> object:
+        raise AssertionError("bare chunks fell back to whole-input parse")
+
+    monkeypatch.setattr(prepared, "_iter_json_stream", observe_records)
+    monkeypatch.setattr(prepared, "iter_parsed_payload", refuse_collected)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        "bare.jsonl",
+        provider.value,
+        "bare",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        prepare_sessions=lambda sessions: sessions,
+    )
+    try:
+        assert artifact.error is None, artifact.error
+        [session] = artifact.iter_sessions()
+        assert decoded >= count * 2  # Eligibility and the canonical parser's original-source passes.
+        assert peak <= 4
+        assert [message.provider_message_id for message in session.messages] == [
+            f"chunk-{index}" for index in range(count)
+        ]
+        assert [message.text for message in session.messages] == [f"neutral-{index}" for index in range(count)]
+        assert _stored_messages(session) == _stored_messages(expected)
+        assert list(session.session_events) == list(expected.session_events)
+        assert session.content_hash == session_content_hash(expected)
+    finally:
+        artifact.discard()
+
+
+@pytest.mark.parametrize("future_wire", [False, True])
+def test_bare_drive_jsonl_preparation_preserves_future_wire_admission(tmp_path: Path, future_wire: bool) -> None:
+    records = [{"id": "chunk", "role": "user", "text": "authored neutral text"}]
+    if future_wire:
+        records[0]["type"] = "future_neutral"
+    expected = parse_payload(Provider.DRIVE, records, "bare", source_path="bare.jsonl")[0]
+    source = tmp_path / "bare.jsonl"
+    source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        "bare.jsonl",
+        Provider.DRIVE.value,
+        "bare",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    try:
+        assert artifact.error is None, artifact.error
+        [session] = artifact.iter_sessions()
+        assert [message.text for message in session.messages] == ["authored neutral text"]
+        assert session.unit_accounting == expected.unit_accounting
+        assert list(session.session_events) == list(expected.session_events)
+    finally:
+        artifact.discard()
+
+
+@pytest.mark.parametrize("shape", ["empty", "container", "browser", "mixed"])
+def test_drive_chunk_stream_selection_preserves_existing_lowering_precedence(shape: str) -> None:
+    from polylogue.browser_capture.models import BROWSER_CAPTURE_KIND, BROWSER_CAPTURE_SCHEMA_VERSION
+    from polylogue.sources.dispatch import is_drive_chunk_sequence
+
+    chunk: dict[str, JSONValue] = {"role": "user", "text": "neutral"}
+    browser: dict[str, JSONValue] = {
+        **chunk,
+        "polylogue_capture_kind": BROWSER_CAPTURE_KIND,
+        "schema_version": BROWSER_CAPTURE_SCHEMA_VERSION,
+        "session": {},
+        "provenance": {},
+    }
+    alternatives: dict[str, list[JSONValue]] = {
+        "empty": [],
+        "container": [chunk, {"chunks": []}],
+        "browser": [browser],
+        "mixed": [chunk, {"neutral_metadata": True}],
+    }
+    records = alternatives[shape]
+    assert is_drive_chunk_sequence(iter(records)) is (shape == "mixed")
+
+
+@pytest.mark.parametrize("provider", [Provider.DRIVE, Provider.GEMINI])
+@pytest.mark.parametrize("count", [8, 64])
+def test_bare_drive_json_array_preparation_streams_canonical_chunk_operands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider, count: int
+) -> None:
+    import gc
+    import weakref
+
+    import polylogue.sources.prepared_jsonl as prepared
+
+    records = [{"id": f"chunk-{index}", "role": "user", "text": f"neutral-{index}"} for index in range(count)]
+    records[-1]["type"] = "future_neutral"
+    expected = parse_payload(provider, records, "bare", source_path="bare.json")[0]
+    source = tmp_path / "bare.json"
+    source.write_text(json.dumps(records), encoding="utf-8")
+    del records
+    live = 0
+    peak = 0
+    decoded = 0
+    from polylogue.sources.decoder_json import normalize_ijson_stdlib_numbers
+
+    original_normalize = normalize_ijson_stdlib_numbers
+
+    class TrackedRecord(dict[str, JSONValue]):
+        pass
+
+    def retired() -> None:
+        nonlocal live
+        live -= 1
+
+    def observe_normalized(value: object) -> object:
+        nonlocal live, peak, decoded
+        normalized = original_normalize(value)
+        if not isinstance(normalized, dict) or not str(normalized.get("id", "")).startswith("chunk-"):
+            return normalized
+        gc.collect()
+        tracked = TrackedRecord(normalized)
+        live += 1
+        peak = max(peak, live)
+        decoded += 1
+        weakref.finalize(tracked, retired)
+        return tracked
+
+    def refuse_collected(*args: object, **kwargs: object) -> object:
+        raise AssertionError("root chunks fell back to whole-input parse")
+
+    monkeypatch.setattr(prepared, "normalize_ijson_stdlib_numbers", observe_normalized)
+    monkeypatch.setattr(prepared, "iter_parsed_payload", refuse_collected)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        "bare.json",
+        provider.value,
+        "bare",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        prepare_sessions=lambda sessions: sessions,
+    )
+    try:
+        assert artifact.error is None, artifact.error
+        [session] = artifact.iter_sessions()
+        assert decoded >= count * 2
+        assert peak <= 4
+        assert [message.provider_message_id for message in session.messages] == [
+            f"chunk-{index}" for index in range(count)
+        ]
+        assert [message.text for message in session.messages] == [f"neutral-{index}" for index in range(count)]
+        assert _stored_messages(session) == _stored_messages(expected)
+        assert list(session.session_events) == list(expected.session_events)
+        assert session.unit_accounting == expected.unit_accounting
+        assert session.content_hash == session_content_hash(expected)
+    finally:
+        artifact.discard()
+
+
+@pytest.mark.parametrize("wrapper", [False, True])
+def test_decoded_record_tape_preserves_complete_wrapper_scope_and_replay(wrapper: bool) -> None:
+    """Both decoder framings preserve late records and independently repeat ordinals."""
+    from contextlib import closing
+
+    from polylogue.sources.decoder_json import DecodedRecordSequence
+
+    expected = [{"identity": str(index), "text": "neutral", "empty": []} for index in range(1201)]
+    document = {"ignored": [0, False], "sessions": expected} if wrapper else expected
+    with closing(
+        DecodedRecordSequence(_iter_json_stream(BytesIO(json.dumps(document).encode()), "neutral-wrapper.json"))
+    ) as records:
+        assert len(records) == 1201
+        assert records[0] == expected[0]
+        assert records[1200] == expected[1200]
+        assert records[-1] == expected[-1]
+        assert list(records) == expected
+        assert list(records) == expected
+    with pytest.raises(RuntimeError):
+        len(records)
+
+
+def test_nonseekable_decoder_keeps_borrowed_stream_open_and_preserves_late_records() -> None:
+    class Nonseekable(BytesIO):
+        def seekable(self) -> bool:
+            return False
+
+        def seek(self, *_args: object, **_kwargs: object) -> int:
+            raise OSError("synthetic nonseekable source")
+
+    expected = [{"ordinal": index, "text": "neutral"} for index in range(1201)]
+    borrowed = Nonseekable(json.dumps(expected).encode())
+    assert list(_iter_json_stream(borrowed, "neutral-array.json")) == expected
+    assert not borrowed.closed
+    borrowed.close()
+
+
+def test_record_recovery_preserves_stdlib_surrogates_nonfinite_and_last_wrapper() -> None:
+    import math
+    from contextlib import closing
+
+    from polylogue.sources.decoder_json import DecodedRecordSequence
+
+    document = b'{"sessions":[{"old":true}],"ignored":[1,2],"sessions":[{"id":"a"},{"id":"b","text":"\xed\xa0\x80","number":NaN}]}'
+    with closing(DecodedRecordSequence(_iter_json_stream(BytesIO(document), "neutral-wrapper.json"))) as records:
+        assert len(records) == 2
+        assert records[0] == {"id": "a"}
+        last = records[1]
+        assert isinstance(last, dict)
+        assert last["id"] == "b" and last["text"] == "\ud800"
+        assert isinstance(last["number"], float) and math.isnan(last["number"])
+
+
+def test_atif_cohort_finalization_preserves_parent_first_and_all_child_headers(tmp_path: Path) -> None:
+    document = {
+        "schema_version": "ATIF-v1.7",
+        "session_id": "neutral-parent",
+        "steps": [{"source": "agent", "message": "Neutral parent observation"}],
+        "subagent_trajectories": [
+            {
+                "session_id": f"neutral-child-{ordinal:04}",
+                "steps": [{"source": "agent", "message": f"Neutral child observation {ordinal}"}],
+            }
+            for ordinal in range(1001)
+        ],
+    }
+    source = tmp_path / "hermes" / "trajectory.json"
+    source.parent.mkdir()
+    source.write_text(json.dumps(document), encoding="utf-8")
+    observed: list[str] = []
+
+    def finalize(sessions: PreparedSessionSequence) -> Iterable[ParsedSession]:
+        observed.extend(sessions.iter_provider_session_ids())
+        assert len(sessions) == 1002
+        return sessions
+
+    import hashlib
+
+    original_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        prepare_sessions=finalize,
+    )
+    try:
+        assert artifact.error is None
+        assert artifact.blob_hash == original_hash
+        assert len(observed) == 1002
+        assert "neutral-parent" in observed[0]
+        assert "neutral-child-0000" in observed[1]
+        assert "neutral-child-1000" in observed[-1]
+        assert [session.provider_session_id for session in artifact.iter_sessions()] == observed
+        assert artifact.sessions_path is not None
+        with sqlite3.connect(artifact.sessions_path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM prepared_session").fetchone()[0] == 1002
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM prepared_event WHERE event_type='hermes_subagent_span'"
+                ).fetchone()[0]
+                == 1001
+            )
+        assert hashlib.sha256(source.read_bytes()).hexdigest() == original_hash
+    finally:
+        artifact.discard()
+
+
+def test_atof_prepared_cohort_waits_for_late_conflicting_delegation(tmp_path: Path) -> None:
+    records: list[dict[str, object]] = [
+        {
+            "atof_version": "0.1",
+            "kind": "scope",
+            "category": "llm",
+            "scope_category": "start",
+            "uuid": f"neutral-{ordinal}",
+            "timestamp": "2026-07-18T09:00:08Z",
+            "name": "hermes.llm.request",
+            "metadata": {"session_id": "parent-a"},
+            "data": {},
+        }
+        for ordinal in range(1201)
+    ]
+    for owner in ("parent-a", "parent-b"):
+        records.append(
+            {
+                "atof_version": "0.1",
+                "kind": "mark",
+                "uuid": f"delegation-{owner}",
+                "timestamp": "2026-07-18T09:00:08Z",
+                "name": "hermes.subagent.start",
+                "metadata": {"session_id": owner},
+                "data": {"child_session_id": "neutral-child"},
+            }
+        )
+    source = tmp_path / "hermes" / "events.jsonl"
+    source.parent.mkdir()
+    source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=True,
+        shard_directory=str(tmp_path / "prepared"),
+        prepare_sessions=lambda sessions: sessions,
+    )
+    try:
+        assert artifact.error is None
+        sessions = artifact.session_sequence()
+        assert len(sessions) == 2
+        observed = [session.provider_session_id for session in sessions]
+        assert "parent-a" in observed[0] and "parent-b" in observed[1]
+        assert not any("neutral-child" in identity for identity in observed)
+        for session in sessions:
+            claims = [event for event in session.session_events if event.event_type == "hermes_subagent_span"]
+            assert len(claims) == 1
+            assert claims[0].payload["delegation_edge_asserted"] is False
+        assert artifact.sessions_path is not None
+        with sqlite3.connect(artifact.sessions_path) as connection:
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM prepared_event WHERE event_type='hermes_llm_request_span'"
+                ).fetchone()[0]
+                == 1201
+            )
+    finally:
+        artifact.discard()
+
+
+def test_decoded_record_tape_closes_input_iterator_after_retention_failure() -> None:
+    from collections.abc import Iterator
+
+    from polylogue.sources.decoder_json import DecodedRecordSequence
+
+    closed = False
+    failure = OSError("synthetic original record read failure")
+
+    def records() -> Iterator[JSONValue]:
+        nonlocal closed
+        try:
+            yield {"neutral": "retained first record"}
+            raise failure
+        finally:
+            closed = True
+
+    with pytest.raises(OSError) as observed:
+        DecodedRecordSequence(records())
+    assert observed.value is failure
+    assert closed
+
+
+def test_decoded_record_tape_preserves_input_and_close_failures() -> None:
+    from builtins import BaseExceptionGroup
+
+    from polylogue.sources.decoder_json import DecodedRecordSequence
+
+    original = OSError("synthetic original record read failure")
+    settlement = OSError("synthetic original iterator close failure")
+
+    class Records:
+        def __iter__(self) -> Records:
+            return self
+
+        def __next__(self) -> object:
+            raise original
+
+        def close(self) -> None:
+            raise settlement
+
+    with pytest.raises(BaseExceptionGroup) as observed:
+        DecodedRecordSequence(Records())  # type: ignore[arg-type]
+    assert observed.value.exceptions == (original, settlement)
+
+
+@pytest.mark.parametrize("construction_failure", [False, True])
+def test_cohort_finalizer_retains_original_failure_and_settles_output_close(
+    tmp_path: Path, construction_failure: bool
+) -> None:
+    from builtins import BaseExceptionGroup
+    from collections.abc import Iterator
+
+    original = OSError("synthetic original cohort interpretation failure")
+    settlement = OSError("synthetic original finalized iterator close failure")
+    close_count = 0
+    reached = False
+
+    class Output:
+        def __iter__(self) -> Iterator[ParsedSession]:
+            if construction_failure:
+                raise original
+            return self
+
+        def __next__(self) -> ParsedSession:
+            raise original
+
+        def close(self) -> None:
+            nonlocal close_count
+            close_count += 1
+            raise settlement
+
+    def finalize(sessions: PreparedSessionSequence) -> Iterable[ParsedSession]:
+        nonlocal reached
+        assert len(sessions) == 1
+        assert "neutral-parent" in next(sessions.iter_provider_session_ids())
+        reached = True
+        return Output()
+
+    source = tmp_path / "hermes" / "trajectory.json"
+    source.parent.mkdir()
+    source.write_text(
+        json.dumps(
+            {
+                "schema_version": "ATIF-v1.7",
+                "session_id": "neutral-parent",
+                "steps": [{"source": "agent", "message": "Neutral observation"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_bytes = source.read_bytes()
+    directory = tmp_path / "prepared"
+    with pytest.raises(BaseExceptionGroup) as observed:
+        prepare_jsonl_blob(
+            str(source),
+            str(source),
+            Provider.HERMES.value,
+            "fallback",
+            is_stream=False,
+            shard_directory=str(directory),
+            prepare_sessions=finalize,
+        )
+    assert observed.value.exceptions == (original, settlement)
+    assert reached and close_count == 1
+    assert source.read_bytes() == original_bytes
+    assert not list(directory.glob("*.db"))
+
+
+@pytest.mark.parametrize("wire", ["document", "array", "jsonl"])
+@pytest.mark.parametrize(
+    ("provider", "record", "kind"),
+    [
+        (
+            Provider.HERMES,
+            {
+                "session_id": "copied-neutral",
+                "transcript": "neutral.json",
+                "content": "Copied neutral prompt",
+                "messages": [{"role": "user", "content": "Neutral prompt"}],
+            },
+            "extracted_transcript_corpus",
+        ),
+        (
+            Provider.GROK,
+            {
+                "conversations": [
+                    {"conversation": {"title": "Neutral"}, "responses": [{"sender": "human", "message": "Hi"}]}
+                ],
+                "event_type": "SessionStart",
+                "session_id": "neutral-hook",
+                "timestamp": "2025-01-02T03:04:05Z",
+                "provider": "codex",
+            },
+            "hook_event",
+        ),
+    ],
+)
+def test_retained_candidacy_preserves_content_refusal_across_wire_shapes(
+    provider: Provider, record: dict[str, JSONValue], kind: str, wire: str
+) -> None:
+    from io import BytesIO
+
+    from polylogue.archive.artifact_taxonomy.runtime import classify_artifact_records, classify_artifact_stream
+
+    encoded = json.dumps([record] if wire == "array" else record).encode()
+    if wire == "jsonl":
+        encoded += b"\n"
+    observed = classify_artifact_stream(
+        BytesIO(encoded),
+        provider=provider,
+        source_path="neutral.jsonl" if wire == "jsonl" else "neutral.json",
+        wire_format="jsonl" if wire == "jsonl" else "json",
+    )
+    canonical = classify_artifact_records([record], provider=provider, source_path="neutral.json")
+    assert observed.proved_non_session is True
+    assert observed.classification.parse_as_session is False
+    assert observed.classification.kind.value == canonical.classification.kind.value == kind
+
+
+@pytest.mark.parametrize("provider", [Provider.DRIVE, Provider.GEMINI])
+@pytest.mark.parametrize("wire", ["json", "jsonl"])
+def test_bare_drive_chunks_account_for_skipped_and_future_records(
+    tmp_path: Path, provider: Provider, wire: str
+) -> None:
+    from polylogue.sources.parsers.base_models import AdmissionDisposition, AdmissionUnit
+
+    records: list[JSONValue] = [
+        {"id": "known", "role": "user", "text": "Neutral authored material"},
+        {"text": "Missing required role"},
+        17,
+        {"type": "future_neutral", "text": "Future missing role"},
+    ]
+    source = tmp_path / f"chunks.{wire}"
+    source.write_text(
+        json.dumps(records) if wire == "json" else "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    [expected] = parse_payload(provider, records, "chunks", source_path=str(source))
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        provider.value,
+        "chunks",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    try:
+        assert artifact.error is None, artifact.error
+        [actual] = artifact.iter_sessions()
+        assert [message.text for message in actual.messages] == ["Neutral authored material"]
+        assert actual.unit_accounting == expected.unit_accounting
+        assert actual.unit_accounting is not None
+        actual.unit_accounting.assert_conserved()
+        assert actual.unit_accounting.expected[AdmissionUnit.OUTER_RECORD] == 4
+        assert [outcome.disposition for outcome in actual.unit_accounting.iter_outcomes()] == [
+            AdmissionDisposition.MATERIALIZED,
+            AdmissionDisposition.TYPED_REFUSAL,
+            AdmissionDisposition.TYPED_REFUSAL,
+            AdmissionDisposition.TYPED_UNKNOWN,
+        ]
+        assert list(actual.session_events) == list(expected.session_events)
+    finally:
+        artifact.discard()

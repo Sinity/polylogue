@@ -7,7 +7,7 @@ Subcommands::
     run --corpus DIR --work DIR [--profile]         one measured daemon build
         [--max-rss-mib N] [--max-promotion-s N]     asserted budgets; exit 1 unless qualified
     report RECEIPT [--refresh]                      render one receipt
-    components parse|blob ...               time one production stage
+    components blob ...                     time one production stage
     compare BEFORE AFTER                            deltas and output equivalence
     profile SAMPLES [--thread PREFIX]               stack-sample tables
 
@@ -63,6 +63,18 @@ def _parser() -> argparse.ArgumentParser:
         default=[],
         metavar="ORIGIN=PATH",
         help="stage an export file under exports/ORIGIN/ (chatgpt, claude-ai)",
+    )
+    explicit.add_argument(
+        "--hooks",
+        type=Path,
+        default=None,
+        help="copy a complete legacy hook spool tree into the sealed corpus and build archive",
+    )
+    explicit.add_argument(
+        "--hooks-fraction",
+        type=float,
+        default=1.0,
+        help="deterministic fraction of hook files to stage (default: 1.0)",
     )
     explicit.add_argument("files", nargs="*", type=Path)
 
@@ -166,9 +178,16 @@ def main(argv: list[str] | None = None) -> int:
             for item in args.export:
                 origin, _, path = item.partition("=")
                 exports.append((origin, Path(path)))
-            if not args.files and not exports:
-                raise SystemExit("name at least one transcript or --export")
-            manifest = corpus_from_files(args.out, args.files, home=args.home, exports=exports)
+            if not args.files and not exports and args.hooks is None:
+                raise SystemExit("name at least one transcript, --export, or --hooks")
+            manifest = corpus_from_files(
+                args.out,
+                args.files,
+                home=args.home,
+                exports=exports,
+                hooks=args.hooks,
+                hooks_fraction=args.hooks_fraction,
+            )
         print(json.dumps({k: v for k, v in manifest.items() if k != "files"}, indent=1))
         return 0
     if args.command == "run":

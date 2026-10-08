@@ -47,9 +47,12 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_session_tag,
     read_assertion_envelope,
 )
+from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+from polylogue.storage.sqlite.write_lease import authorized_session_removal, write_lease
 from polylogue.surfaces.payloads import ActionQueryRowPayload
 from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import write_index_session
+from tests.infra.prepared_replay import write_fixture_precedence_raw_session
 from tests.infra.session_profiles import write_session_profile
 from tests.infra.workload_artifacts import build_seeded_archive
 
@@ -85,7 +88,8 @@ def test_replay_result_reports_typed_unresolved_attachment_owner(tmp_path: Path)
     )
 
     with ArchiveStore(tmp_path / "archive") as archive:
-        result = archive.write_raw_and_parsed_result(
+        result = write_fixture_precedence_raw_session(
+            archive,
             session,
             payload=b"replay-owner-receipt",
             source_path="/tmp/replay-owner-receipt.json",
@@ -118,13 +122,15 @@ def test_hash_unchanged_replay_reports_the_recorded_owner_gaps(tmp_path: Path) -
     )
 
     with ArchiveStore(tmp_path / "archive") as archive:
-        first = archive.write_raw_and_parsed_result(
+        first = write_fixture_precedence_raw_session(
+            archive,
             session,
             payload=b"replay-unchanged-owner",
             source_path="/tmp/replay-unchanged-owner.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        second = archive.write_raw_and_parsed_result(
+        second = write_fixture_precedence_raw_session(
+            archive,
             session,
             payload=b"replay-unchanged-owner",
             source_path="/tmp/replay-unchanged-owner-again.json",
@@ -181,7 +187,8 @@ def test_session_reads_resolve_attachment_bytes_in_the_opened_archive(
         attachments=[_attachment("held.txt", held), _attachment("borrowed.txt", borrowed)],
     )
     with ArchiveStore(selected) as archive:
-        session_id = archive.write_raw_and_parsed_result(
+        session_id = write_fixture_precedence_raw_session(
+            archive,
             session,
             payload=b"opened-archive-attachments",
             source_path="/tmp/opened-archive-attachments.json",
@@ -241,6 +248,66 @@ def test_connection_blob_store_unwinds_promoted_index_root(tmp_path: Path) -> No
     with closing(sqlite3.connect(generation / "index.db")) as conn:
         assert blob_store_for_connection(conn).read_all(digest) == payload
     assert not (generation / "blob").exists()
+
+
+@pytest.mark.parametrize("existing_directory", [False, True])
+def test_read_only_constructor_refuses_missing_archive_without_creating_files(
+    tmp_path: Path, existing_directory: bool
+) -> None:
+    """Default initialization must not turn a read into first-run bootstrap."""
+    from polylogue.core.errors import ArchiveTierUnavailableError
+
+    root = tmp_path / "read-only-missing"
+    if existing_directory:
+        root.mkdir()
+    with pytest.raises(ArchiveTierUnavailableError) as refused:
+        ArchiveStore(root, read_only=True)
+    assert refused.value.tier == "index"
+    assert root.exists() is existing_directory
+    if existing_directory:
+        assert list(root.iterdir()) == []
+
+
+def test_read_only_constructor_refuses_explicit_initialization_before_creating_root(tmp_path: Path) -> None:
+    root = tmp_path / "contradictory-read"
+    with pytest.raises(ReadOnlyArchiveError):
+        ArchiveStore(root, read_only=True, initialize=True)
+    assert not root.exists()
+
+
+def test_read_only_constructor_opens_existing_archive_without_changing_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "existing-read"
+    with ArchiveStore(root):
+        pass
+    before = {
+        str(path.relative_to(root)): sha256(path.read_bytes()).hexdigest() for path in root.rglob("*") if path.is_file()
+    }
+
+    def refuse_bootstrap(*args: object, **kwargs: object) -> None:
+        pytest.fail("read-only constructor invoked archive bootstrap")
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.initialize_active_archive_root", refuse_bootstrap
+    )
+    with ArchiveStore(root, read_only=True) as reader:
+        assert reader._conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 0
+        with pytest.raises(sqlite3.DatabaseError) as refused:
+            reader._conn.execute("CREATE TABLE readonly_must_refuse(value INTEGER)")
+        assert refused.value.sqlite_errorcode == sqlite3.SQLITE_AUTH
+    after = {
+        str(path.relative_to(root)): sha256(path.read_bytes()).hexdigest() for path in root.rglob("*") if path.is_file()
+    }
+    assert {name: after[name] for name in before} == before
+    # SQLite's ordinary Index/User WAL read coordination may create sidecars;
+    # they contain no new committed archive state. Never use immutable=1 to
+    # suppress them, because readers must observe the active writer's WAL.
+    added = set(after) - set(before)
+    assert added <= {"index.db-shm", "index.db-wal", "user.db-shm", "user.db-wal"}
+    for filename in added:
+        if filename.endswith("-wal"):
+            assert (root / filename).stat().st_size == 0
 
 
 def test_read_open_rejects_stale_index_with_generation_and_lifecycle_action(tmp_path: Path) -> None:
@@ -461,7 +528,7 @@ def test_pinned_read_only_store_blocks_all_archive_tier_mutations(tmp_path: Path
         with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
             archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:codex-pinned-read-only")
         with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
-            archive.classify_raw_revision_cohort_for_live_watch("codex-session:codex-pinned-read-only")
+            archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:codex-pinned-read-only")
 
     assert durable_counts() == before
 
@@ -1114,12 +1181,14 @@ def test_archive_facade_raw_admission_governs_parsed_write(tmp_path: Path) -> No
     index_path = root / "index.db"
 
     with ArchiveStore(root) as facade:
-        raw_id, session_id = facade.write_raw_and_parsed(
+        written = write_fixture_precedence_raw_session(
+            facade,
             session,
             payload=b'{"provider":"codex","id":"codex-archive-raw-1"}',
             source_path="/tmp/codex-session.jsonl",
             acquired_at_ms=1_767_000_000_000,
         )
+        raw_id, session_id = written.raw_id, written.session_id
 
     conn = sqlite3.connect(index_path)
     conn.row_factory = sqlite3.Row
@@ -1165,13 +1234,15 @@ def test_archive_tiers_archive_facade_skips_lower_precedence_dom_fallback(tmp_pa
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
+        first = write_fixture_precedence_raw_session(
+            facade,
             native,
             payload=b'{"native": true}',
             source_path="/tmp/native.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        second = facade.write_raw_and_parsed_result(
+        second = write_fixture_precedence_raw_session(
+            facade,
             dom_fallback,
             payload=b'{"dom": true}',
             source_path="/tmp/dom.json",
@@ -1224,13 +1295,15 @@ def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
+        first = write_fixture_precedence_raw_session(
+            facade,
             dom_fallback,
             payload=b'{"dom": true}',
             source_path="/tmp/dom.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        second = facade.write_raw_and_parsed_result(
+        second = write_fixture_precedence_raw_session(
+            facade,
             native,
             payload=b'{"native": true}',
             source_path="/tmp/native.json",
@@ -1337,13 +1410,15 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
 
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        initial = facade.write_raw_and_parsed_result(
+        initial = write_fixture_precedence_raw_session(
+            facade,
             session(initial_kind, initial_count, updated_at="2026-04-03T00:00:00Z"),
             payload=f"{initial_kind}-initial".encode(),
             source_path=f"/tmp/{initial_kind}-initial.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        incoming = facade.write_raw_and_parsed_result(
+        incoming = write_fixture_precedence_raw_session(
+            facade,
             session(
                 incoming_kind,
                 incoming_count,
@@ -1429,13 +1504,15 @@ def test_archive_tiers_archive_facade_export_vs_native_precedence_is_order_indep
             else (native_session(native_id), export_session(native_id))
         )
         with ArchiveStore(root) as facade:
-            first_result = facade.write_raw_and_parsed_result(
+            first_result = write_fixture_precedence_raw_session(
+                facade,
                 first,
                 payload=b"first",
                 source_path="/tmp/first.json",
                 acquired_at_ms=1_767_000_000_000,
             )
-            facade.write_raw_and_parsed_result(
+            write_fixture_precedence_raw_session(
+                facade,
                 second,
                 payload=b"second",
                 source_path="/tmp/second.json",
@@ -1539,7 +1616,8 @@ def test_archive_tiers_archive_facade_tracks_three_browser_arrivals(
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
         outcomes = [
-            facade.write_raw_and_parsed_result(
+            write_fixture_precedence_raw_session(
+                facade,
                 session(kind, count, title, updated_at),
                 payload=f"arrival-{index}-{title}".encode(),
                 source_path=f"/tmp/arrival-{index}.json",
@@ -1593,13 +1671,15 @@ def test_archive_tiers_archive_facade_hash_skips_identical_content_and_refreshes
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
+        first = write_fixture_precedence_raw_session(
+            facade,
             session,
             payload=b'[{"capture":"first"}]',
             source_path="/tmp/first.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        second = facade.write_raw_and_parsed_result(
+        second = write_fixture_precedence_raw_session(
+            facade,
             session,
             payload=b'[{"capture":"second"}]',
             source_path="/tmp/second.json",
@@ -1661,13 +1741,15 @@ def test_archive_tiers_archive_facade_reingests_duplicate_idless_owner_reassignm
 
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
+        first = write_fixture_precedence_raw_session(
+            facade,
             session(0),
             payload=b'{"owner":0}',
             source_path="/tmp/duplicate-owner-first.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        reassigned = facade.write_raw_and_parsed_result(
+        reassigned = write_fixture_precedence_raw_session(
+            facade,
             session(1),
             payload=b'{"owner":1}',
             source_path="/tmp/duplicate-owner-second.json",
@@ -1708,13 +1790,15 @@ def test_archive_tiers_archive_facade_replaces_same_size_changed_attachment_byte
 
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
+        first = write_fixture_precedence_raw_session(
+            facade,
             session(b"one"),
             payload=b"first raw",
             source_path="/tmp/first.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        second = facade.write_raw_and_parsed_result(
+        second = write_fixture_precedence_raw_session(
+            facade,
             session(b"two"),
             payload=b"second raw",
             source_path="/tmp/second.json",
@@ -1759,7 +1843,8 @@ def test_archive_tiers_archive_facade_acquires_empty_inline_attachment(tmp_path:
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as archive:
-        archive.write_raw_and_parsed_result(
+        write_fixture_precedence_raw_session(
+            archive,
             session,
             payload=b"raw",
             source_path="/tmp/empty.json",
@@ -1794,7 +1879,8 @@ def test_archive_tiers_archive_facade_repairs_missing_fts_on_identical_repeat(tm
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
+        first = write_fixture_precedence_raw_session(
+            facade,
             session,
             payload=b"stable raw",
             source_path="/tmp/stable.json",
@@ -1807,7 +1893,8 @@ def test_archive_tiers_archive_facade_repairs_missing_fts_on_identical_repeat(tm
         assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
 
     with ArchiveStore(root) as facade:
-        repeated = facade.write_raw_and_parsed_result(
+        repeated = write_fixture_precedence_raw_session(
+            facade,
             session,
             payload=b"stable raw",
             source_path="/tmp/stable.json",
@@ -1896,7 +1983,19 @@ def test_archive_tiers_archive_facade_deletes_archive_sessions_but_keeps_user_ta
     with ArchiveStore(root) as facade:
         session_id = write_index_session(facade, session)
         facade.add_user_tags((session_id,), ("keep-user-state",))
-        deleted = facade.delete_sessions((session_id,))
+        # Unauthorized disappearance of a tagged session stays refused: only
+        # an authorized removal plan may leave its durable anchors dangling.
+        with (
+            write_lease("test.delete.unauthorized", archive_root=root),
+            pytest.raises(ReferenceSealError),
+        ):
+            facade.delete_sessions((session_id,))
+        assert facade.count_sessions() == 1
+        with (
+            write_lease("test.delete.authorized", archive_root=root),
+            authorized_session_removal(archive_root=root, plan_hash="test-delete-plan", session_ids=(session_id,)),
+        ):
+            deleted = facade.delete_sessions((session_id,))
         remaining = facade.count_sessions()
 
     user_conn = sqlite3.connect(root / "user.db")
@@ -2752,21 +2851,15 @@ def test_session_profile_debt_measures_derivation_lag_only(tmp_path: Path) -> No
 def test_orphan_session_profile_is_unreachable_through_production_writes(tmp_path: Path) -> None:
     """The invariant that licenses deleting the orphan half of the debt scan.
 
-    Two independent guards, both production routes:
-
-    * every write profile that reaches ``index.db`` sets ``foreign_keys = ON``,
-      so an orphan insert is refused and a session delete cascades;
-    * the one route that deliberately suspends enforcement -- the bulk ingest
-      window in ``pipeline/services/ingest_batch/_core.py`` -- derives its
-      pre-commit ``_foreign_key_violations_for_sessions`` probe plan from the
-      live schema, and ``session_profiles`` is in it, scoped by session.
+    Every write profile that reaches ``index.db`` sets ``foreign_keys = ON``,
+    so an orphan insert is refused and a session delete cascades. No ingest
+    route suspends enforcement.
 
     Anti-vacuity: drop ``ON DELETE CASCADE``/``REFERENCES sessions`` from
-    ``SESSION_PROFILES_SPEC`` and the insert/cascade assertions go red and the
-    probe plan loses its entry; set ``foreign_keys=False`` on
-    ``WRITE_CONNECTION_PROFILE`` and the refusal assertion goes red.
+    ``SESSION_PROFILES_SPEC`` and the insert/cascade assertions go red; set
+    ``foreign_keys=False`` on ``WRITE_CONNECTION_PROFILE`` and the refusal
+    assertion goes red.
     """
-    from polylogue.pipeline.services.ingest_batch._core import _foreign_key_check_plan
 
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
@@ -2782,8 +2875,3 @@ def test_orphan_session_profile_is_unreachable_through_production_writes(tmp_pat
         facade._conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         facade._conn.commit()
         assert facade._conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 0
-
-        scoped, unscoped = _foreign_key_check_plan(facade._conn)
-    probed = {(check.table, check.parent, check.scope_column) for check in scoped if check.table == "session_profiles"}
-    assert probed == {("session_profiles", "sessions", "session_id")}
-    assert "session_profiles" not in unscoped

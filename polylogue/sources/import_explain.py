@@ -10,18 +10,22 @@ from collections.abc import Callable, Iterable
 from contextlib import ExitStack
 from io import BytesIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import cast
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact, classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
+from polylogue.core.evidence import Measured, Unavailable
 from polylogue.core.json import JSONValue
+from polylogue.core.provider_identity import captured_hermes_profile_key
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.core.sources import origin_from_provider
+from polylogue.sources.acquisition_boundary import open_bound_container
 from polylogue.sources.decoder_zip import (
-    MAX_UNCOMPRESSED_SIZE,
-    ZipBombError,
     ZipEntryValidator,
-    open_bounded_zip_entry,
+    open_zip_entry,
+    prepare_zip_entry,
     zip_entry_session_artifact,
 )
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
@@ -33,13 +37,22 @@ from polylogue.sources.dispatch import (
     parse_payload,
     parse_stream_payload,
 )
-from polylogue.sources.parsers import antigravity, hermes_identity, hermes_spans, hermes_state, hermes_verification
+from polylogue.sources.parsers import hermes_spans, hermes_state
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.source_acquisition_components import sniff_zip_provider
+from polylogue.sources.source_acquisition_components import (
+    captured_zip_member_coordinate,
+    sniff_zip_provider,
+    zip_acquisition_fingerprint,
+    zip_member_admission,
+)
+from polylogue.sources.source_staging import bind_source_input
 from polylogue.sources.source_walk import _resolve_source_paths
+from polylogue.sources.sqlite_inspection import SQLiteInspection, inspect_sqlite_source
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.source_write import read_capture_mode_resolution
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import read_frame
+from polylogue.storage.tier_access import capture_sqlite_read
 from polylogue.surfaces.payloads import (
     ImportDetectorEvidencePayload,
     ImportExplainEntryPayload,
@@ -439,14 +452,26 @@ def _explain_file(path: Path, *, provider_hint: Provider) -> ImportExplainEntryP
     # pre-JSON-decode consumers (e.g. schema sampling) from raw SQLite bytes,
     # not to gate the SQLite-specific parse routes, which have their own
     # structural admission check (looks_like_*_path).
-    if antigravity.looks_like_trajectory_db_path(path):
-        return _explain_antigravity_trajectory(path, provider_hint=provider_hint)
-
-    if hermes_state.looks_like_state_db_path(path):
-        return _explain_hermes_state_db(path, provider_hint=provider_hint)
-
-    if hermes_verification.looks_like_verification_evidence_db_path(path):
-        return _explain_hermes_verification_evidence_db(path, provider_hint=provider_hint)
+    try:
+        evidence = capture_sqlite_read(lambda: inspect_sqlite_source(path))
+    except (OSError, ValueError) as exc:
+        return _skipped_entry(
+            path,
+            provider_hint=provider_hint,
+            artifact=None,
+            reason=f"SQLite inspection failure: {type(exc).__name__}: {exc}",
+        )
+    if not isinstance(evidence, Measured):
+        detail = evidence.detail if isinstance(evidence, Unavailable) else None
+        return _skipped_entry(
+            path,
+            provider_hint=provider_hint,
+            artifact=None,
+            reason=f"SQLite inspection failure: {detail or 'sqlite_read_failed'}",
+        )
+    inspection = evidence.value
+    if inspection.domain is not None:
+        return _explain_sqlite_inspection(path, inspection, provider_hint=provider_hint)
 
     path_classification = classify_artifact_path(path, provider=provider_hint)
     if path_classification is not None and not path_classification.parse_as_session:
@@ -479,130 +504,60 @@ def _explain_file(path: Path, *, provider_hint: Provider) -> ImportExplainEntryP
     )
 
 
-def _explain_antigravity_trajectory(path: Path, *, provider_hint: Provider) -> ImportExplainEntryPayload:
-    """Inspect the Antigravity trajectory parser without staging or writing."""
-    try:
-        sessions = list(antigravity.parse_trajectory_db(path, fallback_id=path.stem))
-    except Exception as exc:
-        # SQLite-specific degradation is classified by the parser/storage
-        # adapter; this surface only turns a failed inspection into explain
-        # evidence and must not grow another degradation site.
-        return _skipped_entry(
-            path,
-            provider_hint=provider_hint,
-            artifact=None,
-            reason=f"Antigravity trajectory parser failure: {type(exc).__name__}: {exc}",
-            detected_provider=Provider.ANTIGRAVITY,
-            detector_evidence=(
-                _evidence("antigravity_trajectory.signature", matched=True, reason="trajectory_meta and steps tables"),
-            ),
-        )
-    caveats = [
-        "dry-run inspected the SQLite trajectory read-only; import snapshots a consistent logical export before parsing."
-    ]
-    if not sessions or not any(session.messages for session in sessions):
-        caveats.append("trajectory contains no materialized messages; empty evidence remains attributable.")
-    if any(session.ingest_flags for session in sessions):
-        caveats.append("trajectory contains typed unsupported or degraded steps; coverage is not complete.")
+def _explain_sqlite_inspection(
+    path: Path, inspection: SQLiteInspection, *, provider_hint: Provider
+) -> ImportExplainEntryPayload:
+    """Adapt domain evidence proved on one bound connection to the public payload."""
+    domain = inspection.domain
+    assert domain is not None
+    fidelity = inspection.fidelity
+    produced = ImportProducedRowsPayload(**inspection.produced)
+    if domain == "antigravity_trajectory_db":
+        provider = Provider.ANTIGRAVITY
+        artifact_kind = "sqlite_trajectory_database"
+        signature = "antigravity_trajectory.signature"
+        reason = "trajectory_meta and steps tables"
+        caveats = [
+            "dry-run inspected the SQLite trajectory read-only; import snapshots a consistent logical export before parsing."
+        ]
+        if not produced.messages:
+            caveats.append("trajectory contains no materialized messages; empty evidence remains attributable.")
+        if inspection.degraded:
+            caveats.append("trajectory contains typed unsupported or degraded steps; coverage is not complete.")
+        parser_version = None
+    else:
+        provider = Provider.HERMES
+        assert fidelity is not None
+        if domain == "hermes_state_db":
+            artifact_kind = "sqlite_state_database"
+            signature = "hermes_state_db.signature"
+            reason = "required Hermes tables and signature columns"
+            version_prefix = "state-db"
+        else:
+            artifact_kind = "sqlite_verification_evidence_database"
+            signature = "hermes_verification_evidence_db.signature"
+            reason = "required verification_events/verification_state tables and columns"
+            version_prefix = "verification-evidence-db"
+        parser_version = None if fidelity.schema_version is None else f"{version_prefix}-v{fidelity.schema_version}"
+        caveats = [
+            "dry-run inspected the live SQLite database read-only; import snapshots bytes before parsing.",
+            *fidelity.caveats,
+        ]
     return ImportExplainEntryPayload(
         source_path=str(path),
-        artifact_kind="sqlite_trajectory_database",
+        artifact_kind=artifact_kind,
         provider_hint=provider_hint.value,
-        detected_origin=_origin_value(Provider.ANTIGRAVITY),
-        detected_provider=Provider.ANTIGRAVITY.value,
-        detector="antigravity_trajectory_db",
-        detector_evidence=(
-            _evidence("antigravity_trajectory.signature", matched=True, reason="trajectory_meta and steps tables"),
-        ),
-        parser="antigravity_trajectory_db",
+        detected_origin=_origin_value(provider),
+        detected_provider=provider.value,
+        detector=domain,
+        detector_evidence=(_evidence(signature, matched=True, reason=reason),),
+        parser=domain,
+        parser_version=parser_version,
         parser_mode="logical_export",
-        produced=_produced_rows(sessions),
+        produced=produced,
         caveats=tuple(caveats),
         raw_evidence_refs=(),
-    )
-
-
-def _explain_hermes_state_db(path: Path, *, provider_hint: Provider) -> ImportExplainEntryPayload:
-    """Inspect the real Hermes SQLite parser path without writing a raw blob."""
-
-    try:
-        sessions = hermes_state.parse_state_db(
-            path, fallback_id=path.stem, profile_root=hermes_identity.profile_root_for_artifact(path)
-        )
-    except (OSError, sqlite3.Error, ValueError) as exc:
-        return _skipped_entry(
-            path,
-            provider_hint=provider_hint,
-            artifact=None,
-            reason=f"Hermes state.db parser failure: {type(exc).__name__}: {exc}",
-            detected_provider=Provider.HERMES,
-        )
-    fidelity = hermes_state.import_fidelity_declaration(sessions, acquisition_method="logical_export")
-    return ImportExplainEntryPayload(
-        source_path=str(path),
-        artifact_kind="sqlite_state_database",
-        provider_hint=provider_hint.value,
-        detected_origin=_origin_value(Provider.HERMES),
-        detected_provider=Provider.HERMES.value,
-        detector="hermes_state_db",
-        detector_evidence=(
-            _evidence("hermes_state_db.signature", matched=True, reason="required Hermes tables and signature columns"),
-        ),
-        parser="hermes_state_db",
-        parser_version=None if fidelity.schema_version is None else f"state-db-v{fidelity.schema_version}",
-        parser_mode="logical_export",
-        produced=_produced_rows(sessions),
-        caveats=(
-            "dry-run inspected the live SQLite database read-only; import snapshots bytes before parsing.",
-            *fidelity.caveats,
-        ),
-        raw_evidence_refs=(),
-        fidelity=_fidelity_payload(fidelity),
-    )
-
-
-def _explain_hermes_verification_evidence_db(path: Path, *, provider_hint: Provider) -> ImportExplainEntryPayload:
-    """Inspect the real Hermes verification-ledger SQLite parser path without writing a raw blob."""
-
-    try:
-        sessions = hermes_verification.parse_verification_evidence_db(
-            path, fallback_id=path.stem, profile_root=hermes_identity.profile_root_for_artifact(path)
-        )
-    except (OSError, sqlite3.Error, ValueError) as exc:
-        return _skipped_entry(
-            path,
-            provider_hint=provider_hint,
-            artifact=None,
-            reason=f"Hermes verification_evidence.db parser failure: {type(exc).__name__}: {exc}",
-            detected_provider=Provider.HERMES,
-        )
-    fidelity = hermes_verification.import_fidelity_declaration(sessions)
-    return ImportExplainEntryPayload(
-        source_path=str(path),
-        artifact_kind="sqlite_verification_evidence_database",
-        provider_hint=provider_hint.value,
-        detected_origin=_origin_value(Provider.HERMES),
-        detected_provider=Provider.HERMES.value,
-        detector="hermes_verification_evidence_db",
-        detector_evidence=(
-            _evidence(
-                "hermes_verification_evidence_db.signature",
-                matched=True,
-                reason="required verification_events/verification_state tables and columns",
-            ),
-        ),
-        parser="hermes_verification_evidence_db",
-        parser_version=None
-        if fidelity.schema_version is None
-        else f"verification-evidence-db-v{fidelity.schema_version}",
-        parser_mode="logical_export",
-        produced=_produced_rows(sessions),
-        caveats=(
-            "dry-run inspected the live SQLite database read-only; import snapshots bytes before parsing.",
-            *fidelity.caveats,
-        ),
-        raw_evidence_refs=(),
-        fidelity=_fidelity_payload(fidelity),
+        fidelity=None if fidelity is None else _fidelity_payload(fidelity),
     )
 
 
@@ -624,7 +579,15 @@ def _explain_zip(
     ]
     container_provider = provider_hint
     try:
-        with zipfile.ZipFile(path) as archive:
+        with (
+            TemporaryDirectory(prefix="polylogue-zip-explain-") as scratch,
+            bind_source_input(path) as captured,
+            open_bound_container(
+                BlobStore(Path(scratch)),
+                captured,
+            ) as physical,
+            zipfile.ZipFile(physical.stream) as archive,
+        ):
             if container_provider is Provider.UNKNOWN:
                 # The container carried no origin identity while its contents
                 # did: a claude.ai GDPR export ZIP reported
@@ -642,27 +605,37 @@ def _explain_zip(
                             reason=f"dominant member provider: {sniffed.value}",
                         )
                     )
-            validator = ZipEntryValidator(provider_hint, cursor_state=None, zip_path=path)
+            central_directory = archive.infolist()
+            entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
+            admission = zip_member_admission(archive, path, central_directory, provider_hint)
+            validator = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=path)
 
-            def record_rejection(info: zipfile.ZipInfo, reason: str) -> None:
-                skipped.append(
-                    ImportSkippedRowPayload(
-                        reason=reason,
-                        source_path=f"{path}:{info.filename}",
-                    )
+            for info in validator.filter_entries(central_directory, allowed_path=admission.allowed_path):
+                entry_ordinal = entry_ordinals[id(info)]
+                entry_provider = admission.entry_provider_hint(archive, info)
+                profile = captured.captured_identity.member_profile_identity(info.filename)
+                profile_identity = None if profile is None else captured_hermes_profile_key(profile[0])
+                zip_coordinate = captured_zip_member_coordinate(
+                    captured.captured_identity,
+                    entry_name=info.filename,
+                    entry_ordinal=entry_ordinal,
+                    split_index=0,
+                    addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+                    container_blob_hash=physical.blob_hash,
+                    decoder_fingerprint=zip_acquisition_fingerprint(container_provider),
                 )
-
-            for info in validator.filter_entries(archive.infolist(), on_rejected=record_rejection):
-                path_classification = classify_artifact_path(info.filename, provider=provider_hint)
+                path_classification = classify_artifact_path(info.filename, provider=entry_provider)
                 decoded_session_artifact: ArtifactClassification | None = None
                 if path_classification is not None and not path_classification.parse_as_session:
                     try:
                         decoded_session_artifact = zip_entry_session_artifact(
                             archive,
                             info,
-                            provider=provider_hint,
+                            provider=entry_provider,
+                            profile_identity=profile_identity,
+                            captured_zip_coordinate=zip_coordinate,
                         )
-                    except ZipBombError as exc:
+                    except zipfile.BadZipFile as exc:
                         skipped.append(
                             ImportSkippedRowPayload(
                                 reason=f"zip entry rejected: {exc}",
@@ -683,15 +656,15 @@ def _explain_zip(
                     )
                     continue
                 try:
-                    with open_bounded_zip_entry(archive, info) as handle:
-                        entry = _explain_bytes(
-                            handle.read(MAX_UNCOMPRESSED_SIZE + 1),
-                            stream_name=info.filename,
-                            source_path=f"{path}:{info.filename}",
-                            provider_hint=provider_hint,
-                            path_classification=None,
-                        )
-                except ZipBombError as exc:
+                    entry = _explain_zip_entry(
+                        archive,
+                        info,
+                        source_path=f"{path}:{info.filename}",
+                        provider_hint=entry_provider,
+                        profile_identity=profile_identity,
+                        captured_zip_coordinate=zip_coordinate,
+                    )
+                except zipfile.BadZipFile as exc:
                     skipped.append(
                         ImportSkippedRowPayload(
                             reason=f"zip entry rejected: {exc}",
@@ -730,6 +703,107 @@ def _explain_zip(
         produced=produced,
         skipped=tuple(skipped),
         caveats=("ZIP explanation summarizes supported entries; raw bytes are omitted.",),
+    )
+
+
+def _explain_zip_entry(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    source_path: str,
+    provider_hint: Provider,
+    profile_identity: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+) -> ImportExplainEntryPayload:
+    """Aggregate the existing sealed parser artifact without a session list."""
+    import ijson
+
+    from polylogue.sources.detection_projection import DetectorProjection, project_detection_input
+    from polylogue.sources.dispatch import detect_provider_from_stream_evidence
+
+    try:
+        with open_zip_entry(archive, info) as source:
+            detected, evidence = detect_provider_from_stream_evidence(source)
+            shape, mode_view = project_detection_input(source, DetectorProjection(fields={"sessions": None}))
+    except (ijson.JSONError, json.JSONDecodeError, UnicodeError) as exc:
+        # A member that is not decodable JSON is that member's skip, exactly
+        # as an undecodable standalone file is; it never aborts the archive.
+        return _skipped_entry(
+            Path(source_path),
+            provider_hint=provider_hint,
+            artifact=None,
+            reason=f"decode failure: {exc}",
+        )
+    provider = detected or provider_hint
+    refs: list[str] = []
+    session_count = messages = blocks = actions = 0
+    observer: ParsedSession | None = None
+    with prepare_zip_entry(
+        archive,
+        info,
+        provider=provider,
+        source_path=source_path,
+        profile_identity=profile_identity,
+        captured_zip_coordinate=captured_zip_coordinate,
+    ) as prepared:
+        if prepared.error is not None or prepared.deferred or prepared.blob_hash is None:
+            return _skipped_entry(
+                Path(source_path),
+                provider_hint=provider_hint,
+                artifact=None,
+                reason=prepared.error or "source preparation deferred",
+                detected_provider=provider,
+            )
+        for session in prepared.iter_sessions():
+            session_count += 1
+            refs.append(f"session:{session.source_name.value}:{session.provider_session_id}")
+            if observer is None and {"hermes:atif-trajectory", "hermes:atof-observer"}.intersection(
+                session.ingest_flags
+            ):
+                observer = session
+            for message in session.messages:
+                messages += 1
+                for block in message.blocks:
+                    blocks += 1
+                    actions += block.type.value == "tool_use"
+        fidelity = None
+        if provider is Provider.HERMES:
+            fidelity = _fidelity_payload(
+                hermes_spans.import_fidelity_declaration(observer)
+                if observer is not None
+                else hermes_state.json_fallback_fidelity_counts(sessions=session_count, messages=messages)
+            )
+    parser_mode = (
+        "grouped_records"
+        if provider in GROUP_PROVIDERS
+        else "bundle_record"
+        if shape == "sequence"
+        else "session_bundle"
+        if isinstance(mode_view, dict) and "sessions" in mode_view
+        else "single_record"
+    )
+    return ImportExplainEntryPayload(
+        source_path=source_path,
+        artifact_kind="session_record_stream" if provider in GROUP_PROVIDERS else "session_document",
+        provider_hint=provider_hint.value,
+        detected_origin=_origin_value(provider),
+        detected_provider=provider.value,
+        detector="provider_shape",
+        detector_evidence=(_evidence(evidence, matched=provider is not Provider.UNKNOWN, reason=provider.value),),
+        parser=provider.value,
+        parser_mode=parser_mode,
+        produced=ImportProducedRowsPayload(
+            sessions=session_count,
+            messages=messages,
+            blocks=blocks,
+            actions=actions,
+            raw_records=session_count,
+            session_refs=tuple(refs),
+        ),
+        caveats=(() if session_count else ("parser produced no sessions",))
+        + (() if fidelity is None else fidelity.caveats),
+        raw_evidence_refs=(),
+        fidelity=fidelity,
     )
 
 

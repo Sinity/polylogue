@@ -20,14 +20,15 @@ from polylogue.storage.blob_integrity import (
     scan_blob_reference_debt,
 )
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_database,
     initialize_archive_tier,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _make_db(root: Path) -> sqlite3.Connection:
@@ -277,11 +278,11 @@ def test_scan_attachment_coverage_never_counts_unfetched_as_missing(
     index_db = tmp_path / "index.db"
     store = BlobStore(tmp_path / "blob")
     monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
-    write_parsed_session_to_archive(
+    write_fixture_index_session(
         conn,
         _session_with_attachment(
             ParsedAttachment(
@@ -312,7 +313,7 @@ def test_scan_attachment_coverage_uses_read_profile_that_rejects_mutations(
     """The production scan opener permits reads and refuses every write class."""
 
     index_db = tmp_path / "index.db"
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     conn.close()
 
@@ -353,7 +354,7 @@ def test_scan_attachment_coverage_flags_acquired_row_with_missing_blob_file(
     store = BlobStore(tmp_path / "blob")
     monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
     payload = b"attachment bytes that will be deleted from disk"
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -367,7 +368,7 @@ def test_scan_attachment_coverage_flags_acquired_row_with_missing_blob_file(
         )
     )
     blob_hash, blob_size = store.write_from_bytes(payload)
-    write_parsed_session_to_archive(
+    write_fixture_index_session(
         conn,
         session,
         preacquired_attachment_blobs={id(session.attachments[0]): (bytes.fromhex(blob_hash), blob_size, "acquired")},
@@ -407,7 +408,7 @@ def test_scan_attachment_coverage_flags_acquired_row_with_no_attachment_ref(tmp_
     payload = b"orphaned but genuinely fetched bytes"
     blob_hash, blob_size = store.write_from_bytes(payload)
 
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -502,11 +503,11 @@ def test_acquired_coverage_partitioned_by_stored_bytes(tmp_path: Path, monkeypat
         preacquired[id(attachment)] = (bytes.fromhex(blob_hash), size, "acquired")
         hashes[attachment.provider_attachment_id] = blob_hash
 
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
-    write_parsed_session_to_archive(conn, session, preacquired_attachment_blobs=preacquired)
+    write_fixture_index_session(conn, session, preacquired_attachment_blobs=preacquired)
     ids = {
         str(row["display_name"]): str(row["attachment_id"])
         for row in conn.execute("SELECT attachment_id, display_name FROM attachments")
@@ -547,7 +548,7 @@ def test_unverifiable_acquired_row_alone_is_not_ok(tmp_path: Path) -> None:
 
     index_db = tmp_path / "index.db"
     store = BlobStore(tmp_path / "blob")
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -676,10 +677,17 @@ class TestSourcePathSurvivesAnArchiveRootMove:
     def test_a_zip_member_under_a_previous_root_resolves_through_its_container(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "state" / "polylogue"
         (archive_root / "inbox").mkdir(parents=True)
-        (archive_root / "inbox" / "export.zip").write_bytes(b"payload")
-        recorded = self._recorded_under(tmp_path / "db" / "polylogue", "inbox/export.zip") + ":conversations.json"
-
-        available, resolved = blob_integrity._source_path_availability(recorded, archive_root)
+        container = archive_root / "inbox" / "export.zip"
+        recorded_container = tmp_path / "db" / "polylogue" / "inbox" / "export.zip"
+        evidence = _captured_zip_evidence(container, recorded_container=recorded_container)
+        recorded = str(evidence["source_path"])
+        assert blob_integrity._source_path_availability(recorded, archive_root)[0] is False
+        available, resolved = blob_integrity._source_path_availability(
+            recorded,
+            archive_root,
+            captured_coordinate=str(evidence["captured_coordinate"]),
+            raw_evidence=evidence,
+        )
 
         assert available is True
         assert resolved == str(archive_root / "inbox" / "export.zip")
@@ -745,10 +753,161 @@ def test_a_candidate_whose_identity_is_refused_is_not_a_match(monkeypatch: pytes
     unit carries digests only; its refusal is raised by the replay itself.
     """
     from polylogue.core import content_identity
-    from polylogue.operations.archive_backup import _payload_matches_reference
+    from polylogue.storage.backup_package import _payload_matches_reference
 
     monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
     refused = b'{"n": 1.' + b"2" * 64 + b"}"
     with pytest.raises(content_identity.ContentIdentityRefusal):
         content_identity.payload_content_identity(refused)
     assert not _payload_matches_reference({"content_identity": "0" * 64}, refused, "0" * 64)
+
+
+def _captured_zip_evidence(container: Path, *, recorded_container: Path | None = None) -> dict[str, object]:
+    """Exact neutral container and acquisition operands for read-only proof."""
+    import hashlib
+    import zipfile
+
+    from polylogue.core.raw_coordinates import (
+        CapturedZipMemberCoordinate,
+        MemberAddressingMode,
+        captured_zip_coordinate_receipt,
+    )
+    from polylogue.sources.source_acquisition_components import zip_acquisition_fingerprint
+
+    payload = b'{"id":"neutral","mapping":{}}'
+    with zipfile.ZipFile(container, "w") as archive:
+        archive.writestr("conversations.json", payload)
+    recorded = recorded_container or container
+    coordinate = CapturedZipMemberCoordinate(
+        str(recorded),
+        str(recorded),
+        "conversations.json",
+        0,
+        0,
+        MemberAddressingMode.WHOLE_MEMBER,
+        hashlib.sha256(container.read_bytes()).hexdigest(),
+        zip_acquisition_fingerprint(Provider.CHATGPT),
+    )
+    return {
+        "source_path": coordinate.declared_member,
+        "captured_coordinate": captured_zip_coordinate_receipt(coordinate),
+        "coordinate_format": "zip-v2",
+        "entry_ordinal": 0,
+        "split_index": 0,
+        "addressing_mode": coordinate.addressing_mode.value,
+        "capture_mode": Provider.CHATGPT.value,
+        "blob_hash": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize("alteration", ["intact", "missing_member", "not_zip", "changed_content", "wrong_ordinal"])
+def test_zip_source_availability_proves_the_recorded_member_content(tmp_path: Path, alteration: str) -> None:
+    import zipfile
+
+    container = tmp_path / "export.zip"
+    evidence = _captured_zip_evidence(container)
+    if alteration == "missing_member":
+        with zipfile.ZipFile(container, "w") as archive:
+            archive.writestr("other.json", b"{}")
+    elif alteration == "not_zip":
+        container.write_bytes(b"not a zip")
+    elif alteration == "changed_content":
+        with zipfile.ZipFile(container, "w") as archive:
+            archive.writestr("conversations.json", b'{"id":"different","mapping":{}}')
+    elif alteration == "wrong_ordinal":
+        evidence["entry_ordinal"] = 1
+    available, outer = blob_integrity._source_path_availability(
+        str(evidence["source_path"]),
+        captured_coordinate=str(evidence["captured_coordinate"]),
+        raw_evidence=evidence,
+    )
+    assert available is (alteration == "intact")
+    assert outer == str(container)
+
+
+def test_zip_source_permission_failure_retains_original_exception_and_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage import source_zip_replay
+
+    container = tmp_path / "export.zip"
+    evidence = _captured_zip_evidence(container)
+    failure = PermissionError("neutral denied container")
+
+    def denied(*args: object, **kwargs: object) -> None:
+        raise failure
+
+    monkeypatch.setattr("polylogue.storage.source_zip_replay.zipfile.ZipFile", denied)
+    observed: list[Exception] = []
+    candidate, _ = source_zip_replay.zip_reacquired_unit(
+        evidence,
+        source_path=str(evidence["source_path"]),
+        zip_payload_cache={},
+        on_failure=observed.append,
+    )
+    assert candidate is None
+    assert observed == [failure]
+    available, outer = blob_integrity._source_path_availability(
+        str(evidence["source_path"]),
+        captured_coordinate=str(evidence["captured_coordinate"]),
+        raw_evidence=evidence,
+    )
+    assert available is None
+    assert outer == str(container)
+
+
+def test_debt_distinguishes_unavailable_recorded_zip_from_no_source_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    evidence = _captured_zip_evidence(tmp_path / "export.zip")
+    with closing(_make_db(tmp_path)) as conn, conn:
+        _insert_raw(conn, "recorded", str(evidence["blob_hash"]), 29, source_path=str(evidence["source_path"]))
+        from polylogue.core.raw_coordinates import read_captured_zip_coordinate_receipt
+        from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
+
+        coordinate = read_captured_zip_coordinate_receipt(str(evidence["captured_coordinate"]))
+        record_raw_container_coordinate(
+            conn,
+            "recorded",
+            coordinate_format="zip-v2",
+            entry_ordinal=0,
+            split_index=0,
+            addressing_mode=coordinate.addressing_mode,
+            captured_coordinate=coordinate,
+            manage_transaction=False,
+        )
+        conn.execute("UPDATE raw_sessions SET capture_mode=? WHERE raw_id=?", (evidence["capture_mode"], "recorded"))
+        _insert_blob_ref(conn, "e" * 64, "unrecorded", "raw_payload")
+
+    failure = PermissionError("neutral denied container")
+
+    def denied(*args: object, **kwargs: object) -> None:
+        raise failure
+
+    monkeypatch.setattr("polylogue.storage.source_zip_replay.zipfile.ZipFile", denied)
+    report = classify_blob_reference_debt(tmp_path / "source.db", store=BlobStore(tmp_path / "blob"))
+    assert report.missing_source_path_presence == {"source_path_unavailable": 1, "no_source_path_recorded": 1}
+    recorded = next(sample for sample in report.samples if sample.sample_ref_id == "recorded")
+    assert recorded.sample_source_available is None
+    assert recorded.sample_source_path == evidence["source_path"]
+    assert recorded.sample_source_outer_path == str(tmp_path / "export.zip")
+
+
+def test_zip_source_cancellation_preserves_original_primary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.core.compute import DaemonOperationCancelled
+
+    evidence = _captured_zip_evidence(tmp_path / "export.zip")
+    failure = DaemonOperationCancelled("neutral cancelled")
+
+    def cancelled(*args: object, **kwargs: object) -> None:
+        raise failure
+
+    monkeypatch.setattr("polylogue.storage.source_zip_replay.zipfile.ZipFile", cancelled)
+    with pytest.raises(DaemonOperationCancelled) as raised:
+        blob_integrity._source_path_availability(
+            str(evidence["source_path"]),
+            captured_coordinate=str(evidence["captured_coordinate"]),
+            raw_evidence=evidence,
+        )
+    assert raised.value is failure

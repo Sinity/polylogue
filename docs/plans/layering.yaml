@@ -49,7 +49,7 @@ writer_modules:
         - tier: index
           durability: rebuildable
           interruption: replayable
-      entrypoints: [delete_sessions]
+      entrypoints: [ArchiveStore.delete_sessions, stage_index_session_deletions]
     - path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
       surfaces:
         - tier: index
@@ -59,20 +59,15 @@ writer_modules:
           durability: durable
           interruption: atomic
       entrypoints:
-        [admit_raw_and_parsed_result, admit_raw_artifact_blob_ref, admit_raw_artifact_payload,
-        apply_raw_membership_classification, apply_raw_revision_replay,
-        apply_prepared_raw_revision_classification,
+        [apply_prepared_membership_index, apply_raw_revision_replay,
         classify_raw_revision_cohort_for_frozen_candidate,
-        classify_raw_revision_cohort_for_live_watch, classify_raw_revision_cohort_for_live_watch_in_transaction,
-        classify_raw_revision_cohort_for_rebuild_repair, classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
-        finalize_raw_parse_state,
-        mark_raw_parse_failed, promote_reconstructed_legacy_append_revisions,
-        prepare_raw_revision_rebuild_classification,
-        record_current_parser_source_census,
-        release_provisional_full_revisions, replace_raw_membership_census,
-        write_parsed_for_retained_raw, write_parsed_for_retained_raw_result, write_raw_and_parsed,
-        write_raw_and_parsed_result, write_work_event_raw_and_parsed_result]
-      twin_write_contract: raw-membership-classification
+        classify_raw_revision_cohort_for_rebuild_repair,
+        classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
+        prepare_membership_classification_source,
+        promote_reconstructed_legacy_append_revisions, record_current_parser_source_census,
+        record_prepared_membership_census_receipt, refine_prepared_raw_origin, release_provisional_full_revisions,
+        replace_raw_membership_census]
+      twin_write_contract: raw-revision-replay
     - path: polylogue/storage/sqlite/archive_tiers/revision_application.py
       surfaces:
         - tier: index
@@ -85,22 +80,21 @@ writer_modules:
           durability: durable
           interruption: atomic
       entrypoints:
-        [apply_source_raw_state_update, bind_source_raw_revision, record_capture_mode_observation,
-        record_excised_blob_hash, record_raw_container_coordinate, refine_raw_origin,
-        delete_source_hook_event, write_source_blob_refs, write_source_hook_event,
-        write_source_hook_event_batch, write_source_raw_session,
-        write_source_raw_session_blob_ref, upsert_raw_artifact]
+        [delete_source_hook_event, record_capture_mode_observation, record_excised_blob_hash,
+        record_raw_container_coordinate, record_raw_profile_identity, refine_raw_origin,
+        write_source_hook_event, write_source_hook_event_batch, write_source_raw_session,
+        write_source_raw_session_blob_ref]
     - path: polylogue/storage/sqlite/archive_tiers/source_items.py
       surfaces:
         - tier: source
           durability: durable
           interruption: atomic
-      entrypoints: [publish_source_generation, seal_source_generation, transition_source_item,
+      entrypoints: [prepare_source_manifest, publish_acquired_zip_input, publish_source_generation, seal_source_generation, transition_source_item,
         record_source_item_raw_member, record_source_item_member_disposition,
         complete_source_item_enumeration, publish_frozen_source_manifest,
         begin_prepared_source_manifest, append_prepared_source_inputs,
         seal_prepared_source_manifest, publish_sealed_source_manifest,
-        abort_prepared_source_manifest, reconcile_unaccepted_prepared_source_manifests]
+        abort_prepared_source_manifest]
     - path: polylogue/storage/sqlite/archive_tiers/source_attachments.py
       surfaces:
         - tier: source
@@ -116,13 +110,7 @@ writer_modules:
         [rebuild_archive_messages_fts, rederive_codex_spawn_parent_links,
         refresh_and_sweep_attachment_rows,
         replace_parser_ingest_flag_tags, upsert_parser_ingest_flag_tags,
-        upsert_session_profile_costs, write_parsed_session_to_archive]
-    - path: polylogue/storage/sqlite/archive_tiers/write_shard.py
-      surfaces:
-        - tier: index
-          durability: rebuildable
-          interruption: replayable
-      entrypoints: [copy_shard_session_rows]
+        write_parsed_session_to_archive]
     - path: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
       surfaces:
         - tier: index
@@ -194,11 +182,11 @@ writer_modules:
           interruption: replayable
       entrypoints: [record_capture_gap_event, record_source_outage_events]
   twin_write_contracts:
-    - name: raw-membership-classification
+    - name: raw-revision-replay
       module: polylogue/storage/sqlite/archive_tiers/revision_governance.py
       surfaces: [index, source]
-      entrypoints: [apply_raw_membership_classification]
-      reason: "Applying a semantic member-head decision persists the derived session row (index) and the per-raw membership/authority decision (source) together so a partial write can never leave one raw id's authority state inconsistent with the session it was or was not accepted into."
+      entrypoints: [apply_raw_revision_replay]
+      reason: "Byte-revision replay persists the accepted session (index) and that raw's terminal parse state or failure evidence (source) in one admitted batch, so a crash cannot leave a raw acknowledged in source for a session the index never received. Membership publication runs on the prepared route: its index outcome and source acknowledgements are separate staged mutations of one original seal."
     - name: session-tag-assertion-mirror
       module: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
       surfaces: [index, user]

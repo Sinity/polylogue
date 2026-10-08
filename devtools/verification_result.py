@@ -105,7 +105,6 @@ def _pytest_outcomes(aggregate: Mapping[str, Any]) -> dict[str, Any]:
         "terminal_count": _integer(aggregate.get("terminal_union_count")),
         "terminal_green": _boolean(aggregate.get("terminal_green")),
         "complete_corpus_covered": _boolean(aggregate.get("complete_corpus_covered")),
-        "flaky": list(aggregate.get("flaky", [])) if isinstance(aggregate.get("flaky"), list) else [],
         "corpus_digest": _string(corpus.get("digest")),
         "outcomes": bounded_outcomes,
         "outcomes_truncated": len(outcomes) > MAX_GATE_OUTCOMES,

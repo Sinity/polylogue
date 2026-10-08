@@ -69,6 +69,6 @@ def test_terminal_unavailable_is_distinct_from_unfetched() -> None:
         verify=lambda _hash: True,
     )
     assert result.state is AttachmentAvailabilityState.UNAVAILABLE
-    assert result.reason == "provider-bytes-unavailable"
+    assert result.reason == "source-bytes-unavailable"
     assert not result.can_fetch
     assert classify_attachment_state(size_bytes=0, mime_type="text/plain", availability=result) == "missing-blob"

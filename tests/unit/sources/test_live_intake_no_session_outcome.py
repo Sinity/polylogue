@@ -19,9 +19,10 @@ from polylogue import Polylogue
 from polylogue.daemon.intake import AdmissionOutcome
 from polylogue.logging import capture
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
-from polylogue.operations.operation_context import open_operation_read
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.source_layout import export_drop_layout
+from tests.infra.raw_owner_routes import live_owner_set
 
 _MAX_DEFERRED_PAGES = 20
 
@@ -35,35 +36,36 @@ async def _admit(
     suffixes: tuple[str, ...] = (".jsonl",),
 ) -> dict[str, Any]:
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
-    watcher = LiveWatcher(
-        archive,
-        (WatchSource(name=source_name, root=source_root, suffixes=suffixes),),
-        cursor=CursorStore(archive_root / "index.db"),
-        read_snapshot=open_operation_read,
-    )
-    if metrics_sink is not None:
-        ingest_files = watcher._ingest_files
+    async with live_owner_set(archive_root) as owners:
+        watcher = LiveWatcher(
+            archive,
+            (WatchSource(name=source_name, root=source_root, layout=export_drop_layout(suffixes)),),
+            cursor=CursorStore(archive_root / "index.db"),
+            **owners.watcher_kwargs(),
+        )
+        if metrics_sink is not None:
+            ingest_files = watcher._ingest_files
 
-        async def recording_ingest(*args: Any, **kwargs: Any) -> Any:
-            metrics = await ingest_files(*args, **kwargs)
-            metrics_sink.append(metrics)
-            return metrics
+            async def recording_ingest(*args: Any, **kwargs: Any) -> Any:
+                metrics = await ingest_files(*args, **kwargs)
+                metrics_sink.append(metrics)
+                return metrics
 
-        watcher._ingest_files = recording_ingest  # type: ignore[method-assign]
-    try:
-        outcomes: dict[str, Any] = {}
-        for _ in range(_MAX_DEFERRED_PAGES):
-            adapter = FileIntakeAdapter(
-                DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=watcher._sources),
-                watcher._sources[0],
-            )
-            outcomes = dict(await adapter.admit_page(await adapter.discover(limit=8)))
-            if {result.outcome for result in outcomes.values()} != {AdmissionOutcome.DEFERRED}:
-                return outcomes
-        raise AssertionError(f"the source stayed deferred for {_MAX_DEFERRED_PAGES} pages: {outcomes}")
-    finally:
-        watcher.stop()
-        await archive.close()
+            watcher._ingest_files = recording_ingest  # type: ignore[method-assign]
+        try:
+            outcomes: dict[str, Any] = {}
+            for _ in range(_MAX_DEFERRED_PAGES):
+                adapter = FileIntakeAdapter(
+                    DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=watcher._sources),
+                    watcher._sources[0],
+                )
+                outcomes = dict(await adapter.admit_page(await adapter.discover(limit=8)))
+                if {result.outcome for result in outcomes.values()} != {AdmissionOutcome.DEFERRED}:
+                    return outcomes
+            raise AssertionError(f"the source stayed deferred for {_MAX_DEFERRED_PAGES} pages: {outcomes}")
+        finally:
+            watcher.stop()
+            await archive.close()
 
 
 @pytest.mark.asyncio
@@ -219,15 +221,12 @@ async def test_an_undecodable_json_document_is_excluded_as_corrupt_input(
         assert conn.execute("SELECT outcome_code FROM ingest_attempts ORDER BY rowid DESC LIMIT 1").fetchone() == (
             "corrupt_input",
         )
-    from polylogue.sources.revision_backfill import (
-        census_historical_revision_evidence,
-        uncensused_historical_revision_raw_ids,
-    )
+    from polylogue.sources.revision_backfill import uncensused_historical_revision_raw_ids
 
     with sqlite3.connect(archive_root / "source.db") as conn:
         raw_ids = [str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")]
     assert raw_ids, "live refusal did not retain its accepted raw"
-    census_historical_revision_evidence(archive_root, selected_raw_ids=raw_ids)
+    # The live pass settles the refusal through its census phase in one pass.
     assert uncensused_historical_revision_raw_ids(archive_root, raw_ids) == ()
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT status FROM raw_authority_parser_census").fetchall() == [("complete",)]
@@ -278,7 +277,7 @@ async def test_a_stable_truncated_capture_is_admitted_as_a_typed_partial(
     from polylogue.sources.live.batch import LiveBatchProcessor
 
     writer_entry_prefix_counts: list[tuple[int, ...]] = []
-    original_writer = LiveBatchProcessor._ingest_full_records_archive
+    original_writer = LiveBatchProcessor._acquire_full_records_archive
 
     def observe_prepared_prefix_count(self: Any, records: list[Any], *args: Any, **kwargs: Any) -> Any:
         writer_entry_prefix_counts.append(
@@ -286,7 +285,7 @@ async def test_a_stable_truncated_capture_is_admitted_as_a_typed_partial(
         )
         return original_writer(self, records, *args, **kwargs)
 
-    monkeypatch.setattr(LiveBatchProcessor, "_ingest_full_records_archive", observe_prepared_prefix_count)
+    monkeypatch.setattr(LiveBatchProcessor, "_acquire_full_records_archive", observe_prepared_prefix_count)
 
     batches: list[Any] = []
     with capture() as events:

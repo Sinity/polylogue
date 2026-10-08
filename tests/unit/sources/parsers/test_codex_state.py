@@ -18,15 +18,18 @@ from polylogue.sources.parsers.codex_state import (
     CODEX_STATE_FIDELITY,
     CODEX_STATE_TABLE_FIDELITY,
     IN_SCOPE_KINDS,
+    CodexSpawnEdge,
+    CodexStateSnapshot,
+    CodexThreadRecord,
     classify_codex_sqlite_path,
     declared_codex_sqlite_classification,
     is_in_scope_codex_sqlite_path,
     iter_codex_state_parts,
+    iter_codex_state_records,
     looks_like_state_db_payload,
     marker_payload,
-    parse_codex_state_db,
 )
-from polylogue.sources.sqlite_export import open_logical_source, read_export_header
+from polylogue.sources.sqlite_export import logical_source_context, read_export_header
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
     snapshot_sqlite_database,
@@ -397,15 +400,20 @@ def test_every_observed_state_table_has_a_matching_export_disposition() -> None:
 def test_parse_state_db_extracts_titles_and_spawn_edges(tmp_path: Path) -> None:
     path = tmp_path / "state_5.sqlite"
     _write_state_db(path)
-    snapshot = parse_codex_state_db(path)
+    records = tuple(iter_codex_state_records(path))
+    snapshot = CodexStateSnapshot(
+        tuple(record for record in records if isinstance(record, CodexThreadRecord)),
+        tuple(record for record in records if isinstance(record, CodexSpawnEdge)),
+    )
     by_id = {thread.thread_id: thread for thread in snapshot.threads}
     assert by_id["0000-thread-parent"].title == "Investigate flaky retry logic"
     assert by_id["0000-thread-parent"].cwd == "/work/example"
     assert by_id["0000-thread-parent"].model == "gpt-5"
     assert by_id["0000-thread-child"].title == ""
     assert by_id["0000-thread-child"].agent_role == "review"
-    assert len(snapshot.spawn_edges) == 1
-    edge = snapshot.spawn_edges[0]
+    edges = tuple(snapshot.spawn_edges)
+    assert len(edges) == 1
+    edge = edges[0]
     assert edge.parent_thread_id == "0000-thread-parent"
     assert edge.child_thread_id == "0000-thread-child"
     assert edge.status == "closed"
@@ -430,7 +438,7 @@ def test_state_export_retains_unprojected_thread_evidence(tmp_path: Path) -> Non
         "projects",
         "project_roots",
     }
-    with open_logical_source(export_path, immutable=True) as conn:
+    with logical_source_context(export_path, immutable=True) as conn:
         assert conn.execute("SELECT identity_key, payload FROM thread_artifacts").fetchall() == [
             ("artifact-key", '{"path":"notes.md"}')
         ]
@@ -536,7 +544,11 @@ def test_snapshot_reads_consistent_state_while_writer_holds_a_transaction(tmp_pa
         release_writer.set()
         writer_thread.join(timeout=5.0)
 
-    snapshot = parse_codex_state_db(destination)
+    records = tuple(iter_codex_state_records(destination))
+    snapshot = CodexStateSnapshot(
+        tuple(record for record in records if isinstance(record, CodexThreadRecord)),
+        tuple(record for record in records if isinstance(record, CodexSpawnEdge)),
+    )
     by_id = {thread.thread_id: thread for thread in snapshot.threads}
     # The snapshot must see the last *committed* state, never the writer's
     # uncommitted in-flight mutation.

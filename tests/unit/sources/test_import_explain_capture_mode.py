@@ -15,19 +15,20 @@ from typing import get_args
 
 from polylogue.core.enums import Origin, Provider
 from polylogue.sources.import_explain import explain_import_archive
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.surfaces.payloads import CaptureModeResolutionStatus
+from tests.infra.archive_templates import bootstrap_archive_root
 
 _PAYLOAD = b'{"chunkedPrompt": {"chunks": []}}'
 
 
 def _source_db(path: Path) -> sqlite3.Connection:
+    # The archive bootstrap stamps the source tier at its current migrated
+    # version; readers refuse a bare v1 tier as schema skew.
+    bootstrap_archive_root(path.parent)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, ArchiveTier.SOURCE)
     return conn
 
 
@@ -62,6 +63,7 @@ def test_import_explain_reports_every_observed_capture_mode(tmp_path: Path) -> N
             origin=Origin.AISTUDIO_DRIVE,
             capture_mode=Provider.GEMINI,
             source_path="/tmp/export.json",
+            canonical_source_path="/tmp/export.json",
             source_index=0,
             payload=_PAYLOAD,
             acquired_at_ms=1_000,
@@ -71,6 +73,7 @@ def test_import_explain_reports_every_observed_capture_mode(tmp_path: Path) -> N
             origin=Origin.AISTUDIO_DRIVE,
             capture_mode=Provider.DRIVE,
             source_path="/tmp/export.json",
+            canonical_source_path="/tmp/export.json",
             source_index=0,
             payload=_PAYLOAD,
             acquired_at_ms=2_000,
@@ -103,6 +106,7 @@ def test_import_explain_reports_a_single_observed_capture_mode(tmp_path: Path) -
             origin=Origin.CLAUDE_CODE_SESSION,
             capture_mode=Provider.CLAUDE_CODE,
             source_path="/tmp/record.jsonl",
+            canonical_source_path="/tmp/record.jsonl",
             source_index=0,
             payload=b'{"kind":"session"}',
             acquired_at_ms=1_000,

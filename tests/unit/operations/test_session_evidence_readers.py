@@ -29,6 +29,8 @@ import pytest
 from polylogue.core.enums import BlockType, Provider, Role
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedFileEdit, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.live_ingest import write_index_session
 
 _NATIVE_ID = "evidence-readers"
 _SESSION_ID = f"claude-code-session:{_NATIVE_ID}"
@@ -36,7 +38,8 @@ _SESSION_ID = f"claude-code-session:{_NATIVE_ID}"
 
 def _seed(archive_root: Path) -> None:
     with ArchiveStore(archive_root) as archive_db:
-        archive_db.write_raw_and_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id=_NATIVE_ID,
@@ -91,9 +94,6 @@ def _seed(archive_root: Path) -> None:
                     for index in range(2)
                 ],
             ),
-            payload=b'{"raw": "claude payload"}',
-            source_path="/tmp/evidence-readers.jsonl",
-            acquired_at_ms=1735689600000,
         )
 
 
@@ -101,7 +101,7 @@ def _seed(archive_root: Path) -> None:
 def seeded_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     archive_root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
-    _seed(archive_root)
+    run_off_event_loop(lambda: _seed(archive_root))
     return archive_root
 
 
@@ -115,7 +115,7 @@ async def test_file_edit_rows_match_the_facade_reader_they_replaced(seeded_root:
     finally:
         await archive.close()
 
-    with ArchiveStore(seeded_root) as store:
+    with ArchiveStore.open_existing(seeded_root) as store:
         rows, total = read_file_edits_page(store, _SESSION_ID, limit=len(facade_rows or ()) or 1, offset=0)
 
     assert facade_rows, "the fixture must actually record file edits, or this comparison is vacuous"
@@ -135,7 +135,7 @@ async def test_agent_policy_rows_match_the_facade_reader_they_replaced(seeded_ro
     finally:
         await archive.close()
 
-    with ArchiveStore(seeded_root) as store:
+    with ArchiveStore.open_existing(seeded_root) as store:
         evidence = read_agent_policies_evidence(store, _SESSION_ID)
 
     assert facade_rows is not None
@@ -153,7 +153,7 @@ async def test_web_content_rows_match_the_facade_reader_they_replaced(seeded_roo
     finally:
         await archive.close()
 
-    with ArchiveStore(seeded_root) as store:
+    with ArchiveStore.open_existing(seeded_root) as store:
         rows, total = read_web_content_constructs_page(store, _SESSION_ID, limit=len(facade_rows or ()) or 1, offset=0)
 
     assert facade_rows is not None
@@ -166,7 +166,8 @@ def _seed_events(archive_root: Path, count: int) -> str:
     from polylogue.sources.parsers.base import ParsedSessionEvent
 
     with ArchiveStore(archive_root) as archive_db:
-        archive_db.write_raw_and_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="ext-evidence-window",
@@ -176,9 +177,6 @@ def _seed_events(archive_root: Path, count: int) -> str:
                     ParsedSessionEvent(event_type="world_state", payload={"n": index}) for index in range(count)
                 ],
             ),
-            payload=b'{"raw": "evidence window payload"}',
-            source_path="/tmp/evidence-window.jsonl",
-            acquired_at_ms=1735689600000,
         )
     return "claude-code-session:ext-evidence-window"
 
@@ -271,7 +269,8 @@ def _seed_large_file_edits(archive_root: Path, *, rows: int, original_file_bytes
     """
     payload = "x" * original_file_bytes
     with ArchiveStore(archive_root) as archive_db:
-        archive_db.write_raw_and_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="ext-large-file-edits",
@@ -316,9 +315,6 @@ def _seed_large_file_edits(archive_root: Path, *, rows: int, original_file_bytes
                     for index in range(rows)
                 ],
             ),
-            payload=b'{"raw": "large file edit payload"}',
-            source_path="/tmp/large-file-edits.jsonl",
-            acquired_at_ms=1735689600000,
         )
     return "claude-code-session:ext-large-file-edits"
 
@@ -446,7 +442,7 @@ async def test_small_transport_budget_preserves_unicode_json_nulls_and_empty_fie
     from polylogue.operations.session_evidence import SESSION_EVIDENCE_PAGE_READERS
 
     root = tmp_path / "archive"
-    _seed_fragment_evidence(root, kind, 'zażółć\x00🧪"\\\n' * 5000)
+    run_off_event_loop(lambda: _seed_fragment_evidence(root, kind, 'zażółć\x00🧪"\\\n' * 5000))
     with ArchiveStore.open_existing(root) as store:
         expected, _ = SESSION_EVIDENCE_PAGE_READERS[kind](store, _SESSION_ID, 100, 0)
     archive = Polylogue(archive_root=root)
@@ -577,7 +573,7 @@ async def test_oversized_web_construct_resumes_from_daemon_on_api(tmp_path: Path
     from polylogue.operations.session_evidence import SESSION_EVIDENCE_PAGE_READERS
 
     root = tmp_path / "archive"
-    _seed_fragment_evidence(root, "web-content", "x" * (large_fixture_bytes + 4096))
+    run_off_event_loop(lambda: _seed_fragment_evidence(root, "web-content", "x" * (large_fixture_bytes + 4096)))
     ref = f"session:{_SESSION_ID}"
     with ArchiveStore.open_existing(root) as store:
         expected, _ = SESSION_EVIDENCE_PAGE_READERS["web-content"](store, _SESSION_ID, 1, 0)

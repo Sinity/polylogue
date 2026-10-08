@@ -36,6 +36,28 @@ def _target_version() -> int:
     return durable.DURABLE_MIGRATION_ADOPTION_FLOORS[_TIER] + 1
 
 
+_STEP_SQL = "-- migration-safety: additive-no-backup\nCREATE TABLE memo_step_items (id INTEGER PRIMARY KEY) STRICT;\n"
+
+
+@pytest.fixture(autouse=True)
+def _one_declared_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declare one synthetic step above the floor, as a shipped migration would.
+
+    The archive currently ships no numbered Source migration, so the image of
+    a post-floor version needs a declared chain to exist at all.
+    """
+    step = migration_runner.MigrationStep(
+        tier=_TIER, version=_target_version(), name="002_memo_step_items.sql", sql=_STEP_SQL, requires_backup=False
+    )
+    real_load = migration_runner._load_migrations
+    monkeypatch.setattr(
+        migration_runner, "_load_migrations", lambda tier: (step,) if tier is _TIER else real_load(tier)
+    )
+    versions = dict(migration_runner.ARCHIVE_VERSION_BY_TIER)
+    versions[_TIER] = _target_version()
+    monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
+
+
 class _MemoryBuildSpy:
     """Count the in-memory databases the canonical image builder creates."""
 
@@ -104,7 +126,7 @@ def test_normalized_schema_sql_memo_preserves_the_transform() -> None:
     assert "kept" in migration_runner._normalize_schema_sql(literal)
 
 
-def test_baseline_inventory_keeps_pre_migration_index_predicates() -> None:
+def test_baseline_inventory_is_the_baseline_ddl_without_declared_steps() -> None:
     floor = durable.DURABLE_MIGRATION_ADOPTION_FLOORS[_TIER]
     baseline = durable._canonical_schema_inventory(_TIER, floor)
     runtime = durable._canonical_schema_inventory(_TIER, _target_version())
@@ -115,5 +137,6 @@ def test_baseline_inventory_keeps_pre_migration_index_predicates() -> None:
 
 
 def test_undeclared_future_inventory_is_refused() -> None:
+    # One past the runtime's declared chain: no installed step reaches it.
     with pytest.raises(migration_runner.DurableChangeTrainError):
-        durable._canonical_schema_inventory(_TIER, _target_version() + 1)
+        durable._canonical_schema_inventory(_TIER, durable._runtime_durable_version(_TIER) + 1)

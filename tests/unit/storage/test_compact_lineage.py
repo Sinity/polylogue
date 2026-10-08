@@ -32,9 +32,10 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.derived.lineage.compact import derive_compact_lineage
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import write_fixture_index_session
 
 _PARENT = "codex-session:lineage-parent"
 _FORK = "codex-session:lineage-fork"
@@ -51,7 +52,7 @@ def _message(native_id: str, role: Role, text: str) -> ParsedMessage:
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -70,7 +71,7 @@ def _seed_family(conn: sqlite3.Connection) -> None:
             _message("p2", Role.USER, "keep going"),
         ],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_fixture_index_session(conn, parent)
     fork = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="lineage-fork",
@@ -84,7 +85,7 @@ def _seed_family(conn: sqlite3.Connection) -> None:
             _message("f3", Role.ASSISTANT, "fork reply"),
         ],
     )
-    write_parsed_session_to_archive(conn, fork)
+    write_fixture_index_session(conn, fork)
     spawned = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="lineage-spawned",
@@ -96,7 +97,7 @@ def _seed_family(conn: sqlite3.Connection) -> None:
             _message("s1", Role.ASSISTANT, "focused answer"),
         ],
     )
-    write_parsed_session_to_archive(conn, spawned)
+    write_fixture_index_session(conn, spawned)
     conn.commit()
 
 

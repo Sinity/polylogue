@@ -2,7 +2,7 @@
 
 Session excision has one recurring defect shape (polylogue-14ucm, and the
 seven routes closed before it): a durable relation carries evidence that is
-addressable by a session key, ``apply_session_excision`` does not reach it,
+addressable by a session key, the audited Excision operation does not reach it,
 and the receipt still reads complete. Every instance so far --- hook events
 (polylogue-bhhsa), fact-tier TODO snapshots (polylogue-si5kj), container
 payloads held live through ``source_items`` (polylogue-q4f6d) --- was found
@@ -42,6 +42,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
+from polylogue.storage.io_phase_metrics import connection_cursor
+
 #: Column that makes a relation reachable through a raw acquisition.
 RAW_KEY_COLUMN: Final = "raw_id"
 
@@ -55,7 +57,7 @@ class CarrierReach(StrEnum):
     #: Deleted by the database when the raw acquisition row goes, through an
     #: ``ON DELETE CASCADE`` foreign key to ``raw_sessions(raw_id)``.
     RAW_CASCADE = "raw-cascade"
-    #: Deleted by ``apply_session_excision`` itself, by name.
+    #: Deleted by the audited Excision operation itself, by name.
     EXCISED = "excised"
     #: A container that can cover records of several sessions. Its members
     #: are excised per member; the container row survives only while another
@@ -157,6 +159,11 @@ SESSION_CARRIERS: Final[dict[str, SessionCarrier]] = _carriers(
         "capture-time observations of one acquisition",
     ),
     SessionCarrier(
+        "raw_profile_identity_receipts",
+        CarrierReach.RAW_CASCADE,
+        "Source captured-profile receipt belongs to its raw acquisition",
+    ),
+    SessionCarrier(
         "raw_authority_verdicts",
         CarrierReach.RAW_CASCADE,
         "derived raw-authority verdict for one acquisition",
@@ -196,7 +203,7 @@ class UnclassifiedSessionCarrierError(RuntimeError):
             )
         super().__init__(
             "; ".join(parts) + ". Declare each in polylogue.security.excision_carriers.SESSION_CARRIERS "
-            "and make apply_session_excision reach it before excising."
+            "and make the canonical Excision producer reach it before excising."
         )
 
 
@@ -218,20 +225,24 @@ class CarrierAudit:
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> frozenset[str]:
-    return frozenset(str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall())
+    with connection_cursor(conn, f'PRAGMA table_info("{table}")') as cursor:
+        return frozenset(str(row[1]) for row in cursor.fetchall())
 
 
 def _cascades_from_raw_sessions(conn: sqlite3.Connection, table: str) -> bool:
-    for row in conn.execute(f'PRAGMA foreign_key_list("{table}")').fetchall():
-        if str(row[2]) == "raw_sessions" and str(row[3]) == RAW_KEY_COLUMN and str(row[6]).upper() == "CASCADE":
-            return True
+    with connection_cursor(conn, f'PRAGMA foreign_key_list("{table}")') as cursor:
+        for row in cursor.fetchall():
+            if str(row[2]) == "raw_sessions" and str(row[3]) == RAW_KEY_COLUMN and str(row[6]).upper() == "CASCADE":
+                return True
     return False
 
 
 def _live_tables(conn: sqlite3.Connection) -> Iterable[str]:
-    for (name,) in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-    ).fetchall():
+    with connection_cursor(
+        conn, "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ) as cursor:
+        names = cursor.fetchall()
+    for (name,) in names:
         yield str(name)
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -52,11 +53,7 @@ def run_demo_tour(
     transcript_parts: list[str] = []
 
     seed_start = time.perf_counter()
-    seed_options = {
-        "force": True,
-        "with_overlays": True,
-        "explicit_root": archive_root is not None,
-    }
+    seed_options = {"force": True, "with_overlays": True}
     seed = (
         seed_archive(resolved_archive, **seed_options)
         if seed_archive is not None
@@ -90,6 +87,23 @@ def run_demo_tour(
     )
 
     steps: list[DemoTourStep] = []
+    receipt_env = os.environ.copy()
+    receipt_env["POLYLOGUE_FORCE_PLAIN"] = "1"
+    receipt, rendered = _run_cli_step(
+        name="claim versus receipt",
+        args=("demo", "receipts", "--root", str(resolved_archive), "--no-seed"),
+        explanation=(
+            "Start with a falsifiable disagreement: assistant prose claims the tests pass, while the "
+            "provider-normalized tool result says exit 1. A later run repairs the result, and a prose-only "
+            "'error' control demonstrates why keyword matching is not the oracle."
+        ),
+        env=receipt_env,
+        archive_root=resolved_archive,
+        output_path=command_output_dir / "01-claim-versus-receipt.txt",
+    )
+    steps.append(receipt)
+    transcript_parts.append(rendered)
+
     first_result_s = 0.0
     with demo_resident(resolved_archive) as env:
         # Deliberately re-based *after* seeding/verification: those are one-time
@@ -103,15 +117,6 @@ def run_demo_tour(
         query_phase_start = time.perf_counter()
         origin_count = len({session_id.split(":", 1)[0] for session_id in seed.session_ids})
         command_specs = (
-            (
-                "claim versus receipt",
-                ("demo", "receipts"),
-                (
-                    "Start with a falsifiable disagreement: assistant prose claims the tests pass, while the "
-                    "provider-normalized tool result says exit 1. A later run repairs the result, and a prose-only "
-                    "'error' control demonstrates why keyword matching is not the oracle."
-                ),
-            ),
             (
                 "failed actions aggregate",
                 ("actions where is_error:true | group by tool | count",),
@@ -137,7 +142,7 @@ def run_demo_tour(
                 ),
             ),
         )
-        for index, (name, args, explanation) in enumerate(command_specs, start=1):
+        for index, (name, args, explanation) in enumerate(command_specs, start=2):
             step, rendered = _run_cli_step(
                 name=name,
                 args=args,
@@ -148,7 +153,7 @@ def run_demo_tour(
             )
             steps.append(step)
             transcript_parts.append(rendered)
-            if index == 1:
+            if index == 2:
                 first_result_s = time.perf_counter() - query_phase_start
 
     total_duration_s = time.perf_counter() - start
@@ -206,7 +211,7 @@ def _run_cli_step(
     output = completed.stdout
     if completed.stderr:
         output = output + ("\n" if output else "") + completed.stderr
-    output = _sanitize_public_output(output, archive_root=archive_root)
+    output = _sanitize_public_output(output, archive_root=archive_root, output_dir=output_path.parent.parent)
     output_path.write_text(output, encoding="utf-8")
     step = DemoTourStep(
         name=name,
@@ -216,9 +221,12 @@ def _run_cli_step(
         output_path=output_path,
         bytes_written=len(output.encode("utf-8")),
     )
+    public_command = _sanitize_public_output(
+        shlex.join(step.command), archive_root=archive_root, output_dir=output_path.parent.parent
+    )
     rendered = "\n".join(
         [
-            f"$ {shlex.join(step.command)}",
+            f"$ {public_command}",
             explanation,
             f"exit={step.exit_code} duration={step.duration_s:.3f}s bytes={step.bytes_written}",
             output.strip(),
@@ -228,15 +236,20 @@ def _run_cli_step(
     return step, rendered
 
 
-def _sanitize_public_output(output: str, *, archive_root: Path) -> str:
-    """Remove machine-local archive paths from committed proof artifacts.
+def _sanitize_public_output(output: str, *, archive_root: Path, output_dir: Path) -> str:
+    """Remove machine-local archive and tour paths from public proof artifacts.
 
     The live command remains free to show its configured archive path. The public
-    tour, however, is regenerated on many machines and must be byte-stable and
-    safe to commit. Public refs and content digests remain unchanged.
+    tour, however, is regenerated on many machines and must not expose the
+    machine-local scratch root. Public refs and content digests remain unchanged.
     """
 
-    candidates = {str(archive_root), archive_root.as_posix()}
+    candidates = {
+        str(archive_root),
+        archive_root.as_posix(),
+        str(output_dir),
+        output_dir.as_posix(),
+    }
     sanitized = output
     for candidate in sorted(candidates, key=len, reverse=True):
         if candidate:
@@ -356,7 +369,7 @@ def _write_recording_tape(path: Path, *, out_dir_name: str) -> None:
             Set Height 720
             Set Padding 18
             Set TypingSpeed 0.04
-            Type "polylogue demo tour --out-dir {out_ref}"
+            Type "polylogue demo tour --root {out_ref}/archive --out-dir {out_ref}"
             Enter
             Sleep 15s
             Type "cat {out_ref}/transcript.txt"

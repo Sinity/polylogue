@@ -16,13 +16,15 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedMessage, ParsedPasteEvidence, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    # The Index writer admits only connections from its measured creator.
+    conn = connect_measured(path)
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
 
@@ -107,7 +109,7 @@ def test_paste_spans_roundtrip_through_writer(tmp_path: Path) -> None:
         ],
     )
 
-    session_id = write_parsed_session_to_archive(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     has_paste, paste_boundary = conn.execute(
         "SELECT has_paste, paste_boundary FROM messages WHERE native_id = ?",

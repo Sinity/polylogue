@@ -13,41 +13,27 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.archive.revision_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, canonical_authority_logical_key
+from polylogue.archive.revision_authority import (
+    InvalidParserCensusKeysError,
+    canonical_authority_logical_key,
+    raw_authority_parser_fingerprint,
+)
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipDecision
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
 from polylogue.storage.sqlite.connection_profile import (
     attach_readonly_database,
-    open_isolated_write_connection,
     open_readonly_connection,
 )
-from polylogue.storage.sqlite.write_lease import require_write_lease
 
-#: Fingerprints previously stamped by ``RAW_AUTHORITY_PARSER_FINGERPRINT``
-#: whose classification semantics are known to have been superseded by a
-#: later, deliberately-corrected version of ``classify_membership_revisions``
-#: (polylogue-9dxn). A persisted ``ambiguous`` verdict recorded under one of
-#: these fingerprints is stale, not authoritative -- the terminal-decision
-#: check in ``storage/derived/raw.py`` treats it as replayable instead of
-#: durable debt. A verdict recorded under the CURRENT fingerprint, or with no census
-#: row at all (never independently confirmed which parser produced it),
-#: stays terminal -- absent evidence must default to conservative, not to
-#: "assume it's fixed". This set only affects the *terminal* gate; the
-#: *quiescence* gate (``uncensused_historical_revision_raw_ids``) accepts any
-#: known fingerprint (current or superseded) so a bump does not force a full
-#: archive re-census -- see that function's docstring.
-SUPERSEDED_MEMBERSHIP_FINGERPRINTS = frozenset(
-    {"revision-membership-v1", "revision-membership-v2", "revision-membership-v3"}
-)
 logger = get_logger(__name__)
 
 
@@ -56,36 +42,43 @@ def _readonly(path: Path) -> sqlite3.Connection:
     return open_readonly_connection(path, timeout_class="background-read")
 
 
-def _writer(path: Path, *, archive_root: Path) -> sqlite3.Connection:
-    """Open a lease-bound source-tier writer without attached siblings."""
-    return open_isolated_write_connection(path, purpose=f"raw authority({path})", archive_root=archive_root)
+def iter_parser_census_logical_keys(logical_keys_json: object) -> Generator[str, None, None]:
+    """Validate the existing ordered receipt while yielding one canonical key.
 
-
-def parser_census_logical_keys(logical_keys_json: object) -> tuple[str, ...] | None:
-    """Validate and normalize the durable logical-key receipt payload.
-
-    The parser census writer records a sorted, duplicate-free JSON list.  A
-    few legacy membership rows carry provider prefixes, so normalize those to
-    public origins here while preserving the receipt's ordering invariant.
-    ``None`` means the receipt cannot establish parser authority.
+    Canonical duplicate detection belongs to the shared disk measurement.
+    The durable JSON cell itself remains one SQLite value; this reader does
+    not allocate its decoded list, normalized list and duplicate-key set.
     """
-    try:
-        decoded = json.loads(str(logical_keys_json))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    if not isinstance(decoded, list) or not all(isinstance(value, str) for value in decoded):
-        return None
-    raw_keys = tuple(decoded)
-    if raw_keys != tuple(sorted(set(raw_keys))):
-        return None
-    normalized: list[str] = []
-    for logical_key in raw_keys:
+    import io
+
+    import ijson
+
+    from polylogue.archive.raw_payload.streams import raw_byte_stream
+
+    with io.StringIO(str(logical_keys_json)) as text, raw_byte_stream(text) as stream:
+        events = iter(ijson.basic_parse(stream))
+        last: str | None = None
         try:
-            normalized.append(canonical_authority_logical_key(logical_key))
-        except ValueError:
-            return None
-    normalized_keys = tuple(sorted(set(normalized)))
-    return normalized_keys if len(normalized_keys) == len(raw_keys) else None
+            if next(events, None) != ("start_array", None):
+                raise InvalidParserCensusKeysError("parser identity receipt is not an array")
+            for event, value in events:
+                if event == "end_array":
+                    if next(events, None) is not None:
+                        raise InvalidParserCensusKeysError("parser identity receipt has trailing values")
+                    return
+                if event != "string" or not isinstance(value, str) or last is not None and value <= last:
+                    raise InvalidParserCensusKeysError("parser identity receipt keys are not sorted unique strings")
+                last = value
+                try:
+                    key = canonical_authority_logical_key(value)
+                except ValueError as error:
+                    raise InvalidParserCensusKeysError(
+                        "parser identity receipt has an invalid authority key"
+                    ) from error
+                yield key
+        except (ijson.JSONError, UnicodeError) as error:
+            raise InvalidParserCensusKeysError("parser identity receipt JSON cannot establish authority") from error
+        raise InvalidParserCensusKeysError("parser identity receipt is incomplete")
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,120 +133,50 @@ def build_raw_replay_plan(conn: sqlite3.Connection, input_raw_ids: Sequence[str]
     marks = ",".join("?" for _ in raw_ids)
     source_rows = _rows(
         conn,
-        f"""
-        SELECT raw_id, origin, native_id, source_path, source_index,
-               hex(blob_hash) AS blob_hash, blob_size, logical_source_key,
-               revision_kind, source_revision, predecessor_source_revision,
-               predecessor_raw_id, baseline_raw_id, append_start_offset,
-               append_end_offset, acquisition_generation, revision_authority
-        FROM raw_sessions WHERE raw_id IN ({marks}) ORDER BY raw_id
-        """,
+        _RAW_PLAN_SOURCE_SQL.format(marks=marks, index_prefix="index_tier."),
         raw_ids,
     )
     if tuple(str(row["raw_id"]) for row in source_rows) != raw_ids:
         raise RuntimeError("raw replay plan input disappeared during census")
     membership_rows = _rows(
         conn,
-        f"""
-        SELECT raw_id, logical_source_key, provider_session_id, source_revision,
-               hex(normalized_content_hash) AS normalized_content_hash,
-               message_count, predecessor_raw_id, acquisition_generation,
-               revision_authority, decision
-        FROM raw_session_memberships
-        WHERE raw_id IN ({marks})
-        ORDER BY raw_id, logical_source_key
-        """,
+        _RAW_PLAN_MEMBERSHIP_SQL.format(marks=marks, index_prefix="index_tier."),
         raw_ids,
     )
     census_rows = _rows(
         conn,
-        f"""
-        SELECT raw_id, parser_fingerprint, status, member_count, detail
-        FROM raw_membership_census
-        WHERE raw_id IN ({marks}) ORDER BY raw_id
-        """,
+        _RAW_PLAN_CENSUS_SQL.format(marks=marks, index_prefix="index_tier."),
         raw_ids,
     )
     parser_census_rows = _rows(
         conn,
-        f"""
-        SELECT raw_id, parser_fingerprint, status, logical_keys_json, detail
-        FROM raw_authority_parser_census
-        WHERE raw_id IN ({marks}) ORDER BY raw_id
-        """,
+        _RAW_PLAN_PARSER_CENSUS_SQL.format(marks=marks, index_prefix="index_tier."),
         raw_ids,
     )
-    # A multi-session raw keeps its pending-raw byte envelope while each of its
-    # sessions is governed by its own membership key. The envelope names no
-    # session, so it has no accepted head to prove; only its members do.
-    membership_raw_ids = {str(row["raw_id"]) for row in membership_rows}
-    logical_keys = tuple(
-        sorted(
-            {
-                str(value)
-                for row in (*source_rows, *membership_rows)
-                if (value := row.get("logical_source_key")) is not None
-                and not (
-                    str(value).startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX)
-                    and str(row["raw_id"]) in membership_raw_ids
-                )
-            }
-        )
-    )
+    logical_keys = _raw_replay_logical_keys(source_rows, membership_rows)
     if logical_keys:
         key_marks = ",".join("?" for _ in logical_keys)
         head_rows = _rows(
             conn,
-            f"""
-            SELECT logical_source_key, session_id, accepted_raw_id,
-                   accepted_source_revision, hex(accepted_content_hash) AS accepted_content_hash,
-                   accepted_frontier_kind, accepted_frontier,
-                   acquisition_generation, append_end_offset
-            FROM index_tier.raw_revision_heads
-            WHERE logical_source_key IN ({key_marks}) ORDER BY logical_source_key
-            """,
+            _RAW_PLAN_HEAD_SQL.format(marks=key_marks, index_prefix="index_tier."),
             logical_keys,
         )
     else:
         head_rows = []
     session_rows = _rows(
         conn,
-        f"""
-        SELECT session_id, raw_id, hex(content_hash) AS content_hash, message_count
-        FROM index_tier.sessions
-        WHERE raw_id IN ({marks}) ORDER BY session_id
-        """,
+        _RAW_PLAN_SESSION_SQL.format(marks=marks, index_prefix="index_tier."),
         raw_ids,
     )
-    authority_witness = json_document(
-        {
-            "parser_census": parser_census_rows,
-            "membership_census": census_rows,
-            "memberships": membership_rows,
-            "revision_heads": head_rows,
-        }
-    )
-    source_preconditions = json_document(
-        {"raw_sessions": source_rows, "raw_authority_parser_census": parser_census_rows}
-    )
-    index_preconditions = json_document({"sessions": session_rows, "revision_heads": head_rows})
-    identity = {
-        "schema": "polylogue.raw-replay-plan.v2",
-        "input_raw_ids": list(raw_ids),
-        "logical_keys": list(logical_keys),
-        "authority_witness": authority_witness,
-        "source_preconditions": source_preconditions,
-        "index_preconditions": index_preconditions,
-    }
-    input_digest = _digest(identity)
-    return RawReplayPlan(
-        plan_id=f"raw-replay:{input_digest}",
-        input_digest=input_digest,
-        input_raw_ids=raw_ids,
-        logical_keys=logical_keys,
-        authority_witness=authority_witness,
-        source_preconditions=source_preconditions,
-        index_preconditions=index_preconditions,
+    return _raw_replay_plan_from_rows(
+        raw_ids,
+        logical_keys,
+        source_rows=source_rows,
+        membership_rows=membership_rows,
+        census_rows=census_rows,
+        parser_census_rows=parser_census_rows,
+        head_rows=head_rows,
+        session_rows=session_rows,
     )
 
 
@@ -460,6 +383,7 @@ def validate_raw_replay_application_receipt(
         MembershipDecision.APPLIED,
         MembershipDecision.SUPERSEDED_EQUIVALENT,
         MembershipDecision.SUPERSEDED_PREFIX,
+        MembershipDecision.SUPERSEDED_BY_WINNER,
     }
     if any(row.get("decision") not in terminal_membership_decisions for row in membership_rows):
         problems.append("membership receipt contains a non-terminal decision")
@@ -693,7 +617,7 @@ BLOCKER_ORIGIN_FRONTIER_OBLIGATION = "frontier_obligation"
 
 
 def _blocker_kind(*, witness_schema: str) -> str:
-    """Classify a blocker exactly as :func:`resolve_raw_authority_blocker` reads it.
+    """Classify the stored witness for prepared blocker acknowledgement.
 
     A ``frontier_obligation`` carries the current frontier plan shape
     (``authority_witness.schema == polylogue.raw-authority-frontier-plan.v1``)
@@ -713,10 +637,9 @@ def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSOND
     """Read-only lookup of one unresolved blocker's resolution-eligibility shape.
 
     Returns ``None`` when the blocker does not exist or is already resolved.
-    Zero-mutation counterpart to :func:`resolve_raw_authority_blocker`'s own
-    lookup -- used by ``BlockerResolveActuator.prepare``
-    (``polylogue.operations.mutation_actuators``) to build a hashable plan
-    without opening a write transaction against ``source.db``.
+    This discovery read describes the stored blocker without opening a write
+    transaction. Acknowledgement separately prepares the original evidence
+    through the resident owner before authorizing its mutation.
     """
     source_db = archive_root / "source.db"
     if not source_db.is_file():
@@ -758,7 +681,7 @@ def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 1
     """Read-only, paginated inventory of unresolved raw-authority blockers.
 
     Reports each row's ``kind`` (see :func:`_blocker_kind`), which describes
-    how :func:`resolve_raw_authority_blocker` reads its stored snapshot, not
+    how prepared acknowledgement reads its stored snapshot, not
     a different effect. This is the operator discovery surface for an
     exact ``--blocker-id``; it reads the blocker rows themselves, so it does
     not depend on any per-pass inspection record.
@@ -842,99 +765,152 @@ def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 1
     )
 
 
-def resolve_raw_authority_blocker(
-    archive_root: Path,
-    blocker_id: str,
-    *,
-    resolution: str,
-) -> JSONDocument:
-    """Explicitly acknowledge current evidence and reopen replanning."""
-    if not resolution.strip():
-        raise ValueError("raw authority blocker resolution must be non-empty")
-    # Resolution tombstones the durable source ledger and therefore must be
-    # admitted by the daemon coordinator on live paths.  Offline callers keep
-    # the existing permissive one-shot behavior when lease enforcement is off.
-    require_write_lease("raw authority blocker resolution", archive_root=archive_root)
-    source_db = archive_root / "source.db"
-    with closing(_writer(source_db, archive_root=archive_root)) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("ATTACH DATABASE ? AS index_tier", (str(archive_root / "index.db"),))
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            """
-            SELECT b.blocker_id, b.plan_input_digest, b.observed_pass_id,
-                   b.expected_json, b.observed_json
-            FROM raw_authority_blockers AS b
-            WHERE b.blocker_id = ? AND b.resolved_at_ms IS NULL
-            """,
-            (blocker_id,),
-        ).fetchone()
-        if row is None:
-            conn.rollback()
-            raise KeyError(blocker_id)
-        # polylogue-5dzj9: the blocked plan comes from the blocker's own
-        # durable snapshot, not from a join into the retired plan ledger.
-        stored_plan = _raw_replay_plan_from_expected_json(str(row["expected_json"]))
-        witness_schema = stored_plan.authority_witness.get("schema")
-        if witness_schema == _FRONTIER_WITNESS_SCHEMA:
-            observed = stored_plan
-        else:
-            observed = build_raw_replay_plan(conn, stored_plan.input_raw_ids)
-        now = int(time.time() * 1000)
-        full_receipt = json_document(
-            {
-                "schema": "polylogue.raw-authority-blocker-resolution.v1",
-                "blocker_id": blocker_id,
-                "superseded_plan_id": stored_plan.plan_id,
-                "current_plan": observed.to_dict(),
-                "operator_resolution": resolution.strip(),
-                "resolved_at_ms": now,
-            }
-        )
-        updated = conn.execute(
-            """
-            UPDATE raw_authority_blockers
-            SET resolved_at_ms = ?, resolution = ?
-            WHERE blocker_id = ? AND resolved_at_ms IS NULL
-            """,
-            (now, _canonical_json(full_receipt), blocker_id),
-        ).rowcount
-        if updated != 1:
-            conn.rollback()
-            raise RuntimeError(f"raw authority blocker changed during resolution: {blocker_id}")
-        conn.commit()
-    return json_document(
-        {
-            "schema": "polylogue.raw-authority-blocker-resolution-summary.v1",
-            "blocker_id": blocker_id,
-            "superseded_plan_id": stored_plan.plan_id,
-            "current_plan": {
-                "plan_id": observed.plan_id,
-                "input_digest": observed.input_digest,
-                "input_raw_count": len(observed.input_raw_ids),
-                "logical_key_count": len(observed.logical_keys),
-            },
-            "operator_resolution": resolution.strip(),
-            "resolved_at_ms": now,
-        }
-    )
-
-
 __all__ = [
     "BLOCKER_ORIGIN_FRONTIER_OBLIGATION",
     "BLOCKER_ORIGIN_KEY",
-    "RAW_AUTHORITY_PARSER_FINGERPRINT",
-    "SUPERSEDED_MEMBERSHIP_FINGERPRINTS",
+    "raw_authority_parser_fingerprint",
     "RawReplayPlan",
     "build_raw_replay_plan",
     "build_raw_replay_plans",
     "describe_raw_authority_blocker",
     "list_unresolved_raw_authority_blockers",
-    "parser_census_logical_keys",
+    "iter_parser_census_logical_keys",
     "raw_replay_application_receipt",
     "raw_replay_application_receipt_from_connection",
-    "resolve_raw_authority_blocker",
     "unresolved_raw_authority_blockers",
     "validate_raw_replay_application_receipt",
     "validate_raw_replay_plan",
 ]
+
+
+def validated_parser_census_logical_keys(values: Generator[object, None, None]) -> Generator[str, None, None]:
+    """Validate ordered receipt keys and settle the actual decoded row stream."""
+    last: str | None = None
+    with closing(values):
+        for value in values:
+            check_compute_cancelled()
+            if not isinstance(value, str) or last is not None and value <= last:
+                raise InvalidParserCensusKeysError("parser identity receipt keys are not sorted unique strings")
+            last = value
+            try:
+                key = canonical_authority_logical_key(value)
+            except ValueError as error:
+                raise InvalidParserCensusKeysError("parser identity receipt has an invalid authority key") from error
+            yield key
+
+
+_RAW_PLAN_CENSUS_SQL = """
+        SELECT raw_id, parser_fingerprint, status, member_count, detail
+        FROM raw_membership_census
+        WHERE raw_id IN ({marks}) ORDER BY raw_id
+        """
+
+
+_RAW_PLAN_HEAD_SQL = """
+            SELECT logical_source_key, session_id, accepted_raw_id,
+                   accepted_source_revision, hex(accepted_content_hash) AS accepted_content_hash,
+                   accepted_frontier_kind, accepted_frontier,
+                   acquisition_generation, append_end_offset
+            FROM {index_prefix}raw_revision_heads
+            WHERE logical_source_key IN ({marks}) ORDER BY logical_source_key
+            """
+
+
+_RAW_PLAN_MEMBERSHIP_SQL = """
+        SELECT raw_id, logical_source_key, provider_session_id, source_revision,
+               hex(normalized_content_hash) AS normalized_content_hash,
+               message_count, predecessor_raw_id, acquisition_generation,
+               revision_authority, decision
+        FROM raw_session_memberships
+        WHERE raw_id IN ({marks})
+        ORDER BY raw_id, logical_source_key
+        """
+
+
+_RAW_PLAN_PARSER_CENSUS_SQL = """
+        SELECT raw_id, parser_fingerprint, status, logical_keys_json, detail
+        FROM raw_authority_parser_census
+        WHERE raw_id IN ({marks}) ORDER BY raw_id
+        """
+
+
+_RAW_PLAN_SESSION_SQL = """
+        SELECT session_id, raw_id, hex(content_hash) AS content_hash, message_count
+        FROM {index_prefix}sessions
+        WHERE raw_id IN ({marks}) ORDER BY session_id
+        """
+
+
+_RAW_PLAN_SOURCE_SQL = """
+        SELECT raw_id, origin, native_id, source_path, source_index,
+               hex(blob_hash) AS blob_hash, blob_size, logical_source_key,
+               revision_kind, source_revision, predecessor_source_revision,
+               predecessor_raw_id, baseline_raw_id, append_start_offset,
+               append_end_offset, acquisition_generation, revision_authority
+        FROM raw_sessions WHERE raw_id IN ({marks}) ORDER BY raw_id
+        """
+
+
+def _raw_replay_logical_keys(
+    source_rows: list[dict[str, object]], membership_rows: list[dict[str, object]]
+) -> tuple[str, ...]:
+    # A multi-session raw keeps its pending-raw byte envelope while each of its
+    # sessions is governed by its own membership key. The envelope names no
+    # session, so it has no accepted head to prove; only its members do.
+    membership_raw_ids = {str(row["raw_id"]) for row in membership_rows}
+    return tuple(
+        sorted(
+            {
+                str(value)
+                for row in (*source_rows, *membership_rows)
+                if (value := row.get("logical_source_key")) is not None
+                and not (
+                    str(value).startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX)
+                    and str(row["raw_id"]) in membership_raw_ids
+                )
+            }
+        )
+    )
+
+
+def _raw_replay_plan_from_rows(
+    raw_ids: tuple[str, ...],
+    logical_keys: tuple[str, ...],
+    *,
+    source_rows: list[dict[str, object]],
+    membership_rows: list[dict[str, object]],
+    census_rows: list[dict[str, object]],
+    parser_census_rows: list[dict[str, object]],
+    head_rows: list[dict[str, object]],
+    session_rows: list[dict[str, object]],
+) -> RawReplayPlan:
+    authority_witness = json_document(
+        {
+            "parser_census": parser_census_rows,
+            "membership_census": census_rows,
+            "memberships": membership_rows,
+            "revision_heads": head_rows,
+        }
+    )
+    source_preconditions = json_document(
+        {"raw_sessions": source_rows, "raw_authority_parser_census": parser_census_rows}
+    )
+    index_preconditions = json_document({"sessions": session_rows, "revision_heads": head_rows})
+    identity = {
+        "schema": "polylogue.raw-replay-plan.v2",
+        "input_raw_ids": list(raw_ids),
+        "logical_keys": list(logical_keys),
+        "authority_witness": authority_witness,
+        "source_preconditions": source_preconditions,
+        "index_preconditions": index_preconditions,
+    }
+    input_digest = _digest(identity)
+    return RawReplayPlan(
+        plan_id=f"raw-replay:{input_digest}",
+        input_digest=input_digest,
+        input_raw_ids=raw_ids,
+        logical_keys=logical_keys,
+        authority_witness=authority_witness,
+        source_preconditions=source_preconditions,
+        index_preconditions=index_preconditions,
+    )

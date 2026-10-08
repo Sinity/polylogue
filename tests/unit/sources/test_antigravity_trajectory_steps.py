@@ -5,9 +5,38 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.sources.parsers.antigravity import parse_trajectory_db
+from polylogue.core.enums import BlockType, Provider
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication
 from polylogue.sources.parsers.base import AdmissionDisposition, AdmissionRefusalReason
+from polylogue.sources.sqlite_inspection import inspect_sqlite_source
+from tests.infra.antigravity_parser import parse_trajectory_db
 from tests.infra.source_parser_cases import trajectory_db
+
+
+@pytest.mark.parametrize("name", ["nested", "malformed_patch", "parent", "row_exit"])
+def test_streamed_bound_trajectory_preview_matches_parser_evidence(tmp_path: Path, name: str) -> None:
+    source = trajectory_db(tmp_path / "source.sqlite", name)
+    sessions = list(parse_trajectory_db(source, source.stem))
+    preview = inspect_sqlite_source(source)
+    assert preview.produced == {
+        "sessions": len(sessions),
+        "messages": sum(len(session.messages) for session in sessions),
+        "blocks": sum(len(message.blocks) for session in sessions for message in session.messages),
+        "actions": sum(
+            block.type is BlockType.TOOL_USE
+            for session in sessions
+            for message in session.messages
+            for block in message.blocks
+        ),
+        "raw_records": len(sessions),
+        "session_refs": [f"session:antigravity:{session.provider_session_id}" for session in sessions],
+    }
+    assert preview.degraded == any(session.ingest_flags for session in sessions)
+    preflight = inspect_sqlite_source(source, preflight=True)
+    positive = admit_parsed_sessions_for_publication(sessions, provider=Provider.ANTIGRAVITY, source_path=str(source))
+    assert preflight.admitted == len(positive)
+    assert preflight.produced == {**preview.produced, "session_refs": []}
+    assert preflight.degraded == (preview.degraded or len(positive) != len(sessions))
 
 
 def test_millisecond_step_timestamp(tmp_path: Path) -> None:

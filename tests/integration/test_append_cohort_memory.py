@@ -4,40 +4,41 @@ Static trace from the live daemon:
 
 | Candidate | Production site | Trigger | Measured signal |
 | --- | --- | --- | --- |
-| H1 | ``_ingest_append_plans_archive`` | watcher append batch | batch/plan counts and process phases |
-| H2 | ``raw_revision_replay_plan`` | accepted append | metadata-plan calls and accepted replay raws |
-| H3 | ``classify_raw_revision_cohort`` | incomplete/recovery cohort | fallback calls and historical full-blob bytes |
+| H1 | ``ingest_append_plans`` | watcher append batch | batch/plan counts and process phases |
+| H2 | ``raw_append_revision_parent`` | append authority decision | metadata calls and historical full-blob bytes |
+| H3 | ``raw_revision_replay_plan`` | accepted append replay | metadata-plan calls and replayed raw bytes |
 
-The real incident was H1 -> H3, not historical backfill.  This scenario seeds
-an already-proven full snapshot plus a live append, then executes the
-production watcher entrypoint.  It reports anon-PSS, cgroup anon/file, process
-I/O deltas, and batch counts at phase boundaries.  Host-dependent numbers have
-no CI budget; route and byte-count assertions keep the harness non-vacuous.
+The incident was a watcher append that reread every retained full snapshot
+through a cohort classifier.  The append route now decides authority from
+durable metadata alone and classifies no cohort.  This scenario seeds an
+already-proven full snapshot plus a live append, then executes the production
+watcher entrypoint.  It reports anon-PSS, cgroup anon/file, process I/O
+deltas, and batch counts at phase boundaries.  Host-dependent numbers have no
+CI budget; route and byte-count assertions keep the harness non-vacuous.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import sqlite3
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
 from unittest.mock import patch
-
-import pytest
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
-from polylogue.core.sources import origin_from_provider
-from polylogue.sources.live.append_ingest import ingest_append_plans
+from polylogue.daemon.derivation import DerivationReport, Outcome
 from polylogue.sources.live.batch_support import _AppendPlan
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.revision_backfill import RetainedPreparationNoProgressError
+from polylogue.storage.sqlite.archive_tiers import revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from tests.infra.append_cohort_memory_counter import append_cohort_memory_counter
+from tests.infra.archive_templates import run_archive_fixture_write
+from tests.infra.live_ingest import prepared_live_convergence_owner, run_owned_append_plans
 
 
 def _codex_record(session_id: str, message_id: str, text: str) -> bytes:
@@ -63,6 +64,38 @@ def _owner(archive_root: Path) -> object:
     )
 
 
+def _admit_full_snapshots(
+    archive_root: Path,
+    source_path: Path,
+    session_id: str,
+    snapshots: list[bytes],
+    authorities: list[RawRevisionAuthority],
+) -> None:
+    """Admit each full revision through the canonical raw writer on the admitted writer."""
+
+    def acquire() -> None:
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            for index, (payload, authority) in enumerate(zip(snapshots, authorities, strict=True)):
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    capture_mode=Provider.CODEX,
+                    payload=payload,
+                    source_path=str(source_path),
+                    canonical_source_path=str(source_path),
+                    source_index=0,
+                    acquired_at_ms=index + 1,
+                    revision=RawRevisionEnvelope(
+                        f"codex-session:{session_id}",
+                        RawRevisionKind.FULL,
+                        f"full-{index}",
+                        index,
+                        authority=authority,
+                    ),
+                )
+
+    asyncio.run(run_archive_fixture_write(archive_root, acquire))
+
+
 def _seed_cohort_and_append_plan(
     archive_root: Path,
     *,
@@ -77,32 +110,12 @@ def _seed_cohort_and_append_plan(
         session_id, "append", "a" * 16_384
     )
     source_path.write_bytes(snapshots[-1] + append_payload)
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        publisher = archive._blob_publisher
-        assert publisher is not None
-        for index, payload in enumerate(snapshots):
-            blob_hash, _blob_size = publisher.write_from_bytes(payload)
-            publisher.flush()
-            write_source_raw_session(
-                archive._ensure_source_conn(),
-                origin=origin_from_provider(Provider.CODEX),
-                capture_mode=Provider.CODEX,
-                payload=payload,
-                source_path=str(source_path),
-                source_index=0,
-                acquired_at_ms=index + 1,
-                blob_publication_receipt_id=publisher.receipt_id(blob_hash),
-                revision=RawRevisionEnvelope(
-                    f"codex-session:{session_id}",
-                    RawRevisionKind.FULL,
-                    f"full-{index}",
-                    index,
-                    authority=full_authority,
-                ),
-            )
+    _admit_full_snapshots(archive_root, source_path, session_id, snapshots, [full_authority] * len(snapshots))
     stat = source_path.stat()
     return _AppendPlan(
         path=source_path,
+        canonical_source_path=str(source_path),
+        captured_profile_key=None,
         source_name="codex",
         start_offset=len(snapshots[-1]),
         last_complete_newline=stat.st_size,
@@ -114,6 +127,9 @@ def _seed_cohort_and_append_plan(
         payload_hash=hashlib.sha256(append_payload).hexdigest(),
         cursor_fingerprint="full-2",
         bytes_read=len(append_payload),
+        # The watcher plans an append against the session it already bound;
+        # append acquisition refuses a plan without that identity.
+        native_id_hint=session_id,
     )
 
 
@@ -128,36 +144,21 @@ def _seed_partially_classified_cohort_and_append_plan(archive_root: Path) -> _Ap
         session_id, "append", "a" * 16_384
     )
     source_path.write_bytes(snapshots[-1] + append_payload)
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        publisher = archive._blob_publisher
-        assert publisher is not None
-        for index, payload in enumerate(snapshots):
-            blob_hash, _blob_size = publisher.write_from_bytes(payload)
-            publisher.flush()
-            write_source_raw_session(
-                archive._ensure_source_conn(),
-                origin=origin_from_provider(Provider.CODEX),
-                capture_mode=Provider.CODEX,
-                payload=payload,
-                source_path=str(source_path),
-                source_index=0,
-                acquired_at_ms=index + 1,
-                blob_publication_receipt_id=publisher.receipt_id(blob_hash),
-                revision=RawRevisionEnvelope(
-                    f"codex-session:{session_id}",
-                    RawRevisionKind.FULL,
-                    f"full-{index}",
-                    index,
-                    authority=(
-                        RawRevisionAuthority.BYTE_PROVEN
-                        if index < len(snapshots) - 1
-                        else RawRevisionAuthority.ASSERTED
-                    ),
-                ),
-            )
+    _admit_full_snapshots(
+        archive_root,
+        source_path,
+        session_id,
+        snapshots,
+        [
+            RawRevisionAuthority.BYTE_PROVEN if index < len(snapshots) - 1 else RawRevisionAuthority.ASSERTED
+            for index in range(len(snapshots))
+        ],
+    )
     stat = source_path.stat()
     return _AppendPlan(
         path=source_path,
+        canonical_source_path=str(source_path),
+        captured_profile_key=None,
         source_name="codex",
         start_offset=len(snapshots[-1]),
         last_complete_newline=stat.st_size,
@@ -169,39 +170,29 @@ def _seed_partially_classified_cohort_and_append_plan(archive_root: Path) -> _Ap
         payload_hash=hashlib.sha256(append_payload).hexdigest(),
         cursor_fingerprint="full-2",
         bytes_read=len(append_payload),
+        # The watcher plans an append against the session it already bound;
+        # append acquisition refuses a plan without that identity.
+        native_id_hint=session_id,
     )
 
 
 def test_watcher_append_uses_durable_replay_metadata_without_historical_full_reads(tmp_path: Path) -> None:
-    """An established append cohort replays only its selected full and tail."""
+    """An established append cohort decides authority from metadata and replays only its tail."""
     plan = _seed_cohort_and_append_plan(tmp_path)
 
-    def unexpected_worker_start(_worker: threading.Thread, *_args: object, **_kwargs: object) -> None:
-        raise AssertionError("append-cohort collection must not start a parallel reader")
+    # The owned writer runs the whole append route on its worker thread. A
+    # parallel reader would record from a second thread.
+    recording_threads: set[int] = set()
+    with append_cohort_memory_counter() as counter:
+        record = counter.record
 
-    # Warm the worker before the no-new-thread guard. This is the escape
-    # that Thread.start alone cannot detect.
-    with ThreadPoolExecutor(max_workers=1) as warm_executor:
-        warm_executor.submit(lambda: None).result()
-        # Starting a worker is only one way to escape this synchronous route;
-        # an already-warmed executor must be caught at the measured callbacks too.
-        invoking_thread = threading.get_ident()
-        with (
-            patch.object(threading.Thread, "start", autospec=True, side_effect=unexpected_worker_start),
-            append_cohort_memory_counter() as counter,
-        ):
-            record = counter.record
+        def record_on_one_thread(site: str, byte_count: int = 0) -> None:
+            recording_threads.add(threading.get_ident())
+            record(site, byte_count)
 
-            def record_on_invoking_thread(site: str, byte_count: int = 0) -> None:
-                assert threading.get_ident() == invoking_thread, "append-cohort callback escaped the invoking thread"
-                record(site, byte_count)
-
-            with patch.object(counter, "record", side_effect=record_on_invoking_thread):
-                escaped = warm_executor.submit(counter.record, "thread-affinity-canary")
-                with pytest.raises(AssertionError, match="escaped the invoking thread"):
-                    escaped.result()
-                result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
-                counter.snapshot("quiescent")
+        with patch.object(counter, "record", side_effect=record_on_one_thread):
+            result = run_owned_append_plans(tmp_path, _owner(tmp_path), [plan])
+        counter.snapshot("quiescent")
 
     receipt = counter.workload_receipt(
         profile_id="workload-profile:append-cohort-canary",
@@ -212,37 +203,25 @@ def test_watcher_append_uses_durable_replay_metadata_without_historical_full_rea
     )
 
     assert result.succeeded == [plan]
+    assert len(recording_threads) == 1
     assert counter.batch_count == 1
     assert counter.plan_count == 1
     assert counter.calls_by_site["watcher_append_payload"] == 1
     assert counter.bytes_by_site["watcher_append_payload"] == len(plan.payload)
-    assert counter.calls_by_site["raw_revision_replay_plan"] == 1
-    assert counter.calls_by_site["classify_raw_revision_cohort"] == 0
+    # The authority decision (bind) and the terminal receipt each look up the
+    # append's durable parent; neither reads a retained full snapshot.
+    assert counter.calls_by_site["raw_append_revision_parent"] == 2
     assert counter.calls_by_site["historical_full_blob.read_all"] == 0
-    # The bounded invariant is that replay touches only the selected baseline
-    # and the new append, never every historical full snapshot. Replay now
-    # satisfies it by reusing the append plan's in-memory payload instead of
-    # re-reading blobs at all, so this count is 0 rather than the 8 reads the
-    # earlier read-per-raw path performed. The invariant is asserted directly
-    # below (historical reads stay at 0 and the accepted set stays at two), so
-    # this line records the read count without pinning an implementation that
-    # is allowed to get cheaper.
-    assert counter.calls_by_site["replay_raw_blob.read_all"] <= 8
-    # Replay may reopen the compact session metadata while finalizing source
-    # state, but it remains bounded to the selected baseline and append.
-    # Reintroducing full-cohort classification would add all three retained
-    # snapshots on top of this bound.
+    # Replay reuses the append plan's in-memory payload, so it reads no blob at
+    # all. The bounded invariant is that it never touches every historical
+    # full snapshot: three retained snapshots would exceed this bound.
     assert (
         counter.bytes_by_site["replay_raw_blob.read_all"]
         <= 4 * (len(_full_snapshots("append-memory-proof")[-1]) + len(plan.payload)) + 128
     )
-    assert counter.calls_by_site["accepted_raw_ids"] == 1
-    assert counter.bytes_by_site["accepted_raw_ids"] == 2
     phase_names = [phase.name for phase in counter.phases]
     assert phase_names == [
         "watcher_append:before",
-        "raw_revision_replay_plan:before",
-        "raw_revision_replay_plan:after",
         "watcher_append:after",
         "quiescent",
     ], counter.summary()
@@ -259,13 +238,15 @@ def test_watcher_append_uses_durable_replay_metadata_without_historical_full_rea
 
 
 def test_watcher_append_does_not_reclassify_an_established_cohort(tmp_path: Path) -> None:
-    """Anti-vacuity: restoring unconditional classification breaks this route."""
+    """Anti-vacuity: routing the append through a cohort classifier breaks this route."""
     plan = _seed_cohort_and_append_plan(tmp_path)
 
     with patch.object(
-        ArchiveStore, "classify_raw_revision_cohort_for_live_watch", side_effect=AssertionError("cohort route removed")
+        revision_governance,
+        "_classify_raw_revision_cohort",
+        side_effect=AssertionError("the append route classifies no cohort"),
     ):
-        result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
+        result = run_owned_append_plans(tmp_path, _owner(tmp_path), [plan])
 
     assert result.succeeded == [plan]
 
@@ -276,54 +257,86 @@ def test_watcher_append_counter_preserves_multi_plan_batch(tmp_path: Path) -> No
     second = _seed_cohort_and_append_plan(tmp_path, session_id="append-memory-proof-second")
 
     with append_cohort_memory_counter() as counter:
-        result = ingest_append_plans(cast(Any, _owner(tmp_path)), [first, second])
+        result = run_owned_append_plans(tmp_path, _owner(tmp_path), [first, second])
 
     assert result.succeeded == [first, second]
     assert counter.batch_count == 1
     assert counter.plan_count == 2
     assert counter.calls_by_site["watcher_append_payload"] == 1
-    assert counter.calls_by_site["raw_revision_replay_plan"] == 2
+    assert counter.calls_by_site["raw_append_revision_parent"] == 4
+    assert counter.calls_by_site["historical_full_blob.read_all"] == 0
 
 
-def test_watcher_append_defers_incomplete_cohort_after_historical_classification(tmp_path: Path) -> None:
+def test_watcher_append_defers_incomplete_cohort_without_historical_reads(tmp_path: Path) -> None:
     """Incomplete metadata keeps authority proof and must not advance the append cursor."""
     plan = _seed_cohort_and_append_plan(tmp_path, full_authority=RawRevisionAuthority.ASSERTED)
 
     with append_cohort_memory_counter() as counter:
-        result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
+        result = run_owned_append_plans(tmp_path, _owner(tmp_path), [plan])
 
     assert result.succeeded == []
     assert result.deferred == [plan]
-    # Only the fast probe re-enters raw_revision_replay_plan: the classifier
-    # derives its final plan internally rather than calling back through that
-    # method, so the fallback path costs one counted call, not two. The
-    # behavioural claim -- one classification, deferral, no cursor advance --
-    # is asserted on the lines around this one.
-    assert counter.calls_by_site["raw_revision_replay_plan"] == 1
-    assert counter.calls_by_site["classify_raw_revision_cohort"] == 1
-    # Classification no longer re-reads the historical snapshots through the
-    # counted publisher path; the bounded invariant asserted here is that it
-    # never grows to the full retained cohort.
-    assert counter.calls_by_site["historical_full_blob.read_all"] <= 3
+    assert result.failed == []
+    # Deferral is decided from durable metadata: the retained asserted
+    # snapshots are never reread to prove or refuse the append. Its replay
+    # publishes nothing, so no terminal receipt is looked up afterwards.
+    assert counter.calls_by_site["raw_append_revision_parent"] == 1
+    assert counter.calls_by_site["historical_full_blob.read_all"] == 0
+    # A deferred append's bytes are sound: it is never settled as a refusal.
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT parse_error FROM raw_sessions WHERE revision_kind = 'append'").fetchall() == [
+            (None,)
+        ]
 
 
-def test_watcher_append_reclassifies_when_nonempty_plan_omits_current_append(tmp_path: Path) -> None:
+def test_convergence_refuses_an_append_over_an_asserted_baseline_as_no_progress(tmp_path: Path) -> None:
+    """Anti-vacuity: let the replay report success and the key fails as a broken publication.
+
+    The append extends a baseline whose authority is only asserted, so the
+    cohort has no accepted chain and the replay applies nothing. The outcome
+    must be the typed no-progress refusal, not a success with no effect.
+    """
+    plan = _seed_cohort_and_append_plan(tmp_path, full_authority=RawRevisionAuthority.ASSERTED)
+    assert run_owned_append_plans(tmp_path, _owner(tmp_path), [plan]).deferred == [plan]
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        (append_raw,) = source.execute("SELECT raw_id FROM raw_sessions WHERE revision_kind = 'append'").fetchone()
+
+    async def converge() -> DerivationReport:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+            return await owner.converge_raw_id(append_raw)
+
+    report = asyncio.run(converge())
+
+    (outcome,) = report.outcomes
+    assert outcome.outcome is Outcome.FAILED
+    assert outcome.transient is False
+    assert outcome.error is not None and RetainedPreparationNoProgressError.__name__ in outcome.error
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone() == (0,)
+
+
+def test_watcher_append_defers_when_a_newer_asserted_full_hides_the_append(tmp_path: Path) -> None:
     """A newer asserted full must not let the watcher advance an omitted append cursor."""
     plan = _seed_partially_classified_cohort_and_append_plan(tmp_path)
 
     with append_cohort_memory_counter() as counter:
-        result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
+        result = run_owned_append_plans(tmp_path, _owner(tmp_path), [plan])
 
     assert result.succeeded == []
     assert result.deferred == [plan]
-    assert counter.calls_by_site["raw_revision_replay_plan"] == 1
-    assert counter.calls_by_site["classify_raw_revision_cohort"] == 1
+    assert counter.calls_by_site["raw_append_revision_parent"] == 2
+    assert counter.calls_by_site["historical_full_blob.read_all"] == 0
     with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
-        assert source.execute("SELECT 1 FROM raw_sessions WHERE revision_kind = 'append'").fetchone() is not None
-        assert (
-            index.execute(
-                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
-                ("codex-session:append-partial-classification-proof",),
-            ).fetchone()
-            is None
-        )
+        (append_raw,) = source.execute("SELECT raw_id FROM raw_sessions WHERE revision_kind = 'append'").fetchone()
+        (proven_head,) = source.execute(
+            "SELECT raw_id FROM raw_sessions WHERE source_revision = 'full-1' AND revision_authority = 'byte_proven'"
+        ).fetchone()
+        # Single-pass replay publishes the byte-proven prefix; the head stops
+        # there and the append past the asserted full stays deferred.
+        assert index.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
+            ("codex-session:append-partial-classification-proof",),
+        ).fetchone() == (proven_head,)
+        assert index.execute(
+            "SELECT decision FROM raw_revision_applications WHERE raw_id = ?", (append_raw,)
+        ).fetchone() == ("deferred",)

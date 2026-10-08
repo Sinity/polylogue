@@ -222,31 +222,44 @@ Provider reads run through an already-open or inactive first-party tab, not
 the service worker's cookie context. ChatGPT bearer and selected-account values
 remain inside MAIN world; Claude resolves the exact organization selected by
 the UI. The broker accepts only fixed inventory and native-conversation
-operations, bounds time and response bytes, and never persists or logs
-credential values. Missing or stale page auth context pauses for operator
+operations, streams response bytes into immutable OPFS files, and never persists
+or logs credential values. Missing or stale page auth context pauses for operator
 action instead of accepting a plausible-looking empty inventory.
 Claude jobs pin the selected organization at inventory start. If the UI
 selection changes, the job pauses with a `selected_organization_stale` reason;
 cancel that job and start a new one rather than using Resume across accounts.
 
 The scheduler uses concurrency one per provider, a conservative learned
-request cadence, daily and per-wake budgets, `Retry-After`, exponential
-full-jitter backoff, and a circuit breaker. A 403/auth/challenge pauses for
-operator action; repeated 429s or transport failures pause the provider job.
-Native-empty conversations, authorization failures, bounded retry exhaustion,
-receiver outages, and successful durable ACKs remain distinct in the exported
-diagnostic ledger. Receiver-down artifacts remain queued and are retried
-without refetching provider data.
+request cadence, daily and per-wake budgets, authoritative `Retry-After`, and
+exponential full-jitter backoff. A 403/auth/challenge pauses for operator action;
+429s and transport failures retain work for retry. Native-empty conversations,
+authorization failures, receiver outages, and successful durable ACKs remain
+distinct in the diagnostic ledger. Receiver-down artifacts retain their staged
+body references and retry without refetching provider data.
+Checkpoint results stream into each job’s derived outcome. A successful commit
+clears that job’s earlier error; transport loss retains processed results and
+marks unattempted jobs unavailable. These observations preserve operator state
+and do not become checkpoint content or trigger another semantic checkpoint.
 
-Execution itself is leased in IndexedDB, not only the queue item. Request
-budget is reserved atomically before a provider call, and pause/cancel bumps a
-generation checked by every asynchronous continuation, so two service workers
-cannot spend the same token or resurrect cancelled work. Provider requests
-time out before the execution lease can expire. Exact provider revision
-timestamps are recorded in a durable native-id ledger; a later job skips only
-an exact known revision, while missing/untrusted revisions are fetched again.
-Receiver retries and stored native envelopes are bounded and fail-paused on
-attempt, byte, or IndexedDB quota exhaustion.
+Execution is leased in IndexedDB. Active work renews its execution and item
+leases; worker loss permits recovery after expiration. Pause/cancel aborts and
+drains active provider reads and increments the generation checked by every
+asynchronous continuation. Exact provider revision timestamps are recorded in
+the durable native-id ledger; later jobs skip exact known revisions.
+
+OPFS stores committed immutable acquisition parts and sealed raw replies.
+IndexedDB owns record ordering, asset acquisition identity, delivery references,
+and current-document revision pins. Native normalization emits one record at a
+time into this owner. The receiver body is serialized into an immutable File
+with a known byte length and SHA-256. An ACK retires delivery roots, while a
+current-page cache or another unacknowledged record still protects shared assets.
+The popup reads pages of foreground delivery metadata and reports the actual
+total. Actual storage quota failures remain visible and preserve prior evidence;
+queue, byte, and retry counts do not discard valid captures.
+
+The tokenizer's largest native token or individual record can still allocate
+unbounded memory, and browser-native File upload buffering is outside the
+JavaScript chunk contract. There is no end-to-end bounded-memory claim.
 
 Completion means the loopback receiver atomically wrote the artifact and
 returned both a request id and the exact submitted JSON-byte SHA-256. The

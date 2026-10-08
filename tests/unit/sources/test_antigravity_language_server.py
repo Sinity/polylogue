@@ -438,7 +438,7 @@ def test_iter_language_server_exports_only_cascade_ids_empty_set_is_noop(
     assert sessions == []
 
 
-def test_iter_language_server_exports_discovers_nested_conversation_files(
+def test_iter_language_server_exports_admits_declared_files_and_excludes_nested_copies(
     tmp_path: Path,
 ) -> None:
     _touch_conversation_pb(tmp_path, "top-level")
@@ -456,16 +456,19 @@ def test_iter_language_server_exports_discovers_nested_conversation_files(
         },
     )
 
+    assert [path.relative_to(tmp_path).as_posix() for path in antigravity._conversation_pb_paths(tmp_path)] == [
+        "conversations/top-level.pb"
+    ]
     sessions = list(antigravity.iter_language_server_exports(tmp_path, client=fake))
 
-    assert [session.provider_session_id for session in sessions] == ["top-level", "nested"]
+    assert [session.provider_session_id for session in sessions] == ["top-level"]
 
 
-def test_export_results_surfaces_duplicate_identity_without_suppressing_other_items(tmp_path: Path) -> None:
+def test_export_results_surfaces_duplicate_identity_without_suppressing_other_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _touch_conversation_pb(tmp_path, "duplicate", "healthy")
-    nested = tmp_path / "conversations" / "workspace" / "duplicate.pb"
-    nested.parent.mkdir()
-    nested.write_bytes(b"")
+    duplicate = tmp_path / "conversations" / "duplicate.pb"
     fake = _FakeClientForExports(
         [AntigravitySessionSummary(cascade_id="duplicate"), AntigravitySessionSummary(cascade_id="healthy")],
         {
@@ -474,9 +477,16 @@ def test_export_results_surfaces_duplicate_identity_without_suppressing_other_it
         },
     )
 
+    # Duplicate path identities cannot arise from the declared source layout,
+    # so inject the duplicated manifest at the language-server export seam.
+    # This preserves coverage of its typed duplicate outcome without treating
+    # an out-of-layout nested copy as an admitted conversation.
+    monkeypatch.setattr(
+        antigravity, "_conversation_pb_paths", lambda _root: [duplicate, duplicate, duplicate.parent / "healthy.pb"]
+    )
     outcomes = list(antigravity.iter_language_server_export_results(tmp_path, client=fake))
 
-    assert [outcome.cascade_id for outcome in outcomes] == ["duplicate", "healthy", "duplicate"]
+    assert [outcome.cascade_id for outcome in outcomes] == ["duplicate", "duplicate", "healthy"]
     duplicate_failures = [outcome for outcome in outcomes if outcome.error == "duplicate conversation identity"]
     assert len(duplicate_failures) == 1
     assert [outcome.cascade_id for outcome in outcomes if outcome.obtained] == ["duplicate", "healthy"]

@@ -385,7 +385,7 @@ _READ_VIEW_HANDLER_TEMPLATES: dict[str, ReadViewHandlerMetadata] = {
         accepts_query_set=True,
         execution_kind="distinct-operation",
         operations=("read.compact",),
-        example="polylogue find repo:polylogue then read --view compact --max-tokens 4000",
+        example="polylogue find id:codex-session:demo-receipts then read --view compact --max-tokens 4000",
     ),
 }
 

@@ -23,7 +23,7 @@ from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_annotations import persist_annotation_schema
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.daemon_operations import running_daemon_operations
 
 
@@ -77,6 +77,23 @@ def test_resident_join_preserves_paging_and_missing_target_verdict(tmp_path: Pat
     assert first is not None and second is not None
     assert AnnotationJoinOperationResult.model_validate(first["result"]).result.next_offset == 1
     assert AnnotationJoinOperationResult.model_validate(second["result"]).result.next_offset is None
+
+
+async def test_join_completes_nested_on_a_thread_driving_a_loop(tmp_path: Path) -> None:
+    """The pinned join runs inside an admitted read on a loop-driving worker.
+
+    Anti-vacuity: drive ``join_typed_annotations`` through ``asyncio.run``
+    again and this call raises "asyncio.run() cannot be called from a running
+    event loop".
+    """
+    root = tmp_path / "archive"
+    await asyncio.to_thread(bootstrap_archive_root, root)
+    await asyncio.to_thread(_seed_labels, root)
+    with open_operation_read(root) as pinned:
+        result = AnnotationJoinOperationResult.model_validate(
+            execute_annotation_join(_request(), archive=pinned.archive, checkpoint=pinned.archive.check_operation_read)
+        )
+    assert result.result.matched_annotation_count == 2
 
 
 def test_join_reads_the_pinned_user_selection_after_overlay_changes(tmp_path: Path) -> None:
@@ -166,8 +183,8 @@ def test_resident_join_resolves_user_targets_on_the_original_reader(tmp_path: Pa
 async def test_direct_join_refuses_republication_during_its_single_pin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root = bootstrap_archive_root(tmp_path / "archive")
-    _seed_labels(root)
+    root = run_off_event_loop(lambda: bootstrap_archive_root(tmp_path / "archive"))
+    run_off_event_loop(lambda: _seed_labels(root))
     generation = root / ".index-generations" / "neutral-republication"
     generation.mkdir(parents=True)
     shutil.copyfile(ArchiveLocation.resolve(root).active_index_path, generation / "index.db")
@@ -201,8 +218,8 @@ async def test_direct_join_cancellation_settles_the_original_pinned_reader(
 ) -> None:
     from polylogue.operations import annotation_join
 
-    root = bootstrap_archive_root(tmp_path / "archive")
-    _seed_labels(root)
+    root = run_off_event_loop(lambda: bootstrap_archive_root(tmp_path / "archive"))
+    run_off_event_loop(lambda: _seed_labels(root))
     entered = threading.Event()
     settled = threading.Event()
     handles: list[sqlite3.Connection] = []

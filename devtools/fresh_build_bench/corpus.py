@@ -23,6 +23,7 @@ import json
 import os
 import random
 import shutil
+import stat
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -294,83 +295,47 @@ def verify_manifest(root: Path, manifest: dict[str, Any]) -> None:
 class SampleSource:
     """One real source root and where it lands inside the corpus."""
 
+    #: The watch-source name whose declared layout admits the population.
     origin: str
     root: Path
     target: str
-    suffixes: tuple[str, ...]
     #: Sample whole units rather than single files: every file whose first
     #: ``unit_depth`` path parts (suffix stripped) agree is one unit.
     session_units: bool = False
     unit_depth: int = 2
-    #: Directories of parser sidecars (persisted tool output) that belong to
-    #: the unit that contains them, whatever their suffix.
-    sidecar_dirs: tuple[str, ...] = ()
 
 
 def default_sample_sources(home: Path) -> tuple[SampleSource, ...]:
     return (
         # <project>/<session>.jsonl, its subagents and its tool-results/
         # sidecars are one unit.
-        SampleSource(
-            "claude-code",
-            home / ".claude" / "projects",
-            "home/.claude/projects",
-            (".jsonl",),
-            True,
-            sidecar_dirs=("tool-results",),
-        ),
-        SampleSource("codex", home / ".codex" / "sessions", "home/.codex/sessions", (".jsonl",)),
+        SampleSource("claude-code", home / ".claude" / "projects", "home/.claude/projects", True),
+        SampleSource("codex", home / ".codex" / "sessions", "home/.codex/sessions"),
         # Gemini keeps a project's transcripts under chats/ and their
         # persisted tool output under tool-outputs/session-<id>/; the project
         # is the smallest unit that holds both.
-        SampleSource(
-            "gemini-cli",
-            home / ".gemini" / "tmp",
-            "home/.gemini/tmp",
-            (".json", ".jsonl"),
-            True,
-            unit_depth=1,
-            sidecar_dirs=("tool-outputs",),
-        ),
+        SampleSource("gemini-cli", home / ".gemini" / "tmp", "home/.gemini/tmp", True, unit_depth=1),
     )
-
-
-def _admitted(source: SampleSource, path: Path) -> bool:
-    """Production's own admission predicate, plus the unit's parser sidecars.
-
-    A file the daemon discovers (a Claude ``workflows/run.json`` admitted by
-    the provider's declared artifact rules) is in the sample's population;
-    sidecars the parser joins from ``tool-results/`` travel with their unit.
-    """
-    from polylogue.core.enums import Provider
-    from polylogue.sources.source_walk import _is_supported_source_path
-
-    if _is_supported_source_path(path, provider=Provider(source.origin)):
-        return True
-    return any(part in source.sidecar_dirs for part in path.relative_to(source.root).parts[:-1])
 
 
 def _units(source: SampleSource) -> list[tuple[str, list[Path], int]]:
     """Group a source into sampling units: (key, files, bytes)."""
     if not source.root.is_dir():
         return []
-    # Production discovery's own traversal (it follows directory links, as
-    # an operator's ``sessions/team -> /mnt/sessions`` needs), so the sample
-    # and its population denominator see the files the daemon would.
-    from polylogue.sources.source_walk import _iter_source_entries
+    # Production discovery's own layout-bound walk, so the sample and its
+    # population denominator are exactly the files the daemon would admit,
+    # unit sidecars included. Discovery follows a directory link whose target
+    # stays inside the root and refuses one that escapes it; linked files are
+    # not followed, since discovery does not ingest a linked transcript.
+    from polylogue.sources.source_walk import layout_source_paths
+    from polylogue.sources.walk_faults import WalkRefusedError
 
-    def unreadable(error: OSError) -> None:
-        # os.walk would skip an unreadable subtree silently; a sample and its
-        # population must not lose valid operator input that way.
-        raise ValueError(f"a {source.origin} source subtree is unreadable ({error.strerror})") from error
-
-    # Linked files are not followed: production's walk stats entries without
-    # following them, so a linked transcript is not something it ingests.
-    files = [
-        path
-        for path in _iter_source_entries(source.root, onerror=unreadable)
-        if path.is_file() and not path.is_symlink() and _admitted(source, path)
-    ]
+    try:
+        files = layout_source_paths(source.origin, source.root)
+    except WalkRefusedError as exc:
+        # A sample and its population must not lose valid operator input to
+        # an unreadable subtree.
+        raise ValueError(f"a {source.origin} source subtree is unreadable ({exc})") from exc
     if not source.session_units:
         return [(str(path), [path], path.stat().st_size) for path in files]
     grouped: dict[str, list[Path]] = defaultdict(list)
@@ -495,6 +460,8 @@ def corpus_from_files(
     *,
     home: Path,
     exports: Sequence[tuple[str, Path]] = (),
+    hooks: Path | None = None,
+    hooks_fraction: float = 1.0,
 ) -> dict[str, Any]:
     """Seal a private corpus of the named real transcripts and their units.
 
@@ -532,10 +499,12 @@ def corpus_from_files(
         admitted = [source for root, source in sources if root in file.parents]
         if not admitted:
             raise ValueError(f"{named} is not under a default source root of {home}")
-        # The watcher cursors only its declared transcript suffixes; any other
-        # file would never be admitted, and the build could not go terminal.
-        if resolved.suffix.lower() not in admitted[0].suffixes:
-            raise ValueError(f"{named} is not a transcript its source root admits ({', '.join(admitted[0].suffixes)})")
+        # The watcher admits only its declared layout; any other file would
+        # never be admitted, and the build could not go terminal.
+        from polylogue.sources.live.watcher import WatchSource
+
+        if not WatchSource(name=admitted[0].origin, root=admitted[0].root).accepts(file):
+            raise ValueError(f"{named} is not a transcript its source root's declared layout admits")
         # The suffix makes a file observable, not a session: production's own
         # source classifier decides (a Gemini tool-output sidecar is raw-only).
         recognition = recognize_source_class(Provider(admitted[0].origin), resolved)
@@ -567,4 +536,74 @@ def corpus_from_files(
             raise ValueError(f"two --export files share the name {resolved.name!r}; rename one")
         staged.add(resolved.name)
         _copy_private(resolved, out / "exports" / origin / resolved.name)
-    return seal(out, kind="files", parameters={"selection": "explicit", "files": len(files), "exports": len(exports)})
+    if not 0 < hooks_fraction <= 1:
+        raise ValueError("hooks_fraction must be in (0, 1]")
+    hook_count = 0
+    if hooks is not None:
+        source_argument = Path(hooks).expanduser()
+        if source_argument.is_symlink():
+            raise ValueError("hook spool root is a symbolic link")
+        source_root = source_argument.resolve(strict=True)
+        if not source_root.is_dir():
+            raise ValueError(f"hook spool is not a directory: {hooks}")
+        destination_root = out / "home" / ".polylogue-hook-spool"
+        _copy_hook_tree(source_root, destination_root, fraction=hooks_fraction)
+        hook_count = sum(1 for path in destination_root.rglob("*") if path.is_file())
+    return seal(
+        out,
+        kind="files",
+        parameters={
+            "selection": "explicit",
+            "files": len(files),
+            "exports": len(exports),
+            "hook_files": hook_count,
+            "hook_fraction": hooks_fraction,
+        },
+    )
+
+
+def _copy_hook_tree(source_root: Path, destination_root: Path, *, fraction: float) -> None:
+    """Copy a deterministic file sample with per-file identity checks."""
+    stack = [(source_root, destination_root, "")]
+    while stack:
+        source_dir, destination_dir, relative_dir = stack.pop()
+        if source_dir.is_symlink() or not source_dir.is_dir():
+            raise ValueError("hook spool contains a non-directory member")
+        before = source_dir.stat()
+        destination_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        with os.scandir(source_dir) as entries:
+            members = sorted(entries, key=lambda entry: entry.name)
+        observed = []
+        directories = []
+        for entry in members:
+            path = Path(entry.path)
+            status = entry.stat(follow_symlinks=False)
+            observed.append((entry.name, status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns))
+            target = destination_dir / entry.name
+            if stat.S_ISDIR(status.st_mode):
+                directories.append((path, target, f"{relative_dir}/{entry.name}".strip("/")))
+            elif stat.S_ISREG(status.st_mode):
+                relative = f"{relative_dir}/{entry.name}".strip("/")
+                selector = int.from_bytes(hashlib.sha256(relative.encode()).digest()[:8], "big") / 2**64
+                if fraction == 1 or selector < fraction:
+                    _copy_private(path, target)
+            else:
+                raise ValueError("hook spool contains a symlink or special file")
+        if fraction == 1:
+            with os.scandir(source_dir) as entries:
+                after = sorted(
+                    (
+                        entry.name,
+                        entry.stat(follow_symlinks=False).st_dev,
+                        entry.stat(follow_symlinks=False).st_ino,
+                        entry.stat(follow_symlinks=False).st_size,
+                        entry.stat(follow_symlinks=False).st_mtime_ns,
+                    )
+                    for entry in entries
+                )
+            if observed != after or (source_dir.stat().st_dev, source_dir.stat().st_ino) != (
+                before.st_dev,
+                before.st_ino,
+            ):
+                raise ValueError("hook spool changed while staging; retry from a quiescent snapshot")
+        stack.extend(reversed(directories))

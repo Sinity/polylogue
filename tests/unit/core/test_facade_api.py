@@ -22,7 +22,11 @@ from polylogue.archive.message.roles import Role
 from polylogue.config import Config
 from polylogue.core.errors import InsightMaintenanceRequiresDaemonError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_archive_fixture_prepare, run_off_event_loop
 from tests.infra.builders import make_conv, make_msg
+from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.live_ingest import write_index_session
+from tests.infra.retained_replay import publish_retained_payload
 from tests.infra.storage_records import SessionBuilder, materialize_session_insights
 
 
@@ -82,7 +86,7 @@ LIST_CONV_FILTERS: list[ListSessionsCase] = [
 
 
 def _archive(tmp_path: Path) -> Polylogue:
-    initialize_active_archive_root(tmp_path)
+    run_off_event_loop(lambda: initialize_active_archive_root(tmp_path))
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
 
@@ -380,27 +384,22 @@ class TestPolylogueReadSurfaces:
     @pytest.mark.asyncio
     async def test_get_raw_artifacts_resolves_id_and_handles_missing(self: object, tmp_path: Path) -> None:
         from polylogue.core.enums import Provider
-        from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         archive = _archive(tmp_path)
 
-        payload = b'{"raw": "codex payload"}'
-        parsed = ParsedSession(
-            source_name=Provider.from_string("codex"),
-            provider_session_id="provider-raw-api",
-            title="Raw API",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="Hello")],
+        payload = (
+            b'{"type":"session_meta","payload":{"id":"provider-raw-api","timestamp":"2025-01-01T00:00:00Z"}}\n'
+            b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user","content":'
+            b'[{"type":"input_text","text":"Hello"}]}}\n'
         )
-        with ArchiveStore(archive.archive_root) as archive_db:
-            _raw_id, native_id = archive_db.write_raw_and_parsed(
-                parsed,
-                payload=payload,
-                source_path="/tmp/raw.jsonl",
-                acquired_at_ms=1735689600000,
-            )
+        _raw_id, written = await publish_retained_payload(
+            archive.archive_root,
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="/tmp/raw.jsonl",
+            acquired_at_ms=1735689600000,
+        )
+        (native_id,) = written
 
         artifacts, total = await archive.get_raw_artifacts_for_session(native_id)
         missing_artifacts, missing_total = await archive.get_raw_artifacts_for_session("missing")
@@ -435,42 +434,42 @@ class TestPolylogueReadSurfaces:
             updated_at="2025-01-01T00:00:00Z",
             messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="Hello")],
         )
-        # ``write_raw_and_parsed`` returns the full archive session id
+        # The fixture writer returns the full archive session id
         # (``origin:native_id``); the sessions-table ``native_id`` column
         # (what hook rows join against via ``session_native_id``) is the bare
         # provider-native token.
         bare_native_id = "provider-hooks-api"
-        with ArchiveStore(archive.archive_root) as archive_db:
-            _raw_id, native_id = archive_db.write_raw_and_parsed(
-                parsed,
-                payload=b'{"raw": "codex payload"}',
-                source_path="/tmp/raw.jsonl",
-                acquired_at_ms=1735689600000,
-            )
 
-            hook_specs = [
-                ("PreToolUse", 1_735_689_601_000),
-                ("PostToolUse", 1_735_689_602_000),
-                ("PostToolUse", 1_735_689_603_000),
-            ]
-            for index, (event_type, observed_at_ms) in enumerate(hook_specs):
-                archive_db.write_hook_event(
-                    provider=Provider.CODEX,
-                    payload=f'{{"event":"{event_type}","n":{index}}}'.encode(),
-                    source_path="/tmp/hooks/codex-session.jsonl",
-                    acquired_at_ms=observed_at_ms,
-                    carrier_relative_path=f"/tmp/hooks/codex-session.jsonl:{index}",
-                    hook_event=ArchiveHookEvent(
-                        hook_event_id=f"hook-{index}",
-                        origin=Origin.CODEX_SESSION,
+        def seed() -> str:
+            with ArchiveStore(archive.archive_root) as archive_db:
+                seeded_id = write_index_session(archive_db, parsed)
+
+                hook_specs = [
+                    ("PreToolUse", 1_735_689_601_000),
+                    ("PostToolUse", 1_735_689_602_000),
+                    ("PostToolUse", 1_735_689_603_000),
+                ]
+                for index, (event_type, observed_at_ms) in enumerate(hook_specs):
+                    archive_db.write_hook_event(
+                        provider=Provider.CODEX,
+                        payload=f'{{"event":"{event_type}","n":{index}}}'.encode(),
                         source_path="/tmp/hooks/codex-session.jsonl",
-                        event_type=event_type,
-                        payload={"event": event_type, "n": index},
-                        observed_at_ms=observed_at_ms,
-                        native_id=f"{bare_native_id}:{event_type}:{index}",
-                        session_native_id=bare_native_id,
-                    ),
-                )
+                        acquired_at_ms=observed_at_ms,
+                        carrier_relative_path=f"/tmp/hooks/codex-session.jsonl:{index}",
+                        hook_event=ArchiveHookEvent(
+                            hook_event_id=f"hook-{index}",
+                            origin=Origin.CODEX_SESSION,
+                            source_path="/tmp/hooks/codex-session.jsonl",
+                            event_type=event_type,
+                            payload={"event": event_type, "n": index},
+                            observed_at_ms=observed_at_ms,
+                            native_id=f"{bare_native_id}:{event_type}:{index}",
+                            session_native_id=bare_native_id,
+                        ),
+                    )
+            return seeded_id
+
+        native_id = run_off_event_loop(seed)
 
         summary = await archive.get_hook_event_summary_for_session(native_id)
         assert summary is not None
@@ -511,7 +510,7 @@ class TestPolylogueReadSurfaces:
         event type.
 
         Anti-vacuity: this exercises the real ``ParsedSession.session_events``
-        -> ``write_raw_and_parsed`` -> ``SessionRepository.get`` production
+        -> canonical index writer -> ``SessionRepository.get`` production
         path (no test-only reader). Deleting the ``event_type is not None``
         filter branch in ``Polylogue.get_session_events`` breaks the
         ``event_type="world_state"`` assertion below (it would return both
@@ -530,7 +529,7 @@ class TestPolylogueReadSurfaces:
         from polylogue.sources.parsers.base import ParsedMessage, ParsedSession, ParsedSessionEvent
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        archive = _archive(tmp_path)
+        archive = await run_archive_fixture_prepare(lambda: _archive(tmp_path))
 
         parsed = ParsedSession(
             source_name=Provider.from_string("codex"),
@@ -552,13 +551,16 @@ class TestPolylogueReadSurfaces:
                 ),
             ],
         )
-        with ArchiveStore(archive.archive_root) as archive_db:
-            _raw_id, native_id = archive_db.write_raw_and_parsed(
-                parsed,
-                payload=b'{"raw": "codex payload"}',
-                source_path="/tmp/raw.jsonl",
-                acquired_at_ms=1735689600000,
-            )
+
+        def prepare_archive_1() -> str:
+            with ArchiveStore(archive.archive_root) as archive_db:
+                native_id = write_fixture_index_session(
+                    archive_db._conn, parsed, archive_root=archive_db.index_db_path.parent
+                )
+
+            return native_id
+
+        native_id = await run_archive_fixture_prepare(prepare_archive_1)
 
         events = await archive.get_session_events(native_id)
         assert events is not None
@@ -577,12 +579,14 @@ class TestPolylogueReadSurfaces:
         assert bounded is not None
         assert len(bounded) == 1
 
-        no_events_native_id = _seed(
-            archive,
-            "conv-no-events",
-            provider="claude-ai",
-            title="No Events",
-            provider_session_id="provider-no-events",
+        no_events_native_id = await run_archive_fixture_prepare(
+            lambda: _seed(
+                archive,
+                "conv-no-events",
+                provider="claude-ai",
+                title="No Events",
+                provider_session_id="provider-no-events",
+            )
         )
         empty = await archive.get_session_events(no_events_native_id)
         assert empty == []

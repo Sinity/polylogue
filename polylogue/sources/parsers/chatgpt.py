@@ -23,7 +23,10 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 from pydantic import ValidationError
 
-from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
+from polylogue.archive.message.artifacts import (
+    classify_material_origin,
+    classify_message_type,
+)
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import (
@@ -37,6 +40,7 @@ from polylogue.core.enums import (
 )
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.core.types import AttachmentDirection
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.providers.chatgpt_session_models import ChatGPTNode
 from polylogue.sources.tool_result_reasons import unknown_reason
 
@@ -1489,6 +1493,8 @@ class SessionSpill(Protocol):
         """An empty string map for per-node memos and indexes."""
         ...
 
+    def set_attachment_record_origin(self, ordinal: int, raw_position: int) -> None: ...
+
     def connection(self) -> sqlite3.Connection:
         """The scratch database the session's selection tables live in."""
         ...
@@ -1565,6 +1571,8 @@ def _collect_message_entries(
     default_model_slug: str | None,
     new_seen_set: Callable[[], MutableSet[str]] = set,
     new_string_map: Callable[[], MutableMapping[str, str]] = dict,
+    attachment_origin: Callable[[int, int], None] | None = None,
+    attachment_occurrence: Callable[[ParsedAttachment, int], None] | None = None,
 ) -> _ActivePath:
     """Normalize every message node into ``entries``; return the active path."""
     if admission is not None:
@@ -1643,7 +1651,8 @@ def _collect_message_entries(
 
         # Where this message's own attachments begin, so an asset named both
         # by a metadata row and by a content part collapses to one row.
-        message_attachment_ids = _MessageAttachmentIds(attachments, len(attachments), new_string_map())
+        attachment_start = len(attachments)
+        message_attachment_ids = _MessageAttachmentIds(attachments, attachment_start, new_string_map())
 
         # Extract attachments from message metadata
         raw_msg_metadata = msg.get("metadata")
@@ -2269,6 +2278,14 @@ def _collect_message_entries(
                     )
                 else:
                     admission.materialized(AdmissionUnit.BLOCK, block_ordinal, block.type.value)
+        if attachment_origin is not None:
+            for attachment_ordinal in range(attachment_start, len(attachments)):
+                attachment_origin(attachment_ordinal, idx - 1)
+        if attachment_occurrence is not None:
+            for attachment_ordinal in range(attachment_start, len(attachments)):
+                attachment = attachments[attachment_ordinal]
+                attachment_occurrence(attachment, idx - 1)
+                attachments[attachment_ordinal] = attachment
         if not text and not content_blocks and not preserve_empty_messages:
             if admission is not None:
                 admission.unknown(
@@ -2282,7 +2299,12 @@ def _collect_message_entries(
         status_val = msg.get("status")
         end_turn_val = msg.get("end_turn")
         user_context_val = msg_metadata.get("user_context_message_data")
-        message_type = forced_message_type or classify_text_message_type(text) or MessageType.MESSAGE
+        message_type = classify_message_type(
+            role=role,
+            message_type=forced_message_type or MessageType.MESSAGE,
+            text=text,
+            block_types=tuple(block.type for block in content_blocks),
+        )
         real_author = _real_author(author)
         material_origin = human_authored_override(
             role,
@@ -2422,8 +2444,8 @@ def looks_like(payload: object) -> bool:
     pattern already load-bearing for Codex (``codex.looks_like``).
 
     Use this only where a whole document/list-of-documents is available
-    (``dispatch._detect_provider_from_sequence``'s first-record check, and
-    direct callers validating an assembled export). For a single record
+    (the canonical sequence-document detector and direct callers
+    validating an assembled export). For a single record
     that may be an intentionally partial fragment (streamed JSONL lines,
     already-lowered single records), use ``looks_like_fragment`` instead --
     it lacks the document-identity fields this function requires.
@@ -3000,7 +3022,13 @@ def _custom_gpt_event(
 
 
 @parser_admission("chatgpt")
-def parse(payload: Mapping[str, object], fallback_id: str, *, spill: SessionSpill | None = None) -> ParsedSession:
+def parse(
+    payload: Mapping[str, object],
+    fallback_id: str,
+    *,
+    spill: SessionSpill | None = None,
+    attachment_occurrence: Callable[[ParsedAttachment, int], None] | None = None,
+) -> ParsedSession:
     mapping = payload.get("mapping") or {}
     if not isinstance(mapping, Mapping):
         mapping = {}
@@ -3030,6 +3058,8 @@ def parse(payload: Mapping[str, object], fallback_id: str, *, spill: SessionSpil
         default_model_slug=conversation_model_slug,
         new_seen_set=spill.seen_set if spill is not None else set,
         new_string_map=spill.string_map if spill is not None else dict,
+        attachment_origin=spill.set_attachment_record_origin if spill is not None else None,
+        attachment_occurrence=attachment_occurrence,
     )
     emitted_message_ids = entries.emitted_provider_ids()
     session_events: MutableSequence[ParsedSessionEvent] = spill.events() if spill is not None else []
@@ -3156,3 +3186,49 @@ def parse(payload: Mapping[str, object], fallback_id: str, *, spill: SessionSpil
     return session.model_copy(
         update={"messages": messages, "attachments": attachments, "session_events": session_events}
     )
+
+
+def detection_projection(*, whole_document: bool = False) -> DetectorProjection:
+    """Fold every final mapping node using this parser's own shape validators."""
+    scalar = DetectorProjection()
+    author = DetectorProjection(fields={"role": scalar, "name": scalar, "metadata": scalar})
+    content = DetectorProjection(fields=dict.fromkeys(("content_type", "parts", "text", "language"), scalar))
+    message = DetectorProjection(
+        fields={
+            **dict.fromkeys(
+                ("id", "create_time", "update_time", "status", "end_turn", "weight", "metadata", "recipient"), scalar
+            ),
+            "author": author,
+            "content": content,
+        }
+    )
+    node = DetectorProjection(
+        fields={
+            "id": scalar,
+            "message": message,
+            "parent": scalar,
+            "children": DetectorProjection(
+                item=scalar, array_fold="all", array_predicate=lambda value: isinstance(value, str)
+            ),
+        }
+    )
+    validator = _mapping_nodes_are_valid if whole_document else _mapping_node_shape_is_plausible
+    mapping = DetectorProjection(
+        item=node,
+        mapping_predicate=lambda value: validator({"node": value}),
+        mapping_witness={"id": ""} if whole_document else {},
+    )
+    return DetectorProjection(
+        fields={
+            **dict.fromkeys(("current_node", "create_time", "conversation_id", "id", "shared_conversation_id"), scalar),
+            "mapping": mapping,
+            "messages": DetectorProjection(
+                item=DetectorProjection(fields={"node_id": scalar, "role": scalar}),
+                array_fold="first",
+            ),
+        }
+    )
+
+
+def whole_document_detection_projection() -> DetectorProjection:
+    return detection_projection(whole_document=True)

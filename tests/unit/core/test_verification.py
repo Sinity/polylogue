@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -69,11 +71,13 @@ def _insert_raw_record(
     raw_id, blob_size = blob_store.write_from_bytes(raw_content)
     origin = origin_from_provider(Provider.from_string(payload_provider or source_name))
 
-    with open_connection(db_path) as conn:
+    # Raw evidence lives in the Source tier; plant it as an independent writer.
+    with closing(sqlite3.connect(db_path.with_name("source.db"))) as conn, conn:
         write_source_raw_session_blob_ref(
             conn,
             origin=origin,
             source_path=source_path,
+            canonical_source_path=source_path,
             source_index=0,
             blob_hash=bytes.fromhex(raw_id),
             blob_size=blob_size,
@@ -326,13 +330,26 @@ class TestVerifyRawCorpus:
 
     def test_quarantine_malformed_flag_preserved(self, tmp_path: Path) -> None:
         db, location = _empty_archive(tmp_path)
-        # Should not raise even with quarantine_malformed=True on empty DB
+        # An empty corpus has no verdicts, so the writer is never asked.
+        handed: list[object] = []
         report = verify_raw_corpus(
             db_path=db,
             archive_location=location,
             request=SchemaVerificationRequest(quarantine_malformed=True),
+            quarantine=handed.append,
         )
         assert report.total_records == 0
+        assert handed == []
+
+    def test_quarantine_without_a_writer_is_refused(self, tmp_path: Path) -> None:
+        """Verification never takes the Source writer itself."""
+        db, location = _empty_archive(tmp_path)
+        with pytest.raises(ValueError, match="quarantine writer"):
+            verify_raw_corpus(
+                db_path=db,
+                archive_location=location,
+                request=SchemaVerificationRequest(quarantine_malformed=True),
+            )
 
     def test_report_structure_matches_schema(self, tmp_path: Path) -> None:
         db, location = _empty_archive(tmp_path)
@@ -489,7 +506,7 @@ class TestInspectRawArtifactCoverage:
         assert chatgpt_stats.element_kinds == {"session_document": 1}
         assert chatgpt_stats.resolution_reasons == {"exact_structure": 1}
 
-        with open_connection(db_path) as conn:
+        with closing(sqlite3.connect(db_path.with_name("source.db"))) as conn, conn:
             observation_count = conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()[0]
         assert observation_count == 5
 
@@ -523,7 +540,7 @@ class TestInspectRawArtifactCoverage:
             source_path=source_path,
             source_index=0,
         )
-        with open_connection(db_path) as conn:
+        with closing(sqlite3.connect(db_path.with_name("source.db"))) as conn, conn:
             conn.execute(
                 """
                 INSERT INTO raw_artifacts (
@@ -632,7 +649,8 @@ class TestInspectRawArtifactCoverage:
 
         # The durable raw_artifacts row is refreshed in place: its stale
         # support_status flips from unsupported to supported on re-inspection.
-        with open_connection(db_path) as conn:
+        with closing(sqlite3.connect(db_path.with_name("source.db"))) as conn, conn:
+            conn.row_factory = sqlite3.Row
             refreshed = conn.execute(
                 """
                 SELECT support_status
@@ -752,7 +770,7 @@ class TestInspectRawArtifactCoverage:
         sidecar_cohort = next(row for row in cohorts if row.artifact_kind == "agent_sidecar_meta")
         assert sidecar_cohort.linked_sidecar_count == 1
 
-    def test_large_json_documents_use_bounded_full_read_fallback(
+    def test_large_json_documents_use_complete_streamed_observation(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -827,7 +845,9 @@ class TestInspectRawArtifactCoverage:
                 return package
             return None
 
-        monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr(
+            "polylogue.storage.artifacts.inspection.SchemaRegistry.resolve_observation", _resolve_payload
+        )
         monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.get_package", _get_package)
 
         report = inspect_raw_artifact_coverage(
@@ -845,3 +865,25 @@ class TestInspectRawArtifactCoverage:
         assert row.wire_format == "json"
         assert row.artifact_kind == "session_document"
         assert row.support_status.value == "supported_parseable"
+
+
+@pytest.mark.parametrize("suffix", [b" trailing", b', {"later": true}', b' \n{"unfinished":'])
+def test_large_json_artifact_with_invalid_suffix_cannot_prove_schema_support(tmp_path: Path, suffix: bytes) -> None:
+    db_path = tmp_path / "index.db"
+    with open_connection(db_path):
+        pass
+    payload = {"uuid": "neutral-session", "chat_messages": [{"sender": "human", "text": "x" * 100_000}]}
+    _insert_raw_record(
+        db_path=db_path,
+        source_name="claude-ai",
+        source_path="/tmp/neutral.json",
+        raw_content=core_json.dumps_bytes(payload) + suffix,
+    )
+    report = inspect_raw_artifact_coverage(db_path=db_path, request=ArtifactCoverageRequest(providers=["claude-ai"]))
+    assert report.total_records == 1
+    assert report.contract_backed_records == 0
+    row = list_artifact_observation_rows(
+        db_path=db_path,
+        request=ArtifactObservationQuery(providers=["claude-ai"]),
+    )[0]
+    assert row.support_status.value in {"decode_failed", "partial_decode"}

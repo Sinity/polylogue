@@ -1,20 +1,99 @@
 import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
 
-import { indexedDB } from "fake-indexeddb";
+import { indexedDB, IDBKeyRange } from "fake-indexeddb";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { BackfillCoordinator } from "../src/backfill/coordinator.js";
-import { backfillAlarmName, serializedContentHash, serializedJson } from "../src/backfill/models.js";
-import { ChatGptBackfillAdapter, ClaudeBackfillAdapter, GrokBackfillAdapter } from "../src/backfill/providers.js";
-import { IndexedDbBackfillStore, MemoryBackfillStore, progressBuckets } from "../src/backfill/storage.js";
+import { NativeCaptureNormalizer } from "../src/capture/native.js";
+import { receiverContractPreparation, stagingRuntime } from "./infra/capture-staging.js";
 
-function response(body, { status = 200, retryAfter = null } = {}) {
+import { BackfillCoordinator } from "../src/backfill/coordinator.js";
+import { backfillAlarmName } from "../src/backfill/models.js";
+import { ChatGptBackfillAdapter, ClaudeBackfillAdapter, GrokBackfillAdapter } from "../src/backfill/providers.js";
+import { IndexedDbBackfillStore, MemoryBackfillStore } from "../src/backfill/storage.js";
+
+const captureOwners = new Map();
+async function serializedContentHash(file) { return createHash("sha256").update(Buffer.from(await file.arrayBuffer())).digest("hex"); }
+async function captureContentHash(envelope, file) { return envelope.receiver_native?.sha256 || serializedContentHash(file); }
+async function* checkpointResults(store, failures = []) {
+  for await (const job of store.jobRecords()) {
+    yield failures.find((failure) => failure.job_id === job.id) || { job_id: job.id, error: null, outcome: "committed" };
+  }
+}
+function coordinatorFixture(options) {
+  const key = options.store.databaseName || options.store;
+  if (!captureOwners.has(key)) captureOwners.set(key, stagingRuntime());
+  const { staging } = captureOwners.get(key);
+  return new BackfillCoordinator({
+    prepareCapture: (envelope, item, signal) => envelope.receiver_native
+      ? { contentHash: envelope.receiver_native.sha256 }
+      : staging.prepare(envelope, staging.conversionId(`backfill:${item.id}`), { delivery_kind: "backfill", id: item.id, job_id: item.job_id }, signal),
+    ...options,
+  });
+}
+
+async function retainedNativeCapture(envelope) {
+  return captureOwners.get(envelope.capture_record_ref).retainedNativeReplies(envelope);
+}
+
+function response(body, { status = 200, retryAfter = null, provider: declaredProvider = null, refusal = null } = {}) {
   return {
     ok: status >= 200 && status < 300,
     status,
-    headers: { get: (name) => (name === "Retry-After" ? retryAfter : null) },
-    json: vi.fn(async () => structuredClone(body)),
+    polylogueSelectedOrganizationId: Array.isArray(body) ? body[0]?.uuid : null,
+    headers: { get: (name) => (name.toLowerCase() === "retry-after" ? retryAfter : null) },
+    json: vi.fn(async () => globalThis.structuredClone(body)),
+    async normalizeCapture(item, attribution, relatedResponses = {}, signal = new globalThis.AbortController().signal) {
+      const runtime = stagingRuntime(); const { staging, store } = runtime;
+      const provider = declaredProvider || (body.mapping ? "chatgpt" : body.chat_messages ? "claude-ai" : "grok");
+      const owner = { provider, tab_id: 42, document_id: "backfill-fixture-document" };
+      const raw = await staging.begin(owner, { kind: "native-response", source_url: "https://synthetic.invalid/native" });
+      await staging.append(raw, owner, 0, Buffer.from(JSON.stringify(body)).toString("base64"));
+      await staging.seal(raw, owner);
+      const relatedRefs = {};
+      for (const [key, response] of Object.entries(relatedResponses)) {
+        const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://synthetic.invalid/native" });
+        await staging.append(ref, owner, 0, Buffer.from(JSON.stringify(await response.json())).toString("base64"));
+        await staging.seal(ref, owner); relatedRefs[key] = ref;
+      }
+      const normalizer = new NativeCaptureNormalizer({ staging, store, prepareNative: receiverContractPreparation(staging, store, {
+        onPrepare: refusal ? () => { const error = new Error(refusal); error.code = refusal; throw error; } : undefined,
+      }) });
+      const envelope = await normalizer.normalize({ provider, rawRef: raw, nativeId: item.native_id, extensionVersion: "0.1.0", instanceId: "backfill-preparation-instance", attribution: { backfill: attribution }, signal, relatedRefs });
+      captureOwners.set(envelope.capture_record_ref, runtime);
+      return envelope;
+    },
   };
+}
+
+function stagedGrokAdapter(fetchImpl, summary = {}) {
+  const runtime = stagingRuntime(); const { staging, store } = runtime;
+  const owner = { tab_id: 42, document_id: "grok-adapter-document", provider: "grok" };
+  const normalizer = new NativeCaptureNormalizer({ staging, store, prepareNative: receiverContractPreparation(staging, store, { summary }) });
+  const responses = new Map();
+  return new GrokBackfillAdapter(async (url, options) => {
+    const result = await fetchImpl(url, options);
+    if (!result.ok) return result;
+    const body = await result.json();
+    const ref = await staging.begin(owner, { kind: "native-response", source_url: url, capture_bundle: options.captureBundle });
+    await staging.append(ref, owner, 0, Buffer.from(JSON.stringify(body)).toString("base64"));
+    await staging.seal(ref, owner);
+    const staged = { ...result, captureRawRef: ref, normalizeCapture: async (item, attribution, related, signal = new globalThis.AbortController().signal) => {
+      const envelope = await normalizer.normalize({ provider: "grok", nativeId: item.native_id, rawRef: ref,
+        relatedRefs: Object.fromEntries(Object.entries(related).map(([name, value]) => [name, value.captureRawRef])),
+        acquisition: { kind: "grok-endpoint-bundle" }, extensionVersion: "0.1.0", instanceId: "backfill-preparation-instance", attribution, signal });
+      captureOwners.set(envelope.capture_record_ref, runtime);
+      return envelope;
+    } };
+    responses.set(ref.id, staged); return staged;
+  }, { nativeBundleOwner: {
+    begin: (nativeId) => store.beginNativeBundle({ owner, provider: "grok", nativeId, bundleId: globalThis.crypto.randomUUID(), requiredReplies: ["conversation", "responses"] }),
+    response: async (bundleId, name, result) => {
+      if (!result.ok) await store.publishNativeBundleReply(bundleId, owner, name, null, { ok: false, status: result.status });
+    },
+    restoreReply: (ref) => responses.get(ref.id),
+    finish: (bundleId, signal) => normalizer.finishBundle(bundleId, owner, { signal }),
+  } });
 }
 
 function chatGptNative(id, turns = true) {
@@ -60,23 +139,28 @@ class FixtureAdapter {
   }
 }
 
-function harness({ adapter = new FixtureAdapter(), receiver = null, receiverPreflight = null, checkpoint = null, captureOverride = null, start = 100000, instanceId = "instance-a", policy = {}, store = new MemoryBackfillStore() } = {}) {
+function harness({ adapter = new FixtureAdapter(), receiver = null, receiverPreflight = null, checkpoint = null, start = 100000, instanceId = "instance-a", policy = {}, store = new MemoryBackfillStore() } = {}) {
   let now = start;
   const alarms = { create: vi.fn(async () => undefined) };
-  const durableReceiver = receiver || vi.fn(async (envelope, serialized) => ({ receiver_request_id: `ack-${envelope.session.provider_session_id}`, outcome: "accepted", submitted_content_hash: await serializedContentHash(serialized), content_hash: await serializedContentHash(serialized) }));
-  const coordinator = new BackfillCoordinator({
+  const durableReceiver = receiver || vi.fn(async (envelope, serialized) => ({ receiver_request_id: `ack-${envelope.session.provider_session_id}`, outcome: "accepted", submitted_content_hash: await captureContentHash(envelope, serialized), content_hash: await captureContentHash(envelope, serialized) }));
+  const coordinator = coordinatorFixture({
     store,
     adapters: { chatgpt: adapter },
     receiver: durableReceiver,
     receiverPreflight,
     checkpoint,
-    captureOverride,
     alarms,
     clock: () => now,
     random: () => 0,
     instanceId,
   });
   return { adapter, store, alarms, receiver: durableReceiver, coordinator, now: () => now, advance: (ms) => { now += ms; }, policy: { baseCadenceMs: 1000, ...policy } };
+}
+
+async function snapshotJobs(store) {
+  const jobs = [];
+  for await (const job of store.jobRecords()) jobs.push(job);
+  return jobs;
 }
 
 async function startJob(h, patch = {}) {
@@ -89,13 +173,52 @@ async function enumerateThenAdvance(h, job) {
 }
 
 describe("background backfill coordinator", () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => { vi.restoreAllMocks(); captureOwners.clear(); globalThis.IDBKeyRange = IDBKeyRange; });
+
+  it.each([
+    ["memory", () => new MemoryBackfillStore()],
+    ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `slow-${globalThis.crypto.randomUUID()}`)],
+  ])("renews a progressing capture past multiple recovery leases with %s", async (_label, makeStore) => {
+    // Leave IndexedDB scheduling on real immediates while controlling lease timers.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const adapter = new FixtureAdapter(["one"]); const h = harness({ adapter, store: makeStore(), policy: { leaseMs: 900 } });
+      const job = await startJob(h); await enumerateThenAdvance(h, job);
+      let release; let started;
+      const began = new Promise((resolve) => { started = resolve; });
+      const pending = new Promise((resolve) => { release = resolve; });
+      adapter.fetchNative = async (id, signal) => { adapter.fetchCalls.push(id); started(); await pending; signal.throwIfAborted(); return response(chatGptNative(id)); };
+      const execution = h.coordinator.wake(job.id); await began;
+      for (let pass = 0; pass < 12; pass++) { h.advance(300); await vi.advanceTimersByTimeAsync(300); }
+      expect((await h.store.getJob(job.id)).execution_expires_at_ms).toBeGreaterThan(h.now());
+      expect(await h.store.acquireJobExecution(job.id, "second-worker", h.now(), 900)).toBeNull();
+      release(); await execution;
+      expect(adapter.fetchCalls).toEqual(["one"]);
+      expect(((await h.store.queuePage(job.id)).items)[0].state).toBe("complete");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("cancels and drains an active provider read before returning control", async () => {
+    const adapter = new FixtureAdapter(["one"]); const h = harness({ adapter });
+    const job = await startJob(h); await enumerateThenAdvance(h, job);
+    let started; let drained = false;
+    const began = new Promise((resolve) => { started = resolve; });
+    adapter.fetchNative = async (_id, signal) => {
+      started();
+      try { await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })); }
+      finally { drained = true; }
+    };
+    const execution = h.coordinator.wake(job.id); await began;
+    const controlled = await h.coordinator.control(job.id, "cancel");
+    expect(drained).toBe(true); expect(controlled.status).toBe("cancelled");
+    await execution; expect(h.receiver).not.toHaveBeenCalled();
+  });
 
   it.each(["accepted", "noop", "superseded"])("keeps retained ACK truth for %s", async (outcome) => {
-    const receiver = vi.fn(async (_capture, serialized) => ({
+    const receiver = vi.fn(async (envelope, serialized) => ({
       receiver_request_id: "retained-ack", outcome,
-      submitted_content_hash: await serializedContentHash(serialized),
-      content_hash: outcome === "accepted" ? await serializedContentHash(serialized) : "resident-hash",
+      submitted_content_hash: await captureContentHash(envelope, serialized),
+      content_hash: outcome === "accepted" ? await captureContentHash(envelope, serialized) : "resident-hash",
     }));
     const h = harness({ adapter: new FixtureAdapter(["one"]), receiver });
     const job = await startJob(h);
@@ -103,7 +226,7 @@ describe("background backfill coordinator", () => {
     await h.coordinator.wake(job.id);
     h.advance(1000);
     await h.coordinator.wake(job.id);
-    const item = (await h.store.listQueue(job.id))[0];
+    const item = (await h.store.queuePage(job.id)).items[0];
     expect(item.envelope).toBeNull();
     expect(receiver).toHaveBeenCalledTimes(1);
     expect((await h.coordinator.status(job.id)).status).toBe("complete");
@@ -117,17 +240,41 @@ describe("background backfill coordinator", () => {
     }
   });
 
+  it.each(["accepted", "superseded"])("keeps committed %s truth after finalization response loss", async (outcome) => {
+    const receiver = vi.fn(async (envelope, serialized) => ({
+      receiver_request_id: "neutral-finalization-ack", outcome,
+      submitted_content_hash: await captureContentHash(envelope, serialized),
+      content_hash: outcome === "accepted" ? await captureContentHash(envelope, serialized) : "resident-hash",
+    }));
+    const h = harness({ adapter: new FixtureAdapter(["one"]), receiver });
+    const original = h.store.finalizeCaptureCas.bind(h.store);
+    vi.spyOn(h.store, "finalizeCaptureCas").mockImplementation(async (...args) => {
+      await original(...args);
+      throw new Error("neutral post-commit response loss");
+    });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+    const item = (await h.store.queuePage(job.id)).items[0];
+    expect(item).toMatchObject({ state: outcome === "superseded" ? "superseded" : "complete",
+      envelope: null, receiver_receipt: { outcome } });
+    expect((await h.coordinator.status(job.id)).status).toBe("complete");
+    expect(receiver).toHaveBeenCalledTimes(1);
+    expect(h.adapter.fetchCalls).toEqual(["one"]);
+    if (outcome === "superseded") expect(await h.store.getRevision("chatgpt", "one")).toBeUndefined();
+  });
+
   it.each(["foreign_submission", "unknown_outcome", "accepted_wrong_hash"])("refuses %s ACK without dropping retained input", async (fault) => {
-    const receiver = vi.fn(async (_capture, serialized) => ({
+    const receiver = vi.fn(async (envelope, serialized) => ({
       receiver_request_id: "ack", outcome: fault === "unknown_outcome" ? "unknown" : "accepted",
-      submitted_content_hash: fault === "foreign_submission" ? "foreign" : await serializedContentHash(serialized),
-      content_hash: fault === "accepted_wrong_hash" ? "wrong" : await serializedContentHash(serialized),
+      submitted_content_hash: fault === "foreign_submission" ? "foreign" : await captureContentHash(envelope, serialized),
+      content_hash: fault === "accepted_wrong_hash" ? "wrong" : await captureContentHash(envelope, serialized),
     }));
     const h = harness({ adapter: new FixtureAdapter(["one"]), receiver });
     const job = await startJob(h);
     await enumerateThenAdvance(h, job);
     await h.coordinator.wake(job.id);
-    expect((await h.store.listQueue(job.id))[0]).toMatchObject({ state: "captured_waiting_receiver", envelope: expect.any(Object) });
+    expect((await h.store.queuePage(job.id)).items[0]).toMatchObject({ state: "captured_waiting_receiver", envelope: expect.any(Object) });
     expect((await h.coordinator.status(job.id)).cooldown_reason).toBe("receiver_contract_incompatible");
   });
 
@@ -136,10 +283,10 @@ describe("background backfill coordinator", () => {
     const job = await startJob(h);
     await enumerateThenAdvance(h, job);
     await h.coordinator.wake(job.id);
-    expect(progressBuckets(await h.store.listQueue(job.id)).complete).toBe(1);
+    expect((await h.store.queueSummary(job.id)).progress.complete).toBe(1);
 
     h.advance(1000);
-    const restarted = new BackfillCoordinator({ store: h.store, adapters: { chatgpt: h.adapter }, receiver: h.receiver, alarms: h.alarms, clock: h.now, random: () => 0, instanceId: "instance-b" });
+    const restarted = coordinatorFixture({ store: h.store, adapters: { chatgpt: h.adapter }, receiver: h.receiver, alarms: h.alarms, clock: h.now, random: () => 0, instanceId: "instance-b" });
     await restarted.wake(job.id);
 
     const status = await restarted.status(job.id);
@@ -147,7 +294,7 @@ describe("background backfill coordinator", () => {
     expect(status.progress.complete).toBe(2);
     expect(h.adapter.fetchCalls).toEqual(["one", "two"]);
     expect(h.receiver).toHaveBeenCalledTimes(2);
-    expect(h.receiver.mock.calls[0][0].session.title_source).toBe("provider");
+    expect((await retainedNativeCapture(h.receiver.mock.calls[0][0])).id).toBe("one");
   });
 
   it("recovers the durable job, queue, revision, and ACK ledgers from real IndexedDB after a worker restart", async () => {
@@ -159,7 +306,7 @@ describe("background backfill coordinator", () => {
     await enumerateThenAdvance(h, job);
     await h.coordinator.wake(job.id);
     const before = await h.coordinator.status(job.id);
-    const restarted = new BackfillCoordinator({
+    const restarted = coordinatorFixture({
       store: new IndexedDbBackfillStore(indexedDB, databaseName),
       adapters: { chatgpt: adapter }, receiver: h.receiver, alarms: h.alarms,
       clock: h.now, random: () => 0, instanceId: "instance-after-restart",
@@ -178,7 +325,7 @@ describe("background backfill coordinator", () => {
     const receiverPreflight = vi.fn(async () => undefined);
     const h = harness({ receiverPreflight, instanceId: "stable-extension-id" });
     const job = await startJob(h);
-    const restarted = new BackfillCoordinator({
+    const restarted = coordinatorFixture({
       store: h.store, adapters: { chatgpt: h.adapter }, receiver: h.receiver, receiverPreflight,
       alarms: h.alarms, clock: h.now, random: () => 0, instanceId: "stable-extension-id", receiverContractEpoch: "new-worker-epoch",
     });
@@ -191,22 +338,22 @@ describe("background backfill coordinator", () => {
 
   it("keeps a receiver-down capture durable and retries the ACK without refetching provider data", async () => {
     let calls = 0;
-    const receiver = vi.fn(async (_envelope, serialized) => {
+    const receiver = vi.fn(async (envelope, serialized) => {
       calls += 1;
       if (calls === 1) throw new Error("receiver_down");
-      return { receiver_request_id: "ack-recovered", outcome: "accepted", submitted_content_hash: await serializedContentHash(serialized), content_hash: await serializedContentHash(serialized) };
+      return { receiver_request_id: "ack-recovered", outcome: "accepted", submitted_content_hash: await captureContentHash(envelope, serialized), content_hash: await captureContentHash(envelope, serialized) };
     });
     const h = harness({ adapter: new FixtureAdapter(["one"]), receiver });
     const job = await startJob(h);
     await enumerateThenAdvance(h, job);
     await h.coordinator.wake(job.id);
-    expect((await h.store.listQueue(job.id))[0].state).toBe("captured_waiting_receiver");
+    expect(((await h.store.queuePage(job.id)).items)[0].state).toBe("captured_waiting_receiver");
     expect(h.adapter.fetchCalls).toHaveLength(1);
     const providerRequests = (await h.coordinator.status(job.id)).daily_requests;
 
     h.advance(1000);
     await h.coordinator.wake(job.id);
-    const item = (await h.store.listQueue(job.id))[0];
+    const item = ((await h.store.queuePage(job.id)).items)[0];
     expect(item.state).toBe("complete");
     expect(item.receiver_receipt.content_hash).toBe(item.content_hash);
     expect(h.adapter.fetchCalls).toHaveLength(1);
@@ -270,9 +417,7 @@ describe("background backfill coordinator", () => {
       updated_at: "2026-01-01T00:00:00Z",
     };
     await h.store.createJob(healthy);
-    h.coordinator.checkpoint = vi.fn(async () => ({
-      failures: [{ job_id: failed.id, error: "capture_job_receiver_unavailable" }],
-    }));
+    h.coordinator.checkpoint = vi.fn(() => checkpointResults(h.store, [{ job_id: failed.id, error: "capture_job_receiver_unavailable" }]));
 
     const status = await h.coordinator.status(failed.id);
 
@@ -283,15 +428,63 @@ describe("background backfill coordinator", () => {
     expect(await h.store.getJob(healthy.id)).toMatchObject({ status: "running" });
   });
 
+  it("streams many paused scope refusals and coalesces a concurrent semantic control without re-dirtying derived outcomes", async () => {
+    const store = new IndexedDbBackfillStore(indexedDB, `checkpoint-stream-${globalThis.crypto.randomUUID()}`);
+    const h = harness({ store }); const seed = await startJob(h);
+    await h.coordinator.control(seed.id, "pause");
+    await store.putJob({ ...await store.getJob(seed.id), account_scope: null });
+    for (let index = 0; index < 256; index++) await store.putJob({ ...await store.getJob(seed.id), id: `scope-${String(index).padStart(4, "0")}` });
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    let passes = 0; let observed = 0;
+    h.coordinator.checkpoint = vi.fn(async function* () {
+      const pass = ++passes; let first = true;
+      for await (const job of store.jobRecords()) {
+        yield { job_id: job.id, error: "capture_job_account_scope_unresolved", outcome: "scope_unresolved" };
+        // An accumulator that consumes the whole iterator before applying
+        // outcomes fails here; each row must publish before requesting another.
+        expect((await store.getJob(job.id)).recovery_checkpoint_outcome).toMatchObject({ state: "failed", error: "capture_job_account_scope_unresolved" });
+        observed++;
+        if (first && pass === 1) { first = false; await gate; }
+      }
+    });
+    const reading = h.coordinator.status(seed.id);
+    await vi.waitFor(() => expect(observed).toBe(1));
+    const controlling = h.coordinator.control("scope-0255", "cancel");
+    await vi.waitFor(async () => expect((await store.getJob("scope-0255")).status).toBe("cancelled"));
+    release();
+    const [status] = await Promise.all([reading, controlling]);
+    expect(status.recovery_checkpoint_error).toBe("capture_job_account_scope_unresolved");
+    expect(passes).toBe(2); expect(observed).toBe(514);
+    expect((await store.getJob("scope-0255")).status).toBe("cancelled");
+    expect(h.adapter.enumerateCalls).toBe(0);
+  });
+
+  it("preserves a completed checkpoint prefix and marks every unattempted job after transport loss, then clears failures on success", async () => {
+    const h = harness(); const first = await startJob(h);
+    const other = { ...await h.store.getJob(first.id), id: "unattempted-job", provider: "claude-ai" };
+    await h.store.createJob(other);
+    h.coordinator.checkpoint = vi.fn(async function* () {
+      yield { job_id: first.id, error: null, outcome: "committed" };
+      throw new Error("receiver_transport_lost");
+    });
+    expect((await h.coordinator.status(first.id)).recovery_checkpoint_error).toBeNull();
+    expect(await h.store.getJob(other.id)).toMatchObject({ status: "paused",
+      recovery_checkpoint_outcome: { state: "failed", error: "receiver_transport_lost" } });
+    expect((await h.store.getJob(first.id)).status).toBe("running");
+    h.coordinator.checkpoint = vi.fn(() => checkpointResults(h.store));
+    expect((await h.coordinator.status(other.id)).recovery_checkpoint_error).toBeNull();
+    expect((await h.store.getJob(other.id)).status).toBe("paused");
+    expect(h.adapter.enumerateCalls).toBe(0);
+  });
+
   it("keeps a rate-limited checkpoint failure running until its retry deadline", async () => {
     // Anti-vacuity: pausing here leaves the job non-runnable, so the alarm at
     // the deadline could never resume it without operator action.
     const h = harness();
     const job = await startJob(h);
     const retryUntil = h.now() + 60_000;
-    h.coordinator.checkpoint = vi.fn(async () => ({
-      failures: [{ job_id: job.id, error: "provider_throttled", outcome: "rate_limited", retry_until_ms: retryUntil }],
-    }));
+    h.coordinator.checkpoint = vi.fn(() => checkpointResults(h.store, [{ job_id: job.id, error: "provider_throttled", outcome: "rate_limited", retry_until_ms: retryUntil }]));
     h.alarms.create.mockClear();
 
     await h.coordinator.status(job.id);
@@ -304,9 +497,35 @@ describe("background backfill coordinator", () => {
     expect(h.alarms.create).toHaveBeenCalledWith(expect.any(String), { when: retryUntil });
   });
 
+  it("extends an existing checkpoint cooldown for a later Retry-After without shortening it on later observations", async () => {
+    const h = harness();
+    const job = await startJob(h);
+    let retryUntil = h.now() + 60_000;
+    h.coordinator.checkpoint = vi.fn(() => checkpointResults(h.store, [{
+      job_id: job.id, error: "provider_throttled", outcome: "rate_limited", retry_until_ms: retryUntil,
+    }]));
+    await h.coordinator.status(job.id);
+    expect((await h.store.getJob(job.id)).cooldown_until_ms).toBe(retryUntil);
+
+    retryUntil = h.now() + 48 * 60 * 60 * 1000;
+    const extended = retryUntil;
+    h.alarms.create.mockClear();
+    await h.coordinator.status(job.id);
+    expect(await h.store.getJob(job.id)).toMatchObject({ status: "running", cooldown_until_ms: extended });
+    expect(h.alarms.create).toHaveBeenCalledWith(expect.any(String), { when: extended });
+
+    retryUntil = h.now() + 30_000;
+    await h.coordinator.status(job.id);
+    expect((await h.store.getJob(job.id)).cooldown_until_ms).toBe(extended);
+    expect(h.adapter.enumerateCalls).toBe(0);
+  });
+
   it("coalesces concurrent receiver-authority checkpoints across status readers", async () => {
     let releaseCheckpoint;
-    const checkpoint = vi.fn(async () => new Promise((resolve) => { releaseCheckpoint = resolve; }));
+    const checkpoint = vi.fn(async () => {
+      await new Promise((resolve) => { releaseCheckpoint = resolve; });
+      return checkpointResults(h.store);
+    });
     const h = harness({ checkpoint });
     const starting = h.coordinator.start({ provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
     await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(1));
@@ -327,9 +546,10 @@ describe("background backfill coordinator", () => {
     let releaseCheckpoint;
     const checkpointGate = new Promise((resolve) => { releaseCheckpoint = resolve; });
     const writes = [];
-    const checkpoint = vi.fn(async (snapshot) => {
-      writes.push(structuredClone(snapshot));
+    const checkpoint = vi.fn(async () => {
+      writes.push({ jobs: await snapshotJobs(h.store) });
       if (writes.length === 1) await checkpointGate;
+      return checkpointResults(h.store);
     });
     const h = harness();
     const job = await startJob(h);
@@ -361,10 +581,10 @@ describe("background backfill coordinator", () => {
       updated_at: "2026-01-01T00:00:00Z",
     };
     await h.store.createJob(healthy);
-    h.coordinator.checkpoint = vi.fn(async (snapshot) => {
-      writes.push(structuredClone(snapshot));
+    h.coordinator.checkpoint = vi.fn(async () => {
+      writes.push({ jobs: await snapshotJobs(h.store) });
       if (writes.length === 1) await checkpointGate;
-      return { failures: [{ job_id: failed.id, error: "capture_job_receiver_unavailable" }] };
+      return checkpointResults(h.store, [{ job_id: failed.id, error: "capture_job_receiver_unavailable" }]);
     });
 
     const readingFailed = h.coordinator.status(failed.id);
@@ -383,8 +603,8 @@ describe("background backfill coordinator", () => {
 
   it("pauses exactly once on a 202-shaped ACK missing durable fields, then explicitly drains its stored envelope", async () => {
     let compatible = false;
-    const receiver = vi.fn(async (_envelope, serialized) => compatible
-      ? { receiver_request_id: "ack-after-upgrade", outcome: "accepted", submitted_content_hash: await serializedContentHash(serialized), content_hash: await serializedContentHash(serialized) }
+    const receiver = vi.fn(async (envelope, serialized) => compatible
+      ? { receiver_request_id: "ack-after-upgrade", outcome: "accepted", submitted_content_hash: await captureContentHash(envelope, serialized), content_hash: await captureContentHash(envelope, serialized) }
       : { receiver_request_id: "accepted-but-stale" });
     const receiverPreflight = vi.fn(async () => undefined);
     const h = harness({ adapter: new FixtureAdapter(["one"]), receiver, receiverPreflight });
@@ -417,7 +637,7 @@ describe("background backfill coordinator", () => {
     await enumerateThenAdvance(h, job);
     await h.coordinator.wake(job.id);
     const first = await h.coordinator.status(job.id);
-    const item = (await h.store.listQueue(job.id))[0];
+    const item = ((await h.store.queuePage(job.id)).items)[0];
     expect(first).toMatchObject({ status: "paused", cooldown_reason: "receiver_contract_incompatible" });
     expect(item).toMatchObject({ state: "captured_waiting_receiver", attempt_count: 0, last_response_class: "receiver_contract_incompatible" });
     expect(h.adapter.fetchCalls).toEqual(["one"]);
@@ -429,48 +649,25 @@ describe("background backfill coordinator", () => {
     expect(receiver).toHaveBeenCalledTimes(1);
   });
 
-  it("records the bounded ChatGPT bridge projection as native_compact", async () => {
+  it("retains the full native mapping and current node while publishing the canonical receiver reference", async () => {
+    const native = chatGptNative("branch-session");
+    native.mapping.first.children = ["second", "sibling"];
+    native.mapping.sibling = { id: "sibling", parent: "first", children: [], message: { id: "sibling-message", author: { role: "assistant" }, content: { parts: ["alternate"] } } };
+    native.current_node = "second";
     const adapter = new ChatGptBackfillAdapter();
-    const capture = await adapter.normalizeCapture(response({
-      polylogue_bridge_projection: "chatgpt-native-compact-v1",
-      id: "compact-one",
-      title: "Compact one",
-      create_time: 1710000000,
-      update_time: 1710000100,
-      mapping: {
-        node: {
-          id: "node",
-          parent: null,
-          message: {
-            id: "message",
-            author: { role: "assistant" },
-            content: { parts: ["retained text"] },
-            metadata: { model_slug: "fixture" },
-            create_time: 1710000001,
-          },
-        },
-      },
-    }), { native_id: "compact-one", title: "Compact one", updated_at: "2026-07-01T00:00:00Z" }, { job_id: "job", queue_id: "queue", instance_id: "worker" });
-
-    expect(capture).toMatchObject({
-      raw_provider_payload: { polylogue_bridge_projection: "chatgpt-native-compact-v1" },
-      provider_meta: { capture_fidelity: "native_compact" },
-      session: { provider_meta: { capture_fidelity: "native_compact" }, turns: [{ text: "retained text" }] },
-    });
+    const capture = await adapter.normalizeCapture(response(native), { native_id: native.id }, { job_id: "job" });
+    expect(await retainedNativeCapture(capture)).toEqual(native);
+    expect(capture.provider_meta.capture_fidelity).toBe("native_full");
+    expect(capture.session.turns).toEqual([]);
+    expect(capture.receiver_native).toBeDefined();
+    const fixture = new FixtureAdapter([native.id]); fixture.responses = [response(native)];
+    const h = harness({ adapter: fixture }); const job = await startJob(h);
+    await enumerateThenAdvance(h, job); await h.coordinator.wake(job.id);
+    expect(await retainedNativeCapture(h.receiver.mock.calls[0][0])).toEqual(native);
+    expect((await h.store.queuePage(job.id)).items).toMatchObject([{ state: "complete", capture_fidelity: "native_full" }]);
   });
 
-  it("reports native_compact capture fidelity after the receiver acknowledges a compact projection", async () => {
-    const adapter = new FixtureAdapter(["compact-one"]);
-    adapter.responses = [response({ ...chatGptNative("compact-one"), polylogue_bridge_projection: "chatgpt-native-compact-v1" })];
-    const h = harness({ adapter });
-    const job = await startJob(h);
-    await enumerateThenAdvance(h, job);
-    await h.coordinator.wake(job.id);
-
-    expect(await h.store.listQueue(job.id)).toMatchObject([{ state: "complete", capture_fidelity: "native_compact" }]);
-  });
-
-  it("submits the exact capture override through the ordinary receiver path", async () => {
+  it("submits acquired assets through the authoritative adapter through the ordinary receiver path", async () => {
     const exactEnvelope = {
       polylogue_capture_kind: "browser_llm_session",
       provider_meta: { capture_fidelity: "native_full" },
@@ -480,173 +677,41 @@ describe("background backfill coordinator", () => {
         turns: [{ role: "assistant", text: "complete output" }],
         attachments: [{
           name: "assistant-output.zip",
-          inline_base64: btoa("PK exact output"),
+          inline_base64: globalThis.btoa("PK exact output"),
         }],
       },
     };
-    const captureOverride = vi.fn(async () => exactEnvelope);
-    const h = harness({ adapter: new FixtureAdapter(["one"]), captureOverride });
+    const adapter = new FixtureAdapter(["one"]);
+    adapter.normalizeCapture = vi.fn(async () => exactEnvelope);
+    const h = harness({ adapter });
     const job = await startJob(h);
     await enumerateThenAdvance(h, job);
     await h.coordinator.wake(job.id);
 
-    expect(captureOverride).toHaveBeenCalledWith(expect.objectContaining({
-      provider: "chatgpt",
-      nativeId: "one",
-      attribution: expect.objectContaining({ job_id: job.id, instance_id: "instance-a" }),
-    }));
-    expect(h.receiver).toHaveBeenCalledWith(exactEnvelope, serializedJson(exactEnvelope));
-    expect(await h.store.listQueue(job.id)).toMatchObject([{
+    expect(adapter.normalizeCapture).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ native_id: "one" }), expect.objectContaining({ job_id: job.id, instance_id: "instance-a" }), expect.any(globalThis.AbortSignal), expect.objectContaining({ itemId: expect.any(String), jobId: job.id, owner: "instance-a", generation: expect.any(Number) }));
+    expect(h.receiver).toHaveBeenCalledWith(exactEnvelope, expect.objectContaining({ size: expect.any(Number) }), expect.any(globalThis.AbortSignal));
+    expect(JSON.parse(await h.receiver.mock.calls[0][1].text())).toMatchObject({ session: { ...exactEnvelope.session, turns: exactEnvelope.session.turns.map((turn, ordinal) => ({ ...turn, ordinal })) } });
+    expect((await h.store.queuePage(job.id)).items).toMatchObject([{
       state: "complete",
       capture_fidelity: "native_full",
     }]);
   });
 
-  it("retries an exact capture failure instead of accepting a compact asset-less fallback", async () => {
-    const captureOverride = vi.fn(async () => { throw new Error("exact_asset_acquisition_pending"); });
+  it("retains retryable acquisition failures without delivering incomplete assets", async () => {
     const adapter = new FixtureAdapter(["one"]);
-    const h = harness({ adapter, captureOverride });
+    adapter.normalizeCapture = vi.fn(async () => { throw new Error("exact_asset_acquisition_pending"); });
+    const h = harness({ adapter });
     const job = await startJob(h);
     await enumerateThenAdvance(h, job);
     await h.coordinator.wake(job.id);
 
-    expect(captureOverride).toHaveBeenCalledTimes(1);
+    expect(adapter.normalizeCapture).toHaveBeenCalledTimes(1);
     expect(h.receiver).not.toHaveBeenCalled();
-    expect(await h.store.listQueue(job.id)).toMatchObject([{
+    expect((await h.store.queuePage(job.id)).items).toMatchObject([{
       state: "retry_wait",
       last_response_class: "transport",
       last_error: "exact_asset_acquisition_pending",
     }]);
-  });
-
-  it("exports no credentials and restores profile-loss evidence without replaying a missing envelope", async () => {
-    const store = new MemoryBackfillStore();
-    await store.createJob({
-      id: "checkpoint-job", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", provider_options: { claudeOrganizationId: "account-should-not-survive" },
-      status: "running", policy: { maxDailyRequests: 10 }, learned_cadence_ms: 40000, daily_requests: 7,
-      last_ack: { receiver_request_id: "ack-1", content_hash: "abc" }, execution_generation: 0,
-    });
-    await store.putQueue({
-      id: "checkpoint-q", job_id: "checkpoint-job", provider: "chatgpt", native_id: "conversation-1", state: "captured_waiting_receiver",
-      envelope: { raw_provider_payload: { authorization: "Bearer secret", account_id: "account-should-not-survive" } },
-      receiver_receipt: { cookie: "secret" }, content_hash: "abc", attempt_count: 2,
-    });
-    const checkpoint = await store.exportRecoveryCheckpoint();
-    const encoded = JSON.stringify(checkpoint);
-    expect(encoded).not.toContain("Bearer secret");
-    expect(encoded).not.toContain("account-should-not-survive");
-    expect(encoded).not.toContain("cookie");
-    expect(checkpoint.jobs[0]).toMatchObject({ learned_cadence_ms: 40000, daily_requests: 7, last_ack: { receiver_request_id: "ack-1" } });
-
-    const restoredStore = new MemoryBackfillStore();
-    expect(await restoredStore.restoreRecoveryCheckpoint(checkpoint)).toEqual({ restored: 1, reason: "browser_profile_recovery_required" });
-    const restored = await restoredStore.getJob("checkpoint-job");
-    expect(restored).toMatchObject({ status: "paused", cooldown_reason: "browser_profile_recovery_required", last_ack: { receiver_request_id: "ack-1" } });
-    const restoredQueue = await restoredStore.listQueue("checkpoint-job");
-    expect(restoredQueue).toMatchObject([{ state: "recovery_required" }]);
-    expect(restoredQueue[0]).not.toHaveProperty("envelope");
-    const receiver = vi.fn();
-    const coordinator = new BackfillCoordinator({ store: restoredStore, adapters: { chatgpt: new FixtureAdapter(["one"]) }, receiver, alarms: { create: vi.fn() }, clock: () => 200000 });
-    await coordinator.wake("checkpoint-job");
-    expect(receiver).not.toHaveBeenCalled();
-  });
-
-  it("preserves terminal jobs and releases stripped leases when restoring a profile-loss checkpoint", async () => {
-    const store = new MemoryBackfillStore();
-    const checkpoint = {
-      version: 1,
-      jobs: [
-        { id: "complete", provider: "chatgpt", status: "complete", policy: { maxDailyRequests: 10 } },
-        { id: "cancelled", provider: "claude-ai", status: "cancelled", policy: { maxDailyRequests: 10 } },
-        { id: "running", provider: "chatgpt", status: "running", policy: { maxDailyRequests: 10 } },
-        { id: "paused-recovery", provider: "chatgpt", status: "paused", cooldown_reason: "receiver_contract_incompatible", policy: { maxDailyRequests: 10 } },
-      ],
-      queue: [
-        { id: "leased-eligible", job_id: "running", provider: "chatgpt", native_id: "one", state: "leased", resume_state: "eligible", next_eligible_at_ms: 0 },
-        { id: "leased-envelope", job_id: "running", provider: "chatgpt", native_id: "two", state: "leased", resume_state: "captured_waiting_receiver", next_eligible_at_ms: 0 },
-        { id: "paused-envelope", job_id: "paused-recovery", provider: "chatgpt", native_id: "three", state: "captured_waiting_receiver", next_eligible_at_ms: 0 },
-      ],
-      revisions: [],
-    };
-    await store.restoreRecoveryCheckpoint(checkpoint);
-    expect(await store.getJob("complete")).toMatchObject({ status: "complete" });
-    expect(await store.getJob("cancelled")).toMatchObject({ status: "cancelled" });
-    expect(await store.getJob("running")).toMatchObject({ status: "paused", cooldown_reason: "browser_profile_recovery_required" });
-    expect(await store.getJob("paused-recovery")).toMatchObject({ status: "paused", cooldown_reason: "browser_profile_recovery_required" });
-    expect(await store.listQueue("running")).toMatchObject([
-      { id: "leased-eligible", state: "eligible" },
-      { id: "leased-envelope", state: "recovery_required" },
-    ]);
-    const coordinator = new BackfillCoordinator({ store, adapters: { chatgpt: new FixtureAdapter(["one"]) }, receiver: vi.fn(), alarms: { create: vi.fn() }, clock: () => 100000 });
-    await expect(coordinator.control("running", "resume")).rejects.toThrow("browser_profile_recovery_required");
-    await expect(coordinator.control("paused-recovery", "resume")).rejects.toThrow("browser_profile_recovery_required");
-  });
-
-  it("replaces a stale browser cache with the receiver-authoritative checkpoint", async () => {
-    const store = new MemoryBackfillStore();
-    await store.restoreRecoveryCheckpoint({
-      version: 1,
-      jobs: [{ id: "stale", provider: "chatgpt", status: "paused", policy: { maxDailyRequests: 10 } }],
-      queue: [],
-      revisions: [],
-    });
-
-    expect(await store.replaceRecoveryCheckpoint({
-      version: 1,
-      jobs: [{
-        id: "receiver", provider: "chatgpt", status: "running", inventory_cursor: "9",
-        policy: { maxDailyRequests: 10 }, last_ack: { receiver_request_id: "ack-new" },
-      }],
-      queue: [{
-        id: "done", job_id: "receiver", provider: "chatgpt", native_id: "native", state: "complete",
-      }],
-      revisions: [{ id: "chatgpt:native", provider: "chatgpt", native_id: "native" }],
-    })).toEqual({ restored: 1, reason: "receiver_authority_reconciled" });
-
-    expect(await store.getJob("stale")).toBeUndefined();
-    expect(await store.getJob("receiver")).toMatchObject({
-      status: "paused", inventory_cursor: "9", last_ack: { receiver_request_id: "ack-new" },
-    });
-    expect(await store.listQueue("receiver")).toMatchObject([{ id: "done", state: "complete" }]);
-    expect(await store.getRevision("chatgpt", "native")).toMatchObject({ id: "chatgpt:native" });
-  });
-
-  it("validates replacement checkpoints before touching existing cache state", async () => {
-    const store = new MemoryBackfillStore();
-    await store.restoreRecoveryCheckpoint({
-      version: 1,
-      jobs: [{ id: "preserved", provider: "chatgpt", status: "paused", policy: { maxDailyRequests: 10 } }],
-      queue: [],
-      revisions: [],
-    });
-
-    expect(await store.replaceRecoveryCheckpoint({ version: 1, jobs: [], queue: {}, revisions: [] }))
-      .toEqual({ restored: 0, reason: "checkpoint_unavailable" });
-    expect(await store.getJob("preserved")).toMatchObject({ id: "preserved" });
-  });
-
-  it("reconciles successful providers without erasing a failed provider's local state", async () => {
-    const store = new MemoryBackfillStore();
-    await store.restoreRecoveryCheckpoint({
-      version: 1,
-      jobs: [
-        { id: "local-chatgpt", provider: "chatgpt", status: "paused", policy: { maxDailyRequests: 10 } },
-        { id: "local-claude", provider: "claude-ai", status: "paused", policy: { maxDailyRequests: 10 } },
-      ],
-      queue: [],
-      revisions: [],
-    });
-
-    await store.reconcileRecoveryCheckpoint({
-      version: 1,
-      jobs: [{ id: "remote-chatgpt", provider: "chatgpt", status: "running", policy: { maxDailyRequests: 10 } }],
-      queue: [],
-      revisions: [],
-    }, ["chatgpt"]);
-
-    expect(await store.getJob("local-chatgpt")).toBeUndefined();
-    expect(await store.getJob("remote-chatgpt")).toMatchObject({ status: "paused" });
-    expect(await store.getJob("local-claude")).toMatchObject({ id: "local-claude" });
   });
 
   it("treats a shared provider cooldown as a rate limit, not a transport failure", async () => {
@@ -655,7 +720,7 @@ describe("background backfill coordinator", () => {
     // repeated_transport_failures although no provider request was made.
     const adapter = new FixtureAdapter(["one"]);
     const cooldown = Object.assign(new Error("provider_rate_limited"), { outcome: "rate_limited", retryAfterSeconds: 30 });
-    const h = harness({ adapter, policy: { breakerThreshold: 2 } });
+    const h = harness({ adapter, policy: {} });
     const job = await startJob(h);
     await enumerateThenAdvance(h, job);
     adapter.fetchError = cooldown;
@@ -667,10 +732,10 @@ describe("background backfill coordinator", () => {
     expect(status.status).not.toBe("paused");
   });
 
-  it("honors Retry-After exactly and opens a circuit after repeated 429s", async () => {
+  it("honors Retry-After on repeated 429s and resumes without a permanent count cut", async () => {
     const adapter = new FixtureAdapter(["one"]);
     adapter.responses = [response({}, { status: 429, retryAfter: "60" }), response({}, { status: 429, retryAfter: "60" })];
-    const h = harness({ adapter, policy: { breakerThreshold: 2 } });
+    const h = harness({ adapter, policy: {} });
     const job = await startJob(h);
     await enumerateThenAdvance(h, job);
     await h.coordinator.wake(job.id);
@@ -685,16 +750,16 @@ describe("background backfill coordinator", () => {
     await h.coordinator.wake(job.id);
     status = await h.coordinator.status(job.id);
     expect(adapter.fetchCalls).toHaveLength(2);
-    expect(status.status).toBe("paused");
+    expect(status.status).toBe("running");
     expect(status.learned_cadence_ms).toBeGreaterThan(status.policy.baseCadenceMs);
     expect(status.daily_requests).toBe(3);
   });
 
-  it("persists auth, native-empty, bounded transport, and durable ACK as distinct outcomes", async () => {
+  it("retains empty native evidence and distinguishes auth, transport, refusal, and ACK", async () => {
     const cases = [
       { result: response({}, { status: 403 }), expected: "auth_required" },
-      { result: response(chatGptNative("one", false)), expected: "no_turns" },
-      { result: response({}, { status: 503 }), expected: "failed", policy: { maxTransportAttempts: 1, breakerThreshold: 5 } },
+      { result: response(chatGptNative("one", false)), expected: "complete" },
+      { result: response({}, { status: 503 }), expected: "retry_wait" },
       { result: response({}, { status: 400 }), expected: "failed" },
       { result: response(chatGptNative("one")), expected: "complete" },
     ];
@@ -705,49 +770,12 @@ describe("background backfill coordinator", () => {
       const job = await startJob(h);
       await enumerateThenAdvance(h, job);
       await h.coordinator.wake(job.id);
-      expect((await h.store.listQueue(job.id))[0].state).toBe(scenario.expected);
+      expect(((await h.store.queuePage(job.id)).items)[0].state).toBe(scenario.expected);
       expect((await h.coordinator.status(job.id)).daily_requests).toBe(2);
     }
   });
 
-  it("holds an oversized bridge response without consuming retry budget, then requeues it only on resume", async () => {
-    const adapter = new FixtureAdapter(["one"]);
-    adapter.fetchError = new Error("backfill_bridge_projection_too_large:observed_bytes=8388609;limit_bytes=8388608");
-    const h = harness({ adapter });
-    const job = await startJob(h);
-    await enumerateThenAdvance(h, job);
-    await h.coordinator.wake(job.id);
-
-    expect(await h.coordinator.status(job.id)).toMatchObject({ status: "paused", cooldown_reason: "backfill_bridge_response_too_large" });
-    expect(await h.store.listQueue(job.id)).toMatchObject([{
-      state: "bridge_oversize",
-      attempt_count: 0,
-      last_response_class: "bridge_response_too_large",
-      last_error: "backfill_bridge_projection_too_large:observed_bytes=8388609;limit_bytes=8388608",
-    }]);
-
-    await h.coordinator.control(job.id, "resume");
-    expect(await h.store.listQueue(job.id)).toMatchObject([{ state: "eligible", attempt_count: 0, last_error: null }]);
-  });
-
-  it("repairs a persisted bridge hold before a restarted worker fetches or completes it", async () => {
-    const h = harness({ adapter: new FixtureAdapter(["one"]) });
-    const job = await startJob(h);
-    await enumerateThenAdvance(h, job);
-    const [item] = await h.store.listQueue(job.id);
-    await h.store.putQueue({
-      ...item,
-      state: "bridge_oversize",
-      last_error: "backfill_bridge_projection_too_large:observed_bytes=25200000;limit_bytes=25165824",
-    });
-
-    await h.coordinator.wake(job.id);
-
-    expect(await h.coordinator.status(job.id)).toMatchObject({ status: "paused", cooldown_reason: "backfill_bridge_response_too_large" });
-    expect(h.adapter.fetchCalls).toEqual([]);
-  });
-
-  it("fails compact provider-contract drift per item and continues the job", async () => {
+  it("fails native provider-contract drift per item and continues the job", async () => {
     const adapter = new FixtureAdapter(["bad", "good"]);
     adapter.fetchNative = async (nativeId) => {
       adapter.fetchCalls.push(nativeId);
@@ -759,7 +787,7 @@ describe("background backfill coordinator", () => {
     await enumerateThenAdvance(h, job);
     await h.coordinator.wake(job.id);
 
-    expect((await h.store.listQueue(job.id)).find((item) => item.native_id === "bad")).toMatchObject({
+    expect(((await h.store.queuePage(job.id)).items).find((item) => item.native_id === "bad")).toMatchObject({
       native_id: "bad",
       state: "failed",
       attempt_count: 0,
@@ -786,10 +814,10 @@ describe("background backfill coordinator", () => {
     await h.coordinator.wake(job.id);
 
     expect((await h.coordinator.status(job.id)).status).toBe("paused");
-    expect((await store.listQueue(job.id))[0].state).toBe("auth_required");
+    expect(((await store.queuePage(job.id)).items)[0].state).toBe("auth_required");
 
     await h.coordinator.control(job.id, "resume");
-    const resumed = (await store.listQueue(job.id))[0];
+    const resumed = ((await store.queuePage(job.id)).items)[0];
     expect(resumed).toMatchObject({
       state: "eligible",
       resume_state: "eligible",
@@ -812,15 +840,15 @@ describe("background backfill coordinator", () => {
   it.each([
     ["memory storage", () => new MemoryBackfillStore()],
     ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `polylogue-test-${globalThis.crypto.randomUUID()}`)],
-  ])("atomically requeues held bridge work when resuming with %s", async (_label, makeStore) => {
+  ])("atomically requeues authenticated work when resuming with %s", async (_label, makeStore) => {
     const store = makeStore();
     const h = harness({ store });
     const job = await startJob(h);
-    await store.putQueue({ id: "bridge-held", job_id: job.id, provider: "chatgpt", native_id: "one", state: "bridge_oversize", attempt_count: 0, next_eligible_at_ms: null });
+    await store.putQueue({ id: "auth-held", job_id: job.id, provider: "chatgpt", native_id: "one", state: "auth_required", attempt_count: 0, next_eligible_at_ms: null });
 
     await h.coordinator.control(job.id, "resume");
 
-    expect(await store.listQueue(job.id)).toMatchObject([{ state: "eligible", resume_state: "eligible", next_eligible_at_ms: h.now(), last_error: null }]);
+    expect((await store.queuePage(job.id)).items).toMatchObject([{ state: "eligible", resume_state: "eligible", next_eligible_at_ms: h.now(), last_error: null }]);
   });
 
   it("grants only one lease across simultaneous extension instances", async () => {
@@ -831,7 +859,7 @@ describe("background backfill coordinator", () => {
       store.acquireNextLease("j1", "instance-right", 100, 1000),
     ]);
     expect([left, right].filter(Boolean)).toHaveLength(1);
-    expect((await store.listQueue("j1"))[0].state).toBe("leased");
+    expect(((await store.queuePage("j1")).items)[0].state).toBe("leased");
   });
 
   it("serializes leases across separate jobs for the same provider", async () => {
@@ -894,7 +922,7 @@ describe("background backfill coordinator", () => {
       await inventoryGate;
       return { classification: "success", items: [{ native_id: "one", updated_at: "2026-07-01T00:00:00Z" }], next_cursor: "1", done: true, request_count: 1 };
     });
-    const coordinator = new BackfillCoordinator({ store, adapters: { chatgpt: adapter }, receiver: vi.fn(), alarms: { create: vi.fn() }, clock: () => 1000, random: () => 0, instanceId: "idb-instance" });
+    const coordinator = coordinatorFixture({ store, adapters: { chatgpt: adapter }, receiver: vi.fn(), alarms: { create: vi.fn() }, clock: () => 1000, random: () => 0, instanceId: "idb-instance" });
     const job = await coordinator.start({ provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
     const wakes = [coordinator.wake(job.id), coordinator.wake(job.id)];
     await vi.waitFor(() => expect(adapter.enumerate).toHaveBeenCalledTimes(1));
@@ -915,11 +943,13 @@ describe("background backfill coordinator", () => {
     await enumerateThenAdvance(h, job);
     const wake = h.coordinator.wake(job.id);
     await vi.waitFor(() => expect(adapter.fetchNative).toHaveBeenCalledTimes(1));
-    await h.coordinator.control(job.id, "cancel");
+    const cancellation = h.coordinator.control(job.id, "cancel");
+    await vi.waitFor(async () => expect((await h.store.getJob(job.id)).status).toBe("cancelled"));
     releaseFetch(response(chatGptNative("one")));
+    await cancellation;
     await wake;
     expect((await h.coordinator.status(job.id)).status).toBe("cancelled");
-    expect((await h.store.listQueue(job.id))[0].state).toBe("cancelled");
+    expect(((await h.store.queuePage(job.id)).items)[0].state).toBe("cancelled");
     expect(h.receiver).not.toHaveBeenCalled();
   });
 
@@ -934,27 +964,22 @@ describe("background backfill coordinator", () => {
     const second = await startJob(h);
     await enumerateThenAdvance(h, second);
     await h.coordinator.wake(second.id);
-    expect((await h.store.listQueue(second.id))[0].state).toBe("unchanged");
+    expect(((await h.store.queuePage(second.id)).items)[0].state).toBe("unchanged");
     expect(adapter.fetchCalls).toEqual(["one"]);
     expect(h.receiver).toHaveBeenCalledTimes(1);
   });
 
-  it("fail-pauses receiver retries and stored envelope bytes at configured bounds", async () => {
-    const receiverDown = vi.fn(async () => { throw new Error("receiver_down"); });
-    const receiverHarness = harness({ adapter: new FixtureAdapter(["one"]), receiver: receiverDown, policy: { maxReceiverAttempts: 1 } });
-    const receiverJob = await startJob(receiverHarness);
-    await enumerateThenAdvance(receiverHarness, receiverJob);
-    await receiverHarness.coordinator.wake(receiverJob.id);
-    expect((await receiverHarness.coordinator.status(receiverJob.id)).cooldown_reason).toBe("receiver_retry_budget_exhausted");
-    expect((await receiverHarness.store.listQueue(receiverJob.id))[0].state).toBe("captured_waiting_receiver");
-
-    const byteHarness = harness({ adapter: new FixtureAdapter(["one"]), policy: { maxStoredBytes: 64 } });
-    const byteJob = await startJob(byteHarness);
-    await enumerateThenAdvance(byteHarness, byteJob);
-    await byteHarness.coordinator.wake(byteJob.id);
-    expect((await byteHarness.coordinator.status(byteJob.id)).cooldown_reason).toBe("storage_budget_exhausted");
-    expect((await byteHarness.store.listQueue(byteJob.id))[0].last_response_class).toBe("storage_budget_exhausted");
-    expect(byteHarness.receiver).not.toHaveBeenCalled();
+  it("retains acquired receiver evidence across repeated failures without refetching or exhausting attempts", async () => {
+    const receiver = vi.fn(async () => { throw new Error("receiver_down"); });
+    const h = harness({ adapter: new FixtureAdapter(["one"]), receiver });
+    const job = await startJob(h); await enumerateThenAdvance(h, job);
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await h.coordinator.wake(job.id); h.advance(60000);
+    }
+    expect((await h.coordinator.status(job.id)).status).toBe("running");
+    expect((await h.store.queuePage(job.id)).items).toMatchObject([{ state: "captured_waiting_receiver", attempt_count: 20 }]);
+    expect(h.adapter.fetchCalls).toEqual(["one"]);
+    expect(receiver).toHaveBeenCalledTimes(20);
   });
 
   it("pins Claude organization identity across restart and hard-reserves its request budget", async () => {
@@ -965,22 +990,22 @@ describe("background backfill coordinator", () => {
       .mockResolvedValueOnce(response([{ uuid: "org-1" }]))
       .mockResolvedValueOnce(response([{ uuid: "claude-1", updated_at: "2026-01-02T00:00:00Z" }]))
       .mockResolvedValueOnce(response({ uuid: "claude-1", chat_messages: [{ uuid: "m1", sender: "human", text: "hello" }] }));
-    const receiver = vi.fn(async (_envelope, serialized) => ({ receiver_request_id: "ack", outcome: "accepted", submitted_content_hash: await serializedContentHash(serialized), content_hash: await serializedContentHash(serialized) }));
-    const first = new BackfillCoordinator({ store, adapters: { "claude-ai": new ClaudeBackfillAdapter(fetchImpl) }, receiver, alarms, clock: () => now, random: () => 0 });
+    const receiver = vi.fn(async (envelope, serialized) => ({ receiver_request_id: "ack", outcome: "accepted", submitted_content_hash: await captureContentHash(envelope, serialized), content_hash: await captureContentHash(envelope, serialized) }));
+    const first = coordinatorFixture({ store, adapters: { "claude-ai": new ClaudeBackfillAdapter(fetchImpl) }, receiver, alarms, clock: () => now, random: () => 0 });
     const job = await first.start({ provider: "claude-ai", cutoff: "2026-01-01T00:00:00Z", policy: { baseCadenceMs: 1000, maxDailyRequests: 3 } });
     await first.wake(job.id);
     expect((await first.status(job.id)).daily_requests).toBe(2);
     expect((await first.status(job.id)).provider_options.claudeOrganizationId).toBe("org-1");
 
     now += 1000;
-    const restarted = new BackfillCoordinator({ store, adapters: { "claude-ai": new ClaudeBackfillAdapter(fetchImpl) }, receiver, alarms, clock: () => now, random: () => 0 });
+    const restarted = coordinatorFixture({ store, adapters: { "claude-ai": new ClaudeBackfillAdapter(fetchImpl) }, receiver, alarms, clock: () => now, random: () => 0 });
     await restarted.wake(job.id);
     expect((await restarted.status(job.id)).daily_requests).toBe(3);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     expect(fetchImpl.mock.calls[2][0]).toContain("/organizations/org-1/chat_conversations/claude-1");
 
     const cappedFetch = vi.fn();
-    const capped = new BackfillCoordinator({ store: new MemoryBackfillStore(), adapters: { "claude-ai": new ClaudeBackfillAdapter(cappedFetch) }, receiver, alarms, clock: () => now, random: () => 0 });
+    const capped = coordinatorFixture({ store: new MemoryBackfillStore(), adapters: { "claude-ai": new ClaudeBackfillAdapter(cappedFetch) }, receiver, alarms, clock: () => now, random: () => 0 });
     const cappedJob = await capped.start({ provider: "claude-ai", cutoff: "2026-01-01T00:00:00Z", policy: { maxDailyRequests: 1 } });
     await capped.wake(cappedJob.id);
     expect((await capped.status(cappedJob.id)).status).toBe("paused");
@@ -989,11 +1014,6 @@ describe("background backfill coordinator", () => {
 });
 
 describe("provider adapter contracts", () => {
-  it("hashes the exact UTF-8 JSON request bytes used by the receiver contract", async () => {
-    const payload = { z: "żółć 😀", number: 1.25, nested: { b: 2, a: 1 } };
-    const serialized = serializedJson(payload);
-    expect(await serializedContentHash(serialized)).toBe(createHash("sha256").update(serialized, "utf8").digest("hex"));
-  });
 
   it("normalizes ChatGPT and rejects inventory drift loudly", async () => {
     const fetchImpl = vi.fn()
@@ -1002,10 +1022,9 @@ describe("provider adapter contracts", () => {
     const adapter = new ChatGptBackfillAdapter(fetchImpl);
     const inventory = await adapter.enumerate("0", "2020-01-01T00:00:00Z");
     const capture = await adapter.normalizeCapture(await adapter.fetchNative("gpt-1"), inventory.items[0], { job_id: "j", queue_id: "q", instance_id: "i" });
-    expect(capture.session.turns).toHaveLength(2);
-    expect(capture.session.turns[0].text).toBe("hello");
-    expect(capture.session.turns[1].role).toBe("tool");
-    expect(capture.session.turns[1].provider_meta.model_slug).toBe("tool-model");
+    expect(await retainedNativeCapture(capture)).toEqual(chatGptNative("gpt-1"));
+    expect(capture.session.turns).toEqual([]);
+    expect(capture.receiver_native).toBeDefined();
     expect(capture.session.provider_meta.backfill.instance_id).toBe("i");
 
     const drifted = new ChatGptBackfillAdapter(vi.fn(async () => response({ conversations: [] })));
@@ -1017,7 +1036,7 @@ describe("provider adapter contracts", () => {
   // turns. This is the exact shape (content_type "code" then
   // "execution_output") that used to be indistinguishable from ordinary
   // assistant text once BrowserCaptureTurn had no blocks channel.
-  it("pairs a ChatGPT code-interpreter call and its output as tool_use/tool_result blocks", async () => {
+  it("retains a ChatGPT code-interpreter call and output for canonical receiver pairing", async () => {
     const native = {
       id: "gpt-ci",
       title: "Code interpreter run",
@@ -1030,26 +1049,17 @@ describe("provider adapter contracts", () => {
     const adapter = new ChatGptBackfillAdapter(vi.fn());
     const capture = await adapter.normalizeCapture(response(native), { native_id: "gpt-ci", title: "Code interpreter run" }, {});
 
-    const byId = Object.fromEntries(capture.session.turns.map((turn) => [turn.provider_turn_id, turn]));
-    expect(byId["call-1"].blocks).toEqual([
-      { type: "tool_use", tool_name: "code_interpreter", tool_id: "call-1", tool_input: { code: "6 * 7" }, metadata: { content_type: "code" } },
-    ]);
-    expect(byId["result-1"].blocks).toEqual([
-      { type: "tool_result", tool_id: "call-1", text: "42", metadata: { content_type: "execution_output" } },
-    ]);
-    // The tool_use block's own tool_id equals the tool_result block's
-    // tool_id: constructed pairing, not reconstructed from prose.
-    expect(byId["call-1"].blocks[0].tool_id).toBe(byId["result-1"].blocks[0].tool_id);
+    expect(await retainedNativeCapture(capture)).toEqual(native);
+    expect(capture.receiver_native).toBeDefined();
+    // Canonical pairing: native-rich-blocks-v1.json through actual receiver
+    // parity and test_code_interpreter_call_and_result_share_a_tool_id.
+
   });
 
   it("does not misclassify a thoughts-only ChatGPT turn as no_turns", async () => {
-    // chatGptText() used to return "" for a `thoughts` content node (its
-    // payload lives under content.thoughts, not parts/text/result), which
-    // silently dropped the turn from capture.session.turns -- a
-    // reasoning-only conversation would then look like zero turns and get
-    // skipped entirely (coordinator.js's `if (!capture.session?.turns?.length)`
-    // no_turns check), even though raw_provider_payload.mapping (the
-    // archival record) had real content all along.
+    // Canonical block structure is exercised by native-rich-blocks-v1.json
+    // through the actual receiver. The browser retains the original reply
+    // and the canonical nonempty summary instead of projecting prose.
     const native = {
       id: "gpt-reasoning-only",
       title: "Reasoning only",
@@ -1071,9 +1081,9 @@ describe("provider adapter contracts", () => {
     const adapter = new ChatGptBackfillAdapter(vi.fn());
     const capture = await adapter.normalizeCapture(response(native), { native_id: "gpt-reasoning-only", title: "Reasoning only" }, {});
 
-    expect(capture.session.turns).toHaveLength(1);
-    expect(capture.session.turns[0].text).toBe("First I considered X, then Y.");
-    expect(capture.session.turns[0].blocks).toEqual([{ type: "thinking", text: "First I considered X, then Y.", metadata: { content_type: "thoughts" } }]);
+    expect(await retainedNativeCapture(capture)).toEqual(native);
+    expect(capture.capture_summary.turnCount).toBeGreaterThan(0);
+    expect(capture.receiver_native).toBeDefined();
   });
 
   it("does not misclassify a thinking-only Claude turn as no_turns", async () => {
@@ -1092,11 +1102,12 @@ describe("provider adapter contracts", () => {
     const adapter = new ClaudeBackfillAdapter(vi.fn(), "org-1");
     const capture = await adapter.normalizeCapture(response(body), { native_id: "claude-reasoning-only", title: "Reasoning only" }, {});
 
-    expect(capture.session.turns).toHaveLength(1);
-    expect(capture.session.turns[0].text).toBe("Considering the tradeoffs before answering.");
+    expect(await retainedNativeCapture(capture)).toEqual(body);
+    expect(capture.capture_summary.turnCount).toBeGreaterThan(0);
+    expect(capture.receiver_native).toBeDefined();
   });
 
-  it("classifies a recipient-addressed JSON tool call as a tool_use block", async () => {
+  it("retains a recipient-addressed JSON tool call for canonical receiver classification", async () => {
     const native = {
       id: "gpt-tool",
       title: "Web search",
@@ -1107,9 +1118,8 @@ describe("provider adapter contracts", () => {
     const adapter = new ChatGptBackfillAdapter(vi.fn());
     const capture = await adapter.normalizeCapture(response(native), { native_id: "gpt-tool", title: "Web search" }, {});
 
-    expect(capture.session.turns[0].blocks).toEqual([
-      { type: "tool_use", tool_name: "web", tool_id: "call-1", tool_input: { search_query: "weather" }, metadata: { content_type: "text" } },
-    ]);
+    expect(await retainedNativeCapture(capture)).toEqual(native);
+    expect(capture.receiver_native).toBeDefined();
   });
 
   it("refuses a false-empty ChatGPT inventory without proven page auth context", async () => {
@@ -1199,7 +1209,7 @@ describe("provider adapter contracts", () => {
 
     expect(result.done).toBe(true);
     expect(fetchImpl.mock.calls.map(([url]) => {
-      const parsed = new URL(url);
+      const parsed = new globalThis.URL(url);
       return [parsed.searchParams.get("is_archived"), parsed.searchParams.get("is_starred")];
     })).toEqual([
       ["false", "false"],
@@ -1232,20 +1242,21 @@ describe("provider adapter contracts", () => {
     const inventory = await adapter.enumerate("0", "2026-01-01T00:00:00Z");
     const capture = await adapter.normalizeCapture(await adapter.fetchNative("claude-1"), inventory.items[0], { job_id: "j" });
     expect(capture.session.provider).toBe("claude-ai");
-    expect(capture.session.turns[0].role).toBe("assistant");
-    expect(capture.session.turns[0].parent_turn_id).toBe("parent");
-    expect(capture.session.turns[0].provider_meta.model).toBe("claude-opus");
+    expect((await retainedNativeCapture(capture)).chat_messages[0]).toMatchObject({
+      sender: "claude", parent_message_uuid: "parent", model: "claude-opus",
+    });
+    expect(capture.receiver_native).toBeDefined();
     expect(fetchImpl.mock.calls[2][0]).toContain("tree=True");
     expect(fetchImpl.mock.calls[2][0]).toContain("render_all_tools=true");
     expect(fetchImpl.mock.calls[2][0]).toContain("consistency=strong");
 
-    await expect(adapter.normalizeCapture(response({ messages: [] }), inventory.items[0], {})).rejects.toThrow("provider_contract_drift:claude_conversation.chat_messages_must_be_array");
+    await expect(adapter.normalizeCapture(response({ messages: [] }, { provider: "claude-ai", refusal: "invalid_native_preparation" }), inventory.items[0], {})).rejects.toThrow("invalid_native_preparation");
   });
 
   // Grok's own /rest/app-chat/conversations REST surface, verified live
   // 2026-07-31 (see src/content/grok_bridge.js): pageToken-cursored
   // enumeration, and a two-request native fetch (conversation metadata +
-  // /responses) combined into one payload for normalizeCapture.
+  // /responses) retained as separate original replies for normalizeCapture.
   it("enumerates Grok conversations by pageToken and stops when nextPageToken is absent", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(response({
@@ -1289,7 +1300,7 @@ describe("provider adapter contracts", () => {
     await expect(adapter.enumerate()).rejects.toThrow("provider_contract_drift:grok_inventory.conversations_must_be_array");
   });
 
-  it("combines Grok conversation metadata and /responses into one normalized capture, including temporary sessions", async () => {
+  it("retains original Grok endpoint replies while normalizing temporary sessions", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(response({ conversationId: "g-1", title: "Fixture", temporary: true, createTime: "2026-06-27T12:39:08Z", modifyTime: "2026-06-27T13:46:12Z" }))
       .mockResolvedValueOnce(response({
@@ -1298,30 +1309,93 @@ describe("provider adapter contracts", () => {
           { responseId: "r-2", sender: "ASSISTANT", parentResponseId: "r-1", message: "hi there", createTime: "2026-06-27T12:39:15Z", model: "grok-3" },
         ],
       }));
-    const adapter = new GrokBackfillAdapter(fetchImpl);
+    const adapter = stagedGrokAdapter(fetchImpl, { session_kind: "temporary" });
     const capture = await adapter.normalizeCapture(await adapter.fetchNative("g-1"), { native_id: "g-1", title: "Fixture" }, { job_id: "j" });
 
     expect(capture.session.provider).toBe("grok");
     expect(capture.session.session_kind).toBe("temporary");
-    expect(capture.session.turns).toHaveLength(2);
-    expect(capture.session.turns[0]).toMatchObject({ role: "user", text: "hello" });
-    expect(capture.session.turns[1]).toMatchObject({ role: "assistant", text: "hi there", parent_turn_id: "r-1" });
-    expect(capture.session.turns[1].provider_meta.model).toBe("grok-3");
+    expect(capture.session.turns).toEqual([]);
+    expect(capture.receiver_native).toBeDefined();
     expect(fetchImpl.mock.calls[1][0]).toContain("/responses");
+    const retained = await retainedNativeCapture(capture);
+    expect(retained.conversation).toMatchObject({ conversationId: "g-1", temporary: true });
+    expect(retained.responses.responses).toHaveLength(2);
+    expect(retained.responses.responses[1]).toMatchObject({ sender: "ASSISTANT", message: "hi there", parentResponseId: "r-1", model: "grok-3" });
 
     await expect(
-      adapter.normalizeCapture(response({ responses: "not-an-array" }), { native_id: "g-1" }, {}),
-    ).rejects.toThrow("provider_contract_drift:grok_conversation_combined.responses_must_be_array");
+      adapter.normalizeCapture(response({ responses: "not-an-array" }, { refusal: "invalid_native_preparation" }), { native_id: "g-1" }, {}),
+    ).rejects.toThrow("invalid_native_preparation");
   });
 
   it("surfaces a failed Grok /responses fetch as the fetchNative result without a second request", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(response({ conversationId: "g-1" }))
       .mockResolvedValueOnce(response({ code: 5 }, { status: 404 }));
-    const adapter = new GrokBackfillAdapter(fetchImpl);
+    const adapter = stagedGrokAdapter(fetchImpl);
 
     const result = await adapter.fetchNative("g-1");
     expect(result.ok).toBe(false);
     expect(result.status).toBe(404);
+  });
+});
+
+describe("disposable pre-streaming refusal conversion", () => {
+  const refusal = { id: "old-refusal", job_id: "paused-job", provider: "chatgpt", native_id: "native-old", state: "bridge_oversize", lease_owner: null };
+  const paused = { id: "paused-job", provider: "chatgpt", status: "paused", cooldown_reason: "operator_pause" };
+
+  it.each([2, 3])("atomically converts v%s after an aborted upgrade and preserves paused/acquired custody", async (oldVersion) => {
+    const name = `conversion-${globalThis.crypto.randomUUID()}`;
+    const old = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(name, oldVersion);
+      request.onupgradeneeded = () => {
+        for (const store of ["queue", "jobs", "revisions"]) request.result.createObjectStore(store, { keyPath: "id" });
+        if (oldVersion === 3) {
+          const metadata = request.result.createObjectStore("capture_retry_metadata", { keyPath: "queue_order", autoIncrement: true });
+          metadata.createIndex("id", "id", { unique: true });
+          request.result.createObjectStore("capture_retry_bodies", { keyPath: "id" });
+          request.result.createObjectStore("capture_retry_state");
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise((resolve, reject) => {
+      const tx = old.transaction(["queue", "jobs"], "readwrite");
+      tx.objectStore("queue").put(refusal); tx.objectStore("jobs").put(paused);
+      tx.objectStore("queue").put({ ...refusal, id: "acquired-old-refusal", envelope: { retained: "original bytes" } });
+      tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+    });
+    old.close();
+    await new Promise((resolve, reject) => {
+      const request = indexedDB.open(name, 4);
+      request.onupgradeneeded = () => request.transaction.abort();
+      request.onerror = () => resolve();
+      request.onsuccess = () => { request.result.close(); reject(new Error("aborted_upgrade_published")); };
+    });
+    const owner = new IndexedDbBackfillStore(indexedDB, name);
+    expect(await owner.getQueue(refusal.id)).toMatchObject({ state: "eligible", next_eligible_at_ms: 0, lease_owner: null });
+    expect(await owner.getJob(paused.id)).toMatchObject(paused);
+    expect(await owner.getQueue("acquired-old-refusal")).toMatchObject({
+      state: "recovery_required", envelope: { retained: "original bytes" },
+      last_error: "capture_refusal_retains_acquired_evidence",
+    });
+    (await owner.database()).close();
+    const restarted = new IndexedDbBackfillStore(indexedDB, name);
+    expect(await restarted.getQueue(refusal.id)).toMatchObject({ state: "eligible" });
+    expect(await restarted.acquireJobExecution(paused.id, "other-owner", 1000, 1000)).toBeNull();
+  });
+
+  it("converts checkpoint refusal once and preserves acquired custody as an explicit hold", async () => {
+    const owner = new IndexedDbBackfillStore(indexedDB, `checkpoint-conversion-${globalThis.crypto.randomUUID()}`);
+    const acquired = { ...refusal, id: "acquired-refusal", native_id: "native-acquired", body_ref: "retained-body" };
+    const checkpoint = { version: 1, jobs: [paused], queue: [refusal, acquired], revisions: [] };
+    for (let restart = 0; restart < 2; restart++) {
+      for (const job of checkpoint.jobs) await owner.convertLocalCheckpointRecord("jobs", job);
+      for (const item of checkpoint.queue) await owner.convertLocalCheckpointRecord("queue", item);
+    }
+    expect(await owner.getQueue(refusal.id)).toMatchObject({ state: "eligible" });
+    expect(await owner.getQueue(acquired.id)).toMatchObject({ state: "recovery_required", body_ref: "retained-body", last_error: "capture_refusal_retains_acquired_evidence" });
+    expect(await owner.getJob(paused.id)).toMatchObject({ status: "paused", cooldown_reason: "operator_pause" });
+    expect(((await owner.queuePage(paused.id)).items).every((item) => item.state !== "bridge_oversize")).toBe(true);
   });
 });

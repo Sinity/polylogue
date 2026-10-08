@@ -16,9 +16,9 @@ from pathlib import Path
 import pytest
 
 import polylogue.storage.blob_gc as blob_gc
-from polylogue.core.write_lease import write_lease
 from polylogue.storage.blob_liveness import BlobLiveness, LivenessState
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 
 
@@ -97,7 +97,8 @@ def test_gc_commits_exact_member_intent_before_any_unlink(tmp_path: Path, monkey
 
     monkeypatch.setattr(blob_gc, "_unlink_observed_gc_member", assert_intent_then_unlink)
 
-    report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+    with write_lease("test.blob_gc", archive_root=tmp_path):
+        report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
 
     assert report.deleted_count == 1
     assert _member_rows(tmp_path / "source.db") == [(report.generation_id, blob_hash.upper(), "removed")]
@@ -250,7 +251,8 @@ def test_pending_intent_against_a_swapped_namespace_is_abandoned_not_executed(
 
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_after_intent)
     with pytest.raises(RuntimeError, match="namespace-bound intent pending"):
-        blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+        with write_lease("test.blob_gc", archive_root=tmp_path):
+            blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", original_final)
     abandoned_generation = _member_rows(tmp_path / "source.db")[0][0]
 
@@ -258,7 +260,8 @@ def test_pending_intent_against_a_swapped_namespace_is_abandoned_not_executed(
     store.root.rename(observed_namespace)
     store.root.mkdir()
 
-    retry = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+    with write_lease("test.blob_gc", archive_root=tmp_path):
+        retry = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
 
     assert retry.blocked_reason is None
     assert retry.generation_id != abandoned_generation

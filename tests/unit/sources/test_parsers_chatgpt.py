@@ -2578,7 +2578,7 @@ def test_citation_markers_are_stripped_but_citations_survive() -> None:
     assert any(c.provider_key == "citations" for c in constructs)
 
 
-def test_user_editable_context_becomes_runtime_context_message() -> None:
+def test_user_editable_context_preserves_human_authorship() -> None:
     mapping = {
         "node1": {
             "id": "node1",
@@ -2600,7 +2600,7 @@ def test_user_editable_context_becomes_runtime_context_message() -> None:
     assert len(messages) == 1
     message = messages[0]
     assert message.message_type is MessageType.CONTEXT
-    assert message.material_origin is MaterialOrigin.RUNTIME_CONTEXT
+    assert message.material_origin is MaterialOrigin.HUMAN_AUTHORED
     assert message.text is not None
     assert "Profile: local-first archivist." in message.text
     assert "Always answer with evidence refs." in message.text
@@ -4067,9 +4067,9 @@ def test_tool_result_node_reference_resolves_to_emitted_message_identity(
     from polylogue.pipeline.ids import session_content_hash
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
     from polylogue.storage.sqlite.connection_profile import open_connection
     from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.index_writer import write_fixture_index_session
 
     mapping: dict[str, object] = {
         "call-node": {
@@ -4120,7 +4120,7 @@ def test_tool_result_node_reference_resolves_to_emitted_message_identity(
         with closing(open_connection(index_path, tier=ArchiveTier.INDEX, archive_root=tmp_path)) as conn:
             conn.row_factory = sqlite3.Row
             with conn:
-                session_id = write_parsed_session_to_archive(conn, parsed, content_hash=session_content_hash(parsed))
+                session_id = write_fixture_index_session(conn, parsed, content_hash=session_content_hash(parsed))
     with closing(sqlite3.connect(index_path)) as conn:
         rows = conn.execute(
             "SELECT result.tool_id,result.text,result.tool_outcome FROM blocks AS result "
@@ -4177,9 +4177,9 @@ def test_idless_mapping_branch_switch_changes_hash_and_stored_active_leaf(tmp_pa
     from polylogue.pipeline.ids import session_content_hash
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
     from polylogue.storage.sqlite.connection_profile import open_connection
     from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.index_writer import write_fixture_index_session
 
     mapping = {
         "question": {
@@ -4233,7 +4233,7 @@ def test_idless_mapping_branch_switch_changes_hash_and_stored_active_leaf(tmp_pa
             conn.row_factory = sqlite3.Row
             for session, digest, leaf in zip(sessions, hashes, ("left", "right"), strict=True):
                 with conn:
-                    session_id = write_parsed_session_to_archive(conn, session, content_hash=digest)
+                    session_id = write_fixture_index_session(conn, session, content_hash=digest)
                 selected = conn.execute(
                     "SELECT native_id FROM messages WHERE session_id=? AND is_active_leaf=1", (session_id,)
                 ).fetchall()

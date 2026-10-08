@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.paths import data_home
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 
@@ -80,6 +80,22 @@ def _historical_schemas(
             element_kind=element_kind,
         )
         yield package.version, schema
+
+
+def _choose_retained_schema(
+    base_version: str,
+    base_schema: JSONDocument,
+    historical_schemas: Iterator[tuple[str, JSONDocument]],
+    *,
+    schema_accepts: Callable[[JSONDocument], bool],
+) -> tuple[str, JSONDocument]:
+    """Apply the shared retained current-then-historical acceptance order."""
+    if schema_accepts(base_schema):
+        return base_version, base_schema
+    for historical_version, historical_schema in historical_schemas:
+        if schema_accepts(historical_schema):
+            return historical_version, historical_schema
+    return base_version, base_schema
 
 
 def reset_registry_cache() -> None:
@@ -162,6 +178,76 @@ def resolve_payload_schema(
         if schema_accepts(historical_schema):
             return canonical, historical_schema, (str(canonical), historical_version, element_kind)
     return canonical, schema, (str(canonical), package_version, element_kind)
+
+
+def resolve_retained_schema(
+    provider: str | Provider,
+    payload: object,
+    *,
+    source_path: str | None = None,
+    schema_resolution: SchemaResolution | None = None,
+    schema_resolution_is_explicit: bool = False,
+    registry: SchemaRegistry,
+    schema_store: Callable[[object], JSONDocument] | None = None,
+    schema_accepts: Callable[[JSONDocument], bool] | None = None,
+) -> tuple[Provider, JSONDocument, tuple[str, str, str], SchemaResolution | None]:
+    """Resolve and validate a retained lazy document without materializing it.
+
+    Shape observation and validation borrow the caller's replayable document
+    view.  Inferred selection preserves the ordinary registry precedence and
+    tries ranked historical packages only after the selected schema rejects
+    the complete sample stream.  Each candidate receives a fresh iterator
+    from the caller, so a failed package cannot consume evidence needed by a
+    later one.
+    """
+    canonical = canonical_provider(provider)
+    resolution = schema_resolution
+    if resolution is None:
+        observations, _cluster = registry.observe_payload(
+            str(canonical),
+            cast(JSONValue, payload),
+            source_path=source_path,
+            schema_store=schema_store,
+        )
+        resolution = registry.resolve_observation(str(canonical), observations, source_path=source_path)
+
+    if resolution is None:
+        package = _load_package(registry, canonical, version="default")
+        package_version = package.version
+        element_kind = package.default_element_kind
+    else:
+        package_version = resolution.package_version
+        element_kind = resolution.element_kind
+
+    schema = _load_schema(
+        registry,
+        canonical,
+        package_version=package_version,
+        element_kind=element_kind,
+    )
+    if (schema_resolution is not None and schema_resolution_is_explicit) or schema_accepts is None:
+        key = (str(canonical), package_version, element_kind)
+        return canonical, schema, key, _replace_resolution(resolution, canonical, key)
+    package_version, schema = _choose_retained_schema(
+        package_version,
+        schema,
+        _historical_schemas(registry, canonical, element_kind=element_kind),
+        schema_accepts=schema_accepts,
+    )
+    key = (str(canonical), package_version, element_kind)
+    return canonical, schema, key, _replace_resolution(resolution, canonical, key)
+
+
+def _replace_resolution(
+    resolution: SchemaResolution | None,
+    canonical: Provider,
+    key: tuple[str, str, str],
+) -> SchemaResolution | None:
+    if resolution is None:
+        return None
+    from dataclasses import replace
+
+    return replace(resolution, provider=str(canonical), package_version=key[1], element_kind=key[2])
 
 
 def available_providers(*, registry_cls: type[SchemaRegistry] = SchemaRegistry) -> list[str]:

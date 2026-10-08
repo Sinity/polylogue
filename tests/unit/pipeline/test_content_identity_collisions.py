@@ -17,6 +17,9 @@ import itertools
 import sqlite3
 import unicodedata
 from collections.abc import Callable
+from datetime import date, datetime
+from decimal import Decimal
+from enum import Enum
 from pathlib import Path
 
 import pytest
@@ -32,11 +35,14 @@ from polylogue.pipeline.ids import (
 from polylogue.sources.parsers.base_models import (
     ParsedAttachment,
     ParsedContentBlock,
+    ParsedFileEdit,
     ParsedMessage,
     ParsedSession,
     ParsedSessionEvent,
 )
-from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome, write_parsed_session_to_archive
+from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome
+from tests.infra.index_writer import close_fixture_index_connection, write_fixture_index_session
 
 _NULL_LITERAL = "__POLYLOGUE_NULL__"
 _EMPTY_LITERAL = "__POLYLOGUE_EMPTY__"
@@ -59,9 +65,11 @@ def _session(
     instructions_text: str | None = None,
     git_branch: str | None = None,
     working_directories: list[str] | None = None,
+    file_edit: ParsedFileEdit | None = None,
+    pending_drafts: list[dict[str, object]] | None = None,
 ) -> ParsedSession:
     blocks = []
-    if tool_input is not None or metadata is not None:
+    if tool_input is not None or metadata is not None or file_edit is not None:
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_USE,
@@ -69,6 +77,7 @@ def _session(
                 tool_id="call-1",
                 tool_input=tool_input,
                 metadata=metadata,
+                file_edit=file_edit,
             )
         )
     return ParsedSession(
@@ -89,6 +98,7 @@ def _session(
         instructions_text=instructions_text,
         git_branch=git_branch,
         working_directories=working_directories or [],
+        pending_drafts=pending_drafts or [],
     )
 
 
@@ -252,6 +262,69 @@ def test_ascii_key_order_stays_harmless() -> None:
     _assert_same(_session(tool_input={"a": 1, "b": 2}), _session(tool_input={"b": 2, "a": 1}))
 
 
+@pytest.mark.parametrize("carrier", ["tool_input", "metadata", "event", "file_edit", "pending_drafts"])
+def test_nested_nonstring_mapping_keys_keep_typed_associations(carrier: str) -> None:
+    first: dict[object, object] = {1: "integer", "1": "string"}
+    second: dict[object, object] = {"1": "string", 1: "integer"}
+
+    def build(mapping: dict[object, object]) -> ParsedSession:
+        if carrier == "event":
+            return _session(events=_event({"nested": mapping}))
+        if carrier == "file_edit":
+            return _session(file_edit=ParsedFileEdit(structured_patch=[{"nested": mapping}]))
+        if carrier == "pending_drafts":
+            return _session(pending_drafts=[{"nested": mapping}])
+        if carrier == "metadata":
+            return _session(metadata={"nested": mapping})
+        return _session(tool_input={"nested": mapping})
+
+    baseline = build(first)
+    _assert_same(baseline, build(second))
+    # The legacy QUERY lowering stringifies 1 to "1" and used to drop one
+    # value.  The one typed sidecar now keeps both associations in all carriers.
+    axis = "event" if carrier == "event" else ("session" if carrier == "pending_drafts" else "message")
+    _assert_distinct(baseline, build({1: "integer"}), axis=axis)
+
+
+@pytest.mark.parametrize(
+    "key,other_key,value,other",
+    [
+        (b"path", "b'path'", "bytes-key", "string-key"),
+        (date(2026, 1, 2), "2026-01-02", "date-key", "string-key"),
+        ("cafe\u0301", "café", "NFD-key", "NFC-key"),
+    ],
+    ids=["bytes-key", "date-key", "exact-nfd-key"],
+)
+def test_nested_mapping_keys_preserve_runtime_type_and_exact_spelling(
+    key: object, other_key: str, value: str, other: str
+) -> None:
+    payload: dict[str, object] = {"nested": {key: value, other_key: other}}
+    forward = _session(tool_input=payload)
+    reverse = _session(tool_input={"nested": {other_key: other, key: value}})
+    _assert_same(forward, reverse)
+    _assert_distinct(forward, _session(tool_input={"nested": {key: value}}))
+
+
+@pytest.mark.parametrize("field", ["tool_input", "metadata", "event_payload", "structured_patch", "pending_drafts"])
+def test_declared_string_key_maps_reject_before_pydantic_can_drop_bytes_key(field: str) -> None:
+    collision = {b"a": "bytes", "a": "string"}
+    with pytest.raises(ValueError, match="string mapping keys"):
+        if field in {"tool_input", "metadata"}:
+            ParsedContentBlock.model_validate({"type": BlockType.TOOL_USE, "tool_name": "read_file", field: collision})
+        elif field == "event_payload":
+            ParsedSessionEvent.model_validate({"event_type": "turn_context", "payload": collision})
+        elif field == "structured_patch":
+            ParsedFileEdit.model_validate({"structured_patch": [collision]})
+        else:
+            ParsedSession.model_validate(
+                {
+                    "source_name": Provider.CHATGPT,
+                    "provider_session_id": "identity-contract",
+                    "pending_drafts": [collision],
+                }
+            )
+
+
 # -- operational strings hash exactly (polylogue-aki9t) -----------------------
 
 
@@ -310,16 +383,163 @@ def test_prose_nfc_equivalence_reaches_idless_anchors() -> None:
     assert unicodedata.normalize("NFC", _NFD) == _NFC
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            ParsedMessage(
+                provider_message_id="",
+                role=Role.USER,
+                text="ordinary",
+                timestamp="2026-01-02T03:04:05Z",
+            ),
+            "94acc691e6494c71bb4a3181b22f6c33",
+        ),
+        (
+            ParsedMessage(
+                provider_message_id="",
+                role=Role.ASSISTANT,
+                text=None,
+                timestamp=None,
+                user_context_text="",
+            ),
+            "db98315063e94bc832168f0c6031c3f0",
+        ),
+        (
+            ParsedMessage(
+                provider_message_id="",
+                role=Role.ASSISTANT,
+                text="A message",
+                timestamp="2026-01-02T03:04:05Z",
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="read_file",
+                        tool_id="call-7",
+                        tool_input={"path": "/tmp/example", "flags": ["x", None]},
+                        metadata={"note": "ordinary"},
+                    )
+                ],
+            ),
+            "51bcefa015c2fceef3a4a458fddb1038",
+        ),
+    ],
+    ids=["plain", "null-empty", "nested-operational-fields"],
+)
+def test_ordinary_idless_message_ids_keep_pre_a44_vectors(message: ParsedMessage, expected: str) -> None:
+    """Ordinary durable anchors keep their shipped digest preimages."""
+    assert message_content_identity(message) == expected
+
+
+def test_marker_shaped_mapping_key_keeps_its_noncolliding_pre_a44_id() -> None:
+    message = ParsedMessage(
+        provider_message_id="",
+        role=Role.ASSISTANT,
+        text="anchor",
+        timestamp=None,
+        blocks=[
+            ParsedContentBlock(
+                type=BlockType.TOOL_USE,
+                tool_input={"__POLYLOGUE_NULL__": "value"},
+                tool_id="tool",
+                tool_name="read_file",
+            )
+        ],
+    )
+    # Computed by the shipped pre-a44 encoder, not the candidate helper.
+    assert message_content_identity(message) == "622c8a6196d308c682ca401518fa82b7"
+
+
+def test_recursive_marker_literals_and_empty_lists_remain_disjoint() -> None:
+    def id_for(*, payload: dict[str, object], block: bool = True) -> str:
+        message = ParsedMessage(
+            provider_message_id="",
+            role=Role.ASSISTANT,
+            text="anchor",
+            timestamp=None,
+            blocks=(
+                [
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="call",
+                        tool_input=payload,
+                    )
+                ]
+                if block
+                else []
+            ),
+        )
+        return message_content_identity(message)
+
+    assert id_for(payload={"outer": {"value": None}}) != id_for(payload={"outer": {"value": _NULL_LITERAL}})
+    assert id_for(payload={"outer": {"value": ""}}) != id_for(payload={"outer": {"value": _EMPTY_LITERAL}})
+    assert id_for(payload={"outer": {"__POLYLOGUE_NULL__": "value"}}) != id_for(
+        payload={"outer": {"__POLYLOGUE_NULL__": "different"}}
+    )
+    assert id_for(payload={"items": []}) != id_for(payload={"items": _EMPTY_LITERAL})
+    assert id_for(payload={}, block=False) != id_for(payload={"items": []})
+
+
+def test_lossy_identity_lowerings_are_injective_and_declared_equivalences_remain() -> None:
+    def id_for(value: object) -> str:
+        message = ParsedMessage(
+            provider_message_id="",
+            role=Role.ASSISTANT,
+            text="anchor",
+            timestamp=None,
+            blocks=[
+                ParsedContentBlock(
+                    type=BlockType.TOOL_USE,
+                    tool_name="call",
+                    tool_input={"value": value},
+                )
+            ],
+        )
+        return message_content_identity(message)
+
+    marker = _NULL_LITERAL
+    first_set = {
+        frozenset({("a", None), ("b", "x")}),
+        frozenset({("a", "y"), ("b", marker)}),
+    }
+    second_set = {
+        frozenset({("a", marker), ("b", "x")}),
+        frozenset({("a", "y"), ("b", None)}),
+    }
+    assert id_for(first_set) != id_for(second_set)
+
+    # Bytes and temporal values have a declared lowering, but are not equal
+    # to arbitrary user strings that happen to use that serialized spelling.
+    assert id_for(b"a") != id_for(b"61")
+    assert id_for(datetime(2026, 1, 2, 3, 4, 5)) != id_for("2026-01-02T03:04:05")
+    assert id_for(Decimal("0.123456789012345678901")) != id_for({"$decimal": "0.123456789012345678901"})
+    assert session_content_hash(_session(tool_input={"value": b"a"})) != session_content_hash(
+        _session(tool_input={"value": "61"})
+    )
+    assert session_content_hash(_session(tool_input={"value": datetime(2026, 1, 2)})) != session_content_hash(
+        _session(tool_input={"value": "2026-01-02T00:00:00"})
+    )
+
+    class WireToken(str, Enum):
+        VALUE = "wire-value"
+
+    # The established parser-boundary equivalences remain deliberate.
+    assert id_for(WireToken.VALUE) == id_for("wire-value")
+    assert id_for(("a", "b")) == id_for(["a", "b"])
+    assert id_for({"a", "b"}) == id_for(["a", "b"])
+    assert id_for(Decimal("0.5")) == id_for(0.5)
+
+
 # -- the archive writer stores what the identity distinguishes ----------------
 
 
 def _write(db_path: Path, session: ParsedSession) -> dict[str, object]:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     outcomes: list[ArchiveWriteOutcome] = []
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn, session, content_hash=session_content_hash(session), write_outcome=outcomes
         )
         conn.commit()
@@ -334,7 +554,7 @@ def _write(db_path: Path, session: ParsedSession) -> dict[str, object]:
             )
         ]
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
     assert outcomes and outcomes[0].wrote
     return {"hash": bytes(stored[0]), "address": bytes(message[0]), "tool_inputs": tool_inputs}
 

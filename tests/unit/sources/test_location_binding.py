@@ -19,7 +19,9 @@ from polylogue.core.json import JSONDocumentList
 from polylogue.sources.acquisition_boundary import refuse_foreign_path
 from polylogue.sources.dispatch import ForeignOriginContentError, detect_provider
 from polylogue.sources.live.batch_support import _jsonl_provider_and_session_artifact
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.source_parsing import parse_one_source_path
+from tests.infra.source_builders import acquired_payloads
 
 _CODEX_ROLLOUT: JSONDocumentList = [
     {
@@ -139,7 +141,8 @@ def test_raw_only_paths_are_classified_by_location_before_any_probe(tmp_path: Pa
     Anti-vacuity: validating content before the raw-only declaration raises
     ``ForeignOriginContentError`` here.
     """
-    history = tmp_path / "history.jsonl"
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir()
     history.write_bytes(_jsonl(_CODEX_ROLLOUT))
     refuse_foreign_path(history, Provider.CLAUDE_CODE)
     assert _jsonl_provider_and_session_artifact(history, Provider.CLAUDE_CODE) == (Provider.CLAUDE_CODE, False, None)
@@ -212,7 +215,7 @@ def test_one_shot_acquisition_refuses_grouped_foreign_zip_members(tmp_path: Path
     import zipfile
 
     from polylogue.config import Source
-    from polylogue.sources.source_acquisition import iter_source_raw_data
+    from polylogue.sources.source_acquisition import iter_source_acquisition_records
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.cursor_state import CursorStatePayload
 
@@ -223,10 +226,12 @@ def test_one_shot_acquisition_refuses_grouped_foreign_zip_members(tmp_path: Path
 
     cursor_state: CursorStatePayload = {"failed_count": 0, "failed_files": []}
     items = list(
-        iter_source_raw_data(
-            Source(name="claude-code", path=archive),
-            blob_store=BlobStore(tmp_path / "blobs"),
-            cursor_state=cursor_state,
+        acquired_payloads(
+            iter_source_acquisition_records(
+                Source(name="claude-code", path=archive),
+                blob_store=BlobStore(tmp_path / "blobs"),
+                cursor_state=cursor_state,
+            )
         )
     )
     assert [item.source_path for item in items] == [f"{archive}:b-claude.jsonl"]
@@ -346,7 +351,7 @@ def test_production_baseline_excludes_refused_plain_files(tmp_path: Path) -> Non
     (project / "c0ffee00-1111-2222-3333-444455556666.jsonl").write_bytes(_jsonl(_CODEX_ROLLOUT))
     (project / "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl").write_bytes(_jsonl(_CLAUDE_CODE_TRANSCRIPT))
     baseline = capture_production_source_baseline(
-        (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),),
         operation_id="op-test",
     )
     by_name = {Path(decision.path).name: decision for decision in baseline.decisions}
@@ -463,3 +468,30 @@ def test_a_bound_parse_stream_releases_no_session_before_it_validates() -> None:
         for item in emitter.emit(BytesIO(_jsonl([*_CLAUDE_CODE_TRANSCRIPT, *_CODEX_ROLLOUT])), "member.jsonl"):
             released.append(item)
     assert released == []
+
+
+@pytest.mark.parametrize(
+    ("relative", "expected_count"), [("workflows/recovered.json", 1), ("tool-results/opaque.json", 0)]
+)
+def test_decoded_json_session_outranks_only_parseable_fact_paths(
+    tmp_path: Path, relative: str, expected_count: int
+) -> None:
+    from polylogue.sources.source_parsing import has_decoded_session_evidence
+
+    path = tmp_path / ".claude" / "projects" / "neutral" / relative
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(_CLAUDE_CODE_TRANSCRIPT))
+    assert has_decoded_session_evidence(path, provider=Provider.CLAUDE_CODE)
+    parsed = list(
+        parse_one_source_path(str(path), file_mtime=None, source_name="claude-code", sidecar_data={}, capture_raw=False)
+    )
+    assert len(parsed) == expected_count
+    if parsed:
+        raw, session = parsed[0]
+        assert raw is None
+        assert session.source_name is Provider.CLAUDE_CODE
+        assert [message.provider_message_id for message in session.messages] == ["u1", "a1"]
+        assert [block.text for message in session.messages for block in message.blocks] == [
+            "Search for ad-hoc solutions.",
+            "Looking now.",
+        ]

@@ -224,12 +224,10 @@ def _project_message_content(
     if not projected_text and not kept_blocks and not projected_attachments:
         return None
 
-    return message.model_copy(
-        update={
-            "text": projected_text or None,
-            "blocks": kept_blocks,
-            "attachments": projected_attachments,
-        }
+    return message.copy_with_projected_content(
+        text=projected_text or None,
+        blocks=kept_blocks,
+        attachments=projected_attachments,
     )
 
 

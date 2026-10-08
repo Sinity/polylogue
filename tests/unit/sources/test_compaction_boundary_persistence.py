@@ -20,13 +20,14 @@ from pathlib import Path
 
 from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.sources.parsers.codex import parse as parse_codex
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -81,7 +82,7 @@ def test_claude_code_compaction_stores_the_boundary_range_and_summary(tmp_path: 
     assert [event.boundary_end_position for event in parsed.session_events] == [1]
 
     conn = _connect(tmp_path / "index.db")
-    session_id = write_parsed_session_to_archive(conn, parsed)
+    session_id = write_fixture_index_session(conn, parsed)
     conn.commit()
 
     rows = _stored_compactions(conn)
@@ -136,7 +137,7 @@ def test_codex_compaction_stores_the_boundary_range_and_summary(tmp_path: Path) 
     assert compactions[0].boundary_end_position is not None
 
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(conn, parsed)
+    write_fixture_index_session(conn, parsed)
     conn.commit()
 
     rows = _stored_compactions(conn)

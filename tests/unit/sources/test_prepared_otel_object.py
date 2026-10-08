@@ -14,17 +14,15 @@ import polylogue.sources.prepared_jsonl as prepared_jsonl
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import spill_otlp_spans
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from polylogue.sources.origin_specs import SEMCONV_SCHEMA_URL
 from polylogue.sources.parsers import otel_genai
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_jsonl import _index_otlp_spans, _otlp_envelope, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteSessionEventSink
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
-from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.retained_jsonl import retained_raw_fixture
 
 
 def _attribute(key: str, value: object) -> dict[str, object]:
@@ -145,7 +143,7 @@ def _source(tmp_path: Path, document: dict[str, Any] | str) -> Path:
 
 
 def _expected(document: dict[str, Any], source: Path) -> list[ParsedSession]:
-    sessions = require_positive_conversational_evidence(
+    sessions = admit_parsed_sessions_for_publication(
         parse_payload(Provider.OTEL_GENAI, [document], "fallback", source_path=str(source)),
         provider=Provider.OTEL_GENAI,
         source_path=str(source),
@@ -181,7 +179,7 @@ def _refuse_whole_document(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError("whole-document decode or parse was used")
 
     monkeypatch.setattr(prepared_jsonl, "_iter_json_stream", refuse)
-    monkeypatch.setattr(prepared_jsonl, "parse_payload", refuse)
+    monkeypatch.setattr(prepared_jsonl, "iter_parsed_payload", refuse)
     monkeypatch.setattr(otel_genai, "parse", refuse)
 
 
@@ -528,34 +526,26 @@ def test_retained_otlp_export_uses_streamed_replay_route(tmp_path: Path, monkeyp
     expected = _expected(document, Path(source_path))
     blob_root = tmp_path / "blob"
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(document).encode())
-    source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
-    _refuse_whole_document(monkeypatch)
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-raw",
-        Provider.OTEL_GENAI.value,
-        blob_hash,
-        source_path,
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "prepared"),
-        "2025-01-02T03:04:05Z",
-    )
-    assert artifact.error is None
-    assert artifact.positive_evidence_filtered
-    sessions = list(artifact.iter_sessions())
-    assert [session.provider_session_id for session in sessions] == [
-        session.provider_session_id for session in expected
-    ]
-    assert [len(session.session_events) for session in sessions] == [
-        len(session.session_events) for session in expected
-    ]
+    with retained_raw_fixture(
+        root=tmp_path,
+        provider=Provider.OTEL_GENAI,
+        blob_hash=blob_hash,
+        source_path=source_path,
+        file_mtime="2025-01-02T03:04:05Z",
+    ) as (reader, raw_id):
+        _refuse_whole_document(monkeypatch)
+        artifact = revision_backfill.prepare_retained_jsonl_artifact(
+            reader, raw_id, directory=BlobStore(blob_root)._ensure_private_staging_root() / "prepared"
+        )
+        try:
+            assert artifact.error is None, artifact.error
+            assert artifact.positive_evidence_filtered
+            sessions = list(artifact.iter_sessions())
+            assert [session.provider_session_id for session in sessions] == [
+                session.provider_session_id for session in expected
+            ]
+            assert [len(session.session_events) for session in sessions] == [
+                len(session.session_events) for session in expected
+            ]
+        finally:
+            artifact.discard()

@@ -27,9 +27,11 @@ from polylogue.sources.acquisition_boundary import (
     refuse_foreign_path,
 )
 from polylogue.sources.dispatch import ForeignOriginContentError
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
+from tests.infra.source_builders import acquired_payloads
 
 _SESSION_ID = "bad69218-73bd-490a-869a-2b3a30bf421b"
 _CLAUDE: JSONDocumentList = [
@@ -114,41 +116,17 @@ def test_validator_refuses_a_foreign_record_wherever_it_sits(name: str, document
         _validate(name, document())
 
 
-def test_a_record_of_many_values_is_classified_from_a_bounded_view() -> None:
-    """A record's classification view stays bounded however many values it holds.
-
-    The Codex discriminator (``payload``) follows an array far longer than
-    any container budget, so the record is still refused, while the view
-    built for it keeps at most the record budget of values.
-
-    Anti-vacuity: a builder that copies every value retains the whole
-    array; one that stops reading at a budget never sees ``payload``.
-    """
-    import ijson
-
-    from polylogue.sources import acquisition_boundary
-
-    record = {"type": "session_meta", "pad": list(range(1 << 19)), "payload": _CODEX[0]["payload"]}
-    line = json.dumps(record).encode()
+def test_late_foreign_shape_survives_large_record_and_mapping() -> None:
+    """Late discriminators must survive both former value and entry caps."""
+    record = {
+        "type": "session_meta",
+        "pad": list(range(1 << 19)),
+        "large_integer": 10**100,
+        **{f"unrelated-{index}": None for index in range(4097)},
+        "payload": _CODEX[0]["payload"],
+    }
     with pytest.raises(ForeignOriginContentError):
-        _validate("big.jsonl", line + b"\n")
-
-    builder = acquisition_boundary._EvidenceBuilder()
-    for event, value in ijson.basic_parse(line, use_float=True):
-        builder.event(event, value)
-
-    def retained(value: object) -> int:
-        if isinstance(value, dict):
-            return 1 + sum(retained(item) for item in value.values())
-        if isinstance(value, list):
-            return 1 + sum(retained(item) for item in value)
-        return 1
-
-    view = builder.value
-    assert isinstance(view, dict)
-    assert view["payload"] == _CODEX[0]["payload"]
-    assert retained(view) <= acquisition_boundary._RECORD_KEEP_VALUES
-    assert len(view["pad"]) == acquisition_boundary._CONTAINER_KEEP_ENTRIES
+        _validate("big.jsonl", json.dumps(record).encode() + b"\n")
 
 
 def test_validator_admits_own_origin_material_of_any_size() -> None:
@@ -162,7 +140,8 @@ def test_validator_admits_own_origin_material_of_any_size() -> None:
     _validate("malformed.jsonl", b'{"type": "user", "broken\n' + _jsonl(_CLAUDE))
     # Unbound (inbox), raw-only and non-JSON material is not validated.
     BoundRecordValidator("a.jsonl", Provider.UNKNOWN).feed(_jsonl(_CODEX))
-    assert not BoundRecordValidator("history.jsonl", Provider.CLAUDE_CODE).active
+    # The declared prompt-history log lives at ``~/.claude/history.jsonl``.
+    assert not BoundRecordValidator("/home/user/.claude/history.jsonl", Provider.CLAUDE_CODE).active
     assert not BoundRecordValidator("notes.md", Provider.CLAUDE_CODE).active
 
 
@@ -261,11 +240,15 @@ def _route_zip_parse(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
 
 def _route_acquire(path: Path, store: ArchiveBlobPublisher) -> bool:
     from polylogue.config import Source
-    from polylogue.sources.source_acquisition import iter_source_raw_data
+    from polylogue.sources.source_acquisition import iter_source_acquisition_records
 
     cursor_state: CursorStatePayload = {"failed_count": 0, "failed_files": []}
     items = list(
-        iter_source_raw_data(Source(name="claude-code", path=path), blob_store=store, cursor_state=cursor_state)
+        acquired_payloads(
+            iter_source_acquisition_records(
+                Source(name="claude-code", path=path), blob_store=store, cursor_state=cursor_state
+            )
+        )
     )
     return not items and _refused(cursor_state)
 
@@ -275,7 +258,50 @@ def _route_acquire_file(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
 
 
 def _route_acquire_zip_member(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
-    return _route_acquire(_archive(tmp_path), store)
+    """Drive the real acquisition consumer, which settles the container.
+
+    The container is retained as the input denominator before its members
+    are decoded, so the refused member leaves a published container with a
+    ``refused`` disposition, no raw for the member and no open reservation.
+    The generator alone stops before that settlement.
+    """
+    import asyncio
+    import sqlite3
+
+    from polylogue.config import Source
+    from polylogue.daemon.drive_catchup import DriveCatchupExecution
+    from polylogue.pipeline.services.acquisition import AcquisitionService
+    from polylogue.storage.sqlite import SQLiteBackend
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    zip_path = _archive(tmp_path)
+
+    async def acquire() -> None:
+        backend = SQLiteBackend(db_path=archive_root / "index.db")
+        try:
+            async with prepared_live_convergence_owner(archive_root) as owner:
+                execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+                result = await AcquisitionService(backend, execution=execution).acquire_sources(
+                    [Source(name="claude-code", path=zip_path)]
+                )
+                assert result.acquired == 0 and result.raw_ids == []
+        finally:
+            await backend.close()
+
+    asyncio.run(acquire())
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source:
+        container = source.execute("SELECT source_path, blob_hash FROM source_items").fetchall()
+        dispositions = source.execute(
+            "SELECT member_name, disposition, diagnostic FROM source_item_member_dispositions"
+        ).fetchall()
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
+    assert [(path, blob is not None) for path, blob in container] == [(str(zip_path), True)]
+    assert [(name, disposition) for name, disposition, _diagnostic in dispositions] == [(_NAME, "refused")]
+    return "foreign_origin_content" in str(dispositions[0][2])
 
 
 def _route_retained(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
@@ -289,6 +315,7 @@ def _route_retained(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
     with pytest.raises(ForeignOriginContentError):
         list(
             iter_retained_source_records(
+                enumeration_fingerprint="b" * 64,
                 source_path=str(path),
                 blob_hash=blob_hash,
                 blob_size=blob_size,
@@ -328,7 +355,7 @@ def _route_production_baseline(tmp_path: Path, store: ArchiveBlobPublisher) -> b
 
     path = _plain(tmp_path)
     baseline = capture_production_source_baseline(
-        (WatchSource(name="claude-code", root=path.parent.parent, suffixes=(".jsonl",)),),
+        (WatchSource(name="claude-code", root=path.parent.parent, layout=export_drop_layout((".jsonl",))),),
         operation_id="op-test",
     )
     [decision] = [decision for decision in baseline.decisions if Path(decision.path).name == _NAME]
@@ -397,7 +424,7 @@ _SOURCE_BYTE_SINKS = frozenset(
         "prepare_from_path",
         "prepare_from_fileobj",
         "prepare_from_writer",
-        "open_bounded_zip_entry",
+        "open_zip_entry",
     }
 )
 
@@ -411,6 +438,8 @@ _DECLARED_NON_ACQUISITION_SITES: dict[tuple[str, str], str] = {
     ),
     ("polylogue/sources/acquisition_boundary.py", "open_bound_member"): "the boundary itself",
     ("polylogue/sources/acquisition_boundary.py", "capture_bound_stream"): "the boundary itself",
+    ("polylogue/sources/acquisition_boundary.py", "capture_bound_path"): "the boundary itself",
+    ("polylogue/sources/acquisition_boundary.py", "open_bound_container"): "the boundary itself",
     ("polylogue/storage/blob_store.py", "BlobStore.write_from_path"): "blob store implementation",
     ("polylogue/storage/blob_store.py", "BlobStore.write_from_fileobj"): "blob store implementation",
     ("polylogue/storage/blob_store.py", "BlobStore.write_from_writer"): "blob store implementation",
@@ -420,9 +449,6 @@ _DECLARED_NON_ACQUISITION_SITES: dict[tuple[str, str], str] = {
     ("polylogue/operations/attachment_convergence.py", "_download_prepared"): (
         "downloads a provider-hosted attachment, not session records"
     ),
-    ("polylogue/pipeline/services/ingest_worker.py", "_browser_capture_payload.spill"): (
-        "decodes a retained browser capture's attachment carriers into blobs, not session records"
-    ),
     ("polylogue/operations/ingest_inputs.py", "retain_input_page"): (
         "freezes a declared input's physical bytes; its decode "
         "(retained_acquisition) reads them through the boundary before any raw"
@@ -430,17 +456,27 @@ _DECLARED_NON_ACQUISITION_SITES: dict[tuple[str, str], str] = {
     ("polylogue/sources/sqlite_snapshot.py", "snapshot_sqlite_to_blob"): (
         "retains a declared database's logical export; the declaration is refused by refuse_declared_foreign"
     ),
-    ("polylogue/sources/assembly_chatgpt.py", "_read_json_zip_member"): "export sidecar read, not session records",
     ("polylogue/sources/assembly_chatgpt.py", "_read_chatgpt_zip_sidecars"): "export asset attachments",
     ("polylogue/sources/assembly_chatgpt.py", "_acquire_asset_blobs_from_directory"): "export asset attachments",
-    (
-        "polylogue/sources/decoder_zip.py",
-        "zip_entry_session_artifact",
-    ): "classification probe; parse reads via boundary",
-    ("polylogue/sources/source_acquisition_components.py", "sniff_zip_provider"): "unbound provider sniff",
-    ("polylogue/sources/import_explain.py", "_explain_zip"): "read-only diagnostics",
     ("polylogue/sources/import_preflight.py", "_preflight_zip"): "read-only diagnostics",
     ("polylogue/schemas/source_inference.py", "_collect_zip_candidate"): "schema inference tooling",
+    ("polylogue/sources/decoder_zip.py", "prepare_zip_entry"): (
+        "copies the exact member for the streamed parser, whose records are validated by the boundary"
+    ),
+    ("polylogue/sources/import_explain.py", "_explain_zip_entry"): "read-only diagnostics",
+    ("polylogue/sources/live/batch.py", "LiveBatchProcessor._extract_source_only_zip_member_records"): (
+        "verifies a zero-length member is empty; admitted member bytes are captured through the boundary"
+    ),
+    ("polylogue/sources/retained_acquisition.py", "iter_retained_source_records"): (
+        "verifies a zero-length retained member is empty; records decode through the boundary"
+    ),
+    ("polylogue/sources/prepared_jsonl.py", "_prepare_attachment_publications"): (
+        "re-prepares an already-retained attachment blob by its exact hash, not session records"
+    ),
+    ("polylogue/sources/source_acquisition_components.py", "_zip_entry_detected_provider"): (
+        "provider sniff of a CRC-validated entry; records are acquired through the boundary"
+    ),
+    ("polylogue/storage/materials.py", "prepare_material"): "retains declared non-session material documents",
 }
 
 
@@ -487,9 +523,68 @@ def test_no_route_reads_source_bytes_around_the_boundary() -> None:
     """Every retention or member open outside the boundary is declared and reasoned.
 
     Anti-vacuity: a new acquisition route calling ``write_from_path`` or
-    ``open_bounded_zip_entry`` directly appears here as undeclared; a stale
+    ``open_zip_entry`` directly appears here as undeclared; a stale
     declaration (its site removed) appears as unused.
     """
     sites = _sink_call_sites()
     assert sites - _DECLARED_NON_ACQUISITION_SITES.keys() == set()
     assert _DECLARED_NON_ACQUISITION_SITES.keys() - sites == set()
+
+
+def test_path_capture_freezes_coordinate_before_alias_retargets(tmp_path: Path) -> None:
+    original = tmp_path / "original.jsonl"
+    replacement = tmp_path / "replacement.jsonl"
+    original.write_bytes(_jsonl(_CLAUDE))
+    replacement.write_bytes(_jsonl(_CODEX))
+    alias = tmp_path / "declared.jsonl"
+    alias.symlink_to(original)
+    store = BlobStore(tmp_path / "blobs")
+
+    def retarget() -> None:
+        if alias.resolve() == original:
+            alias.unlink()
+            alias.symlink_to(replacement)
+
+    capture = capture_bound_path(store, alias, Provider.CLAUDE_CODE, heartbeat=retarget)
+    assert capture.canonical_source_path == str(original)
+    assert capture.file_observation[:2] == (original.stat().st_dev, original.stat().st_ino)
+    with store.open(capture.blob_hash) as retained:
+        assert retained.read() == original.read_bytes()
+    assert alias.resolve() == replacement
+
+
+def test_hermes_snapshot_uses_opened_profile_after_parent_alias_retargets(tmp_path: Path) -> None:
+    """A parser-side resolve would qualify captured A bytes with profile B."""
+    from polylogue.sources.acquisition_boundary import bound_profile_identity, open_bound_path
+    from polylogue.sources.dispatch import parse_payload
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+
+    first = tmp_path / "profile-a"
+    second = tmp_path / "profile-b"
+    for directory in (first, second):
+        (directory / "sessions").mkdir(parents=True)
+    document = {
+        "session_id": "shared-session",
+        "session_start": "2026-05-07T08:39:43.000000",
+        "messages": [{"role": "user", "content": "captured"}],
+    }
+    (first / "sessions" / "session_shared.json").write_text(json.dumps(document), encoding="utf-8")
+    (second / "sessions" / "session_shared.json").write_text(json.dumps(document), encoding="utf-8")
+    alias = tmp_path / "profile"
+    alias.symlink_to(first, target_is_directory=True)
+    source = alias / "sessions" / "session_shared.json"
+    with open_bound_path(source, Provider.HERMES) as stream:
+        receipt = bound_profile_identity(stream)
+        assert receipt is not None
+        alias.unlink()
+        alias.symlink_to(second, target_is_directory=True)
+        captured = json.loads(stream.read())
+    sessions = parse_payload(
+        Provider.HERMES, captured, "fallback", source_path=str(source), profile_identity=receipt.key
+    )
+    assert receipt.key == profile_key(first)
+    assert receipt.source_path == first / "sessions" / "session_shared.json"
+    assert [session.provider_session_id for session in sessions] == [
+        qualified_session_id("shared-session", profile_key(first))
+    ]
+    assert receipt.key != profile_key(second)

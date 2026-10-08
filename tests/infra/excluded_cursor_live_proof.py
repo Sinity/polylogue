@@ -18,15 +18,14 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
 
-from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
-from polylogue.operations.operation_context import open_operation_read
-from polylogue.pipeline.ids import session_content_hash, session_id
-from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.cursor_authority import fixture_cursor_authority
+from tests.infra.raw_owner_routes import live_owner_set
 
 
 def _codex_records(
@@ -57,7 +56,7 @@ def _write_jsonl(path: Path, records: tuple[dict[str, object], ...]) -> Path:
     return path
 
 
-RECEIPT_SCHEMA = "polylogue.excluded-cursor-live-proof.v2"
+RECEIPT_SCHEMA = "polylogue.excluded-cursor-live-proof.v3"
 FIXTURE_VERSION = "candidate-codex-live-compatible-2026-08-06"
 OLD_PARSER_FINGERPRINT = "live-batched-v1"
 NEW_PARSER_FINGERPRINT = "live-batched-v2"
@@ -90,61 +89,28 @@ def _seed_excluded(cursor: CursorStore, path: Path, *, parser_fingerprint: str) 
         mtime_ns=stat.st_mtime_ns,
         failure_count=5,
         excluded=True,
+        authority=fixture_cursor_authority(path),
     )
 
 
-def _seed_byte_authority(root: Path, path: Path, *, native_id: str) -> None:
-    """Seed source evidence plus a byte head without materializing a session."""
-    payload = path.read_bytes()
-    logical_source_key = f"codex:{native_id}"
-    [parsed] = parse_payload(
-        Provider.CODEX,
-        [json.loads(line) for line in payload.splitlines()],
-        native_id,
-        source_path=str(path),
-    )
-    source_revision = "excluded-cursor-proof-authority-0"
-    accepted_content_hash = bytes.fromhex(session_content_hash(parsed))
-    accepted_session_id = str(session_id(parsed.source_name, parsed.provider_session_id))
-    revision = RawRevisionEnvelope(
-        logical_source_key,
-        RawRevisionKind.FULL,
-        source_revision,
-        0,
-        authority=RawRevisionAuthority.BYTE_PROVEN,
-    )
+def _seed_retained_evidence(root: Path, path: Path, *, native_id: str) -> None:
+    """Retain the file's bytes as a plain acquisition without materializing a session.
+
+    Revision authority is left to the canonical live route: a hand-written
+    envelope or byte head would disagree with the revision live capture
+    records for the same key, and the cohort refuses that conflict.
+    """
     with ArchiveStore.open_existing(root, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
+        archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=payload,
+            payload=path.read_bytes(),
             source_path=str(path),
+            # Production acquisition records the resolved path authority; the
+            # live selection gate refuses an archive holding a raw without it.
+            canonical_source_path=str(path.resolve()),
             acquired_at_ms=1,
             native_id=native_id,
-            revision=revision,
         )
-    conn = sqlite3.connect(root / "index.db")
-    try:
-        conn.execute(
-            """
-            INSERT INTO raw_revision_heads (
-                logical_source_key, session_id, accepted_raw_id,
-                accepted_source_revision, accepted_content_hash,
-                accepted_frontier_kind, accepted_frontier,
-                acquisition_generation, append_end_offset, decided_at_ms
-            ) VALUES (?, ?, ?, ?, ?, 'byte', ?, 0, NULL, 1)
-            """,
-            (
-                logical_source_key,
-                accepted_session_id,
-                raw_id,
-                source_revision,
-                accepted_content_hash,
-                len(payload),
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _attempts_for_path(root: Path, path: Path) -> list[dict[str, object]]:
@@ -294,37 +260,46 @@ def _run_case(
     bypass_frontier_gate: bool = False,
 ) -> dict[str, Any]:
     polylogue = SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db"))
-    # The daemon wires a read snapshot for off-writer existing-session
-    # preparation; without it every prepared path stays deferred.
-    watcher = LiveWatcher(
-        cast(Any, polylogue),
-        (WatchSource(name="codex", root=source_root),),
-        cursor=cursor,
-        read_snapshot=open_operation_read,
+    record = cursor.get_record(path)
+    fingerprint_changed_before_catch_up = (
+        record is not None and bool(record.excluded) and record.parser_fingerprint != parser_fingerprint
     )
-    try:
-        record = cursor.get_record(path)
-        fingerprint_changed_before_catch_up = (
-            record is not None and bool(record.excluded) and record.parser_fingerprint != parser_fingerprint
-        )
-        metrics_holder: list[object] = []
-        original_ingest = watcher._ingest_files
+    metrics_holder: list[object] = []
 
-        async def capture_ingest(*args: Any, **kwargs: Any) -> object:
-            metrics = await original_ingest(*args, **kwargs)
-            metrics_holder.append(metrics)
-            return metrics
-
-        with patch("polylogue.sources.live.watcher._PARSER_FINGERPRINT", parser_fingerprint):
-            frontier_patch = (
-                patch("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
-                if bypass_frontier_gate
-                else nullcontext()
+    async def admit() -> None:
+        # The watcher runs with the daemon's complete live owner set: its writer
+        # coordinator, SQLite capture stage and Raw convergence owner. Without
+        # the coordinator, batch publication writes outside writer admission.
+        async with live_owner_set(root) as owners:
+            watcher = LiveWatcher(
+                cast(Any, polylogue),
+                (WatchSource(name="codex", root=source_root, layout=export_drop_layout((".jsonl",))),),
+                cursor=cursor,
+                **owners.watcher_kwargs(),
             )
-            with frontier_patch, patch.object(watcher, "_ingest_files", capture_ingest):
-                asyncio.run(_admit_one_page(watcher, source_root))
-    finally:
-        watcher.stop()
+            try:
+                original_ingest = watcher._ingest_files
+
+                async def capture_ingest(*args: Any, **kwargs: Any) -> object:
+                    metrics = await original_ingest(*args, **kwargs)
+                    metrics_holder.append(metrics)
+                    return metrics
+
+                with patch("polylogue.sources.live.watcher._PARSER_FINGERPRINT", parser_fingerprint):
+                    frontier_patch = (
+                        patch(
+                            "polylogue.readiness.capability.raw_frontier_source_selection_block_reason",
+                            lambda _root: None,
+                        )
+                        if bypass_frontier_gate
+                        else nullcontext()
+                    )
+                    with frontier_patch, patch.object(watcher, "_ingest_files", capture_ingest):
+                        await _admit_one_page(watcher, source_root)
+            finally:
+                watcher.stop()
+
+    asyncio.run(admit())
     return _case_summary(
         case_id=case_id,
         path=path,
@@ -352,7 +327,7 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         "indexed", "excluded-proof-indexed", ("revived", "indexed")
     )
     indexed_path = indexed_source_root / "indexed.jsonl"
-    _seed_byte_authority(indexed_root, indexed_path, native_id="excluded-proof-indexed")
+    _seed_retained_evidence(indexed_root, indexed_path, native_id="excluded-proof-indexed")
     indexed_before = _indexed_counts(indexed_root, indexed_path)
     if indexed_before["indexed_sessions"] != 0:
         raise AssertionError(f"indexed case was not empty before catch-up: {indexed_before}")
@@ -410,6 +385,7 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
     cases = [indexed, still_excluded, deferred_partial]
     indexed_attempt = indexed["attempt"]
     deferred_evidence = deferred_partial["failure_evidence"]
+    deferred_attempt = deferred_partial["attempt"]
     outcomes = {
         "indexed": indexed["indexed_before"]["indexed_sessions"] == 0
         and indexed["indexed"]["indexed_sessions"] == 1
@@ -419,10 +395,13 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         "still_excluded": still_excluded["retry_state"]["excluded"] is True
         and still_excluded["attempt_present"] is False
         and still_excluded["retry_state"]["retry_due"] is False,
-        "deferred_partial": deferred_evidence is not None
-        and deferred_evidence["artifact_kind"] == "deferred_hot_jsonl_capture"
-        and deferred_evidence["support_status"] == "partial_decode"
-        and deferred_evidence["parse_error_present"] is False
+        # A stable file whose final record is cut off is indexed up to the
+        # cut and receipted as a typed partial admission (d60ba407fe); it is
+        # not deferred as a hot capture.
+        "deferred_partial": deferred_evidence is None
+        and deferred_attempt is not None
+        and deferred_attempt["outcome_code"] == "success"
+        and deferred_attempt["evidence_ref"] == "batch:partial_admission"
         and deferred_partial["indexed"]["indexed_sessions"] == 1
         and deferred_partial["retry_state"]["excluded"] is False
         and deferred_partial["retry_state"]["retry_due"] is False,
@@ -461,10 +440,10 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
             ),
         },
         "anti_vacuity": {
-            "indexed_authority": "byte_proven_source_raw_and_revision_head",
+            "indexed_authority": "retained_source_raw",
             "indexed_session_count_before": indexed["indexed_before"]["indexed_sessions"],
             "indexed_session_count": indexed["indexed"]["indexed_sessions"],
-            "deferred_partial_artifact": deferred_evidence["artifact_kind"] if deferred_evidence else None,
+            "deferred_partial_admission": deferred_attempt["evidence_ref"] if deferred_attempt else None,
             "unchanged_excluded_attempt_present": still_excluded["attempt_present"],
         },
     }

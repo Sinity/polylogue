@@ -1,7 +1,7 @@
 """Concurrency contracts for the two-phase validation executor.
 
 ``evaluate_raw_artifacts`` in ``polylogue/pipeline/services/validation_flow.py`` runs CPU-bound
-schema validation across a ``ProcessPoolExecutor`` (Phase 1) and then
+schema validation through shared bounded compute (Phase 1) and then
 performs sequential async ``mark_raw_validated`` / ``mark_raw_parsed``
 writes (Phase 2). These tests pin the load-bearing contracts:
 
@@ -102,6 +102,7 @@ def _make_record(raw_id: str, *, payload: bytes) -> RawSessionRecord:
         raw_id=raw_id,
         source_name=Provider.CLAUDE_AI.value,
         source_path=f"/synthetic/{raw_id}.json",
+        canonical_source_path=f"/synthetic/{raw_id}.json",
         blob_size=len(payload),
         acquired_at="2026-01-01T00:00:00Z",
     )
@@ -271,6 +272,7 @@ class TestValidateRecordSyncDeterminism:
             blob_hash=blob_hash,
             source_name=Provider.HERMES.value,
             source_path=str(source),
+            canonical_source_path=str(source),
             payload_provider=Provider.HERMES,
             source_index=None,
             blob_size=blob_size,
@@ -480,59 +482,34 @@ class TestOutcomeAggregationProperty:
         assert forward.drift_counts == reverse.drift_counts
 
 
-class TestValidationDispatchByteTier:
-    """polylogue-oa9w8: no spawn-based pool per small batch."""
-
-    async def test_a_small_batch_validates_without_constructing_a_process_pool(
+class TestSharedValidationAdmission:
+    async def test_small_batch_declares_bytes_to_the_shared_adapter(
         self, blob_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``validate_raw_ids`` walks raw ids in batches of 50; a corpus-wide
-        pass therefore consulted the dispatch ~863 times and got an
-        unconditional process pool every time, each a fresh interpreter per
-        worker re-importing polylogue.
-
-        Anti-vacuity: drop the byte tier from ``resolve_validation_dispatch``
-        (or stop passing ``total_blob_bytes``) and ``constructed`` is non-zero.
-        """
         import polylogue.pipeline.services.validation_flow as flow
+        from polylogue.core.compute import BoundedComputeAdapter
 
-        constructed: list[int] = []
-        real_executor = flow.process_pool_executor  # type: ignore[attr-defined]
+        adapter = BoundedComputeAdapter(max_workers=1, queue_units=0, queue_bytes=1024)
+        demands: list[tuple[str, int]] = []
+        submit = adapter.submit
 
-        def counting_executor(*, max_workers: int) -> Any:
-            constructed.append(max_workers)
-            return real_executor(max_workers=max_workers)
+        def tracked_submit(function: Any, **kwargs: Any) -> Any:
+            demands.append((kwargs["admission_class"], kwargs["estimated_bytes"]))
+            return submit(function, **kwargs)
 
-        monkeypatch.setattr(flow, "process_pool_executor", counting_executor)
-
+        monkeypatch.setattr(adapter, "submit", tracked_submit)
+        monkeypatch.setattr(flow, "compute_adapter", lambda: adapter)
         store = RecordingStore()
-        records = _seed_records(blob_root, 50)
-        assert sum(record.blob_size for record in records) <= 8 * 1024 * 1024
-
-        result = await evaluate_raw_artifacts(
-            repository=store,
-            raw_artifacts=records,
-            persist=True,
-            mode=ValidationMode.ADVISORY,
-        )
-
-        assert constructed == []
-        assert [r.raw_id for r in result.records] == [r.raw_id for r in records]
-
-    def test_a_batch_above_the_byte_tier_still_gets_a_process_pool(self) -> None:
-        from polylogue.pipeline.services.process_pool import (
-            VALIDATION_SEQUENTIAL_BLOB_BYTES,
-            PoolKind,
-            resolve_validation_dispatch,
-        )
-
-        big = resolve_validation_dispatch(record_count=50, total_blob_bytes=VALIDATION_SEQUENTIAL_BLOB_BYTES + 1)
-        assert big.pool_kind is PoolKind.PROCESS
-        assert big.worker_count >= 1
-
-        small = resolve_validation_dispatch(record_count=50, total_blob_bytes=VALIDATION_SEQUENTIAL_BLOB_BYTES)
-        assert small.pool_kind is PoolKind.SEQUENTIAL
-
-        # A caller that cannot weigh its batch keeps the historical answer.
-        unweighed = resolve_validation_dispatch(record_count=50)
-        assert unweighed.pool_kind is PoolKind.PROCESS
+        records = _seed_records(blob_root, 5)
+        try:
+            result = await evaluate_raw_artifacts(
+                repository=store,
+                raw_artifacts=records,
+                persist=True,
+                mode=ValidationMode.ADVISORY,
+            )
+            assert demands == [("incremental-background", record.blob_size) for record in records]
+            assert [record.raw_id for record in result.records] == [record.raw_id for record in records]
+            assert adapter.snapshot().used_units == 0
+        finally:
+            adapter.shutdown(wait=True)

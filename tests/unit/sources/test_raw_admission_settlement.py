@@ -20,6 +20,8 @@ from polylogue import Polylogue
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.source_layout import export_drop_layout
+from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 _SESSION_ID = "56cb9ec1-ece5-4705-ac40-a3e1b1569c25"
 
@@ -66,7 +68,7 @@ async def test_sibling_checkpoints_sharing_a_session_id_produce_one_accepted_hea
     archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "gemini-live.db")
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="gemini-cli", root=chats_root, suffixes=(".json", ".jsonl")),),
+        (WatchSource(name="gemini-cli", root=chats_root, layout=export_drop_layout((".json", ".jsonl"))),),
         cursor=CursorStore(archive_root / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -76,8 +78,8 @@ async def test_sibling_checkpoints_sharing_a_session_id_produce_one_accepted_hea
         _checkpoint(first, kind="main", turns=5, started="2026-04-02T10:09:30.776Z")
         _checkpoint(second, kind="main", turns=13, started="2026-04-02T10:09:30.776Z")
 
-        assert (await processor.ingest_files([first], emit_event=False)).failed_file_count == 0
-        assert (await processor.ingest_files([second], emit_event=False)).failed_file_count == 0
+        assert (await ingest_files_with_owners(processor, [first], emit_event=False)).failed_file_count == 0
+        assert (await ingest_files_with_owners(processor, [second], emit_event=False)).failed_file_count == 0
 
         with sqlite3.connect(archive_root / "source.db") as conn:
             untyped = conn.execute(
@@ -128,7 +130,7 @@ async def test_every_planned_path_is_accounted_for(
     archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "gemini-account.db")
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="gemini-cli", root=chats_root, suffixes=(".json", ".jsonl")),),
+        (WatchSource(name="gemini-cli", root=chats_root, layout=export_drop_layout((".json", ".jsonl"))),),
         cursor=CursorStore(archive_root / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -142,7 +144,7 @@ async def test_every_planned_path_is_accounted_for(
         inadmissible = chats_root / "notes.jsonl"
         inadmissible.write_text(json.dumps({"unrelated": "content", "n": 1}) + "\n")
 
-        metrics = await processor.ingest_files([admissible, inadmissible], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [admissible, inadmissible], emit_event=False)
 
         assert metrics.needed_file_count == 2
         assert metrics.succeeded_file_count == 1
@@ -178,7 +180,7 @@ async def test_offered_bytes_split_puts_a_refused_file_in_the_refused_bucket(
     archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "gemini-account.db")
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="gemini-cli", root=chats_root, suffixes=(".json", ".jsonl")),),
+        (WatchSource(name="gemini-cli", root=chats_root, layout=export_drop_layout((".json", ".jsonl"))),),
         cursor=CursorStore(archive_root / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -194,7 +196,7 @@ async def test_offered_bytes_split_puts_a_refused_file_in_the_refused_bucket(
         admissible_bytes = admissible.stat().st_size
         refused_bytes = refused.stat().st_size
 
-        metrics = await processor.ingest_files([admissible, refused], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [admissible, refused], emit_event=False)
 
         assert metrics.input_bytes == admissible_bytes + refused_bytes
         assert metrics.ingested_bytes == admissible_bytes

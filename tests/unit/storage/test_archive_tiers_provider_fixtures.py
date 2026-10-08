@@ -9,17 +9,15 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers import antigravity
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import (
-    read_archive_session_envelope,
-    search_archive_blocks,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope, search_archive_blocks
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -57,7 +55,7 @@ def test_archive_tiers_writer_materializes_drive_payload(tmp_path: Path) -> None
     conn = _connect(tmp_path / "index.db")
     [session] = parse_payload(Provider.DRIVE, _load_drive_payload("text_only_prompt.json"), "drive-fixture")
 
-    session_id = write_parsed_session_to_archive(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     envelope = read_archive_session_envelope(conn, session_id)
 
     assert envelope.origin == "aistudio-drive"
@@ -78,7 +76,7 @@ def test_archive_tiers_writer_materializes_antigravity_payload(tmp_path: Path) -
     conn = _connect(tmp_path / "index.db")
     [session] = parse_payload(Provider.ANTIGRAVITY, _antigravity_payload(), "ag-fixture")
 
-    session_id = write_parsed_session_to_archive(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     envelope = read_archive_session_envelope(conn, session_id)
 
     assert envelope.origin == "antigravity-session"

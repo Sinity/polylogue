@@ -13,6 +13,7 @@ from polylogue.sources.live.cursor_lifecycle import (
     CursorLifecycleState,
     classify_cursor_lifecycle_state,
 )
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 
 def test_reset_failures_does_not_revive_an_excluded_cursor(tmp_path: Path) -> None:
@@ -20,7 +21,7 @@ def test_reset_failures_does_not_revive_an_excluded_cursor(tmp_path: Path) -> No
     source = tmp_path / "capture.jsonl"
     source.write_text('{"event":"one"}\n', encoding="utf-8")
 
-    store.mark_failed(source)
+    store.mark_failed(source, authority=fixture_cursor_authority(source))
     assert classify_cursor_lifecycle_state(store.get_record(source)) is CursorLifecycleState.RETRY_PENDING
 
     store.reset_failures(source)

@@ -284,6 +284,27 @@ def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
     return _payload_int(row[0])
 
 
+def _classified_execute(conn: sqlite3.Connection, sql: str, params: tuple[object, ...]) -> sqlite3.Cursor:
+    """Execute a readiness query, refusing a present-but-unreadable relation.
+
+    A relation that exists without a column the query reads cannot be
+    measured. It is raised as ``readiness_relation_unavailable`` before any
+    caller's degradation policy can read it as an empty or zero answer.
+    """
+    from polylogue.storage.embeddings.support import (
+        READINESS_RELATION_UNAVAILABLE,
+        EmbeddingCoverageUnmeasurableError,
+        is_unreadable_relation_error,
+    )
+
+    try:
+        return conn.execute(sql, params)
+    except sqlite3.OperationalError as exc:
+        if is_unreadable_relation_error(exc):
+            raise EmbeddingCoverageUnmeasurableError(f"{READINESS_RELATION_UNAVAILABLE}: {exc}") from exc
+        raise
+
+
 def _scalar_int_with_timeout(
     conn: sqlite3.Connection, sql: str, *, timeout_ms: int | None, params: tuple[object, ...] = ()
 ) -> int | None:
@@ -294,15 +315,18 @@ def _scalar_int_with_timeout(
     competing handler and propagates any outer interruption unchanged.
     """
 
-    from polylogue.storage.embeddings.support import is_missing_table_error
+    from polylogue.storage.embeddings.support import EmbeddingCoverageUnmeasurableError, is_missing_table_error
 
     if timeout_ms is None:
-        row = conn.execute(sql, params).fetchone()
+        row = _classified_execute(conn, sql, params).fetchone()
         return _payload_int(row[0]) if row else 0
 
     try:
         with query_deadline(conn, seconds=timeout_ms / 1000):
-            row = conn.execute(sql, params).fetchone()
+            row = _classified_execute(conn, sql, params).fetchone()
+    except EmbeddingCoverageUnmeasurableError:
+        # Present but unreadable: not measured, so never a zero.
+        return None
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
         if is_missing_table_error(exc):
@@ -327,11 +351,11 @@ def _rows_with_timeout(
     from polylogue.storage.embeddings.support import is_missing_table_error
 
     if timeout_ms is None:
-        return list(conn.execute(sql, params).fetchall())
+        return list(_classified_execute(conn, sql, params).fetchall())
 
     try:
         with query_deadline(conn, seconds=timeout_ms / 1000):
-            rows = conn.execute(sql, params).fetchall()
+            rows = _classified_execute(conn, sql, params).fetchall()
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
         if is_missing_table_error(exc):
@@ -626,9 +650,18 @@ def _authoritative_archive_embedding_state(
         FROM sessions AS s
         LEFT JOIN per_session AS p ON p.session_id = s.session_id
         """
-    rows = _rows_with_timeout(conn, sql, timeout_ms=timeout_ms)
-    if not rows:
+    from polylogue.storage.embeddings.support import EmbeddingCoverageUnmeasurableError
+
+    try:
+        rows = _rows_with_timeout(conn, sql, timeout_ms=timeout_ms)
+    except EmbeddingCoverageUnmeasurableError as exc:
+        return ArchiveEmbeddingStateProbe(counts=None, reason=exc.reason)
+    if rows is None:
         return ArchiveEmbeddingStateProbe(counts=None, reason="readiness_inspection_timeout")
+    if not rows:
+        # The aggregate always answers one row; none means a relation it reads
+        # (e.g. ``blocks``) is absent. That is an unreadable Index, not a slow one.
+        return ArchiveEmbeddingStateProbe(counts=None, reason="readiness_relation_unavailable")
     counts: tuple[int, int, int, int] = tuple(_payload_int(value) for value in rows[0])  # type: ignore[assignment]
     return ArchiveEmbeddingStateProbe(counts=counts)
 

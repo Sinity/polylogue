@@ -32,6 +32,7 @@ from polylogue.storage.sqlite.queries.sessions_search import (
     search_session_evidence_hits,
     search_session_hits,
 )
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.identity import archive_message_id
 
 _ORIGIN = "unknown-export"
@@ -152,9 +153,15 @@ async def test_commit_between_readiness_probes_does_not_refuse(
     async def racing_status(probe_conn: aiosqlite.Connection) -> Any:
         nonlocal raced
         status = await real_status(probe_conn)
-        with open_connection(searchable_db) as writer:
-            _seed_session(writer, f"conv-late-{next(counter)}", "late arriving block")
-            writer.commit()
+
+        def write_late_session() -> None:
+            with open_connection(searchable_db) as writer:
+                _seed_session(writer, f"conv-late-{next(counter)}", "late arriving block")
+                writer.commit()
+
+        # The racing writer commits before the search resumes; it runs off
+        # the loop because a synchronous write lease cannot block it.
+        run_off_event_loop(write_late_session)
         raced = True
         return status
 

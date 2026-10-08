@@ -4,18 +4,20 @@ Polylogue demos are evidence packets, not feature montages. A public demo should
 
 ## Run the current private-data-free tour
 
-The shortest path is one command. It creates a throwaway archive and exits
+The shortest path is one command with an explicit scratch archive root. It exits
 successfully only after the tour's structural checks pass:
 
 ```bash
-uvx polylogue demo tour
+uvx polylogue demo tour --root ./polylogue-demo-tour/archive
 ```
 
 The terminal result to look for is `Polylogue demo tour: passed`. The tour
 prints the report, transcript, and recording paths for closer inspection.
+The root must not overlap the configured archive. `demo seed` and `demo receipts`
+also require an explicit scratch `--root`.
 
 ```bash
-nix run github:Sinity/polylogue -- demo tour
+nix run github:Sinity/polylogue -- demo tour --root ./polylogue-demo-tour/archive
 ```
 
 From a checkout:
@@ -23,7 +25,7 @@ From a checkout:
 ```bash
 git clone https://github.com/Sinity/polylogue.git
 cd polylogue
-nix develop -c polylogue demo tour
+nix develop -c polylogue demo tour --root ./polylogue-demo-tour/archive
 ```
 
 The tour creates a throwaway archive, imports synthetic provider-shaped artifacts through the normal parsers, verifies declared constructs, runs canonical query/read/analysis paths, and writes a report, transcript, command outputs, and recording source. It requires no private transcript or provider account. After its one-shot seed writer settles, the tour starts its own resident daemon for the synthetic archive, with filesystem watching, source catchup, browser capture and paid embeddings disabled. It waits for that child's declared listener binding before measuring query latency and stops and physically waits for the child on every exit. Seed, verification, daemon startup and shutdown remain included in the full tour duration.

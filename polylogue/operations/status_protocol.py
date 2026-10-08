@@ -123,6 +123,7 @@ class ComponentSnapshot:
 class _Attempt:
     """One in-flight or completed collector invocation, run on a daemon thread."""
 
+    sequence: int
     thread: threading.Thread | None
     done: threading.Event
     submitted_monotonic: float
@@ -132,12 +133,14 @@ class _Attempt:
     completed_at: str | None = None
     reported_timeout: bool = False
     outcome: list[tuple[str, Any]] = field(default_factory=list)
+    finalized_snapshot: ComponentSnapshot | None = None
 
 
 @dataclass
 class _Good:
     """The most recent successful collection, kept for last-good evidence."""
 
+    attempt_sequence: int
     snapshot: ComponentSnapshot
     captured_monotonic: float
     fingerprint: str | None
@@ -155,6 +158,7 @@ class StatusComponentRegistry:
         self._lock = threading.Lock()
         self._pending: dict[str, _Attempt] = {}
         self._good: dict[str, _Good] = {}
+        self._attempt_sequences: dict[str, int] = {}
         self._fingerprint_errors: dict[str, str] = {}
 
     @property
@@ -290,7 +294,10 @@ class StatusComponentRegistry:
             return None
 
     def _start_attempt_locked(self, spec: StatusComponentSpec, fingerprint: str | None) -> _Attempt:
+        sequence = self._attempt_sequences.get(spec.name, 0) + 1
+        self._attempt_sequences[spec.name] = sequence
         attempt = _Attempt(
+            sequence=sequence,
             thread=None,
             done=threading.Event(),
             submitted_monotonic=monotonic(),
@@ -311,7 +318,25 @@ class StatusComponentRegistry:
     def _finalize_locked(
         self, spec: StatusComponentSpec, attempt: _Attempt, fingerprint: str | None
     ) -> ComponentSnapshot:
-        del self._pending[spec.name]
+        """Publish one completed attempt once, even when several readers waited on it.
+
+        A completed attempt can have multiple synchronous callers waiting on
+        its event. The first caller owns publication; later callers adopt the
+        exact snapshot it published. A refresh may also have replaced this
+        attempt in ``_pending`` before an older waiter reacquires the lock, so
+        only remove the entry when it still names this attempt.
+        """
+        if attempt.finalized_snapshot is not None:
+            return attempt.finalized_snapshot
+        if self._pending.get(spec.name) is attempt:
+            del self._pending[spec.name]
+        snapshot = self._build_finalized_snapshot(spec, attempt, fingerprint)
+        attempt.finalized_snapshot = snapshot
+        return snapshot
+
+    def _build_finalized_snapshot(
+        self, spec: StatusComponentSpec, attempt: _Attempt, fingerprint: str | None
+    ) -> ComponentSnapshot:
         kind, payload = attempt.outcome[0]
         completed_mono = attempt.completed_monotonic
         assert completed_mono is not None and attempt.completed_at is not None
@@ -347,9 +372,13 @@ class StatusComponentRegistry:
                 completed_at=attempt.completed_at,
                 collection_duration_s=duration_s,
             )
-            self._good[spec.name] = _Good(
-                snapshot=snapshot, captured_monotonic=attempt.submitted_monotonic, fingerprint=attempt.fingerprint
-            )
+            if good is None or attempt.sequence > good.attempt_sequence:
+                self._good[spec.name] = _Good(
+                    attempt_sequence=attempt.sequence,
+                    snapshot=snapshot,
+                    captured_monotonic=attempt.submitted_monotonic,
+                    fingerprint=attempt.fingerprint,
+                )
             if spec.ttl_s > 0 and age_s >= spec.ttl_s:
                 return self._stale_snapshot(spec, self._good[spec.name])
             return snapshot

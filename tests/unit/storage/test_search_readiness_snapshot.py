@@ -14,7 +14,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.search import runtime
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.snapshot_probe import CommitBetweenStatements
 
 
@@ -56,21 +56,23 @@ def test_search_hits_come_from_the_snapshot_its_readiness_admitted(
     with ArchiveStore(archive_root) as facade:
         writer = facade._conn
         assert str(writer.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
-        write_parsed_session_to_archive(writer, _text_session("admitted-first", "quick fox before admission"))
+        write_fixture_index_session(writer, _text_session("admitted-first", "quick fox before admission"))
         writer.commit()
         admitted = _session_ids(writer)
         db_path = facade.index_db_path
 
         def concurrent_commit() -> None:
-            write_parsed_session_to_archive(writer, _text_session("admitted-second", "quick fox after admission"))
+            write_fixture_index_session(writer, _text_session("admitted-second", "quick fox after admission"))
             writer.commit()
 
         real_open = runtime.open_read_connection
         probes: list[CommitBetweenStatements] = []
 
         @contextmanager
-        def open_probe(path: Path | str | None = None) -> Iterator[CommitBetweenStatements]:
-            with real_open(path) as conn:
+        def open_probe(
+            path: Path | str | None = None, *, archive_root: Path | None = None
+        ) -> Iterator[CommitBetweenStatements]:
+            with real_open(path, archive_root=archive_root) as conn:
                 probe = CommitBetweenStatements(
                     conn,
                     trigger_sql="SELECT COUNT(*) FROM blocks WHERE search_text != ''",
@@ -116,11 +118,11 @@ def test_fts_partition_inspection_reads_one_snapshot_for_every_caller(tmp_path: 
     archive_root = tmp_path / "archive"
     with ArchiveStore(archive_root) as facade:
         writer = facade._conn
-        write_parsed_session_to_archive(writer, _text_session("inspected-first", "counted before the commit"))
+        write_fixture_index_session(writer, _text_session("inspected-first", "counted before the commit"))
         writer.commit()
 
         def concurrent_commit() -> None:
-            write_parsed_session_to_archive(writer, _text_session("inspected-second", "committed mid-inspection"))
+            write_fixture_index_session(writer, _text_session("inspected-second", "committed mid-inspection"))
             writer.commit()
 
         reader = open_readonly_connection(facade.index_db_path)

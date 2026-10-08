@@ -122,23 +122,17 @@ def test_convergence_debt_lookup_attaches_source_read_only(
     assert [path.name for path in opened] == ["index.db"]
 
 
-def test_hook_and_baseline_source_reads_go_through_profiles(
+def test_retained_hook_read_has_no_archive_root_reopen_and_baseline_uses_profile(
     archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    hooks = spy(monkeypatch, hook_tool_response, tmp_path)
-    assert (
-        hook_tool_response.resolve_hook_tool_responses(
-            archive, origin="claude-code-session", session_native_ids=("absent",), tool_use_ids=("t",)
-        )
-        == {}
-    )
+    assert not hasattr(hook_tool_response, "resolve_hook_tool_responses")
     baseline = spy(monkeypatch, production_baseline, tmp_path)
     decisions = production_baseline.unretained_source_decisions(
         SimpleNamespace(accepted=()),  # type: ignore[arg-type]
         archive / "source.db",
     )
     assert decisions == ()
-    assert [path.name for path in hooks + baseline] == ["source.db", "source.db"]
+    assert [path.name for path in baseline] == ["source.db"]
 
 
 def test_async_backend_readers_deny_writes_including_attached_siblings(tmp_path: Path) -> None:

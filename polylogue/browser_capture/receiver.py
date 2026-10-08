@@ -7,7 +7,6 @@ import fcntl
 import hashlib
 import hmac
 import io
-import json
 import os
 import re
 import secrets
@@ -36,8 +35,6 @@ from polylogue.browser_capture.capture_stream import (
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_API_SCHEMA,
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
-    BrowserBackfillCheckpointRecord,
-    BrowserBackfillCheckpointRequest,
     BrowserCaptureAcceptedIdentity,
     BrowserCaptureArchiveLifecycle,
     BrowserCaptureArchiveStatePayload,
@@ -379,20 +376,23 @@ def capture_response_id(provider: str, provider_session_id: str, capture_id: str
     return value if value.startswith(prefix) else f"{prefix}{value}"
 
 
-def _capture_has_content_carrier(summary: CaptureSummary) -> bool:
-    return any(fact.carrier is not None for fact in summary.attachments)
+def _capture_has_any_carrier(summary: CaptureSummary) -> bool:
+    return any(fact.carrier_evidence for fact in summary.attachments)
 
 
-def _capture_has_invalid_content_carrier(summary: CaptureSummary) -> bool:
-    return any(fact.carrier is not None and not fact.carrier_valid for fact in summary.attachments)
+def _capture_has_invalid_or_conflicting_carrier(summary: CaptureSummary) -> bool:
+    return any(fact.has_invalid_or_conflicting_carrier for fact in summary.attachments)
 
 
-def _capture_carrier_conflicts(incoming: CaptureSummary, existing: CaptureSummary) -> bool:
+def _capture_carrier_conflicts(
+    incoming: CaptureSummary,
+    existing: CaptureSummary,
+) -> bool:
     """Reject carrier bytes that contradict an existing attachment identity.
 
-    Attachments pair by their scope and provider attachment ID, in observed
-    order within that group, so an attachment inserted into another turn or
-    ahead of an existing one is not compared against an unrelated object.
+    Attachments pair by their scope, provider attachment ID, and nonempty
+    provider message owner, in observed order within that group. Ownerless
+    occurrences retain their declared order within the scope and ID group.
     """
     incoming_groups = _scoped_attachment_facts(incoming)
     for key, previous_group in _scoped_attachment_facts(existing).items():
@@ -402,19 +402,28 @@ def _capture_carrier_conflicts(incoming: CaptureSummary, existing: CaptureSummar
         for current, previous in zip(current_group, previous_group, strict=False):
             if current.identity != previous.identity:
                 return True
-            current_carrier, current_valid = current.effective_carrier
-            previous_carrier, previous_valid = previous.effective_carrier
-            if current_carrier is None or previous_carrier is None:
+            if (
+                current.size_bytes is not None
+                and previous.size_bytes is not None
+                and current.size_bytes != previous.size_bytes
+            ):
+                return True
+            current_evidence = current.carrier_evidence
+            previous_evidence = previous.carrier_evidence
+            if not current_evidence:
                 continue
-            if not current_valid or not previous_valid or current_carrier != previous_carrier:
+            if current.has_invalid_or_conflicting_carrier or previous.has_invalid_or_conflicting_carrier:
+                return True
+            if previous_evidence and current.effective_carrier[0] != previous.effective_carrier[0]:
                 return True
     return False
 
 
-def _scoped_attachment_facts(summary: CaptureSummary) -> dict[tuple[str, str], list[AttachmentFact]]:
-    groups: dict[tuple[str, str], list[AttachmentFact]] = {}
+def _scoped_attachment_facts(summary: CaptureSummary) -> dict[tuple[str, str, str | None], list[AttachmentFact]]:
+    groups: dict[tuple[str, str, str | None], list[AttachmentFact]] = {}
     for fact in summary.attachments:
-        groups.setdefault((fact.scope, fact.attachment_id), []).append(fact)
+        owner = fact.message_provider_id or None
+        groups.setdefault((fact.scope, fact.attachment_id, owner), []).append(fact)
     return groups
 
 
@@ -436,17 +445,30 @@ def _attachment_content_enrichment(incoming: CaptureSummary, existing: CaptureSu
 
     added_carrier = False
     for incoming_attachment, existing_attachment in zip(incoming_attachments, existing_attachments, strict=True):
-        if incoming_attachment.carrier is None:
-            if existing_attachment.carrier is not None:
+        if incoming_attachment.identity != existing_attachment.identity:
+            return False
+        if (
+            incoming_attachment.size_bytes is not None
+            and existing_attachment.size_bytes is not None
+            and incoming_attachment.size_bytes != existing_attachment.size_bytes
+        ):
+            return False
+        incoming_evidence = incoming_attachment.carrier_evidence
+        existing_evidence = existing_attachment.carrier_evidence
+        if not incoming_evidence:
+            if existing_evidence:
                 return False
             continue
-        if not incoming_attachment.carrier_valid:
+        if incoming_attachment.has_invalid_or_conflicting_carrier:
             return False
+        incoming_carrier, _ = incoming_attachment.effective_carrier
         existing_carrier, existing_valid = existing_attachment.effective_carrier
         if existing_carrier is None:
             added_carrier = True
             continue
-        if not existing_valid or incoming_attachment.carrier != existing_carrier:
+        if existing_attachment.has_invalid_or_conflicting_carrier or not existing_valid:
+            return False
+        if incoming_carrier != existing_carrier:
             return False
     return added_carrier
 
@@ -658,20 +680,6 @@ def _escape_like_suffix(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-# Spool governor (kwsb.1): a hostile or runaway poster sending distinct
-# (provider, provider_session_id) pairs creates a new file per capture —
-# unlike a repeat capture of the SAME session, which replaces its existing
-# file in place and never grows the spool. These bounds cap that growth.
-SPOOL_MAX_FILES = 20_000
-# Capture bytes have no quota of their own: ``stage_capture_body`` reserves
-# each body's declared length on the spool filesystem before writing it, so
-# the only byte refusal is the physical one (``SpoolStorageExhaustedError``).
-
-
-class SpoolQuotaExceededError(RuntimeError):
-    """Raised when writing a new (non-replacing) capture would exceed the spool quota."""
-
-
 class BrowserCaptureSpoolConflictError(RuntimeError):
     """Raised when an existing spool name cannot safely admit a capture.
 
@@ -682,10 +690,8 @@ class BrowserCaptureSpoolConflictError(RuntimeError):
     """
 
 
-# BrowserCaptureHTTPServer is a ThreadingHTTPServer — concurrent POSTs run on
-# separate threads. Without this lock, multiple new-capture writes could all
-# pass _check_spool_quota() before any of them lands (TOCTOU), overshooting
-# the quota under load. Held across check-and-write, not just the check.
+# Serialize admission and publication across request threads; the file lock
+# below supplies the same original custody across receiver processes.
 _SPOOL_WRITE_LOCK = threading.Lock()
 
 
@@ -700,46 +706,6 @@ def _spool_file_lock(spool_root: Path) -> Iterator[None]:
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
-
-
-@dataclass(frozen=True, slots=True)
-class SpoolUsage:
-    file_count: int
-    total_bytes: int
-
-
-def spool_usage(spool_root: Path) -> SpoolUsage:
-    """Count the artifacts the spool quota is measured against."""
-    file_count = 0
-    total_bytes = 0
-    if spool_root.exists():
-        for path in spool_root.rglob("*.json"):
-            try:
-                total_bytes += path.stat().st_size
-            except OSError:
-                continue
-            file_count += 1
-    return SpoolUsage(file_count=file_count, total_bytes=total_bytes)
-
-
-def _check_spool_quota(
-    spool_root: Path,
-    *,
-    max_files: int,
-    max_bytes: int | None,
-    label: str = "capture spool",
-) -> None:
-    """Callers must pass max_files/max_bytes explicitly (not as defaults
-    bound to the module constants) so tests can monkeypatch SPOOL_MAX_FILES/
-    POST_COMMAND_QUEUE_MAX_* and have it take effect --
-    a default parameter value binds at function-definition time, before
-    any monkeypatch runs."""
-    usage = spool_usage(spool_root)
-    if usage.file_count >= max_files or (max_bytes is not None and usage.total_bytes >= max_bytes):
-        raise SpoolQuotaExceededError(
-            f"{label} quota exceeded: {usage.file_count} files, {usage.total_bytes} bytes "
-            f"(limits: {max_files} files, {max_bytes} bytes)"
-        )
 
 
 def _capture_is_newer_or_richer(incoming: CaptureSummary, existing: CaptureSummary) -> bool:
@@ -772,6 +738,17 @@ def _capture_is_newer_or_richer(incoming: CaptureSummary, existing: CaptureSumma
             return True
         if incoming_updated < existing_updated:
             return False
+    incoming_observation = incoming.head.provenance
+    existing_observation = existing.head.provenance
+    if (
+        incoming_observation.extension_instance_id is not None
+        and incoming_observation.extension_instance_id == existing_observation.extension_instance_id
+        and incoming_observation.acquisition_sequence is not None
+        and existing_observation.acquisition_sequence is not None
+    ):
+        # These counters share one durable owner. Other instances' clocks and
+        # counters cannot establish ordering within this acquisition history.
+        return incoming_observation.acquisition_sequence > existing_observation.acquisition_sequence
     if existing_captured is not None and incoming_captured is not None and incoming_captured < existing_captured:
         return False
     # An absent update timestamp is unknown, not a change from an existing
@@ -784,6 +761,20 @@ def _capture_is_newer_or_richer(incoming: CaptureSummary, existing: CaptureSumma
     )
 
 
+def _same_instance_acquisition_advances(incoming: CaptureSummary, existing: CaptureSummary) -> bool:
+    incoming_observation = incoming.head.provenance
+    existing_observation = existing.head.provenance
+    return (
+        incoming.provider is existing.provider
+        and incoming.provider_session_id == existing.provider_session_id
+        and incoming_observation.extension_instance_id is not None
+        and incoming_observation.extension_instance_id == existing_observation.extension_instance_id
+        and incoming_observation.acquisition_sequence is not None
+        and existing_observation.acquisition_sequence is not None
+        and incoming_observation.acquisition_sequence > existing_observation.acquisition_sequence
+    )
+
+
 def capture_convergence(incoming: CaptureSummary, existing: CaptureSummary) -> CaptureConvergence:
     """Decide what a resident artifact of the same name does to an incoming capture.
 
@@ -793,7 +784,7 @@ def capture_convergence(incoming: CaptureSummary, existing: CaptureSummary) -> C
     """
     if incoming.provider is not existing.provider or incoming.provider_session_id != existing.provider_session_id:
         return CaptureConvergence.NAME_COLLISION
-    if _capture_has_invalid_content_carrier(incoming):
+    if _capture_has_invalid_or_conflicting_carrier(incoming):
         return CaptureConvergence.SUPERSEDED
     if existing.dedup_content_hash == incoming.dedup_content_hash:
         return CaptureConvergence.DUPLICATE
@@ -802,7 +793,7 @@ def capture_convergence(incoming: CaptureSummary, existing: CaptureSummary) -> C
     # A carrier that contradicts a resident attachment is not freshness
     # evidence.  Otherwise ordinary newer/richer snapshots (for example a new
     # turn carrying an attachment) retain their existing admission semantics.
-    if _capture_has_content_carrier(incoming) and _capture_carrier_conflicts(incoming, existing):
+    if _capture_has_any_carrier(incoming) and _capture_carrier_conflicts(incoming, existing):
         return CaptureConvergence.SUPERSEDED
     if not _capture_is_newer_or_richer(incoming, existing):
         return CaptureConvergence.SUPERSEDED
@@ -816,7 +807,9 @@ def summarize_capture_envelope(envelope: BrowserCaptureEnvelope) -> CaptureSumma
 
 def _envelope_bytes(envelope: BrowserCaptureEnvelope) -> bytes:
     payload = envelope.model_dump(mode="json", exclude_none=True)
-    return dumps_bytes(payload, sort_keys=True, indent=2) + b"\n"
+    # Raw provider mapping order remains authoritative for canonical replay.
+    # Streamed admission fingerprints normalize object order independently.
+    return dumps_bytes(payload, indent=2) + b"\n"
 
 
 def write_capture_envelope(
@@ -880,16 +873,14 @@ def admit_staged_capture(
 
     ``summary`` is the streamed summary of ``staged``. A resident artifact of
     the same name is summarized by the same streamed reader under the spool
-    lock, so neither side is held whole. Raises
-    :class:`SpoolQuotaExceededError` before publishing a NEW artifact (one
-    that does not replace an existing same-session file) once the spool's
-    file-count quota is reached — replacing an existing capture never grows the spool and is
-    always allowed. The quota check and the publication are serialized against
-    every other call (see ``_SPOOL_WRITE_LOCK``). The caller discards
-    ``staged`` afterwards; a published file has already been moved away.
+    lock, so neither side is held whole. Admission and publication are
+    serialized across writers. Staging reserves the actual physical storage;
+    valid captures have no count quota. The caller discards ``staged``
+    afterwards; a published file has already been moved away.
     """
     root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
     target = capture_artifact_path(summary, root)
+    convergence = CaptureConvergence.PUBLISH
     with _SPOOL_WRITE_LOCK, _spool_file_lock(root):
         replaced = target.exists()
         if replaced:
@@ -902,7 +893,12 @@ def admit_staged_capture(
             convergence = capture_convergence(summary, existing)
             if convergence is CaptureConvergence.NAME_COLLISION:
                 raise BrowserCaptureSpoolConflictError(f"capture artifact name collision for {target.name}")
-            if convergence is not CaptureConvergence.PUBLISH:
+            refresh_duplicate = (
+                convergence is CaptureConvergence.DUPLICATE
+                and _same_instance_acquisition_advances(summary, existing)
+                and _capture_is_newer_or_richer(summary, existing)
+            )
+            if convergence is not CaptureConvergence.PUBLISH and not refresh_duplicate:
                 # Both receipts identify the bytes and revision that stay.
                 # A previous rename may have succeeded before its directory
                 # barrier failed. Settle that path before acknowledging reuse.
@@ -928,8 +924,6 @@ def admit_staged_capture(
                     accepted_identities=_accepted_identities(existing, root),
                     convergence=convergence,
                 )
-        else:
-            _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=None)
         target.parent.mkdir(parents=True, exist_ok=True)
         # Establish the provider entry in the durable spool root first.
         sync_directory(root)
@@ -942,13 +936,13 @@ def admit_staged_capture(
         artifact_ref=capture_artifact_ref(summary, root),
         bytes_written=target.stat().st_size,
         replaced=replaced,
-        deduplicated=False,
+        deduplicated=convergence is CaptureConvergence.DUPLICATE,
         dedup_content_hash=summary.dedup_content_hash,
         content_hash=staged.sha256,
         capture_id=summary.capture_id,
         capture_instance_id=summary.head.provenance.extension_instance_id,
         accepted_identities=_accepted_identities(summary, root),
-        convergence=CaptureConvergence.PUBLISH,
+        convergence=convergence,
     )
 
 
@@ -1126,106 +1120,19 @@ def existing_capture_state(
     ).model_dump(mode="json", exclude_none=True)
 
 
-def _atomic_write_json(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    raw = dumps_bytes(payload, sort_keys=True, indent=2)
-    with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
-        temp_path = Path(handle.name)
-        handle.write(raw)
-        handle.write(b"\n")
-    temp_path.replace(path)
-
-
-# ---- Backfill-ledger checkpoint mirror (polylogue-06zm) --------------------
-#
-# The extension's IndexedDB backfill ledger is the fast primary source; a
-# local chrome.storage.local copy already survives an ordinary profile
-# restart (polylogue-jlme.4). This mirror is the second fallback: a
-# receiver-owned, credential-free copy that outlives BOTH of those when a
-# profile is destructively re-seeded or the extension is fully reinstalled,
-# so recovery has a durable place to look beyond the browser profile itself.
-# One JSON file per extension_instance_id, overwritten on every checkpoint
-# (last write wins) -- the service worker is single-threaded and only ever
-# checkpoints its own ledger, so there is exactly one legitimate writer per
-# instance id at a time. The file-count bound still guards against a buggy
-# or hostile caller minting unbounded distinct instance ids.
-BACKFILL_CHECKPOINT_MAX_FILES = 2_000
-BACKFILL_CHECKPOINT_MAX_BYTES = 200 * 1024 * 1024  # 200 MiB
-
-
 def backfill_checkpoint_root(spool_path: Path | None = None) -> Path:
-    """Return the directory that holds mirrored backfill-ledger checkpoints."""
+    """Locate original checkpoint inputs retained for digest-bound inspection.
+
+    New checkpoints use CaptureJobRegistry custody. Existing mirror bytes may
+    contain unique acquired payloads and delivery metadata, so their directory
+    remains an ordinary input to the registry's orphan census and raw reader.
+    """
     root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
     return root / BACKFILL_CHECKPOINT_DIRNAME
 
 
-def _backfill_checkpoint_path(root: Path, instance_id: str) -> Path:
-    return root / f"{_safe_token(instance_id)}.json"
-
-
-def write_backfill_checkpoint(
-    request: BrowserBackfillCheckpointRequest,
-    *,
-    spool_path: Path | None = None,
-) -> BrowserBackfillCheckpointRecord:
-    """Persist a credential-free backfill-ledger checkpoint mirror.
-
-    Overwrites any prior checkpoint for the same ``extension_instance_id``
-    (last write wins; see module comment above). Guarded by the same write
-    lock and quota-check pattern the capture spool and post-command queue
-    use, so a concurrent write cannot bypass the quota check (TOCTOU).
-    """
-    root = backfill_checkpoint_root(spool_path)
-    with _SPOOL_WRITE_LOCK:
-        target = _backfill_checkpoint_path(root, request.extension_instance_id)
-        if not target.exists():
-            _check_spool_quota(
-                root,
-                max_files=BACKFILL_CHECKPOINT_MAX_FILES,
-                max_bytes=BACKFILL_CHECKPOINT_MAX_BYTES,
-                label="backfill-checkpoint mirror",
-            )
-        record = BrowserBackfillCheckpointRecord(
-            extension_instance_id=request.extension_instance_id,
-            checkpoint=request.checkpoint,
-            stored_at=datetime.now(UTC).isoformat(),
-        )
-        _atomic_write_json(target, record.model_dump(mode="json"))
-    return record
-
-
-def read_backfill_checkpoint(
-    instance_id: str,
-    *,
-    spool_path: Path | None = None,
-) -> BrowserBackfillCheckpointRecord | None:
-    """Return the mirrored checkpoint for an extension instance, if any."""
-    root = backfill_checkpoint_root(spool_path)
-    path = _backfill_checkpoint_path(root, instance_id)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    # ValueError covers both json.JSONDecodeError and UnicodeDecodeError from
-    # read_text on a corrupt (non-UTF-8) mirror file.
-    except (OSError, ValueError) as exc:
-        # A corrupt/unreadable mirror is not "no checkpoint": returning None
-        # triggers a full re-backfill, so leave a trace of why.
-        logger.warning(
-            "backfill checkpoint mirror unreadable for %s (%s); extension will re-backfill", instance_id, exc
-        )
-        return None
-    try:
-        return BrowserBackfillCheckpointRecord.model_validate(payload)
-    except Exception as exc:
-        logger.warning("backfill checkpoint mirror invalid for %s (%s); extension will re-backfill", instance_id, exc)
-        return None
-
-
 __all__ = [
     "BACKFILL_CHECKPOINT_DIRNAME",
-    "BACKFILL_CHECKPOINT_MAX_BYTES",
-    "BACKFILL_CHECKPOINT_MAX_FILES",
     "BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV",
     "RECEIVER_ATTESTATION_DOMAIN",
     "RECEIVER_IDENTITY_HEX_CHARS",
@@ -1234,26 +1141,22 @@ __all__ = [
     "BrowserCaptureWriteResult",
     "BrowserCaptureSpoolConflictError",
     "CaptureConvergence",
-    "SpoolUsage",
     "admit_staged_capture",
     "attest_receiver",
     "backfill_checkpoint_root",
     "capture_artifact_ref",
     "capture_convergence",
-    "spool_usage",
     "capture_response_id",
     "_is_extension_origin_pattern",
     "capture_artifact_path",
     "existing_capture_state",
     "load_or_mint_receiver_identity",
     "load_or_mint_receiver_token",
-    "read_backfill_checkpoint",
     "receiver_attestation_proof",
     "receiver_identity",
     "receiver_status_payload",
     "resolve_receiver_auth_token",
     "summarize_capture_envelope",
-    "write_backfill_checkpoint",
     "write_capture_envelope",
     "write_capture_envelope_bytes",
 ]

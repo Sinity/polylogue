@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from polylogue.cli.shared.check_models import CheckCommandResult
@@ -100,8 +101,19 @@ def _run_blob_store_check(config: Config, *, full: bool = False) -> JSONDocument
     return json_document(report.to_dict())
 
 
-def _run_schema_verification(options: CheckCommandOptions, config: Config) -> SchemaVerificationReport:
+def _run_schema_verification(env: AppEnv, options: CheckCommandOptions, config: Config) -> SchemaVerificationReport:
     from polylogue.storage.archive_identity import ArchiveLocation
+
+    def quarantine(verdicts: Sequence[tuple[str, str]]) -> None:
+        # The resident daemon is the archive's only live writer; this process
+        # only verifies and hands it the verdicts.
+        from polylogue.cli.archive_query import submit_cli_mutation
+
+        submit_cli_mutation(
+            env,
+            "maintenance.schema.quarantine",
+            {"verdicts": [{"raw_id": raw_id, "reason": reason} for raw_id, reason in verdicts]},
+        )
 
     report = run_schema_verification(
         SchemaVerificationRequest(
@@ -114,6 +126,7 @@ def _run_schema_verification(options: CheckCommandOptions, config: Config) -> Sc
         ),
         db_path=config.db_path,
         archive_location=ArchiveLocation.resolve(config.archive_root),
+        quarantine=quarantine if options.schema_quarantine_malformed else None,
     )
     print(file=sys.stderr)
     return report
@@ -137,7 +150,7 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
         result.blob_report = _run_blob_store_check(config, full=options.blob_integrity_full)
 
     if options.check_schemas:
-        result.schema_report = _run_schema_verification(options, config)
+        result.schema_report = _run_schema_verification(env, options, config)
 
     if options.check_artifact_coverage:
         result.coverage_report = run_artifact_coverage(

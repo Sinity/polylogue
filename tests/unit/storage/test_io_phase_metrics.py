@@ -13,6 +13,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.io_phase_metrics import (
     close_connection_cursor,
     connect_measured,
+    connection_cursor,
     io_phase_process_snapshot,
     io_phase_snapshot,
     live_connection_cursors,
@@ -320,6 +321,148 @@ def test_measured_connection_retains_failed_cursor_without_native_owner(tmp_path
     finally:
         if retained_cursor := actual():
             retained_cursor.allow_cleanup.set()
+        connection.close()
+
+
+@pytest.mark.parametrize("execute_fails", [False, True])
+def test_statement_context_retains_failed_native_close_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute_fails: bool
+) -> None:
+    from polylogue.storage.io_phase_metrics import _MeasuredConnection
+
+    path = tmp_path / "statement-close.db"
+    connection = connect_measured(path)
+    cursor_factory = _MeasuredConnection.cursor
+    selected: list[ControlledCursor] = []
+    close_failure = OSError("synthetic actual statement close failure")
+
+    def blocked_cursor(original: _MeasuredConnection) -> sqlite3.Cursor:
+        cursor = cursor_factory(original, factory=ControlledCursor)
+        assert isinstance(cursor, ControlledCursor)
+        cursor.cleanup_failure = close_failure
+        cursor.allow_cleanup.clear()
+        selected.append(cursor)
+        return cursor
+
+    monkeypatch.setattr(_MeasuredConnection, "cursor", blocked_cursor)
+    try:
+        with pytest.raises(BaseExceptionGroup if execute_fails else OSError) as failure:
+            with connection_cursor(
+                connection, "SELECT absent_column" if execute_fails else "SELECT 1 UNION ALL SELECT 2"
+            ) as cursor:
+                assert next(cursor) == (1,)
+        if execute_fails:
+            assert isinstance(failure.value, BaseExceptionGroup)
+            assert isinstance(failure.value.exceptions[0], sqlite3.OperationalError)
+            assert failure.value.exceptions[1] is close_failure
+        else:
+            assert failure.value is close_failure
+        retained = weakref.ref(selected.pop())
+        if not execute_fails:
+            del cursor
+        failure.value.__traceback__ = None
+        if isinstance(failure.value, BaseExceptionGroup):
+            for component in failure.value.exceptions:
+                component.__traceback__ = None
+        # ExceptionInfo stores its own original traceback independently of
+        # exception.__traceback__. Drop that last test-owned frame carrier.
+        del failure
+        gc.collect()
+        assert retained() is not None
+        assert retained() in live_connection_cursors(connection)
+        actual = retained()
+        assert isinstance(actual, ControlledCursor)
+        actual.allow_cleanup.set()
+        connection.close()
+
+        assert live_connection_cursors(connection) == ()
+    finally:
+        for child in live_connection_cursors(connection):
+            if isinstance(child, ControlledCursor):
+                child.allow_cleanup.set()
+        connection.close()
+
+
+@pytest.mark.parametrize("probe", ["table", "relation", "view", "trigger", "index", "column", "attached"])
+def test_canonical_sync_introspection_settles_its_actual_native_cursors(probe: str) -> None:
+    from polylogue.core import sqlite_introspection
+
+    connection = connect_measured(":memory:")
+    try:
+        with connection_cursor(connection, "CREATE TABLE evidence(value INTEGER)"):
+            pass
+        with connection_cursor(connection, "CREATE INDEX evidence_value ON evidence(value)"):
+            pass
+        with connection_cursor(connection, "CREATE VIEW evidence_view AS SELECT value FROM evidence"):
+            pass
+        with connection_cursor(
+            connection, "CREATE TRIGGER evidence_trigger AFTER INSERT ON evidence BEGIN SELECT 1; END"
+        ):
+            pass
+        with connection_cursor(connection, "ATTACH ':memory:' AS input"):
+            pass
+        with connection_cursor(connection, "CREATE TABLE input.evidence(value INTEGER)"):
+            pass
+        if probe == "table":
+            result = sqlite_introspection.table_exists(connection, "evidence")
+        elif probe == "relation":
+            result = sqlite_introspection.relation_exists(connection, "evidence_view")
+        elif probe == "view":
+            result = sqlite_introspection.view_exists(connection, "evidence_view")
+        elif probe == "trigger":
+            result = sqlite_introspection.trigger_exists(connection, "evidence_trigger")
+        elif probe == "index":
+            result = sqlite_introspection.index_exists(connection, "evidence_value")
+        elif probe == "column":
+            result = sqlite_introspection.column_exists(connection, "evidence", "value")
+        else:
+            result = sqlite_introspection.table_exists(connection, "evidence", schema="input")
+        assert result
+        assert live_connection_cursors(connection) == ()
+    finally:
+        connection.close()
+
+
+def test_standalone_core_introspection_works_in_a_fresh_native_interpreter() -> None:
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sqlite3; from polylogue.core.sqlite_introspection import table_exists; "
+            "c=sqlite3.connect(':memory:'); c.execute('CREATE TABLE evidence(value INTEGER)').close(); "
+            "assert table_exists(c, 'evidence'); c.close(); print('plain introspection settled')",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "plain introspection settled"
+
+
+@pytest.mark.parametrize("measured", [False, True])
+@pytest.mark.parametrize("fails", [False, True])
+def test_statement_context_physically_settles_declared_connection_types(measured: bool, fails: bool) -> None:
+    connection = connect_measured(":memory:") if measured else sqlite3.connect(":memory:")
+    original = OSError("neutral statement consumer failure")
+    try:
+        if fails:
+            with pytest.raises(OSError) as failure:
+                with connection_cursor(connection, "SELECT 7") as cursor:
+                    assert cursor.fetchone() == (7,)
+                    raise original
+            assert failure.value is original
+        else:
+            with connection_cursor(connection, "SELECT 7") as cursor:
+                assert cursor.fetchone() == (7,)
+        with pytest.raises(sqlite3.ProgrammingError):
+            cursor.fetchone()
+        if measured:
+            assert live_connection_cursors(connection) == ()
+    finally:
         connection.close()
 
 

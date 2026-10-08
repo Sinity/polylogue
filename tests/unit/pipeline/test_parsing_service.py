@@ -7,7 +7,8 @@ import hashlib
 import json
 import sqlite3
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,17 +23,18 @@ from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.pipeline.payload_types import ParseBatchObservation
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.acquisition_records import ScanResult
-from polylogue.pipeline.services.ingest_worker import _fallback_id
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.planning import PlanningService
 from polylogue.pipeline.services.planning_backlog import collect_parse_backlog
 from polylogue.pipeline.services.validation import ValidationService  # used by TestPlanningService
 from polylogue.sources.parsers.base import RawSessionData
+from polylogue.sources.retained_acquisition import SourceInputRecord
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.storage_records import admit_raw_record, make_raw_session
 
 pytestmark = pytest.mark.uses_real_clock("Same as test_async_index: acquired_at is opaque metadata.")
@@ -40,24 +42,6 @@ pytestmark = pytest.mark.uses_real_clock("Same as test_async_index: acquired_at 
 WorkspacePaths = dict[str, Path]
 SessionPayload = dict[str, JSONValue]
 VisitSourcesCallback = Callable[[RawSessionRecord], Awaitable[None]]
-
-
-def test_fallback_id_preserves_drive_cache_hash_suffix() -> None:
-    fallback_id = _fallback_id(
-        "/home/sinity/.local/share/polylogue/drive-cache/gemini/Branch_of_Br-144383b77f2f293fb94ec8647f3632e4.json",
-        "raw-id",
-    )
-
-    assert fallback_id == "Branch_of_Br-144383b77f2f293fb94ec8647f3632e4"
-
-
-def test_fallback_id_preserves_subagent_stems() -> None:
-    fallback_id = _fallback_id(
-        "/home/sinity/.claude/projects/project/session/subagents/agent-aba750c3c29cb63e0.jsonl",
-        "raw-id",
-    )
-
-    assert fallback_id == "agent-aba750c3c29cb63e0"
 
 
 def _parse_batch_observation(
@@ -77,7 +61,7 @@ def _parse_batch_observation(
 
 async def test_parse_backlog_excludes_terminal_failure_authority_until_forced_reparse(tmp_path: Path) -> None:
     """Scheduled parse selection stops retrying a typed terminal refusal."""
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     source_db = tmp_path / "source.db"
     backend = SQLiteBackend(db_path=source_db)
     try:
@@ -87,6 +71,7 @@ async def test_parse_backlog_excludes_terminal_failure_authority_until_forced_re
                 raw_id="terminal-unsupported",
                 source_name="codex-session",
                 source_path="unsupported.jsonl",
+                canonical_source_path="unsupported.jsonl",
                 validation_status="skipped",
                 parse_error="unsupported shape",
                 blob_size=1,
@@ -120,7 +105,7 @@ async def test_parse_backlog_keeps_malformed_terminal_evidence_retryable(
     mutation: str,
 ) -> None:
     """Only an exact, typed terminal carrier suppresses scheduled retry."""
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     source_db = tmp_path / "source.db"
     backend = SQLiteBackend(db_path=source_db)
     raw_id = "malformed-terminal"
@@ -131,6 +116,7 @@ async def test_parse_backlog_keeps_malformed_terminal_evidence_retryable(
                 raw_id=raw_id,
                 source_name="codex-session",
                 source_path="unsupported.jsonl",
+                canonical_source_path="unsupported.jsonl",
                 validation_status="skipped",
                 parse_error="unsupported shape",
                 blob_size=1,
@@ -172,7 +158,7 @@ async def test_parse_backlog_keeps_malformed_terminal_evidence_retryable(
 @pytest.mark.asyncio
 async def test_validation_failed_unsupported_terminal_evidence_remains_unexplained(tmp_path: Path) -> None:
     """Validation failure authority is limited to corrupt/decode outcomes."""
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     source_db = tmp_path / "source.db"
     backend = SQLiteBackend(db_path=source_db)
     try:
@@ -182,6 +168,7 @@ async def test_validation_failed_unsupported_terminal_evidence_remains_unexplain
                 raw_id="validation-failed-unsupported",
                 source_name="codex-session",
                 source_path="unsupported.jsonl",
+                canonical_source_path="unsupported.jsonl",
                 validation_status="failed",
                 parse_error="unsupported shape",
                 blob_size=1,
@@ -334,9 +321,7 @@ class TestParsingServiceParseSources:
         mock_collect_validate.assert_awaited_once()
         mock_collect_parse.assert_awaited_once()
         # The parse step receives exactly the raw ids acquisition returned.
-        mock_parse.assert_awaited_once_with(
-            raw_ids=["raw-1", "raw-2"], progress_callback=None, force_write=False, max_pass_seconds=None
-        )
+        mock_parse.assert_awaited_once_with(raw_ids=["raw-1", "raw-2"], progress_callback=None, max_pass_seconds=None)
 
     async def test_ingest_sources_surfaces_batch_diagnostics_only(self) -> None:
         mock_repository = MagicMock()
@@ -428,7 +413,6 @@ class TestParsingServiceParseSources:
         mock_parse.assert_awaited_once_with(
             raw_ids=["raw-1", "raw-2", "raw-3", "raw-4"],
             progress_callback=None,
-            force_write=False,
             max_pass_seconds=None,
         )
 
@@ -500,9 +484,7 @@ class TestParsingServiceParseSources:
             drive_config=mock_config.drive_config,
         )
         # In unified ingest, validation is inline — callback passed to parse_from_raw
-        mock_parse.assert_awaited_once_with(
-            raw_ids=["raw-1"], progress_callback=callback, force_write=False, max_pass_seconds=None
-        )
+        mock_parse.assert_awaited_once_with(raw_ids=["raw-1"], progress_callback=callback, max_pass_seconds=None)
 
     async def test_backend_not_initialized_raises(self) -> None:
         mock_repository = MagicMock()
@@ -513,6 +495,31 @@ class TestParsingServiceParseSources:
 
         with pytest.raises(DatabaseError, match="backend is not initialized"):
             await service.parse_sources([source])
+
+
+@asynccontextmanager
+async def _canonical_parsing(
+    archive_root: Path, config: Config
+) -> AsyncIterator[tuple[ParsingService, AcquisitionService]]:
+    """Parsing and acquisition on the archive's own Index, published by the daemon's owners."""
+    from polylogue.daemon.drive_catchup import DriveCatchupExecution
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
+    backend = SQLiteBackend(db_path=archive_root / "index.db")
+    try:
+        async with prepared_live_convergence_owner(archive_root) as owner:
+            execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+            parsing = ParsingService(
+                repository=SessionRepository(backend=backend),
+                archive_root=archive_root,
+                config=config,
+                execution=execution,
+                retained_runner=owner.ingest_retained_raw_ids,
+            )
+            yield parsing, AcquisitionService(backend=backend, execution=execution)
+    finally:
+        await backend.close()
 
 
 class TestParsingServiceIntegration:
@@ -547,21 +554,13 @@ class TestParsingServiceIntegration:
         (inbox / "sessions.json").write_text(
             json.dumps([self._session_json("test-conv-1", "Test Session", "Hello, world!")])
         )
-        # This ParsingService/SQLiteBackend path persists into read model
-        # sessions/messages tables. cli_workspace["db_path"] is the archive
-        # index.db, so this test writes to its own fresh backend database
-        # alongside it.
-        backend = SQLiteBackend(db_path=cli_workspace["archive_root"] / "ingest.db")
         config = Config(
             archive_root=cli_workspace["archive_root"],
             render_root=cli_workspace["render_root"],
             sources=[Source(name="test-inbox", path=inbox)],
         )
-        result = await ParsingService(
-            repository=SessionRepository(backend=backend),
-            archive_root=cli_workspace["archive_root"],
-            config=config,
-        ).parse_sources(config.sources)
+        async with _canonical_parsing(cli_workspace["archive_root"], config) as (parsing, _acquisition):
+            result = await parsing.parse_sources(config.sources)
         assert result.counts["sessions"] >= 1
         assert result.processed_ids
 
@@ -570,34 +569,27 @@ class TestParsingServiceIntegration:
         (inbox / "sessions.json").write_text(
             json.dumps([self._session_json("test-conv-raw", "Test Raw Session", "Hello from raw!")])
         )
-        # See test_ingest_with_real_database: this SQLiteBackend path cannot
-        # open the archive index.db, so route it to its own DB.
-        backend = SQLiteBackend(db_path=cli_workspace["archive_root"] / "ingest.db")
         config = Config(
             archive_root=cli_workspace["archive_root"],
             render_root=cli_workspace["render_root"],
             sources=[Source(name="test-inbox", path=inbox)],
         )
-        acquire_result = await AcquisitionService(backend=backend).acquire_sources(config.sources)
-        raw_ids = acquire_result.raw_ids
-        assert len(raw_ids) == 1
+        async with _canonical_parsing(cli_workspace["archive_root"], config) as (parsing, acquisition):
+            acquire_result = await acquisition.acquire_sources(config.sources)
+            raw_ids = acquire_result.raw_ids
+            assert len(raw_ids) == 1
 
-        parse_result = await ParsingService(
-            repository=SessionRepository(backend=backend),
-            archive_root=cli_workspace["archive_root"],
-            config=config,
-        ).parse_from_raw(raw_ids=raw_ids)
+            parse_result = await parsing.parse_from_raw(raw_ids=raw_ids)
         assert parse_result.counts["sessions"] >= 1
         assert parse_result.processed_ids
-        async with backend.connection() as conn:
-            row = await (
-                await conn.execute(
-                    "SELECT raw_id FROM sessions WHERE session_id = ?",
-                    (list(parse_result.processed_ids)[0],),
-                )
+        index_uri = f"file:{cli_workspace['archive_root'] / 'index.db'}?mode=ro"
+        with sqlite3.connect(index_uri, uri=True) as conn:
+            row = conn.execute(
+                "SELECT raw_id FROM sessions WHERE session_id = ?",
+                (list(parse_result.processed_ids)[0],),
             ).fetchone()
         assert row is not None
-        assert row["raw_id"] == raw_ids[0]
+        assert row[0] == raw_ids[0]
 
 
 class TestParsingServiceStreaming:
@@ -640,7 +632,28 @@ class TestParsingServiceStreaming:
 
         with patch(
             "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(
+                side_effect=[
+                    {
+                        "records": 1,
+                        "sessions": 0,
+                        "messages": 0,
+                        "changed_sessions": 0,
+                        "failed_raw_count": 0,
+                        "converged": True,
+                        "elapsed_ms": 0.0,
+                    },
+                    {
+                        "records": 2,
+                        "sessions": 0,
+                        "messages": 0,
+                        "changed_sessions": 0,
+                        "failed_raw_count": 0,
+                        "converged": True,
+                        "elapsed_ms": 0.0,
+                    },
+                ]
+            ),
         ) as mock_process:
             await service.parse_from_raw(
                 raw_ids=["raw-1", "raw-2", "raw-3"],
@@ -648,10 +661,8 @@ class TestParsingServiceStreaming:
             )
 
         repository.get_raw_blob_sizes.assert_awaited_once_with(["raw-1", "raw-2", "raw-3"])
-        assert mock_process.await_args_list[0].args[2] == ["raw-1"]
-        assert mock_process.await_args_list[1].args[2] == ["raw-2", "raw-3"]
-        assert mock_process.await_args_list[0].kwargs["suspend_fts_triggers"] is True
-        assert mock_process.await_args_list[1].kwargs["suspend_fts_triggers"] is True
+        assert mock_process.await_args_list[0].args[1] == ["raw-1"]
+        assert mock_process.await_args_list[1].args[1] == ["raw-2", "raw-3"]
         assert "Ingesting batch 1 (0/3 raw, batch 1 raw, 96.0 MiB)" in progress_events
         assert "Ingesting batch 2 (1/3 raw, batch 2 raw, 104.0 MiB)" in progress_events
 
@@ -675,7 +686,28 @@ class TestParsingServiceStreaming:
 
         with patch(
             "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(
+                side_effect=[
+                    {
+                        "records": 1,
+                        "sessions": 0,
+                        "messages": 0,
+                        "changed_sessions": 0,
+                        "failed_raw_count": 0,
+                        "converged": True,
+                        "elapsed_ms": 0.0,
+                    },
+                    {
+                        "records": 2,
+                        "sessions": 0,
+                        "messages": 0,
+                        "changed_sessions": 0,
+                        "failed_raw_count": 0,
+                        "converged": True,
+                        "elapsed_ms": 0.0,
+                    },
+                ]
+            ),
         ) as mock_process:
             await service.parse_from_raw(
                 provider="chatgpt",
@@ -683,8 +715,8 @@ class TestParsingServiceStreaming:
             )
 
         repository.iter_raw_headers.assert_called_once_with(source_name="chatgpt")
-        assert mock_process.await_args_list[0].args[2] == ["raw-1"]
-        assert mock_process.await_args_list[1].args[2] == ["raw-2", "raw-3"]
+        assert mock_process.await_args_list[0].args[1] == ["raw-1"]
+        assert mock_process.await_args_list[1].args[1] == ["raw-2", "raw-3"]
         assert "Ingesting batch 1 (0/3 raw, batch 1 raw, 96.0 MiB)" in progress_events
         assert "Ingesting batch 2 (1/3 raw, batch 2 raw, 104.0 MiB)" in progress_events
 
@@ -704,8 +736,17 @@ class TestParsingServiceStreaming:
         config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
         service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
 
-        async def _process(*_args: object, **_kwargs: object) -> None:
+        async def _process(*_args: object, **_kwargs: object) -> dict[str, object]:
             events.append("batch-write")
+            return {
+                "records": 1,
+                "sessions": 0,
+                "messages": 0,
+                "changed_sessions": 0,
+                "failed_raw_count": 0,
+                "converged": True,
+                "elapsed_ms": 0.0,
+            }
 
         with patch(
             "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
@@ -723,7 +764,7 @@ class TestParsingServiceStreaming:
         applied to the daemon's other unbounded writer-holding actor
         (``maintenance.drive_catchup``, measured hold_max=18,623s). A per-call
         wall-clock budget must stop ``parse_from_raw`` from draining the whole
-        raw-id backlog in one call even though ``raw_batch_size`` alone would
+        raw-id backlog in one call even though the parse page size alone would
         admit every batch. The budget is checked only *between* batches (each
         batch is a real write/transaction boundary), so at least one batch
         always completes -- forward progress is guaranteed -- and raw ids left
@@ -745,8 +786,10 @@ class TestParsingServiceStreaming:
             repository=repository,
             archive_root=config.archive_root,
             config=config,
-            raw_batch_size=1,
         )
+        # One raw per parse page, so every page is its own write boundary. Set
+        # on the instance: the clock patch below is undone mid-test.
+        service.RAW_BATCH_SIZE = 1
 
         # A monotonic clock that always advances well past any small budget
         # after its very first read -- deterministic regardless of exactly
@@ -758,7 +801,20 @@ class TestParsingServiceStreaming:
 
         with patch(
             "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
-            new=AsyncMock(side_effect=[None, None, None]),
+            new=AsyncMock(
+                side_effect=[
+                    {
+                        "records": 1,
+                        "sessions": 0,
+                        "messages": 0,
+                        "changed_sessions": 0,
+                        "failed_raw_count": 0,
+                        "converged": True,
+                        "elapsed_ms": 0.0,
+                    }
+                    for _ in range(3)
+                ]
+            ),
         ) as mock_process:
             bounded = await service.parse_from_raw(
                 raw_ids=["raw-1", "raw-2", "raw-3"],
@@ -771,7 +827,20 @@ class TestParsingServiceStreaming:
         monkeypatch.undo()
         with patch(
             "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(
+                side_effect=[
+                    {
+                        "records": 1,
+                        "sessions": 0,
+                        "messages": 0,
+                        "changed_sessions": 0,
+                        "failed_raw_count": 0,
+                        "converged": True,
+                        "elapsed_ms": 0.0,
+                    }
+                    for _ in range(2)
+                ]
+            ),
         ) as mock_process_remainder:
             remainder = await service.parse_from_raw(raw_ids=["raw-2", "raw-3"])
 
@@ -785,7 +854,7 @@ class TestParsingServiceStreaming:
 
 
 class TestPlanningService:
-    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
+    @patch("polylogue.pipeline.services.acquisition.iter_source_acquisition_records")
     async def test_parse_plan_uses_existing_raw_scope_without_scanning_sources(
         self, mock_iter: MagicMock, tmp_path: Path
     ) -> None:
@@ -801,6 +870,7 @@ class TestPlanningService:
                 raw_id="raw-scoped",
                 source_name="inbox-a",
                 source_path=str(source_dir / "a.json"),
+                canonical_source_path=str(source_dir / "a.json"),
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             ),
@@ -833,6 +903,7 @@ class TestPlanningService:
                     raw_id=raw_id,
                     source_name=source_name,
                     source_path=source_path,
+                    canonical_source_path=source_path,
                     blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 ),
@@ -844,8 +915,10 @@ class TestPlanningService:
         assert plan.summary.details["backlog_validate"] == 1
         assert set(plan.validate_raw_ids) == {"raw-scoped"}
 
-    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
+    @patch("polylogue.pipeline.services.acquisition.iter_source_acquisition_records")
     async def test_build_plan_dedupes_duplicate_scanned_raw_ids(self, mock_iter: MagicMock, tmp_path: Path) -> None:
+        # Planning reads the archive's known source cursors before scanning.
+        run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
@@ -858,7 +931,7 @@ class TestPlanningService:
             source_index=0,
             provider_hint=Provider.CHATGPT,
         )
-        mock_iter.return_value = iter([raw_data, raw_data])
+        mock_iter.return_value = iter([SourceInputRecord('["physical-file-v1",0]', raw_data)] * 2)
 
         plan = await planner.build_plan(
             sources=[Source(name="inbox-a", path=source_dir)],
@@ -888,6 +961,7 @@ class TestPlanningService:
                     raw_id=backlog_ids[index],
                     source_name="inbox-a",
                     source_path=str(source_dir / f"backlog-{index}.json"),
+                    canonical_source_path=str(source_dir / f"backlog-{index}.json"),
                     blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 ),
@@ -930,6 +1004,7 @@ class TestPlanningService:
                     raw_id=hashlib.sha256(f"raw-preview-{index}".encode()).hexdigest(),
                     source_name="inbox-a",
                     source_path=str(source_dir / f"p-{index}.json"),
+                    canonical_source_path=str(source_dir / f"p-{index}.json"),
                     blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 ),
@@ -972,6 +1047,7 @@ class TestPlanningService:
                     raw_id=raw_id,
                     source_name="inbox-a",
                     source_path=str(source_dir / f"{raw_id}.json"),
+                    canonical_source_path=str(source_dir / f"{raw_id}.json"),
                     blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 ),
@@ -997,6 +1073,7 @@ class TestPlanningService:
                 raw_id="raw-validated",
                 source_name="inbox-a",
                 source_path=str(source_dir / "validated.json"),
+                canonical_source_path=str(source_dir / "validated.json"),
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             ),
@@ -1010,6 +1087,7 @@ class TestPlanningService:
                 raw_id="raw-unvalidated",
                 source_name="inbox-a",
                 source_path=str(source_dir / "unvalidated.json"),
+                canonical_source_path=str(source_dir / "unvalidated.json"),
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             ),
@@ -1022,6 +1100,7 @@ class TestPlanningService:
                 raw_id="raw-validation-failed",
                 source_name="inbox-a",
                 source_path=str(source_dir / "validation-failed.json"),
+                canonical_source_path=str(source_dir / "validation-failed.json"),
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             ),
@@ -1071,6 +1150,7 @@ class TestPlanningService:
             raw_id="raw-existing",
             source_name="inbox-a",
             source_path="/tmp/existing.json",
+            canonical_source_path="/tmp/existing.json",
             blob_size=len(b'{"id":"x"}'),
             acquired_at=datetime.now(tz=timezone.utc).isoformat(),
         )
@@ -1127,6 +1207,7 @@ class TestPlanningService:
                 raw_id=hashlib.sha256(b"existing-passed").hexdigest(),
                 source_name="inbox-a",
                 source_path="/tmp/existing-passed.json",
+                canonical_source_path="/tmp/existing-passed.json",
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             ),
@@ -1134,6 +1215,7 @@ class TestPlanningService:
                 raw_id=hashlib.sha256(b"existing-unvalidated").hexdigest(),
                 source_name="inbox-a",
                 source_path="/tmp/existing-unvalidated.json",
+                canonical_source_path="/tmp/existing-unvalidated.json",
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             ),
@@ -1141,6 +1223,7 @@ class TestPlanningService:
                 raw_id=hashlib.sha256(b"existing-failed").hexdigest(),
                 source_name="inbox-a",
                 source_path="/tmp/existing-failed.json",
+                canonical_source_path="/tmp/existing-failed.json",
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             ),

@@ -98,9 +98,9 @@ def read_counter() -> Iterator[ReadCounter]:
     from polylogue.sources.acquisition_boundary import capture_bound_path as real_capture
 
     def counted_capture(blob_store, path, location, *, heartbeat=None):  # type: ignore[no-untyped-def]
-        hash_hex, size = real_capture(blob_store, path, location, heartbeat=heartbeat)
-        counter.record("capture_bound_path", size)
-        return hash_hex, size
+        capture = real_capture(blob_store, path, location, heartbeat=heartbeat)
+        counter.record("capture_bound_path", capture.blob_size)
+        return capture
 
     # ----- Wrap Path.read_bytes globally (only when used by batch.py) ----
     # We don't monkeypatch Path.read_bytes itself (way too broad). Instead,

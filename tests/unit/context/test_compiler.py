@@ -4,10 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from polylogue.archive.context_models import ContextImage, ContextSegment, ContextSpec
 from polylogue.context.compiler import (
-    ContextImage,
-    ContextSegment,
-    ContextSpec,
     compile_assertion_context_segment,
     compile_prose_with_refs_context_segment,
     compile_query_unit_context_segment,

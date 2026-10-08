@@ -19,18 +19,22 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_default_convergence_stages
 from polylogue.sources.live import hook_paste_enrichment
 from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource
+from tests.infra.compute_owner import owned_compute_adapter
+from tests.infra.live_batch import prepared_live_batch_processor
 
 _MESSAGES_PER_SESSION = 8
 
@@ -143,36 +147,40 @@ class _ChunkProbe:
             self.statements += 1
 
 
-def _build(
+@asynccontextmanager
+async def _build(
     tmp_path: Path,
     *,
     monkeypatch: pytest.MonkeyPatch,
     seeded_sessions: int,
-) -> tuple[LiveBatchProcessor, Path, Path]:
+    compute_adapter: BoundedComputeAdapter,
+) -> AsyncIterator[tuple[LiveBatchProcessor, Path, Path]]:
     archive_root = tmp_path / f"archive-{seeded_sessions}"
     archive_root.mkdir()
     corpus_root = tmp_path / f"corpus-{seeded_sessions}"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(archive_root / "polylogue.toml"))
     db_path = archive_root / "index.db"
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
-    processor = LiveBatchProcessor(
-        cast(Any, _Polylogue(archive_root, db_path)),
+    converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute_adapter))
+    # The supplied live owners: writer, retained publication, and the
+    # converger's stages run through the Raw owner on the same compute adapter.
+    async with prepared_live_batch_processor(
+        archive_root,
         (WatchSource(name="claude-code", root=corpus_root),),
-        cursor=CursorStore(db_path),
         parser_fingerprint="chunk-cost-v1",
         converger=converger,
-    )
-    seeded = [_write_session(corpus_root, ordinal) for ordinal in range(seeded_sessions)]
-    metrics = asyncio.run(processor.ingest_files(seeded, emit_event=False))
-    assert metrics.succeeded_file_count == seeded_sessions
-    source_db = archive_root / "source.db"
-    for ordinal in range(seeded_sessions):
-        _seed_hook_event(source_db, ordinal)
-    return processor, corpus_root, source_db
+        compute_adapter=compute_adapter,
+    ) as processor:
+        seeded = [_write_session(corpus_root, ordinal) for ordinal in range(seeded_sessions)]
+        metrics = await processor.ingest_files(seeded, emit_event=False)
+        assert metrics.succeeded_file_count == seeded_sessions, metrics
+        source_db = archive_root / "source.db"
+        for ordinal in range(seeded_sessions):
+            _seed_hook_event(source_db, ordinal)
+        yield processor, corpus_root, source_db
 
 
-def _converge_chunk(
+async def _converge_chunk(
     processor: LiveBatchProcessor,
     probe: _ChunkProbe,
     paths: list[Path],
@@ -190,7 +198,7 @@ def _converge_chunk(
 
     processor._converge_paths = probed_converge  # type: ignore[method-assign]
     try:
-        return asyncio.run(processor.ingest_files(paths, emit_event=False, whole_archive_convergence=whole_archive))
+        return await processor.ingest_files(paths, emit_event=False, whole_archive_convergence=whole_archive)
     finally:
         processor._converge_paths = real_converge  # type: ignore[method-assign]
 
@@ -202,25 +210,32 @@ def test_chunk_convergence_cost_does_not_grow_with_archive_size(
     small_sessions, large_sessions = 2, 14
     probe = _ChunkProbe(monkeypatch)
     results: dict[int, tuple[int, int, dict[str, float]]] = {}
-    for seeded_sessions in (small_sessions, large_sessions):
-        processor, corpus_root, source_db = _build(tmp_path, monkeypatch=monkeypatch, seeded_sessions=seeded_sessions)
-        # The first chunk after seeding also prunes the seeding's consumed
-        # raw-existence journal, one trigger firing per row (#5657), so it is
-        # O(seeded rows) once. Converge one warm-up chunk so the measured one
-        # is a steady-state chunk.
-        warm_up = [_write_session(corpus_root, seeded_sessions + chunk_files)]
-        assert _converge_chunk(processor, probe, warm_up, whole_archive=False).succeeded_file_count == 1
-        chunk = [_write_session(corpus_root, seeded_sessions + offset) for offset in range(chunk_files)]
-        for offset in range(chunk_files):
-            _seed_hook_event(source_db, seeded_sessions + offset)
-        probe.statements = probe.hook_events_read = 0
-        metrics = _converge_chunk(processor, probe, chunk, whole_archive=False)
-        assert metrics.succeeded_file_count == chunk_files
-        results[seeded_sessions] = (
-            probe.statements,
-            probe.hook_events_read,
-            dict(metrics.stage_timings_s),
-        )
+
+    async def measure(seeded_sessions: int, compute: BoundedComputeAdapter) -> None:
+        async with _build(
+            tmp_path, monkeypatch=monkeypatch, seeded_sessions=seeded_sessions, compute_adapter=compute
+        ) as (processor, corpus_root, source_db):
+            # The first chunk after seeding also prunes the seeding's consumed
+            # raw-existence journal, one trigger firing per row (#5657), so it is
+            # O(seeded rows) once. Converge one warm-up chunk so the measured one
+            # is a steady-state chunk.
+            warm_up = [_write_session(corpus_root, seeded_sessions + chunk_files)]
+            assert (await _converge_chunk(processor, probe, warm_up, whole_archive=False)).succeeded_file_count == 1
+            chunk = [_write_session(corpus_root, seeded_sessions + offset) for offset in range(chunk_files)]
+            for offset in range(chunk_files):
+                _seed_hook_event(source_db, seeded_sessions + offset)
+            probe.statements = probe.hook_events_read = 0
+            metrics = await _converge_chunk(processor, probe, chunk, whole_archive=False)
+            assert metrics.succeeded_file_count == chunk_files
+            results[seeded_sessions] = (
+                probe.statements,
+                probe.hook_events_read,
+                dict(metrics.stage_timings_s),
+            )
+
+    with owned_compute_adapter() as compute:
+        for seeded_sessions in (small_sessions, large_sessions):
+            asyncio.run(measure(seeded_sessions, compute))
 
     small_statements, small_events, small_stages = results[small_sessions]
     large_statements, large_events, large_stages = results[large_sessions]
@@ -237,12 +252,20 @@ def test_chunk_convergence_cost_does_not_grow_with_archive_size(
 
 def test_final_catch_up_chunk_runs_the_whole_archive_stages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     probe = _ChunkProbe(monkeypatch)
-    processor, corpus_root, source_db = _build(tmp_path, monkeypatch=monkeypatch, seeded_sessions=2)
-    chunk = [_write_session(corpus_root, 2)]
-    _seed_hook_event(source_db, 2)
 
-    probe.statements = probe.hook_events_read = 0
-    metrics = _converge_chunk(processor, probe, chunk, whole_archive=True)
+    async def final_chunk(compute: BoundedComputeAdapter) -> Any:
+        async with _build(tmp_path, monkeypatch=monkeypatch, seeded_sessions=2, compute_adapter=compute) as (
+            processor,
+            corpus_root,
+            source_db,
+        ):
+            chunk = [_write_session(corpus_root, 2)]
+            _seed_hook_event(source_db, 2)
+            probe.statements = probe.hook_events_read = 0
+            return await _converge_chunk(processor, probe, chunk, whole_archive=True)
+
+    with owned_compute_adapter() as compute:
+        metrics = asyncio.run(final_chunk(compute))
 
     assert metrics.succeeded_file_count == 1
     assert "raw_authority_verdict_cache" in metrics.stage_timings_s

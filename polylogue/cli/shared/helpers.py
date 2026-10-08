@@ -30,7 +30,6 @@ from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
     from polylogue.analysis.archive import ArchiveCoverageInsight
-    from polylogue.api import Polylogue
     from polylogue.config import Config
     from polylogue.readiness import ReadinessReport
     from polylogue.services import RuntimeServices
@@ -48,13 +47,20 @@ def get_readiness(config: Config) -> ReadinessReport:
     return _get_readiness(config)
 
 
-def _summary_facade(services: RuntimeServices | None, db_path: Path | None) -> Polylogue:
-    from polylogue.api import Polylogue
+def _summary_read(
+    services: RuntimeServices | None,
+    db_path: Path | None,
+    operation: str,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    from polylogue.cli.operation_kernel import OperationRequest, dispatch
+    from polylogue.config import load_polylogue_config
 
-    if services is not None:
-        config = services.get_config()
-        return Polylogue(archive_root=config.archive_root, db_path=db_path or config.db_path)
-    return Polylogue(db_path=db_path)
+    config = services.get_config() if services is not None else load_polylogue_config()
+    result = dispatch(config, OperationRequest(operation, payload), archive_root=db_path.parent if db_path else None)
+    if not isinstance(result.value, dict):
+        raise ValueError(f"{operation} returned a non-object result")
+    return result.value
 
 
 async def get_origin_counts(
@@ -62,8 +68,11 @@ async def get_origin_counts(
     services: RuntimeServices | None = None,
     db_path: Path | None = None,
 ) -> list[tuple[str, int]]:
-    counts = await _summary_facade(services, db_path).get_stats_by("origin")
-    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    result = _summary_read(services, db_path, "query.aggregate", {"mode": "stats_by", "group_by": "origin"})
+    groups = result.get("groups")
+    if not isinstance(groups, dict):
+        raise ValueError("query.aggregate omitted origin groups")
+    return sorted(((str(name), int(count)) for name, count in groups.items()), key=lambda item: (-item[1], item[0]))
 
 
 async def list_archive_coverage_insights(
@@ -71,9 +80,18 @@ async def list_archive_coverage_insights(
     services: RuntimeServices | None = None,
     db_path: Path | None = None,
 ) -> list[ArchiveCoverageInsight]:
-    from polylogue.analysis.archive import ArchiveCoverageInsightQuery
+    from polylogue.analysis.archive import ArchiveCoverageInsight, ArchiveCoverageInsightQuery
+    from polylogue.operations.insight_contracts import InsightListResult
 
-    return await _summary_facade(services, db_path).list_archive_coverage_insights(ArchiveCoverageInsightQuery())
+    query = ArchiveCoverageInsightQuery()
+    result = _summary_read(
+        services,
+        db_path,
+        "insights.list",
+        {"page": {"insight": "archive_coverage", "query": query.model_dump(mode="json", exclude_none=True)}},
+    )
+    page = InsightListResult.model_validate(result).page
+    return [ArchiveCoverageInsight.model_validate(item) for item in page.items]
 
 
 def print_summary(env: AppEnv, *, verbose: bool = False) -> None:

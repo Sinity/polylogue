@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -10,7 +11,6 @@ from polylogue.operations.audit import AuditRepository, MachineRequestBinding, M
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.ingest_acceptance import IngestActuator, ingest_plan
 from polylogue.operations.machine_lifecycle import machine_request_state
-from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.mutation_transaction import (
     AuthorizationMismatchError,
     MutationAuthorization,
@@ -19,45 +19,27 @@ from polylogue.operations.mutation_transaction import (
     MutationPrincipal,
     OperationExecutor,
 )
-from polylogue.pipeline.services.ingest_batch._core import _delete_sessions_without_fk_cascade
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     FrozenSourceInput,
     FrozenSourceManifest,
+    SealedSourceManifestRef,
     append_prepared_source_inputs,
     begin_prepared_source_manifest,
     seal_prepared_source_manifest,
 )
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.operation_recovery import recover_on_admitted_owner
+from tests.infra.source_builders import prepared_ingest_manifest
 
 
-def test_bulk_session_cleanup_deletes_compound_message_owner_rows() -> None:
-    """Manual FK-off cleanup follows message ownership through the session.
-
-    Anti-vacuity: omit the transitive message-owner cleanup and the row remains
-    orphaned; the final foreign-key check also reports the violation.
-    """
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(
-        """
-        PRAGMA foreign_keys=OFF;
-        CREATE TABLE sessions(session_id TEXT PRIMARY KEY);
-        CREATE TABLE messages(message_id TEXT UNIQUE, session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE, UNIQUE(message_id, session_id));
-        CREATE TABLE attachment_refs(message_id TEXT NOT NULL, session_id TEXT NOT NULL,
-          FOREIGN KEY(message_id, session_id) REFERENCES messages(message_id, session_id) ON DELETE CASCADE);
-        INSERT INTO sessions VALUES ('stale');
-        INSERT INTO messages VALUES ('m1', 'stale');
-        INSERT INTO attachment_refs VALUES ('m1', 'stale');
-        """
-    )
-
-    _delete_sessions_without_fk_cascade(conn, ("stale",))
-
-    assert conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone() == (0,)
-    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
-    conn.close()
+def _leased_ingest_manifest(archive_root: Path, *args: Any, **kwargs: Any) -> SealedSourceManifestRef:
+    """Prepare the staged manifest under the archive's writer lease, as production does."""
+    with write_lease("test.ingest-manifest", archive_root=archive_root):
+        return prepared_ingest_manifest(archive_root, *args, **kwargs)
 
 
 def _authorize(plan: MutationPlan, actuator: IngestActuator, principal: MutationPrincipal) -> MutationAuthorization:
@@ -66,18 +48,64 @@ def _authorize(plan: MutationPlan, actuator: IngestActuator, principal: Mutation
     )
 
 
+def test_new_acceptance_streams_manifest_beyond_former_input_cap(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+    blob_hash, _ = publisher.write_from_bytes(b"synthetic shared input")
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
+    receipt = publisher.receipt_id(blob_hash)
+    assert receipt is not None
+    manifest = _leased_ingest_manifest(
+        tmp_path,
+        "large-acceptance",
+        "d" * 64,
+        (FrozenSourceInput(f"input:{n:05d}", f"/synthetic/{n}", blob_hash, receipt) for n in range(10_241)),
+        publisher_id=publisher.publisher_id,
+    )
+    principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
+    binding = MachineRequestBinding("archive:test", "request:large", principal.actor_ref, "f" * 64, "ingest")
+    audit = AuditRepository.for_archive_root(tmp_path)
+    with audit.bind_machine_request(binding, transition="accept_ingest", deadline_unix_ms=1000):
+        audit.accept_ingest(manifest, principal)
+    assert audit.machine_request(binding) is not None
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM source_items").fetchone() == (10_241,)
+        assert source.execute("SELECT COUNT(*) FROM prepared_source_manifest_members").fetchone() == (10_241,)
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
+
+
+def test_new_plan_refuses_inline_manifest_without_rewriting_historical_evidence() -> None:
+    historical = FrozenSourceManifest(
+        "historical",
+        "d" * 64,
+        (FrozenSourceInput("input", "/synthetic/input", "a" * 64, "receipt"),),
+    )
+    with pytest.raises(TypeError, match="staged source manifest"):
+        ingest_plan(
+            historical,  # type: ignore[arg-type]
+            archive_instance_id="archive",
+            archive_identity_digest="b" * 64,
+            now_ms=1,
+            expires_at_ms=1000,
+        )
+
+
 @pytest.mark.parametrize("phase", ["after_source_prepare", "after_audit_commit", "after_source_promotion"])
 def test_ingest_acceptance_replays_identity_without_acquiring(tmp_path: Path, phase: str) -> None:
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
-    manifest = FrozenSourceManifest(
+    manifest = _leased_ingest_manifest(
+        tmp_path,
         "source-generation:test",
         "d" * 64,
         (FrozenSourceInput("input.json", "/synthetic/input.json", blob_hash, publication_id),),
+        publisher_id=publisher.publisher_id,
     )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     binding = MachineRequestBinding("archive:test", "request:test", principal.actor_ref, "f" * 64, "ingest")
@@ -116,7 +144,8 @@ def test_startup_reclaims_interrupted_preaccept_pages_and_unattached_reservation
     first_hash, _ = publisher.write_from_bytes(b"first page")
     first_receipt = publisher.receipt_id(first_hash)
     assert first_receipt is not None
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     with sqlite3.connect(tmp_path / "source.db") as source:
         source.execute("BEGIN IMMEDIATE")
         begin_prepared_source_manifest(
@@ -138,9 +167,13 @@ def test_startup_reclaims_interrupted_preaccept_pages_and_unattached_reservation
         source.commit()
     # The next page's publication can commit before its member batch does.
     publisher.write_from_bytes(b"unattached second page")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
 
-    recover_interrupted_operations(tmp_path)
+    # Startup recovery runs on the daemon's admitted preparation owner, which
+    # charges the original Source rows the cleanup reads; a bare call has no
+    # input admission and is refused before any row is read.
+    recover_on_admitted_owner(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute("SELECT COUNT(*) FROM prepared_source_manifests").fetchone() == (0,)
         assert source.execute("SELECT COUNT(*) FROM prepared_source_manifest_members").fetchone() == (0,)
@@ -159,7 +192,8 @@ def test_sealed_manifest_acceptance_promotes_every_member_atomically(tmp_path: P
         receipt_id = publisher.receipt_id(blob_hash)
         assert receipt_id is not None
         inputs.append(FrozenSourceInput(f"input:{ordinal}", f"/synthetic/{ordinal}", blob_hash, receipt_id))
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     with sqlite3.connect(tmp_path / "source.db") as source:
         source.execute("BEGIN IMMEDIATE")
         begin_prepared_source_manifest(
@@ -194,7 +228,7 @@ def test_sealed_manifest_acceptance_promotes_every_member_atomically(tmp_path: P
             "SELECT COUNT(*) FROM source_items WHERE source_generation_id='sealed:test'"
         ).fetchone() == (2,)
         assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
-    recover_interrupted_operations(tmp_path)
+    recover_on_admitted_owner(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute(
             "SELECT COUNT(*) FROM prepared_source_manifest_members WHERE source_generation_id='sealed:test'"
@@ -206,11 +240,7 @@ def test_sealed_manifest_acceptance_promotes_every_member_atomically(tmp_path: P
 
 def test_ingest_principal_is_checked_before_source_prepare(tmp_path: Path) -> None:
     bootstrap_archive_root(tmp_path)
-    manifest = FrozenSourceManifest(
-        "generation:test",
-        "d" * 64,
-        (FrozenSourceInput("input.json", "/synthetic/input.json", "a" * 64, "not-published"),),
-    )
+    manifest = SealedSourceManifestRef("generation:test", "d" * 64, "a" * 64, "b" * 64, 1)
     audit = AuditRepository.for_archive_root(tmp_path)
     principal = MutationPrincipal("actor:test", frozenset({"read"}), "cli", "user")
     binding = MachineRequestBinding("archive:test", "request:test", principal.actor_ref, "f" * 64, "ingest")
@@ -228,10 +258,17 @@ def test_malformed_runtime_authority_never_prepares_source_manifest(tmp_path: Pa
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = FrozenSourceManifest("generation:bad", "d" * 64, (FrozenSourceInput("in", "/in", blob_hash, receipt),))
+    manifest = _leased_ingest_manifest(
+        tmp_path,
+        "generation:bad",
+        "d" * 64,
+        (FrozenSourceInput("in", "/in", blob_hash, receipt),),
+        publisher_id=publisher.publisher_id,
+    )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     now_ms = int(frozen_clock.time() * 1000)
     plan = ingest_plan(
@@ -262,11 +299,17 @@ def test_runtime_authority_replay_preserves_frozen_ids_and_machine_part(
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = FrozenSourceManifest(
-        "generation:good", "d" * 64, (FrozenSourceInput("in", "/in", blob_hash, receipt),), "codex"
+    manifest = _leased_ingest_manifest(
+        tmp_path,
+        "generation:good",
+        "d" * 64,
+        (FrozenSourceInput("in", "/in", blob_hash, receipt),),
+        "codex",
+        publisher_id=publisher.publisher_id,
     )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     now_ms = int(frozen_clock.time() * 1000)
@@ -332,7 +375,12 @@ def test_source_name_changes_accepted_manifest_and_preview_identity(frozen_clock
             now_ms=int(frozen_clock.time() * 1000),
             expires_at_ms=int(frozen_clock.time() * 1000) + 300_000,
         )
-        for manifest in (unnamed, named, another)
+        for manifest in (
+            SealedSourceManifestRef(
+                m.source_generation_id, m.enumeration_fingerprint, m.manifest_digest, "b" * 64, 1, m.source_name
+            )
+            for m in (unnamed, named, another)
+        )
     ]
     assert len({plan.plan_hash for plan in plans}) == 3
 
@@ -343,11 +391,16 @@ def test_runtime_authority_normal_accept_commits_linked_run(tmp_path: Path, froz
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = FrozenSourceManifest(
-        "generation:normal", "d" * 64, (FrozenSourceInput("in", "/in", blob_hash, receipt),)
+    manifest = _leased_ingest_manifest(
+        tmp_path,
+        "generation:normal",
+        "d" * 64,
+        (FrozenSourceInput("in", "/in", blob_hash, receipt),),
+        publisher_id=publisher.publisher_id,
     )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     now_ms = int(frozen_clock.time() * 1000)
@@ -400,13 +453,16 @@ def test_deterministically_failed_accept_ingest_leaves_a_recoverable_archive(tmp
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
-    manifest = FrozenSourceManifest(
+    manifest = _leased_ingest_manifest(
+        tmp_path,
         "source-generation:wedge",
         "d" * 64,
         (FrozenSourceInput("input.json", "/synthetic/input.json", blob_hash, publication_id),),
+        publisher_id=publisher.publisher_id,
     )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     binding = MachineRequestBinding("archive:test", "request:wedge", principal.actor_ref, "f" * 64, "ingest")

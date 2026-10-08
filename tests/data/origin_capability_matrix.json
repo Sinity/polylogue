@@ -36,7 +36,7 @@
     {"name": "grok-malformed-conversation", "provider": "grok", "payload": {"conversations": [{"not": "a conversation"}]}}
   ],
   "collisions": [
-    {"name": "claude-code-before-codex", "expected_provider": "claude-code", "fallback_id": "origin-matrix-collision-claude", "payload": [{"sessionId": "collision-session", "parentUuid": "collision-parent", "role": "user", "content": [{"type": "text", "text": "collision witness"}]}]},
+    {"name": "claude-code-before-codex", "expected_provider": "claude-code", "fallback_id": "origin-matrix-collision-claude", "payload": [{"sessionId": "collision-session", "parentUuid": null, "type": "user", "uuid": "collision-message", "timestamp": "2026-01-01T00:00:00Z", "role": "user", "content": [{"type": "text", "text": "collision witness"}], "message": {"role": "user", "content": "collision witness"}}]},
     {"name": "chatgpt-before-claude-ai", "expected_provider": "chatgpt", "fallback_id": "origin-matrix-collision-chatgpt", "payload": {"id": "collision-conversation", "conversation_id": "collision-conversation", "create_time": 1700000000.0, "current_node": "node-1", "mapping": {"node-1": {"id": "node-1", "parent": null, "children": [], "message": {"id": "message-1", "author": {"role": "user"}, "content": {"content_type": "text", "parts": ["collision witness"]}}}}, "chat_messages": [{"sender": "human", "text": "collision witness"}]}}
   ]
 }

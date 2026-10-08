@@ -12,21 +12,24 @@ from __future__ import annotations
 import errno
 import json
 import sqlite3
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from polylogue import Polylogue
+from polylogue.core.compute import DaemonBackpressureError
 from polylogue.daemon.intake import AdmissionOutcome
 from polylogue.logging import capture
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
-from polylogue.operations.operation_context import open_operation_read
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult
+from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.raw_owner_routes import live_owner_set
 
 
 def _write_session(path: Path, session_id: str) -> None:
@@ -105,8 +108,8 @@ def _fail_first_index_write(monkeypatch: pytest.MonkeyPatch, failure: BaseExcept
 
 
 def _fail_first_blob_copy(monkeypatch: pytest.MonkeyPatch, failure: OSError) -> None:
-    # Captures stream through the acquisition boundary into write_from_fileobj.
-    original = ArchiveBlobPublisher.write_from_fileobj
+    # Captures stream through the acquisition boundary into write_from_writer.
+    original = ArchiveBlobPublisher.write_from_writer
     calls = 0
 
     def fail_once(self: ArchiveBlobPublisher, *args: Any, **kwargs: Any) -> tuple[str, int]:
@@ -116,28 +119,30 @@ def _fail_first_blob_copy(monkeypatch: pytest.MonkeyPatch, failure: OSError) -> 
             raise failure
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_fileobj", fail_once)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_writer", fail_once)
 
 
 @pytest.fixture
-def storage_env(workspace_env: dict[str, Path]) -> tuple[Polylogue, LiveWatcher, Path]:
+async def storage_env(workspace_env: dict[str, Path]) -> AsyncIterator[tuple[Polylogue, LiveWatcher, Path]]:
     root = workspace_env["data_root"] / "claude-projects"
-    root.mkdir(parents=True)
-    source_path = root / "session.jsonl"
+    project = root / "-home-user-repo"
+    project.mkdir(parents=True)
+    source_path = project / "session.jsonl"
     _write_session(source_path, "storage-fault")
     archive = Polylogue(
         archive_root=workspace_env["archive_root"],
         db_path=workspace_env["archive_root"] / "index.db",
     )
-    watcher = LiveWatcher(
-        archive,
-        (WatchSource(name="claude-code", root=root),),
-        cursor=CursorStore(archive.archive_root / "index.db"),
-        # The daemon's read route; without it off-writer preparation defers
-        # every full-route file and nothing reaches the index write.
-        read_snapshot=open_operation_read,
-    )
-    return archive, watcher, source_path
+    # The daemon's intake owners; without them full-route preparation never
+    # publishes and nothing reaches the index write.
+    async with live_owner_set(archive.archive_root) as owners:
+        watcher = LiveWatcher(
+            archive,
+            (WatchSource(name="claude-code", root=root),),
+            cursor=CursorStore(archive.archive_root / "index.db"),
+            **owners.watcher_kwargs(),
+        )
+        yield archive, watcher, source_path
 
 
 async def _assert_recovers(archive: Polylogue, watcher: LiveWatcher, source_path: Path) -> None:
@@ -174,6 +179,37 @@ async def test_index_write_storage_fault_refuses_page_without_marking_input(
         assert [(event.get("level"), event.get("reason")) for event in refusals] == [
             ("error", "storage_fault.capacity")
         ]
+
+        await _assert_recovers(archive, watcher, source_path)
+    finally:
+        watcher.stop()
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_index_write_compute_backpressure_stays_retryable_and_recovers(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compute admission refusal leaves the retained source retryable and later indexable."""
+    archive, watcher, source_path = storage_env
+    _fail_first_index_write(
+        monkeypatch,
+        DaemonBackpressureError("daemon compute admission is saturated; retry shortly"),
+    )
+    try:
+        outcomes = await _admit(watcher)
+
+        assert outcomes
+        assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
+        cursor = watcher._cursor.get_record(source_path)
+        assert cursor is None or (cursor.failure_count == 0 and not cursor.excluded)
+        assert all(error is None for _parsed, error in _raw_parse_states(archive.archive_root, source_path))
+        assert _latest_attempt(watcher) == (
+            "failed",
+            "transient_error",
+            "archive_write:DaemonBackpressureError",
+        )
 
         await _assert_recovers(archive, watcher, source_path)
     finally:
@@ -303,6 +339,7 @@ def test_zip_member_publication_on_a_full_archive_escapes_instead_of_excluding(t
             b'"uuid":"u1","timestamp":"2025-01-01T00:00:00Z"}\n',
         )
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="claude-code", root=tmp_path),),
@@ -317,26 +354,31 @@ def test_zip_member_publication_on_a_full_archive_escapes_instead_of_excluding(t
         def write_from_fileobj(self, *args: Any, **kwargs: Any) -> Any:
             raise OSError(errno.ENOSPC, "No space left on device")
 
+        def prepare_from_writer(self, *args: Any, **kwargs: Any) -> Any:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def write_from_writer(self, *args: Any, **kwargs: Any) -> Any:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
     full = _FullBlobStore(tmp_path / "blob")
-    with pytest.raises(ArchiveStorageFaultError):
-        processor._extract_zip_member_records(
-            bundle, blob_store=full, fallback_provider=Provider.CLAUDE_CODE, file_mtime="2026-09-04T00:00:00+00:00"
-        )
+    # The eager member route is retired; source-only extraction is the single
+    # remaining ZIP member route and must still type the full-disk refusal.
     with pytest.raises(ArchiveStorageFaultError):
         processor._extract_source_only_zip_member_records(
-            bundle, blob_store=full, fallback_provider=Provider.CLAUDE_CODE, file_mtime="2026-09-04T00:00:00+00:00"
+            bundle,
+            blob_store=full,
+            fallback_provider=Provider.CLAUDE_CODE,
+            file_mtime="2026-09-04T00:00:00+00:00",
+            zip_inputs={},
         )
 
 
 @pytest.mark.asyncio
-async def test_a_spent_writer_hold_closes_the_attempt_as_retryable(
+async def test_sqlite_contention_closes_the_attempt_as_retryable(
     storage_env: tuple[Polylogue, LiveWatcher, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The adapter requeues a page whose writer hold ran out; its attempt row
-    must agree. Anti-vacuity: through the generic classification the row
-    records ``parser_defect`` with ``retryable=0``."""
-    from polylogue.core.write_hold import WriteHoldBudgetError
+    """A real SQLite contention failure closes its attempt as retryable."""
     from polylogue.sources.live.batch import LiveBatchProcessor
 
     archive, watcher, source_path = storage_env
@@ -349,18 +391,18 @@ async def test_a_spent_writer_hold_closes_the_attempt_as_retryable(
         )
         attempt.opened(attempt_id)
         attempt.started = True
-        raise WriteHoldBudgetError(actor="test", checkpoint="full_acquisition_complete", hold_seconds=2.0, budget_s=1.0)
+        raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(LiveBatchProcessor, "_ingest_files", spend_hold)
     try:
-        with pytest.raises(WriteHoldBudgetError):
+        with pytest.raises(sqlite3.OperationalError):
             await watcher._batch_processor.ingest_files([source_path])
         with sqlite3.connect(watcher._cursor._ops_db_path) as conn:
             row = conn.execute(
                 "SELECT status, outcome_code, retryable, evidence_ref FROM ingest_attempts "
                 "ORDER BY started_at_ms DESC, rowid DESC LIMIT 1"
             ).fetchone()
-        assert tuple(row) == ("failed", "transient_error", 1, "write_hold_budget")
+        assert tuple(row) == ("failed", "transient_error", 1, "archive_write:OperationalError")
     finally:
         monkeypatch.setattr(LiveBatchProcessor, "_ingest_files", original)
         watcher.stop()
@@ -411,7 +453,6 @@ async def test_an_attempt_close_skipped_under_lock_is_reported(
     """``finish_ingest_attempt`` gives up quietly (returns ``False``) when the
     ops tier stays locked; the closer must say the row is still running.
     Anti-vacuity: treating every non-raising call as closed emits nothing."""
-    from polylogue.core.write_hold import WriteHoldBudgetError
     from polylogue.sources.live.batch import LiveBatchProcessor
 
     archive, watcher, source_path = storage_env
@@ -422,12 +463,12 @@ async def test_an_attempt_close_skipped_under_lock_is_reported(
         )
         kwargs["open_attempt"].opened(attempt_id)
         kwargs["open_attempt"].started = True
-        raise WriteHoldBudgetError(actor="test", checkpoint="full_acquisition_complete", hold_seconds=2.0, budget_s=1.0)
+        raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(LiveBatchProcessor, "_ingest_files", spend_hold)
     monkeypatch.setattr(CursorStore, "finish_ingest_attempt", lambda self, *args, **kwargs: False)
     try:
-        with capture() as events, pytest.raises(WriteHoldBudgetError):
+        with capture() as events, pytest.raises(sqlite3.OperationalError):
             await watcher._batch_processor.ingest_files([source_path])
         skipped = [event for event in events if event.get("event") == "live.ingest.attempt_finish_failed"]
         assert [event.get("reason") for event in skipped] == ["ops_write_skipped"]
@@ -447,8 +488,8 @@ async def test_a_storage_fault_discards_blobs_staged_earlier_in_the_pass(
     discard the first file's temporary remains after every retry."""
     archive, watcher, source_path = storage_env
     _write_session(source_path.parent / "second.jsonl", "storage-fault-2")
-    # Captures stream through the acquisition boundary into write_from_fileobj.
-    original = ArchiveBlobPublisher.write_from_fileobj
+    # Captures stream through the acquisition boundary into write_from_writer.
+    original = ArchiveBlobPublisher.write_from_writer
     calls = 0
 
     def fail_second(self: ArchiveBlobPublisher, *args: Any, **kwargs: Any) -> tuple[str, int]:
@@ -458,7 +499,7 @@ async def test_a_storage_fault_discards_blobs_staged_earlier_in_the_pass(
             raise OSError(errno.ENOSPC, "No space left on device")
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_fileobj", fail_second)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_writer", fail_second)
     try:
         outcomes = await _admit(watcher)
         assert calls == 2

@@ -38,63 +38,71 @@ def _seed_raw_authority_blocker(
     minimal rows rather than driving a full frontier inspection -- sufficient
     to exercise ``BlockerResolveActuator.prepare``'s real read against
     ``source.db`` and, for non-frontier blockers,
-    ``resolve_raw_authority_blocker``'s real replan.
+    the prepared acknowledgement’s original-input replan.
 
     ``frontier`` seeds a ``frontier_obligation``-kind blocker: the current
-    frontier plan shape ``_reconcile_frontier_obligations`` writes. Without
+    frontier plan shape the prepared inspector writes. Without
     it the row is a ``stale_plan`` -- a durable snapshot predating that shape,
     which the resolver re-derives from live evidence instead of trusting.
     """
-    raw_id = f"raw-{blocker_id}"
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        payload = (
-            b'{"type":"session_meta","payload":{"id":"' + blocker_id.encode() + b'"}}\n'
-            b'{"type":"response_item","payload":{"type":"message","id":"m-1",'
-            b'"role":"user","content":[{"type":"input_text","text":"hi"}]}}\n'
-        )
-        archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=payload,
-            source_path=f"{blocker_id}.jsonl",
-            acquired_at_ms=1000,
-            raw_id=raw_id,
-        )
+    import asyncio
 
-    witness_schema = "polylogue.raw-authority-frontier-plan.v1" if frontier else "polylogue.raw-authority-plan.v1"
-    input_digest = hashlib.sha256(plan_id.encode("utf-8")).hexdigest()
-    observed_json = "{}"
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
-        # The blocker is keyed on the plan's content address and carries the
-        # plan snapshot itself: that snapshot, not a join into a plan ledger,
-        # is what every reader resolves against.
-        conn.execute(
-            """
-            INSERT INTO raw_authority_blockers (
-                blocker_id, plan_input_digest, observed_pass_id, reason, expected_json,
-                observed_json, created_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, 1000)
-            """,
-            (
-                blocker_id,
-                input_digest,
-                observed_pass_id,
-                reason,
-                json.dumps(
-                    {
-                        "plan_id": plan_id,
-                        "input_digest": input_digest,
-                        "input_raw_ids": [raw_id],
-                        "logical_keys": [],
-                        "authority_witness": {"schema": witness_schema},
-                        "source_preconditions": {},
-                        "index_preconditions": {},
-                    }
+    from tests.infra.archive_templates import run_archive_fixture_write
+
+    def seed() -> None:
+        raw_id = f"raw-{blocker_id}"
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            payload = (
+                b'{"type":"session_meta","payload":{"id":"' + blocker_id.encode() + b'"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","id":"m-1",'
+                b'"role":"user","content":[{"type":"input_text","text":"hi"}]}}\n'
+            )
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=f"{blocker_id}.jsonl",
+                canonical_source_path=f"{blocker_id}.jsonl",
+                acquired_at_ms=1000,
+                raw_id=raw_id,
+            )
+
+        witness_schema = "polylogue.raw-authority-frontier-plan.v1" if frontier else "polylogue.raw-authority-plan.v1"
+        input_digest = hashlib.sha256(plan_id.encode("utf-8")).hexdigest()
+        observed_json = "{}"
+        with sqlite3.connect(archive_root / "source.db") as conn:
+            conn.execute("PRAGMA foreign_keys = ON")
+            # The blocker is keyed on the plan's content address and carries the
+            # plan snapshot itself: that snapshot, not a join into a plan ledger,
+            # is what every reader resolves against.
+            conn.execute(
+                """
+                INSERT INTO raw_authority_blockers (
+                    blocker_id, plan_input_digest, observed_pass_id, reason, expected_json,
+                    observed_json, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, 1000)
+                """,
+                (
+                    blocker_id,
+                    input_digest,
+                    observed_pass_id,
+                    reason,
+                    json.dumps(
+                        {
+                            "plan_id": plan_id,
+                            "input_digest": input_digest,
+                            "input_raw_ids": [raw_id],
+                            "logical_keys": [],
+                            "authority_witness": {"schema": witness_schema},
+                            "source_preconditions": {},
+                            "index_preconditions": {},
+                        }
+                    ),
+                    observed_json,
                 ),
-                observed_json,
-            ),
-        )
-        conn.commit()
+            )
+            conn.commit()
+
+    asyncio.run(run_archive_fixture_write(archive_root, seed))
 
 
 def test_raw_authority_blocker_resolution_cli_requires_confirmation(
@@ -220,10 +228,12 @@ def test_raw_authority_blocker_resolution_plain_output_reports_unknown_blocker(
     assert "not found or already resolved" in result.output
 
 
+@pytest.mark.parametrize("resolution", ["acknowledged", "  acknowledged  "])
 def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
+    resolution: str,
 ) -> None:
     """(b) daemon route: the listing is a read, but the resolution in its tail is a write."""
     root = cli_workspace["archive_root"]
@@ -251,7 +261,7 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
             ["--plain", "ops", "maintenance", "raw-authority-blockers", "--output-format", "json"],
             catch_exceptions=False,
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
         by_id = {row["blocker_id"]: row for row in payload["blockers"]}
         assert by_id["blocker-stale"]["kind"] == "stale_plan"
@@ -272,12 +282,12 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
                 "--blocker-id",
                 "blocker-stale",
                 "--reason",
-                "acknowledged",
+                resolution,
                 "--yes",
             ],
             catch_exceptions=False,
         )
-        assert resolve.exit_code == 0
+        assert resolve.exit_code == 0, resolve.output
         after = cli_runner.invoke(
             cli,
             ["--plain", "ops", "maintenance", "raw-authority-blockers", "--output-format", "json"],
@@ -414,6 +424,7 @@ def _seed_blob_reference_debt(archive_root: Path, source: Path) -> None:
             conn,
             origin="chatgpt-export",
             source_path=str(source),
+            canonical_source_path=str(source),
             source_index=0,
             blob_hash=missing_raw_hash,
             blob_size=source.stat().st_size,
@@ -440,7 +451,7 @@ def test_backup_plan_cli_reports_backup_profiles_and_tier_boundaries(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["mode"] == "backup_plan"
@@ -482,7 +493,7 @@ def test_backup_plan_cli_surfaces_missing_tiers_and_wal_checkpoint_warning(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     tiers = {tier["tier"]: tier for tier in payload["tiers"]}
     assert tiers["index"]["present"] is False
@@ -501,7 +512,7 @@ def test_backup_plan_cli_renders_plain_summary(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "Archive backup plan" in result.output
     assert "source.db: critical policy=back_up present" in result.output
     assert "full_evidence:" in result.output
@@ -510,16 +521,19 @@ def test_backup_plan_cli_renders_plain_summary(
 def test_assertion_export_cli_emits_all_assertions_as_jsonl(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _seed_assertion_export_rows(cli_workspace["archive_root"])
+    root = cli_workspace["archive_root"]
+    _seed_assertion_export_rows(root)
 
-    result = cli_runner.invoke(
-        cli,
-        ["--plain", "ops", "maintenance", "assertion-export"],
-        catch_exceptions=False,
-    )
+    with cli_daemon_archive(root, monkeypatch):
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "assertion-export"],
+            catch_exceptions=False,
+        )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     rows = [json.loads(line) for line in result.stdout.splitlines()]
     assert [row["assertion_id"] for row in rows] == ["export-mark", "export-deleted-note"]
     assert rows[0]["kind"] == "mark"
@@ -531,35 +545,84 @@ def test_assertion_export_cli_emits_all_assertions_as_jsonl(
 def test_assertion_export_cli_filters_and_writes_json_file(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _seed_assertion_export_rows(cli_workspace["archive_root"])
     out_path = cli_workspace["archive_root"] / "exports" / "assertions.json"
 
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "assertion-export",
-            "--format",
-            "json",
-            "--kind",
-            "note",
-            "--status",
-            "deleted",
-            "--out",
-            str(out_path),
-        ],
-        catch_exceptions=False,
-    )
+    with cli_daemon_archive(cli_workspace["archive_root"], monkeypatch):
+        result = cli_runner.invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "assertion-export",
+                "--format",
+                "json",
+                "--kind",
+                "note",
+                "--status",
+                "deleted",
+                "--out",
+                str(out_path),
+            ],
+            catch_exceptions=False,
+        )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert result.stdout == f"Exported 1 assertions to {out_path}\n"
     payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert payload["mode"] == "assertion_export"
     assert payload["count"] == 1
     assert [row["assertion_id"] for row in payload["assertions"]] == ["export-deleted-note"]
+
+
+@pytest.mark.parametrize("damage", ["missing", "unreadable"])
+@pytest.mark.parametrize("existing_output", [False, True])
+def test_assertion_export_refusal_preserves_output(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+    existing_output: bool,
+) -> None:
+    root = cli_workspace["archive_root"]
+    output = root / "export.json"
+    if existing_output:
+        output.write_bytes(b"neutral existing output")
+    with cli_daemon_archive(root, monkeypatch):
+        user_path = root / "user.db"
+        user_path.rename(root / "user-retained.db")
+        if damage == "unreadable":
+            user_path.write_bytes(b"neutral invalid SQLite authority")
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "assertion-export", "--format", "json", "--out", str(output)],
+        )
+    assert result.exit_code != 0, result.output
+    if existing_output:
+        assert output.read_bytes() == b"neutral existing output"
+    else:
+        assert not output.exists()
+
+
+def test_assertion_export_present_empty_user_writes_valid_empty_output(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = cli_workspace["archive_root"]
+    output = root / "empty-export.json"
+    with cli_daemon_archive(root, monkeypatch):
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "assertion-export", "--format", "json", "--out", str(output)],
+        )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(output.read_text())
+    assert payload["count"] == 0
+    assert payload["assertions"] == []
 
 
 def test_blob_gc_cli_dry_run_reports_without_deleting(
@@ -575,7 +638,7 @@ def test_blob_gc_cli_dry_run_reports_without_deleting(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["mode"] == "blob_gc"
@@ -602,7 +665,7 @@ def test_blob_gc_cli_plain_preview_names_skip_counts(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "Blob GC dry-run" in result.output
     assert "Candidates: 1" in result.output
     assert "Result:     would delete 1 blob(s)" in result.output
@@ -657,13 +720,16 @@ def test_blob_gc_cli_has_no_mutate_flag(
 
 
 def _seed_unreferenced_publication_receipt(archive_root: Path) -> str:
-    publisher = ArchiveBlobPublisher(
-        archive_root / "source.db",
-        archive_root / "blob",
-    )
-    blob_hash, _ = publisher.write_from_bytes(b"operator-adjudicated receipt")
-    receipt_id = publisher.receipt_id(blob_hash)
-    publisher.flush()
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    with write_lease("test.blob-publication-receipt", archive_root=archive_root):
+        publisher = ArchiveBlobPublisher(
+            archive_root / "source.db",
+            archive_root / "blob",
+        )
+        blob_hash, _ = publisher.write_from_bytes(b"operator-adjudicated receipt")
+        receipt_id = publisher.receipt_id(blob_hash)
+        publisher.flush()
     assert receipt_id is not None
     return receipt_id
 
@@ -840,7 +906,7 @@ def test_blob_reference_debt_cli_classifies_missing_refs(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["mode"] == "blob_reference_debt"
     assert payload["mutates"] is False
@@ -872,7 +938,7 @@ def test_blob_reference_debt_cli_plain_output_names_read_only_debt(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "Blob reference debt" in result.output
     assert "Status:       debt-present" in result.output
     assert "Source paths: recoverable_source_path_exists=1, source_path_missing=1" in result.output
@@ -998,7 +1064,7 @@ def test_embedding_orphan_reconcile_cli_dry_run_keeps_rows(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["mode"] == "embedding_orphan_reconcile"
     assert payload["mutates"] is False
@@ -1035,7 +1101,7 @@ def test_embedding_orphan_reconcile_cli_plain_dry_run_reports_would_remove_count
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "Would remove:  1 message ref(s), 1 status row(s)" in result.output
     assert "Removed:" not in result.output
     with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
@@ -1067,7 +1133,7 @@ def test_embedding_orphan_reconcile_cli_has_no_mutate_flag(
 def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(cli, ["--plain", "ops", "maintenance", "--help"], catch_exceptions=False)
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "archive-read" in result.output
     for removed in (
         "archive-copy-raw",
@@ -1081,18 +1147,19 @@ def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliR
         assert removed not in result.output
 
 
+@pytest.mark.parametrize("output_format", ["plain", "json"])
 def test_raw_authority_frontier_cli_inspects_without_applying_plans(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     cli_runner: CliRunner,
+    output_format: str,
 ) -> None:
-    """The census is the daemon's ``maintenance.raw-authority-frontier`` operation.
+    """The daemon measures frontier coverage; the CLI submits and renders it.
 
-    It publishes durable blockers into ``source.db``, so the CLI submits it and
-    renders the census the daemon returned; the daemon-down matrix in
-    ``test_cli_operation_authority.py`` proves the command never writes
-    in-process. Anti-vacuity: run ``inspect_raw_authority_frontier`` in the CLI
-    again and the recorded submissions are empty.
+    The empty archive gains measured coverage without changing Source bytes.
+    The daemon-down matrix in ``test_cli_operation_authority.py`` proves the
+    command never executes in-process; local execution would leave the
+    recorded operation submissions empty.
     """
     import polylogue.cli.operation_kernel as operation_kernel
     from tests.infra.daemon_operations import cli_daemon_archive
@@ -1106,6 +1173,8 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
 
     monkeypatch.setattr(operation_kernel, "configured_mutation_operation", recording)
     with cli_daemon_archive(tmp_path / "archive", monkeypatch):
+        source_path = tmp_path / "archive" / "source.db"
+        source_before = source_path.read_bytes()
         result = cli_runner.invoke(
             cli,
             [
@@ -1114,23 +1183,28 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
                 "maintenance",
                 "raw-authority-frontier",
                 "--output-format",
-                "json",
+                output_format,
             ],
             catch_exceptions=False,
         )
+        assert source_path.read_bytes() == source_before
 
     assert result.exit_code == 0, result.output
     assert submitted == ["maintenance.raw-authority-frontier"]
-    payload = json.loads(result.stdout)
-    assert payload["schema"] == "polylogue.raw-authority-frontier-census.v1"
-    assert payload["accepted_head_count"] == 0
-    assert payload["plan_count"] == 0
-    # polylogue-6kur: the census reports obligations, never an executable
-    # plan count. Nothing applies a frontier plan.
-    assert "executable_plan_count" not in payload
-    assert payload["state_counts"] == {}
-    assert payload["pass_id"].startswith("raw-authority-frontier-pass:")
-    assert "query_handle" not in payload
+    if output_format == "json":
+        payload = json.loads(result.stdout)
+        assert payload["mode"] == "full"
+        assert payload["healthy"]
+        assert payload["accepted_head_checks"] == payload["blocking_head_checks"] == 0
+        assert payload["cursor_checks"] == payload["cursor_ahead_count"] == payload["cursor_gap_count"] == 0
+        assert payload["pass_id"].startswith("raw-authority-frontier-pass:")
+        # Coverage reports observations, not executable plans or client query handles.
+        assert "executable_plan_count" not in payload
+        assert "state_counts" not in payload
+        assert "query_handle" not in payload
+    else:
+        assert "Frontier full: healthy=True heads=0 blocked=0" in result.stdout
+        assert "Cursors: checked=0 ahead=0 gaps=0" in result.stdout
 
     help_result = cli_runner.invoke(cli, ["--plain", "ops", "maintenance", "--help"])
     assert help_result.exit_code == 0
@@ -1151,7 +1225,7 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
         catch_exceptions=False,
     )
     assert frontier_help.exit_code == 0
-    assert "Record the raw-authority frontier census without applying plans." in frontier_help.output
+    assert "Measure current frontier coverage through the daemon preparation owner." in frontier_help.output
     for removed in ("--apply-plan", "--preview-census", "--yes"):
         assert removed not in frontier_help.output
 
@@ -1196,6 +1270,21 @@ def test_archive_read_cli_lists_archive_sessions(
         def __exit__(self, *args: object) -> None:
             return None
 
+        def close(self) -> None:
+            return None
+
+        def begin_read_snapshot(self) -> None:
+            return None
+
+        def end_read_snapshot(self) -> None:
+            return None
+
+        def set_read_progress_guard(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def clear_read_progress_guard(self) -> None:
+            return None
+
         def list_summaries(self, *, limit: int, origin: str | None) -> list[ArchiveSessionSummary]:
             assert limit == 2
             assert origin == "codex-session"
@@ -1215,7 +1304,7 @@ def test_archive_read_cli_lists_archive_sessions(
 
     monkeypatch.setattr(
         "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
+        classmethod(lambda cls, root, **_options: FakeArchiveStore()),
     )
 
     result = cli_runner.invoke(
@@ -1235,7 +1324,7 @@ def test_archive_read_cli_lists_archive_sessions(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["mode"] == "list"
     assert payload["sessions"] == [
@@ -1269,6 +1358,21 @@ def test_archive_read_cli_searches_archive_blocks(
         def __exit__(self, *args: object) -> None:
             return None
 
+        def close(self) -> None:
+            return None
+
+        def begin_read_snapshot(self) -> None:
+            return None
+
+        def end_read_snapshot(self) -> None:
+            return None
+
+        def set_read_progress_guard(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def clear_read_progress_guard(self) -> None:
+            return None
+
         def search_summaries(self, query: str, *, limit: int, origin: str | None) -> list[ArchiveSessionSearchHit]:
             assert query == "needle"
             assert limit == 5
@@ -1287,7 +1391,7 @@ def test_archive_read_cli_searches_archive_blocks(
 
     monkeypatch.setattr(
         "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
+        classmethod(lambda cls, root, **_options: FakeArchiveStore()),
     )
 
     result = cli_runner.invoke(
@@ -1307,7 +1411,7 @@ def test_archive_read_cli_searches_archive_blocks(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["mode"] == "search"
     assert payload["hits"][0]["block_id"] == "codex-session:native-1:m1:0"
@@ -1387,3 +1491,32 @@ def test_blob_publication_abandonment_chunks_instead_of_refusing(monkeypatch: py
     assert [len(batch) for batch in batches] == [256, 1]
     assert merged["result"] == {"abandoned": list(ids)}
     assert merged["receipt_ref"] == "r1,r2"
+
+
+@pytest.mark.parametrize("output_format", ["json", "jsonl"])
+def test_assertion_export_cli_walks_multiple_daemon_pages(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, output_format: str
+) -> None:
+    root = cli_workspace["archive_root"]
+    with sqlite3.connect(root / "user.db") as user:
+        user.executemany(
+            "INSERT INTO assertions(assertion_id,target_ref,key,kind,value_json,created_at_ms,updated_at_ms) "
+            "VALUES (?,?,?,?,?,?,?)",
+            [
+                (f"neutral-page-{index:04d}", "session:neutral", "neutral", "tag", "{}", index + 1, index + 1)
+                for index in range(513)
+            ],
+        )
+    with cli_daemon_archive(root, monkeypatch):
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "assertion-export", "--format", output_format],
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0, result.output
+    rows = (
+        json.loads(result.stdout)["assertions"]
+        if output_format == "json"
+        else [json.loads(line) for line in result.stdout.splitlines()]
+    )
+    assert [row["assertion_id"] for row in rows] == [f"neutral-page-{index:04d}" for index in range(513)]

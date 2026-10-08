@@ -8,7 +8,8 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, cast
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -21,39 +22,25 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 from tests.infra.daemon_operations import DaemonOperationStack, cli_daemon_archive
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.operation_recovery import recover_on_admitted_owner
 
 
-def test_reset_session_resolution_uses_readonly_database_boundary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_reset_session_resolution_uses_server_owned_preview(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_module = importlib.import_module("polylogue.cli.commands.reset")
-    index_db = tmp_path / "index.db"
-    with sqlite3.connect(index_db) as writer:
-        writer.execute("CREATE TABLE sessions (session_id TEXT)")
-        writer.execute("INSERT INTO sessions VALUES ('selected')")
+    seen: list[tuple[str, dict[str, object]]] = []
 
-    real_open = reset_module.open_readonly_connection
-    observed = []
+    def submit(_env: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        seen.append((operation, payload))
+        return {"reference": {"request_id": "neutral-preview-request"}, "session_count": 1}
 
-    def checked_open(path: Path, **kwargs: Any) -> sqlite3.Connection:
-        conn = cast(sqlite3.Connection, real_open(path, **kwargs))
-        observed.append(path)
-        for statement in (
-            "INSERT INTO sessions VALUES ('wrong')",
-            "UPDATE sessions SET session_id = 'wrong'",
-            "DELETE FROM sessions",
-            "CREATE TABLE unwanted (value TEXT)",
-            "PRAGMA query_only = OFF",
-            "ATTACH DATABASE ':memory:' AS writable",
-        ):
-            with pytest.raises(sqlite3.DatabaseError):
-                conn.execute(statement)
-        return conn
-
-    monkeypatch.setattr(reset_module, "_index_db_path", lambda: index_db)
-    monkeypatch.setattr(reset_module, "open_readonly_connection", checked_open)
-    assert reset_module._resolve_archive_session_ids(["selected"]) == ["selected"]
-    assert observed == [index_db]
+    monkeypatch.setattr(reset_module, "_submit", submit)
+    env = SimpleNamespace(config=object())
+    assert reset_module._identity_reset_targets(env, conv_id="selected", source_path=None) == (
+        "neutral-preview-request",
+        1,
+        "session 'selected'",
+    )
+    assert seen == [("mutation.identity-reset.preview", {"session": "selected", "reason": "reset --session"})]
 
 
 def _no_seed(_root: Path) -> None:
@@ -195,14 +182,8 @@ class TestResetCommandSubprocess:
         in-process reset writer and both commands start succeeding offline,
         turning these red.
         """
-        from tests.infra.source_builders import GenericSessionBuilder
-
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
-        inbox = workspace["paths"]["inbox"]
-
-        (GenericSessionBuilder("to-delete").add_user("will be deleted").write_to(inbox / "test.json"))
-        run_cli(["--plain", "run", "parse"], env=env)
 
         archive_db = Path(workspace["paths"]["archive_root"]) / "index.db"
         assert archive_db.exists()
@@ -459,8 +440,7 @@ class TestResetCommandDeletion:
         recovery deletes the tiers; skip sidecars of a deleted database and a
         ``-wal`` survives beside the recreated file.
         """
-        from polylogue.operations.mutation_replay import apply_staged_archive_resets, recover_interrupted_operations
-        from polylogue.storage.sqlite.write_guard import declared_unguarded_write
+        from polylogue.operations.mutation_replay import apply_staged_archive_resets
 
         with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
             from polylogue.paths import data_home
@@ -489,15 +469,13 @@ class TestResetCommandDeletion:
         assert status == "running"
         self._end_attempt_owner(archive_root, operation_id)
         # Ordinary recovery runs after tiers open: it must leave the plan pending.
-        with declared_unguarded_write("test: startup recovery outside the tier seam"):
-            recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
         # It may mark the dead attempt interrupted, but the plan stays nonterminal.
         [(_operation_id, status)] = self._reset_runs(archive_root)
         assert status in {"running", "interrupted"}
         assert all((archive_root / name).exists() for name in deleted_tiers)
 
-        with declared_unguarded_write("test: daemon startup seam"):
-            assert apply_staged_archive_resets(archive_root) == (operation_id,)
+        assert apply_staged_archive_resets(archive_root) == (operation_id,)
 
         [(_operation_id, status)] = self._reset_runs(archive_root)
         assert status not in {"running", "interrupted"}
@@ -507,8 +485,7 @@ class TestResetCommandDeletion:
         for name in ("source.db", "user.db", "audit.db", "embeddings.db"):
             assert (archive_root / name).exists(), name
         assert assets_dir.exists() is ("--assets" not in flags and "--all" not in flags)
-        with declared_unguarded_write("test: re-bootstrap after the staged reset"):
-            initialize_active_archive_root(archive_root)
+        initialize_active_archive_root(archive_root)
         assert (archive_root / "index.db").exists()
         assert (archive_root / "ops.db").exists()
 
@@ -728,15 +705,12 @@ class TestResetIdentityMutationContract:
 
     def test_nonexistent_session_ref_mutates_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """A typo'd/nonexistent session ref must resolve to zero targets, not a literal tombstone."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        _seed_archive_session(archive_root, native_id="real-one")
-
-        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
-            runner = CliRunner()
-            result = runner.invoke(
+        with _daemon_reset(tmp_path, monkeypatch, lambda root: _seed_archive_session(root, native_id="real-one")) as (
+            stack,
+            _seeded,
+        ):
+            archive_root = stack.archive_root
+            result = CliRunner().invoke(
                 cli, ["ops", "reset", "--session", "codex-session:totally-nonexistent-typo", "--yes"]
             )
 
@@ -746,15 +720,12 @@ class TestResetIdentityMutationContract:
 
     def test_session_dry_run_previews_without_mutating(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """--dry-run prints the resolved target and performs no mutation."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        session_id = _seed_archive_session(archive_root, native_id="preview-only")
-
-        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--session", session_id, "--dry-run"])
+        with _daemon_reset(
+            tmp_path, monkeypatch, lambda root: _seed_archive_session(root, native_id="preview-only")
+        ) as (stack, seeded):
+            archive_root = stack.archive_root
+            session_id = str(seeded)
+            result = CliRunner().invoke(cli, ["ops", "reset", "--session", session_id, "--dry-run"])
 
         assert result.exit_code == 0
         assert session_id in result.output
@@ -764,15 +735,11 @@ class TestResetIdentityMutationContract:
 
     def test_session_dry_run_json_envelope(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """--dry-run --json emits a stable MutationResultPayload preview."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        session_id = _seed_archive_session(archive_root, native_id="json-preview")
-
-        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--session", session_id, "--dry-run", "--json"])
+        with _daemon_reset(
+            tmp_path, monkeypatch, lambda root: _seed_archive_session(root, native_id="json-preview")
+        ) as (stack, seeded):
+            session_id = str(seeded)
+            result = CliRunner().invoke(cli, ["ops", "reset", "--session", session_id, "--dry-run", "--json"])
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
@@ -786,15 +753,13 @@ class TestResetIdentityMutationContract:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """No mutation happens without --yes, even outside JSON mode."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        session_id = _seed_archive_session(archive_root, native_id="no-yes")
-
-        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--session", session_id])
+        with _daemon_reset(tmp_path, monkeypatch, lambda root: _seed_archive_session(root, native_id="no-yes")) as (
+            stack,
+            seeded,
+        ):
+            archive_root = stack.archive_root
+            session_id = str(seeded)
+            result = CliRunner().invoke(cli, ["ops", "reset", "--session", session_id])
 
         assert result.exit_code == 0
         with sqlite3.connect(archive_root / "index.db") as conn:

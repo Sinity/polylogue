@@ -1,464 +1,161 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { executeProviderPageRequest as executeOwnedProviderPageRequest } from "../src/backfill/page_transport.js";
+import { stagingRuntime } from "./infra/capture-staging.js";
 
-import { executeProviderPageRequest } from "../src/backfill/page_transport.js";
-
-const { Headers, Response } = globalThis;
+const neutralOwner = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const executeProviderPageRequest = request => executeOwnedProviderPageRequest({ ...request, ownerId: neutralOwner });
 const originalWindow = globalThis.window;
-
-function installWindow(url, fetchImpl, storage = {}) {
-  const values = new Map(Object.entries(storage));
+const selected = "22222222-2222-4222-8222-222222222222";
+function installWindow(url, fetchImpl) {
+  const events = new globalThis.EventTarget();
+  const { staging } = stagingRuntime();
+  const provider = new globalThis.URL(url).hostname === "chatgpt.com" ? "chatgpt" : new globalThis.URL(url).hostname === "claude.ai" ? "claude-ai" : "grok";
+  const owner = { tab_id: 42, document_id: "synthetic", provider };
   globalThis.window = {
-    location: new URL(url),
-    fetch: fetchImpl,
-    localStorage: { getItem: (key) => values.get(key) || null },
-    setTimeout: globalThis.setTimeout.bind(globalThis),
-    clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    location: new globalThis.URL(url), fetch: fetchImpl, preparedResponses: [],
+    localStorage: { getItem: () => JSON.stringify({ orgUuid: selected }) },
+    addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
+    dispatchEvent: events.dispatchEvent.bind(events),
+    polylogueAssetStream: { async prepareResponse(provider, signal, sourceUrl, bundle, kind, observationOnly, queueContext, accountHandle) {
+      globalThis.window.preparedResponses.push({ provider, sourceUrl, bundle, kind, observationOnly, queueContext, accountHandle });
+      return { consume: async (response) => {
+        if (!response.ok) { await response.body?.cancel(); return null; }
+        return globalThis.window.polylogueAssetStream.stageResponse(response, provider, signal);
+      }, fail: async () => undefined };
+    }, async stageResponse(response, _provider, signal) {
+      const ref = await staging.begin(owner); const reader = response.body.getReader(); let sequence = 0;
+      try {
+        for (;;) {
+          signal.throwIfAborted(); const { value, done } = await reader.read(); if (done) break;
+          for (let offset = 0; offset < value.length; offset += 48 * 1024) await staging.append(ref, owner, sequence++, globalThis.Buffer.from(value.subarray(offset, offset + 48 * 1024)).toString("base64"));
+        }
+        await staging.seal(ref, owner); return ref;
+      } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
+    } },
   };
+  return staging;
 }
-
-afterEach(() => {
-  globalThis.window = originalWindow;
-  vi.restoreAllMocks();
-});
+afterEach(() => { globalThis.window = originalWindow; vi.restoreAllMocks(); });
+const auth = () => new globalThis.Response(JSON.stringify({ accessToken: "synthetic-token", account: { id: "synthetic-account" } }));
 
 describe("first-party provider page transport", () => {
-  it("returns only the stable ChatGPT account handle for an identity request", async () => {
-    const token = "synthetic-bearer-secret";
-    const accountId = "account-stable-id";
-    const fetchImpl = vi.fn(async (input) => {
-      expect(new URL(input).pathname).toBe("/api/auth/session");
-      return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
-    });
-    installWindow("https://chatgpt.com/", fetchImpl);
+  it.each([
+    ["chatgpt", "https://chatgpt.com/", "/api/auth/session"],
+    ["claude-ai", "https://claude.ai/new", "/api/organizations"],
+  ])("preserves %s identity429 and its48h Retry-After without subsequent provider reads", async (provider, page, path) => {
+    const fetchImpl = vi.fn(async () => new globalThis.Response("rate limited", { status: 429, headers: { "Retry-After": "172800" } }));
+    const staging = installWindow(page, fetchImpl);
+    expect(await executeProviderPageRequest({ provider, operation: "identity", params: {} }))
+      .toMatchObject({ ok: false, error: "provider_rate_limited", outcome: "rate_limited", status: 429, retryAfter: "172800", responseUrl: `${new globalThis.URL(page).origin}${path}` });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(globalThis.window.preparedResponses).toEqual([]);
+    expect(staging.storage.files.size).toBe(0);
+  });
+  it("keeps ChatGPT credentials in MAIN and returns its stable account handle", async () => {
+    const fetchImpl = vi.fn(async () => auth()); installWindow("https://chatgpt.com/", fetchImpl);
+    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "identity", params: {} });
+    expect(result).toEqual({ ok: true, response: { accountHandle: "synthetic-account" } });
+    expect(JSON.stringify(result)).not.toContain("synthetic-token"); expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
 
-    const result = await executeProviderPageRequest({
-      provider: "chatgpt",
-      operation: "identity",
-      params: {},
-    });
-
-    expect(result).toEqual({ ok: true, response: { accountHandle: accountId } });
-    expect(JSON.stringify(result)).not.toContain(token);
+  it("validates the selected Claude organization for identity without picking the first organization", async () => {
+    const fetchImpl = vi.fn(async () => new globalThis.Response(JSON.stringify([{ uuid: "33333333-3333-4333-8333-333333333333" }, { uuid: selected }])));
+    installWindow("https://claude.ai/new", fetchImpl);
+    expect(await executeProviderPageRequest({ provider: "claude-ai", operation: "identity", params: {} })).toEqual({ ok: true, response: { accountHandle: selected } });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the exact selected Claude organization as its stable identity", async () => {
-    const selected = "22222222-2222-4222-8222-222222222222";
-    const fetchImpl = vi.fn(async (input) => {
-      expect(new URL(input).pathname).toBe("/api/organizations");
-      return new Response(JSON.stringify([{ uuid: selected }]));
-    });
-    installWindow("https://claude.ai/new", fetchImpl, {
-      "omelette-org-settings-cache": JSON.stringify({ orgUuid: selected, settings: {} }),
-    });
-
-    const result = await executeProviderPageRequest({
-      provider: "claude-ai",
-      operation: "identity",
-      params: {},
-    });
-
-    expect(result).toEqual({ ok: true, response: { accountHandle: selected } });
+  it("refuses a stale selected Claude identity without substituting another available organization", async () => {
+    const fetchImpl = vi.fn(async () => new globalThis.Response(JSON.stringify([{ uuid: "33333333-3333-4333-8333-333333333333" }])));
+    installWindow("https://claude.ai/new", fetchImpl);
+    expect(await executeProviderPageRequest({ provider: "claude-ai", operation: "identity", params: {} }))
+      .toEqual({ ok: false, error: "backfill_bridge_selected_organization_stale" });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(globalThis.window.preparedResponses).toEqual([]);
   });
 
-  it("rejects a stale cached Claude organization as an identity", async () => {
-    const selected = "22222222-2222-4222-8222-222222222222";
-    const current = "33333333-3333-4333-8333-333333333333";
-    installWindow("https://claude.ai/new", vi.fn(async () => new Response(JSON.stringify([{ uuid: current }]))), {
-      "omelette-org-settings-cache": JSON.stringify({ orgUuid: selected, settings: {} }),
-    });
-
-    const result = await executeProviderPageRequest({
-      provider: "claude-ai",
-      operation: "identity",
-      params: {},
-    });
-
-    expect(result).toEqual({ ok: false, error: "backfill_bridge_selected_organization_stale" });
+  it("refuses a switched Claude conversation scope before staging or provider traffic", async () => {
+    const fetchImpl = vi.fn(); installWindow("https://claude.ai/new", fetchImpl);
+    expect(await executeProviderPageRequest({ provider: "claude-ai", operation: "conversation",
+      params: { nativeId: "session", organizationId: "33333333-3333-4333-8333-333333333333" } }))
+      .toEqual({ ok: false, error: "backfill_bridge_selected_organization_stale" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(globalThis.window.preparedResponses).toEqual([]);
   });
 
-  it("keeps ChatGPT bearer and selected account inside MAIN-world execution", async () => {
+  it.each([
+    ["chatgpt", "https://chatgpt.com/", "/backend-api/conversation/session", 2],
+    ["claude-ai", "https://claude.ai/new", `/api/organizations/${selected}/chat_conversations/session`, 1],
+    ["grok", "https://grok.com/", "/rest/app-chat/conversations/session", 1],
+  ])("stages exact %s reply bytes while returning only a ref and response metadata", async (provider, page, expectedPath, requests) => {
+    const literal = ' {"id":"session", "metadata":{"kept":"\\\\ \\u0061"}, "mapping":{}}\n';
     const calls = [];
-    const token = "synthetic-bearer-secret";
-    const accountId = "synthetic-account-secret";
-    const fetchImpl = vi.fn(async (input, options = {}) => {
-      const url = new URL(input);
-      calls.push({ url, options });
-      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }), { headers: { "Content-Type": "application/json" } });
-      const headers = new Headers(options.headers);
-      if (headers.get("Authorization") !== `Bearer ${token}` || headers.get("ChatGPT-Account-Id") !== accountId) {
-        return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { "Content-Type": "application/json" } });
+    const fetchImpl = vi.fn(async (input, options) => {
+      const url = new globalThis.URL(input); calls.push({ url, options });
+      if (url.pathname === "/api/auth/session") return auth();
+      if (provider === "chatgpt") {
+        expect(new globalThis.Headers(options.headers).get("Authorization")).toBe("Bearer synthetic-token");
+        expect(new globalThis.Headers(options.headers).get("ChatGPT-Account-Id")).toBe("synthetic-account");
       }
-      return new Response(JSON.stringify({ items: [{ id: "conversation-1" }], total: 2 }), { headers: { "Content-Type": "application/json" } });
+      return new globalThis.Response(literal, { headers: { "Content-Type": "application/json", "Content-Length": String(40 * 1024 * 1024) } });
     });
-    installWindow("https://chatgpt.com/", fetchImpl);
-
-    const result = await executeProviderPageRequest({
-      provider: "chatgpt",
-      operation: "inventory",
-      params: { offset: 0, limit: 1, archived: false, starred: false },
-      maxResponseBytes: 4096,
-    });
-
-    expect(result).toMatchObject({ ok: true, response: { ok: true, status: 200 } });
-    expect(JSON.parse(result.response.body)).toMatchObject({ total: 2, items: [{ id: "conversation-1" }] });
-    expect(JSON.stringify(result)).not.toContain(token);
-    expect(JSON.stringify(result)).not.toContain(accountId);
-    expect(calls.find((call) => call.url.pathname === "/backend-api/conversations").url.searchParams.get("is_archived")).toBe("false");
+    const staging = installWindow(page, fetchImpl);
+    const result = await executeProviderPageRequest({ provider, requestId: "request", operation: "conversation", params: { nativeId: "session", organizationId: selected } });
+    expect(result.ok).toBe(true); expect(result.response.bodyRef).toMatchObject({ id: expect.any(String), token: expect.any(String) });
+    expect(result.response).not.toHaveProperty("body");
+    expect(await (await staging.file(result.response.bodyRef.id)).text()).toBe(literal);
+    expect((await staging.metadata(result.response.bodyRef.id)).sha256).toBe(createHash("sha256").update(literal).digest("hex"));
+    expect(calls).toHaveLength(requests); expect(calls.at(-1).url.pathname).toBe(expectedPath);
+    if (provider === "claude-ai") expect(calls.at(-1).url.searchParams.get("render_all_tools")).toBe("true");
+    expect(globalThis.window.preparedResponses).toHaveLength(1);
+    expect(globalThis.window.preparedResponses[0].accountHandle).toBe(provider === "chatgpt" ? "synthetic-account" : provider === "claude-ai" ? selected : null);
   });
 
-  it("cancels a chunked response as soon as the byte cap is crossed", async () => {
-    const cancel = vi.fn(async () => undefined);
-    let reads = 0;
-    const response = {
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      body: { getReader: () => ({
-        read: vi.fn(async () => {
-          reads += 1;
-          if (reads === 1) return { done: false, value: new Uint8Array(6) };
-          if (reads === 2) return { done: false, value: new Uint8Array(6) };
-          return { done: true };
-        }),
-        cancel,
-      }) },
-    };
-    const selected = "22222222-2222-4222-8222-222222222222";
-    installWindow("https://claude.ai/new", vi.fn(async () => response), {
-      "omelette-org-settings-cache": JSON.stringify({ orgUuid: selected, settings: {} }),
-    });
+  it("streams a valid reply beyond the former bridge cap without projecting or truncating it", async () => {
+    const chunk = globalThis.Buffer.from("x".repeat(48 * 1024)); const count = 700;
+    let emitted = 0; const hash = createHash("sha256");
+    const fetchImpl = vi.fn(async (input) => new globalThis.URL(input).pathname === "/api/auth/session" ? auth() : new globalThis.Response(new globalThis.ReadableStream({ pull(controller) {
+      if (emitted++ < count) { hash.update(chunk); controller.enqueue(chunk); } else controller.close();
+    } })));
+    const staging = installWindow("https://chatgpt.com/", fetchImpl);
+    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "session" } });
+    expect(result.ok).toBe(true); const meta = await staging.metadata(result.response.bodyRef.id);
+    expect(meta.bytes).toBe(count * chunk.length); expect(meta.sha256).toBe(hash.digest("hex"));
+    expect(JSON.stringify(result).length).toBeLessThan(1024);
+  }, 30_000);
 
-    const result = await executeProviderPageRequest({ provider: "claude-ai", operation: "organizations", params: {}, maxResponseBytes: 8 });
-
-    expect(result.error).toMatch(/^backfill_bridge_response_too_large:observed_bytes=12;limit_bytes=8$/);
-    expect(cancel).toHaveBeenCalledTimes(1);
-    expect(reads).toBe(2);
+  it("stages the original organization list once and carries the selected identity separately", async () => {
+    const literal = JSON.stringify([{ uuid: "33333333-3333-4333-8333-333333333333" }, { uuid: selected }]);
+    const fetchImpl = vi.fn(async () => new globalThis.Response(literal)); const staging = installWindow("https://claude.ai/new", fetchImpl);
+    const result = await executeProviderPageRequest({ provider: "claude-ai", operation: "organizations", params: {} });
+    expect(result.response.selectedOrganizationId).toBe(selected); expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(await (await staging.file(result.response.bodyRef.id)).text()).toBe(literal);
   });
 
-  it("projects a declared-over-32-MiB ChatGPT conversation before crossing the bridge, dropping only envelope-level noise", async () => {
-    const token = "synthetic-bearer-secret";
-    const accountId = "synthetic-account-secret";
-    const fetchImpl = vi.fn(async (input) => {
-      const url = new URL(input);
-      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
-      return new Response(JSON.stringify({
-        id: "conversation-1",
-        title: "Fixture",
-        mapping: {
-          node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { parts: ["kept"] }, metadata: { model_slug: "fixture" }, create_time: 1 } },
-        },
-        ignored_large_provider_metadata: "x".repeat(4096),
-      }), { headers: { "Content-Length": String(32 * 1024 * 1024 + 1) } });
-    });
-    installWindow("https://chatgpt.com/", fetchImpl);
-
-    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
-
-    expect(result).toMatchObject({ ok: true, response: { ok: true } });
-    const body = JSON.parse(result.response.body);
-    expect(body).toMatchObject({
-      polylogue_bridge_projection: "chatgpt-native-compact-v1",
-      mapping: { node: { message: { content: { parts: ["kept"] }, metadata: { model_slug: "fixture" } } } },
-    });
-    // Envelope-level fields not in the declared header (id/title/create_time/
-    // update_time/current_node) are conversation-object noise, distinct from
-    // the per-node content/metadata fidelity bug this fix addresses.
-    expect(JSON.stringify(body)).not.toContain("ignored_large_provider_metadata");
+  it("returns provider 429 and Retry-After without acquiring its body", async () => {
+    const fetchImpl = vi.fn(async () => new globalThis.Response("rate limited", { status: 429, headers: { "Retry-After": "120" } }));
+    const staging = installWindow("https://grok.com/", fetchImpl);
+    const result = await executeProviderPageRequest({ provider: "grok", operation: "responses", params: { nativeId: "session" } });
+    expect(result).toMatchObject({ ok: true, response: { ok: false, status: 429, retryAfter: "120", bodyRef: null } });
+    expect(staging.storage.files.size).toBe(0); expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("forwards a ChatGPT `thoughts` reasoning node's full payload instead of collapsing it to {}", async () => {
-    const token = "synthetic-bearer-secret";
-    const accountId = "synthetic-account-secret";
-    const fetchImpl = vi.fn(async (input) => {
-      const url = new URL(input);
-      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
-      return new Response(JSON.stringify({
-        id: "conversation-1",
-        mapping: {
-          "reasoning-node": {
-            id: "reasoning-node",
-            parent: null,
-            message: {
-              id: "reasoning-message",
-              author: { role: "assistant" },
-              content: {
-                content_type: "thoughts",
-                thoughts: [
-                  { summary: "Considering the request", content: "The user wants X, so I should check Y first." },
-                  { summary: "Checking constraints", content: "Y depends on Z, verified via tool call." },
-                ],
-              },
-              metadata: { model_slug: "gpt-5-6-thinking" },
-            },
-          },
-        },
-      }));
+  it.each(["pagehide", "polylogue.providerCancel"])("drains a pending provider request on %s", async (eventType) => {
+    let started; let drained = false; const began = new Promise((resolve) => { started = resolve; });
+    const fetchImpl = vi.fn(async (_input, options) => {
+      started(); try { return await new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new globalThis.DOMException("cancelled", "AbortError")), { once: true })); }
+      finally { drained = true; }
     });
-    installWindow("https://chatgpt.com/", fetchImpl);
-
-    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
-
-    const body = JSON.parse(result.response.body);
-    expect(body.mapping["reasoning-node"].message.content).toEqual({
-      content_type: "thoughts",
-      thoughts: [
-        { summary: "Considering the request", content: "The user wants X, so I should check Y first." },
-        { summary: "Checking constraints", content: "Y depends on Z, verified via tool call." },
-      ],
-    });
+    installWindow("https://grok.com/", fetchImpl);
+    const pending = executeProviderPageRequest({ provider: "grok", requestId: "owned", operation: "conversation", params: { nativeId: "session" } });
+    await began; const event = new globalThis.Event(eventType); Object.defineProperty(event, "detail", { value: { requestId: "owned", ownerId: neutralOwner } }); globalThis.window.dispatchEvent(event);
+    expect((await pending).ok).toBe(false); expect(drained).toBe(true);
   });
 
-  it("forwards content_references, citations, and other metadata keys the old allowlist dropped", async () => {
-    const token = "synthetic-bearer-secret";
-    const accountId = "synthetic-account-secret";
-    const richMetadata = {
-      model_slug: "gpt-5-6",
-      content_references: [{ matched_text: "a source", url: "https://example.com/a", type: "webpage" }],
-      citations: [{ start_ix: 0, end_ix: 5, metadata: { url: "https://example.com/b" } }],
-      finish_details: { type: "stop", stop_tokens: [200002] },
-      request_id: "req-abc123",
-      reasoning_status: "reasoning_ended",
-      search_result_groups: [{ domain: "example.com", entries: [{ url: "https://example.com/c" }] }],
-      aggregate_result: { status: "success", final_expression_output: '{"result": 42}' },
-      attachments: [{ id: "file-1", name: "data.csv", mime_type: "text/csv", size: 1234, extracted_content: "col_a,col_b\n1,2\n" }],
-    };
-    const fetchImpl = vi.fn(async (input) => {
-      const url = new URL(input);
-      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
-      return new Response(JSON.stringify({
-        id: "conversation-1",
-        mapping: {
-          node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { content_type: "text", parts: ["with citation"] }, metadata: richMetadata } },
-        },
-      }));
-    });
-    installWindow("https://chatgpt.com/", fetchImpl);
-
-    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
-
-    const body = JSON.parse(result.response.body);
-    expect(body.mapping.node.message.metadata).toEqual(richMetadata);
-  });
-
-  it("preserves each node's `children` ordering across the projection (branch_index depends on it)", async () => {
-    const token = "synthetic-bearer-secret";
-    const accountId = "synthetic-account-secret";
-    const fetchImpl = vi.fn(async (input) => {
-      const url = new URL(input);
-      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
-      return new Response(JSON.stringify({
-        id: "conversation-1",
-        mapping: {
-          root: { id: "root", parent: null, children: ["reply-b", "reply-a"], message: { id: "root-msg", author: { role: "user" }, content: { parts: ["question"] } } },
-          "reply-a": { id: "reply-a", parent: "root", children: [], message: { id: "reply-a-msg", author: { role: "assistant" }, content: { parts: ["first regeneration"] } } },
-          "reply-b": { id: "reply-b", parent: "root", children: [], message: { id: "reply-b-msg", author: { role: "assistant" }, content: { parts: ["second regeneration"] } } },
-        },
-      }));
-    });
-    installWindow("https://chatgpt.com/", fetchImpl);
-
-    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
-
-    const body = JSON.parse(result.response.body);
-    // The order here (reply-b before reply-a) is deliberately not sorted --
-    // polylogue.sources.parsers.chatgpt.extract_messages_from_mapping reads
-    // this exact array to compute branch_index (a sibling's position within
-    // it), so the projection must forward it byte-for-byte, not a
-    // recomputed or alphabetized version.
-    expect(body.mapping.root.children).toEqual(["reply-b", "reply-a"]);
-    expect(body.mapping["reply-a"].children).toEqual([]);
-  });
-
-  it("preserves is_temporary/conversation_template_id/gizmo_id so session_kind and project scoping survive the bridge", async () => {
-    const token = "synthetic-bearer-secret";
-    const accountId = "synthetic-account-secret";
-    const fetchImpl = vi.fn(async (input) => {
-      const url = new URL(input);
-      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
-      return new Response(JSON.stringify({
-        id: "conversation-1",
-        is_temporary: true,
-        conversation_template_id: "g-p-project123",
-        gizmo_id: "g-custom-gpt-456",
-        mapping: {
-          node: { id: "node", parent: null, message: { id: "message", author: { role: "user" }, content: { parts: ["hi"] } } },
-        },
-      }));
-    });
-    installWindow("https://chatgpt.com/", fetchImpl);
-
-    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
-
-    // polylogue.sources.parsers.chatgpt.parse() reads these three fields to
-    // set session_kind (is_temporary) and provider_project_ref
-    // (conversation_template_id/gizmo_id) -- they must survive the bridge
-    // now that the projection advertises itself as native_full.
-    const body = JSON.parse(result.response.body);
-    expect(body).toMatchObject({
-      is_temporary: true,
-      conversation_template_id: "g-p-project123",
-      gizmo_id: "g-custom-gpt-456",
-    });
-  });
-
-  it("preserves completion and asset descriptors in the bounded ChatGPT projection", async () => {
-    const token = "synthetic-bearer-secret";
-    const accountId = "synthetic-account-secret";
-    const fetchImpl = vi.fn(async (input) => {
-      const url = new URL(input);
-      if (url.pathname === "/api/auth/session") {
-        return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
-      }
-      return new Response(JSON.stringify({
-        id: "conversation-1",
-        conversation_id: "conversation-1",
-        title: "Completed package",
-        current_node: "assistant-node",
-        mapping: {
-          "assistant-node": {
-            id: "assistant-node",
-            parent: null,
-            message: {
-              id: "assistant-message",
-              author: { role: "assistant" },
-              status: "finished_successfully",
-              end_turn: true,
-              recipient: "all",
-              content: {
-                content_type: "text",
-                parts: [
-                  "[Download](sandbox:/mnt/data/assistant-output.zip)",
-                  { content_type: "image_asset_pointer", asset_pointer: "file-service://file-OUTPUT1" },
-                ],
-              },
-              metadata: {
-                model_slug: "gpt-5-6-pro",
-                attachments: [{ id: "file-INPUT1", name: "context.tar.gz", mime_type: "application/gzip" }],
-              },
-            },
-          },
-        },
-      }));
-    });
-    installWindow("https://chatgpt.com/", fetchImpl);
-
-    const result = await executeProviderPageRequest({
-      provider: "chatgpt",
-      operation: "conversation",
-      params: { nativeId: "conversation-1" },
-      maxResponseBytes: 32 * 1024 * 1024,
-    });
-
-    const body = JSON.parse(result.response.body);
-    expect(body.current_node).toBe("assistant-node");
-    expect(body.mapping["assistant-node"].message).toMatchObject({
-      status: "finished_successfully",
-      end_turn: true,
-      recipient: "all",
-      content: {
-        parts: [
-          "[Download](sandbox:/mnt/data/assistant-output.zip)",
-          { content_type: "image_asset_pointer", asset_pointer: "file-service://file-OUTPUT1" },
-        ],
-      },
-      metadata: {
-        model_slug: "gpt-5-6-pro",
-        attachments: [{ id: "file-INPUT1", name: "context.tar.gz", mime_type: "application/gzip" }],
-      },
-    });
-  });
-
-  it("crosses a compact ChatGPT projection above 8 MiB within the bounded bridge", async () => {
-    const token = "synthetic-bearer-secret";
-    const accountId = "synthetic-account-secret";
-    const fetchImpl = vi.fn(async (input) => {
-      const url = new URL(input);
-      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
-      return new Response(JSON.stringify({
-        id: "conversation-1",
-        mapping: {
-          node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { parts: ["x".repeat(9 * 1024 * 1024)] } } },
-        },
-      }));
-    });
-    installWindow("https://chatgpt.com/", fetchImpl);
-
-    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
-
-    expect(result).toMatchObject({ ok: true, response: { ok: true } });
-    expect(new globalThis.TextEncoder().encode(result.response.body).length).toBeGreaterThan(8 * 1024 * 1024);
-    expect(new globalThis.TextEncoder().encode(result.response.body).length).toBeLessThan(24 * 1024 * 1024);
-  });
-
-  it("fails closed when a compact ChatGPT projection still exceeds its bridge limit", async () => {
-    const token = "synthetic-bearer-secret";
-    const accountId = "synthetic-account-secret";
-    const fetchImpl = vi.fn(async (input) => {
-      const url = new URL(input);
-      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
-      return new Response(JSON.stringify({
-        id: "conversation-1",
-        mapping: {
-          node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { parts: ["x".repeat(24 * 1024 * 1024)] } } },
-        },
-      }));
-    });
-    installWindow("https://chatgpt.com/", fetchImpl);
-
-    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
-
-    expect(result.error).toMatch(/^backfill_bridge_projection_too_large:observed_bytes=.+;limit_bytes=25165824$/);
-  });
-
-  it("accounts for escaping in the outer scripting-result bridge payload", async () => {
-    const token = "synthetic-bearer-secret";
-    const accountId = "synthetic-account-secret";
-    const fetchImpl = vi.fn(async (input) => {
-      const url = new URL(input);
-      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
-      return new Response(JSON.stringify({
-        id: "conversation-1",
-        mapping: {
-          node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { parts: ['"'.repeat(13 * 1024 * 1024)] } } },
-        },
-      }));
-    });
-    installWindow("https://chatgpt.com/", fetchImpl);
-
-    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
-
-    expect(result.error).toMatch(/^backfill_bridge_projection_too_large:observed_bytes=.+;limit_bytes=25165824$/);
-  });
-
-  it("returns malformed compact source as typed provider contract drift", async () => {
-    const token = "synthetic-bearer-secret";
-    const accountId = "synthetic-account-secret";
-    const fetchImpl = vi.fn(async (input) => {
-      const url = new URL(input);
-      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
-      return new Response(JSON.stringify({ id: "conversation-1", mapping: [] }));
-    });
-    installWindow("https://chatgpt.com/", fetchImpl);
-
-    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
-
-    expect(result).toMatchObject({ ok: false, error: "provider_contract_drift:chatgpt_conversation.mapping_must_be_object" });
-  });
-  it("uses the exact Claude UI selector despite ambiguous per-organization keys", async () => {
-    const selected = "22222222-2222-4222-8222-222222222222";
-    const other = "11111111-1111-4111-8111-111111111111";
-    installWindow("https://claude.ai/new", vi.fn(async () => new Response(JSON.stringify([{ uuid: other }, { uuid: selected }]), { headers: { "Content-Type": "application/json", "Retry-After": "60" } })), {
-      [`claude-mcp-has-connectors:${other}`]: "true",
-      [`claude-mcp-has-connectors:${selected}`]: "true",
-      "omelette-org-settings-cache": JSON.stringify({ orgUuid: selected, settings: {} }),
-    });
-
-    const result = await executeProviderPageRequest({ provider: "claude-ai", operation: "organizations", params: {}, maxResponseBytes: 4096 });
-
-    expect(JSON.parse(result.response.body).map((entry) => entry.uuid)).toEqual([selected, other]);
-    expect(result.response.retryAfter).toBe("60");
-    expect(result.response).not.toHaveProperty("headers");
+  it("refuses a mismatched provider before any request", async () => {
+    const fetchImpl = vi.fn(); installWindow("https://grok.com/", fetchImpl);
+    expect(await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "session" } })).toMatchObject({ ok: false, error: "backfill_bridge_provider_mismatch" });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

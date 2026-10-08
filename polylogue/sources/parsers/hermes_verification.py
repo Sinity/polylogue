@@ -75,15 +75,22 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
-from contextlib import closing
+from collections.abc import Iterator, Mapping
+from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SourceFidelityStatus
 from polylogue.core.json import JSONDocument
-from polylogue.sources.sqlite_export import LogicalExportError, logical_source_shape, open_logical_source
+from polylogue.sources.detection_projection import DetectorProjection
+from polylogue.sources.sqlite_export import (
+    LogicalExportError,
+    logical_source_context,
+    logical_source_shape,
+    readable_table_info,
+)
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
@@ -97,18 +104,6 @@ from .hermes_state import (
 
 HERMES_VERIFICATION_DB_MARKER = "hermes_verification_evidence_db"
 _DEFAULT_SESSION_ID = "default"
-# Declared consumer-side bounds on an untrusted, structurally-routed SQLite
-# file. Far above any real Hermes install (the producer documents its own,
-# smaller limits); crossing them means the file is not the artifact it claims
-# to be, which is a refusal rather than a partial parse.
-_MAX_VERIFICATION_EVENT_ROWS = 500_000
-_MAX_VERIFICATION_STATE_ROWS = 100_000
-
-
-class HermesVerificationTooLargeError(ValueError):
-    """A verification_evidence.db exceeding the declared consumer row bounds."""
-
-
 _REQUIRED_EVENT_COLUMNS = frozenset(
     {
         "id",
@@ -212,20 +207,16 @@ def looks_like_verification_evidence_db_path(path: Path, *, immutable: bool = Fa
         return False
 
 
-def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
-    """Open a retained logical export or a live Hermes database for reading.
-
-    The caller owns the returned connection and must close it: for a retained
-    export it holds the only reference to an already-unlinked reconstruction,
-    so leaving it open keeps that inode alive for the rest of the process.
-    """
-    conn = open_logical_source(path, immutable=immutable)
-    conn.row_factory = sqlite3.Row
-    return conn
+@contextmanager
+def _readonly_context(path: Path, *, immutable: bool = False) -> Iterator[sqlite3.Connection]:
+    """Keep the logical-source reader and reconstruction on its creator."""
+    with logical_source_context(path, immutable=immutable) as connection:
+        connection.row_factory = sqlite3.Row
+        yield connection
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    return {str(row[1]) for row in readable_table_info(conn, table)}
 
 
 def _has_required_tables(conn: sqlite3.Connection) -> bool:
@@ -251,6 +242,7 @@ def parse_verification_evidence_db_payload(
     *,
     profile_root: Path | None = None,
     source_path: str | None = None,
+    profile_identity: str | None = None,
 ) -> list[ParsedSession]:
     """Parse a ``verification_db_path`` marker payload.
 
@@ -274,6 +266,7 @@ def parse_verification_evidence_db_payload(
         Path(path_value),
         fallback_id=fallback_id,
         profile_root=profile_root,
+        profile_identity=profile_identity,
         immutable=payload.get("sqlite_immutable") is True,
     )
 
@@ -284,6 +277,7 @@ def parse_verification_evidence_db(
     fallback_id: str | None = None,
     profile_root: Path | None = None,
     immutable: bool = False,
+    profile_identity: str | None = None,
 ) -> list[ParsedSession]:
     """Parse every verification event/state row from a Hermes verification_evidence.db file.
 
@@ -299,42 +293,34 @@ def parse_verification_evidence_db(
     unresolved.
     """
     del fallback_id
+    with _readonly_context(path, immutable=immutable) as conn:
+        return _parse_verification_connection(conn, path, profile_root=profile_root, profile_identity=profile_identity)
+
+
+def _parse_verification_connection(
+    conn: sqlite3.Connection, path: Path, *, profile_root: Path | None = None, profile_identity: str | None = None
+) -> list[ParsedSession]:
+    """Parse on the caller-owned read transaction without reopening its source."""
+    conn.row_factory = sqlite3.Row
     grouped_events: dict[str, list[ParsedSessionEvent]] = {}
     grouped_state: dict[str, list[ParsedSessionEvent]] = {}
-    # ``closing``, not a bare ``with``: a sqlite3 connection's own context
-    # manager commits or rolls back and never closes, so returning from here
-    # would leave the unlinked reconstruction backed by an open handle.
-    with closing(_connect_readonly(path, immutable=immutable)) as conn:
-        if not _has_required_tables(conn):
-            raise ValueError(f"{path} is not a Hermes verification_evidence.db file")
-        schema_version = _schema_version(conn)
-        # Streamed, not ``fetchall()``: a structurally-conforming SQLite file
-        # reaches this parser from any import path, and the producer's own row
-        # limits are not enforceable on the consumer side. Grouping straight
-        # off the cursor keeps one row resident instead of the whole table,
-        # and the declared caps turn an oversized file into a counted refusal
-        # -- never a silent truncation of verification evidence.
-        for events, row in enumerate(
-            conn.execute("SELECT * FROM verification_events ORDER BY session_id, id"), start=1
-        ):
-            if events > _MAX_VERIFICATION_EVENT_ROWS:
-                raise HermesVerificationTooLargeError(
-                    f"{path} declares more than {_MAX_VERIFICATION_EVENT_ROWS} verification_events rows; refusing"
-                )
-            grouped_events.setdefault(str(row["session_id"]), []).append(
-                _verification_event(row, schema_version=schema_version)
-            )
-        for states, row in enumerate(
-            conn.execute("SELECT * FROM verification_state ORDER BY session_id, root"), start=1
-        ):
-            if states > _MAX_VERIFICATION_STATE_ROWS:
-                raise HermesVerificationTooLargeError(
-                    f"{path} declares more than {_MAX_VERIFICATION_STATE_ROWS} verification_state rows; refusing"
-                )
-            grouped_state.setdefault(str(row["session_id"]), []).append(_verification_state_event(row))
+    if not _has_required_tables(conn):
+        raise ValueError(f"{path} is not a Hermes verification_evidence.db file")
+    schema_version = _schema_version(conn)
+    # Stream each table without an outcome-changing row count refusal.
+    for row in conn.execute("SELECT * FROM verification_events ORDER BY session_id, id"):
+        grouped_events.setdefault(str(row["session_id"]), []).append(
+            _verification_event(row, schema_version=schema_version)
+        )
+    for row in conn.execute("SELECT * FROM verification_state ORDER BY session_id, root"):
+        grouped_state.setdefault(str(row["session_id"]), []).append(_verification_state_event(row))
 
     session_ids = sorted(set(grouped_events) | set(grouped_state))
-    profile_key_value = _profile_key(profile_root) if profile_root is not None else None
+    profile_key_value = (
+        profile_identity
+        if profile_identity is not None
+        else (_profile_key(profile_root) if profile_root is not None else None)
+    )
     return [
         _verification_session(
             session_id,
@@ -344,6 +330,66 @@ def parse_verification_evidence_db(
         )
         for session_id in session_ids
     ]
+
+
+def _inspect_verification_connection(
+    conn: sqlite3.Connection,
+    grouping: sqlite3.Connection,
+    path: Path,
+    *,
+    profile_root: Path | None,
+    profile_identity: str | None = None,
+) -> tuple[dict[str, Any], HermesImportFidelity]:
+    """Aggregate real parser evidence without retaining the parsed ledger.
+
+    Python owns the session key conversion. Disk-backed BINARY keys preserve
+    its grouping and lexical order even when native columns use NOCASE.
+    """
+    conn.row_factory = sqlite3.Row
+    if not _has_required_tables(conn):
+        raise ValueError(f"{path} is not a Hermes verification_evidence.db file")
+    schema_version = _schema_version(conn)
+    evidence = _VerificationFidelityEvidence()
+    grouping.execute("CREATE TABLE session_keys (id TEXT COLLATE BINARY PRIMARY KEY) WITHOUT ROWID").close()
+    with closing(conn.execute("SELECT * FROM verification_events ORDER BY session_id, id")) as rows:
+        for row in rows:
+            event = _verification_event(row, schema_version=schema_version)
+            evidence.event(event)
+            grouping.execute("INSERT OR IGNORE INTO session_keys VALUES (?)", (str(row["session_id"]),)).close()
+    with closing(conn.execute("SELECT * FROM verification_state ORDER BY session_id, root")) as rows:
+        for row in rows:
+            event = _verification_state_event(row)
+            evidence.event(event)
+            grouping.execute("INSERT OR IGNORE INTO session_keys VALUES (?)", (str(row["session_id"]),)).close()
+    grouping.commit()
+    profile_key_value = (
+        profile_identity
+        if profile_identity is not None
+        else (_profile_key(profile_root) if profile_root is not None else None)
+    )
+    produced: dict[str, Any] = {
+        "sessions": 0,
+        "messages": 0,
+        "blocks": 0,
+        "actions": 0,
+        "raw_records": 0,
+        "session_refs": [],
+    }
+    with closing(grouping.execute("SELECT id FROM session_keys ORDER BY id COLLATE BINARY")) as keys:
+        for (session_id,) in keys:
+            # Preview exposes the produced-row shape, not this summary's text.
+            # The same session constructor owns identity, link and block counts.
+            session = _verification_session(session_id, [], [], profile_key=profile_key_value)
+            evidence.session(session)
+            produced["sessions"] += 1
+            produced["raw_records"] += 1
+            produced["messages"] += len(session.messages)
+            produced["blocks"] += sum(len(message.blocks) for message in session.messages)
+            produced["actions"] += sum(
+                block.type.value == "tool_use" for message in session.messages for block in message.blocks
+            )
+            produced["session_refs"].append(f"session:{session.source_name.value}:{session.provider_session_id}")
+    return produced, _fidelity_from_evidence(evidence)
 
 
 def _schema_version(conn: sqlite3.Connection) -> int | None:
@@ -479,7 +525,7 @@ def _optional_text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _parent_session_link_capability(sessions: list[ParsedSession]) -> HermesFidelityCapability:
+def _parent_session_link_capability(session_count: int, linked: int) -> HermesFidelityCapability:
     """Declare fidelity for the ``session_links`` parent edge to the conversational session.
 
     Mirrors ``hermes_spans._parent_session_link_capability`` (polylogue-y9zx
@@ -489,9 +535,8 @@ def _parent_session_link_capability(sessions: list[ParsedSession]) -> HermesFide
     session was actually ingested -- that confirmation is the generic
     ``session_links`` resolution machinery's job, not this parser's.
     """
-    total = max(len(sessions), 1)
-    linked = sum(1 for session in sessions if session.parent_session_provider_id)
-    if not sessions:
+    total = max(session_count, 1)
+    if not session_count:
         return HermesFidelityCapability(
             status="absent",
             observed=0,
@@ -500,7 +545,7 @@ def _parent_session_link_capability(sessions: list[ParsedSession]) -> HermesFide
             detail="No sessions were produced, so no session_links parent edge could be asserted.",
         )
     status: SourceFidelityStatus
-    if linked == len(sessions):
+    if linked == session_count:
         status = "inferred"
     elif linked:
         status = "degraded"
@@ -530,65 +575,85 @@ def import_fidelity_declaration(sessions: list[ParsedSession]) -> HermesImportFi
     ``sessions: list[ParsedSession]`` fidelity shape rather than picking one
     session as an arbitrary representative.
     """
-    events = [
-        event
-        for session in sessions
-        for event in session.session_events
-        if event.event_type == "hermes_verification_event"
-    ]
-    state_events = [
-        event
-        for session in sessions
-        for event in session.session_events
-        if event.event_type == "hermes_verification_state"
-    ]
-    total = max(len(events) + len(state_events), 1)
+    evidence = _VerificationFidelityEvidence()
+    for session in sessions:
+        evidence.session(session)
+        for event in session.session_events:
+            evidence.event(event)
+    return _fidelity_from_evidence(evidence)
+
+
+@dataclass(slots=True)
+class _VerificationFidelityEvidence:
+    events: int = 0
+    states: int = 0
+    outputs: int = 0
+    ambiguous: int = 0
+    sessions: int = 0
+    linked: int = 0
+
+    def event(self, event: ParsedSessionEvent) -> None:
+        if event.event_type == "hermes_verification_event":
+            self.events += 1
+            self.outputs += bool(event.payload.get("output_summary"))
+        elif event.event_type == "hermes_verification_state":
+            self.states += 1
+        else:
+            return
+        self.ambiguous += bool(event.payload.get("ambiguous_correlation"))
+
+    def session(self, session: ParsedSession) -> None:
+        self.sessions += 1
+        self.linked += bool(session.parent_session_provider_id)
+
+
+def _fidelity_from_evidence(evidence: _VerificationFidelityEvidence) -> HermesImportFidelity:
+    total = max(evidence.events + evidence.states, 1)
 
     def exact_if_observed(count: int, detail: str) -> HermesFidelityCapability:
         return HermesFidelityCapability(
             status="exact" if count else "absent", observed=count, expected=total, counts={}, detail=detail
         )
 
-    ambiguous = sum(1 for event in events + state_events if event.payload.get("ambiguous_correlation"))
     capabilities = {
         "command_evidence": exact_if_observed(
-            len(events),
+            evidence.events,
             "command/canonical_command/kind/scope round-trip verbatim from verification_events; "
             "this is Hermes's own recorded evidence, not conversational content, so payload "
             "hygiene does not bound it (unlike ATOF/ATIF).",
         ),
         "outcome_evidence": exact_if_observed(
-            len(events),
+            evidence.events,
             "status/exit_code are structurally authoritative -- exit_code is NOT NULL in the "
             "producer schema, unlike the NULL-means-unknown tool_result_exit_code convention "
             "elsewhere in this archive.",
         ),
         "output_evidence": exact_if_observed(
-            sum(1 for event in events if event.payload.get("output_summary")),
+            evidence.outputs,
             "output_summary round-trips verbatim, bounded to 2000 characters by the producer.",
         ),
         "changed_paths": exact_if_observed(
-            len(state_events), "verification_state.changed_paths_json round-trips as a typed path list."
+            evidence.states, "verification_state.changed_paths_json round-trips as a typed path list."
         ),
         "correlation": HermesFidelityCapability(
-            status="degraded" if ambiguous else ("exact" if events or state_events else "absent"),
-            observed=(len(events) + len(state_events)) - ambiguous,
+            status="degraded" if evidence.ambiguous else ("exact" if evidence.events or evidence.states else "absent"),
+            observed=(evidence.events + evidence.states) - evidence.ambiguous,
             expected=total,
-            counts={"ambiguous": ambiguous},
+            counts={"ambiguous": evidence.ambiguous},
             detail="Correlation is exact via the producer's own session_id field, except rows "
             "where Hermes recorded session_id='default' (its own fallback for unknown session "
             "identity), which are marked ambiguous rather than silently trusted.",
         ),
         "retention_completeness": HermesFidelityCapability(
             status="degraded",
-            observed=len(events),
+            observed=evidence.events,
             expected=total,
             counts={},
             detail="The producer prunes events older than 30 days and caps at 100 events per "
             "(session_id, root) / 10,000 unreferenced total -- this import reflects only what "
             "Hermes currently retains, not a complete historical verification ledger.",
         ),
-        "parent_session_link": _parent_session_link_capability(sessions),
+        "parent_session_link": _parent_session_link_capability(evidence.sessions, evidence.linked),
     }
     caveats = tuple(f"{name}: {cap.detail}" for name, cap in capabilities.items() if cap.status != "exact")
     return HermesImportFidelity(
@@ -610,7 +675,6 @@ def import_fidelity_declaration(sessions: list[ParsedSession]) -> HermesImportFi
 
 __all__ = [
     "HERMES_VERIFICATION_DB_MARKER",
-    "HermesVerificationTooLargeError",
     "HermesVerificationEventType",
     "hermes_verification_session_id_for",
     "import_fidelity_declaration",
@@ -621,3 +685,10 @@ __all__ = [
     "parse_verification_evidence_db",
     "parse_verification_evidence_db_payload",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Keep the marker and declaration used by the verification detector."""
+    return DetectorProjection(
+        fields={"polylogue_artifact": DetectorProjection(), "verification_db_path": DetectorProjection()}
+    )

@@ -483,3 +483,27 @@ def test_profile_selection_comes_from_the_production_registry() -> None:
         assert focused.state("raw_observation_convergence") is ServiceState.SKIPPED
 
     asyncio.run(scenario())
+
+
+def test_cancellation_before_service_start_never_constructs_its_coroutine() -> None:
+    """The owned task creates the service only once it can await it."""
+
+    async def scenario() -> None:
+        supervisor = _supervisor()
+        constructed = False
+
+        def factory() -> Coroutine[object, object, None]:
+            nonlocal constructed
+            constructed = True
+            return _forever()
+
+        task = supervisor.start("health_check", factory)
+        assert task is not None
+        task.cancel()
+        report = await supervisor.shutdown()
+        assert not constructed
+        assert supervisor.state("health_check") is ServiceState.STOPPED
+        assert report.stopped == ("health_check",)
+        assert not report.incomplete
+
+    asyncio.run(scenario())

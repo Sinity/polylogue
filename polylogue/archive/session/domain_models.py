@@ -69,6 +69,10 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     parent_id: SessionId | None = None
     branch_type: BranchType | None = None
     message_count: int | None = None
+    # Canonical session-list rows expose the archive's numeric word aggregate.
+    # Keep it on the summary so HTTP and SSR projections do not lose it while
+    # crossing from the archive row into the domain model.
+    word_count: int | None = None
     dialogue_count: int | None = None
     terminal_state: str | None = None
     total_cost_usd: float | None = None

@@ -260,29 +260,6 @@ def test_sampling_in_its_own_thread_measures_a_live_group(tmp_path: Path) -> Non
     assert document["peak"]["pss_kib"] == 900 * KIB
 
 
-def test_a_followed_rerun_group_is_part_of_the_run_peak(tmp_path: Path) -> None:
-    """A slot job's in-slot rerun runs in a new session; its memory still counts.
-
-    Anti-vacuity: make ``follow`` a no-op and the second sample reads the
-    finished first group again, so the rerun's larger peak never appears.
-    """
-    proc = _proc(tmp_path)
-    _process(proc, 100, pgid=100, pss_kib=200 * KIB)
-    sampler = _sampler(tmp_path, proc, pgid=100)
-    sampler.sample()
-
-    for path in (proc / "100").iterdir():
-        path.unlink()
-    (proc / "100").rmdir()
-    _process(proc, 300, pgid=300, pss_kib=900 * KIB)
-    # No explicit sample: ``follow`` observes the new group at once, so a
-    # rerun that ends within one interval is still measured.
-    sampler.follow(300)
-
-    document = sampler.stop()
-    assert document["peak"]["pss_kib"] == 900 * KIB
-
-
 def test_reused_numeric_group_never_acquires_custody(tmp_path: Path) -> None:
     proc = _proc(tmp_path)
     leader = _process(proc, 100, pgid=100, pss_kib=100 * KIB)

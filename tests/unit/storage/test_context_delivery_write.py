@@ -4,13 +4,8 @@ import sqlite3
 
 import pytest
 
-from polylogue.context.compiler import (
-    ContextImage,
-    ContextOmission,
-    ContextSegment,
-    ContextSpec,
-    context_snapshot_record_from_image,
-)
+from polylogue.archive.context_models import ContextImage, ContextOmission, ContextSegment, ContextSpec
+from polylogue.context.compiler import context_snapshot_record_from_image
 from polylogue.core.refs import EvidenceRef
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import (
@@ -161,3 +156,100 @@ def test_context_delivery_validates_recipient_and_actor_refs(recipient: str, act
             recipient_ref=recipient,
             delivered_by_ref=actor,
         )
+
+
+@pytest.mark.parametrize("operation", ["write", "read", "list"])
+@pytest.mark.parametrize("execute_failure", [False, True])
+def test_context_delivery_retains_original_failed_statement_until_creator_retry(
+    monkeypatch: pytest.MonkeyPatch, operation: str, execute_failure: bool
+) -> None:
+    from builtins import BaseExceptionGroup
+    from typing import Any
+
+    from polylogue.storage.io_phase_metrics import _MeasuredConnection, connect_measured, live_connection_cursors
+    from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError, NativeSQLCustodyOwner
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    connection = connect_measured(":memory:")
+    assert isinstance(connection, _MeasuredConnection)
+    owner = NativeSQLCustodyOwner(connection)
+    selected: list[ControlledCursor] = []
+    completed: list[str] = []
+    primary = OSError("synthetic context statement failure")
+    image = _image()
+    record = context_snapshot_record_from_image(image, boundary="session-start", run_ref="run:r1")
+    try:
+        connection.executescript(USER_DDL)
+        if operation != "write":
+            write_context_delivery(
+                connection,
+                image=image,
+                record=record,
+                recipient_ref="agent:codex-main",
+                delivered_by_ref="user:local",
+                delivered_at_ms=123,
+            )
+            connection.commit()
+        owner.retain_settlement_callback(lambda: completed.append("settled"))
+        make_cursor = connection.cursor
+
+        class ContextCursor(ControlledCursor):
+            def execute(self, sql: str, parameters: Any = (), /) -> ContextCursor:
+                matches = (
+                    sql.lstrip().startswith("INSERT INTO context_deliveries")
+                    if operation == "write"
+                    else sql.lstrip().startswith("SELECT snapshot_ref, recipient_ref")
+                    if operation == "read"
+                    # A paged list read opens with its exact total.
+                    else sql.lstrip().startswith("SELECT COUNT(*) FROM context_deliveries")
+                )
+                if matches:
+                    selected.append(self)
+                    self.allow_cleanup.clear()
+                    if execute_failure:
+                        raise primary
+                super().execute(sql, parameters)
+                return self
+
+        def cursor() -> sqlite3.Cursor:
+            return make_cursor(factory=ContextCursor)
+
+        monkeypatch.setattr(connection, "cursor", cursor)
+        with pytest.raises(BaseExceptionGroup if execute_failure else OSError) as failure:
+            if operation == "write":
+                write_context_delivery(
+                    connection,
+                    image=image,
+                    record=record,
+                    recipient_ref="agent:codex-main",
+                    delivered_by_ref="user:local",
+                    delivered_at_ms=123,
+                )
+            elif operation == "read":
+                read_context_delivery(connection, record.snapshot_ref)
+            else:
+                list_context_deliveries(connection, recipient_ref="agent:codex-main")
+        assert len(selected) == 1
+        statement = selected[0]
+        assert statement.close_attempts == 1
+        assert statement in live_connection_cursors(connection)
+        assert any(cursor is statement for cursor in connection._unsettled_native_cursors.values())
+        if execute_failure:
+            assert isinstance(failure.value, BaseExceptionGroup)
+            assert any(error is primary for error in failure.value.exceptions)
+        else:
+            assert failure.value is statement.cleanup_failure
+        with pytest.raises(NativeConnectionSettlementError) as unsettled:
+            owner.close()
+        assert unsettled.value.owner is owner and owner.connection is connection
+        assert owner.close_required and not owner._settled and completed == []
+        assert statement.close_attempts == 2
+        statement.allow_cleanup.set()
+        owner.close()
+        assert statement.close_attempts == 3
+        assert owner.connection is None and owner._settled and completed == ["settled"]
+        assert not connection._unsettled_native_cursors
+    finally:
+        for statement in selected:
+            statement.allow_cleanup.set()
+        owner.close()

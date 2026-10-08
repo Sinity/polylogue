@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Literal, NoReturn, NotRequired, TypedDict
 
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.surfaces.machine_envelope import (
@@ -52,8 +52,8 @@ DAEMON_REQUIRED = "daemon_required"
 #:
 #: The mirror image of :data:`DAEMON_REQUIRED`, and deliberately a different
 #: code: the remedy there is "start the daemon", and the remedy here is the
-#: opposite -- route the write through the daemon that is *already* running,
-#: or stop it and own the archive offline. Folding both into one code would
+#: opposite -- route the write through the daemon that is *already* running.
+#: Folding both into one code would
 #: tell a machine caller to start a second daemon for the archive whose first
 #: one is exactly what refused it.
 ARCHIVE_WRITER_OWNERSHIP_UNAVAILABLE = "archive_writer_ownership_unavailable"
@@ -98,7 +98,7 @@ class MachineError:
         del exclude_none
         return json.dumps(self.to_dict(), indent=2)
 
-    def emit(self, *, exit_code: int = 1) -> None:
+    def emit(self, *, exit_code: int = 1) -> NoReturn:
         """Write the payload to stdout and exit."""
         sys.stdout.write(self.to_json(exclude_none=True))
         sys.stdout.write("\n")
@@ -292,7 +292,7 @@ def error_archive_writer_ownership(
     remedy = (
         "check archive-writer ownership and retry when it can be determined"
         if code == "archive_writer_ownership_undecidable"
-        else "route the write through the resident polylogued, or stop it"
+        else "route the write through the resident polylogued"
     )
     details: JSONDocument = {"remedy": remedy}
     if archive_root:

@@ -37,6 +37,7 @@ from polylogue.sources.parsers.codex import (
 )
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
+from tests.infra.index_writer import write_fixture_index_session
 
 CATALOG_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "codex_event_stream"
 
@@ -637,12 +638,10 @@ class TestFunctionsExecLowering:
         """
         import sqlite3
 
+        from polylogue.storage.io_phase_metrics import connect_measured
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-        from polylogue.storage.sqlite.archive_tiers.write import (
-            read_archive_session_envelope,
-            write_parsed_session_to_archive,
-        )
+        from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 
         session = _parse(
             [
@@ -663,11 +662,11 @@ class TestFunctionsExecLowering:
             ],
             "functions-exec-fabricated-write",
         )
-        conn = sqlite3.connect(tmp_path / "index.db")
+        conn = connect_measured(tmp_path / "index.db")
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         initialize_archive_tier(conn, ArchiveTier.INDEX)
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         envelope = read_archive_session_envelope(conn, session_id)
         conn.close()
 
@@ -1213,3 +1212,25 @@ class TestItemCompletedExecEvidence:
             "exec-dddd4444",
             "exec-eeee5555",
         ]
+
+
+@pytest.mark.parametrize("fixture", ["text_only_stream.jsonl", "tool_call_stream.jsonl", "interleaved_stream.jsonl"])
+def test_parse_stream_preserves_supplied_list_sinks(fixture: str) -> None:
+    """Final active-leaf marking must retain the caller's original stores."""
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSessionEvent
+
+    records = _load_catalog(fixture)
+    messages: list[ParsedMessage] = []
+    events: list[ParsedSessionEvent] = []
+    session = parse_stream(iter(records), fixture, message_sink=messages, event_sink=events)
+    assert session.messages is messages
+    assert session.session_events is events
+    assert messages
+    assert [message.is_active_leaf for message in messages] == [False] * (len(messages) - 1) + [True]
+    expected = _parse(records, fixture)
+    assert [message.model_dump(mode="json") for message in messages] == [
+        message.model_dump(mode="json") for message in expected.messages
+    ]
+    assert [event.model_dump(mode="json") for event in events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]

@@ -97,7 +97,7 @@ and its readers:
 | `raw_session_memberships.decision` | index tier | retain (untouched) |
 | `raw_sessions.parse_error`, `parsed_at_ms`, `revision_authority`, byte-chain columns | source tier | retain (untouched) |
 | `raw_membership_census.status` (`complete`/`failed`/`non_session`) | source tier | retain |
-| `raw_authority_parser_census.parser_fingerprint` + `SUPERSEDED_MEMBERSHIP_FINGERPRINTS` (`raw_authority.py:42-44`) | source tier | retain |
+| `raw_authority_parser_census.parser_fingerprint` compared with the current executable parser-semantic fingerprint | source tier | retain |
 | `raw_revision_heads.accepted_raw_id` (+ frontier kind/value) | index tier | retain (untouched) |
 | Open/resolved authorization blockers (`raw_authority_blockers.resolved_at_ms`); the fail-closed gate is `unresolved_raw_replay_blockers` (`raw_authority.py:900-925`), which refuses the whole pass (`raw_convergence.py:5307-5316`) | source tier | retain, re-keyed (§4) |
 | "This component was attempted and made zero typed progress, so stop reselecting it" — the hjpx no-progress rule (`raw_convergence.py:4608-4645`), read back by `raw_replay_plan_no_progress_plan_ids` (`raw_authority.py:839-885`) | **only** in `raw_authority_census_plans.outcome_status` | **migrate to an addressable decision** |

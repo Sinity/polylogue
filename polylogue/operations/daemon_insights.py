@@ -22,7 +22,8 @@ from polylogue.operations.insight_planning import (
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.machine_receipts import InsightPartHistoricalReceipt
 from polylogue.operations.mutation_transaction import MutationReceipt, OperationExecutor, StartedBoundMutation
-from polylogue.operations.operation_context import OperationContext, PinnedOperationRead, open_operation_read
+from polylogue.operations.operation_context import PinnedOperationRead, open_operation_read
+from polylogue.operations.operation_context_types import OperationContext
 
 
 class InsightStoppedError(RuntimeError):

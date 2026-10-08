@@ -15,12 +15,13 @@ from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
 from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.sources.dispatch import (
+    admit_parsed_sessions_for_publication,
     detect_provider,
     detect_provider_evidence,
     parse_payload,
-    require_positive_conversational_evidence,
 )
 from polylogue.sources.origin_specs import ORIGIN_SPECS
+from polylogue.sources.parsers import codex
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
 from polylogue.sources.parsers.base_models import ParsedSession
 from tests.infra.origin_capability_matrix import (
@@ -116,7 +117,7 @@ def test_each_supported_origin_has_one_claim_and_reaches_production_detector_and
                 witness.fallback_id,
                 source_path=witness.fixture_path,
             )
-            accepted = require_positive_conversational_evidence(
+            accepted = admit_parsed_sessions_for_publication(
                 sessions,
                 provider=claim.provider,
                 source_path=witness.fixture_path,
@@ -175,7 +176,7 @@ def test_negative_witness_families_are_rejected_by_dispatch_and_content_gate(fam
         detected = detect_provider(case.payload)
         sessions = parse_payload(case.provider, case.payload, f"malformed-{case.name}")
         assert (
-            require_positive_conversational_evidence(
+            admit_parsed_sessions_for_publication(
                 sessions,
                 provider=case.provider,
                 source_path=None,
@@ -185,7 +186,7 @@ def test_negative_witness_families_are_rejected_by_dispatch_and_content_gate(fam
         if detected is not None and detected is not case.provider:
             cross_origin_sessions = parse_payload(detected, case.payload, f"cross-origin-{case.name}")
             assert (
-                require_positive_conversational_evidence(
+                admit_parsed_sessions_for_publication(
                     cross_origin_sessions,
                     provider=detected,
                     source_path=None,
@@ -198,6 +199,9 @@ def test_collision_witnesses_follow_real_detector_precedence_and_still_parse() -
     manifest = load_manifest()
 
     for case in manifest.collisions:
+        if case.name == "claude-code-before-codex":
+            assert isinstance(case.payload, list)
+            assert codex.looks_like(case.payload)
         detected, evidence = detect_provider_evidence(case.payload)
         assert detected is case.expected_provider, case.name
         assert evidence.strip(), case.name
@@ -286,3 +290,23 @@ def test_no_origin_emits_topology_evidence_its_declaration_calls_structurally_ab
                     contradictions.append(f"{entry.origin.value}.{dimension} ({witness.fixture_path})")
     assert checked
     assert contradictions == []
+
+
+def test_complete_stream_detector_matches_existing_origin_witnesses() -> None:
+    from io import BytesIO
+
+    from polylogue.sources.dispatch import detect_provider_from_stream_evidence
+
+    for entry in load_manifest().entries:
+        if entry.unsupported is not None:
+            continue
+        for witness in entry.witnesses:
+            if witness.route == "vendor":
+                continue
+            payload = load_witness_fixture(witness)
+            expected, expected_evidence = detect_provider_evidence(payload)
+            source = BytesIO(json.dumps(payload).encode())
+            observed, observed_evidence = detect_provider_from_stream_evidence(source)
+            assert observed is expected, entry.origin.value
+            assert observed_evidence == expected_evidence, entry.origin.value
+            assert source.tell() == 0

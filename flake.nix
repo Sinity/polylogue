@@ -44,6 +44,13 @@
       # separately named alias of it.
       python = pkgs.python314FreeThreading;
       pythonPackages = python.pkgs;
+      fakeIndexedDB = pkgs.runCommand "polylogue-fake-indexeddb-6.2.5" { } ''
+        mkdir -p "$out"
+        ${pkgs.gnutar}/bin/tar -xzf ${pkgs.fetchurl {
+          url = "https://registry.npmjs.org/fake-indexeddb/-/fake-indexeddb-6.2.5.tgz";
+          hash = "sha512-CGnyrvbhPlWYMngksqrSSUT1BAVP49dZocrHuK0SvtR0D5TMs5wP0o3j7jexDJW01KSadjBp1M/71o/KR3nD1w==";
+        }} -C "$out"
+      '';
 
       # Polylogue uses the MCPServer API introduced by MCP 2.x.  nixpkgs'
       # free-threaded package set still supplies MCP 1.x, which imports but
@@ -610,6 +617,7 @@
       };
 
       devShells.${system}.default = pkgs.mkShell {
+        POLYLOGUE_FAKE_INDEXEDDB_PACKAGE = "${fakeIndexedDB}/package";
         buildInputs = [
           python
           pkgs.uv
@@ -620,6 +628,8 @@
           pkgs.ast-grep
           pkgs.scc
           pkgs.codeql
+          pkgs.nodejs_24
+          fakeIndexedDB
         ];
 
         POLYLOGUE_RETIRED_VERIFY_HISTORY_PATHS = "/realm/activity/dev/polylogue/verify-history.jsonl:/realm/activity/development/polylogue/verify-history.jsonl:/realm/projects/polylogue/source/development/verify-history.jsonl";

@@ -143,7 +143,7 @@ def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(
 
     from polylogue.daemon.operation_runtime import _Exchange
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
-    from polylogue.operations.operation_context import OperationContext
+    from polylogue.operations.operation_context_types import OperationContext
 
     fenced_actors: list[str] = []
     original_run_sync = DaemonWriteThreadBridge.run_sync_with_timeout
@@ -179,10 +179,12 @@ def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(
     from polylogue.daemon import operation_runtime
     from polylogue.operations.machine_lifecycle import machine_request_state as original_state
 
-    def durable_state(audit: AuditRepository, record: dict[str, object]) -> dict[str, object]:
+    def durable_state(audit: AuditRepository, record: dict[str, object], **window: int) -> dict[str, object]:
+        # The control read pages the request's parts (``parts_offset`` /
+        # ``parts_limit``); the stand-in forwards that window unchanged.
         if record.get("request_id") == "accepted-resend":
             return {"outcome": "cancelled", "sequence": 1, "effect": "indeterminate"}
-        return original_state(audit, record)
+        return original_state(audit, record, **window)
 
     monkeypatch.setattr(operation_runtime, "machine_request_state", durable_state)
 
@@ -213,11 +215,15 @@ def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(
             request_id=f"{request_id}-cancel",
             archive_root=str(stack.archive_root),
         )
-        stack.runtime.call(cancel, principal)
-
-        with stack.runtime._condition:
-            stack.runtime._exchanges.pop(request_id, None)
-        future.cancel()
+        try:
+            stack.runtime.call(cancel, principal)
+        finally:
+            # The stand-in exchange has no worker to settle its future; leaving
+            # it registered after a failed call would hang runtime shutdown
+            # and hide that failure behind the test timeout.
+            with stack.runtime._condition:
+                stack.runtime._exchanges.pop(request_id, None)
+            future.cancel()
 
     with running_daemon_operations(tmp_path / "archive") as stack:
         # Opposite-direction pin first: a genuinely pre-acceptance resend

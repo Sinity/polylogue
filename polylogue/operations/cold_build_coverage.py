@@ -17,28 +17,18 @@ move the index schema identity.
 
 from __future__ import annotations
 
-from contextlib import closing
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.logging import WARNING, emit
-from polylogue.storage.archive_identity import resolve_active_index_path
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
     from polylogue.sources.live.cold_build import ColdBuildGeneration
-    from polylogue.storage.index_generation import IndexGeneration
+    from polylogue.storage.index_generation import IndexGeneration, PreparedIndexPromotion
 
 __all__ = [
     "ColdBuildCoverageError",
     "promote_cold_build_covering_active_index",
-    "require_active_coverage",
 ]
-
-#: Active sessions compared per round trip. A paging size only: every active
-#: session is compared, whatever the archive holds.
-_COVERAGE_PAGE_SIZE = 512
 
 
 class ColdBuildCoverageError(RuntimeError):
@@ -58,103 +48,21 @@ class ColdBuildCoverageError(RuntimeError):
         )
 
 
-def require_active_coverage(generation: ColdBuildGeneration) -> None:
-    """Refuse a candidate that would drop a session the active generation serves.
-
-    Compares every active session whose ``raw_id`` ``source.db`` still retains
-    with the candidate, by ``session_id`` (origin plus native id), so a newer
-    revision of the same source that the candidate accepted still covers the
-    session. A session whose raw is no longer retained has no durable evidence
-    any build could replay, so it is not a coverage obligation. The active
-    generation is read inside one transaction, a consistent snapshot, a page
-    at a time.
-
-    Both index files are opened without schema validation: only
-    ``sessions.session_id`` and ``sessions.raw_id`` are read, the candidate
-    still has its deferred indexes dropped, and an explicit cold build is how
-    an active generation at an older derived identity gets replaced.
-    """
-    archive_root = generation.archive_root
-    active_path = resolve_active_index_path(archive_root)
-    candidate_path = Path(generation.generation.index_path)
-    if not active_path.exists():
-        return
-    if generation.promoted or active_path.resolve() == candidate_path.resolve():
-        # Readers already resolve this candidate (an earlier promotion swapped
-        # the pointer before failing). There is no other generation to cover,
-        # and ``promote`` finishes that interrupted publication.
-        return
-    missing_count = 0
-    first_missing: str | None = None
-    with (
-        closing(
-            open_readonly_connection(
-                active_path, tier=ArchiveTier.INDEX, validate_schema=False, timeout_class="background-read"
-            )
-        ) as active,
-        closing(
-            open_readonly_connection(
-                candidate_path, tier=ArchiveTier.INDEX, validate_schema=False, timeout_class="background-read"
-            )
-        ) as candidate,
-        closing(
-            open_readonly_connection(
-                archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-            )
-        ) as source,
-    ):
-        active.execute("BEGIN")
-        after = ""
-        while True:
-            rows = active.execute(
-                "SELECT session_id, raw_id FROM sessions "
-                "WHERE session_id > ? AND raw_id IS NOT NULL ORDER BY session_id LIMIT ?",
-                (after, _COVERAGE_PAGE_SIZE),
-            ).fetchall()
-            if not rows:
-                break
-            after = str(rows[-1][0])
-            raw_ids = tuple(dict.fromkeys(str(row[1]) for row in rows))
-            retained = {
-                str(row[0])
-                for row in source.execute(
-                    f"SELECT raw_id FROM raw_sessions WHERE raw_id IN ({','.join('?' for _ in raw_ids)})",
-                    raw_ids,
-                )
-            }
-            owed = tuple(str(row[0]) for row in rows if str(row[1]) in retained)
-            if not owed:
-                continue
-            present = {
-                str(row[0])
-                for row in candidate.execute(
-                    f"SELECT session_id FROM sessions WHERE session_id IN ({','.join('?' for _ in owed)})",
-                    owed,
-                )
-            }
-            for session_id in owed:
-                if session_id not in present:
-                    missing_count += 1
-                    if first_missing is None:
-                        first_missing = session_id
-        active.execute("COMMIT")
-    if first_missing is not None:
+def promote_cold_build_covering_active_index(
+    generation: ColdBuildGeneration, prepared: PreparedIndexPromotion
+) -> IndexGeneration:
+    """Promote with the off-gate coverage/reference proof still retained."""
+    if prepared.missing_session_count and prepared.first_missing_session_id is not None:
         emit(
             "daemon.cold_build.coverage_refused",
             level=WARNING,
             outcome="degraded",
             reason="active_coverage_incomplete",
             generation_id=generation.generation_id,
-            sessions=missing_count,
+            sessions=prepared.missing_session_count,
         )
-        raise ColdBuildCoverageError(missing_count=missing_count, first_missing_session_id=first_missing)
-
-
-def promote_cold_build_covering_active_index(generation: ColdBuildGeneration) -> IndexGeneration:
-    """Promote ``generation`` only if it serves every session the active index serves.
-
-    One writer call runs the comparison and the promotion, so no archive write
-    lands between them.
-    """
-    require_active_coverage(generation)
-    return generation.promote()
+        raise ColdBuildCoverageError(
+            missing_count=prepared.missing_session_count,
+            first_missing_session_id=prepared.first_missing_session_id,
+        )
+    return generation.promote_prepared(prepared)

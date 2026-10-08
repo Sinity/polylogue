@@ -22,9 +22,9 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, cast
@@ -39,6 +39,7 @@ from polylogue.operations.mutation_transaction import (
     MutationPlan,
     MutationReceipt,
     MutationTargetStatus,
+    PlanStaleError,
     RecoveryDeferredError,
     RecoveryResolution,
     ReplayHandles,
@@ -47,13 +48,18 @@ from polylogue.operations.mutation_transaction import (
     register_recovery_route,
 )
 from polylogue.security.lifecycle import LifecycleMode
-from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
-from polylogue.storage.sqlite.managed_connection import sqlite_connection
+from polylogue.storage.sqlite.connection_profile import (
+    open_connection,
+    open_isolated_write_connection,
+    open_readonly_connection,
+)
 from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 
 if TYPE_CHECKING:
     from polylogue.core.json import JSONValue
+    from polylogue.storage.frontier_inspection import PreparedFrontierAcknowledgement
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.audit_continuity import CanonicalAuditLiteral
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +152,11 @@ class SessionExcisionArgs:
     reason: str
     actor: str
     cascade_lineage: bool
+    # Ephemeral original creator admission, excluded from durable plan data.
+    input_demand: Callable[[int], None] | None = field(default=None, repr=False, compare=False)
+    result_sink: Callable[[Mapping[str, object], CanonicalAuditLiteral], None] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +164,7 @@ class SessionExcisionActuator(ConvergentReplay):
     """Actuator for ``mutate-session-excision``: durable, re-ingest-proof removal.
 
     Real production mutation: ``security.excision.plan_session_excision`` /
-    ``apply_session_excision`` -- the cross-tier (source/index/embeddings/
+    the audited Excision operation -- the cross-tier (source/index/embeddings/
     user) removal that records a durable removed-hash marker so re-ingest of
     unmodified source files cannot resurrect the content. Unlike
     ``mutate-delete-session``, excision is not idempotent-silent: a stale
@@ -166,9 +177,11 @@ class SessionExcisionActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "confirm_flag"
 
     def prepare(self, args: SessionExcisionArgs) -> MutationPlan:
-        from polylogue.security.excision import plan_session_excision
+        from polylogue.operations.operation_context import open_operation_read
+        from polylogue.security.excision import excision_target_replay, plan_session_excision
 
-        plan = plan_session_excision(args.archive_root, args.session_id, cascade_lineage=args.cascade_lineage)
+        with open_operation_read(args.archive_root) as pinned:
+            plan = plan_session_excision(pinned.archive, args.session_id, cascade_lineage=args.cascade_lineage)
         target_refs = ((make_target_ref("session", args.session_id),) if plan.found else ()) + tuple(
             make_target_ref("session", sid) for sid in plan.lineage_dependent_session_ids
         )
@@ -188,35 +201,36 @@ class SessionExcisionActuator(ConvergentReplay):
                 "source_marker_inputs_pending": plan.source_marker_inputs_pending,
                 "source_marker_inputs_accepted": plan.source_marker_inputs_accepted,
                 "marker_input_digests": list(plan.marker_input_digests),
+                "targets": [excision_target_replay(target) for target in plan.targets],
+                "user_frame_epoch": plan.user_frame_epoch,
             },
         )
 
     def apply(self, plan: MutationPlan, args: SessionExcisionArgs) -> MutationReceipt:
+        from polylogue.operations.mutation_transaction import take_started_bound_mutation
         from polylogue.security.excision import (
             ExcisionBlobReferenceUnknownError,
             LineageDependentsError,
-            apply_session_excision,
+            _apply_started_session_excision,
+            _deliver_started_no_effect_excision,
         )
 
+        started = take_started_bound_mutation(self, plan)
         if not plan.context.get("found"):
+            summary = _deliver_started_no_effect_excision(started, args)
             return MutationReceipt(
                 operation=self.operation,
                 plan_hash=plan.plan_hash,
-                status="unknown",
+                status="already_satisfied",
                 target_refs=plan.target_refs,
                 affected_count=0,
-                detail="session_not_found",
+                detail=None,
                 receipt_ref=None,
                 applied_at=plan.prepared_at,
+                domain_receipt=summary,
             )
         try:
-            receipt = apply_session_excision(
-                args.archive_root,
-                args.session_id,
-                reason=args.reason,
-                actor=args.actor,
-                cascade_lineage=args.cascade_lineage,
-            )
+            receipt = _apply_started_session_excision(started, args, actuator=self)
         except (LineageDependentsError, ExcisionBlobReferenceUnknownError) as exc:
             # Both refusals roll the excision back before any write.
             return MutationReceipt(
@@ -228,33 +242,24 @@ class SessionExcisionActuator(ConvergentReplay):
                 detail=str(exc),
                 receipt_ref=None,
                 applied_at=plan.prepared_at,
-            )
-        # Excision writes its durable user.db record before it drops the
-        # rebuildable index row, and ``found`` is read from that index. A
-        # session no longer found is therefore excised only if its record
-        # exists; an absent index row alone proves nothing (the index may be
-        # rebuilding), so that case fails visibly instead of passing.
-        if not receipt.found and not _excision_recorded(args.archive_root, args.session_id):
-            return MutationReceipt(
-                operation=self.operation,
-                plan_hash=plan.plan_hash,
-                status="failed",
-                target_refs=plan.target_refs,
-                affected_count=0,
-                detail="session is absent from the index and has no excision record; re-issue after convergence",
-                receipt_ref=None,
-                applied_at=plan.prepared_at,
+                domain_receipt={
+                    "refusal_kind": (
+                        "lineage_dependents_unresolved"
+                        if isinstance(exc, LineageDependentsError)
+                        else "blob_references_undecided"
+                    )
+                },
             )
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,
-            status="applied" if receipt.found else "already_satisfied",
+            status="applied" if receipt["found"] else "already_satisfied",
             target_refs=plan.target_refs,
-            affected_count=receipt.counts.get("index_sessions", 0),
+            affected_count=cast("Mapping[str, int]", receipt["counts"]).get("index_sessions", 0),
             detail=None,
-            receipt_ref=receipt.receipt_assertion_id,
+            receipt_ref=cast("str | None", receipt["receipt_assertion_id"]),
             applied_at=plan.prepared_at,
-            domain_receipt=receipt.as_dict(),
+            domain_receipt=receipt,
         )
 
     def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> SessionExcisionArgs:
@@ -267,70 +272,71 @@ class SessionExcisionActuator(ConvergentReplay):
         )
 
     def recover(self, handles: ReplayHandles, plan: MutationPlan) -> RecoveryResolution:
-        """Finish excising exactly the recorded cascade set.
+        """Finish the exact recorded attempt using its Source and atomic paid proof."""
+        from dataclasses import replace
 
-        The live lineage links are what an interrupted cascade was deleting,
-        so rediscovering dependents from them can miss a grandchild whose
-        parent link is already gone. Each recorded session is excised on its
-        own, dependents before the sessions they depend on; one that no
-        longer resolves must carry its excision record.
-        """
-        from polylogue.security.excision import (
-            ExcisionBlobReferenceUnknownError,
-            LineageDependentsError,
-            apply_session_excision,
+        from polylogue.core.stage_admission import admit_stage_write
+        from polylogue.operations.audit import AuditRepository
+        from polylogue.security.excision import _apply_original_session_excision
+        from polylogue.storage.sqlite.literal_cells import owned_literal_stream
+        from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+
+        original = handles.recovery_operation
+        if (
+            original is None
+            or original.operation != self.operation
+            or original.plan_hash != plan.plan_hash
+            or original.attempt_id is None
+            or not original.target_evidence_complete
+            or original.reconstructed_target_count != original.expected_target_count
+            or original.expected_target_count != len(plan.target_refs)
+            or tuple(target.ref for target in original.targets) != plan.target_refs
+        ):
+            raise ReferenceSealError("Excision recovery requires its exact recorded operation and attempt")
+        if handles.input_demand is None:
+            raise ReferenceSealError("Excision recovery requires its original prepared compute admission")
+        if plan.context["found"] is False:
+            return RecoveryResolution("absent", "the original no-effect Excision plan has no selected effect")
+        if plan.context["found"] is not True:
+            raise ReferenceSealError("Excision recovery has no canonical original found state")
+
+        def consume_effect_product(_summary: Mapping[str, object], literal: CanonicalAuditLiteral) -> None:
+            # Internal recovery promises a domain effect resolution. It does
+            # not certify installation in a daemon request's result owner.
+            with owned_literal_stream(literal.verified_chunks()) as chunks:
+                for _chunk in chunks:
+                    pass
+
+        args = replace(
+            self.replay_args(handles, plan),
+            input_demand=handles.input_demand,
+            result_sink=consume_effect_product,
         )
-
-        args = self.replay_args(handles, plan)
-        remaining = [*cast("list[str]", plan.context["lineage_dependent_session_ids"]), args.session_id]
-        excised = 0
-        while remaining:
-            progressed = False
-            for session_id in list(remaining):
-                try:
-                    receipt = apply_session_excision(
-                        args.archive_root, session_id, reason=args.reason, actor=args.actor, cascade_lineage=False
-                    )
-                except LineageDependentsError:
-                    continue
-                except ExcisionBlobReferenceUnknownError as exc:
-                    return RecoveryResolution("replay-failed", f"{session_id}: {exc}")
-                if not receipt.found and not _excision_recorded(args.archive_root, session_id):
-                    return RecoveryResolution(
-                        "replay-failed",
-                        f"{session_id} is absent from the index and has no excision record; re-issue after convergence",
-                    )
-                excised += int(receipt.found)
-                remaining.remove(session_id)
-                progressed = True
-            if not progressed:
-                return RecoveryResolution(
-                    "replay-failed", f"lineage dependents outside the recorded cascade still hold {remaining}"
-                )
+        admit_stage_write(
+            "operation.session-excision.recovery-continuity",
+            lambda: AuditRepository.for_archive_root(handles.archive_root).reconcile_continuity(),
+        )
+        summary = _apply_original_session_excision(
+            plan,
+            original.operation_id,
+            args,
+            actuator=self,
+            recovery=original,
+        )
         return RecoveryResolution(
             "complete",
-            "excised the recorded cascade set",
+            "the original Excision attempt is physically settled",
             MutationReceipt(
                 operation=self.operation,
                 plan_hash=plan.plan_hash,
-                status="applied" if excised else "already_satisfied",
+                status="applied",
                 target_refs=plan.target_refs,
-                affected_count=excised,
+                affected_count=cast("Mapping[str, int]", summary["counts"]).get("index_sessions", 0),
                 detail=None,
-                receipt_ref=None,
+                receipt_ref=cast("str | None", summary["receipt_assertion_id"]),
                 applied_at=plan.prepared_at,
+                domain_receipt=summary,
             ),
-        )
-
-
-def _excision_recorded(archive_root: Path, session_id: str) -> bool:
-    with closing(open_readonly_connection(archive_root / "user.db", timeout_class="background-read")) as conn:
-        return (
-            conn.execute(
-                "SELECT 1 FROM assertions WHERE target_ref = ? AND kind = ? LIMIT 1",
-                (f"session:{session_id}", AssertionKind.EXCISION_RECORD.value),
-            ).fetchone()
-            is not None
         )
 
 
@@ -373,7 +379,12 @@ class SessionLifecycleRequestActuator(ConvergentReplay):
         from polylogue.security.lifecycle import submit_lifecycle_request_with_outcome
 
         user_db = args.archive_root / "user.db"
-        with sqlite_connection(user_db) as connection:
+        connection = open_isolated_write_connection(
+            user_db,
+            purpose="operation.mutate-session-lifecycle-request",
+            archive_root=args.archive_root,
+        )
+        try:
             submission = submit_lifecycle_request_with_outcome(
                 connection,
                 target_ref=make_target_ref("session", args.session_id),
@@ -382,6 +393,12 @@ class SessionLifecycleRequestActuator(ConvergentReplay):
                 actor=args.actor,
                 now_ms=args.now_ms,
             )
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,
@@ -427,10 +444,11 @@ class IdentityResetActuator(ConvergentReplay):
     tombstone helpers (``_suppress_archive_sessions`` writes the durable
     user.db suppression, ``_delete_archive_sessions`` drops the rebuildable
     index.db rows). Target resolution (token -> exact session ids) happens
-    once by the caller before ``prepare`` is invoked, mirroring #jnj.5's
-    "resolve once, preview and mutate the identical set" fix; ``prepare``
-    only re-verifies that the resolved set still exists so a concurrent
-    change is caught before APPLY.
+    once by the resident preview owner before ``prepare`` is invoked. The
+    client receives a sealed preview-batch request reference. Confirmation
+    authorizes its exact bounded plans, and apply submits only the authorization
+    batch reference; each part reconstructs arguments from its audited plan. ``prepare`` re-verifies the exact
+    recorded IDs so a concurrent target change is caught before APPLY.
     """
 
     operation: str = "mutate-identity-reset"
@@ -462,6 +480,7 @@ class IdentityResetActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: IdentityResetArgs) -> MutationReceipt:
+        from polylogue.operations.machine_receipts import IdentityResetHistoricalReceipt
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
         from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
@@ -477,11 +496,18 @@ class IdentityResetActuator(ConvergentReplay):
                 detail="no_matching_sessions",
                 receipt_ref=None,
                 applied_at=plan.prepared_at,
+                historical_receipt=IdentityResetHistoricalReceipt(
+                    suppressed_count=0, deleted_archive_rows=0, tombstoned_without_index_row_count=0
+                ),
             )
 
         user_db = args.archive_root / "user.db"
         initialize_archive_database(user_db, ArchiveTier.USER)
-        conn = sqlite3.connect(user_db)
+        conn = open_isolated_write_connection(
+            user_db,
+            purpose="operation.mutate-identity-reset",
+            archive_root=args.archive_root,
+        )
         try:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -531,18 +557,11 @@ class IdentityResetActuator(ConvergentReplay):
             detail=None,
             receipt_ref=None,
             applied_at=plan.prepared_at,
-            domain_receipt={
-                "suppressed_count": suppressed,
-                "deleted_archive_rows": deleted,
-                # A target with no rebuildable row still gets its durable
-                # tombstone; name those instead of letting the row count
-                # imply the suppression silently did not happen.
-                "tombstoned_without_index_row": [
-                    sid
-                    for sid in session_ids
-                    if sid not in set(cast("list[str]", plan.context.get("present_in_index") or ()))
-                ],
-            },
+            historical_receipt=IdentityResetHistoricalReceipt(
+                suppressed_count=suppressed,
+                deleted_archive_rows=deleted,
+                tombstoned_without_index_row_count=sum(sid not in prepared_present for sid in session_ids),
+            ),
         )
 
     def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> IdentityResetArgs:
@@ -857,17 +876,24 @@ class BlobPublicationAbandonActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: BlobPublicationAbandonArgs) -> MutationReceipt:
+        from polylogue.core.stage_admission import admit_stage_write
         from polylogue.storage.blob_publication import abandon_blob_publication_receipts
 
         blocked = cast("list[str]", plan.context.get("blocked", []))
         if blocked:
             raise RecoveryDeferredError(f"blob publication liveness is blocked for receipts: {blocked}")
-        abandonment = abandon_blob_publication_receipts(
-            args.archive_root / "source.db",
-            args.archive_root / "blob",
-            args.publication_ids,
-            confirmed=True,
-            index_db_path=_index_db_path(args.archive_root),
+        # The abandonment writes Source. A daemon request already holds the
+        # writer (admission falls through); startup recovery replays this
+        # apply outside it, where an unadmitted Source transaction is denied.
+        abandonment = admit_stage_write(
+            "operation.blob-publication-abandon.apply",
+            lambda: abandon_blob_publication_receipts(
+                args.archive_root / "source.db",
+                args.archive_root / "blob",
+                args.publication_ids,
+                confirmed=True,
+                index_db_path=_index_db_path(args.archive_root),
+            ),
         )
         return MutationReceipt(
             operation=self.operation,
@@ -913,12 +939,15 @@ def _resolve_existing_session_ids(archive_root: Path, session_ids: tuple[str, ..
     try:
         if not session_ids:
             return ()
-        placeholders = ",".join("?" for _ in session_ids)
-        rows = conn.execute(
-            f"SELECT session_id FROM sessions WHERE session_id IN ({placeholders})",
-            session_ids,
-        ).fetchall()
-        found = {str(row[0]) for row in rows}
+        found: set[str] = set()
+        batch_size = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+        for offset in range(0, len(session_ids), batch_size):
+            batch = session_ids[offset : offset + batch_size]
+            placeholders = ",".join("?" for _ in batch)
+            found.update(
+                str(row[0])
+                for row in conn.execute(f"SELECT session_id FROM sessions WHERE session_id IN ({placeholders})", batch)
+            )
         return tuple(sid for sid in session_ids if sid in found)
     finally:
         conn.close()
@@ -1087,7 +1116,7 @@ class BulkTagActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: BulkTagArgs) -> MutationPlan:
-        resolved, _unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
+        resolved, unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
@@ -1098,13 +1127,15 @@ class BulkTagActuator(ConvergentReplay):
                 "session_ids": list(resolved),
                 "tags": list(args.tags),
                 "requested_session_count": len(args.session_ids),
+                "requested_session_ids": list(args.session_ids),
+                "unresolved_session_ids": list(unresolved),
             },
         )
 
     def apply(self, plan: MutationPlan, args: BulkTagArgs) -> MutationReceipt:
         session_ids: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
         tags: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("tags") or ()))
-        requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
+        requested_count = cast("int", plan.context["requested_session_count"])
         # Every planned id is stored exactly or the apply stops before its
         # first write; none is re-resolved to a prefix sibling.
         args.archive.require_stored_session_ids(session_ids)
@@ -1117,7 +1148,7 @@ class BulkTagActuator(ConvergentReplay):
             assertions += changed
             if changed > 0:
                 affected += 1
-        _, unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
+        unresolved = tuple(cast("list[str]", plan.context["unresolved_session_ids"]))
         outcome = _narrowed_plan_outcome(matched=affected, unresolved=unresolved)
         status: MutationTargetStatus = "applied" if affected else "already_satisfied"
         return MutationReceipt(
@@ -1148,7 +1179,7 @@ class BulkTagActuator(ConvergentReplay):
         # carries no author: production bulk tagging never sets one.
         return BulkTagArgs(
             archive=handles.archive,
-            session_ids=tuple(cast("list[str]", plan.context["session_ids"])),
+            session_ids=tuple(cast("list[str]", plan.context["requested_session_ids"])),
             tags=tuple(cast("list[str]", plan.context["tags"])),
         )
 
@@ -1248,7 +1279,7 @@ class BulkMetadataSetActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: BulkMetadataSetArgs) -> MutationPlan:
-        resolved, _unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
+        resolved, unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
@@ -1259,6 +1290,8 @@ class BulkMetadataSetActuator(ConvergentReplay):
                 "session_ids": list(resolved),
                 "pairs": [[key, value] for key, value in args.pairs],
                 "requested_session_count": len(args.session_ids),
+                "requested_session_ids": list(args.session_ids),
+                "unresolved_session_ids": list(unresolved),
             },
         )
 
@@ -1266,7 +1299,7 @@ class BulkMetadataSetActuator(ConvergentReplay):
         session_ids: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
         planned_pairs = cast("list[list[object]]", plan.context.get("pairs") or [])
         pairs: tuple[tuple[str, object], ...] = tuple((str(pair[0]), pair[1]) for pair in planned_pairs)
-        requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
+        requested_count = cast("int", plan.context["requested_session_count"])
         args.archive.require_stored_session_ids(session_ids)
         affected = 0
         assertions = 0
@@ -1275,7 +1308,7 @@ class BulkMetadataSetActuator(ConvergentReplay):
             assertions += changed
             if changed > 0:
                 affected += 1
-        _, unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
+        unresolved = tuple(cast("list[str]", plan.context["unresolved_session_ids"]))
         outcome = _narrowed_plan_outcome(matched=affected, unresolved=unresolved)
         status: MutationTargetStatus = "applied" if affected else "already_satisfied"
         return MutationReceipt(
@@ -1303,7 +1336,7 @@ class BulkMetadataSetActuator(ConvergentReplay):
     def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> BulkMetadataSetArgs:
         return BulkMetadataSetArgs(
             archive=handles.archive,
-            session_ids=tuple(cast("list[str]", plan.context["session_ids"])),
+            session_ids=tuple(cast("list[str]", plan.context["requested_session_ids"])),
             pairs=tuple((str(pair[0]), pair[1]) for pair in cast("list[list[object]]", plan.context["pairs"])),
         )
 
@@ -2039,11 +2072,9 @@ class AnnotationDeleteActuator(ConvergentReplay):
 
 
 # ---------------------------------------------------------------------------
-# Raw-authority blocker resolution (mutate-resolve-raw-authority-blocker) --
-# phase 3 (t46.9/kwsb.2): closes the tonight-discovered operator gap where
-# ``resolve_raw_authority_blocker`` had a CLI adapter (``raw-authority-
-# blocker-resolve``) but no census entry and no authorization path shared
-# with any other destructive route.
+# Prepared blocker acknowledgement uses the same executor authorization and
+# audit path as other mutations. Its Source capability stays on the original
+# admitted creator through publication and physical settlement.
 # ---------------------------------------------------------------------------
 
 
@@ -2054,13 +2085,14 @@ class BlockerResolveArgs:
     archive_root: Path
     blocker_id: str
     resolution: str
+    prepared: PreparedFrontierAcknowledgement
 
 
 @dataclass(frozen=True, slots=True)
 class BlockerResolveActuator(ConvergentReplay):
     """Actuator for ``mutate-resolve-raw-authority-blocker``: reopen raw replanning.
 
-    Real production mutation: ``raw_authority.resolve_raw_authority_blocker``
+    Real production mutation: the prepared frontier acknowledgement publication
     -- the durable ``source.db`` acknowledgement that a frontier obligation
     was read and accepted, so the next census pass replans it against current
     evidence. Classified ``reset`` (not ``reversible``: an operator cannot
@@ -2080,10 +2112,14 @@ class BlockerResolveActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "confirm_flag"
 
     def prepare(self, args: BlockerResolveArgs) -> MutationPlan:
-        from polylogue.storage.raw_authority import describe_raw_authority_blocker
-
-        described = describe_raw_authority_blocker(args.archive_root, args.blocker_id)
-        target_refs = (f"raw-authority-blocker:{args.blocker_id}",) if described is not None else ()
+        prepared = args.prepared
+        if (prepared.archive_root, prepared.blocker_id, prepared.resolution) != (
+            args.archive_root,
+            args.blocker_id,
+            args.resolution,
+        ):
+            raise ValueError("blocker acknowledgement does not match its prepared authority")
+        target_refs = (f"raw-authority-blocker:{args.blocker_id}",) if prepared.found else ()
         return build_plan(
             operation=self.operation,
             destructive_class="reset",
@@ -2092,15 +2128,15 @@ class BlockerResolveActuator(ConvergentReplay):
             reversible=False,
             context={
                 "blocker_id": args.blocker_id,
-                "found": described is not None,
-                "kind": described["kind"] if described is not None else None,
+                "found": prepared.found,
+                "kind": prepared.kind,
                 "resolution": args.resolution,
             },
         )
 
     def apply(self, plan: MutationPlan, args: BlockerResolveArgs) -> MutationReceipt:
-        from polylogue.storage.raw_authority import resolve_raw_authority_blocker
-
+        if self.prepare(args).context != plan.context:
+            raise PlanStaleError("blocker acknowledgement no longer matches its authorized target")
         if not plan.context.get("found"):
             return MutationReceipt(
                 operation=self.operation,
@@ -2113,11 +2149,7 @@ class BlockerResolveActuator(ConvergentReplay):
                 applied_at=plan.prepared_at,
             )
         try:
-            receipt = resolve_raw_authority_blocker(
-                args.archive_root,
-                args.blocker_id,
-                resolution=args.resolution,
-            )
+            receipt = args.prepared.publish()
         except KeyError:
             # Only an unresolved blocker is found, so a re-applied plan whose
             # first apply committed the resolution converges here.
@@ -2144,12 +2176,35 @@ class BlockerResolveActuator(ConvergentReplay):
             domain_receipt=receipt_dict,
         )
 
-    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> BlockerResolveArgs:
-        return BlockerResolveArgs(
-            archive_root=handles.archive_root,
-            blocker_id=str(plan.context["blocker_id"]),
+    def recover(self, handles: ReplayHandles, plan: MutationPlan) -> RecoveryResolution:
+        from polylogue.core.stage_admission import admit_stage_write
+        from polylogue.storage.frontier_inspection import prepared_frontier_blocker_acknowledgement
+
+        if handles.input_demand is None:
+            raise RecoveryDeferredError("blocker acknowledgement requires its admitted preparation owner")
+        with prepared_frontier_blocker_acknowledgement(
+            handles.archive_root,
+            str(plan.context["blocker_id"]),
             resolution=str(plan.context["resolution"]),
-        )
+            input_demand=handles.input_demand,
+        ) as prepared:
+            args = BlockerResolveArgs(handles.archive_root, prepared.blocker_id, prepared.resolution, prepared)
+            if not prepared.found:
+                receipt = MutationReceipt(
+                    operation=self.operation,
+                    plan_hash=plan.plan_hash,
+                    status="already_satisfied",
+                    target_refs=plan.target_refs,
+                    affected_count=0,
+                    detail="blocker_not_found_or_already_resolved",
+                    receipt_ref=None,
+                    applied_at=plan.prepared_at,
+                )
+            else:
+                receipt = admit_stage_write("operation.frontier.blocker.recover", lambda: self.apply(plan, args))
+        if receipt.status in {"applied", "already_satisfied"}:
+            return RecoveryResolution("complete", "re-applied the interrupted acknowledgement", receipt)
+        return RecoveryResolution("replay-failed", f"acknowledgement recovery ended {receipt.status}")
 
 
 # ---------------------------------------------------------------------------
@@ -2725,6 +2780,22 @@ class CorrectionRecordActuator(ConvergentReplay):
             author_kind=cast("str | None", plan.context["author_kind"]),
         )
 
+    def already_applied(self, handles: ReplayHandles, plan: MutationPlan) -> bool:
+        from polylogue.storage.sqlite.archive_tiers.user_write import correction_effect_matches
+
+        with closing(
+            open_readonly_connection(handles.archive_root / "user.db", timeout_class="background-read")
+        ) as conn:
+            return correction_effect_matches(
+                conn,
+                "insight",
+                str(plan.context["session_id"]),
+                str(plan.context["kind"]),
+                {"payload": plan.context["payload"], "note": plan.context["note"]},
+                author_ref=cast("str | None", plan.context["author_ref"]),
+                author_kind=cast("str | None", plan.context["author_kind"]),
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class CorrectionDeleteArgs:
@@ -3118,12 +3189,10 @@ def _partition_requested_session_ids(
 
     A multi-target mutation may not silently shrink to the ids that still
     resolve: an id excised between selection and execution is a *named gap*,
-    not an absence of intent. PREPARE plans the resolved half; APPLY re-runs
-    this split over the caller's own ids so it can decide one honest terminal
-    outcome instead of reporting success over a smaller set than the caller
-    asked for. The declared plan context is a closed model
-    (``machine_plan_context``), so the gap is carried on the receipt, which is
-    where the terminal outcome is decided anyway.
+    not an absence of intent. PREPARE freezes the resolved half as effect
+    targets and retains original IDs and named gaps in the closed machine
+    context. APPLY and recovery report that same gap without resolving it
+    into newly available targets.
 
     A multi-target selection is a set of full session ids its caller already
     resolved once (the CLI from its query, a facade caller from its own

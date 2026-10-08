@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -10,12 +11,15 @@ import shutil
 import sqlite3
 import subprocess
 import time
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 
 from devtools.pipeline_probe.request import (
     _INPUT_MODES,
@@ -51,6 +55,7 @@ from polylogue.demo.workspace import VerificationWorkspace, create_verification_
 from polylogue.paths import archive_root, blob_store_root
 from polylogue.pipeline.services.acquisition_records import pending_pre_parse_raw_admission_request
 from polylogue.pipeline.services.parsing import ParsingService
+from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.scenarios import (
     PipelineProbeInputMode,
     PipelineProbeRequest,
@@ -195,7 +200,7 @@ def _fetch_archive_file_set_candidates(
             SELECT raw_id, origin, source_path, source_index, blob_hash, blob_size,
                    acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
                    validated_at_ms, validation_status, validation_error,
-                   validation_drift_count, validation_mode, detection_warnings_json
+                   validation_drift_count, validation_mode, detection_warnings_json, canonical_source_path
             FROM raw_sessions
             ORDER BY acquired_at_ms DESC, raw_id ASC
             """
@@ -222,6 +227,7 @@ def _fetch_archive_file_set_candidates(
                 payload_provider=provider,
                 source_name=provider.value,
                 source_path=source_path,
+                canonical_source_path=row[16],
                 source_index=int(row[3] or 0),
                 blob_size=int(row[5] or 0),
                 acquired_at=acquired_at,
@@ -712,6 +718,41 @@ async def _probe_index_stage(
         )
 
 
+@asynccontextmanager
+async def _probe_raw_owner(
+    archive_root: Path, *, parse_workers: int | None
+) -> AsyncIterator[RawObservationConvergenceOwner]:
+    """Own the canonical retained Raw preparation route for one probe run.
+
+    Ingest publication goes through the daemon's raw-observation owner; the
+    probe supplies it the way the one-shot ingest operation does and settles
+    its writer before the compute kernel shuts down.
+    """
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+    from polylogue.operations.canonical_archive_ingest import one_shot_compute_owner
+
+    async with one_shot_compute_owner(parse_workers=parse_workers) as compute:
+        coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+        try:
+            yield RawObservationConvergenceOwner(
+                archive_root,
+                compute_adapter=compute,
+                write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+                write_coordinator=coordinator,
+            )
+        finally:
+            if not await coordinator.shutdown(timeout=float("inf")):
+                raise RuntimeError("probe writer coordinator did not settle")
+
+
+async def _bootstrap_probe_archive(archive_root: Path) -> None:
+    """Create the active tiers off the event loop, as their write lease requires."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
+
+
 async def _run_probe_pipeline(
     *,
     config: Config,
@@ -721,44 +762,35 @@ async def _run_probe_pipeline(
     backend: SQLiteBackend | None = None,
     repository: SessionRepository | None = None,
 ) -> tuple[JSONDocument, JSONDocument]:
-    owns_backend = backend is None
-    active_backend = backend or create_backend(db_path=config.db_path)
-    owns_repository = repository is None
-    active_repository = repository or SessionRepository(backend=active_backend)
     metrics = PipelineMetrics()
     started = time.perf_counter()
     indexed = False
     index_error: str | None = None
+    selected_sources = [source for source in config.sources if source_names is None or source.name in set(source_names)]
 
-    try:
-        selected_sources = [
-            source for source in config.sources if source_names is None or source.name in set(source_names)
-        ]
-        parser = ParsingService(
-            repository=active_repository,
-            archive_root=config.archive_root,
-            config=config,
-            raw_batch_size=request.raw_batch_size or 50,
-            ingest_workers=request.ingest_workers,
-            measure_ingest_result_size=request.measure_ingest_result_size,
+    ingest_stage = metrics.start_stage("ingest")
+    if selected_sources:
+        # The daemon's own route for declared files: claim the isolated root,
+        # bootstrap it, and converge every file through the live owners.
+        from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
+
+        parse_result = await ingest_one_shot_archive(
+            config.archive_root, selected_sources, parse_workers=request.ingest_workers
         )
-        ingest_stage = metrics.start_stage("ingest")
-        if selected_sources:
-            ingest_result = await parser.ingest_sources(
-                sources=selected_sources,
-                stage="all",
-                parse_records=True,
-            )
-            parse_result = ingest_result.parse_result
-            ingest_stage.sub_timings.update({f"{k}_s": v for k, v in ingest_result.timings.items()})
-            ingest_stage.details.update(cast(JSONDocument, ingest_result.diagnostics))
-            ingest_stage.stop(items=len(ingest_result.parse_raw_ids))
-        else:
-            parse_started = time.perf_counter()
-            parse_result = await parser.parse_from_raw()
-            ingest_stage.sub_timings["parse_s"] = time.perf_counter() - parse_started
-            ingest_stage.stop(items=len(parse_result.processed_ids))
+    else:
+        parse_result = await _replay_seeded_archive(config=config, request=request, repository=repository)
+    ingest_stage.sub_timings.update({f"{name}_s": seconds for name, seconds in parse_result.stage_timings_s.items()})
+    ingest_stage.details.update(
+        {
+            "excised_skips": parse_result.excised_skips,
+            "time_budget_exceeded": parse_result.time_budget_exceeded,
+        }
+    )
+    ingest_stage.stop(items=len(parse_result.processed_ids))
 
+    owns_backend = backend is None
+    active_backend = backend or create_backend(db_path=config.db_path)
+    try:
         if stage_sequence is not None and "materialize" in stage_sequence:
             materialize_stage = metrics.start_stage("materialize")
             materialize_outcome = await _probe_materialize_stage(
@@ -781,29 +813,43 @@ async def _run_probe_pipeline(
             indexed = index_outcome.indexed
             index_error = index_outcome.error
             index_stage.stop(items=index_outcome.item_count)
-
-        duration_ms = int((time.perf_counter() - started) * 1000)
-        result_payload: JSONDocument = {
-            "run_id": "probe",
-            "counts": dict(parse_result.counts),
-            "changed_counts": dict(parse_result.changed_counts),
-            "processed_ids": len(parse_result.processed_ids),
-            "parse_failures": parse_result.parse_failures,
-            "indexed": indexed,
-            "index_error": index_error,
-            "duration_ms": duration_ms,
-        }
-        run_payload: JSONDocument = {
-            "run_id": "probe",
-            "duration_ms": duration_ms,
-            "metrics": metrics.to_summary(),
-        }
-        return result_payload, run_payload
     finally:
-        if owns_repository:
-            await active_repository.close()
         if owns_backend:
             await active_backend.close()
+
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    result_payload: JSONDocument = {
+        "run_id": "probe",
+        "counts": dict(parse_result.counts),
+        "changed_counts": dict(parse_result.changed_counts),
+        "processed_ids": len(parse_result.processed_ids),
+        "parse_failures": parse_result.parse_failures,
+        "indexed": indexed,
+        "index_error": index_error,
+        "duration_ms": duration_ms,
+    }
+    run_payload: JSONDocument = {
+        "run_id": "probe",
+        "duration_ms": duration_ms,
+        "metrics": metrics.to_summary(),
+    }
+    return result_payload, run_payload
+
+
+async def _replay_seeded_archive(
+    *, config: Config, request: PipelineProbeRequest, repository: SessionRepository | None
+) -> ParseResult:
+    """Replay already-retained raws through the canonical retained Raw owner."""
+    if repository is None:
+        raise ValueError("archive-subset replay requires the repository that seeded its raws")
+    async with _probe_raw_owner(config.archive_root, parse_workers=request.ingest_workers) as owner:
+        parser = ParsingService(
+            repository=repository,
+            archive_root=config.archive_root,
+            config=config,
+            retained_runner=owner.replay_retained_raw_ids,
+        )
+        return await parser.parse_from_raw()
 
 
 def _probe_stage_sequence(probe_mode: str, stage: str) -> list[str] | None:
@@ -819,9 +865,6 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
 
     workspace = _workspace_for_request(request)
     workdir = workspace.root
-    raw_batch_size = request.raw_batch_size
-    if raw_batch_size is not None and raw_batch_size <= 0:
-        raise ValueError("--raw-batch-size must be positive")
     ingest_workers = request.ingest_workers
     if ingest_workers is not None and ingest_workers <= 0:
         raise ValueError("--ingest-workers must be positive")
@@ -872,9 +915,7 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 "seed": corpus_request.seed,
                 "style": corpus_request.style,
                 "package_version": corpus_request.package_version,
-                "raw_batch_size": request.raw_batch_size,
                 "ingest_workers": request.ingest_workers,
-                "measure_ingest_result_size": request.measure_ingest_result_size,
             },
             "paths": {
                 "workdir": str(workdir),
@@ -926,9 +967,7 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 "source_name": source_name,
                 "stage": request.stage,
                 "stage_sequence": _json_string_sequence(stage_sequence),
-                "raw_batch_size": request.raw_batch_size,
                 "ingest_workers": request.ingest_workers,
-                "measure_ingest_result_size": request.measure_ingest_result_size,
             },
             "paths": {
                 "workdir": str(workdir),
@@ -972,6 +1011,7 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
         )
         with _isolated_env(workspace):
             db_path_val = config.db_path
+            await _bootstrap_probe_archive(archive_root)
             backend = create_backend(db_path=db_path_val)
             repository = SessionRepository(backend=backend)
             try:
@@ -1000,9 +1040,7 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 "sample_per_provider": sample_per_provider,
                 "provider_filters": _json_string_sequence(provider_filters),
                 "source_filters": _json_string_sequence(source_filters),
-                "raw_batch_size": request.raw_batch_size,
                 "ingest_workers": request.ingest_workers,
-                "measure_ingest_result_size": request.measure_ingest_result_size,
             },
             "paths": {
                 "workdir": str(workdir),

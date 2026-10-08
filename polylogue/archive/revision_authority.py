@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Generator, Iterable, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
-from typing import BinaryIO, Literal
+from typing import TYPE_CHECKING, BinaryIO, Literal
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
 from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
 from polylogue.core.sources import origin_from_provider
@@ -20,47 +24,26 @@ class RawRevisionKind(StrEnum):
 
 
 class RawRevisionAuthority(PolylogueStrEnum):
-    """Closed vocabulary for ``revision_authority``/``previous_revision_authority``.
-
-    ``PolylogueStrEnum`` (not a plain ``StrEnum``) so this generates its SQL
-    CHECK via ``archive_tiers/common.py``'s ``check()``/``nullable_check()``
-    at every column sharing the full 3-value domain, instead of each site
-    hand-copying the literal list (polylogue-h57ic). ``raw_session_
-    memberships.revision_authority`` is a genuinely narrower 2-value domain
-    (``ASSERTED`` never applies there) and uses the separate
-    ``ProvenRevisionAuthority`` literal alias in
-    ``storage/sqlite/archive_tiers/types.py`` instead of this enum.
-    """
+    """Typed source-revision authority, validated at durable write boundaries."""
 
     ASSERTED = "asserted"
     BYTE_PROVEN = "byte_proven"
     QUARANTINED = "quarantined"
 
 
-def revision_authority_for_census_detail(detail: str) -> RawRevisionAuthority | None:
-    """Translate legacy census markers at the write boundary.
-
-    ``detail`` remains display text; durable readers must use the typed
-    ``raw_membership_census.revision_authority`` column.  This narrow bridge
-    exists only while older callers still supply the explanatory marker.
-    """
-    if detail == BYTE_AUTHORITY_CENSUS_DETAIL:
-        return RawRevisionAuthority.BYTE_PROVEN
-    if detail == HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL:
-        return RawRevisionAuthority.QUARANTINED
-    return None
-
-
 BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision authority"
 
-#: Current parser semantics for source-tier membership and parser receipts.
-#: Both admission writers and replay readers depend on revision authority, so
-#: this token belongs with that shared contract rather than either storage
-#: projection that consumes it.
-#: v5: claude.ai project and account-memory documents, and Codex rollouts
-#: with bare ``token_usage_record`` lines, are session-bearing; OTel session
-#: ids escape their components.
-RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v5"
+
+def raw_authority_parser_fingerprint() -> str:
+    """Return current parser/replay semantics without paying at module import.
+
+    This is derived from executable OriginSpec routes, their recursive parser
+    closures, and shared lowering. Keeping the computation lazy avoids parsing
+    the whole provider tree for imports that only need durable revision types.
+    """
+    from polylogue.sources.origin_specs import parser_semantic_authority_fingerprint
+
+    return parser_semantic_authority_fingerprint()
 
 
 def raw_receipt_order_sql(table_alias: str = "r") -> str:
@@ -114,7 +97,7 @@ def decided_unresolved_membership_sql(table_alias: str = "r") -> str:
     """
 
 
-#: ``raw_id`` prefix of a retained agent work event (``ArchiveStore.append_work_event``).
+#: ``raw_id`` prefix of a retained agent work event (``ArchiveStore.admit_work_event``).
 #: A work event is its own logical source: its raw id is its logical key, so it
 #: never joins the byte-revision cohort of the transcript it annotates.
 WORK_EVENT_RAW_ID_PREFIX = "agent-work-event:"
@@ -180,48 +163,302 @@ def logical_head_cohort_sql(conn: sqlite3.Connection, *, raw_alias: str, has_mem
     )
 
 
-def durable_authority_logical_keys(
+def parser_census_identity_is_complete(
     *,
-    raw_logical_key: object,
-    revision_kind: object,
-    membership_logical_keys: Iterable[object],
-) -> tuple[str, ...] | None:
-    """Return the canonical durable identity set a parser receipt must prove.
-
-    A ``pending-raw:`` envelope preserves bytes before parsing; it is not a
-    parser identity and must never leak into the durable parser receipt.
-    """
-    values = [str(value) for value in membership_logical_keys if value is not None]
-    if raw_logical_key is not None and str(revision_kind) != RawRevisionKind.UNKNOWN.value:
-        typed_key = str(raw_logical_key)
-        if not typed_key.startswith("pending-raw:"):
-            values.append(typed_key)
-    try:
-        return tuple(sorted({canonical_authority_logical_key(value) for value in values}))
-    except ValueError:
-        return None
-
-
-def parser_census_is_complete(
-    *,
-    recorded_keys: tuple[str, ...] | None,
-    durable_keys: tuple[str, ...] | None,
+    durable_valid: bool,
+    observed_valid: bool,
+    identities_match: bool,
+    observed_count: int,
     typed_non_session: bool,
     parser_confirmed_non_session: bool,
     byte_governed_fragment: bool,
 ) -> bool:
-    """Return whether a parser receipt proves its durable authority shape.
-
-    The receipt writer and readiness reader must apply this same predicate.
-    Empty identity sets are complete only when a durable non-session or
-    byte-authority disposition proves that no parser identity is expected.
-    """
+    """One completion law for exact measured producer and retained identity sets."""
     return (
-        durable_keys is not None
-        and recorded_keys is not None
-        and recorded_keys == durable_keys
-        and (bool(recorded_keys) or typed_non_session or parser_confirmed_non_session or byte_governed_fragment)
+        durable_valid
+        and observed_valid
+        and identities_match
+        and (observed_count > 0 or typed_non_session or parser_confirmed_non_session or byte_governed_fragment)
     )
+
+
+class InvalidParserCensusKeysError(ValueError):
+    """A retained identity receipt cannot establish its declared key set."""
+
+
+@dataclass(frozen=True, slots=True)
+class ParserCensusIdentityMeasurement:
+    """Exact identity comparison scoped to its existing Native disk owner."""
+
+    connection: sqlite3.Connection
+    durable_valid: bool
+    observed_valid: bool
+    identities_match: bool
+    observed_count: int
+    owner: NativeSQLCustodyOwner
+
+    def iter_keys(self, *, observed: bool) -> Generator[str, None, None]:
+        with closing(
+            self.connection.execute(
+                "SELECT logical_key FROM census_identity WHERE kind=? ORDER BY logical_key", (int(not observed),)
+            )
+        ) as rows:
+            for row in rows:
+                yield str(row[0])
+
+    def iter_durable_bindings(self) -> Generator[tuple[str, str | None], None, None]:
+        """Yield canonical identity and its exact captured membership spelling."""
+        with closing(
+            self.connection.execute(
+                "SELECT logical_key, source_key FROM census_identity WHERE kind=1 ORDER BY logical_key"
+            )
+        ) as rows:
+            for key, source_key in rows:
+                yield str(key), None if source_key is None else str(source_key)
+
+    def complete(
+        self,
+        *,
+        typed_non_session: bool,
+        parser_confirmed_non_session: bool,
+        byte_governed_fragment: bool,
+    ) -> bool:
+        return parser_census_identity_is_complete(
+            durable_valid=self.durable_valid,
+            observed_valid=self.observed_valid,
+            identities_match=self.identities_match,
+            observed_count=self.observed_count,
+            typed_non_session=typed_non_session,
+            parser_confirmed_non_session=parser_confirmed_non_session,
+            byte_governed_fragment=byte_governed_fragment,
+        )
+
+    def _stdlib_keys_json_chunks(self, check_stop: Callable[[], None]) -> Generator[bytes, None, None]:
+        """Encode each exact key through its original readonly TEXT handle."""
+        import codecs
+        import json
+
+        check_stop()
+        yield b"["
+        first = True
+        with closing(
+            self.connection.execute("SELECT rowid, occurrences FROM census_identity WHERE kind=0 ORDER BY logical_key")
+        ) as rows:
+            for rowid, occurrences in rows:
+                check_stop()
+                for _ in range(occurrences):
+                    check_stop()
+                    if not first:
+                        yield b", "
+                    yield b'"'
+                    with self.owner.readonly_blob("census_identity", "logical_key", rowid) as blob:
+                        decoder = codecs.getincrementaldecoder("utf-8")()
+                        remaining = len(blob)
+                        while remaining:
+                            check_stop()
+                            chunk = blob.read(min(4096, remaining))
+                            if not chunk:
+                                raise ValueError("parser census key ended before its retained byte length")
+                            remaining -= len(chunk)
+                            text = decoder.decode(chunk, final=remaining == 0)
+                            # The stdlib string encoder preserves its exact
+                            # ASCII/control/non-BMP spelling. Incremental UTF8
+                            # decoding never splits a Unicode code point.
+                            yield json.dumps(text)[1:-1].encode("ascii")
+                    yield b'"'
+                    first = False
+        check_stop()
+        yield b"]"
+
+    @contextmanager
+    def keys_json_stream(
+        self, *, sqlite_encoding: bool, check_stop: Callable[[], None] | None = None
+    ) -> Iterator[tuple[int, Generator[bytes, None, None]]]:
+        """Lend exact receipt bytes while their original measurement owner is live.
+
+        SQLite's aggregate remains native and may allocate its complete value;
+        it is never fetched into Python. The stdlib route repeats its existing
+        occurrence spelling, measuring and delivering on this same snapshot.
+        """
+        from polylogue.core.compute_cancel import check_compute_cancelled
+
+        def check() -> None:
+            check_compute_cancelled()
+            if check_stop is not None:
+                check_stop()
+
+        if self.owner.require_connection() is not self.connection:
+            raise RuntimeError("parser census stream differs from its original native owner")
+        check()
+        if not sqlite_encoding:
+            with closing(self._stdlib_keys_json_chunks(check)) as measured:
+                byte_length = sum(len(chunk) for chunk in measured)
+            with closing(self._stdlib_keys_json_chunks(check)) as chunks:
+                yield byte_length, chunks
+            return
+
+        # This is the original SQLite JSON aggregate, including ordered
+        # distinct keys and its exact Unicode/control-character spelling.
+        # Keep the scalar on the same private measurement connection.
+        stopped: BaseException | None = None
+
+        def progress() -> int:
+            nonlocal stopped
+            try:
+                check()
+            except BaseException as error:
+                stopped = error
+                return 1
+            return 0
+
+        self.connection.set_progress_handler(progress, 1000)
+        try:
+            with closing(self.connection.execute("DELETE FROM census_encoded_keys")):
+                pass
+            with closing(
+                self.connection.execute(
+                    "INSERT INTO census_encoded_keys(id,value) SELECT 1,json_group_array(logical_key) FROM ("
+                    "SELECT logical_key FROM census_identity WHERE kind=0 ORDER BY logical_key)"
+                )
+            ):
+                pass
+        except sqlite3.OperationalError as interrupted:
+            if stopped is not None:
+                raise stopped from interrupted
+            raise
+        finally:
+            self.connection.set_progress_handler(None, 0)
+        check()
+        with self.owner.readonly_blob("census_encoded_keys", "value", 1) as blob:
+            byte_length = len(blob)
+
+            def read_chunks() -> Generator[bytes, None, None]:
+                remaining = byte_length
+                while remaining:
+                    check()
+                    chunk = blob.read(min(65536, remaining))
+                    if not chunk:
+                        raise ValueError("parser census JSON ended before its measured byte length")
+                    remaining -= len(chunk)
+                    yield chunk
+                check()
+
+            with closing(read_chunks()) as chunks:
+                yield byte_length, chunks
+
+
+@contextmanager
+def parser_census_identity_measurement(
+    *,
+    raw_logical_key: object,
+    revision_kind: object,
+    membership_logical_keys: Iterable[object],
+    observed_logical_keys: Iterable[str] | None,
+    observed_are_receipt: bool = False,
+    inherit_durable_keys: bool = False,
+    check_stop: Callable[[], None] | None = None,
+) -> Iterator[ParserCensusIdentityMeasurement]:
+    """Measure producer or retained receipt keys under the same identity law.
+
+    Inputs come from the caller's admitted Source snapshot. The scratch owner
+    never reopens that snapshot; its regular indexed table lives on disk.
+    """
+    from polylogue.storage.sqlite.connection_profile import (
+        retained_native_sql_owners_on_current_thread,
+        scratch_connection_context,
+    )
+
+    if observed_logical_keys is not None and inherit_durable_keys:
+        raise ValueError("parser census cannot combine observed and inherited durable keys")
+    with scratch_connection_context(prefix="polylogue-parser-census-", filename="identities.sqlite") as scratch:
+        owners = tuple(owner for owner in retained_native_sql_owners_on_current_thread() if owner.connection is scratch)
+        if len(owners) != 1:
+            raise RuntimeError("parser census measurement requires its single original native owner")
+        owner = owners[0]
+        scratch.execute("PRAGMA cache_size=-2048").close()
+        scratch.execute("PRAGMA journal_mode=DELETE").close()
+        scratch.execute("PRAGMA temp_store=FILE").close()
+        scratch.execute("BEGIN").close()
+        scratch.execute(
+            "CREATE TABLE census_identity(kind INTEGER NOT NULL, logical_key TEXT NOT NULL, source_key TEXT, "
+            "occurrences INTEGER NOT NULL DEFAULT 1, "
+            "PRIMARY KEY(kind, logical_key))"
+        ).close()
+        scratch.execute("CREATE TABLE census_encoded_keys(id INTEGER PRIMARY KEY, value TEXT NOT NULL)").close()
+        durable_valid = True
+        for value in membership_logical_keys:
+            if check_stop is not None:
+                check_stop()
+            if value is None:
+                continue
+            try:
+                key = canonical_authority_logical_key(str(value))
+            except ValueError:
+                durable_valid = False
+                continue
+            scratch.execute(
+                "INSERT OR IGNORE INTO census_identity(kind, logical_key, source_key) VALUES (1, ?, ?)",
+                (key, str(value)),
+            ).close()
+        if raw_logical_key is not None and str(revision_kind) != RawRevisionKind.UNKNOWN.value:
+            typed_key = str(raw_logical_key)
+            if not typed_key.startswith("pending-raw:"):
+                try:
+                    key = canonical_authority_logical_key(typed_key)
+                except ValueError:
+                    durable_valid = False
+                else:
+                    scratch.execute(
+                        "INSERT OR IGNORE INTO census_identity(kind, logical_key) VALUES (1, ?)", (key,)
+                    ).close()
+        observed_valid = observed_logical_keys is not None or inherit_durable_keys
+        if inherit_durable_keys and durable_valid:
+            scratch.execute(
+                "INSERT INTO census_identity(kind, logical_key) SELECT 0, logical_key FROM census_identity WHERE kind=1"
+            ).close()
+        elif observed_logical_keys is not None:
+            observed = iter(observed_logical_keys)
+            try:
+                while True:
+                    if check_stop is not None:
+                        check_stop()
+                    try:
+                        value = next(observed)
+                    except StopIteration:
+                        break
+                    except InvalidParserCensusKeysError:
+                        observed_valid = False
+                        break
+                    key = canonical_authority_logical_key(value)
+                    with closing(
+                        scratch.execute(
+                            "INSERT OR IGNORE INTO census_identity(kind, logical_key) VALUES (0, ?)", (key,)
+                        )
+                    ) as inserted:
+                        if observed_are_receipt and not inserted.rowcount:
+                            observed_valid = False
+                            scratch.execute(
+                                "UPDATE census_identity SET occurrences=occurrences+1 WHERE kind=0 AND logical_key=?",
+                                (key,),
+                            ).close()
+            finally:
+                close_observed = getattr(observed, "close", None)
+                if callable(close_observed):
+                    close_observed()
+        with closing(scratch.execute("SELECT COUNT(*) FROM census_identity WHERE kind=0")) as counted:
+            observed_count = int(counted.fetchone()[0])
+        with closing(
+            scratch.execute(
+                "SELECT 1 FROM census_identity AS observed WHERE observed.kind=0 AND NOT EXISTS ("
+                "SELECT 1 FROM census_identity AS durable WHERE durable.kind=1 AND durable.logical_key=observed.logical_key) "
+                "UNION ALL SELECT 1 FROM census_identity AS durable WHERE durable.kind=1 AND NOT EXISTS ("
+                "SELECT 1 FROM census_identity AS observed WHERE observed.kind=0 AND observed.logical_key=durable.logical_key) LIMIT 1"
+            )
+        ) as compared:
+            differs = compared.fetchone()
+        yield ParserCensusIdentityMeasurement(
+            scratch, durable_valid, observed_valid, differs is None, observed_count, owner
+        )
 
 
 #: ``raw_membership_census.detail`` marker written when a full-only,
@@ -233,6 +470,9 @@ def parser_census_is_complete(
 #: previously-ambiguous sibling evidence before ever accepting a
 #: later-discovered raw as an unconditional singleton byte-proven baseline.
 HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL = "historical non-prefix full revision governance"
+#: A typed full revision whose stored identity the current parser no longer
+#: derives retires to membership governance under the parsed identity.
+SUPERSEDED_IDENTITY_GOVERNANCE_DETAIL = "superseded full revision identity"
 
 
 @dataclass(frozen=True)
@@ -458,9 +698,7 @@ def classify_historical_full_revisions(
     ``raw_id``) before the chain proof runs, and every non-representative
     duplicate mirrors its representative's verdict with ``relation=
     "duplicate"``. Output order matches input size order (ascending, ties
-    broken by ``raw_id``), preserving the existing "first is oldest, last is
-    head" contract relied on by callers such as
-    ``classify_untyped_full_revision_groups``.
+    broken by ``raw_id``): the first is oldest and the last is the head.
     """
     if not revisions:
         return []
@@ -606,4 +844,5 @@ __all__ = [
     "append_source_revision",
     "classify_historical_full_revisions",
     "classify_historical_full_revision_streams",
+    "raw_authority_parser_fingerprint",
 ]

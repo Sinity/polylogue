@@ -40,9 +40,6 @@ class SyntheticVectorProvider:
         self.calls.append(list(texts))
         return [[0.5] * self.dimension for _ in texts]
 
-    def upsert(self, *args: object, **kwargs: object) -> None:
-        raise AssertionError("archive materialization must use the archive embedding route")
-
     def query(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
         return []
 
@@ -91,7 +88,7 @@ class NoCallVectorProvider(SyntheticVectorProvider):
 
 
 def snapshot_embedding_backup(old_root: Path, backup: Path) -> None:
-    from polylogue.operations.archive_backup import _backup_sqlite
+    from polylogue.storage.backup_package import _backup_sqlite
 
     with arm_write_lease_enforcement(), write_lease("fixture.embedding-backup", archive_root=old_root):
         _backup_sqlite(old_root / "embeddings.db", backup, archive_root_path=old_root)

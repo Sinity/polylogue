@@ -4,6 +4,7 @@ import json
 import sqlite3
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -17,6 +18,111 @@ from polylogue.sources.live.batch_support import _parse_path_as_session_artifact
 from polylogue.sources.source_parsing import parse_one_source_path
 from polylogue.sources.source_walk import census_source_root
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+
+@pytest.mark.parametrize("wire_format", ["json", "jsonl"])
+@pytest.mark.parametrize("last_value,proved", [("1", True), ('[{"deep":[{}]}]', False)])
+def test_complete_artifact_metadata_uses_last_duplicate_value_and_unknown_fields(
+    wire_format: Literal["json", "jsonl"], last_value: str, proved: bool
+) -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    record = '{"unselected":[{"deep":[{}]}],"unselected":' + last_value + "}"
+    payload = "[" + record + "]" if wire_format == "json" else record + "\n"
+    result = classify_artifact_stream(io.BytesIO(payload.encode()), provider=Provider.UNKNOWN, wire_format=wire_format)
+    assert result.proved_non_session is proved
+    assert result.classification.kind is (ArtifactKind.METADATA_DOCUMENT if proved else ArtifactKind.UNKNOWN)
+
+
+def test_complete_artifact_beads_refusal_is_distinct_from_unknown_and_late_conversation() -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    beads = {"id": "interaction", "kind": "field_change", "created_at": "synthetic", "issue_id": "task", "extra": {}}
+    refusal = classify_artifact_stream(
+        io.BytesIO((json.dumps(beads) + "\n").encode()), provider=Provider.UNKNOWN, wire_format="jsonl"
+    )
+    assert refusal.classification.kind is ArtifactKind.UNKNOWN
+    assert refusal.proved_non_session
+    conversation = {"role": "user", "content": "actual conversational record"}
+    records = [beads] * 65 + [conversation]
+    result = classify_artifact_stream(
+        io.BytesIO("".join(json.dumps(record) + "\n" for record in records).encode()),
+        provider=Provider.UNKNOWN,
+        wire_format="jsonl",
+    )
+    assert not result.proved_non_session
+
+
+def test_complete_artifact_checkpoint_fold_cannot_refuse_a_late_session_record() -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    source_path = "/synthetic/.claude/projects/project/session.jsonl"
+    checkpoint = {"type": "file-history-snapshot"}
+    payload = (json.dumps(checkpoint) + "\n") * 65
+    refusal = classify_artifact_stream(
+        io.BytesIO(payload.encode()), provider=Provider.CLAUDE_CODE, source_path=source_path, wire_format="jsonl"
+    )
+    assert refusal.proved_non_session
+    assert refusal.classification.kind is ArtifactKind.FILE_HISTORY_SNAPSHOT
+    payload += json.dumps({"type": "user", "uuid": "message", "message": {"role": "user", "content": "hello"}}) + "\n"
+    result = classify_artifact_stream(
+        io.BytesIO(payload.encode()), provider=Provider.CLAUDE_CODE, source_path=source_path, wire_format="jsonl"
+    )
+    assert result.classification.parse_as_session
+    assert not result.classification.schema_eligible
+    assert not result.proved_non_session
+
+
+def test_complete_artifact_late_syntax_failure_and_cancellation_do_not_prove_refusal() -> None:
+    import io
+
+    import ijson
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    payload = b'{"event_type":"stop","session_id":"s","timestamp":"t","provider":"codex"}\n' * 65
+    with pytest.raises(ijson.JSONError):
+        classify_artifact_stream(io.BytesIO(payload + b'{"broken":}\n'), provider=Provider.CODEX, wire_format="jsonl")
+
+    def cancel() -> None:
+        raise InterruptedError("synthetic taxonomy cancellation")
+
+    with pytest.raises(InterruptedError):
+        classify_artifact_stream(io.BytesIO(payload), provider=Provider.CODEX, wire_format="jsonl", check_stop=cancel)
+
+
+def test_complete_artifact_preserves_exact_bare_codex_header_recovery() -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    bare = b'{"type":"session_meta"}\n' * 2
+    result = classify_artifact_stream(io.BytesIO(bare), provider=Provider.CODEX, wire_format="jsonl")
+    assert result.classification.parse_as_session
+    assert not result.classification.schema_eligible
+    extended = b'{"type":"session_meta","unselected":1}\n' * 2
+    result = classify_artifact_stream(io.BytesIO(extended), provider=Provider.CODEX, wire_format="jsonl")
+    assert not result.classification.parse_as_session
+
+
+def test_jsonl_complete_document_array_keeps_document_semantics() -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    payload = [{"role": "user", "content": "first"}, {"role": "assistant", "content": "second"}]
+    result = classify_artifact_stream(
+        io.BytesIO(json.dumps(payload).encode()), provider=Provider.UNKNOWN, wire_format="jsonl"
+    )
+    assert result.classification.parse_as_session
+    assert result.record_count == 2
+    assert not result.proved_non_session
 
 
 def test_every_origin_artifact_rule_names_a_declared_artifact_kind() -> None:
@@ -353,7 +459,8 @@ def test_source_manifest_counts_the_derivative_apart_from_its_original() -> None
     """
     with tempfile.TemporaryDirectory() as raw_root:
         root = Path(raw_root)
-        project = root / "projects" / "proj"
+        projects = root / "projects"
+        project = projects / "-proj"
         project.mkdir(parents=True)
         (project / "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl").write_text(
             "\n".join(json.dumps(record) for record in _PROVIDER_TURNS) + "\n", encoding="utf-8"
@@ -362,7 +469,7 @@ def test_source_manifest_counts_the_derivative_apart_from_its_original() -> None
             "\n".join(json.dumps(record) for record in _EXTRACTED_TURNS) + "\n", encoding="utf-8"
         )
 
-        census = census_source_root(root, provider=Provider.CLAUDE_CODE)
+        census = census_source_root(projects, provider=Provider.CLAUDE_CODE)
 
     assert census.candidate_count == 2
     assert census.disposition_counts == {"session": 1, "non_session": 1, "unsupported": 0}
@@ -489,6 +596,7 @@ def test_antigravity_brain_metadata_sidecar_is_rejected_from_live_and_schema_rou
             provider=Provider.ANTIGRAVITY,
             payload=payload,
             source_path=str(metadata_path),
+            canonical_source_path=str(metadata_path),
             acquired_at_ms=1_767_798_895_216,
         )
 
@@ -533,6 +641,7 @@ def test_schema_sampling_uses_detected_provider_for_unknown_acquisition(workspac
             provider=Provider.UNKNOWN,
             payload=payload,
             source_path="/captures/learned/session.jsonl",
+            canonical_source_path="/captures/learned/session.jsonl",
             acquired_at_ms=1,
         )
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -674,10 +783,10 @@ def test_file_history_snapshot_only_stream_never_classifies_as_session() -> None
     type is a known non-conversational envelope kind) must override that
     path-only session verdict.
 
-    ``require_positive_conversational_evidence`` already refuses to
+    ``admit_parsed_sessions_for_publication`` already refuses to
     materialize this shape as an index-tier session post-parse (see
     ``test_dispatch_payloads.py``'s
-    ``test_require_positive_conversational_evidence_refuses_claude_code_stream_with_no_conversational_records``),
+    ``test_admit_parsed_sessions_for_publication_refuses_claude_code_stream_with_no_conversational_records``),
     but the raw-tier ``artifact_taxonomy``/``raw_artifacts`` classification
     is a separate layer that must independently say "sidecar", not "session
     that later turned out empty".
@@ -947,3 +1056,83 @@ def test_codex_bare_session_meta_stream_is_still_recovered() -> None:
 
     assert artifact.kind is ArtifactKind.SESSION_RECORD_STREAM
     assert artifact.parse_as_session is True
+
+
+def test_late_message_establishes_session_document() -> None:
+    """A positive message beyond the former twelve-item prefix remains input."""
+    payload: JSONValue = {"messages": [{} for _ in range(12)] + [{"role": "user", "content": "late"}]}
+    artifact = classify_artifact(payload, provider=Provider.UNKNOWN)
+    assert artifact.parse_as_session
+    assert artifact.kind is ArtifactKind.SESSION_DOCUMENT
+
+
+def test_late_provider_record_prevents_extracted_corpus_refusal() -> None:
+    """A wire envelope beyond the former prefix disqualifies the corpus rule."""
+    payload: list[JSONValue] = [{"source_file": "transcript.jsonl", "text": "copied"} for _ in range(32)]
+    payload.append({"type": "user", "message": {"role": "user", "content": "wire"}})
+    artifact = classify_artifact(payload, provider=Provider.CLAUDE_CODE)
+    assert artifact.kind is not ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS
+
+
+def test_late_session_document_prevents_all_hook_stream_refusal() -> None:
+    """Complete stream predicates cannot refuse mixed input from its hook prefix."""
+    payload: list[JSONValue] = [
+        {"event_type": "started", "session_id": "synthetic", "timestamp": "2026-01-01", "provider": "claude-code"}
+        for _ in range(32)
+    ]
+    payload.append({"messages": [{"role": "user", "content": "conversation"}]})
+    artifact = classify_artifact(payload, provider=Provider.UNKNOWN)
+    assert artifact.parse_as_session
+    assert artifact.kind is not ArtifactKind.HOOK_EVENT
+
+
+_CODEX_RECORD_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "codex"
+
+
+@pytest.mark.parametrize("fixture", ["legacy-response-records.jsonl", "retained-context-and-realtime.jsonl"])
+def test_codex_legacy_and_retained_record_streams_classify_as_sessions(fixture: str) -> None:
+    """Both the complete-payload and the streamed fold admit the new Codex record shapes.
+
+    The legacy fixture holds more unwrapped response records than messages,
+    so the streamed fold is red if those records stop counting as Codex
+    record evidence (the record majority fails and the stream is unknown).
+    """
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    raw = (_CODEX_RECORD_FIXTURES / fixture).read_bytes()
+    records = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    source_path = "/exports/rollout-sample.jsonl"
+
+    complete = classify_artifact(records, provider=Provider.CODEX, source_path=source_path)
+    assert complete.parse_as_session
+    assert complete.kind is ArtifactKind.SESSION_RECORD_STREAM
+
+    streamed = classify_artifact_stream(
+        io.BytesIO(raw), provider=Provider.CODEX, wire_format="jsonl", source_path=source_path
+    )
+    assert streamed.classification.parse_as_session
+    assert streamed.classification.kind is ArtifactKind.SESSION_RECORD_STREAM
+    assert streamed.record_count == len(records)
+
+
+@pytest.mark.parametrize("fixture", ["legacy-response-records.jsonl", "retained-context-and-realtime.jsonl"])
+def test_codex_stream_with_an_unknown_outer_record_is_still_refused(fixture: str) -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    lines = (_CODEX_RECORD_FIXTURES / fixture).read_bytes().splitlines()
+    lines.insert(2, b'{"type":"future_outer_kind","payload":{"type":"anything"}}')
+    raw = b"\n".join(lines) + b"\n"
+    records = [json.loads(line) for line in lines]
+    source_path = "/exports/rollout-sample.jsonl"
+
+    assert not classify_artifact(records, provider=Provider.CODEX, source_path=source_path).parse_as_session
+    streamed = classify_artifact_stream(
+        io.BytesIO(raw), provider=Provider.CODEX, wire_format="jsonl", source_path=source_path
+    )
+    assert not streamed.classification.parse_as_session
+    assert streamed.classification.kind is ArtifactKind.UNKNOWN
+    assert not streamed.proved_non_session

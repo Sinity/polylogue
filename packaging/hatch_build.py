@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 sys.dont_write_bytecode = True
+
+_BUILD_INFO_RELATIVE = "polylogue/_build_info.py"
 
 
 def _git_metadata(repo_root: Path) -> tuple[str, bool]:
@@ -43,26 +45,38 @@ def _render_build_info(commit: str, dirty: bool) -> str:
 
 
 class CustomBuildHook(BuildHookInterface):
+    """Embed ``polylogue/_build_info.py`` without writing into the source tree.
+
+    A checkout renders the module into a private temporary directory and
+    force-includes it at its package path, so a read-only checkout (a sandboxed
+    test runner, a mounted source) builds the same artifact. An unpacked sdist
+    or a Nix source tree already carries the module and registers it as is.
+    """
+
     def initialize(self, version: str, build_data: dict[str, object]) -> None:
         del version
-        self._generated_build_info = False
-        self._build_info_path = Path(self.root) / "polylogue" / "_build_info.py"
+        self._generated_dir: tempfile.TemporaryDirectory[str] | None = None
         repo_root = Path(self.root)
+        build_info_path = repo_root / _BUILD_INFO_RELATIVE
 
         if (repo_root / ".git").exists():
             try:
                 commit, dirty = _git_metadata(repo_root)
             except RuntimeError:
-                if self._build_info_path.exists():
+                if build_info_path.exists():
                     self._register_build_info_artifact(build_data)
                     return
                 raise
-            self._build_info_path.write_text(_render_build_info(commit, dirty), encoding="utf-8")
-            self._generated_build_info = True
-            self._register_build_info_artifact(build_data)
+            self._generated_dir = tempfile.TemporaryDirectory(prefix="polylogue-build-info-")
+            generated = Path(self._generated_dir.name) / "_build_info.py"
+            generated.write_text(_render_build_info(commit, dirty), encoding="utf-8")
+            force_include = build_data.setdefault("force_include", {})
+            if not isinstance(force_include, dict):
+                raise RuntimeError("unexpected hatch build-data shape for force_include")
+            force_include[str(generated)] = _BUILD_INFO_RELATIVE
             return
 
-        if self._build_info_path.exists():
+        if build_info_path.exists():
             self._register_build_info_artifact(build_data)
             return
 
@@ -72,13 +86,13 @@ class CustomBuildHook(BuildHookInterface):
 
     def finalize(self, version: str, build_data: dict[str, object], artifact_path: str) -> None:
         del version, build_data, artifact_path
-        if self._generated_build_info and not os.environ.get("POLYLOGUE_SDIST_BUILD"):
-            self._build_info_path.unlink(missing_ok=True)
+        if self._generated_dir is not None:
+            self._generated_dir.cleanup()
+            self._generated_dir = None
 
     def _register_build_info_artifact(self, build_data: dict[str, object]) -> None:
-        relative_path = str(self._build_info_path.relative_to(self.root))
         artifacts = build_data.setdefault("artifacts", [])
         if not isinstance(artifacts, list):
             raise RuntimeError("unexpected hatch build-data shape for artifacts")
-        if relative_path not in artifacts:
-            artifacts.append(relative_path)
+        if _BUILD_INFO_RELATIVE not in artifacts:
+            artifacts.append(_BUILD_INFO_RELATIVE)

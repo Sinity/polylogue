@@ -15,12 +15,12 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.convergence import (
     DaemonConverger,
     SelectedSessionTarget,
     SessionProfileConvergenceOwner,
 )
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.operations.session_profile_convergence import (
     make_session_profile_derivation,
@@ -45,7 +45,7 @@ async def _owner_for(
 ]:
     adapter = make_session_profile_derivation(index_db, archive_root=archive_root, now=lambda: 0.0)
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     return (
         SessionProfileConvergenceOwner(
             _converger_for(index_db, archive_root, adapter),
@@ -332,7 +332,7 @@ async def test_selected_part_retries_only_the_same_binding_moved_target(tmp_path
 
     adapter.compute = move_target_binding  # type: ignore[method-assign, assignment]
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     owner = SessionProfileConvergenceOwner(
         _converger_for(recovered.index_db, recovered.root, adapter),
         compute_adapter=compute,
@@ -387,7 +387,7 @@ async def test_selected_part_retains_a_committed_effect_when_post_certification_
 
     adapter.selected_part_facts = facts_missing_after_publish  # type: ignore[method-assign]
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     owner = SessionProfileConvergenceOwner(
         _converger_for(recovered.index_db, recovered.root, adapter),
         compute_adapter=compute,
@@ -439,7 +439,7 @@ async def test_selected_part_cancellation_waits_for_the_bridged_publication(tmp_
 
     adapter.publish = blocking_publish  # type: ignore[method-assign]
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     owner = SessionProfileConvergenceOwner(
         _converger_for(recovered.index_db, recovered.root, adapter),
         compute_adapter=compute,

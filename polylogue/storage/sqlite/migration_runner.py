@@ -9,15 +9,15 @@ import os
 import re
 import sqlite3
 import stat
-import struct
 import time
 import types
 import uuid
+from builtins import BaseExceptionGroup
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import StrEnum
-from functools import lru_cache
+from functools import cache, lru_cache, partial
 from importlib import resources
 from pathlib import Path
 from threading import Lock
@@ -30,13 +30,19 @@ from polylogue.storage.backup_attestation import (
     verify_verification_receipt,
 )
 from polylogue.storage.backup_blob_closure import package_blob_closure
+from polylogue.storage.io_phase_metrics import _MeasuredConnection, close_connection_cursor, connection_cursor
 from polylogue.storage.sqlite.archive_tiers import (
-    ARCHIVE_BASELINE_DDL_BY_TIER,
     ARCHIVE_DDL_BY_TIER,
     ARCHIVE_VERSION_BY_TIER,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.literal_cells import (
+    literal_metadata,
+    owned_literal_stream,
+    stream_literal_blob,
+    stream_literal_cell,
+)
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 DURABLE_MIGRATION_TIERS: frozenset[ArchiveTier] = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
@@ -254,12 +260,34 @@ def _requires_migration_backup(path: Path, sql: str) -> bool:
     return False
 
 
-def _index_replacement_pairs(path: Path, sql: str) -> tuple[str, ...]:
-    """Admit only complete same-name index replacement pairs, not their effect."""
+_SQL_SCHEMA_IDENTIFIER = r"""(?:[A-Za-z_][A-Za-z_0-9]*|"(?:[^"]|"")*"|'(?:[^']|'')*'|`(?:[^`]|``)*`|\[[^\]]*\])"""
+_SQL_SCHEMA_TRIVIA = r"(?:\s|/\*.*?\*/|--[^\n]*(?:\n|$))*"
+_SCHEMA_DROP_STATEMENT_RE = re.compile(
+    rf"^(?:DROP\b|ALTER{_SQL_SCHEMA_TRIVIA}TABLE{_SQL_SCHEMA_TRIVIA}"
+    rf"{_SQL_SCHEMA_IDENTIFIER}(?:{_SQL_SCHEMA_TRIVIA}\.{_SQL_SCHEMA_TRIVIA}{_SQL_SCHEMA_IDENTIFIER})?"
+    rf"{_SQL_SCHEMA_TRIVIA}DROP\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _migration_has_schema_drops(sql: str) -> bool:
+    """Classify actual DROP statements and ALTER TABLE DROP, excluding literals."""
+    return any(_SCHEMA_DROP_STATEMENT_RE.match(statement) for statement in _iter_migration_statements(sql))
+
+
+def _index_replacement_pairs(path: Path, sql: str, *, allow_other_statements: bool = False) -> tuple[str, ...]:
+    """Classify every drop as an adjacent same-name index replacement.
+
+    The no-backup marker admits only pairs. A backup-required migration may
+    also create tables or add columns, without changing the classification of
+    its individual index drops. Neither mode proves the replacement effect.
+    """
     statements = iter(_iter_migration_statements(sql))
     names: list[str] = []
     identifier = r"[A-Za-z_][A-Za-z_0-9]*"
     for drop in statements:
+        if allow_other_statements and not _SCHEMA_DROP_STATEMENT_RE.match(drop):
+            continue
         match = re.fullmatch(rf"DROP\s+INDEX\s+({identifier})\s*;", drop, re.IGNORECASE)
         create = next(statements, None)
         replacement = re.fullmatch(
@@ -345,6 +373,15 @@ def _execute_proved_migration_sql(conn: sqlite3.Connection, step: MigrationStep)
 
 def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
     """Bind exact retained values, including primary keys, independently of DDL."""
+    from polylogue.core.compute_cancel import check_compute_cancelled
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_on_current_thread
+
+    owners = tuple(owner for owner in retained_native_sql_owners_on_current_thread() if owner.connection is conn)
+    if len(owners) > 1:
+        raise MigrationError("literal proof has ambiguous native connection ownership")
+    owner = owners[0] if owners else None
+    if owner is not None:
+        owner.require_connection()
     digest = hashlib.sha256()
 
     def frame(value: bytes) -> None:
@@ -354,22 +391,24 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
     def metadata_text(value: object) -> str:
         return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
-    tables_cursor = conn.execute(
-        "SELECT name, wr FROM pragma_table_list WHERE schema='main' AND type='table' ORDER BY name COLLATE BINARY"
-    )
-    try:
+    with connection_cursor(
+        conn, "SELECT name, wr FROM pragma_table_list WHERE schema='main' AND type='table' ORDER BY name COLLATE BINARY"
+    ) as tables_cursor:
         tables = tuple(tables_cursor)
-    finally:
-        tables_cursor.close()
     for table, without_rowid in tables:
+        check_compute_cancelled()
         name = metadata_text(table)
         if name == "sqlite_schema":
             continue
-        with closing(conn.execute("SELECT name, pk FROM pragma_table_xinfo(?) ORDER BY cid", (name,))) as cursor:
+        with connection_cursor(
+            conn, "SELECT name, pk, hidden FROM pragma_table_xinfo(?) ORDER BY cid", (name,)
+        ) as cursor:
             columns = tuple(cursor)
+        generated = any(column[2] in (2, 3) for column in columns)
         selected = [metadata_text(column[0]) for column in columns]
         frame(b"table")
         frame(name.encode("utf-8"))
+        alias: str | None = None
         if without_rowid:
             order = [metadata_text(column[0]) for column in sorted(columns, key=lambda row: int(row[1])) if column[1]]
             if not order:
@@ -414,14 +453,25 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
             # private TEMP table never changes caller storage pragmas.
             locator = _quote_sqlite_identifier("literal_locator_" + uuid.uuid4().hex)
             key_names = [_quote_sqlite_identifier("key_" + str(index)) for index in range(len(order))]
-            conn.execute(f"CREATE TEMP TABLE {locator} (ordinal INTEGER PRIMARY KEY, {','.join(key_names)})").close()
+            with connection_cursor(
+                conn, f"CREATE TEMP TABLE {locator} (ordinal INTEGER PRIMARY KEY, {','.join(key_names)})"
+            ):
+                pass
             try:
-                conn.execute(
+                with connection_cursor(
+                    conn,
                     f"INSERT INTO {locator} SELECT row_number() OVER (ORDER BY {ordering}), "
-                    f"{','.join(_quote_sqlite_identifier(column) for column in order)} FROM {table_sql}"
-                ).close()
-            except BaseException:
-                conn.execute(f"DROP TABLE temp.{locator}").close()
+                    f"{','.join(_quote_sqlite_identifier(column) for column in order)} FROM {table_sql}",
+                ):
+                    pass
+            except BaseException as primary:
+                try:
+                    with connection_cursor(conn, f"DROP TABLE temp.{locator}"):
+                        pass
+                except BaseException as cleanup:
+                    raise BaseExceptionGroup(
+                        "Literal locator hydration and retirement failed", [primary, cleanup]
+                    ) from primary
                 raise
             bindings = " AND ".join(
                 f"t.{_quote_sqlite_identifier(column)} IS k.{key}" for column, key in zip(order, key_names, strict=True)
@@ -432,55 +482,84 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
             if without_rowid
             else f"FROM {table_sql} ORDER BY {ordering}"
         )
-        descriptors = None
+        proof_failure: BaseException | None = None
         try:
-            descriptors = conn.execute(f"SELECT {','.join(projection)} {descriptor_source}")
-            for row_offset, row in enumerate(descriptors):
-                frame(b"row")
-                row_id = None if without_rowid else int(row[1])
-                for offset in range(0, len(row), 2):
-                    storage_class, value = metadata_text(row[offset]), row[offset + 1]
-                    frame(storage_class.encode("ascii"))
-                    if storage_class == "null":
-                        frame(b"")
-                    elif storage_class == "integer":
-                        frame(int(value).to_bytes(8, "big", signed=True))
-                    elif storage_class == "real":
-                        frame(struct.pack(">d", float(value)))
-                    elif row_id is not None:
-                        # Readonly incremental handles also accept TEXT and
-                        # indexed/primary-key columns, preserving literal
-                        # bytes without UTF-8 decoding or whole-cell copies.
-                        with conn.blobopen(name, selected[offset // 2], row_id, readonly=True) as blob:
-                            digest.update(len(blob).to_bytes(8, "big"))
-                            while chunk := blob.read(64 * 1024):
-                                digest.update(chunk)
-                    else:
-                        # Generic synthetic WITHOUT ROWID proofs have no
-                        # SQLite incremental-cell API. Keep Python transfers
-                        # bounded and literal; SQLite itself still allocates
-                        # one cell and may sort complete primary keys. No
-                        # currently admitted durable archive uses this shape.
-                        column_sql = "t." + _quote_sqlite_identifier(selected[offset // 2])
-                        with closing(
-                            conn.execute(f"SELECT length(CAST({column_sql} AS BLOB)) {cell_sql}", (row_offset + 1,))
-                        ) as cell:
-                            size = int(cell.fetchone()[0])
-                        digest.update(size.to_bytes(8, "big"))
-                        for byte_offset in range(0, size, 64 * 1024):
-                            with closing(
-                                conn.execute(
-                                    f"SELECT substr(CAST({column_sql} AS BLOB), ?, ?) {cell_sql}",
-                                    (byte_offset + 1, min(64 * 1024, size - byte_offset), row_offset + 1),
-                                )
+            with connection_cursor(conn, f"SELECT {','.join(projection)} {descriptor_source}") as descriptors:
+                for row_offset, row in enumerate(descriptors):
+                    check_compute_cancelled()
+                    frame(b"row")
+                    row_id = None if without_rowid else int(row[1])
+                    for offset in range(0, len(row), 2):
+                        storage_class, value = metadata_text(row[offset]), row[offset + 1]
+                        frame(storage_class.encode("ascii"))
+                        if storage_class in {"null", "integer", "real"}:
+                            frame(literal_metadata(storage_class, value, None).fixed_bytes())
+                        elif row_id is not None and not generated:
+                            # Readonly incremental handles also accept TEXT and
+                            # indexed/primary-key columns, preserving literal
+                            # bytes without UTF-8 decoding or whole-cell copies.
+                            blob_scope = (
+                                owner.readonly_blob(name, selected[offset // 2], row_id)
+                                if owner is not None
+                                else conn.blobopen(name, selected[offset // 2], row_id, readonly=True)
+                            )
+                            with blob_scope as blob:
+                                digest.update(len(blob).to_bytes(8, "big"))
+                                for chunk in stream_literal_blob(blob, len(blob), check_compute_cancelled):
+                                    digest.update(chunk)
+                        else:
+                            # Generated-column tables also prohibit Blob.open on
+                            # their ordinary stored fields. Select the fallback
+                            # from actual native shape, never a failed Blob probe.
+                            # Transfers stay bounded; SQLite can allocate a whole
+                            # scalar and sort WITHOUT ROWID keys internally.
+                            column_sql = ("t." if without_rowid else "") + _quote_sqlite_identifier(
+                                selected[offset // 2]
+                            )
+                            if without_rowid:
+                                literal_source = cell_sql
+                            else:
+                                assert alias is not None
+                                literal_source = f"FROM {table_sql} WHERE {_quote_sqlite_identifier(alias)}=?"
+                            literal_parameters = (row_offset + 1,) if without_rowid else (row_id,)
+                            with connection_cursor(
+                                conn, f"SELECT length(CAST({column_sql} AS BLOB)) {literal_source}", literal_parameters
                             ) as cell:
-                                chunk = cell.fetchone()[0]
-                            digest.update(chunk)
+                                size = int(cell.fetchone()[0])
+                            cell_metadata = literal_metadata(storage_class, value, size)
+                            digest.update(size.to_bytes(8, "big"))
+                            with owned_literal_stream(
+                                stream_literal_cell(
+                                    conn,
+                                    cell_metadata,
+                                    expression=column_sql,
+                                    source_sql=literal_source,
+                                    parameters=literal_parameters,
+                                    incremental=None,
+                                    close_cursor=(
+                                        partial(close_connection_cursor, conn)
+                                        if isinstance(conn, _MeasuredConnection)
+                                        else sqlite3.Cursor.close
+                                    ),
+                                    check_cancel=check_compute_cancelled,
+                                )
+                            ) as chunks:
+                                for chunk in chunks:
+                                    digest.update(chunk)
+        except BaseException as failure:
+            proof_failure = failure
+            raise
         finally:
-            if descriptors is not None:
-                descriptors.close()
             if locator is not None:
-                conn.execute(f"DROP TABLE temp.{locator}").close()
+                try:
+                    with connection_cursor(conn, f"DROP TABLE temp.{locator}"):
+                        pass
+                except BaseException as cleanup:
+                    if proof_failure is not None:
+                        raise BaseExceptionGroup(
+                            "Literal proof and locator retirement failed", [proof_failure, cleanup]
+                        ) from proof_failure
+                    raise
         frame(b"end-table")
     return digest.hexdigest()
 
@@ -1227,36 +1306,6 @@ def _pending_migration_steps(
     return steps
 
 
-def _require_pristine_source_attachment_baseline(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
-    """Prove this replacement has no acquired Source evidence to put at risk.
-
-    This authority belongs only to Source slot 003. Existing literal row and
-    schema proofs include canonical seed rows and every unrelated Source table;
-    an empty blob ledger alone cannot authorize a populated archive.
-    """
-    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    installed = next((step for step in _load_migrations(tier) if step.version == 3), None)
-    expected_sql = (
-        resources.files("polylogue.storage.sqlite.migrations.source")
-        .joinpath("003_attachment_coordinate_identity.sql")
-        .read_text(encoding="utf-8")
-    )
-    if installed is None or installed.name != "003_attachment_coordinate_identity.sql" or installed.sql != expected_sql:
-        raise MigrationError("pristine Source authority requires the attachment identity migration")
-    if tier is not ArchiveTier.SOURCE or version != 2:
-        raise MigrationError("pristine attachment baseline authority requires Source v2")
-    with closing(sqlite3.connect(":memory:")) as expected:
-        expected.executescript(ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE])
-        for step in _load_migrations(ArchiveTier.SOURCE):
-            if step.version <= version:
-                expected.executescript(step.sql)
-        expected.commit()
-        if capture_durable_schema_inventory(conn).sha256 != capture_durable_schema_inventory(
-            expected
-        ).sha256 or _durable_literal_rows_digest(conn) != _durable_literal_rows_digest(expected):
-            raise MigrationError("Source differs from its pristine attachment baseline; verified backup required")
-
-
 def migrate_archive_tier(
     conn: sqlite3.Connection,
     tier: ArchiveTier,
@@ -1264,7 +1313,6 @@ def migrate_archive_tier(
     backup_manifest: Path | None,
     target_version: int | None = None,
     schema_replay_proof: DurableMigrationReplayProof | None = None,
-    allow_pristine_source_baseline: bool = False,
 ) -> MigrationResult:
     """Apply additive migrations for one durable tier."""
     if tier not in DURABLE_MIGRATION_TIERS:
@@ -1320,14 +1368,9 @@ def migrate_archive_tier(
         ):
             raise MigrationError("durable migration replay proof does not match the live starting version")
     precheck_requires_backup = any(step.requires_backup for step in precheck_steps)
-    pristine_authority = precheck_requires_backup and backup_manifest is None and allow_pristine_source_baseline
-    if pristine_authority:
-        _require_pristine_source_attachment_baseline(conn, tier)
-        if target_version != 3:
-            raise MigrationError("pristine attachment baseline authority only admits Source slot 003")
-    if precheck_requires_backup and backup_manifest is None and not pristine_authority:
+    if precheck_requires_backup and backup_manifest is None:
         raise MigrationError(f"{tier.value} migration requires a verified backup manifest")
-    if precheck_requires_backup and not pristine_authority:
+    if precheck_requires_backup:
         # Baseline validation before acquiring the write lock. The paired
         # post-lock call below re-validates with the same connection;
         # _validate_live_source_fingerprint rejects a nonempty WAL, so a
@@ -1382,9 +1425,7 @@ def migrate_archive_tier(
         pending_versions = {step.version for step in steps}
         sidecars = tuple(sidecar for sidecar in all_sidecars if sidecar.slot in pending_versions)
         requires_backup = any(step.requires_backup for step in steps)
-        if pristine_authority:
-            _require_pristine_source_attachment_baseline(conn, tier)
-        if requires_backup and backup_manifest is None and not pristine_authority:
+        if requires_backup and backup_manifest is None:
             raise MigrationError(f"{tier.value} migration requires a verified backup manifest")
         backup_receipt = (
             validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
@@ -2769,7 +2810,6 @@ def authorize_durable_change_train_backup(
     backup_manifest: Path | None,
     evidence_ref: str,
     authorized_at_ms: int | None = None,
-    allow_pristine_source_baseline: bool = False,
 ) -> DurableChangeTrain:
     """Bind the exact live bytes and authenticated backup receipt before apply."""
     if train.state is not DurableChangeTrainState.RESERVED:
@@ -2790,12 +2830,7 @@ def authorize_durable_change_train_backup(
     manifest_path: Path | None = None
     receipt_path: Path | None = None
     mode = "additive-no-backup"
-    if train.migration.requires_backup and backup_manifest is None and allow_pristine_source_baseline:
-        _require_pristine_source_attachment_baseline(conn, train.tier)
-        if train.target_version != 3:
-            raise DurableChangeTrainError("pristine Source authority only admits slot 003")
-        mode = "pristine-source-attachment-baseline"
-    elif train.migration.requires_backup:
+    if train.migration.requires_backup:
         if backup_manifest is None:
             raise DurableChangeTrainError(
                 f"{train.tier.value} train {train.train_id} requires an authenticated backup before apply"
@@ -2857,9 +2892,6 @@ def _revalidate_backup_authorization(conn: sqlite3.Connection, train: DurableCha
         raise DurableChangeTrainError(
             f"authorized live tier version changed: authorized v{authorization.live_user_version}, observed v{version}"
         )
-    if authorization.mode == "pristine-source-attachment-baseline":
-        _require_pristine_source_attachment_baseline(conn, train.tier)
-        return None
     if authorization.mode == "additive-no-backup":
         if train.migration.requires_backup:
             raise DurableChangeTrainError("backup-required migration cannot apply under additive-no-backup authority")
@@ -2984,10 +3016,6 @@ def apply_durable_change_train(
             backup_manifest=backup_manifest,
             target_version=train.target_version,
             schema_replay_proof=train.schema_replay_proof,
-            allow_pristine_source_baseline=(
-                train.backup_authorization is not None
-                and train.backup_authorization.mode == "pristine-source-attachment-baseline"
-            ),
         )
         if (
             result.from_version != train.current_version
@@ -3482,20 +3510,7 @@ def _validate_backup_authorization(train: DurableChangeTrain) -> None:
     live_path = Path(_require_nonempty(authorization.live_tier_path, label="authorized live tier path"))
     if live_path.resolve(strict=False) != Path(reservation.tier_path).resolve(strict=False):
         raise DurableChangeTrainError("backup authorization live path differs from the writer reservation")
-    if authorization.mode == "pristine-source-attachment-baseline":
-        if train.tier is not ArchiveTier.SOURCE or train.current_version != 2 or train.target_version != 3:
-            raise DurableChangeTrainError("pristine Source authority must bind attachment slot 003")
-        if any(
-            value is not None
-            for value in (
-                authorization.manifest_path,
-                authorization.manifest_sha256,
-                authorization.receipt_path,
-                authorization.receipt_sha256,
-            )
-        ):
-            raise DurableChangeTrainError("pristine Source authority cannot claim backup artifacts")
-    elif authorization.mode == "additive-no-backup":
+    if authorization.mode == "additive-no-backup":
         if train.migration.requires_backup:
             raise DurableChangeTrainError("backup-required migration has additive-no-backup authority")
         if any(
@@ -3885,6 +3900,14 @@ def durable_change_train_to_payload(train: DurableChangeTrain) -> dict[str, obje
     return payload
 
 
+@cache
+def _manifest_dataclass_hints(annotation: type) -> Mapping[str, object]:
+    # The canonical manifest schema is static. Recompiling its ForwardRefs for
+    # each nested object retains code proportional to repeated train validation.
+    # Cache schema only; every payload still receives full structural validation.
+    return types.MappingProxyType(get_type_hints(annotation))
+
+
 def _decode_manifest_value(annotation: object, value: object, *, label: str) -> object:
     origin = get_origin(annotation)
     args = get_args(annotation)
@@ -3951,7 +3974,7 @@ def _decode_manifest_value(annotation: object, value: object, *, label: str) -> 
             raise DurableChangeTrainError(
                 f"{label} fields differ: missing={sorted(missing)}, unexpected={sorted(unexpected)}"
             )
-        hints = get_type_hints(annotation)
+        hints = _manifest_dataclass_hints(annotation)
         decoded = {
             item.name: _decode_manifest_value(
                 hints[item.name],

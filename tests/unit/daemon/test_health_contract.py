@@ -223,12 +223,25 @@ class TestTierInventoryContract:
         assert not missing, f"FAST tier missing checks: {sorted(missing)}"
         assert not extra, f"FAST tier has undocumented checks: {sorted(extra)}"
 
-    def test_medium_tier_inventory_pinned(self) -> None:
-        names = frozenset(alert.check_name for alert in _run_medium_checks())
+    def test_medium_tier_inventory_pinned(self, one_shot_workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+        from polylogue.storage.sqlite.write_lease import write_lease
+
+        # cursor_lag reads the ops cursor ledger; without one it honestly
+        # reports "not measured", which is not part of the pinned inventory.
+        root = one_shot_workspace_env["archive_root"]
+        with write_lease("test.health-inventory-fixture", archive_root=root):
+            initialize_archive_database(root / "ops.db", ArchiveTier.OPS)
+        alerts = _run_medium_checks()
+        names = frozenset(alert.check_name for alert in alerts)
         missing = EXPECTED_MEDIUM_CHECKS - names
         extra = names - EXPECTED_MEDIUM_CHECKS
         assert not missing, f"MEDIUM tier missing checks: {sorted(missing)}"
-        assert not extra, f"MEDIUM tier has undocumented checks: {sorted(extra)}"
+        assert not extra, (
+            f"MEDIUM tier has undocumented checks: {sorted(extra)}",
+            [(alert.check_name, alert.message) for alert in alerts if alert.check_name in extra],
+        )
 
     @pytest.mark.slow
     def test_expensive_tier_inventory_pinned(self) -> None:

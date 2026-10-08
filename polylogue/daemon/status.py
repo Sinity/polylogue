@@ -63,7 +63,7 @@ from polylogue.daemon.live_ingest_attempt_progress import (
 from polylogue.daemon.periodic import periodic_loop_payload
 from polylogue.logging import WARNING, emit
 from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
-from polylogue.operations.daemon_status import overall_status_ok
+from polylogue.operations.daemon_status import archive_identity_status, overall_status_ok
 from polylogue.operations.quick_check import (
     QuickCheckObservation,
     observe_quick_check,
@@ -594,6 +594,8 @@ class RawFailureSample(BaseModel):
         "terminal_unknown_export_no_session",
         "terminal_unsupported_shape",
         "terminal_missing_source_coordinates",
+        "terminal_missing_profile_identity",
+        "terminal_retained_zip_membership_unproved",
     ]
     provider_hint: str | None = None
     relative_path_spans: tuple[tuple[StrictInt, StrictInt], ...] = Field(default=(), exclude=True)
@@ -1240,9 +1242,6 @@ def _read_archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | 
         ).fetchone()
         if has_table is None:
             return None
-        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(ingest_cursor)")}
-        if not {"failure_count", "next_retry_at", "excluded"}.issubset(columns):
-            return None
         tracked_file_count = int(conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0])
         failed_file_count = int(
             conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0").fetchone()[0]
@@ -1624,6 +1623,8 @@ def _check_daemon_liveness(lifecycle: dict[str, object] | None = None) -> bool:
 
 
 _COLLECTION_STATE_BY_READINESS_KEY: dict[str, str] = {
+    "configured_sources": "configured_source_readiness",
+    "attachments": "configured_source_readiness",
     "search": "fts_readiness",
     "raw_materialization": "raw_materialization",
     "session_profiles": "insight_freshness",
@@ -1769,6 +1770,7 @@ def _daemon_claim_guard(
     session_summary_readiness: ComponentReadiness,
     embedding_readiness: EmbeddingReadiness,
     live_ingest_attempts: LiveIngestAttemptSummary,
+    configured_components: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Derive the claim-guard block for the daemon-serving status path."""
     raw_component = _component_from_raw_materialization_readiness(raw_materialization_readiness)
@@ -1817,6 +1819,18 @@ def _daemon_claim_guard(
             summary=fts_component.summary,
         ),
     ]
+    for name in ("configured_sources", "attachments"):
+        component = (configured_components or {}).get(name, {})
+        if not isinstance(component, Mapping):
+            component = {}
+        derived_domains.append(
+            DerivedDomainReadiness(
+                domain=name,
+                ready=component.get("state") == "ready",
+                summary=str(component.get("summary", "configured source inspection unavailable")),
+                determinate=component.get("state", "unknown") != "unknown",
+            )
+        )
     if embedding_readiness.embedding_config_enabled:
         derived_domains.append(
             DerivedDomainReadiness(
@@ -2201,6 +2215,33 @@ _UNMEASURED_SINEX_PUBLICATION: dict[str, object] = {
 }
 
 
+def _configured_source_readiness_info() -> dict[str, object]:
+    from polylogue.config import get_config
+    from polylogue.operations.daemon_status import _attachment_component, _source_connection
+    from polylogue.operations.drive_readiness import configured_source_readiness_from_archive
+    from polylogue.operations.operation_context import open_operation_read
+
+    config = get_config()
+    with open_operation_read(config.archive_root) as pinned:
+        return {
+            "configured_sources": configured_source_readiness_from_archive(pinned.archive, config),
+            "attachments": _attachment_component(
+                pinned.archive.index_connection, _source_connection(pinned.archive)
+            ).to_dict(),
+        }
+
+
+def _configured_source_status_fingerprint() -> str:
+    from polylogue.config import get_config
+    from polylogue.operations.drive_readiness import configured_source_observation_fingerprint
+
+    return (
+        _daemon_status_fingerprint(_active_status_db_path())
+        + ":"
+        + configured_source_observation_fingerprint(get_config())
+    )
+
+
 def _daemon_status_component_specs(
     *,
     checked_health: Callable[[set[HealthTier]], DaemonHealth],
@@ -2219,6 +2260,14 @@ def _daemon_status_component_specs(
     change the same way a fresh ephemeral registry would.
     """
     return [
+        StatusComponentSpec(
+            name="configured_source_readiness",
+            scope="configured_sources",
+            collector=_configured_source_readiness_info,
+            deadline_s=2.0,
+            cost_class="moderate",
+            fingerprint=_configured_source_status_fingerprint,
+        ),
         StatusComponentSpec(
             name="sinex_publication",
             scope="archive",
@@ -2633,7 +2682,10 @@ def build_daemon_status(
         """
         snapshot = snapshots[name]
         if unmeasured is not _UNMEASURED_UNSET and _component_is_unmeasured(
-            snapshot, current_fingerprint=current_fingerprint
+            snapshot,
+            current_fingerprint=_configured_source_status_fingerprint()
+            if name == "configured_source_readiness"
+            else current_fingerprint,
         ):
             return unmeasured
         value = snapshot.value
@@ -2876,6 +2928,21 @@ def build_daemon_status(
         archive_storage=storage_info,
         live_ingest_attempts=live_ingest_attempts,
     )
+    configured_components = _v("configured_source_readiness", {}, unmeasured={})
+    for name in ("configured_sources", "attachments"):
+        value = configured_components.get(name) if isinstance(configured_components, Mapping) else None
+        component_readiness[name] = (
+            dict(value)
+            if isinstance(value, Mapping)
+            else {
+                "component": name,
+                "scope": "configured_sources",
+                "state": "unknown",
+                "summary": "configured source inspection unavailable",
+                "counts": {},
+                "caveats": ["configured_source_inspection_unavailable"],
+            }
+        )
     _attach_collection_state(component_readiness, snapshots)
     return DaemonStatus(
         raw_parse_failures=_optional_int(raw_failures.get("parse_failures")),
@@ -2916,6 +2983,7 @@ def build_daemon_status(
         component_readiness=component_readiness,
         status_components=_status_component_metadata(snapshots),
         claim_guard=_daemon_claim_guard(
+            configured_components=component_readiness,
             archive_storage=storage_info,
             raw_materialization_readiness=raw_materialization_readiness,
             raw_frontier_integrity=raw_frontier_integrity,
@@ -3202,6 +3270,9 @@ def daemon_status_payload(
             "claim_guard": status.claim_guard,
             "live": live_source_status_payload(watch_sources),
             "browser_capture": browser_capture_status_payload(),
+            # The archive this daemon answers for, from the same producer as
+            # the pinned operation read: the HTTP route serves this payload.
+            **archive_identity_status(archive_root(), _active_status_db_path()),
             "db_path": str(_active_status_db_path()),
             "db_size_bytes": status.db_size_bytes,
             "wal_size_bytes": status.wal_size_bytes,

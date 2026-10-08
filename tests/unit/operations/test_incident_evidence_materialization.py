@@ -25,6 +25,7 @@ from polylogue.operations.incident_evidence_materialization import (
 )
 from polylogue.operations.work_evidence_writes import replace_work_evidence_graph_checked
 from polylogue.storage.repository import SessionRepository
+from tests.infra.archive_templates import bootstrapped_tier_path
 
 
 async def _seed_incident_session(db_path: Path) -> str:
@@ -144,7 +145,9 @@ async def test_materialize_incident_work_evidence_rejects_empty_selection(tmp_pa
 
 @pytest.mark.asyncio
 async def test_materialize_incident_work_evidence_rejects_unknown_session_ids(tmp_path: Path) -> None:
-    async with SessionRepository(db_path=tmp_path / "index.db") as repository:
+    # A read never initializes the archive it reads; the lookup runs against
+    # an empty, bootstrapped archive so the typed "not found" is what answers.
+    async with SessionRepository(db_path=bootstrapped_tier_path(tmp_path / "index.db")) as repository:
         with pytest.raises(NoIncidentSessionsFoundError):
             await materialize_incident_work_evidence(
                 repository,

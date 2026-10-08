@@ -1,6 +1,6 @@
 """Import-source preflight classification for truthful scheduling.
 
-This module intentionally does not parse full sessions.  It answers the
+This module answers the
 admission-time question: does the staged artifact contain at least one
 payload shape that Polylogue knows how to parse, and are there caveats the
 operator should see before the daemon claims the import is pending?
@@ -8,31 +8,26 @@ operator should see before the daemon claims the import is pending?
 
 from __future__ import annotations
 
-import json
 import zipfile
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
-from io import BytesIO
-from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import IO, TYPE_CHECKING, Any
 
 from polylogue.core.enums import Provider
 from polylogue.sources.decoder_zip import (
-    MAX_UNCOMPRESSED_SIZE,
     ZIP_JSON_SUFFIXES,
-    ZipBombError,
     ZipEntryValidator,
-    open_bounded_zip_entry,
+    open_zip_entry,
 )
-from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
-from polylogue.sources.dispatch import detect_provider, require_positive_conversational_evidence
-from polylogue.sources.parsers import antigravity
+from polylogue.sources.dispatch import detect_provider_from_stream_evidence
+from polylogue.sources.sqlite_inspection import inspect_sqlite_source
+
+if TYPE_CHECKING:
+    from polylogue.sources.source_staging import SourceInputBinding
 
 _JSON_SUFFIXES = frozenset({".json", ".jsonl", ".ndjson"})
-_MAX_SQLITE_PROBE_SESSIONS = 8
-_MAX_DIRECTORY_CANDIDATES = 256
-_MAX_STREAM_RECORDS = 32
 
 
 class ImportPreflightStatus(str, Enum):
@@ -164,125 +159,73 @@ class _PreflightAccumulator:
         return ImportPreflightStatus.UNSUPPORTED
 
 
-def preflight_import_source(path: Path) -> ImportPreflightResult:
-    """Classify a staged import source before the daemon claims acceptance."""
-    resolved = path.resolve()
-    acc = _PreflightAccumulator(source_path=str(resolved))
-    if resolved.is_dir():
-        _preflight_directory(resolved, acc)
-    else:
-        _preflight_file(resolved, acc, label=resolved.name)
-    return acc.result()
-
-
-def _preflight_directory(path: Path, acc: _PreflightAccumulator) -> None:
-    candidates_seen = 0
-    for child in sorted(item for item in path.rglob("*") if item.is_file()):
-        if not _is_candidate_path(child):
-            acc.ignored()
-            continue
-        candidates_seen += 1
-        if candidates_seen > _MAX_DIRECTORY_CANDIDATES:
-            acc._caveat(f"{path}: stopped after {_MAX_DIRECTORY_CANDIDATES} candidate files")
-            break
-        _preflight_file(child, acc, label=str(child.relative_to(path)))
-    if candidates_seen == 0:
-        acc.unsupported(str(path), "directory contains no JSON, JSONL, or ZIP import candidates")
-
-
-def _preflight_file(path: Path, acc: _PreflightAccumulator, *, label: str) -> None:
-    lower_name = path.name.lower()
-    if Path(lower_name).suffix in {".db", ".sqlite", ".sqlite3"}:
-        _preflight_sqlite(path, acc, label=label)
-        return
-    if lower_name.endswith(".zip"):
-        _preflight_zip(path, acc, label=label)
-        return
-    if not _is_json_candidate_name(lower_name):
-        acc.unsupported(label, "file extension is not a supported import candidate")
-        return
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        acc.malformed(label, f"could not read file: {exc}")
-        return
-    _preflight_json_bytes(raw, acc, label=label)
-
-
-def _preflight_sqlite(path: Path, acc: _PreflightAccumulator, *, label: str) -> None:
+def _preflight_sqlite(
+    path: Path,
+    acc: _PreflightAccumulator,
+    *,
+    label: str,
+    source_binding: SourceInputBinding | None = None,
+    check_stop: Callable[[], None] | None = None,
+) -> None:
     """Classify a SQLite import by its provider schema, never by its suffix."""
+    callback_failed = False
+
+    def heartbeat() -> None:
+        nonlocal callback_failed
+        from polylogue.core.compute_cancel import check_compute_cancelled
+
+        callback_failed = True
+        check_compute_cancelled()
+        if check_stop is not None:
+            check_stop()
+        callback_failed = False
+
     try:
-        if antigravity.looks_like_trajectory_db_path(path):
-            # Preflight answers an admissibility question, so it pays for a
-            # bounded probe rather than for the whole file. ``parse_trajectory_db``
-            # is a generator that runs one steps query per ``trajectory_meta``
-            # row, so ``list()`` made the cost of asking scale with a crafted
-            # file. The unexamined remainder is a counted caveat -- never a
-            # silently partial "supported".
-            probe = list(
-                islice(antigravity.parse_trajectory_db(path, fallback_id=path.stem), _MAX_SQLITE_PROBE_SESSIONS + 1)
-            )
-            unexamined = len(probe) > _MAX_SQLITE_PROBE_SESSIONS
-            sessions = probe[:_MAX_SQLITE_PROBE_SESSIONS]
-            if unexamined:
-                acc._caveat(
-                    f"{label}: classified from the first {_MAX_SQLITE_PROBE_SESSIONS} trajectories; "
-                    "the remainder was not inspected"
-                )
-            # Preflight promises what production import does, so the probed
-            # sessions pass the same evidence gate every production write path
-            # applies. An empty trajectory, or one of only unsupported step
-            # formats, is refused there, and so it is refused here.
-            admitted = require_positive_conversational_evidence(
-                sessions, provider=Provider.ANTIGRAVITY, source_path=str(path)
-            )
-            if admitted:
+        inspection = inspect_sqlite_source(path, preflight=True, source_binding=source_binding, check_stop=heartbeat)
+        if inspection.domain == "antigravity_trajectory_db":
+            if inspection.admitted:
                 acc.supported(label, Provider.ANTIGRAVITY)
-                if any(session.ingest_flags for session in sessions) or len(admitted) < len(sessions):
+                if inspection.degraded:
                     acc._caveat(f"{label}: trajectory contains unsupported, degraded or empty steps")
             else:
                 acc.unsupported(label, "Antigravity trajectory schema contains no materialized messages")
             return
     except Exception as exc:
-        # The parser adapter classifies SQLite read failures at its storage
-        # seam; this boundary turns any failed inspection into a typed
-        # preflight outcome without adding a new hand-written sqlite policy.
+        from polylogue.core.compute import DaemonOperationCancelled
+
+        if callback_failed or isinstance(exc, DaemonOperationCancelled):
+            raise
         acc.malformed(label, f"could not inspect SQLite trajectory: {type(exc).__name__}: {exc}")
         return
     acc.unsupported(label, "SQLite schema is not a supported Antigravity trajectory store")
 
 
-def _preflight_zip(path: Path, acc: _PreflightAccumulator, *, label: str) -> None:
+def _preflight_zip(
+    path: Path,
+    acc: _PreflightAccumulator,
+    *,
+    label: str,
+    handle: IO[bytes] | None = None,
+    check_stop: Callable[[], None] | None = None,
+) -> None:
     try:
-        with zipfile.ZipFile(path) as zf:
+        with zipfile.ZipFile(path if handle is None else handle) as zf:
             validator = ZipEntryValidator("unknown", cursor_state=None, zip_path=path)
             admitted = False
-            rejected = False
-
-            def record_rejection(info: zipfile.ZipInfo, reason: str) -> None:
-                nonlocal rejected
-                rejected = True
-                acc.malformed(
-                    f"{label}:{info.filename}",
-                    f"ZIP entry rejected before read: {reason}",
-                )
-
             for info in validator.filter_entries(
                 zf.infolist(),
                 allowed_suffixes=ZIP_JSON_SUFFIXES,
-                on_rejected=record_rejection,
             ):
                 admitted = True
                 entry_label = f"{label}:{info.filename}"
                 try:
-                    with open_bounded_zip_entry(zf, info) as handle:
-                        raw = handle.read(MAX_UNCOMPRESSED_SIZE + 1)
-                except (OSError, KeyError, zipfile.BadZipFile, ZipBombError) as exc:
+                    with open_zip_entry(zf, info) as handle:
+                        _preflight_json_handle(handle, acc, label=entry_label, check_stop=check_stop)
+                except (OSError, KeyError, zipfile.BadZipFile) as exc:
                     acc.malformed(entry_label, f"could not read ZIP entry: {exc}")
                     continue
-                _preflight_json_bytes(raw, acc, label=entry_label)
 
-            if not admitted and not rejected:
+            if not admitted:
                 acc.unsupported(label, "ZIP contains no JSON or JSONL import candidates")
     except zipfile.BadZipFile as exc:
         acc.malformed(label, f"invalid ZIP archive: {exc}")
@@ -290,32 +233,18 @@ def _preflight_zip(path: Path, acc: _PreflightAccumulator, *, label: str) -> Non
         acc.malformed(label, f"could not read ZIP archive: {exc}")
 
 
-def _preflight_json_bytes(raw: bytes, acc: _PreflightAccumulator, *, label: str) -> None:
-    text = _decode_json_bytes(raw)
-    if text is None:
-        acc.malformed(label, "unsupported text encoding")
-        return
+def _preflight_json_handle(
+    handle: IO[bytes], acc: _PreflightAccumulator, *, label: str, check_stop: Callable[[], None] | None = None
+) -> None:
+    import ijson
+
     try:
-        payload: Any = json.loads(text)
-    except json.JSONDecodeError:
-        _preflight_json_stream(raw, acc, label=label)
+        provider, _evidence = detect_provider_from_stream_evidence(handle, check_stop=check_stop)
+    except (ijson.JSONError, UnicodeError, ValueError) as exc:
+        acc.malformed(label, f"could not decode complete JSON input: {type(exc).__name__}")
         return
-    provider = detect_provider(payload)
     if provider is None:
         acc.unsupported(label, "JSON shape is not a supported export")
-        return
-    acc.supported(label, provider)
-
-
-def _preflight_json_stream(raw: bytes, acc: _PreflightAccumulator, *, label: str) -> None:
-    try:
-        payloads = list(islice(_iter_json_stream(BytesIO(raw), label), _MAX_STREAM_RECORDS))
-    except Exception as exc:
-        acc.malformed(label, f"could not decode JSON stream: {type(exc).__name__}")
-        return
-    provider = detect_provider(payloads)
-    if provider is None:
-        acc.unsupported(label, "JSONL shape is not a supported export")
         return
     acc.supported(label, provider)
 
@@ -336,5 +265,97 @@ def _is_json_candidate_name(name: str) -> bool:
 __all__ = [
     "ImportPreflightResult",
     "ImportPreflightStatus",
-    "preflight_import_source",
 ]
+
+
+def _preflight_handle(
+    handle: IO[bytes], semantic_path: Path, *, check_stop: Callable[[], None] | None = None
+) -> ImportPreflightResult:
+    """Inspect the actual accepted byte descriptor in its fresh reader process."""
+    acc = _PreflightAccumulator(str(semantic_path))
+    if semantic_path.suffix.lower() == ".zip":
+        _preflight_zip(semantic_path, acc, label=semantic_path.name, handle=handle, check_stop=check_stop)
+    elif _is_json_candidate_name(semantic_path.name.lower()):
+        _preflight_json_handle(handle, acc, label=semantic_path.name, check_stop=check_stop)
+    else:
+        acc.unsupported(semantic_path.name, "file extension is not a supported import candidate")
+    return acc.result()
+
+
+def _decode_bound_preflight(value: dict[str, Any], semantic_path: Path) -> ImportPreflightResult:
+    names = {
+        "status",
+        "source_path",
+        "candidate_count",
+        "supported_count",
+        "unsupported_count",
+        "malformed_count",
+        "ignored_count",
+        "providers",
+        "caveats",
+        "samples",
+    }
+    if set(value) != names or value["source_path"] != str(semantic_path):
+        raise ValueError("source preflight protocol differs from its accepted coordinate")
+    counts = {name: value[name] for name in names if name.endswith("_count")}
+    if any(type(count) is not int or count < 0 for count in counts.values()):
+        raise ValueError("invalid source preflight counts")
+    if counts["candidate_count"] != sum(
+        counts[name] for name in ("supported_count", "unsupported_count", "malformed_count")
+    ):
+        raise ValueError("inconsistent source preflight counts")
+    if any(
+        not isinstance(value[name], list) or any(not isinstance(item, str) for item in value[name])
+        for name in ("providers", "caveats", "samples")
+    ):
+        raise ValueError("invalid source preflight evidence")
+    acc = _PreflightAccumulator(
+        str(semantic_path),
+        **counts,
+        providers={Provider(provider) for provider in value["providers"]},
+        caveats=value["caveats"],
+        samples=value["samples"],
+    )
+    result = acc.result()
+    if result.status.value != value["status"]:
+        raise ValueError("inconsistent source preflight status")
+    return result
+
+
+def preflight_import_bindings(
+    members: Iterable[tuple[SourceInputBinding, str]],
+    *,
+    source_path: str,
+    single_file: bool,
+    check_stop: Callable[[], None],
+) -> ImportPreflightResult:
+    """Classify every captured member before scheduling, preserving original labels."""
+    from polylogue.sources.source_staging import preflight_bound_bytes
+    from polylogue.sources.sqlite_snapshot import is_sqlite_path
+
+    acc = _PreflightAccumulator(source_path)
+    seen = False
+    for binding, label in members:
+        seen = True
+        if not _is_candidate_path(binding.source_path):
+            if single_file:
+                acc.unsupported(label, "file extension is not a supported import candidate")
+            else:
+                acc.ignored()
+            continue
+        if is_sqlite_path(binding.source_path):
+            _preflight_sqlite(binding.source, acc, label=label, source_binding=binding, check_stop=check_stop)
+            continue
+        result = _decode_bound_preflight(preflight_bound_bytes(binding, check_stop=check_stop), binding.source_path)
+        for name in ("candidate_count", "supported_count", "unsupported_count", "malformed_count", "ignored_count"):
+            setattr(acc, name, getattr(acc, name) + getattr(result, name))
+        acc.providers.update(result.providers)
+        # The bound preflight already labels its evidence with the member's
+        # semantic source path; prefixing the binding label again doubles it.
+        for caveat in result.caveats:
+            acc._caveat(caveat)
+        for sample in result.samples:
+            acc._sample(sample)
+    if not seen or not acc.candidate_count:
+        acc.unsupported(source_path, "directory contains no JSON, JSONL, or ZIP import candidates")
+    return acc.result()

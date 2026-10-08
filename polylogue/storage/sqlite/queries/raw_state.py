@@ -10,7 +10,7 @@ from polylogue.core.enums import Origin, Provider, ValidationMode, ValidationSta
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
-from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
+from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update, raw_state_parameter
 
 
 def raw_provider_origin_sql(*, table_alias: str | None = None) -> str:
@@ -96,7 +96,7 @@ async def apply_raw_state_update(
             await conn.commit()
         return
 
-    set_clauses, compiled_params = compile_raw_state_update(state, now_ms=_now_ms())
+    set_clauses, compiled_params = compile_raw_state_update(state, now_ms=_now_ms(), literal=raw_state_parameter)
     if not set_clauses:
         if transaction_depth == 0:
             await conn.commit()
@@ -128,7 +128,7 @@ async def mark_raw_parsed(
         )
     else:
         state = RawSessionStateUpdate(
-            parse_error=error[:2000],
+            parse_error=error,
             payload_provider=provider_token,
         )
     await apply_raw_state_update(
@@ -167,7 +167,7 @@ async def mark_raw_validated(
 
     state = RawSessionStateUpdate(
         validation_status=validation_status,
-        validation_error=(error[:2000] if error else None),
+        validation_error=(error if error else None),
         validation_drift_count=drift_count,
         validation_provider=coerce_provider(provider),
         validation_mode=validation_mode,
@@ -263,3 +263,20 @@ __all__ = [
     "reset_parse_status",
     "reset_validation_status",
 ]
+
+
+def retained_raw_decode_refusal_sql() -> str:
+    """Canonical current parser/artifact decode-refusal projection."""
+    from polylogue.core.raw_failure_evidence import RAW_FAILURE_VALIDATION_FAILURE_KINDS
+
+    return f"""SELECT a.artifact_kind, r.parse_error, a.support_status,
+              r.validation_status, a.classification_reason FROM raw_sessions r
+            JOIN raw_authority_parser_census c ON c.raw_id = r.raw_id
+            JOIN raw_artifacts a ON a.raw_id = r.raw_id
+              AND (a.origin IS r.origin OR a.origin IS {raw_provider_origin_sql(table_alias="r")})
+              AND a.source_path IS r.source_path AND a.source_index IS r.source_index
+            WHERE r.raw_id = ? AND c.parser_fingerprint = ? AND c.status = 'complete'
+              AND r.parse_error IS NOT NULL
+              AND a.support_status = 'decode_failed'
+              AND a.artifact_kind IN ({",".join("?" for _ in RAW_FAILURE_VALIDATION_FAILURE_KINDS)})
+            ORDER BY a.artifact_kind LIMIT 1"""

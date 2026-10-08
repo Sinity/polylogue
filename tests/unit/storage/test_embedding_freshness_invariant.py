@@ -67,9 +67,6 @@ class _FakeVectorProvider:
         assert input_type == "document"
         return [[self.value] * self.dimension for _ in texts]
 
-    def upsert(self, *args: object, **kwargs: object) -> None:
-        raise AssertionError("archive materialization must use the archive embedding route")
-
     def query(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
         return []
 
@@ -661,6 +658,21 @@ def test_common_derivation_replaces_physical_vector_with_existing_metadata(
     adapter = EmbeddingDerivationAdapter(index_db, _FakeVectorProvider(0.25), archive_root=root, reserve=admit)
     frame = make_embedding_frame(index_db, archive_root=root, adapter=adapter, scope=(session_id,))
     report = converge(DerivationRegistry([adapter]), frame, publisher=admit)
+    if damage == "recipe":
+        # Input selection is part of the embedding contract: a changed
+        # selector needs a validated replacement generation, so in-place
+        # publication refuses and the purchased V1 vector stays untouched.
+        assert report.done == 0
+        assert report.failed == 1
+        (outcome,) = report.outcomes
+        assert outcome.transient is False
+        assert outcome.error is not None and "EmbeddingContractTransitionRequiredError" in outcome.error
+        conn = _open_embeddings(root / "embeddings.db")
+        try:
+            assert _current_ref_and_vector(conn, session_id) == (_message_id, address, old_vector)
+        finally:
+            conn.close()
+        return
     assert report.done == 1, report.outcomes
     assert report.failed == 0
     conn = _open_embeddings(root / "embeddings.db")

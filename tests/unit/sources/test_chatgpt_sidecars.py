@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -25,6 +26,7 @@ from polylogue.sources.parsers.chatgpt_sidecars import (
     parse_library_files,
 )
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
+from polylogue.storage import io_phase_metrics
 
 
 def test_sidecar_enrichment_updates_prepared_rows_without_collecting(tmp_path: Path) -> None:
@@ -464,3 +466,236 @@ class TestChatGPTAssetIndexResolveSandbox:
         assert resolution.tier == 1
         assert resolution.file is not None
         assert resolution.file.file_id == "file_a"
+
+
+@pytest.mark.parametrize("failed_statement", ["PRAGMA journal_mode", "BEGIN", "CREATE TABLE", "CREATE INDEX"])
+@pytest.mark.parametrize("failed_close", [False, True])
+def test_asset_index_constructor_settles_or_retains_actual_sql_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    failed_statement: str,
+    failed_close: bool,
+) -> None:
+    import sqlite3
+
+    from polylogue.storage.sqlite import connection_profile
+
+    captured: list[ChatGPTAssetIndex] = []
+    original_open = connection_profile.open_scratch_connection
+    original_connect = sqlite3.connect
+    fail_closes = [failed_close]
+
+    class FaultConnection(io_phase_metrics._MeasuredConnection):
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+            if sql.startswith(failed_statement):
+                raise sqlite3.OperationalError("synthetic asset setup fault")
+            return super().execute(sql, *args, **kwargs)
+
+        def close(self) -> None:
+            if fail_closes[0]:
+                raise sqlite3.OperationalError("synthetic asset close fault")
+            super().close()
+
+    def connect(path: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        kwargs["factory"] = FaultConnection
+        result = original_connect(path, *args, **kwargs)
+        assert isinstance(result, sqlite3.Connection)
+        return result
+
+    def open_writer(path: Path, **kwargs: Any) -> object:
+        dependencies = kwargs["lifetime_dependencies"]
+        assert isinstance(dependencies, tuple) and isinstance(dependencies[0], ChatGPTAssetIndex)
+        captured.append(dependencies[0])
+        return original_open(path, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    monkeypatch.setattr(connection_profile, "open_scratch_connection", open_writer)
+    expected_error = connection_profile.NativeConnectionSettlementError if failed_close else sqlite3.OperationalError
+    with pytest.raises(expected_error):
+        ChatGPTAssetIndex()
+    assert len(captured) == 1
+    index = captured[0]
+    owners = connection_profile.retained_native_sql_owners_for_lifetime(index)
+    if failed_close:
+        assert owners
+        assert index._path.exists()
+        with pytest.raises(RuntimeError):
+            index.close()
+        fail_closes[0] = False
+        for owner in owners:
+            owner.close()
+        index.close()
+    else:
+        assert not owners
+    assert not index._path.parent.exists()
+
+
+def test_streamed_sidecar_duplicate_keys_preserve_last_value_and_first_order() -> None:
+    from io import BytesIO
+
+    index = ChatGPTAssetIndex()
+    try:
+        assert index.load_stream(
+            BytesIO(b'{"file-a.dat":"first","file-a":"alias","file-a.dat":"last"}'),
+            library=False,
+        )
+        assert index.load_stream(
+            BytesIO(
+                b'[{"file_id":"file-b","file_name":"old","file_name":"shared"},'
+                b'{"file_id":"file-c","file_name":"shared"},'
+                b'{"file_id":"file-b","file_name":"shared","mime_type":"text/plain"}]'
+            ),
+            library=True,
+        )
+        index.seal()
+        resolved = index.resolve_dat("file-a")
+        assert resolved is not None and resolved.name == "alias"
+        record = index.library_record("file-b")
+        assert record is not None and record.mime_type == "text/plain"
+        resolution = index.resolve_sandbox(file_name="shared", message_id=None, thread_id=None)
+        assert resolution.tier == 5 and resolution.file is None
+    finally:
+        index.close()
+
+
+@pytest.mark.parametrize("library", [False, True])
+def test_streamed_sidecar_cancellation_rolls_back_partial_input(monkeypatch: pytest.MonkeyPatch, library: bool) -> None:
+    import json
+    import threading
+    from io import BytesIO
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    index = ChatGPTAssetIndex()
+    baseline = [{"file_id": "file-old", "file_name": "old.txt"}] if library else {"file-old.dat": "old.txt"}
+    assert index.load_stream(BytesIO(json.dumps(baseline).encode()), library=library)
+    cancelled = threading.Event()
+    insert = index._insert_library if library else index._insert_name
+
+    def cancel_after_insert(*args: Any) -> None:
+        insert(*args)
+        cancelled.set()
+
+    monkeypatch.setattr(index, "_insert_library" if library else "_insert_name", cancel_after_insert)
+    token = compute_cancel.set(cancelled)
+    try:
+        payload = (
+            [{"file_id": f"file-new-{number}", "file_name": "new.txt"} for number in range(1024)]
+            if library
+            else {f"file-new-{number}.dat": "new.txt" for number in range(1024)}
+        )
+        with pytest.raises(DaemonOperationCancelled):
+            index.load_stream(BytesIO(json.dumps(payload).encode()), library=library)
+        assert cancelled.is_set()
+        cancelled.clear()
+        index.seal()
+        retained = index.resolve_dat("file-old")
+        assert retained is not None
+        assert retained.name == "old.txt"
+        assert index.resolve_dat("file-new-0") is None
+    finally:
+        compute_cancel.reset(token)
+        index.close()
+
+
+def test_streamed_sidecar_trailing_error_rolls_back_all_lookup_rows() -> None:
+    from io import BytesIO
+
+    import ijson
+
+    index = ChatGPTAssetIndex()
+    try:
+        with pytest.raises(ijson.JSONError):
+            index.load_stream(BytesIO(b'{"file-a.dat":"unproved"} trailing'), library=False)
+        index.seal()
+        assert index.resolve_dat("file-a") is None
+    finally:
+        index.close()
+
+
+def test_paged_asset_groups_preserve_source_merge_and_rendition_keys() -> None:
+    index = ChatGPTAssetIndex()
+    try:
+        first = index.begin_asset_group()
+        index.record_asset(first, "file-a", "one/file-a.png", ("a1" * 32, 1))
+        index.record_asset(first, "file-a", "two/file-a.png", ("a2" * 32, 2))
+        index.record_asset(first, "file-a", "one/file-a.png", ("ff" * 32, 99))
+        index.finish_asset_group(first)
+        second = index.begin_asset_group()
+        index.record_asset(second, "file-a", "single/file-a.png", ("a3" * 32, 3))
+        index.finish_asset_group(second)
+        index.seal()
+        assert dict(index.asset_blobs) == {
+            "file-a#one/file-a.png": ("a1" * 32, 1),
+            "file-a#two/file-a.png": ("a2" * 32, 2),
+            "file-a": ("a3" * 32, 3),
+        }
+        assert list(index.rendition_keys("file-a")) == ["file-a#one/file-a.png", "file-a#two/file-a.png"]
+    finally:
+        index.close()
+
+
+def test_sidecar_cleanup_preserves_borrowed_index_and_settles_asset_supplement() -> None:
+    from polylogue.sources.assembly import close_sidecar_data
+
+    naming = ChatGPTAssetIndex.empty()
+    supplement = ChatGPTAssetIndex()
+    group = supplement.begin_asset_group()
+    supplement.record_asset(group, "file-a", "file-a.png", ("aa" * 32, 1))
+    supplement.finish_asset_group(group)
+    supplement.seal()
+    borrowed: SidecarData = {"chatgpt_asset_index": naming}
+    combined: SidecarData = {**borrowed, "chatgpt_asset_blobs": supplement.asset_blobs}
+    try:
+        close_sidecar_data(combined, borrowed=borrowed)
+        assert not naming._closed
+        assert supplement._closed
+        assert naming.is_empty
+    finally:
+        naming.close()
+        supplement.close()
+
+
+def test_asset_lookup_failed_native_close_retains_index_until_actual_settlement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    from polylogue.storage.sqlite import connection_profile
+
+    index = ChatGPTAssetIndex.build(asset_file_names_payload={"file-a.dat": "asset.png"})
+    original_connect = sqlite3.connect
+    fail_closes = [True]
+
+    class FaultReader(io_phase_metrics._MeasuredConnection):
+        def close(self) -> None:
+            if fail_closes[0]:
+                raise sqlite3.OperationalError("synthetic asset lookup close fault")
+            super().close()
+
+    def connect(path: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        kwargs["factory"] = FaultReader
+        result = original_connect(path, *args, **kwargs)
+        assert isinstance(result, sqlite3.Connection)
+        return result
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    try:
+        with pytest.raises(connection_profile.NativeConnectionSettlementError):
+            index.resolve_dat("file-a")
+        owners = connection_profile.retained_native_sql_owners_for_lifetime(index)
+        assert owners and index._path.exists()
+        with pytest.raises(RuntimeError):
+            index.close()
+        fail_closes[0] = False
+        for owner in owners:
+            owner.close()
+        assert not connection_profile.retained_native_sql_owners_for_lifetime(index)
+        resolved = index.resolve_dat("file-a")
+        assert resolved is not None and resolved.name == "asset.png"
+    finally:
+        fail_closes[0] = False
+        for owner in connection_profile.retained_native_sql_owners_for_lifetime(index):
+            owner.close()
+        index.close()
+    assert not index._path.parent.exists()

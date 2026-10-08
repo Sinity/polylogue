@@ -73,6 +73,44 @@ logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
+class CursorPathAuthority:
+    """The canonical coordinate and profile of the file a cursor describes.
+
+    Every cursor write carries one: a byte offset without it is refused by
+    the raw-frontier gate (``ops cursor canonical path authority is
+    unavailable``). Writers that hold an acquisition capture pass its
+    already-observed values; the others observe the file through
+    :meth:`observe`, the same bound open acquisition uses.
+    """
+
+    canonical_source_path: str
+    captured_profile_key: str | None
+
+    @classmethod
+    def observe(cls, path: Path) -> CursorPathAuthority:
+        """Bind the canonical path and profile of the file at ``path`` now."""
+        from polylogue.sources.acquisition_boundary import (
+            bound_profile_identity,
+            bound_source_observation,
+            open_bound_path,
+        )
+
+        with open_bound_path(path, None) as stream:
+            canonical, _observation = bound_source_observation(stream)
+            profile = bound_profile_identity(stream)
+        if canonical is None:
+            raise OSError(f"cursor source has no canonical coordinate: {path}")
+        return cls(canonical, profile.key if profile is not None else None)
+
+    @classmethod
+    def of_record(cls, record: CursorRecord) -> CursorPathAuthority | None:
+        """The authority an existing cursor already claims, if it claims one."""
+        if record.canonical_source_path is None:
+            return None
+        return cls(record.canonical_source_path, record.captured_profile_key)
+
+
+@dataclass(frozen=True, slots=True)
 class CursorRecord:
     """Stored live cursor state for one source file."""
 
@@ -82,6 +120,8 @@ class CursorRecord:
     last_complete_newline: int
     record_count: int
     updated_at: str
+    canonical_source_path: str | None = None
+    captured_profile_key: str | None = None
     last_record_ts: str | None = None
     parser_fingerprint: str | None = None
     content_fingerprint: str | None = None
@@ -130,12 +170,12 @@ class LiveConvergenceDebt:
 
 
 @dataclass(frozen=True, slots=True)
-class ConvergenceDebtClear:
-    """Clear stale debt for one subject while preserving named stages."""
+class ConvergenceDebtSettlement:
+    """Settle exactly one evaluated stage and subject."""
 
     subject_type: str
     subject_id: str
-    preserved_stages: tuple[str, ...]
+    stage: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +194,7 @@ class ConvergenceDebtWrite:
 class ConvergenceDebtBatchEntry:
     """Ordered clear/write operations that previously formed one path outcome."""
 
-    clears: tuple[ConvergenceDebtClear, ...] = ()
+    clears: tuple[ConvergenceDebtSettlement, ...] = ()
     writes: tuple[ConvergenceDebtWrite, ...] = ()
 
 
@@ -264,6 +304,8 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
         next_retry_at=_optional_str(row[13]),
         excluded=bool(row[16]) if row[16] is not None else False,
         deferred_end_offset=_optional_int(row[17]),
+        canonical_source_path=_optional_str(row[18]),
+        captured_profile_key=_optional_str(row[19]),
     )
 
 
@@ -656,9 +698,17 @@ class CursorStore:
         (polylogue-5pv1p).
         """
         origin = _origin_value_for_source_name(record.source_name)
+        from polylogue.core.enums import Provider
+        from polylogue.sources.parsers.hermes_identity import declares_profile_identity
+
+        # A cursor records a profile key only where acquisition declares one,
+        # the rule its archived-raw reconciliation reads through.
+        provider = None if record.source_name is None else Provider.from_string(record.source_name)
         upsert_archive_ingest_cursor(
             conn,
             source_path=record.source_path,
+            canonical_source_path=record.canonical_source_path,
+            captured_profile_key=record.captured_profile_key if declares_profile_identity(provider) else None,
             updated_at_ms=_required_epoch_ms(record.updated_at),
             origin=origin,
             stat_size=record.byte_size,
@@ -860,21 +910,10 @@ class CursorStore:
                 _begin_ops_write(conn)
                 for entry in batch:
                     for clear in entry.clears:
-                        if clear.preserved_stages:
-                            placeholders = ",".join("?" for _ in clear.preserved_stages)
-                            conn.execute(
-                                f"""
-                                DELETE FROM convergence_debt
-                                WHERE target_type = ? AND target_id = ?
-                                  AND stage NOT IN ({placeholders})
-                                """,
-                                (clear.subject_type, clear.subject_id, *clear.preserved_stages),
-                            )
-                        else:
-                            conn.execute(
-                                "DELETE FROM convergence_debt WHERE target_type = ? AND target_id = ?",
-                                (clear.subject_type, clear.subject_id),
-                            )
+                        conn.execute(
+                            "DELETE FROM convergence_debt WHERE target_type = ? AND target_id = ? AND stage = ?",
+                            (clear.subject_type, clear.subject_id, clear.stage),
+                        )
                     for debt_write in entry.writes:
                         self._sync_convergence_debt_on_conn(
                             conn,
@@ -915,37 +954,6 @@ class CursorStore:
                 conn.commit()
 
         best_effort_cursor_write("archive ops convergence debt clear", write)
-
-    def _clear_convergence_debt_except_from_ops(
-        self,
-        *,
-        subject_type: str,
-        subject_id: str,
-        stages: Iterable[str],
-    ) -> None:
-        preserved = tuple(stages)
-
-        def write() -> None:
-            with self._connect_ops() as conn:
-                if preserved:
-                    placeholders = ",".join("?" for _ in preserved)
-                    conn.execute(
-                        f"""
-                        DELETE FROM convergence_debt
-                        WHERE target_type = ?
-                          AND target_id = ?
-                          AND stage NOT IN ({placeholders})
-                        """,
-                        (subject_type, subject_id, *preserved),
-                    )
-                else:
-                    conn.execute(
-                        "DELETE FROM convergence_debt WHERE target_type = ? AND target_id = ?",
-                        (subject_type, subject_id),
-                    )
-                conn.commit()
-
-        best_effort_cursor_write("archive ops convergence debt clear-except", write)
 
     def begin_ingest_attempt(
         self,
@@ -1324,7 +1332,8 @@ class CursorStore:
                 origin,
                 updated_at_ms,
                 excluded,
-                deferred_end_offset
+                deferred_end_offset,
+                canonical_source_path, captured_profile_key
             FROM ingest_cursor
             WHERE source_path = ?
             """,
@@ -1364,7 +1373,8 @@ class CursorStore:
                         origin,
                         updated_at_ms,
                         excluded,
-                        deferred_end_offset
+                        deferred_end_offset,
+                        canonical_source_path, captured_profile_key
                     FROM ingest_cursor
                     WHERE source_path IN ({placeholders})
                     """,
@@ -1395,6 +1405,7 @@ class CursorStore:
         failure_count: int | None = None,
         next_retry_at: str | None = None,
         excluded: bool | None = None,
+        authority: CursorPathAuthority,
         allow_backward: bool = False,
         deferred_end_offset: int | None = None,
     ) -> bool:
@@ -1414,6 +1425,8 @@ class CursorStore:
         return self._sync_cursor_record_to_ops(
             CursorRecord(
                 source_path=str(path),
+                canonical_source_path=authority.canonical_source_path,
+                captured_profile_key=authority.captured_profile_key,
                 byte_size=byte_size,
                 byte_offset=offset,
                 last_complete_newline=newline_offset,
@@ -1472,7 +1485,13 @@ class CursorStore:
         best_effort_cursor_write("archive ops cursor observation rebase", write)
         return updated
 
-    def mark_failed(self, path: Path, *, failed_stat: os.stat_result | None = None) -> None:
+    def mark_failed(
+        self,
+        path: Path,
+        *,
+        authority: CursorPathAuthority | None,
+        failed_stat: os.stat_result | None = None,
+    ) -> None:
         """Increment failure count and set exponential backoff.
 
         Read-modify-write against ``failure_count`` happens inside one
@@ -1485,6 +1504,10 @@ class CursorStore:
         def mutate(current: CursorRecord | None) -> CursorRecord | None:
             record = current
             if record is None:
+                if authority is None:
+                    # No cursor and no observable file: there is no offset
+                    # this failure could bind, so it records nothing.
+                    return None
                 try:
                     stat = path.stat()
                     byte_size = stat.st_size
@@ -1498,6 +1521,8 @@ class CursorStore:
                     mtime_ns = None
                 record = CursorRecord(
                     source_path=str(path),
+                    canonical_source_path=authority.canonical_source_path,
+                    captured_profile_key=authority.captured_profile_key,
                     byte_size=byte_size,
                     byte_offset=byte_size,
                     last_complete_newline=byte_size,
@@ -1539,13 +1564,14 @@ class CursorStore:
         self._read_modify_write_cursor_record(path, mutate, actuator="mark_failed")
 
     def defer_full_cursor_reconciliation(self, path: Path) -> None:
-        """Retry archive-backed full-cursor handoff without poisoning the source.
+        """Retry full intake or its handoff without poisoning the source.
 
         A raw full capture can be durable and parseable while its live JSONL
         source is still appending too quickly to establish a stable handoff.
         This is a scheduling condition, not a parse/persistence failure: it
         must never consume the finite failure budget that quarantines malformed
-        files.
+        files. A transient source read likewise remains owed for as many passes
+        as it takes to become readable.
         """
 
         def mutate(current: CursorRecord | None) -> CursorRecord | None:
@@ -1806,7 +1832,8 @@ class CursorStore:
                         origin,
                         updated_at_ms,
                     excluded,
-                    deferred_end_offset
+                    deferred_end_offset,
+                    canonical_source_path, captured_profile_key
                 FROM ingest_cursor
                 WHERE excluded = 0
                   AND (
@@ -1847,21 +1874,6 @@ class CursorStore:
             materializer_version=materializer_version,
             now=now,
             deferred=deferred,
-        )
-
-    def clear_convergence_debt_except(
-        self,
-        *,
-        subject_type: str,
-        subject_id: str,
-        stages: Iterable[str],
-    ) -> None:
-        """Clear convergence debt for a subject except currently failed stages."""
-        preserved_stages = tuple(stages)
-        self._clear_convergence_debt_except_from_ops(
-            subject_type=subject_type,
-            subject_id=subject_id,
-            stages=preserved_stages,
         )
 
     def clear_convergence_debt_under_prefix(

@@ -23,11 +23,6 @@ from polylogue.archive.revision_authority import (
     RawRevisionEnvelope,
     RawRevisionKind,
 )
-from polylogue.security.excision import (
-    apply_session_excision,
-    plan_session_excision,
-    resolve_session_excision_target,
-)
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
@@ -37,6 +32,11 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.excision import (
+    plan_session_excision_from_root,
+    resolve_session_excision_target_from_root,
+)
+from tests.infra.excision_execution import execute_excision
 
 _LOGICAL_KEY = "codex-session:multi-revision"
 
@@ -61,6 +61,7 @@ def _seed_two_revisions(archive_root: Path) -> tuple[str, str, str, bytes, bytes
             source_conn,
             origin="codex-session",
             source_path="/fake/multi-revision.jsonl",
+            canonical_source_path="/fake/multi-revision.jsonl",
             source_index=0,
             payload=baseline_payload,
             acquired_at_ms=1_000,
@@ -77,6 +78,7 @@ def _seed_two_revisions(archive_root: Path) -> tuple[str, str, str, bytes, bytes
             source_conn,
             origin="codex-session",
             source_path="/fake/multi-revision.jsonl",
+            canonical_source_path="/fake/multi-revision.jsonl",
             source_index=0,
             payload=head_payload,
             acquired_at_ms=2_000,
@@ -171,6 +173,7 @@ def test_excision_reaches_every_revision_of_the_session(tmp_path: Path) -> None:
             source_conn,
             origin="codex-session",
             source_path="/fake/unrelated.jsonl",
+            canonical_source_path="/fake/unrelated.jsonl",
             source_index=0,
             payload=b'{"event": "unrelated"}\n',
             acquired_at_ms=3_000,
@@ -181,15 +184,15 @@ def test_excision_reaches_every_revision_of_the_session(tmp_path: Path) -> None:
     finally:
         source_conn.close()
 
-    target = resolve_session_excision_target(tmp_path, session_id)
+    target = resolve_session_excision_target_from_root(tmp_path, session_id)
     resolved = {raw.raw_id for raw in target.raw_targets}
     assert resolved == {baseline_raw_id, head_raw_id}, "the superseded baseline was not resolved"
 
-    plan = plan_session_excision(tmp_path, session_id)
+    plan = plan_session_excision_from_root(tmp_path, session_id)
     assert plan.source_raw_rows == 2
 
-    receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
-    assert receipt.found
+    receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:local")
+    assert receipt["found"]
 
     assert _raw_ids(tmp_path) == {"raw-unrelated"}, "an earlier revision survived the excision"
     assert _blob_ref_ids(tmp_path) == {"raw-unrelated"}
@@ -209,7 +212,7 @@ def test_excision_removes_hook_evidence_and_its_blobs(tmp_path: Path) -> None:
     ``source.db`` with its blob still rooting GC.
 
     Anti-vacuity: deleting the hook loop from
-    ``_apply_single_session_excision`` leaves the ``raw_hook_events`` row, its
+    the canonical Excision producer leaves the ``raw_hook_events`` row, its
     carrier, its ``hook_payload`` blob ref and the unmarked hash behind --
     every assertion below goes red, and the re-ingest refusal at the bottom
     stops refusing.
@@ -233,14 +236,14 @@ def test_excision_removes_hook_evidence_and_its_blobs(tmp_path: Path) -> None:
     finally:
         source_conn.close()
 
-    plan = plan_session_excision(tmp_path, session_id)
+    plan = plan_session_excision_from_root(tmp_path, session_id)
     assert plan.source_hook_events == 1, "the preview must name the hook evidence in scope"
 
-    receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
-    assert receipt.found
-    assert receipt.counts["source_hook_events"] == 1
-    assert receipt.retained_hook_events == (), "nothing should have survived the excision"
-    assert receipt.complete is True
+    receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:local")
+    assert receipt["found"]
+    assert receipt["counts"]["source_hook_events"] == 1
+    assert receipt["retained_hook_events"] == [], "nothing should have survived the excision"
+    assert receipt["complete"] is True
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone()[0] == 0
@@ -268,16 +271,17 @@ def test_excision_removes_hook_evidence_and_its_blobs(tmp_path: Path) -> None:
 
 
 def test_excision_names_hook_evidence_it_could_not_remove(tmp_path: Path) -> None:
-    """What survives is named, not silently dropped.
+    """An obstructed hook deletion never reports success while the payload survives.
 
-    ``ExcisionReceipt.retained_hook_events`` is a post-condition read back
-    after the commit, so a hook row that resists deletion (here an ``AFTER
-    DELETE`` trigger reinstates it, standing in for any durable obstruction)
-    is reported instead of being assumed gone.
+    A durable obstruction (here an ``AFTER DELETE`` trigger that reinstates the
+    row) is an undeclared Source write. The excision writer's authorizer
+    admits only declared targets, so the whole excision fails closed: no
+    receipt claims completion, the hook payload stays, and the session is not
+    partially excised.
 
-    Anti-vacuity: replacing the post-commit read-back with
-    ``retained_hook_events = ()`` reports unqualified success while the
-    payload below is still readable.
+    Anti-vacuity: an authorizer that admitted the trigger's undeclared insert
+    would commit an excision whose receipt reports success while this payload
+    is still readable.
     """
     session_id, _baseline, _head, _bp, _hp = _seed_two_revisions(tmp_path)
     hook_payload = b'{"tool_input": "stubborn"}'
@@ -305,11 +309,12 @@ def test_excision_names_hook_evidence_it_could_not_remove(tmp_path: Path) -> Non
     finally:
         source_conn.close()
 
-    receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
-    assert receipt.retained_hook_events == ("hook-2",)
-    assert receipt.complete is False, "an excision that leaves hook payloads must not report completeness"
-    assert receipt.as_dict()["retained_hook_events"] == ["hook-2"]
+    with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+        execute_excision(tmp_path, session_id, reason="test", actor="user:local")
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         rows = conn.execute("SELECT payload_json FROM raw_hook_events WHERE hook_event_id = 'hook-2'").fetchall()
-    assert len(rows) == 1, "the residual this receipt names must be real"
+    assert len(rows) == 1, "the obstructed hook payload must survive the refused excision"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        remaining = conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    assert remaining == (1,), "a refused excision must not partially excise the session"

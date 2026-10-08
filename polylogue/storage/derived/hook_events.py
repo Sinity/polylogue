@@ -85,6 +85,9 @@ class HookEventsReplacement:
     base_offset: int = 0
     empty: bool = False
 
+    def close(self) -> None:
+        """The captured event values own no physical resources."""
+
 
 def carrier_identity(
     source_path: str,
@@ -316,6 +319,7 @@ class HookEventsDerivation:
     def publish(self, frame: object, replacement: HookEventsReplacement) -> bool:
         from polylogue.archive.message.paste_detection import has_paste_indicator
         from polylogue.core.enums import Origin
+        from polylogue.core.stage_admission import admit_stage_write
         from polylogue.sources.live.archive_open import _open_archive_for_live_write
         from polylogue.sources.live.cursor import (
             ConvergenceDebtBatchEntry,
@@ -341,41 +345,51 @@ class HookEventsDerivation:
                 and carried.event.session_native_id
                 and has_paste_indicator(carried.event.payload)
             }
-            # Queue the affected old sessions, not the next transcript batch.
-            # This commits BEFORE the hook rows under the same writer lease:
-            # a crash after hook publication cannot lose the enrichment work.
-            # The batch API refuses failed writes rather than silently losing
-            # debt. A failed hook publication remains stale and queues again.
-            if paste_sessions:
-                CursorStore(self.archive_root / "ops.db").apply_convergence_debt_batch(
-                    (
-                        ConvergenceDebtBatchEntry(
-                            writes=tuple(
-                                ConvergenceDebtWrite(
-                                    stage="hook_paste_enrichment",
-                                    subject_type="session_id",
-                                    subject_id=session_id,
-                                    error="retained hook paste evidence awaiting session enrichment",
-                                    deferred=True,
+
+            def publish_under_writer() -> bool:
+                # Publication may wait in the writer queue after the off-writer
+                # freshness check. Recheck its small SQL binding after admission
+                # so a concurrent hook publisher cannot make this replacement
+                # stale while it waits.
+                if not self._current(frame):
+                    return False
+                with self._read() as conn:
+                    if self._binding(conn, replacement.identity, replacement.blob_hash) != replacement.input_binding:
+                        return False
+                # Queue and publish under the same coordinator admission: a
+                # crash after hook publication cannot lose enrichment work.
+                if paste_sessions:
+                    CursorStore(self.archive_root / "ops.db").apply_convergence_debt_batch(
+                        (
+                            ConvergenceDebtBatchEntry(
+                                writes=tuple(
+                                    ConvergenceDebtWrite(
+                                        stage="hook_paste_enrichment",
+                                        subject_type="session_id",
+                                        subject_id=session_id,
+                                        error="retained hook paste evidence awaiting session enrichment",
+                                        deferred=True,
+                                    )
+                                    for session_id in sorted(paste_sessions)
                                 )
-                                for session_id in sorted(paste_sessions)
-                            )
-                        ),
+                            ),
+                        )
                     )
-                )
-            store = _open_archive_for_live_write(self.archive_root)
-            with store as archive:
-                archive.write_hook_events_from_carrier(
-                    carrier_source_id=replacement.identity.source_id,
-                    carrier_relative_path=replacement.identity.relative_path,
-                    carrier_role=replacement.identity.role,
-                    carrier_blob_hash=bytes.fromhex(replacement.blob_hash),
-                    carrier_source_path=replacement.source_path,
-                    events=replacement.payload,
-                    acquired_at_ms=replacement.acquired_at_ms,
-                )
-                archive.commit()
-            return True
+                store = _open_archive_for_live_write(self.archive_root)
+                with store as archive:
+                    archive.write_hook_events_from_carrier(
+                        carrier_source_id=replacement.identity.source_id,
+                        carrier_relative_path=replacement.identity.relative_path,
+                        carrier_role=replacement.identity.role,
+                        carrier_blob_hash=bytes.fromhex(replacement.blob_hash),
+                        carrier_source_path=replacement.source_path,
+                        events=replacement.payload,
+                        acquired_at_ms=replacement.acquired_at_ms,
+                    )
+                    archive.commit()
+                return True
+
+            return bool(admit_stage_write("derivation.hook_events", publish_under_writer))
         finally:
             lease.close()
 

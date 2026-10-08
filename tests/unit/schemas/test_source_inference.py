@@ -299,12 +299,18 @@ def test_interrupted_export_never_publishes_a_complete_cache_manifest(
         created_spool_directories.append(Path(directory.name))
         return directory
 
+    put_exports: list[str] = []
+
     def interrupt_second(*args: Any, **kwargs: Any) -> None:
+        # Collection runs on the bounded compute adapter, so either export may
+        # complete first; interrupt whichever export arrives after one is cached.
         candidate = args[1]
         assert isinstance(candidate, _SourceCandidate)
-        if candidate.path.name == "second.json":
+        if put_exports and candidate.path.name not in put_exports:
             raise RuntimeError("synthetic parent interruption")
         real_put(*args, **kwargs)
+        if candidate.path.name not in put_exports:
+            put_exports.append(candidate.path.name)
 
     monkeypatch.setattr(source_inference_module, "_put_contribution", interrupt_second)
     monkeypatch.setattr(tempfile, "TemporaryDirectory", track_temporary_directory)
@@ -676,12 +682,13 @@ def test_antigravity_non_json_inputs_are_counted_with_declared_terminal_reasons(
     conversation = tmp_path / "conversations" / "session.pb"
     conversation.parent.mkdir()
     conversation.write_bytes(b"opaque-protobuf")
-    brain = tmp_path / "brain" / "notes.md"
-    brain.parent.mkdir()
+    brain = tmp_path / "brain" / "c1" / "notes.md"
+    brain.parent.mkdir(parents=True)
     brain.write_text("sidecar", encoding="utf-8")
 
+    # The canonical Antigravity root, walked by its declared layout.
     result = infer_sources(
-        (SchemaSourceInput("antigravity", tmp_path),),
+        (SchemaSourceInput("antigravity", tmp_path, source_name="antigravity"),),
         cache_path=tmp_path / "source-cache.sqlite3",
         max_workers=1,
     )
@@ -1119,15 +1126,12 @@ def test_codex_schema_retains_wire_records_without_claiming_parser_support(tmp_p
     path.write_text("\n".join(json.dumps(record) for record in records))
     classification = classify_artifact(records, provider=Provider.CODEX, source_path=path)
     assert classification.schema_eligible
-    # #4881 ("Preserve declared Codex event fields through archive reads") moved
-    # ``inter_agent_communication_metadata`` and ``token_usage_record`` out of
-    # the schema-only set and gave them a real parse route, so the envelope
-    # generation is now genuinely parser-supported. The legacy generation still
-    # is not, and that is what this test's premise rests on: schema retention
-    # must not depend on parser support either way.
-    envelope_supported = generation == "envelope"
-    assert classification.parse_as_session is envelope_supported
-    assert is_supported_session_stream(records) is envelope_supported
+    # Both generations have a parse route: the envelope records since #4881,
+    # and the legacy generation's unwrapped reasoning/function_call/
+    # function_call_output records through the response-item lowering. Schema
+    # retention is asserted below independently of that support.
+    assert classification.parse_as_session
+    assert is_supported_session_stream(records)
     result = infer_sources((SchemaSourceInput("codex", path),), cache_path=tmp_path / "cache.sqlite", max_workers=1)
     assert result.terminal_counts == {"included": 1}
     assert result.record_count == len(records)

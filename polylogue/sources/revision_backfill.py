@@ -1,4 +1,4 @@
-"""Conservative replay of legacy raw rows into typed revision authority."""
+"""Prepare retained revisions and publish captured authority decisions."""
 
 from __future__ import annotations
 
@@ -8,30 +8,35 @@ import hashlib
 import json
 import os
 import pickle
-import shutil
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
 import uuid
+import zipfile
+from builtins import BaseExceptionGroup, ExceptionGroup
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
-from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import ExitStack, contextmanager, nullcontext
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import wraps
 from io import BytesIO
-from itertools import chain, islice
+from itertools import chain, groupby
 from pathlib import Path
-from types import TracebackType
-from typing import Any, BinaryIO, Final, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal, Protocol, cast
 
 import ijson
-from ijson.common import ObjectBuilder
 
 from polylogue import logging as _polylogue_logging
-from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
+from polylogue.archive.artifact_taxonomy import (
+    ArtifactClassification,
+    ArtifactKind,
+    ArtifactStreamClassification,
+    classify_artifact_stream,
+    declared_evidence_classification,
+)
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -40,68 +45,71 @@ from polylogue.archive.ingest_flags import (
 from polylogue.archive.revision_authority import (
     BYTE_AUTHORITY_CENSUS_DETAIL,
     HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+    SUPERSEDED_IDENTITY_GOVERNANCE_DETAIL,
     RawRevisionAuthority,
-    RawRevisionEnvelope,
     RawRevisionKind,
     canonical_authority_logical_key,
-    durable_authority_logical_keys,
     is_work_event_raw_id,
-    parser_census_is_complete,
-    raw_receipt_order_sql,
+    parser_census_identity_measurement,
 )
 from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.session_revision_membership import (
+    MembershipClassification,
+    MembershipDecision,
     MembershipRevision,
     classify_membership_revisions,
 )
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes
-from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
-from polylogue.core.identity_law import session_id as archive_session_id
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel_requested
+from polylogue.core.enums import ArtifactSupportStatus, PolylogueStrEnum, Provider, ValidationMode
 from polylogue.core.json import JSONValue
-from polylogue.core.sources import origin_from_provider, provider_from_origin
-from polylogue.core.timestamp_authority import normalize_session_timestamps
-from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
-from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.pipeline.ids import session_revision_projection
-from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes, estimate_parsed_tree_bytes
-from polylogue.pipeline.services.process_pool import (
-    PoolKind,
-    parallel_threads_effective,
-    resolve_revision_backfill_census_dispatch,
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
+from polylogue.core.raw_failure_evidence import (
+    CohortMembershipRefusalError,
+    MissingProfileIdentityError,
+    RawFailureEvidenceKind,
+    RetainedZipMembershipUnprovedError,
 )
+from polylogue.core.sources import origin_from_provider
+from polylogue.core.timestamp_authority import normalize_session_timestamps
+from polylogue.pipeline.ids import SessionRevisionProjection, session_revision_projection
+from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.assembly import SidecarData
-from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
-    detect_provider_evidence,
-    detect_provider_from_raw_bytes_evidence,
+    admit_parsed_sessions_for_publication,
+    detect_provider_from_stream_evidence,
     is_jsonl_source_path,
     is_stream_record_provider,
-    merge_parsed_session_chunks,
     parse_payload,
     parse_stream_payload,
-    require_positive_conversational_evidence,
 )
+from polylogue.sources.fallback_identity import fallback_session_id
 from polylogue.sources.live.batch_support import (
     jsonl_complete_prefix,
+    jsonl_parse_input_of_handle,
     jsonl_parse_prefix_size,
     jsonl_parse_prefix_size_of_handle,
 )
-from polylogue.sources.origin_specs import artifact_rule_for_path
-from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
+from polylogue.sources.origin_specs import path_declaration_refuses_session
+from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.prepared_jsonl import (
     DecodeFailure,
     PreparedDecodeError,
     PreparedJsonl,
+    PreparedSessionSequence,
     _iter_prefix_lines,
     classify_decode_failure,
     prepare_jsonl_blob,
     terminal_decode_evidence,
 )
-from polylogue.sources.prepared_message_sink import SqliteMessageSink
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+from polylogue.sources.retained_sqlite import collect_sqlite_sessions, iter_sqlite_sessions
 from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.sqlite_export import looks_like_logical_source_bytes
 from polylogue.sources.sqlite_snapshot import (
@@ -109,587 +117,108 @@ from polylogue.sources.sqlite_snapshot import (
     is_sqlite_page_image,
     is_undeclared_logical_export,
 )
-from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.artifacts.inspection import artifact_observation_id
+from polylogue.storage.blob_publication import BlobPublicationSourceRead
+from polylogue.storage.io_phase_metrics import connection_cursor
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import (
-    RAW_AUTHORITY_PARSER_FINGERPRINT,
-    SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
-    parser_census_logical_keys,
+    iter_parser_census_logical_keys,
+    raw_authority_parser_fingerprint,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
-    FrozenSourceRemediationRequiredError,
-    PreparedRawRevisionClassification,
+    ArchiveRawParsedWriteResult,
+    MembershipHeadPlan,
+    PreparedRawClassificationStaleError,
+    PreparedRevisionAdoption,
+    PreparedRevisionReplayOutcome,
     _raw_parse_failure_state,
     _raw_parse_success_state,
-    apply_prepared_raw_revision_classification,
-    membership_key_has_pending_envelope_member,
-    pending_raw_envelope_has_membership_authority,
-    raw_has_membership_governed_pending_envelope,
+    _record_raw_failure_evidence,
     record_current_parser_source_census,
-    record_raw_failure_evidence,
+    record_prepared_membership_census_receipt,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     PENDING_RAW_LOGICAL_SOURCE_PREFIX,
     ArchiveSourceArtifact,
-    apply_source_raw_state_update,
-    upsert_raw_artifact,
+    SourceArtifactProducer,
+    SourceRawStateProducer,
+    _apply_source_raw_state_update,
+    _upsert_raw_artifact,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
-    PreparedRows,
+    ConnectionSessionSourceRead,
+    PreparedSessionSourceRead,
     PreparedSessionWrite,
     PreparedSessionWriteRefusedError,
-    prepare_session_rows,
     prepare_session_shard,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, discard_session_shard
 from polylogue.storage.sqlite.connection_profile import (
-    ReadContinuation,
-    ReadFrame,
-    ReadFrameExpiredError,
     StaleContinuationError,
     read_frame,
 )
-from polylogue.storage.sqlite.managed_connection import sqlite_connection
+from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+from polylogue.storage.sqlite.session_shard import discard_session_shard
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
-_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES: Final[int] = 8192
-_REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES: Final[int] = 64 * 1024
-_REPLAY_PROVIDER_DETECTION_READ_CHUNK_BYTES: Final[int] = 4096
 
 
-class _ReadableBinary(Protocol):
-    def read(self, size: int = -1) -> bytes: ...
-
-
-class _LineReadableBinary(_ReadableBinary, Protocol):
-    def readline(self, size: int = -1) -> bytes: ...
-
-
-class _SeekableReadableBinary(_LineReadableBinary, Protocol):
-    def seek(self, offset: int, whence: int = 0) -> int: ...
-
-
-_DOCUMENT_PROBE_ROOT_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "account_uuid",
-        "artifactType",
-        "cascadeId",
-        "chat_messages",
-        "chunkedPrompt",
-        "chunks",
-        "conversation_id",
-        "conversations",
-        "conversations_memory",
-        "create_time",
-        "current_node",
-        "cwd",
-        "docs",
-        "id",
-        "is_starter_project",
-        "kind",
-        "lastUpdated",
-        "last_updated",
-        "leafUuid",
-        "mapping",
-        "markdown",
-        "message",
-        "messages",
-        "parentUuid",
-        "payload",
-        "platform",
-        "polylogue_capture_kind",
-        "project",
-        "projectHash",
-        "project_memories",
-        "prompt_template",
-        "record_type",
-        "session",
-        "sessionId",
-        "session_id",
-        "session_start",
-        "shared_conversation_id",
-        "source",
-        "startTime",
-        "summary",
-        "type",
-        "updatedAt",
-        "uuid",
-        "version",
-    }
-)
-_DOCUMENT_PROBE_EXACT_STRING_KEYS: Final[frozenset[str]] = frozenset(
-    {"kind", "polylogue_capture_kind", "record_type", "role", "source", "type"}
-)
-_DOCUMENT_PROBE_CHUNK_CONTENT_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "codeExecutionResult",
-        "driveAudio",
-        "driveDocument",
-        "driveImage",
-        "driveVideo",
-        "errorMessage",
-        "executableCode",
-        "grounding",
-        "inlineFile",
-        "inlineImage",
-        "isThought",
-        "parts",
-        "text",
-        "youtubeVideo",
-    }
-)
-
-
-def _document_probe_value(key: str, event: str, value: object) -> object | None:
-    """Retain only detector-relevant scalar type/equality evidence."""
-    if event == "string":
-        return str(value) if key in _DOCUMENT_PROBE_EXACT_STRING_KEYS else "present"
-    if event == "number":
-        return 0
-    if event == "boolean":
-        return bool(value)
-    if event == "null":
-        return None
-    return None
-
-
-class _ScalarBoundedJSONReader:
-    """Stream JSON while capping every scalar token before ijson sees it."""
-
-    def __init__(self, payload: _ReadableBinary) -> None:
-        self._payload = payload
-        self._output = bytearray()
-        self._eof = False
-        self._in_string = False
-        self._string_bytes = 0
-        self._escape = bytearray()
-        self._escape_target = 0
-        self._utf8_remaining = 0
-        self._emit_utf8 = False
-        self._in_number = False
-
-    def read(self, size: int = -1) -> bytes:
-        if size == 0:
-            return b""
-        if size < 0:
-            chunks: list[bytes] = []
-            while chunk := self.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES):
-                chunks.append(chunk)
-            return b"".join(chunks)
-        while len(self._output) < size and not self._eof:
-            chunk = self._payload.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES)
-            if not chunk:
-                self._eof = True
-                break
-            self._filter(chunk)
-        result = bytes(self._output[:size])
-        del self._output[:size]
-        return result
-
-    def _filter(self, chunk: bytes) -> None:
-        for byte in chunk:
-            if self._in_string:
-                self._filter_string_byte(byte)
-                continue
-            if self._in_number:
-                if byte in b"0123456789.eE+-":
-                    continue
-                self._in_number = False
-            if byte == ord('"'):
-                self._output.append(byte)
-                self._in_string = True
-                self._string_bytes = 0
-            elif byte in b"-0123456789":
-                self._output.extend(b"0")
-                self._in_number = True
-            else:
-                self._output.append(byte)
-
-    def _filter_string_byte(self, byte: int) -> None:
-        if self._escape:
-            self._escape.append(byte)
-            if len(self._escape) == 2:
-                self._escape_target = 6 if byte == ord("u") else 2
-            if len(self._escape) == self._escape_target:
-                if self._string_bytes + len(self._escape) <= _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES:
-                    self._output.extend(self._escape)
-                    self._string_bytes += len(self._escape)
-                self._escape.clear()
-                self._escape_target = 0
-            return
-        if self._utf8_remaining:
-            if self._emit_utf8:
-                self._output.append(byte)
-            self._utf8_remaining -= 1
-            return
-        if byte == ord("\\"):
-            self._escape.append(byte)
-            return
-        if byte == ord('"'):
-            self._output.append(byte)
-            self._in_string = False
-            return
-        if byte < 0x80:
-            if self._string_bytes < _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES:
-                self._output.append(byte)
-                self._string_bytes += 1
-            return
-        utf8_bytes = 2 if byte < 0xE0 else 3 if byte < 0xF0 else 4 if byte < 0xF8 else 1
-        self._utf8_remaining = utf8_bytes - 1
-        self._emit_utf8 = self._string_bytes + utf8_bytes <= _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES
-        if self._emit_utf8:
-            self._output.append(byte)
-            self._string_bytes += utf8_bytes
-
-
-class _BoundedJSONLRecordReader:
-    """Expose one JSONL record without exceeding the shared scan budget."""
-
-    def __init__(self, payload: _LineReadableBinary, byte_budget: int) -> None:
-        self._payload = payload
-        self._remaining = byte_budget
-        self.bytes_read = 0
-        self._done = False
-
-    def read(self, size: int = -1) -> bytes:
-        if size == 0 or self._done:
-            return b""
-        if self._remaining <= 0:
-            self._done = True
-            return b""
-        read_size = _REPLAY_PROVIDER_DETECTION_READ_CHUNK_BYTES if size < 0 else size
-        read_size = min(read_size, _REPLAY_PROVIDER_DETECTION_READ_CHUNK_BYTES, self._remaining)
-        chunk = self._payload.readline(read_size)
-        self.bytes_read += len(chunk)
-        self._remaining -= len(chunk)
-        if not chunk or chunk.endswith(b"\n") or self._remaining <= 0:
-            self._done = True
-        return chunk
-
-    def drain(self) -> None:
-        """Consume this physical record, subject to the remaining scan budget."""
-        while not self._done:
-            self.read(_REPLAY_PROVIDER_DETECTION_READ_CHUNK_BYTES)
-
-
-@dataclass(slots=True)
-class _StreamingDocumentProviderProbe:
-    """Bounded structural summary for one object in a JSON document.
-
-    Cardinality is fixed by provider detector fields. Large scalar bodies,
-    unrelated keys, repeated messages, and repeated mapping nodes are never
-    retained; the ijson event stream can therefore continue to EOF without a
-    whole-document allocation or a scan-count cutoff.
-    """
-
-    payload: dict[str, object] = field(default_factory=dict)
-    mapping_seen: bool = False
-    mapping_valid: bool = True
-    mapping_node_open: bool = False
-    mapping_node_message: Literal["absent", "null", "map", "invalid"] = "absent"
-    mapping_node_author: bool = False
-    chat_message_item: dict[str, object] = field(default_factory=dict)
-    chat_message_matched: bool = False
-    first_message_item: dict[str, object] = field(default_factory=dict)
-    first_message_complete: bool = False
-    chunk_item: dict[str, object] = field(default_factory=dict)
-    chunk_matched: bool = False
-    conversation_item_has_conversation: bool = False
-    conversation_item_has_responses: bool = False
-    conversation_matched: bool = False
-
-    def _set_root(self, key: str, event: str, value: object) -> None:
-        if key not in _DOCUMENT_PROBE_ROOT_KEYS:
-            return
-        if event == "start_map":
-            self.payload[key] = {}
-        elif event == "start_array":
-            self.payload[key] = []
-        elif event in {"string", "number", "boolean", "null"}:
-            self.payload[key] = _document_probe_value(key, event, value)
-
-    @staticmethod
-    def _set_item_value(item: dict[str, object], key: str, event: str, value: object) -> None:
-        if event == "start_map":
-            item[key] = {}
-        elif event == "start_array":
-            item[key] = []
-        elif event in {"string", "number", "boolean", "null"}:
-            item[key] = _document_probe_value(key, event, value)
-
-    def feed(self, prefix: str, event: str, value: object) -> None:
-        parts = prefix.split(".") if prefix else []
-        if len(parts) == 1:
-            self._set_root(parts[0], event, value)
-
-        if parts == ["session", "provider"] and event == "string":
-            session = self.payload.setdefault("session", {})
-            if isinstance(session, dict):
-                session["provider"] = str(value)
-
-        if len(parts) == 2 and parts[0] == "payload":
-            nested = self.payload.setdefault("payload", {})
-            if isinstance(nested, dict):
-                self._set_item_value(nested, parts[1], event, value)
-
-        if len(parts) == 2 and parts[0] == "mapping":
-            if event == "start_map":
-                self.mapping_seen = True
-                self.mapping_node_open = True
-                self.mapping_node_message = "absent"
-                self.mapping_node_author = False
-            elif event not in {"end_map", "map_key"}:
-                self.mapping_seen = True
-                self.mapping_valid = False
-        elif len(parts) == 3 and parts[0] == "mapping" and parts[2] == "message":
-            if event == "start_map":
-                self.mapping_node_message = "map"
-            elif event == "null":
-                self.mapping_node_message = "null"
-            elif event not in {"map_key", "end_map"}:
-                self.mapping_node_message = "invalid"
-        elif len(parts) == 4 and parts[0] == "mapping" and parts[2:] == ["message", "author"] and event == "start_map":
-            self.mapping_node_author = True
-
-        if len(parts) == 2 and parts == ["chat_messages", "item"] and event == "start_map":
-            self.chat_message_item = {}
-        elif len(parts) == 3 and parts[:2] == ["chat_messages", "item"]:
-            self._set_item_value(self.chat_message_item, parts[2], event, value)
-
-        if len(parts) == 2 and parts == ["messages", "item"] and event == "start_map":
-            if not self.first_message_complete:
-                self.first_message_item = {}
-        elif len(parts) == 3 and parts[:2] == ["messages", "item"] and not self.first_message_complete:
-            self._set_item_value(self.first_message_item, parts[2], event, value)
-
-        chunk_root = parts[:2] == ["chunks", "item"]
-        chunk_nested = parts[:3] == ["chunkedPrompt", "chunks", "item"]
-        if (chunk_root and len(parts) == 2 or chunk_nested and len(parts) == 3) and event == "start_map":
-            self.chunk_item = {}
-        elif chunk_root and len(parts) == 3:
-            self._set_item_value(self.chunk_item, parts[2], event, value)
-        elif chunk_nested and len(parts) == 4:
-            self._set_item_value(self.chunk_item, parts[3], event, value)
-
-        if parts == ["conversations", "item"] and event == "start_map":
-            self.conversation_item_has_conversation = False
-            self.conversation_item_has_responses = False
-        elif parts == ["conversations", "item", "conversation"] and event == "start_map":
-            self.conversation_item_has_conversation = True
-        elif parts == ["conversations", "item", "responses"] and event == "start_array":
-            self.conversation_item_has_responses = True
-
-        if event != "end_map":
-            return
-        if len(parts) == 2 and parts[0] == "mapping" and self.mapping_node_open:
-            if (
-                self.mapping_node_message == "map" and not self.mapping_node_author
-            ) or self.mapping_node_message == "invalid":
-                self.mapping_valid = False
-            self.mapping_node_open = False
-        elif parts == ["chat_messages", "item"]:
-            has_role = any(key in self.chat_message_item for key in ("sender", "role", "author"))
-            has_content = any(key in self.chat_message_item for key in ("text", "content"))
-            self.chat_message_matched |= has_role and has_content
-        elif parts == ["messages", "item"] and not self.first_message_complete:
-            self.first_message_complete = True
-        elif parts in (["chunks", "item"], ["chunkedPrompt", "chunks", "item"]):
-            role = self.chunk_item.get("role") or self.chunk_item.get("author")
-            self.chunk_matched |= isinstance(role, str) and any(
-                key in self.chunk_item for key in _DOCUMENT_PROBE_CHUNK_CONTENT_KEYS
-            )
-        elif parts == ["conversations", "item"]:
-            self.conversation_matched |= (
-                self.conversation_item_has_conversation and self.conversation_item_has_responses
-            )
-
-    def classify(self, *, sequence_item: bool = False) -> tuple[Provider, str]:
-        if self.mapping_seen and self.mapping_valid:
-            self.payload["mapping"] = {"bounded-node": {"id": "bounded-node", "message": None}}
-        if self.chat_message_matched:
-            self.payload["chat_messages"] = [{"role": "present", "text": "present"}]
-        if self.first_message_complete:
-            self.payload["messages"] = [self.first_message_item]
-        if self.chunk_matched:
-            chunk = {"role": "present", "text": "present"}
-            if isinstance(self.payload.get("chunkedPrompt"), dict):
-                self.payload["chunkedPrompt"] = {"chunks": [chunk]}
-            else:
-                self.payload["chunks"] = [chunk]
-        if self.conversation_matched:
-            self.payload["conversations"] = [{"conversation": {}, "responses": []}]
-        candidate: object = [self.payload] if sequence_item else self.payload
-        provider, evidence = detect_provider_evidence(candidate)
-        if provider is None:
-            return Provider.UNKNOWN, evidence
-        return provider, f"bounded streaming JSON structure: {evidence}"
-
-
-def _detect_provider_from_bounded_document(payload: _SeekableReadableBinary) -> tuple[Provider, str]:
-    """Scan every document object while retaining fixed structural evidence."""
-    payload.seek(0)
-    bounded_payload = _ScalarBoundedJSONReader(payload)
-    probe: _StreamingDocumentProviderProbe | None = None
-    root_is_array = False
-    last_evidence = "no bounded document structure identified a provider; used fallback_provider"
+def _resolved_retained_provider(payload: BinaryIO, source_path: str) -> tuple[Provider, str]:
+    """Classify exactly the retained input accepted by its parser boundary."""
+    jsonl = is_jsonl_source_path(source_path)
+    scope = jsonl_parse_input_of_handle(payload, check_stop=check_compute_cancelled) if jsonl else nullcontext(payload)
     try:
-        for prefix, event, value in ijson.parse(bounded_payload, use_float=True):
-            if prefix == "" and event == "start_array":
-                root_is_array = True
-                continue
-            if root_is_array:
-                if prefix == "item" and event == "start_map":
-                    probe = _StreamingDocumentProviderProbe()
-                    continue
-                if probe is None:
-                    continue
-                if prefix == "item" and event == "end_map":
-                    provider, last_evidence = probe.classify(sequence_item=True)
-                    if provider is not Provider.UNKNOWN:
-                        return provider, last_evidence
-                    probe = None
-                    continue
-                if prefix.startswith("item."):
-                    probe.feed(prefix.removeprefix("item."), event, value)
-                continue
-
-            if prefix == "" and event == "start_map":
-                probe = _StreamingDocumentProviderProbe()
-                continue
-            if probe is None:
-                continue
-            if prefix == "" and event == "end_map":
-                return probe.classify()
-            probe.feed(prefix, event, value)
-    except ijson.JSONError:
-        return Provider.UNKNOWN, last_evidence
-    return Provider.UNKNOWN, last_evidence
+        with scope as accepted:
+            if jsonl:
+                start = accepted.tell()
+                first = accepted.read(1)
+                accepted.seek(start)
+                if not first:
+                    return Provider.UNKNOWN, "no accepted complete JSONL records"
+            provider, evidence = detect_provider_from_stream_evidence(
+                accepted,
+                check_stop=check_compute_cancelled,
+            )
+    except (ijson.JSONError, UnicodeError, json.JSONDecodeError) as error:
+        kind = DecodeFailure.JSONL_RECORD if jsonl else DecodeFailure.DOCUMENT
+        raise PreparedDecodeError(kind, str(error)) from error
+    return (Provider.UNKNOWN if provider is None else Provider(provider)), evidence
 
 
-def _detect_provider_from_bounded_prefix(
-    prefix: bytes,
-    stream_name: str,
-    *,
-    record_stream: bool,
+def _resolved_retained_member_provider(
+    evidence_reader: RetainedRawRead, raw_id: str, payload: BinaryIO, source_path: str
 ) -> tuple[Provider, str]:
-    """Classify completed structure exposed by a bounded JSON prefix.
+    """Resolve an UNKNOWN retained raw by its own shape, then by its ZIP container.
 
-    The ordinary raw-byte detector remains the first authority.  When the
-    prefix ends inside one oversized JSON value, ijson still emits every
-    completed key/value event before that truncated value.  Reconstructing
-    only those completed events preserves structural provider evidence (for
-    example a Codex ``session_meta`` envelope or a Claude ``sessionId``)
-    without retaining or completing the oversized record.
+    Source-only acquisition retains every ZIP member as UNKNOWN. A member's own
+    records name its provider when they can; a sibling that no detector
+    claims (a GDPR export's ``message_feedback.json``) takes the container
+    hint, exactly as retained enumeration of the same physical ZIP assigns it
+    through ``zip_member_admission`` (polylogue-hs3y).
     """
-    provider, evidence = detect_provider_from_raw_bytes_evidence(
-        prefix,
-        stream_name,
-        Provider.UNKNOWN,
-        truncated_tail_ok=True,
-    )
+    provider, evidence = _resolved_retained_provider(payload, source_path)
     if provider is not Provider.UNKNOWN:
         return provider, evidence
+    coordinate = evidence_reader.raw_captured_zip_coordinate(raw_id)
+    if coordinate is None:
+        return provider, evidence
+    from polylogue.sources.source_acquisition_components import zip_member_admission
 
-    builder = ObjectBuilder()
-    try:
-        for event, value in ijson.basic_parse(BytesIO(prefix), use_float=True):
-            builder.event(event, value)
-    except ijson.JSONError:
-        # Premature EOF is expected for an oversized-record prefix.  The
-        # builder retains only values whose lexical token completed inside
-        # the bound; an unfinished string/object contributes no guessed data.
-        pass
-    partial = builder.value
-    candidate: object = [partial] if record_stream and isinstance(partial, dict) else partial
-    detected, partial_evidence = detect_provider_evidence(candidate)
-    if detected is None:
-        return Provider.UNKNOWN, evidence
-    return detected, f"bounded partial JSON structure: {partial_evidence}"
-
-
-def _detect_provider_from_bounded_record(
-    record: _BoundedJSONLRecordReader,
-) -> tuple[Provider, str]:
-    """Classify a streamed JSONL record from bounded structural evidence."""
-    bounded_record = _ScalarBoundedJSONReader(record)
-    probe = _StreamingDocumentProviderProbe()
-    last_evidence = "no bounded JSONL record structure identified a provider"
-    try:
-        for prefix, event, value in ijson.parse(bounded_record, use_float=True):
-            if prefix == "":
-                if event == "start_map":
-                    continue
-                if event == "end_map":
-                    provider, last_evidence = probe.classify(sequence_item=True)
-                    if provider is not Provider.UNKNOWN:
-                        return provider, last_evidence
-                    continue
-            elif prefix:
-                probe.feed(prefix, event, value)
-    except ijson.JSONError:
-        # A scan-budget cutoff or malformed JSON is expected for retained
-        # unknown bytes. Completed structural events are still valid evidence;
-        # an incomplete tail contributes nothing.
-        pass
-    provider, last_evidence = probe.classify(sequence_item=True)
-    return provider, last_evidence
-
-
-def _detect_unknown_retained_provider(
-    payload: _SeekableReadableBinary,
-    source_path: str,
-) -> tuple[Provider, str]:
-    """Detect retained UNKNOWN bytes without eagerly materializing JSONL.
-
-    A byte prefix can end inside the first physical JSONL record.  For an
-    oversized record stream that makes a prefix-only detector inconclusive
-    even when a later structural key in that record identifies a streaming
-    provider. Stream each record through the structural probe in bounded
-    chunks, stopping at positive evidence, the total scan envelope, or EOF.
-
-    Non-JSONL documents first use the same prefix evidence, then continue a
-    bounded structural event scan through every document object. Eager replay
-    remains gated on a positive provider result from one of those bounded
-    passes; an unresolved UNKNOWN document is never materialized wholesale.
-    """
-    stream_name = Path(source_path).name
-    if not is_jsonl_source_path(source_path):
-        provider, evidence = _detect_provider_from_bounded_prefix(
-            payload.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES),
-            stream_name,
-            record_stream=False,
-        )
-        if provider is not Provider.UNKNOWN:
-            return provider, evidence
-        return _detect_provider_from_bounded_document(payload)
-
-    last_evidence = "no bounded JSONL record identified a provider; used fallback_provider"
-    scanned_bytes = 0
-
-    while scanned_bytes < _REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES:
-        record = _BoundedJSONLRecordReader(
-            payload,
-            _REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES - scanned_bytes,
-        )
-        provider, last_evidence = _detect_provider_from_bounded_record(record)
-        parsed_bytes = record.bytes_read
-        scanned_bytes += parsed_bytes
-        if provider is not Provider.UNKNOWN:
-            return provider, last_evidence
-        record.drain()
-        scanned_bytes += record.bytes_read - parsed_bytes
-        if record.bytes_read == 0:
-            break
-    return Provider.UNKNOWN, last_evidence
-
-
-def _require_bounded_provider(provider: Provider, source_path: str) -> None:
-    """Refuse eager UNKNOWN replay after bounded structural detection."""
-    if provider is Provider.UNKNOWN:
-        raise ValueError(f"retained UNKNOWN provider remained unresolved after bounded scan: {source_path}")
+    with evidence_reader.open_raw_container_material(raw_id) as physical:
+        if physical is None:
+            raise RetainedPreparationRetryableError(f"retained ZIP container bytes are absent for raw {raw_id}")
+        with zipfile.ZipFile(physical) as archive:
+            entries = archive.infolist()
+            if coordinate.entry_ordinal >= len(entries) or (
+                entries[coordinate.entry_ordinal].filename != coordinate.member_name
+            ):
+                raise RetainedZipMembershipUnprovedError("retained ZIP member differs from its container receipt")
+            admission = zip_member_admission(archive, Path(coordinate.declared_container), entries, Provider.UNKNOWN)
+            container_provider = admission.entry_provider_hint(archive, entries[coordinate.entry_ordinal])
+    if container_provider is Provider.UNKNOWN:
+        return provider, evidence
+    return container_provider, f"zip container member admission: {container_provider.value}"
 
 
 def _expand_frozen_revision_link_selection(archive_root: Path, raw_ids: Sequence[str]) -> tuple[str, ...]:
@@ -740,58 +269,62 @@ def _browser_snapshot_fidelity(ingest_flags: Sequence[str]) -> Literal["dom", "n
 
 
 @dataclass(frozen=True, slots=True)
-class RevisionBackfillResult:
+class PreparedRevisionReplayResult:
+    """Authority and index effects of one prepared publication window."""
+
     scanned: int
     classified_full: int
     replayed_logical_sources: int
     quarantined: int
     adoption_deferred: int = 0
-    #: How many replay units fell back from shard-resident lowering to inline
-    #: lowering because the writer refused the prepared rows (polylogue-k00uq).
-    #: A shard is sealed by a parse worker with no archive connection, so it
-    #: cannot slice the prefix-tail a prefix-sharing child actually stores --
-    #: ``_extract_prefix_tail`` needs a live read of the already-archived
-    #: parent. The unit is still written, by the ordinary inline path; this
-    #: names and counts the degradation instead of aborting the whole replay.
-    shard_lowering_degraded: int = 0
-    #: Wall-clock seconds per named stage of this backfill call, keyed by the
-    #: SAME names logged as ``"backfill stage timings: ..."`` below --
-    #: ``census``/``census_receipt``/``spill_load`` (decode-side, computed
-    #: here) plus ``revision_replay.*``/``membership_replay.*`` (writer-side,
-    #: recorded by ``ArchiveStore.apply_raw_revision_replay`` /
-    #: ``apply_raw_membership_classification`` through the SAME dict passed
-    #: in as ``stage_timings_s``) and ``total``. This is the parse-vs-apply
-    #: split callers need: it was already being computed and logged, just
-    #: discarded at this function's return boundary -- see
-    #: ``split_parse_and_apply_seconds`` for the two-bucket rollup.
-    #: ``compare=False`` -- wall-clock timings are never equal across two
-    #: independent runs by construction, and existing callers (e.g.
-    #: ``test_thread_parse_matches_sequential_archive_state``) compare two
-    #: ``RevisionBackfillResult``s for LOGICAL equality (same counts across
-    #: execution modes), not identical timing. Diagnostic metadata must not
-    #: change that contract.
+    # Publication timings contain source census and writer effects. Parsing
+    # belongs to Raw.compute and is not inferred from a publication timer.
     stage_timings_s: dict[str, float] = field(default_factory=dict, compare=False)
-    #: Bounded-cache outcome for this replay.  Timing alone cannot distinguish
-    #: a whale that used the resident tier from one that fell back to spill or
-    #: reparse, so retain the effective envelopes and path counters alongside
-    #: the stage ledger.  It is diagnostic metadata, not parsed-content
-    #: identity, for the same equality reason as ``stage_timings_s``.
-    whale_envelope: dict[str, int] = field(default_factory=dict, compare=False)
-    #: Enrichment fallbacks are counts, not elapsed time. Keep them outside
-    #: ``stage_timings_s`` so consumers can safely compare that ledger with
-    #: route duration.
     stage_counts: dict[str, int] = field(default_factory=dict, compare=False)
+    written_session_ids: tuple[str, ...] = ()
+    changed_session_ids: tuple[str, ...] = ()
+    # Original writer effects are orthogonal to transcript hash changes,
+    # especially for idempotent event-only Raw publications.
+    writer_changed_raw_ids: tuple[str, ...] = ()
+    written_message_count: int = 0
+    written_counts: dict[str, int] = field(default_factory=dict, compare=False)
+    session_outputs: tuple[tuple[str, bytes | None, bytes | None, int], ...] = ()
+    membership_refusals: tuple[tuple[str, str, MembershipDecision], ...] = ()
 
 
-#: Stage-timing keys that are decode work (read-only blob->ParsedSession
-#: parse), as opposed to everything else recorded in the same dict, which is
-#: SQLite writer work (index/FTS/projection writes under
-#: ``revision_replay.*`` / ``membership_replay.*`` prefixes, plus the small
-#: ``census_receipt`` parser-fingerprint commit). Used by
-#: ``split_parse_and_apply_seconds`` to answer "is decode or the single
-#: writer the bottleneck?" without guessing at every current and future
-#: writer-stage key name.
-_PARSE_STAGE_TIMING_KEYS: Final[frozenset[str]] = frozenset({"census", "spill_load"})
+@dataclass(frozen=True, slots=True)
+class RetainedRawRetryableFailure:
+    """One raw whose retained preparation failed retryably within a replay page.
+
+    ``error`` is the original failure, kept as evidence. The raw's bytes stay
+    retained and unpublished, so its next pass (the live cursor's retry, or
+    fair intake) prepares it again.
+    """
+
+    raw_id: str
+    error: Exception
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedReplayOutcome:
+    """A retained replay page's receipts and its raws' retryable failures.
+
+    A failing raw does not stop its page: the receipts its siblings published
+    are returned beside the failures, so a caller can account for both.
+    """
+
+    receipts: tuple[PreparedRevisionReplayResult, ...] = ()
+    failures: tuple[RetainedRawRetryableFailure, ...] = ()
+
+    def require_complete(self) -> tuple[PreparedRevisionReplayResult, ...]:
+        """The receipts, or the page's failures raised for a caller that admits no partial page."""
+        if len(self.failures) == 1:
+            raise self.failures[0].error
+        if self.failures:
+            raise ExceptionGroup(
+                "retained replay raws failed preparation", [failure.error for failure in self.failures]
+            )
+        return self.receipts
 
 
 _REPLAY_ENRICHMENT_DEGRADATIONS: contextvars.ContextVar[Counter[str] | None] = contextvars.ContextVar(
@@ -801,12 +334,12 @@ _REPLAY_ENRICHMENT_DEGRADATIONS_LOCK = threading.Lock()
 
 
 def _capture_replay_enrichment_degradations(
-    function: Callable[..., RevisionBackfillResult],
-) -> Callable[..., RevisionBackfillResult]:
+    function: Callable[..., PreparedRevisionReplayResult],
+) -> Callable[..., PreparedRevisionReplayResult]:
     """Give one historical backfill and its workers a private degradation ledger."""
 
     @wraps(function)
-    def wrapped(*args: object, **kwargs: object) -> RevisionBackfillResult:
+    def wrapped(*args: object, **kwargs: object) -> PreparedRevisionReplayResult:
         counts: Counter[str] = Counter()
         token = _REPLAY_ENRICHMENT_DEGRADATIONS.set(counts)
         try:
@@ -821,23 +354,6 @@ def _capture_replay_enrichment_degradations(
     return wrapped
 
 
-def split_parse_and_apply_seconds(stage_timings_s: dict[str, float]) -> tuple[float, float]:
-    """Roll up a backfill's per-stage timings into (parse_s, apply_s).
-
-    ``parse_s`` is decode work (``census`` + ``spill_load``): read-only,
-    embarrassingly parallel, scales with ``parse_workers``. ``apply_s`` is
-    everything else charged against ``total`` (writer-side index/FTS/
-    projection writes plus the small census receipt commit): serialized
-    through the single SQLite writer and does not scale with worker count.
-    Returns ``(0.0, 0.0)`` if ``total`` was never recorded (e.g. an empty
-    backfill that returned before any stage ran).
-    """
-    total_s = stage_timings_s.get("total", 0.0)
-    parse_s = sum(stage_timings_s.get(key, 0.0) for key in _PARSE_STAGE_TIMING_KEYS)
-    apply_s = max(0.0, total_s - parse_s)
-    return parse_s, apply_s
-
-
 @dataclass(frozen=True, slots=True)
 class RevisionCensusResult:
     scanned: int
@@ -848,55 +364,27 @@ class RevisionCensusResult:
 
 
 @dataclass(slots=True)
-class _CurrentParserReceiptShape:
-    recorded_keys_json: object
-    typed_key: object
-    revision_kind: object
-    typed_non_session: bool
-    parser_confirmed_non_session: bool
-    byte_governed_fragment: bool
-    membership_keys: list[object] = field(default_factory=list)
-
-
-@dataclass(slots=True)
 class _RevisionCensusState:
     scanned: int
     classified: int
     quarantined: int
     censused: set[str]
     membership_candidates: dict[str, set[str]]
-    provisional_full_raw_ids: dict[str, set[str]]
     transient_non_session_raw_ids: set[str]
-    #: Reverse of ``provisional_full_raw_ids``: a chain head or probe is looked
-    #: up once per deferred member, so a scan of every key would be quadratic
-    #: in the number of independently growing sources.
-    provisional_key_by_raw_id: dict[str, str] = field(default_factory=dict)
-
-    def bind_provisional_full_raw(self, logical_key: str, raw_id: str) -> None:
-        self.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
-        self.provisional_key_by_raw_id[raw_id] = logical_key
-
-    def provisional_logical_key(self, raw_id: str) -> str | None:
-        return self.provisional_key_by_raw_id.get(raw_id)
-
-
-#: Per-batch parse dedup key used by ``_parse_retained_raws``:
-#: ``(provider, blob_hash, dedup_path, native_id)`` (``dedup_path`` is ``""`` for
-#: :data:`_PATH_INDEPENDENT_PARSE_PROVIDERS`, else the raw's own
-#: ``source_path``) -- see :func:`_parse_retained_raws`'s docstring for why
-#: that key shape is safe to share across rows. ``native_id`` (polylogue-
-#: 6lyh1) is the fallback-identity hint an APPEND-kind raw recovers at
-#: replay time (``None`` for every FULL raw and every APPEND raw with no
-#: recorded hint); without it in the key, two byte-identical APPEND payloads
-#: recorded under different recovered native ids -- content-hash dedup alone
-#: cannot see that divergence, since path-independent providers deliberately
-#: ignore ``source_path`` too -- would incorrectly fan the SAME parsed
-#: session identity out to both raw_ids.
-_ParseDedupKey = tuple[Provider, str, str, str | None]
 
 
 class RetainedPreparationRetryableError(RuntimeError):
     """A supplied retained parse cannot be trusted; retry without quarantining bytes."""
+
+
+class RetainedPreparationNoProgressError(RuntimeError):
+    """A preparatory Source phase committed without changing its durable inputs.
+
+    Preparing again would read the same state and commit the same phase, so
+    this is a terminal outcome for the component, never a reason to retry.
+    """
+
+    code = "retained_phase_no_progress"
 
 
 class UnsupportedRetainedJsonShapeError(ValueError):
@@ -914,12 +402,23 @@ class RetainedParseFailure:
 
     detail: str
     decode_failure: DecodeFailure | None = None
+    missing_profile_identity: bool = False
+    retained_zip_membership_unproved: bool = False
 
     @classmethod
     def of(cls, error: BaseException) -> RetainedParseFailure:
-        return cls(str(error), classify_decode_failure(error))
+        return cls(
+            str(error),
+            classify_decode_failure(error),
+            isinstance(error, MissingProfileIdentityError),
+            isinstance(error, RetainedZipMembershipUnprovedError),
+        )
 
     def as_exception(self) -> Exception:
+        if self.retained_zip_membership_unproved:
+            return RetainedZipMembershipUnprovedError(self.detail)
+        if self.missing_profile_identity:
+            return MissingProfileIdentityError(self.detail)
         return retained_parse_exception(self.detail, self.decode_failure)
 
 
@@ -950,7 +449,7 @@ def _retained_jsonl_stream(payload: BinaryIO, source_name: str, source_path: str
         return _iter_json_stream(payload, source_name, fail_on_decode_error=True)
     prefix_size = jsonl_parse_prefix_size_of_handle(payload)
     record_input = _iter_prefix_lines(payload, prefix_size) if prefix_size is not None else payload
-    return _iter_json_stream(record_input, source_name, fail_on_decode_error=True)  # type: ignore[arg-type]
+    return _iter_json_stream(record_input, source_name, fail_on_decode_error=True)
 
 
 @dataclass(slots=True)
@@ -964,15 +463,17 @@ class PreparedRetainedInput:
     native_id: str | None
     parser_fingerprint: str
     fallback_timestamp: str | None
-    sessions_path: Path | None
+    verified_blob_stat: tuple[int, int, int, int, int]
     parser_error: str | None = None
     #: Which decode boundary refused the bytes when ``parser_error`` is a
     #: decode refusal; the census turns that into a terminal outcome.
     parser_decode_failure: DecodeFailure | None = None
+    missing_profile_identity: bool = False
+    retained_zip_membership_unproved: bool = False
+    unsupported_shape: bool = False
+    captured_profile_key: str | None = None
     enriched: bool = False
-    # The disk-backed carrier is the retained worker's publication boundary.
-    # Legacy sessions_path remains accepted for old direct callers until their
-    # worker route is migrated.
+    # The sealed disk-backed carrier is the retained worker publication boundary.
     prepared_artifact: PreparedJsonl | None = None
 
 
@@ -993,8 +494,43 @@ def _enrichment_evidence_digest(value: object) -> str:
             digest.update(data)
             return len(data)
 
+    from polylogue.sources.retained_title_index import RetainedTitleIndex, title_evidence_digest
+
+    if isinstance(value, dict) and "retained_state_titles" in value:
+        titles = value["retained_state_titles"]
+        if isinstance(titles, RetainedTitleIndex):
+            title_digest = titles.evidence_digest()
+        else:
+            title_digest = title_evidence_digest(
+                sorted(titles.items(), key=lambda row: row[0].encode("utf-8", "surrogatepass"))
+            )
+        value = {**value, "retained_state_titles": ("retained-title-evidence:v1", title_digest)}
+
+    from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
+
+    if isinstance(value, dict) and isinstance(value.get("chatgpt_asset_index"), ChatGPTAssetIndex):
+        from polylogue.sources.parsers.chatgpt_sidecars import _AssetBlobs
+
+        index = value["chatgpt_asset_index"]
+        value = {**value, "chatgpt_asset_index": index.evidence_digest()}
+        assets = value.get("chatgpt_asset_blobs")
+        if isinstance(assets, _AssetBlobs):
+            # A retained supplement can own the missing acquired-member map
+            # while an acquisition-carried naming index remains authoritative.
+            # Bind each actual artifact without serializing SQL handles.
+            value["chatgpt_asset_blobs"] = assets.index.evidence_digest()
     pickle.dump(value, DigestWriter(), protocol=pickle.HIGHEST_PROTOCOL)
     return digest.hexdigest()
+
+
+def _owned_enrichment_evidence_digest(value: SidecarData) -> str:
+    """Digest operation-owned sidecars and settle their artifact lifetime."""
+    from polylogue.sources.assembly import close_sidecar_data
+
+    try:
+        return _enrichment_evidence_digest(value)
+    finally:
+        close_sidecar_data(value)
 
 
 def _retained_parser_sidecar_digest(source_conn: sqlite3.Connection, *, provider: Provider, source_path: str) -> str:
@@ -1012,9 +548,11 @@ def _retained_parser_sidecar_digest(source_conn: sqlite3.Connection, *, provider
     root_path = session_dir.parent / f"{session_dir.name}.jsonl"
     tool_prefix = f"{directory.as_posix()}/"
     sibling_prefix = f"{(session_dir / 'subagents').as_posix()}/"
+    # The sibling resolver distinguishes only an append revision; a census
+    # that types an unknown revision as full does not move this evidence.
     for row in source_conn.execute(
         "SELECT source_path, raw_id, hex(blob_hash), blob_size, file_mtime_ms, "
-        "revision_kind, acquired_at_ms FROM raw_sessions "
+        "revision_kind = 'append', acquired_at_ms FROM raw_sessions "
         "WHERE source_path = ? OR (source_path >= ? AND source_path < ?) "
         "OR (source_path >= ? AND source_path < ?) ORDER BY source_path, raw_id",
         (
@@ -1039,6 +577,7 @@ def enrichment_dependency_digest(
     *,
     provider: Provider,
     source_path: str,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
     provider_session_ids: Iterable[str],
     index_conn: sqlite3.Connection | None,
     source_conn: sqlite3.Connection | None,
@@ -1059,15 +598,14 @@ def enrichment_dependency_digest(
     # seals do: gating this on an assembly spec made the writer's value for a
     # provider without one differ from the sealed value, so every prepared
     # artifact of that provider read as stale and never published.
-    assembly_digest = _enrichment_evidence_digest(
+    assembly_digest = _owned_enrichment_evidence_digest(
         _retained_enrichment_sidecar_data(
             provider=provider,
             sessions=(),
             provider_session_ids=provider_session_ids,
-            index_conn=index_conn,
-            source_conn=source_conn,
-            blob_root=blob_root,
+            evidence_reader=ConnectionRetainedEnrichmentRead(index_conn, source_conn, blob_root),
             source_path=source_path,
+            captured_zip_coordinate=captured_zip_coordinate,
         )
     )
     parser_digest = (
@@ -1149,18 +687,12 @@ def session_enrichment_evidence_key(
     Resolved exactly as retained replay resolves its enrichment evidence, so
     it equals the key a session enriched from that evidence carries.
     """
-    if provider not in _SESSION_EVIDENCE_PROVIDERS or not source_path or not native_id:
-        return None
-    data = _retained_enrichment_sidecar_data(
+    return session_enrichment_evidence_key_from_reader(
         provider=provider,
-        sessions=(),
-        provider_session_ids=[native_id],
-        index_conn=index_conn,
-        source_conn=source_conn,
-        blob_root=blob_root,
         source_path=source_path,
+        native_id=native_id,
+        evidence_reader=ConnectionRetainedEnrichmentRead(index_conn, source_conn, blob_root),
     )
-    return enrichment_evidence_key(provider, data, native_id)
 
 
 def record_session_enrichment_binding(
@@ -1192,6 +724,7 @@ def prepared_enrichment_dependency_state(
     artifact: PreparedJsonl,
     *,
     provider: Provider,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
     source_path: str,
     sessions: Iterable[ParsedSession],
     parser_sidecars: bool,
@@ -1208,6 +741,7 @@ def prepared_enrichment_dependency_state(
     current = enrichment_dependency_digest(
         provider=provider,
         source_path=source_path,
+        captured_zip_coordinate=captured_zip_coordinate,
         provider_session_ids=(session.provider_session_id for session in sessions if session.provider_session_id),
         index_conn=archive.index_connection,
         source_conn=archive._ensure_source_conn(),
@@ -1218,310 +752,508 @@ def prepared_enrichment_dependency_state(
 
 
 def prepare_retained_jsonl_artifact(
+    evidence_reader: RetainedSessionRead,
     raw_id: str,
-    provider_token: str,
-    blob_hash: str,
-    source_path: str,
-    kind_token: str,
-    native_id: str | None,
-    blob_root: str,
-    source_db_path: str,
-    index_db_path: str,
-    directory: str,
-    fallback_timestamp: str | None,
+    *,
+    directory: Path,
+    allow_generic_object_alias: bool = False,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
 ) -> PreparedJsonl:
-    """Prepare a retained JSON or JSONL session view on a read-only snapshot."""
-    from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
-    from polylogue.storage.blob_store import BlobStore
+    """Seal JSON sessions using this creator's actual selected Source inputs.
 
-    provider = Provider(provider_token)
-    if not (is_jsonl_source_path(source_path) or Path(source_path).suffix.lower() == ".json"):
+    The admitted parent owns the original witness/read window through
+    publication and physical discard. This producer never opens another
+    Source or Index generation and never substitutes a digest for currency.
+    """
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    provider, blob_hash, source_path, kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+    if not (
+        is_jsonl_source_path(source_path)
+        or Path(source_path).suffix.lower() == ".json"
+        or path_declaration_refuses_session(provider, source_path)
+        or allow_generic_object_alias
+    ):
         raise RetainedPreparationRetryableError(f"retained JSON worker cannot parse {raw_id}")
-    blob_path = BlobStore(Path(blob_root)).blob_path(blob_hash)
+    blob_path = evidence_reader.raw_revision_blob_path(raw_id)
+    if blob_path is None:
+        raise RetainedPreparationRetryableError(f"retained JSON bytes are absent for raw {raw_id}")
     if provider is Provider.UNKNOWN:
         try:
-            with blob_path.open("rb") as payload:
-                provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
-        except OSError as exc:
-            raise RetainedPreparationRetryableError(f"retained JSON evidence read failed for raw {raw_id}") from exc
+            with evidence_reader.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
+                provider, _evidence = _resolved_retained_member_provider(evidence_reader, raw_id, payload, source_path)
+        except PreparedDecodeError as exc:
+            return PreparedJsonl(
+                blob_hash,
+                None,
+                None,
+                f"{type(exc).__name__}: {exc}",
+                decode_failure=exc.kind,
+            )
         if provider is Provider.UNKNOWN:
             refusal = UnsupportedRetainedJsonShapeError(
-                f"retained UNKNOWN provider remained unresolved after bounded scan: {source_path}"
+                f"retained UNKNOWN provider has no recognized complete input shape: {source_path}"
             )
-            return PreparedJsonl(
-                None,
-                None,
-                None,
-                f"{type(refusal).__name__}: {refusal}",
+            return PreparedJsonl(None, None, None, f"{type(refusal).__name__}: {refusal}", unsupported_shape=True)
+    fallback_id = fallback_session_id(source_path, raw_id)
+    if kind is RawRevisionKind.APPEND:
+        fallback_id = (
+            _append_session_native_id(
+                evidence_reader.raw_append_logical_key(raw_id),
+                provider=provider,
+                captured_native_id=evidence_reader.raw_native_id(raw_id),
             )
-    kind = RawRevisionKind(kind_token)
-    fallback_id = (native_id or Path(source_path).stem) if kind is RawRevisionKind.APPEND else Path(source_path).stem
-    try:
-        with (
-            read_frame(source_db_path, tier=ArchiveTier.SOURCE, timeout_class="background-read") as source_frame,
-            read_frame(index_db_path, tier=ArchiveTier.INDEX, timeout_class="background-read") as index_frame,
-        ):
-            source_conn = source_frame.connection
-            index_conn = index_frame.connection
-            source_conn.execute("BEGIN")
-            index_conn.execute("BEGIN")
-            evidence_digest: str | None = None
+            or fallback_id
+        )
+    profile_identity = evidence_reader.raw_profile_identity(raw_id)
+    captured_zip_coordinate = evidence_reader.raw_captured_zip_coordinate(raw_id)
+    fallback_timestamp = evidence_reader.raw_revision_file_mtime(raw_id)
+    if provider is Provider.HERMES and profile_identity is None:
+        return PreparedJsonl(
+            blob_hash,
+            None,
+            None,
+            "retained Hermes input has no captured profile identity receipt",
+            missing_profile_identity=True,
+        )
+    from polylogue.sources.assembly import close_sidecar_data, get_assembly_spec
 
-            def capture_evidence(value: object) -> None:
-                nonlocal evidence_digest
-                evidence_digest = _enrichment_evidence_digest(value)
+    sidecar_data_cache: SidecarData = {}
+    sidecar_data_loaded = False
+    prepare_per_session = (
+        not is_stream_record_provider(source_path, provider)
+        and provider in BUNDLE_PROVIDERS
+        and Path(source_path).name.lower().endswith(".json")
+    )
 
-            sidecar_data_cache: SidecarData = {}
-            sidecar_data_loaded = False
-            from polylogue.sources.assembly import get_assembly_spec
+    def finalize(sessions: PreparedSessionSequence) -> Iterator[ParsedSession]:
+        return iter_enriched_sessions_from_retained_read(
+            evidence_reader=evidence_reader,
+            provider=provider,
+            sessions=sessions,
+            source_path=source_path,
+            captured_zip_coordinate=captured_zip_coordinate,
+            provider_session_ids=sessions.iter_provider_session_ids(),
+            normalize_session=lambda session: normalize_session_timestamps(
+                session, fallback_timestamp=fallback_timestamp
+            ),
+        )
 
-            prepare_per_session = (
-                not is_stream_record_provider(source_path, provider)
-                and provider in BUNDLE_PROVIDERS
-                and Path(source_path).name.lower().endswith(".json")
-            )
-            stream_grok = (
-                provider is Provider.GROK
-                and not is_stream_record_provider(source_path, provider)
-                and Path(source_path).name.lower().endswith(".json")
-                and get_assembly_spec(provider) is None
-            )
-
-            # Bundle providers have source-scoped assembly evidence. Codex's
-            # title enrichment needs the cohort's session IDs and is not a
-            # bundle provider, so it remains on the cohort callback below.
-            def finalize(sessions: list[ParsedSession]) -> list[ParsedSession]:
-                # ``prepare_jsonl_blob`` admits every session before it calls
-                # a finalizer, so this sees only admitted sessions.
-                normalized = [
-                    normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp) for session in sessions
-                ]
-                return _replay_safe_enrich_sessions(
+    def prepare_bundle_session(session: ParsedSession) -> ParsedSession:
+        nonlocal sidecar_data_loaded
+        check_compute_cancelled()
+        normalized = normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp)
+        spec = get_assembly_spec(provider)
+        if spec is None:
+            return normalized
+        if not sidecar_data_loaded:
+            sidecar_data_cache.update(
+                _retained_enrichment_sidecar_data(
                     provider=provider,
-                    sessions=normalized,
-                    index_conn=index_conn,
-                    source_conn=source_conn,
-                    blob_root=Path(blob_root),
+                    sessions=(),
+                    evidence_reader=evidence_reader,
                     source_path=source_path,
-                    evidence_observer=capture_evidence,
+                    captured_zip_coordinate=captured_zip_coordinate,
                 )
-
-            def prepare_bundle_session(session: ParsedSession) -> ParsedSession:
-                nonlocal sidecar_data_loaded
-                normalized = normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp)
-                spec = get_assembly_spec(provider)
-                if spec is None:
-                    return cast(ParsedSession, normalized)
-                if not sidecar_data_loaded:
-                    sidecar_data_cache.update(
-                        _retained_enrichment_sidecar_data(
-                            provider=provider,
-                            sessions=(),
-                            index_conn=index_conn,
-                            source_conn=source_conn,
-                            blob_root=Path(blob_root),
-                            source_path=source_path,
-                        )
-                    )
-                    capture_evidence(sidecar_data_cache)
-                    sidecar_data_loaded = True
-                assert sidecar_data_loaded
-                return spec.enrich_session(normalized, sidecar_data_cache)
-
-            def classify_records(records: Iterable[JSONValue]) -> Iterable[JSONValue]:
-                source = iter(records)
-                sample = tuple(islice(source, 64))
-                if _declared_non_session_artifact_classification(provider, source_path, sample=sample) is not None:
-                    return iter(())
-                return chain(sample, source)
-
-            def classify_bundle_members(witnesses: Sequence[JSONValue]) -> bool:
-                # The member scan keeps the first 64 members, each container
-                # field cut to 64 entries, as the bounded record sample.
-                return _declared_non_session_artifact_classification(provider, source_path, sample=witnesses) is None
-
-            def classify_grok_export(witness: JSONValue) -> bool:
-                # The root fields, with containers cut to their first 64
-                # entries, are the bounded record sample.
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_generic_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                witness: JSONValue = {**envelope, "messages": list(messages)}
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_hermes_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                taxonomy_witness = envelope.get("__taxonomy_witness")
-                witness: JSONValue = {
-                    **{key: value for key, value in envelope.items() if not key.startswith("__")},
-                    **(taxonomy_witness if isinstance(taxonomy_witness, dict) else {}),
-                    "messages": list(messages),
-                }
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_claude_design_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                witness: JSONValue = {**envelope, "messages": list(messages)}
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_claude_ai_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                witness: JSONValue = {
-                    **{key: value for key, value in envelope.items() if not key.startswith("__")},
-                    "chat_messages": list(messages),
-                }
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_drive_chunked_object(witness: dict[str, JSONValue]) -> bool:
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_hermes_atif_object(witness: dict[str, JSONValue]) -> bool:
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_otel_object(witness: dict[str, JSONValue]) -> bool:
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_chatgpt_object(envelope: dict[str, object]) -> bool:
-                mapping = envelope["mapping"]
-                assert isinstance(mapping, Mapping)
-                sample_mapping = dict(islice(mapping.items(), 64))
-                witness = {**envelope, "mapping": sample_mapping}
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_gemini_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                witness: JSONValue = {**envelope, "messages": list(messages)}
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            parse_prefix_size: int | None = None
-            if is_jsonl_source_path(source_path):
-                with blob_path.open("rb") as tail_handle:
-                    parse_prefix_size = jsonl_parse_prefix_size_of_handle(tail_handle)
-            artifact = prepare_jsonl_blob(
-                str(blob_path),
-                source_path,
-                provider.value,
-                fallback_id,
-                is_stream=is_stream_record_provider(source_path, provider),
-                shard_directory=directory,
-                # Live intake refuses a complete JSONL record that does not
-                # decode; replay of the same bytes must refuse it too.
-                strict_jsonl_records=True,
-                parse_prefix_size=parse_prefix_size,
-                sidecar_resolver=RetainedSidecarResolver(
-                    Path(blob_root).parent,
-                    blob_root=Path(blob_root),
-                    source_conn=source_conn,
-                ),
-                prepare_session=prepare_bundle_session if prepare_per_session else None,
-                prepare_sessions=None if prepare_per_session else finalize,
-                prepare_records=classify_records,
-                classify_grok_export=classify_grok_export if stream_grok else None,
-                classify_generic_object=classify_generic_object,
-                classify_hermes_object=classify_hermes_object,
-                classify_claude_design_object=classify_claude_design_object,
-                classify_claude_ai_object=classify_claude_ai_object,
-                classify_drive_chunked_object=classify_drive_chunked_object,
-                classify_hermes_atif_object=classify_hermes_atif_object,
-                classify_chatgpt_object=classify_chatgpt_object,
-                classify_gemini_object=classify_gemini_object,
-                classify_otel_object=classify_otel_object,
-                classify_bundle_members=classify_bundle_members,
-                # The publisher recomputes this digest from the retained
-                # evidence for every artifact, so a pass that enriched nothing
-                # (no assembly spec, or no admitted session) must bind the
-                # same evidence value rather than an absent one.
-                preparation_dependency=lambda: (
-                    _retained_dependency_digest(
-                        evidence_digest
-                        if evidence_digest is not None
-                        else _enrichment_evidence_digest(
-                            _retained_enrichment_sidecar_data(
-                                provider=provider,
-                                sessions=(),
-                                index_conn=index_conn,
-                                source_conn=source_conn,
-                                blob_root=Path(blob_root),
-                                source_path=source_path,
-                            )
-                        ),
-                        _retained_parser_sidecar_digest(source_conn, provider=provider, source_path=source_path),
-                    ),
-                    str(Path(index_db_path).resolve()),
-                ),
             )
+            sidecar_data_loaded = True
+        return spec.enrich_session(normalized, sidecar_data_cache)
+
+    try:
+        parse_prefix_size: int | None = None
+        if is_jsonl_source_path(source_path) and not path_declaration_refuses_session(provider, source_path):
+            with evidence_reader.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
+                try:
+                    parse_prefix_size = jsonl_parse_prefix_size_of_handle(payload)
+                except Exception as exc:
+                    decode_failure = classify_decode_failure(exc)
+                    if decode_failure is None:
+                        raise
+                    return PreparedJsonl(
+                        blob_hash,
+                        None,
+                        None,
+                        f"{type(exc).__name__}: {exc}",
+                        decode_failure=decode_failure,
+                    )
+            if _size == 0 and _is_declared_provider_session_stream(provider, source_path):
+                return PreparedJsonl(
+                    blob_hash,
+                    None,
+                    None,
+                    "zero-byte provider session stream contains no decodable session record",
+                    decode_failure=DecodeFailure.JSONL_RECORD,
+                )
+        artifact = prepare_jsonl_blob(
+            str(blob_path),
+            source_path,
+            provider.value,
+            fallback_id,
+            is_stream=is_stream_record_provider(source_path, provider),
+            profile_identity=profile_identity,
+            shard_directory=str(directory),
+            publication_publisher=ArchiveBlobPublisher(
+                evidence_reader.archive_root / "source.db",
+                evidence_reader.archive_root / "blob",
+            ),
+            publication_source_read=evidence_reader,
+            strict_jsonl_records=True,
+            parse_prefix_size=parse_prefix_size,
+            source_sha256=blob_hash,
+            sidecar_resolver=evidence_reader.retained_sidecar_resolver(),
+            prepare_session=prepare_bundle_session if prepare_per_session else None,
+            prepare_sessions=None if prepare_per_session else finalize,
+            captured_zip_coordinate=captured_zip_coordinate,
+        )
     except (OSError, sqlite3.OperationalError) as exc:
         raise RetainedPreparationRetryableError(f"retained JSON evidence read failed for raw {raw_id}") from exc
+    finally:
+        primary = sys.exception()
+        try:
+            close_sidecar_data(sidecar_data_cache)
+        except BaseException as cleanup:
+            if primary is not None:
+                raise BaseExceptionGroup(
+                    "retained JSON preparation and sidecar cleanup failed", [primary, cleanup]
+                ) from None
+            raise
     if artifact.blob_hash is not None and artifact.blob_hash != blob_hash:
-        artifact.discard()
-        raise RetainedPreparationRetryableError(f"retained JSON blob changed for raw {raw_id}")
+        blob_refusal = RetainedPreparationRetryableError(f"retained JSON blob changed for raw {raw_id}")
+        try:
+            artifact.discard()
+        except BaseException as cleanup:
+            raise BaseExceptionGroup(
+                "retained JSON refusal and artifact cleanup failed", [blob_refusal, cleanup]
+            ) from None
+        raise blob_refusal
+    return _attach_retained_validation_verdict(
+        artifact,
+        provider=provider,
+        blob_hash=blob_hash,
+        blob_path=blob_path,
+        source_path=source_path,
+        raw_id=raw_id,
+        directory=directory,
+        validation_mode=validation_mode,
+        captured_zip_coordinate=captured_zip_coordinate,
+        jsonl=is_jsonl_source_path(source_path),
+    )
+
+
+@contextmanager
+def _retained_validation_input(
+    blob_path: Path,
+    prefix_size: int | None,
+    directory: Path,
+) -> Iterator[Path]:
+    """Expose exactly the parsed JSONL frontier to the spill-backed validator."""
+    if prefix_size is None or prefix_size == blob_path.stat().st_size:
+        yield blob_path
+        return
+    if prefix_size < 0:
+        raise RetainedPreparationRetryableError("retained JSONL parser returned a negative prefix")
+    fd, raw_path = tempfile.mkstemp(prefix="validation-", suffix=".jsonl", dir=directory)
+    path = Path(raw_path)
+    try:
+        remaining = prefix_size
+        with os.fdopen(fd, "wb") as target, blob_path.open("rb") as source:
+            while remaining:
+                check_compute_cancelled()
+                chunk = source.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise RetainedPreparationRetryableError("retained JSONL parser prefix exceeds source bytes")
+                target.write(chunk)
+                remaining -= len(chunk)
+        yield path
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _attach_retained_validation_verdict(
+    artifact: PreparedJsonl,
+    *,
+    provider: Provider,
+    blob_hash: str,
+    blob_path: Path,
+    source_path: str,
+    raw_id: str,
+    directory: Path,
+    validation_mode: ValidationMode,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
+    jsonl: bool,
+) -> PreparedJsonl:
+    """Bind schema evidence to the exact retained bytes the parser consumed."""
+    if (
+        artifact.error is None
+        and artifact.resolved_provider is not None
+        and not path_declaration_refuses_session(provider, source_path)
+        and not (jsonl and artifact.parsed_prefix_size == 0)
+    ):
+        from polylogue.schemas import validate_retained_document
+
+        validation_prefix = artifact.parsed_prefix_size if jsonl and validation_mode is not ValidationMode.OFF else None
+        try:
+            with _retained_validation_input(blob_path, validation_prefix, directory) as validation_path:
+                verdict = validate_retained_document(
+                    artifact.resolved_provider,
+                    validation_path,
+                    mode=validation_mode,
+                    raw_id=raw_id,
+                    revision_sha256=blob_hash,
+                    evidence_id=raw_id,
+                    source_path=source_path,
+                    jsonl=jsonl,
+                    captured_zip_coordinate=captured_zip_coordinate,
+                )
+            return dataclasses.replace(artifact, validation_verdict=verdict)
+        except BaseException as primary:
+            try:
+                artifact.discard()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup(
+                    "retained validation and artifact cleanup failed", [primary, cleanup]
+                ) from None
+            raise
     return artifact
 
 
-def prepare_retained_non_json_artifact(
-    archive: ArchiveStore,
-    raw_id: str,
-    provider_token: str,
-    blob_hash: str,
-    source_path: str,
-    kind_token: str,
-    native_id: str | None,
-    blob_root: str,
-    source_db_path: str,
-    index_db_path: str,
-    directory: str,
-    fallback_timestamp: str | None,
-) -> PreparedJsonl:
-    """Seal a non-JSON retained parse inside the isolated preparation worker."""
-    from polylogue.pipeline.ids import session_content_hash
-    from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact
-    from polylogue.sources.prepared_message_sink import SqliteMessageStore
-    from polylogue.storage.blob_store import BlobStore
+def _is_declared_provider_session_stream(provider: Provider, source_path: str) -> bool:
+    """Whether an empty provider JSONL path should be decoded as a session stream."""
+    if provider not in {Provider.CODEX, Provider.CLAUDE_CODE}:
+        return False
+    # Claude's configured history file is raw-only intake metadata. Other
+    # provider JSONL paths that are not explicitly excluded by OriginSpec are
+    # session decode inputs, including neutral and exported path spellings.
+    return not (provider is Provider.CLAUDE_CODE and Path(source_path).name.lower() == "history.jsonl")
 
-    archive_root = Path(source_db_path).parent
-    if archive_root / "blob" != Path(blob_root):
-        raise RetainedPreparationRetryableError(f"retained archive binding changed for raw {raw_id}")
+
+def prepare_retained_non_json_artifact(
+    evidence_reader: RetainedSessionRead,
+    raw_id: str,
+    *,
+    directory: Path,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
+) -> PreparedJsonl:
+    """Seal non-JSON sessions through the same original retained read owner."""
+    from polylogue.core.compute import DaemonBackpressureError
+    from polylogue.core.prepared_file import VerificationCancelledError
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.sources.prepared_jsonl import (
+        PreparedJsonl,
+        _prepare_attachment_publications,
+        _prepare_codex_state_blob,
+        _prepare_sidecar_publications,
+        _write_artifact,
+        record_prepared_classification,
+    )
+    from polylogue.sources.prepared_message_sink import SqliteMessageStore
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError
+    from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+
+    provider, blob_hash, source_path, _kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+    # Some providers arrive under neutral or mislabeled filenames. A simple
+    # top-level message envelope has an existing ijson-to-SQLite route in
+    # prepare_jsonl_blob; route by that complete shape before the collecting
+    # non-JSON replay below. The probe validates through EOF and leaves the
+    # retained blob untouched.
+    if provider in {Provider.DRIVE, Provider.GEMINI} and not (
+        is_jsonl_source_path(source_path) or Path(source_path).suffix.lower() == ".json"
+    ):
+        from polylogue.sources.decoder_json import generic_message_object_envelope
+
+        blob_path = evidence_reader.raw_revision_blob_path(raw_id)
+        if blob_path is not None:
+            with blob_path.open("rb") as handle:
+                generic_envelope = generic_message_object_envelope(handle)
+            if generic_envelope is not None:
+                return prepare_retained_jsonl_artifact(
+                    evidence_reader,
+                    raw_id,
+                    directory=directory,
+                    allow_generic_object_alias=True,
+                    validation_mode=validation_mode,
+                )
+    if path_declaration_refuses_session(provider, source_path):
+        # A raw-only member (an export's binary asset) is evidence whatever its
+        # suffix: the sealed preparation records its path classification
+        # without decoding the bytes, exactly as for a JSON-suffixed member.
+        return prepare_retained_jsonl_artifact(
+            evidence_reader, raw_id, directory=directory, validation_mode=validation_mode
+        )
+    publisher = ArchiveBlobPublisher(
+        evidence_reader.archive_root / "source.db",
+        evidence_reader.archive_root / "blob",
+    )
     sessions_path = Path(directory) / f"prepared-{uuid.uuid4().hex}.db"
     shard_path: Path | None = None
     store: SqliteMessageStore | None = None
     sealed = False
     parsed = False
     try:
-        provider, current_hash, current_path, kind, _size = archive.raw_revision_descriptor(raw_id)
-        if (
-            archive.index_db_path.resolve() != Path(index_db_path).resolve()
-            or provider != Provider(provider_token)
-            or current_hash != blob_hash
-            or current_path != source_path
-            or kind != RawRevisionKind(kind_token)
-            or (archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None) != native_id
-            or archive.raw_revision_file_mtime(raw_id) != fallback_timestamp
-        ):
-            raise RetainedPreparationRetryableError(f"retained descriptor changed for raw {raw_id}")
-        sessions = parse_retained_raw_sessions(archive, raw_id)
-        outcome = _enrich_retained_parse_outcome(
-            archive,
-            raw_id,
-            descriptor=(provider, blob_hash, source_path, kind, _size, native_id),
-            outcome=(sessions, _size, kind),
-        )
-        if isinstance(outcome, Exception):
-            raise outcome
-        sessions = outcome[0]
-        resolved_provider = Provider.from_string(sessions[0].source_name) if sessions else provider
-        evidence = _retained_enrichment_sidecar_data(
-            provider=resolved_provider,
-            sessions=sessions,
-            index_conn=archive.index_connection,
-            source_conn=archive._ensure_source_conn(),
-            blob_root=Path(blob_root),
-            source_path=source_path,
-        )
-        dependency = _retained_dependency_digest(
-            _enrichment_evidence_digest(evidence),
-            _retained_parser_sidecar_digest(
-                archive._ensure_source_conn(), provider=resolved_provider, source_path=source_path
-            ),
-        )
-        parsed = True
-        if not BlobStore(Path(blob_root)).verify(blob_hash):
+        state_descriptor = _retained_codex_state_descriptor(evidence_reader, raw_id)
+        if not BlobStore(evidence_reader.archive_root / "blob").verify(blob_hash, stop=compute_cancel_requested):
             raise RetainedPreparationRetryableError(f"retained blob changed for raw {raw_id}")
+        if state_descriptor is not None:
+            parsed = True
+            artifact = _prepare_codex_state_blob(
+                state_descriptor[0],
+                Path(directory),
+                state_kind=state_descriptor[2],
+                source_hash=blob_hash,
+                semantic_source_path=source_path,
+                enrichment_digest=None,
+                enrichment_index_path=None,
+                publication_publisher=publisher,
+                captured_profile_key=evidence_reader.raw_profile_identity(raw_id),
+            )
+            sealed = True
+            return artifact
+        # Retained SQLite sessions are parsed while their output store owns
+        # every sink, array, and accounting stream through publication.
+        sqlite_path = BlobStore(evidence_reader.archive_root / "blob").blob_path(blob_hash)
+        from polylogue.sources.sqlite_export import looks_like_logical_source_path
+
+        if (
+            provider in {Provider.HERMES, Provider.ANTIGRAVITY}
+            and looks_like_logical_source_path(sqlite_path)
+            and not path_declaration_refuses_session(provider, source_path)
+        ):
+            from polylogue.storage.sqlite.archive_tiers.write import append_session_to_shard
+            from polylogue.storage.sqlite.session_shard import SessionShardBuilder
+
+            store = SqliteMessageStore(sessions_path)
+            with closing(SessionShardBuilder(Path(directory) / f"shard-{uuid.uuid4().hex}.db")) as builder:
+
+                def prepared_sessions() -> Generator[ParsedSession, None, None]:
+                    assert store is not None
+                    with closing(
+                        _iter_sqlite_path(
+                            provider,
+                            sqlite_path,
+                            source_path,
+                            store,
+                            fallback_id=fallback_session_id(source_path, raw_id),
+                            profile_identity=evidence_reader.raw_profile_identity(raw_id),
+                        )
+                    ) as source_sessions:
+                        for session in source_sessions:
+                            check_compute_cancelled()
+                            session = normalize_session_timestamps(
+                                session, fallback_timestamp=evidence_reader.raw_revision_file_mtime(raw_id)
+                            )
+                            with closing(
+                                iter_enriched_sessions_from_retained_read(
+                                    evidence_reader,
+                                    provider,
+                                    source_path,
+                                    [session],
+                                    captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
+                                )
+                            ) as enriched_sessions:
+                                for enriched in enriched_sessions:
+                                    enriched.content_hash = session_content_hash(enriched)
+                                    append_session_to_shard(builder, enriched)
+                                    yield enriched
+
+                with closing(prepared_sessions()) as selected_sessions:
+                    _write_artifact(
+                        store, blob_hash, selected_sessions, enrichment_digest=None, enrichment_index_path=None
+                    )
+                shard_path = builder.seal().path
+            parsed = True
+            # Hermes' SQLite export is parsed through a deterministic JSON
+            # marker document. Validate that same marker projection (the
+            # schema-eligible parser input), while binding its verdict to the
+            # content-addressed SQLite revision that produced it.
+            from polylogue.archive.raw_payload.decode import build_raw_payload_envelope
+
+            envelope = None
+            if provider is Provider.HERMES:
+                envelope = build_raw_payload_envelope(
+                    sqlite_path,
+                    source_path=source_path,
+                    fallback_provider=provider,
+                    sqlite_immutable=True,
+                )
+                classification = envelope.artifact
+            else:
+                # Antigravity's SQLite parser validates its native table and
+                # step shapes directly; there is no JSON document to resolve
+                # against the retained schema registry.
+                classification = ArtifactClassification(
+                    provider=provider,
+                    kind=ArtifactKind.SESSION_DOCUMENT,
+                    parse_as_session=True,
+                    schema_eligible=False,
+                    default_priority=120,
+                    reason="Antigravity trajectory SQLite parser",
+                )
+            if classification is not None:
+                record_prepared_classification(
+                    store.conn,
+                    ArtifactStreamClassification(classification, False, 1),
+                )
+            verdict = None
+            if envelope is not None and classification.schema_eligible:
+                marker_path = Path(directory) / f"validation-marker-{uuid.uuid4().hex}.json"
+                try:
+                    marker_path.write_text(json.dumps(envelope.payload, ensure_ascii=False), encoding="utf-8")
+                    from polylogue.schemas import validate_retained_document
+
+                    verdict = validate_retained_document(
+                        envelope.provider,
+                        marker_path,
+                        mode=validation_mode,
+                        raw_id=raw_id,
+                        revision_sha256=blob_hash,
+                        evidence_id=raw_id,
+                        source_path=source_path,
+                        jsonl=False,
+                        captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
+                    )
+                finally:
+                    marker_path.unlink(missing_ok=True)
+            _prepare_attachment_publications(store, publisher, Path(directory))
+            _prepare_sidecar_publications(store, publisher, Path(directory))
+            store.close()
+            store = None
+            artifact = PreparedJsonl.seal(
+                blob_hash,
+                sessions_path,
+                shard_path,
+                enrichment_digest=None,
+                enrichment_index_path=None,
+                resolved_provider=provider,
+                publication_publisher=publisher,
+                captured_profile_key=evidence_reader.raw_profile_identity(raw_id),
+            )
+            if verdict is not None:
+                artifact = dataclasses.replace(artifact, validation_verdict=verdict)
+            sealed = True
+            return artifact
+        # A declared raw-only evidence path is terminal by its declaration:
+        # its bytes are retained, never decoded as a session grammar.
+        declared = declared_evidence_classification(source_path, provider=provider)
+        sessions = (
+            []
+            if declared is not None
+            else enrich_sessions_from_retained_read(
+                evidence_reader,
+                provider=provider,
+                source_path=source_path,
+                sessions=parse_retained_raw_sessions(evidence_reader, raw_id),
+                captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
+            )
+        )
+        resolved_provider = Provider.from_string(sessions[0].source_name) if sessions else provider
+        if not sessions and resolved_provider is Provider.UNKNOWN:
+            with evidence_reader.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
+                resolved_provider, _evidence = _resolved_retained_member_provider(
+                    evidence_reader, raw_id, payload, source_path
+                )
+        parsed = True
         store = SqliteMessageStore(sessions_path)
         for session in sessions:
             session.content_hash = session_content_hash(session)
@@ -1530,45 +1262,101 @@ def prepare_retained_non_json_artifact(
             store,
             blob_hash,
             sessions,
-            enrichment_digest=dependency,
-            enrichment_index_path=str(Path(index_db_path).resolve()),
+            enrichment_digest=None,
+            enrichment_index_path=None,
         )
+        if declared is not None:
+            record_prepared_classification(store.conn, ArtifactStreamClassification(declared, True, 0))
+        _prepare_attachment_publications(store, publisher, Path(directory))
+        _prepare_sidecar_publications(store, publisher, Path(directory))
         store.close()
         store = None
         artifact = PreparedJsonl.seal(
             blob_hash,
             sessions_path,
             shard_path,
-            enrichment_digest=dependency,
-            enrichment_index_path=str(Path(index_db_path).resolve()),
+            enrichment_digest=None,
+            enrichment_index_path=None,
             resolved_provider=resolved_provider,
+            publication_publisher=publisher,
+            captured_profile_key=evidence_reader.raw_profile_identity(raw_id),
+        )
+        artifact = _attach_retained_validation_verdict(
+            artifact,
+            provider=provider,
+            blob_hash=blob_hash,
+            blob_path=sqlite_path,
+            source_path=source_path,
+            raw_id=raw_id,
+            directory=Path(directory),
+            validation_mode=validation_mode,
+            captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
+            jsonl=False,
         )
         sealed = True
         return artifact
+    except (BlobVerificationCancelledError, VerificationCancelledError) as exc:
+        raise DaemonOperationCancelled("retained byte verification cancelled") from exc
     except RetainedPreparationRetryableError:
         raise
     except (OSError, sqlite3.OperationalError, MemoryError) as exc:
         raise RetainedPreparationRetryableError(f"retained worker could not prepare raw {raw_id}") from exc
+    except (
+        BaseExceptionGroup,
+        DaemonOperationCancelled,
+        DaemonBackpressureError,
+        ReferenceSealError,
+        NativeConnectionSettlementError,
+    ):
+        raise
     except Exception as exc:
         if parsed:
             raise RetainedPreparationRetryableError(f"retained worker artifact failed for raw {raw_id}") from exc
-        return PreparedJsonl(blob_hash, None, None, f"{type(exc).__name__}: {exc}"[:500])
+        return PreparedJsonl(
+            blob_hash,
+            None,
+            None,
+            f"{type(exc).__name__}: {exc}",
+            decode_failure=classify_decode_failure(exc),
+            missing_profile_identity=isinstance(exc, MissingProfileIdentityError),
+            retained_zip_membership_unproved=isinstance(exc, RetainedZipMembershipUnprovedError),
+            unsupported_shape=isinstance(exc, UnsupportedRetainedJsonShapeError),
+        )
     finally:
-        if store is not None:
-            store.close()
         if not sealed:
+            primary = sys.exception()
+            failures: list[BaseException] = []
+            # Preparation has queued claims but has not admitted a flush.
+            # Settle the artifact's actual SQL owner before retiring its
+            # private claim files. A failed close retains both families.
+            if store is not None:
+                try:
+                    store.close()
+                except BaseException as cleanup:
+                    failures.append(cleanup)
+            if not failures:
+                try:
+                    publisher.discard_pending()
+                except BaseException as cleanup:
+                    failures.append(cleanup)
+            if failures:
+                if primary is not None:
+                    failures.insert(0, primary)
+                raise BaseExceptionGroup(
+                    "retained artifact preparation and physical cleanup failed", failures
+                ) from None
             sessions_path.unlink(missing_ok=True)
             if shard_path is not None:
                 discard_session_shard(shard_path)
 
 
 def _prepared_retained_outcome(
-    archive: ArchiveStore,
+    archive: RetainedRawRead,
     raw_id: str,
     prepared_inputs: Mapping[str, PreparedRetainedInput],
     *,
     stop: Callable[[], bool] | None = None,
-) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
+) -> tuple[Sequence[ParsedSession], int, RawRevisionKind] | Exception:
     prepared = prepared_inputs.get(raw_id)
     if prepared is None:
         raise RetainedPreparationRetryableError(f"prepared retained input is missing for raw {raw_id}")
@@ -1581,7 +1369,8 @@ def _prepared_retained_outcome(
         ("source_path", prepared.source_path, source_path),
         ("payload_bytes", prepared.payload_bytes, size),
         ("native_id", prepared.native_id, native_id),
-        ("parser_fingerprint", prepared.parser_fingerprint, RAW_AUTHORITY_PARSER_FINGERPRINT),
+        ("profile_identity", prepared.captured_profile_key, archive.raw_profile_identity(raw_id)),
+        ("parser_fingerprint", prepared.parser_fingerprint, raw_authority_parser_fingerprint()),
         ("fallback_timestamp", prepared.fallback_timestamp, fallback_timestamp),
     )
     changed = [name for name, expected, actual in mismatched if expected != actual]
@@ -1601,83 +1390,19 @@ def _prepared_retained_outcome(
         )
     from polylogue.storage.blob_store import BlobStore
 
-    # ``stop`` is the caller's cancellation: it ends this re-hash between
-    # chunks with BlobVerificationCancelledError.
-    if not BlobStore(Path(archive.archive_root) / "blob").verify(blob_hash, stop=stop):
+    # The producer verified the full bytes before and after preparation. Writer
+    # publication compares that exact physical input without rehashing it.
+    try:
+        stat = BlobStore(Path(archive.archive_root) / "blob").blob_path(blob_hash).stat()
+    except OSError as exc:
+        raise RetainedPreparationRetryableError(f"prepared retained blob unavailable for raw {raw_id}") from exc
+    current_stat = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    if current_stat != prepared.verified_blob_stat:
         raise RetainedPreparationRetryableError(f"prepared retained blob changed for raw {raw_id}")
-    if prepared.parser_error is not None:
-        return retained_parse_exception(prepared.parser_error, prepared.parser_decode_failure)
-    if prepared.prepared_artifact is not None:
-        artifact = prepared.prepared_artifact
-        if artifact.blob_hash != blob_hash or artifact.error is not None:
-            raise RetainedPreparationRetryableError(f"prepared retained artifact changed for raw {raw_id}")
-        if artifact.enrichment_index_path != str(archive.index_db_path.resolve()):
-            raise RetainedPreparationRetryableError(f"prepared retained index dependency changed for raw {raw_id}")
-        try:
-            sessions = list(artifact.iter_sessions())
-        except Exception as exc:
-            raise RetainedPreparationRetryableError(f"prepared retained artifact unavailable for raw {raw_id}") from exc
-        # The worker enriched and sealed the dependency under the provider it
-        # resolved from these verified bytes; an UNKNOWN descriptor never
-        # names the evidence that was read.
-        stale = prepared_enrichment_dependency_state(
-            archive,
-            artifact,
-            provider=artifact.resolved_provider or provider,
-            source_path=source_path,
-            sessions=sessions,
-            parser_sidecars=True,
-        )
-        if stale is not None:
-            raise RetainedPreparationRetryableError(f"prepared retained {stale} for raw {raw_id}")
-        return sessions, size, kind
-    if prepared.sessions_path is None:
-        raise RetainedPreparationRetryableError(f"prepared retained carrier is missing for raw {raw_id}")
-    try:
-        with prepared.sessions_path.open("rb") as handle:
-            sessions = pickle.load(handle)
-    except Exception as exc:
-        raise RetainedPreparationRetryableError(f"prepared retained carrier unavailable for raw {raw_id}") from exc
-    if not isinstance(sessions, list) or any(not isinstance(session, ParsedSession) for session in sessions):
-        raise RetainedPreparationRetryableError(f"prepared retained carrier is invalid for raw {raw_id}")
-    if prepared.enriched:
-        return sessions, size, kind
-    descriptor = (provider, blob_hash, source_path, kind, size, native_id)
-    outcome = _enrich_retained_parse_outcome(archive, raw_id, descriptor=descriptor, outcome=(sessions, size, kind))
-    if isinstance(outcome, Exception):
-        raise RetainedPreparationRetryableError(f"prepared retained enrichment failed for raw {raw_id}") from outcome
-    staged = prepared.sessions_path.with_name(f"{prepared.sessions_path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with staged.open("xb") as handle:
-            pickle.dump(outcome[0], handle, protocol=pickle.HIGHEST_PROTOCOL)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(staged, prepared.sessions_path)
-        _fsync_directory(prepared.sessions_path.parent)
-    except Exception as exc:
-        raise RetainedPreparationRetryableError(
-            f"prepared retained enrichment carrier failed for raw {raw_id}"
-        ) from exc
-    finally:
-        staged.unlink(missing_ok=True)
-    prepared.enriched = True
-    return outcome
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-class RawRevisionReplayResourceBlockedError(RuntimeError):
-    def __init__(self, raw_ids: list[str], limit_bytes: int, total_bytes: int) -> None:
-        self.raw_ids = tuple(raw_ids)
-        self.limit_bytes = limit_bytes
-        self.total_bytes = total_bytes
-        super().__init__(f"{len(raw_ids)} raw revision(s) total {total_bytes} bytes exceed replay limit {limit_bytes}")
+    sessions = _sealed_retained_sessions(prepared, stop=stop)
+    if isinstance(sessions, Exception):
+        return sessions
+    return sessions, size, kind
 
 
 class AntigravityTrajectoryDriftError(RuntimeError):
@@ -1691,69 +1416,26 @@ class AntigravityTrajectoryDriftError(RuntimeError):
     """
 
 
-class RebuildDeadlineExceededError(RuntimeError):
-    """Raised by an injected ``deadline_check`` callback to stop replay mid-page.
-
-    polylogue-uhgm: ``backfill_historical_revision_evidence``'s REPLAY phase
-    (the byte-cohort and membership-cohort loops below) calls an optional
-    caller-supplied ``deadline_check`` once at the top of every cohort
-    iteration -- i.e. *between* cohorts, never mid-cohort-apply. A cohort
-    already durably committed (or accepted into the currently open,
-    not-yet-committed replay batch) when this fires stands; the cohort about
-    to start does not begin. A caller that catches this and retries from the
-    same source-order position is safe by the existing content-hash
-    idempotency invariant
-    (re-applying an already-committed cohort is a no-op upsert, never a
-    duplicate), matching the crash-recovery contract an open replay batch
-    already has (``test_backfill_resumes_after_replay_batch_crash_discards_
-    whole_batch_cleanly``). This closes the gap where a bounded pass's
-    deadline was previously observed only after the WHOLE requested page
-    replayed to completion.
-    """
-
-
-def _resource_blocked_parser_fingerprint(max_payload_bytes: int) -> str:
-    """Return the durable admission identity for one bounded census envelope."""
-    return f"{RAW_AUTHORITY_PARSER_FINGERPRINT}:resource-blocked:{max_payload_bytes}"
-
-
 def uncensused_historical_revision_raw_ids(
     archive_root: Path,
     raw_ids: list[str],
-    *,
-    max_payload_bytes: int | None = None,
 ) -> tuple[str, ...]:
     """Return inputs whose current parser identity has not been persisted.
 
-    The dedicated receipt proves that *some* parser version whose semantics
-    are still known to this codebase actually observed every relevant raw.
-    Durable revision or membership rows alone may have been produced by an
-    older parser and therefore cannot establish current quiescence.
-
-    This deliberately accepts any *known* fingerprint (the current one, or
-    one listed in ``SUPERSEDED_MEMBERSHIP_FINGERPRINTS``), not only the
-    current one (polylogue-9dxn): the census answers "was this raw ever
-    observed by a real parser?", which a fingerprint bump alone does not
-    change -- only ``classify_membership_revisions`` semantics changing (a
-    superseded fingerprint) can make a *verdict* stale, which is a separate
-    question the terminal-decision check in ``storage/derived/raw.py`` answers.
-    Treating a bump as forcing full re-census here would mean every
-    fingerprint bump re-parses the entire archive just to re-confirm facts
-    that did not change.
+    The dedicated receipt proves that the parser whose current executable
+    semantics fingerprint is stored actually observed every relevant raw.
+    Any fingerprint change makes a former receipt stale, so no growing list of
+    manually-known revisions can accidentally keep a changed parser authority
+    current.
 
     Current-fingerprint receipts also have to prove the durable authority
-    shape. Older receipts can contain an empty key list even when membership
-    rows establish a canonical identity, so those rows must be selected for
-    recomputation instead of remaining permanently blocked by the readiness
-    predicate.
+    shape. Receipts with another fingerprint, or an empty key list when
+    membership rows establish a canonical identity, are selected for
+    recomputation instead of remaining permanently blocked by readiness.
     """
     if not raw_ids:
         return ()
-    resource_blocked_fingerprint = (
-        _resource_blocked_parser_fingerprint(max_payload_bytes) if max_payload_bytes is not None else None
-    )
-    known_fingerprints = [RAW_AUTHORITY_PARSER_FINGERPRINT, *sorted(SUPERSEDED_MEMBERSHIP_FINGERPRINTS)]
-    known_placeholders = ",".join("?" for _ in known_fingerprints)
+    current_fingerprint = raw_authority_parser_fingerprint()
     with read_frame(
         archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
     ) as source_frame:
@@ -1769,33 +1451,19 @@ def uncensused_historical_revision_raw_ids(
                 LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
                 WHERE r.raw_id IN ({placeholders})
                   AND NOT COALESCE(
-                      c.parser_fingerprint IN ({known_placeholders})
+                      c.parser_fingerprint = ?
                       AND c.status = 'complete'
                       AND c.detail LIKE 'parser-observed:%',
                       0
                   )
-                  AND NOT COALESCE(
-                      c.parser_fingerprint = ?
-                      AND c.status = 'failed',
-                      0
-                  )
                 ORDER BY r.raw_id
                 """,
-                [*raw_id_chunk, *known_fingerprints, resource_blocked_fingerprint],
+                [*raw_id_chunk, current_fingerprint],
             )
             uncensused.extend(str(row[0]) for row in rows)
-            current_receipt_shapes: dict[str, _CurrentParserReceiptShape] = {}
-            for (
-                raw_id_value,
-                logical_keys_json,
-                typed_key,
-                revision_kind,
-                typed_non_session,
-                parser_confirmed_non_session,
-                byte_governed_fragment,
-                membership_key,
-            ) in conn.execute(
-                f"""
+            with closing(
+                conn.execute(
+                    f"""
                 SELECT r.raw_id, c.logical_keys_json, r.logical_source_key, r.revision_kind,
                        EXISTS(SELECT 1 FROM raw_artifacts AS a
                               WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
@@ -1819,1211 +1487,76 @@ def uncensused_historical_revision_raw_ids(
                   AND c.detail LIKE 'parser-observed:%'
                 ORDER BY r.raw_id, m.logical_source_key
                 """,
-                (
-                    RAW_AUTHORITY_PARSER_FINGERPRINT,
-                    RAW_AUTHORITY_PARSER_FINGERPRINT,
-                    RawRevisionAuthority.BYTE_PROVEN.value,
-                    *raw_id_chunk,
-                    RAW_AUTHORITY_PARSER_FINGERPRINT,
-                ),
-            ):
-                raw_id = str(raw_id_value)
-                shape = current_receipt_shapes.setdefault(
-                    raw_id,
-                    _CurrentParserReceiptShape(
+                    (
+                        raw_authority_parser_fingerprint(),
+                        raw_authority_parser_fingerprint(),
+                        RawRevisionAuthority.BYTE_PROVEN.value,
+                        *raw_id_chunk,
+                        raw_authority_parser_fingerprint(),
+                    ),
+                )
+            ) as receipt_rows:
+                for raw_id, raw_rows in groupby(receipt_rows, key=lambda row: str(row[0])):
+                    check_compute_cancelled()
+                    first = next(raw_rows)
+                    (
+                        _raw_id,
                         logical_keys_json,
                         typed_key,
                         revision_kind,
-                        bool(typed_non_session),
-                        bool(parser_confirmed_non_session),
-                        bool(byte_governed_fragment),
-                    ),
-                )
-                if membership_key is not None:
-                    shape.membership_keys.append(membership_key)
-            for raw_id, shape in current_receipt_shapes.items():
-                durable_keys = durable_authority_logical_keys(
-                    raw_logical_key=shape.typed_key,
-                    revision_kind=shape.revision_kind,
-                    membership_logical_keys=shape.membership_keys,
-                )
-                if not parser_census_is_complete(
-                    recorded_keys=parser_census_logical_keys(shape.recorded_keys_json),
-                    durable_keys=durable_keys,
-                    typed_non_session=shape.typed_non_session,
-                    parser_confirmed_non_session=shape.parser_confirmed_non_session,
-                    byte_governed_fragment=shape.byte_governed_fragment,
-                ):
-                    uncensused.append(raw_id)
+                        typed_non_session,
+                        parser_confirmed_non_session,
+                        byte_governed_fragment,
+                        _membership_key,
+                    ) = first
+                    with parser_census_identity_measurement(
+                        raw_logical_key=typed_key,
+                        revision_kind=revision_kind,
+                        membership_logical_keys=(row[7] for row in chain((first,), raw_rows)),
+                        observed_logical_keys=iter_parser_census_logical_keys(logical_keys_json),
+                        observed_are_receipt=True,
+                        check_stop=check_compute_cancelled,
+                    ) as measured:
+                        if not measured.complete(
+                            typed_non_session=bool(typed_non_session),
+                            parser_confirmed_non_session=bool(parser_confirmed_non_session),
+                            byte_governed_fragment=bool(byte_governed_fragment),
+                        ):
+                            uncensused.append(raw_id)
+        if not source_frame.revalidate():
+            raise StaleContinuationError("source archive changed during parser source census")
     return tuple(sorted(set(uncensused)))
 
 
-def record_resource_blocked_revision_census(
-    archive_root: Path,
-    raw_ids: tuple[str, ...],
+def apply_prepared_revision_census(
+    seal: PreparedIndexMutation,
+    prepared: PreparedRevisionSourceCensus,
     *,
-    max_payload_bytes: int,
-    total_payload_bytes: int,
-    stream_safe: bool | None = None,
-) -> None:
-    """Persist a non-terminal no-retry receipt for immutable oversized bytes.
-
-    ``failed`` is deliberately truthful: the current parser has not inspected
-    the payload.  The fingerprint binds that fact to the exact admission
-    envelope, so increasing the envelope (or changing the parser identity)
-    re-admits the raw without a timer-driven retry storm.
-
-    ``stream_safe`` is retained for old callers and receipts. Supported
-    stream-record JSONL now uses ordinary prepared replay, so a resource
-    receipt for it should be reconsidered by that route. Other formats keep
-    their existing bounded admission policy until their parsers migrate.
-    This note does not change the envelope-keyed re-admission fingerprint.
-    """
-    if not raw_ids:
-        return
-    fingerprint = _resource_blocked_parser_fingerprint(max_payload_bytes)
-    routing_note = (
-        "; stream-record JSONL can retry through ordinary prepared replay"
-        if stream_safe
-        else "; nonprepared replay remains subject to this resource envelope"
-        if stream_safe is False
-        else ""
-    )
-    detail = (
-        "current parser census deferred before blob open: "
-        f"component payload {total_payload_bytes} exceeds envelope {max_payload_bytes}{routing_note}"
-    )
-    with sqlite_connection(archive_root / "source.db") as conn:
-        for raw_id in raw_ids:
-            conn.execute(
-                """
-                INSERT INTO raw_authority_parser_census (
-                    raw_id, parser_fingerprint, status, logical_keys_json, detail
-                ) VALUES (?, ?, 'failed', '[]', ?)
-                ON CONFLICT(raw_id) DO UPDATE SET
-                    parser_fingerprint = excluded.parser_fingerprint,
-                    status = excluded.status,
-                    logical_keys_json = excluded.logical_keys_json,
-                    detail = excluded.detail
-                """,
-                (raw_id, fingerprint, detail),
-            )
-
-
-def _chain_members_smallest_first(
-    archive: ArchiveStore, chain_older_by_head: Mapping[str, tuple[str, ...]]
-) -> dict[str, tuple[str, ...]]:
-    """Each proven chain's non-head members, smallest payload first.
-
-    ``classify_untyped_full_revision_groups`` proves byte CONTAINMENT: every
-    member's payload is a strict prefix of the head's. Containment is not
-    parsed identity, so the census parses the smallest member as well as the
-    head and inherits only for members bracketed between two independently
-    parsed, agreeing captures (polylogue-irtix sub-item C). Size order is what
-    makes that bracket meaningful, and it is what the walk in
-    ``_census_historical_revision_evidence`` ascends when the smallest member's
-    own parse refutes the head's identity.
-    """
-    candidates = sorted({raw_id for older_raw_ids in chain_older_by_head.values() for raw_id in older_raw_ids})
-    if not candidates:
-        return {}
-    sizes = archive.raw_payload_sizes(candidates)
-    return {
-        head_raw_id: tuple(sorted(older_raw_ids, key=lambda raw_id: (sizes.get(raw_id, 0), raw_id)))
-        for head_raw_id, older_raw_ids in chain_older_by_head.items()
-        if older_raw_ids
-    }
-
-
-def _census_historical_revision_evidence(
-    archive: ArchiveStore,
-    spill: _ParsedSessionSpill,
-    *,
-    selected_raw_ids: list[str] | None,
-    max_payload_bytes: int | None,
-    ingest_workers: int = 1,
-    commit_batch_size: int | None = None,
-    prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
-    shard_transport: _FrozenReplayShardTransport | None = None,
-) -> _RevisionCensusState:
-    """Persist a complete bounded parser census without mutating index.db.
-
-    ``commit_batch_size`` (polylogue-amg1): when set to a positive integer,
-    ``replace_raw_membership_census``/``bind_raw_revision`` writes for up to
-    that many raws share one source.db commit instead of one commit per raw
-    (``sqlite3.Connection.__exit__`` -- fsync -- measured at 42.6% of wall
-    time on an independent-raw corpus). This only defers WHEN bytes already
-    proven durable by ``write_raw_payload`` become visible as census rows; a
-    crash mid-batch loses at most one batch's progress, which the caller
-    re-derives identically on retry (census is idempotent and re-run from
-    durable raw bytes) -- it never leaves a raw half-written or duplicates
-    an outcome. Every batch is committed (or the whole batch is discarded on
-    an exception, via the caller's ``rollback()``) before this function
-    returns or propagates; a crash further downstream (replay phase) cannot
-    observe a partially-committed census. Default ``None`` preserves the
-    original per-raw-commit behavior for every existing caller.
-
-    Untyped raws sharing one ``source_path`` are first checked for a proven
-    byte-growth chain (``ArchiveStore.classify_untyped_full_revision_groups``,
-    polylogue-nh44) before any of them is parsed. Only the newest member of a
-    proven chain is actually parsed; every older member is bound to the same
-    learned identity without independently parsing bytes that byte comparison
-    already proved are a strict prefix of the newest capture. This is a
-    census-time parse-cost optimization only: it never grants authority --
-    ``classify_raw_revision_cohort_for_rebuild_repair`` (called later, during
-    replay) still independently re-derives byte-provenness from raw bytes for
-    every raw.
-    """
-    state = _RevisionCensusState(0, 0, 0, set(), {}, {}, set())
-    batch_size = commit_batch_size if commit_batch_size is not None and commit_batch_size > 0 else None
-    batched = batch_size is not None
-    pending_commits = 0
-
-    def commit_unit() -> None:
-        nonlocal pending_commits
-        pending_commits += 1
-        if batch_size is None:
-            # ``bind_raw_revision(manage_transaction=True)`` commits its
-            # revision write before the parser receipt is recorded below.
-            # Commit again at the unit boundary so that trailing receipt is
-            # durable before this archive wrapper closes.
-            archive.commit()
-            pending_commits = 0
-        elif pending_commits >= batch_size:
-            archive.commit()
-            pending_commits = 0
-
-    def apply_outcome(
-        raw_id: str,
-        source_index: int,
-        outcomes: Mapping[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception],
-    ) -> None:
-        state.scanned += 1
-        state.censused.add(raw_id)
-        if source_index < 0:
-            source_conn = archive._ensure_source_conn()
-            has_membership_authority = source_conn.execute(
-                "SELECT 1 FROM raw_session_memberships WHERE raw_id = ? LIMIT 1", (raw_id,)
-            ).fetchone()
-            if has_membership_authority is not None:
-                record_current_parser_source_census(source_conn, raw_id)
-            else:
-                archive.replace_raw_membership_census(
-                    raw_id,
-                    None,
-                    parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                    censused_at_ms=0,
-                    detail=BYTE_AUTHORITY_CENSUS_DETAIL,
-                    manage_transaction=not batched,
-                )
-            state.quarantined += 1
-            commit_unit()
-            return
-        outcome = outcomes[raw_id]
-        if isinstance(outcome, Exception) and _settle_terminal_decode_refusal(
-            archive, raw_id, outcome, source_index=source_index, manage_transaction=not batched
-        ):
-            # A complete record that does not decode is a permanent property
-            # of these bytes, so the census settles it as live intake does:
-            # terminal evidence on the raw and a complete receipt with no
-            # identity. A failed receipt would be re-selected on every pass.
-            state.scanned += 1
-            state.censused.add(raw_id)
-            commit_unit()
-            return
-        if isinstance(outcome, Exception):
-            archive.replace_raw_membership_census(
-                raw_id,
-                None,
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                censused_at_ms=0,
-                detail=str(outcome),
-                manage_transaction=not batched,
-            )
-            state.quarantined += 1
-            commit_unit()
-            return
-        sessions, payload_bytes, revision_kind = outcome
-        stored_provider, _blob_hash, _source_path, _stored_kind, _stored_size = archive.raw_revision_descriptor(raw_id)
-        if sessions:
-            parsed_provider = Provider.from_string(sessions[0].source_name)
-            record_session_artifact_observation(
-                archive,
-                raw_id=raw_id,
-                provider=parsed_provider,
-                source_path=_source_path,
-                source_index=source_index,
-                observed_at_ms=archive.raw_revision_observed_at_ms(raw_id),
-                manage_transaction=not batched,
-            )
-        if stored_provider is Provider.UNKNOWN and sessions:
-            # Acquisition deliberately did not decode an UNKNOWN source-only
-            # member.  A successful replay now has durable shape evidence for
-            # its provider, so retain that result independently of the later
-            # index promotion outcome.
-            apply_source_raw_state_update(
-                archive._ensure_source_conn(),
-                raw_id,
-                state=RawSessionStateUpdate(payload_provider=Provider.from_string(sessions[0].source_name)),
-                manage_transaction=not batched,
-            )
-        if not sessions:
-            provider = _detected_provider_for_empty_replay(
-                archive,
-                raw_id,
-                stored_provider=stored_provider,
-                source_path=_source_path,
-            )
-            # A terminal artifact makes this raw ineligible for future census
-            # work. Its artifact carrier, parse state, and both census receipts
-            # must therefore become durable as one source-tier transaction.
-            # Batches retain that transaction until their existing commit
-            # boundary instead of forcing one SQLite commit per empty raw.
-            transaction = nullcontext() if batched else archive._ensure_source_conn()
-            with transaction:
-                if stored_provider is Provider.UNKNOWN and provider is not Provider.UNKNOWN:
-                    apply_source_raw_state_update(
-                        archive._ensure_source_conn(),
-                        raw_id,
-                        state=RawSessionStateUpdate(payload_provider=provider),
-                        manage_transaction=False,
-                    )
-                terminalized = _persist_terminal_non_session_artifact(
-                    archive,
-                    raw_id,
-                    provider=provider,
-                    source_path=_source_path,
-                    source_index=source_index,
-                    manage_transaction=False,
-                )
-                if provider is not Provider.UNKNOWN:
-                    archive.replace_raw_membership_census(
-                        raw_id,
-                        [],
-                        parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                        censused_at_ms=0,
-                        detail=(LEGACY_PAGE_IMAGE_CENSUS_DETAIL if _retained_page_image_raw(archive, raw_id) else ""),
-                        retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
-                        manage_transaction=False,
-                    )
-                    if not terminalized:
-                        apply_source_raw_state_update(
-                            archive._ensure_source_conn(),
-                            raw_id,
-                            state=_raw_parse_success_state(provider),
-                            manage_transaction=False,
-                        )
-            if provider is not Provider.UNKNOWN:
-                commit_unit()
-                return
-        state.classified += int(len(sessions) == 1)
-        spill.add(raw_id, sessions, payload_bytes=payload_bytes)
-        if shard_transport is not None:
-            prepared_artifact = (
-                prepared_inputs[raw_id].prepared_artifact
-                if prepared_inputs is not None and raw_id in prepared_inputs
-                else None
-            )
-            shard_transport.add_raw(raw_id, sessions, prepared_artifact=prepared_artifact)
-        if (
-            len(sessions) == 1
-            and revision_kind is RawRevisionKind.UNKNOWN
-            and archive.raw_native_id(raw_id) is not None
-        ):
-            session = sessions[0]
-            logical_key = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
-            archive.bind_raw_revision(
-                raw_id,
-                RawRevisionEnvelope(
-                    logical_source_key=logical_key,
-                    kind=RawRevisionKind.FULL,
-                    source_revision=raw_id,
-                    acquisition_generation=0,
-                    authority=RawRevisionAuthority.QUARANTINED,
-                ),
-                manage_transaction=not batched,
-            )
-            record_current_parser_source_census(archive._ensure_source_conn(), raw_id, parser_sessions=sessions)
-            state.bind_provisional_full_raw(logical_key, raw_id)
-            commit_unit()
-        elif revision_kind is RawRevisionKind.UNKNOWN or (
-            _raw_has_pending_envelope(archive, raw_id)
-            and (
-                archive.raw_native_id(raw_id) is None
-                or len(sessions) > 1
-                or raw_has_membership_governed_pending_envelope(archive._ensure_source_conn(), raw_id)
-            )
-        ):
-            # A grouped acquisition retains native_id=NULL even when its
-            # parser currently yields one session. Its original membership
-            # governs that session, just as for a raw holding several.
-            # A native singleton pending envelope instead learns its own key
-            # through the parser census below. Grouped raws are governed per
-            # session, exactly as live ingest
-            # records a multi-session file. A raw already governed that way
-            # replaces its memberships whatever the current session count, so
-            # a parser that now yields one session cannot leave stale members.
-            archive.replace_raw_membership_census(
-                raw_id,
-                sessions,
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                censused_at_ms=0,
-                manage_transaction=not batched,
-            )
-            for session in sessions:
-                logical_key = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
-                state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
-            commit_unit()
-        else:
-            record_current_parser_source_census(archive._ensure_source_conn(), raw_id, parser_sessions=sessions)
-            commit_unit()
-
-    def bind_byte_proven_older_member(raw_id: str, logical_key: str) -> None:
-        """Bind an older chain member to the head's learned key without parsing it.
-
-        Its own bytes were never independently opened here; identity is
-        established by construction (byte-prefix of the parsed head), not by
-        inspecting this raw's content.
-        """
-        archive.bind_raw_revision(
-            raw_id,
-            RawRevisionEnvelope(
-                logical_source_key=logical_key,
-                kind=RawRevisionKind.FULL,
-                source_revision=raw_id,
-                acquisition_generation=0,
-                authority=RawRevisionAuthority.QUARANTINED,
-            ),
-            manage_transaction=not batched,
-        )
-        record_current_parser_source_census(
-            archive._ensure_source_conn(),
-            raw_id,
-            inherited_logical_keys=(logical_key,),
-        )
-        state.scanned += 1
-        state.censused.add(raw_id)
-        state.classified += 1
-        state.bind_provisional_full_raw(logical_key, raw_id)
-        commit_unit()
-
-    census_selections: tuple[tuple[str, ...] | None, ...]
-    if selected_raw_ids is None:
-        census_selections = (None,)
-    else:
-        census_selections = archive.raw_membership_selection_components(selected_raw_ids)
-    try:
-        for initial_selection in census_selections:
-            census_selection = initial_selection
-            while True:
-                rows = archive.raw_membership_census_rows(census_selection)
-                if max_payload_bytes is not None:
-                    payload_sizes = archive.raw_payload_sizes(
-                        [
-                            raw_id
-                            for raw_id, _source_index, terminal_non_session, _raw_rowid in rows
-                            if raw_id not in state.censused and not terminal_non_session
-                        ]
-                    )
-                    total_payload_bytes = sum(payload_sizes.values())
-                    oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
-                    if oversized or total_payload_bytes > max_payload_bytes:
-                        blocked_ids = oversized or list(payload_sizes)
-                        raise RawRevisionReplayResourceBlockedError(
-                            sorted(blocked_ids), max_payload_bytes, total_payload_bytes
-                        )
-                for raw_id, _source_index, _terminal_non_session, _raw_rowid in sorted(
-                    rows,
-                    key=lambda row: archive.raw_revision_observation_order(row[0])[1],
-                ):
-                    if raw_id in state.censused or not _replay_retained_codex_state_evidence(archive, raw_id):
-                        continue
-                    state.scanned += 1
-                    state.censused.add(raw_id)
-                    state.transient_non_session_raw_ids.add(raw_id)
-                    commit_unit()
-                terminal_raw_ids = {
-                    raw_id for raw_id, _source_index, terminal_non_session, _raw_rowid in rows if terminal_non_session
-                }
-                for raw_id in terminal_raw_ids - state.censused:
-                    state.scanned += 1
-                    state.censused.add(raw_id)
-                    record_current_parser_source_census(archive._ensure_source_conn(), raw_id)
-                    commit_unit()
-                pending_rows = [
-                    (raw_id, source_index)
-                    for raw_id, source_index, terminal_non_session, _raw_rowid in rows
-                    if raw_id not in state.censused and not terminal_non_session
-                ]
-                # Parse is read-only blob->ParsedSession decode and authority-neutral;
-                # spread it across a process pool when there is more than one raw to
-                # parse. Archive writes below stay in fixed `pending_rows` order
-                # regardless of worker completion order, so parallel and sequential
-                # runs remain byte-identical.
-                parseable_raw_ids = [raw_id for raw_id, source_index in pending_rows if source_index >= 0]
-                # Prepared inputs already carry every raw's independently
-                # parsed evidence. The old skip-parse optimization would
-                # re-scan whole blobs under the source writer; consume each
-                # sealed result directly and let off-lease byte proof handle
-                # their revision relation later.
-                chain_older_by_head = (
-                    {}
-                    if prepared_inputs is not None
-                    else archive.classify_untyped_full_revision_groups(parseable_raw_ids)
-                )
-                # polylogue-irtix (C): the chain's SMALLEST member is parsed
-                # alongside its head instead of inheriting the head's learned
-                # identity on byte containment alone. It is the member the
-                # head's bytes prove least about -- a rollout captured between
-                # session start and its first turn is a byte prefix of the
-                # finished file and still parses to no session at all.
-                chain_members_by_head = _chain_members_smallest_first(archive, chain_older_by_head)
-                chain_probe_by_head = {
-                    head_raw_id: members[0] for head_raw_id, members in chain_members_by_head.items()
-                }
-                head_by_older = {
-                    older_raw_id: head_raw_id
-                    for head_raw_id, older_raw_ids in chain_older_by_head.items()
-                    for older_raw_id in older_raw_ids
-                    if older_raw_id != chain_probe_by_head.get(head_raw_id)
-                }
-                dispatch_raw_ids = [raw_id for raw_id in parseable_raw_ids if raw_id not in head_by_older]
-                # polylogue-4j9j: apply consumes outcomes as they resolve
-                # instead of after the whole page has parsed. The loop below
-                # reads each dispatched raw exactly once and in
-                # ``dispatch_raw_ids`` order -- ``dispatch_raw_ids`` is
-                # ``pending_rows`` filtered, and the skips here are the same
-                # filter -- so writes stay in the identical order and a page
-                # no longer has to hold every parsed session at once.
-                #
-                # Parse threads now run while this thread writes, which the
-                # eager form avoided by construction. That is safe at exactly
-                # this seam and nowhere else: a GIL interpreter never reaches
-                # the threaded plan at all (``resolve_revision_backfill_census_dispatch``
-                # returns SEQUENTIAL), and the polylogue-7mtf measurement that
-                # forbids concurrent parse threads -- ~5000x writer commit
-                # latency -- was taken on a GIL build.
-                with stream_retained_raws(
-                    archive,
-                    dispatch_raw_ids,
-                    ingest_workers=ingest_workers,
-                    prepared_inputs=prepared_inputs,
-                ) as parsed_outcomes:
-                    for raw_id, source_index in pending_rows:
-                        if raw_id in head_by_older:
-                            continue
-                        apply_outcome(raw_id, source_index, parsed_outcomes)
-                if head_by_older:
-                    source_index_by_raw_id = dict(pending_rows)
-                    bound_logical_key = state.provisional_logical_key
-
-                    unresolved = [
-                        older_raw_id
-                        for older_raw_id, head_raw_id in head_by_older.items()
-                        if bound_logical_key(head_raw_id) is None
-                    ]
-                    # The head's parse did not yield a clean single-session bind
-                    # (e.g. a coincidental byte-prefix among multi-session
-                    # bundles) -- fall back to parsing every deferred member
-                    # individually, exactly as if no chain had been proven.
-                    fallback_outcomes = (
-                        _parse_retained_raws(
-                            archive,
-                            unresolved,
-                            ingest_workers=ingest_workers,
-                            prepared_inputs=prepared_inputs,
-                        )
-                        if unresolved
-                        else {}
-                    )
-                    for head_raw_id, members in chain_members_by_head.items():
-                        deferred = [raw_id for raw_id in members if head_by_older.get(raw_id) == head_raw_id]
-                        head_key = bound_logical_key(head_raw_id)
-                        if head_key is None:
-                            for older_raw_id in deferred:
-                                apply_outcome(older_raw_id, source_index_by_raw_id[older_raw_id], fallback_outcomes)
-                            continue
-                        # Ascend the chain until one member's OWN parse lands on
-                        # the head's key. Everything above that member is
-                        # bracketed by two agreeing parsed captures and may
-                        # inherit; everything below it was refuted and is
-                        # classified by its own parse instead. A chain whose
-                        # smallest member already agrees costs one extra parse,
-                        # not one per member.
-                        agreed = bound_logical_key(chain_probe_by_head[head_raw_id]) == head_key
-                        index = 0
-                        while not agreed and index < len(deferred):
-                            older_raw_id = deferred[index]
-                            apply_outcome(
-                                older_raw_id,
-                                source_index_by_raw_id[older_raw_id],
-                                _parse_retained_raws(
-                                    archive,
-                                    [older_raw_id],
-                                    ingest_workers=ingest_workers,
-                                    prepared_inputs=prepared_inputs,
-                                ),
-                            )
-                            index += 1
-                            agreed = bound_logical_key(older_raw_id) == head_key
-                        if agreed:
-                            for older_raw_id in deferred[index:]:
-                                bind_byte_proven_older_member(older_raw_id, head_key)
-                if census_selection is None:
-                    break
-                expanded, _keys = archive.expand_raw_membership_selection(list(census_selection))
-                if set(expanded) == set(census_selection):
-                    break
-                census_selection = expanded
-    except BaseException:
-        if batched:
-            archive.rollback()
-        raise
-    if batched and pending_commits > 0:
-        archive.commit()
-    return state
-
-
-def _load_frozen_revision_evidence(
-    archive: ArchiveStore,
-    spill: _ParsedSessionSpill,
-    *,
-    selected_raw_ids: list[str] | None,
-    max_payload_bytes: int | None,
-    ingest_workers: int,
-    prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
-    shard_transport: _FrozenReplayShardTransport | None = None,
-) -> _RevisionCensusState:
-    """Parse a phase-2 source snapshot without changing its durable ledger."""
-    expanded_raw_ids, _logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
-    if selected_raw_ids is not None:
-        expanded_raw_ids = _expand_frozen_revision_link_selection(archive.archive_root, expanded_raw_ids)
-    rows = archive.raw_membership_census_rows(expanded_raw_ids if selected_raw_ids is not None else None)
-    if max_payload_bytes is not None:
-        payload_sizes = archive.raw_payload_sizes(
-            [raw_id for raw_id, _source_index, terminal_non_session, _raw_rowid in rows if not terminal_non_session]
-        )
-        total_payload_bytes = sum(payload_sizes.values())
-        oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
-        if oversized or total_payload_bytes > max_payload_bytes:
-            raise RawRevisionReplayResourceBlockedError(
-                sorted(oversized or payload_sizes), max_payload_bytes, total_payload_bytes
-            )
-    frozen_codex_state_raw_ids = frozenset(
-        raw_id
-        for raw_id, _source_index, _terminal_non_session, _raw_rowid in rows
-        if _retained_codex_state_descriptor(archive, raw_id) is not None
-    )
-    recorded_logical_keys = require_current_parser_source_census(
-        archive.archive_root,
-        selected_raw_ids=expanded_raw_ids if selected_raw_ids is not None else None,
-        transient_non_session_raw_ids=frozen_codex_state_raw_ids,
-    )
-    parseable_raw_ids = [
-        raw_id
-        for raw_id, source_index, terminal_non_session, _raw_rowid in rows
-        if source_index >= 0 and not terminal_non_session and raw_id not in frozen_codex_state_raw_ids
-    ]
-    parsed_outcomes = _parse_retained_raws(
-        archive,
-        parseable_raw_ids,
-        ingest_workers=ingest_workers,
-        prepared_inputs=prepared_inputs,
-    )
-    state = _RevisionCensusState(0, 0, 0, set(), {}, {}, set(frozen_codex_state_raw_ids))
-    for raw_id, source_index, terminal_non_session, _raw_rowid in rows:
-        state.scanned += 1
-        state.censused.add(raw_id)
-        if terminal_non_session or raw_id in frozen_codex_state_raw_ids:
-            continue
-        if source_index < 0:
-            state.quarantined += 1
-            continue
-        outcome = parsed_outcomes[raw_id]
-        if isinstance(outcome, Exception):
-            raise FrozenSourceRemediationRequiredError(
-                f"inactive candidate could not parse frozen raw {raw_id}: {type(outcome).__name__}: {outcome}"
-            ) from outcome
-        sessions, payload_bytes, revision_kind = outcome
-        parsed_logical_keys = tuple(
-            sorted(
-                {
-                    # Parser output uses Provider internally, while the
-                    # persisted census is normalized to public Origin keys.
-                    f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
-                    for session in sessions
-                }
-            )
-        )
-        if recorded_logical_keys[raw_id] != parsed_logical_keys:
-            raise FrozenSourceRemediationRequiredError(
-                "inactive candidate re-derived different current-parser logical keys for frozen raw "
-                f"{raw_id}: recorded={recorded_logical_keys[raw_id]!r}, parsed={parsed_logical_keys!r}"
-            )
-        spill.add(raw_id, sessions, payload_bytes=payload_bytes)
-        if shard_transport is not None:
-            # The frozen-source branch has already established parser-receipt
-            # parity above. Build the same sealed worker transport used by
-            # live ingest before any inactive index transaction starts.
-            prepared_artifact = (
-                prepared_inputs[raw_id].prepared_artifact
-                if prepared_inputs is not None and raw_id in prepared_inputs
-                else None
-            )
-            shard_transport.add_raw(raw_id, sessions, prepared_artifact=prepared_artifact)
-        state.classified += int(len(sessions) == 1)
-        if revision_kind is RawRevisionKind.UNKNOWN or raw_has_membership_governed_pending_envelope(
-            archive._ensure_source_conn(), raw_id
-        ):
-            for session in sessions:
-                # Persist the same canonical Origin identity used by current
-                # parser census and live ingestion.
-                logical_key = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
-                state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
-    return state
-
-
-def require_current_parser_source_census(
-    archive_root: Path,
-    *,
-    selected_raw_ids: Sequence[str] | None = None,
-    transient_non_session_raw_ids: Set[str] = frozenset(),
-) -> dict[str, tuple[str, ...]]:
-    """Require phase-2 parser receipts before allocating an index candidate."""
-    stale_raw_ids: list[str] = []
-    recorded_logical_keys: dict[str, tuple[str, ...]] = {}
-    selections: tuple[tuple[str, ...] | None, ...] | None
-    if selected_raw_ids is None:
-        selections = None
-    else:
-        selections = tuple(
-            tuple(selected_raw_ids[offset : offset + 500]) for offset in range(0, len(selected_raw_ids), 500)
-        )
-    with read_frame(
-        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-    ) as source_frame:
-        source_frontier_rowid: int | None = None
-        if selections is None:
-            source_frontier_rowid = _current_source_rowid_frontier(source_frame)
-        for selection in _current_source_raw_id_selections(
-            source_frame, selections, frontier_rowid=source_frontier_rowid
-        ):
-            where = f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
-            rows = _read_current_source_census_page(
-                source_frame,
-                selection,
-                source_frontier_rowid,
-                f"""
-                SELECT r.raw_id, c.parser_fingerprint, c.status, c.logical_keys_json
-                FROM raw_sessions AS r
-                LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
-                {where}
-                ORDER BY r.raw_id
-                """,
-                selection,
-            )
-            for raw_id_value, fingerprint, status, logical_keys_json in rows:
-                raw_id = str(raw_id_value)
-                if raw_id in transient_non_session_raw_ids:
-                    recorded_logical_keys[raw_id] = ()
-                    continue
-                if fingerprint != RAW_AUTHORITY_PARSER_FINGERPRINT or status != "complete":
-                    stale_raw_ids.append(raw_id)
-                    continue
-                normalized_keys = parser_census_logical_keys(logical_keys_json)
-                if normalized_keys is None:
-                    stale_raw_ids.append(raw_id)
-                    continue
-                recorded_logical_keys[raw_id] = normalized_keys
-        _require_current_source_census_frame(source_frame)
-    if stale_raw_ids:
-        sample = ", ".join(stale_raw_ids[:5])
-        raise FrozenSourceRemediationRequiredError(
-            "inactive candidate requires a complete current-parser source census; "
-            f"{len(stale_raw_ids)} raw(s) are stale or incomplete (sample: {sample})"
-        )
-
-    durable_bindings: dict[str, tuple[object, object, list[object], bool, bool, bool]] = {
-        raw_id: (None, RawRevisionKind.UNKNOWN.value, [], False, False, False) for raw_id in recorded_logical_keys
-    }
-    with read_frame(
-        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-    ) as source_frame:
-        for selection in _current_source_raw_id_selections(
-            source_frame, selections, frontier_rowid=source_frontier_rowid
-        ):
-            where = f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
-            params = (
-                RAW_AUTHORITY_PARSER_FINGERPRINT,
-                RAW_AUTHORITY_PARSER_FINGERPRINT,
-                RawRevisionAuthority.BYTE_PROVEN.value,
-                *selection,
-            )
-            rows = _read_current_source_census_page(
-                source_frame,
-                selection,
-                source_frontier_rowid,
-                f"""
-                SELECT r.raw_id, r.logical_source_key, r.revision_kind, r.source_index, m.logical_source_key,
-                       EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
-                       EXISTS(
-                           SELECT 1 FROM raw_membership_census AS mc
-                           WHERE mc.raw_id = r.raw_id
-                             AND mc.parser_fingerprint = ?
-                             AND mc.status = 'non_session'
-                       ),
-                       EXISTS(
-                           SELECT 1 FROM raw_membership_census AS mc
-                           WHERE mc.raw_id = r.raw_id
-                             AND r.source_index < 0
-                             AND mc.parser_fingerprint = ?
-                             AND mc.status = 'failed'
-                             AND mc.revision_authority = ?
-                       )
-                FROM raw_sessions AS r
-                LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-                {where}
-                ORDER BY r.raw_id, m.logical_source_key
-                """,
-                params,
-            )
-            for (
-                raw_id_value,
-                typed_key,
-                revision_kind,
-                _source_index,
-                membership_key,
-                typed_non_session,
-                parser_confirmed_non_session,
-                byte_governed_fragment,
-            ) in rows:
-                raw_id = str(raw_id_value)
-                typed_non_session = bool(typed_non_session) or raw_id in transient_non_session_raw_ids
-                (
-                    existing_typed,
-                    existing_kind,
-                    memberships,
-                    existing_non_session,
-                    existing_parser_confirmed_non_session,
-                    existing_byte_governed_fragment,
-                ) = durable_bindings.get(
-                    raw_id,
-                    (
-                        typed_key,
-                        revision_kind,
-                        [],
-                        bool(typed_non_session),
-                        bool(parser_confirmed_non_session),
-                        bool(byte_governed_fragment),
-                    ),
-                )
-                if membership_key is not None:
-                    memberships.append(membership_key)
-                durable_bindings[raw_id] = (
-                    typed_key if existing_typed is None else existing_typed,
-                    revision_kind if existing_kind == RawRevisionKind.UNKNOWN.value else existing_kind,
-                    memberships,
-                    bool(typed_non_session) or existing_non_session,
-                    bool(parser_confirmed_non_session) or existing_parser_confirmed_non_session,
-                    bool(byte_governed_fragment) or existing_byte_governed_fragment,
-                )
-
-    invalid_durable_bindings: set[str] = set()
-    durable_logical_keys: dict[str, tuple[str, ...]] = {}
-    for (
-        raw_id,
-        (
-            typed_key,
-            revision_kind,
-            membership_keys,
-            typed_non_session,
-            parser_confirmed_non_session,
-            byte_governed_fragment,
-        ),
-    ) in durable_bindings.items():
-        durable_keys = durable_authority_logical_keys(
-            raw_logical_key=typed_key,
-            revision_kind=revision_kind,
-            membership_logical_keys=membership_keys,
-        )
-        if durable_keys is None or not parser_census_is_complete(
-            recorded_keys=recorded_logical_keys.get(raw_id),
-            durable_keys=durable_keys,
-            typed_non_session=typed_non_session,
-            parser_confirmed_non_session=parser_confirmed_non_session,
-            byte_governed_fragment=byte_governed_fragment,
-        ):
-            invalid_durable_bindings.add(raw_id)
-        else:
-            durable_logical_keys[raw_id] = durable_keys
-
-    authority_binding_drift = sorted(
-        invalid_durable_bindings
-        | {
-            raw_id
-            for raw_id, census_keys in recorded_logical_keys.items()
-            if durable_logical_keys.get(raw_id, ()) != census_keys
-        }
-    )
-    if authority_binding_drift:
-        sample = ", ".join(authority_binding_drift[:5])
-        raise FrozenSourceRemediationRequiredError(
-            "inactive candidate current-parser census differs from frozen durable authority bindings; "
-            f"{len(authority_binding_drift)} raw(s) require source remediation (sample: {sample})"
-        )
-
-    authority_rows: dict[str, tuple[str | None, str, str, int, str | None, str | None]] = {}
-    with read_frame(
-        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-    ) as source_frame:
-        for selection in _current_source_raw_id_selections(
-            source_frame, selections, frontier_rowid=source_frontier_rowid
-        ):
-            where = f"WHERE raw_id IN ({','.join('?' for _ in selection)})"
-            rows = _read_current_source_census_page(
-                source_frame,
-                selection,
-                source_frontier_rowid,
-                f"""
-                SELECT raw_id, logical_source_key, revision_kind, revision_authority,
-                       source_index, predecessor_raw_id, baseline_raw_id
-                FROM raw_sessions {where}
-                ORDER BY raw_id
-                """,
-                selection,
-            )
-            for raw_id_value, logical_key, revision_kind, authority, source_index, predecessor_id, baseline_id in rows:
-                authority_rows[str(raw_id_value)] = (
-                    str(logical_key) if logical_key is not None else None,
-                    str(revision_kind),
-                    str(authority),
-                    int(source_index),
-                    str(predecessor_id) if predecessor_id is not None else None,
-                    str(baseline_id) if baseline_id is not None else None,
-                )
-
-    append_identity_drift: set[str] = set()
-    for raw_id, (
-        append_key,
-        revision_kind,
-        authority,
-        _source_index,
-        predecessor_id,
-        baseline_id,
-    ) in authority_rows.items():
-        if revision_kind != RawRevisionKind.APPEND.value:
-            continue
-        predecessor = authority_rows.get(predecessor_id or "")
-        baseline = authority_rows.get(baseline_id or "")
-        if (
-            append_key is None
-            or authority != RawRevisionAuthority.BYTE_PROVEN.value
-            or predecessor_id is None
-            or baseline_id is None
-            or predecessor_id == raw_id
-            or baseline_id == raw_id
-            or predecessor is None
-            or baseline is None
-            or predecessor[2] != RawRevisionAuthority.BYTE_PROVEN.value
-            or baseline[1] != RawRevisionKind.FULL.value
-            or baseline[2] != RawRevisionAuthority.BYTE_PROVEN.value
-            or baseline[3] < 0
-        ):
-            append_identity_drift.add(raw_id)
-            continue
-        try:
-            canonical_append_key = canonical_authority_logical_key(append_key)
-            canonical_predecessor_key = canonical_authority_logical_key(predecessor[0] or "")
-            canonical_baseline_key = canonical_authority_logical_key(baseline[0] or "")
-        except ValueError:
-            append_identity_drift.add(raw_id)
-            continue
-        if {canonical_predecessor_key, canonical_baseline_key} != {canonical_append_key}:
-            append_identity_drift.add(raw_id)
-            continue
-
-        seen = {raw_id}
-        cursor_id = predecessor_id
-        while True:
-            if cursor_id in seen:
-                append_identity_drift.add(raw_id)
-                break
-            seen.add(cursor_id)
-            cursor = authority_rows.get(cursor_id)
-            if cursor is None:
-                append_identity_drift.add(raw_id)
-                break
-            if cursor[1] == RawRevisionKind.FULL.value:
-                if cursor_id != baseline_id:
-                    append_identity_drift.add(raw_id)
-                break
-            if cursor[1] != RawRevisionKind.APPEND.value or cursor[4] is None:
-                append_identity_drift.add(raw_id)
-                break
-            try:
-                if canonical_authority_logical_key(cursor[0] or "") != canonical_append_key:
-                    append_identity_drift.add(raw_id)
-                    break
-            except ValueError:
-                append_identity_drift.add(raw_id)
-                break
-            cursor_id = cursor[4]
-    if append_identity_drift:
-        sample = ", ".join(sorted(append_identity_drift)[:5])
-        raise FrozenSourceRemediationRequiredError(
-            "inactive candidate typed continuation identity differs from linked byte authority; "
-            f"{len(append_identity_drift)} raw(s) require source remediation (sample: {sample})"
-        )
-
-    unresolved_raw_ids: list[str] = []
-    with read_frame(
-        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-    ) as source_frame:
-        for selection in _current_source_raw_id_selections(
-            source_frame, selections, frontier_rowid=source_frontier_rowid
-        ):
-            authority_where = f"AND r.raw_id IN ({','.join('?' for _ in selection)})"
-            authority_params: tuple[object, ...] = selection
-            unresolved_raw_ids.extend(
-                str(row[0])
-                for row in _read_current_source_census_page(
-                    source_frame,
-                    selection,
-                    source_frontier_rowid,
-                    f"""
-                    SELECT DISTINCT r.raw_id
-                    FROM raw_sessions AS r
-                    LEFT JOIN raw_membership_census AS c ON c.raw_id = r.raw_id
-                    LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-                    WHERE r.revision_authority = 'quarantined'
-                      {authority_where}
-                      AND NOT EXISTS (
-                          SELECT 1 FROM raw_artifacts AS a
-                          WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0
-                      )
-                      AND (
-                          c.raw_id IS NULL OR c.status NOT IN ('complete', 'non_session')
-                          OR (
-                              c.status = 'complete'
-                              AND (
-                                  m.raw_id IS NULL OR m.decision IS NULL
-                                  OR m.decision IN ('ambiguous', 'deferred')
-                              )
-                          )
-                      )
-                    ORDER BY r.raw_id
-                    """,
-                    authority_params,
-                )
-                if str(row[0]) not in transient_non_session_raw_ids
-            )
-    if unresolved_raw_ids:
-        sample = ", ".join(unresolved_raw_ids[:5])
-        raise FrozenSourceRemediationRequiredError(
-            "inactive candidate requires complete frozen source authority; "
-            f"{len(unresolved_raw_ids)} raw(s) remain quarantined or undecided (sample: {sample})"
-        )
-    return recorded_logical_keys
-
-
-_CURRENT_SOURCE_CENSUS_PAGE_SIZE = 500
-_CURRENT_SOURCE_CENSUS_PAGE_RETRIES = 1
-
-
-def _current_source_rowid_frontier(source_frame: ReadFrame) -> int:
-    """Capture the committed source row frontier, retrying if its frame expires."""
-    sql = "SELECT COALESCE(MAX(rowid), 0) FROM raw_sessions"
-    for attempt in range(_CURRENT_SOURCE_CENSUS_PAGE_RETRIES + 1):
-        try:
-            rows = tuple(source_frame.stream(sql))
-            return int(rows[0][0]) if rows else 0
-        except ReadFrameExpiredError:
-            if attempt >= _CURRENT_SOURCE_CENSUS_PAGE_RETRIES:
-                raise
-            _require_current_source_census_frame(source_frame)
-            source_frame.rebind()
-    raise AssertionError("bounded source frontier retry loop fell through")
-
-
-def _current_source_selection_continuation(
-    source_frame: ReadFrame,
-    selection: tuple[str, ...],
-    frontier_rowid: int | None,
-) -> ReadContinuation:
-    """Anchor one page by its source endpoint or its immutable input selection."""
-    last_raw_id = selection[-1]
-    if frontier_rowid is None:
-        continuation = ReadContinuation(
-            position=last_raw_id,
-            anchor_sql="SELECT ?",
-            anchor_params=(last_raw_id,),
-        )
-    else:
-        continuation = ReadContinuation(
-            position=last_raw_id,
-            anchor_sql="SELECT raw_id FROM raw_sessions WHERE raw_id = ? AND rowid <= ?",
-            anchor_params=(last_raw_id, frontier_rowid),
-        )
-    return source_frame.bind(continuation)
-
-
-def _require_current_source_census_frame(source_frame: ReadFrame) -> None:
-    """Refuse a mixed census if the source changed since this frame opened."""
-    if not source_frame.revalidate():
-        raise StaleContinuationError(
-            "source archive changed during parser source census; retry against one unchanged generation"
-        )
-
-
-def _resume_current_source_census(
-    source_frame: ReadFrame,
-    continuation: ReadContinuation,
-) -> ReadContinuation:
-    if source_frame.expired:
-        _require_current_source_census_frame(source_frame)
-    return source_frame.resume(continuation)
-
-
-def _read_current_source_census_page(
-    source_frame: ReadFrame,
-    selection: tuple[str, ...],
-    frontier_rowid: int | None,
-    sql: str,
-    parameters: Sequence[object],
-) -> tuple[sqlite3.Row, ...]:
-    """Read a whole selection before changing result state, retrying one expiry."""
-    continuation = _current_source_selection_continuation(source_frame, selection, frontier_rowid)
-    for attempt in range(_CURRENT_SOURCE_CENSUS_PAGE_RETRIES + 1):
-        try:
-            return tuple(source_frame.stream(sql, parameters))
-        except ReadFrameExpiredError:
-            if attempt >= _CURRENT_SOURCE_CENSUS_PAGE_RETRIES:
-                raise
-            _require_current_source_census_frame(source_frame)
-            _resume_current_source_census(source_frame, continuation)
-    raise AssertionError("bounded source census page retry loop fell through")
-
-
-def _current_source_raw_id_selections(
-    source_frame: ReadFrame,
-    selections: tuple[tuple[str, ...] | None, ...] | None,
-    *,
-    frontier_rowid: int | None,
-) -> Iterator[tuple[str, ...]]:
-    """Yield bounded raw-id selections, rebinding between pages as needed."""
-    if selections is not None:
-        continuation: ReadContinuation | None = None
-        for selection in selections:
-            if not selection:
-                continue
-            if continuation is not None:
-                _resume_current_source_census(source_frame, continuation)
-            continuation = _current_source_selection_continuation(source_frame, selection, frontier_rowid)
-            _resume_current_source_census(source_frame, continuation)
-            yield selection
-        return
-
-    if frontier_rowid is None:
-        raise ValueError("archive-wide source census requires its initial rowid frontier")
-    continuation = None
-    after_raw_id: str | None = None
-    while True:
-        if continuation is not None:
-            _resume_current_source_census(source_frame, continuation)
-            after_raw_id = str(continuation.position)
-        params: tuple[object, ...] = (
-            (frontier_rowid, _CURRENT_SOURCE_CENSUS_PAGE_SIZE)
-            if after_raw_id is None
-            else (frontier_rowid, after_raw_id, _CURRENT_SOURCE_CENSUS_PAGE_SIZE)
-        )
-        where = "WHERE rowid <= ?" if after_raw_id is None else "WHERE rowid <= ? AND raw_id > ?"
-        page_sql = f"SELECT raw_id FROM raw_sessions {where} ORDER BY raw_id LIMIT ?"
-        page_anchor = continuation or source_frame.bind(
-            ReadContinuation(position=frontier_rowid, anchor_sql="SELECT ?", anchor_params=(frontier_rowid,))
-        )
-        for attempt in range(_CURRENT_SOURCE_CENSUS_PAGE_RETRIES + 1):
-            try:
-                raw_ids = tuple(str(row[0]) for row in source_frame.stream(page_sql, params))
-                break
-            except ReadFrameExpiredError:
-                if attempt >= _CURRENT_SOURCE_CENSUS_PAGE_RETRIES:
-                    raise
-                _require_current_source_census_frame(source_frame)
-                _resume_current_source_census(source_frame, page_anchor)
-        else:
-            raise AssertionError("bounded source ID page retry loop fell through")
-        if not raw_ids:
-            return
-        after_raw_id = raw_ids[-1]
-        continuation = _current_source_selection_continuation(source_frame, raw_ids, frontier_rowid)
-        # A page's ID scan can itself spend time near the frame limit. Renew
-        # before handing its selection to the caller, which starts the page's
-        # authority query on the same frame.
-        _resume_current_source_census(source_frame, continuation)
-        yield raw_ids
-
-
-def census_historical_revision_evidence(
-    archive_root: Path,
-    *,
-    active_index_path: Path | None = None,
-    selected_raw_ids: list[str] | None = None,
-    max_payload_bytes: int | None = None,
-    ingest_workers: int = 1,
-    commit_batch_size: int | None = None,
-    prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
-    classification_proofs: Mapping[str, PreparedRawRevisionClassification] | None = None,
+    payload_store: BlobStore,
 ) -> RevisionCensusResult:
-    """Complete the source-tier census stage without applying index changes.
+    """Publish the same off-writer census tape before returning its receipt."""
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import publish_prepared_revision_source
 
-    ``prepared_inputs`` consumes sealed disk-backed sessions for a
-    source-only first pass; this commits identity and parser census before an
-    append-chain composer takes a read-only replay plan on the next
-    derivation attempt.
-    """
-    with (
-        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
-        _ParsedSessionSpill(
-            archive_root,
-            index_path=active_index_path,
-            max_cached_payload_bytes=max_payload_bytes,
-            prepared_inputs=prepared_inputs,
-        ) as spill,
-    ):
-        state = _census_historical_revision_evidence(
-            archive,
-            spill,
-            selected_raw_ids=selected_raw_ids,
-            max_payload_bytes=max_payload_bytes,
-            ingest_workers=ingest_workers,
-            commit_batch_size=commit_batch_size,
-            prepared_inputs=prepared_inputs,
-        )
-        archive.commit()
-        expanded, logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
-        if classification_proofs is not None:
-            if set(classification_proofs) - set(logical_keys):
-                raise RetainedPreparationRetryableError("prepared byte classification key changed after census")
-            # The byte scan and its source binding were prepared on a pinned
-            # read-only snapshot. Apply only its SQL decisions here, after the
-            # ordinary parser census has committed; any changed dependency
-            # refuses the proof before source authority moves.
-            source_conn = archive._ensure_source_conn()
-            for logical_key in sorted(logical_keys):
-                proof = classification_proofs.get(logical_key)
-                # The census may have just moved a multi-session raw to
-                # membership governance; its pending envelope is then no byte
-                # chain to prove.
-                if proof is not None and not pending_raw_envelope_has_membership_authority(source_conn, logical_key):
-                    apply_prepared_raw_revision_classification(archive, proof)
-            archive.commit()
-    return RevisionCensusResult(
-        state.scanned,
-        state.classified,
-        state.quarantined,
-        expanded,
-        logical_keys,
-    )
+    _require_classification_inputs_current(prepared.classification_blob_stats, payload_store)
+    publish_prepared_revision_source(seal, prepared.permit)
+    return prepared.result
+
+
+def _require_classification_inputs_current(
+    blob_stats: Sequence[tuple[str, tuple[int, int, int, int, int]]], payload_store: BlobStore
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import _blob_stat_identity
+
+    for blob_hash, identity in blob_stats:
+        check_compute_cancelled()
+        try:
+            current = _blob_stat_identity(payload_store.blob_path(blob_hash))
+        except OSError as failure:
+            raise PreparedRawClassificationStaleError(
+                "retained classification input disappeared before publication"
+            ) from failure
+        if current != identity:
+            raise PreparedRawClassificationStaleError("retained classification input changed before publication")
 
 
 class ReplayTopologyState(PolylogueStrEnum):
@@ -3092,39 +1625,25 @@ def _canonical_replay_key(logical_key: str) -> str | None:
         return None
 
 
-def _replay_representative_raw_ids(sorted_keys: list[str], archive_root: Path) -> dict[str, str]:
-    """Pick one raw per logical key to read that key's parent claim from.
-
-    Newest acquisition wins and ``raw_id`` breaks ties, so a cohort whose
-    raws claim different parents resolves to the same claim on every run.
-    """
+def _replay_representative_raw_ids(
+    sorted_keys: list[str],
+    evidence_reader: RetainedReplayScheduleRead,
+) -> dict[str, str]:
+    """Choose canonical receipt-ranked representatives without reopening Source."""
     representative: dict[str, str] = {}
-    with read_frame(
-        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-    ) as source_frame:
-        conn = source_frame.connection
-        for start in range(0, len(sorted_keys), _REPLAY_KEY_QUERY_CHUNK):
-            chunk = sorted_keys[start : start + _REPLAY_KEY_QUERY_CHUNK]
-            placeholders = ",".join("?" for _ in chunk)
-            rows = conn.execute(
-                f"""
-                SELECT logical_source_key, raw_id
-                FROM raw_sessions
-                WHERE logical_source_key IN ({placeholders})
-                ORDER BY logical_source_key, {raw_receipt_order_sql("raw_sessions")} DESC, raw_id ASC
-                """,
-                chunk,
-            )
+    for start in range(0, len(sorted_keys), _REPLAY_KEY_QUERY_CHUNK):
+        chunk = sorted_keys[start : start + _REPLAY_KEY_QUERY_CHUNK]
+        with evidence_reader.replay_representative_rows(chunk) as rows:
             for logical_source_key, raw_id in rows:
+                check_compute_cancelled()
                 representative.setdefault(str(logical_source_key), str(raw_id))
     return representative
 
 
 def _replay_parent_claims(
     sorted_keys: list[str],
-    archive: ArchiveStore,
-    spill: _ParsedSessionSpill,
-    archive_root: Path,
+    evidence_reader: RetainedReplayScheduleRead,
+    spill: _PreparedReplayInputs,
 ) -> dict[str, str | None]:
     """Read each key's claimed parent logical key from its representative raw.
 
@@ -3133,7 +1652,7 @@ def _replay_parent_claims(
     one's claim would attribute a parent to a session that never made it;
     a key whose representative raw yields no matching session claims nothing.
     """
-    representative = _replay_representative_raw_ids(sorted_keys, archive_root)
+    representative = _replay_representative_raw_ids(sorted_keys, evidence_reader)
     keys_by_raw: dict[str, list[str]] = {}
     for key in sorted_keys:
         raw_id = representative.get(key)
@@ -3143,7 +1662,9 @@ def _replay_parent_claims(
     claims: dict[str, str | None] = dict.fromkeys(sorted_keys, None)
     for raw_id, keys in keys_by_raw.items():
         try:
-            sessions, _payload_bytes = spill.for_raw(archive, raw_id)
+            sessions, _payload_bytes = spill.for_raw(raw_id)
+        except DaemonOperationCancelled:
+            raise
         except Exception:
             # Lineage ordering is a scheduling optimization only -- any
             # failure here degrades to "claims nothing", never to a replay
@@ -3196,9 +1717,8 @@ def _replay_cycle_members(sorted_keys: list[str], edge: Mapping[str, str | None]
 
 def _lineage_aware_replay_schedule(
     logical_keys: set[str],
-    archive: ArchiveStore,
-    spill: _ParsedSessionSpill,
-    archive_root: Path,
+    evidence_reader: RetainedReplayScheduleRead,
+    spill: _PreparedReplayInputs,
 ) -> ReplaySchedule:
     """Order one rebuild's byte-typed logical keys so a parent's cohort
     replays before any of its children's (polylogue-5q2u).
@@ -3230,7 +1750,7 @@ def _lineage_aware_replay_schedule(
             parent_of=dict.fromkeys(sorted_keys, None),
         )
 
-    claims = _replay_parent_claims(sorted_keys, archive, spill, archive_root)
+    claims = _replay_parent_claims(sorted_keys, evidence_reader, spill)
 
     # One spelling represents each identity; the others are its aliases.
     representative_spelling: dict[str, str] = {}
@@ -3301,58 +1821,6 @@ def _lineage_aware_replay_schedule(
     return ReplaySchedule(order=tuple(order), topology=topology, parent_of=edge)
 
 
-class _FrozenReplayShardTransport:
-    """Own sealed production shards for one frozen inactive-generation replay.
-
-    The transport deliberately delegates row construction and sealing to
-    ``prepare_session_shard``. It owns only the raw/cohort-to-file association
-    needed by revision governance, never an alternate shard format or writer.
-    """
-
-    def __init__(self, directory: Path) -> None:
-        self._directory = directory
-        self._paths_by_raw_id: dict[str, Path] = {}
-
-    def add_raw(
-        self,
-        raw_id: str,
-        sessions: Sequence[ParsedSession],
-        *,
-        prepared_artifact: PreparedJsonl | None = None,
-    ) -> None:
-        if prepared_artifact is not None:
-            if prepared_artifact.shard_path is None:
-                raise ShardRefusedError(f"retained artifact has no sealed shard for raw {raw_id}")
-            self._paths_by_raw_id[raw_id] = prepared_artifact.shard_path
-            return
-        self._paths_by_raw_id[raw_id] = prepare_session_shard(self._directory, sessions).path
-
-    def path_for_raw(self, raw_id: str) -> Path:
-        try:
-            return self._paths_by_raw_id[raw_id]
-        except KeyError as exc:
-            raise ShardRefusedError(f"frozen replay has no sealed shard for raw {raw_id}") from exc
-
-    def add_composed(self, raw_id: str, session: ParsedSession) -> Path:
-        """Build the production shard for a multi-raw chain's composed write."""
-        path = prepare_session_shard(self._directory, [session]).path
-        self._paths_by_raw_id[raw_id] = path
-        return path
-
-
-def _required_shard_prepared_rows(
-    raw_id: str,
-    session: ParsedSession,
-    bindings: Mapping[str, PreparedRows],
-) -> dict[str, PreparedRows]:
-    """Bind exactly the session the frozen replay is about to full-replace."""
-    session_id = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
-    try:
-        return {raw_id: bindings[session_id]}
-    except KeyError as exc:
-        raise ShardRefusedError(f"sealed shard has no rows for replay session {session_id}") from exc
-
-
 def _validated_prepared_aggregate(
     logical_key: str,
     accepted_raw_ids: tuple[str, ...],
@@ -3379,7 +1847,9 @@ def _validated_prepared_aggregate(
     if artifact.shard_path is None:
         raise RetainedPreparationRetryableError(f"prepared aggregate shard is absent for {logical_key}")
     try:
-        sessions = list(artifact.iter_sessions())
+        sessions = artifact.session_sequence()
+    except DaemonOperationCancelled:
+        raise
     except Exception as exc:
         raise RetainedPreparationRetryableError(f"prepared aggregate seal is invalid for {logical_key}") from exc
     if len(sessions) != 1:
@@ -3387,74 +1857,170 @@ def _validated_prepared_aggregate(
     return sessions[0], artifact.shard_path
 
 
-def selected_prepared_membership_head(
-    archive: ArchiveStore,
+@dataclass(frozen=True, slots=True)
+class PreparedMembershipReplay:
+    """Captured membership decisions and immutable comparison artifacts."""
+
+    candidate_raw_ids: tuple[str, ...]
+    head_raw_id: str | None
+    sessions: Mapping[str, ParsedSession]
+    projections: Mapping[str, SessionRevisionProjection]
+    classification: MembershipClassification
+    head_plan: MembershipHeadPlan | None = None
+    source_decisions: Mapping[str, MembershipDecision] | None = None
+    decided_at_ms: int | None = None
+
+    def close(self) -> None:
+        failures: list[BaseException] = []
+        for projection in self.projections.values():
+            try:
+                projection.close()
+            except BaseException as exc:
+                failures.append(exc)
+        if failures:
+            raise BaseExceptionGroup("prepared membership cleanup failed", failures)
+
+
+def prepared_session_for_logical_key(
+    sessions: Sequence[ParsedSession], *, raw_id: str, logical_source_key: str
+) -> ParsedSession:
+    """Select exactly one original parser output for the admitted member key."""
+    selected: ParsedSession | None = None
+    parsed_count = 0
+    match_count = 0
+    for session in sessions:
+        check_compute_cancelled()
+        parsed_count += 1
+        if f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}" != logical_source_key:
+            continue
+        match_count += 1
+        if selected is None:
+            selected = session
+    if selected is None:
+        raise CohortMembershipRefusalError(
+            logical_source_key,
+            raw_id,
+            f"selector member parsed {parsed_count} session(s), none for this logical key",
+        )
+    if match_count != 1:
+        raise CohortMembershipRefusalError(
+            logical_source_key,
+            raw_id,
+            f"selector member parsed {match_count} sessions for this logical key, not one",
+        )
+    return selected
+
+
+def prepared_session_for_revision_key(
+    sessions: Sequence[ParsedSession], *, raw_id: str, logical_source_key: str
+) -> ParsedSession:
+    """Select a retained transcript member or its validated singleton event output."""
+    if not is_work_event_raw_id(raw_id):
+        return prepared_session_for_logical_key(sessions, raw_id=raw_id, logical_source_key=logical_source_key)
+    # The retained event parser has validated the original durable envelope.
+    # Its authority key identifies that envelope; its session identifies the
+    # existing destination, so transcript membership equality does not apply.
+    if logical_source_key != raw_id or len(sessions) != 1:
+        raise CohortMembershipRefusalError(
+            logical_source_key, raw_id, "work event lost its singleton envelope authority"
+        )
+    session = sessions[0]
+    if session.messages or len(session.session_events) != 1:
+        raise CohortMembershipRefusalError(
+            logical_source_key, raw_id, "work event output is not one event without transcript messages"
+        )
+    return session
+
+
+def prepare_membership_replay(
+    archive: RetainedMembershipRead,
     logical_key: str,
     prepared_inputs: Mapping[str, PreparedRetainedInput],
     *,
+    head_raw_id: str | None,
     stop: Callable[[], bool] | None = None,
-) -> tuple[str, ParsedSession] | None:
-    """Classify a censused membership cohort on a read-only preparation snapshot.
+) -> PreparedMembershipReplay:
+    """Capture membership comparison on the retained read-only snapshot."""
 
-    The publisher runs the same classifier after its source census. A changed
-    winner invalidates this prepared write; no candidate tree is rebuilt in
-    the writer as a fallback.
-    """
     candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
     # Rebuild replay also carries its current-pass `membership_candidates` for
     # quarantined/unknown raws; the persisted membership rows are the exact
     # read-only equivalent for the selected prepared component. The ordinary
     # rebuild selector intentionally filters these out until classification.
     candidate_raw_ids.update(
-        str(row[0])
-        for row in archive.source_connection.execute(
-            "SELECT raw_id FROM raw_session_memberships WHERE logical_source_key = ? ORDER BY raw_id",
-            (logical_key,),
-        )
-        if str(row[0]) in prepared_inputs
+        raw_id for raw_id in archive.raw_membership_logical_raw_ids(logical_key) if raw_id in prepared_inputs
     )
-    head_raw_id = archive.raw_revision_head_raw_id(logical_key)
-    if head_raw_id is not None and archive._raw_revision_authority(head_raw_id) == "quarantined":
+    # The accepted head is comparison evidence under any authority. Without
+    # it, a cohort cannot tell a member that adds content from one the head
+    # already contains, and yielding to a byte head would record both as
+    # superseded. Its own binding stays as it is: a head without a membership
+    # row receives no Source decision.
+    if head_raw_id is not None:
         candidate_raw_ids.add(head_raw_id)
     member_sessions: dict[str, ParsedSession] = {}
     revisions: list[MembershipRevision] = []
-    for raw_id in sorted(candidate_raw_ids):
-        if raw_id not in prepared_inputs:
-            raise RetainedPreparationRetryableError(
-                f"prepared membership candidate is absent for {logical_key}: {raw_id}"
-            )
-        outcome = _prepared_retained_outcome(archive, raw_id, prepared_inputs, stop=stop)
-        if isinstance(outcome, Exception):
-            raise RetainedPreparationRetryableError(
-                f"prepared membership candidate has parser failure for {logical_key}: {raw_id}"
-            ) from outcome
-        sessions, _size, _kind = outcome
-        for session in sessions:
-            session_key = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
-            if session_key != logical_key:
-                continue
+    projections: dict[str, SessionRevisionProjection] = {}
+    try:
+        for raw_id in sorted(candidate_raw_ids):
+            if raw_id not in prepared_inputs:
+                raise RetainedPreparationRetryableError(
+                    f"prepared membership candidate is absent for {logical_key}: {raw_id}"
+                )
+            outcome = _prepared_retained_outcome(archive, raw_id, prepared_inputs, stop=stop)
+            if isinstance(outcome, Exception):
+                raise CohortMembershipRefusalError(
+                    logical_key, raw_id, f"selector member did not parse: {outcome}"
+                ) from outcome
+            sessions, _size, _kind = outcome
+            session = prepared_session_for_logical_key(sessions, raw_id=raw_id, logical_source_key=logical_key)
             member_sessions[raw_id] = session
+            projections[raw_id] = session_revision_projection(session)
             revisions.append(
                 MembershipRevision(
                     raw_id,
-                    session_revision_projection(session),
-                    session.updated_at,
+                    projections[raw_id],
+                    # Only the producer's own time orders browser snapshots. An
+                    # acquisition fallback (the capture file's mtime) is not
+                    # provider authority: the receiver rewrites one spool file
+                    # per capture, so its mtime would order any two captures.
+                    session.updated_at if session.updated_at_provenance != "fallback" else None,
                     browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
+                    # Declared capture order: the latest retained observation
+                    # of these bytes, never their evidence volume.
+                    capture_order=archive.raw_revision_observation_order(raw_id),
+                    # Only declared provider IDs are identity evidence; an
+                    # id-less message must not stand in as a shared ``None``
+                    # member that makes unrelated snapshots look preserved.
                     provider_message_ids=(
-                        session.messages.provider_message_ids(include_none=True)
+                        session.messages.provider_message_ids(include_none=False)
                         if isinstance(session.messages, SqliteMessageSink)
-                        else frozenset(message.provider_message_id for message in session.messages)
+                        else frozenset(
+                            message.provider_message_id for message in session.messages if message.provider_message_id
+                        )
                     ),
                     provider_attachment_ids=frozenset(
                         attachment.provider_attachment_id for attachment in session.attachments
                     ),
                 )
             )
-    classification = classify_membership_revisions(revisions, existing_accepted_raw_id=head_raw_id)
-    if not classification.accepted_raw_ids:
-        return None
-    accepted = classification.accepted_raw_ids[-1]
-    return accepted, member_sessions[accepted]
+        classification = classify_membership_revisions(revisions, existing_accepted_raw_id=head_raw_id)
+    except BaseException as primary:
+        failures: list[BaseException] = [primary]
+        for projection in projections.values():
+            try:
+                projection.close()
+            except BaseException as cleanup:
+                failures.append(cleanup)
+        if len(failures) > 1:
+            raise BaseExceptionGroup("membership preparation and physical cleanup failed", failures) from None
+        raise
+    return PreparedMembershipReplay(
+        tuple(sorted(candidate_raw_ids)),
+        head_raw_id,
+        member_sessions,
+        projections,
+        classification,
+    )
 
 
 def _prepared_write_for(
@@ -3495,1424 +2061,450 @@ def _require_prepared_cross_acquisition_write(
         raise RetainedPreparationRetryableError(f"prepared cross-acquisition write is missing for {session_id}")
 
 
-def _owned_generation_is_empty(archive_root: Path, *, generation: tuple[str, str]) -> bool:
-    """Whether an owned inactive generation currently holds no sessions.
-
-    Opened read-only and without initialization so the probe cannot create
-    schema, defer an index, or otherwise mutate the candidate it is measuring:
-    a resumed generation must be refused in exactly the state it was found.
-    """
-    with ArchiveStore(
-        archive_root,
-        initialize=False,
-        read_only=True,
-        owned_inactive_generation=generation,
-        validate_index_layout=False,
-    ) as probe:
-        return probe._conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is None
-
-
 @_capture_replay_enrichment_degradations
-def backfill_historical_revision_evidence(
+def apply_prepared_revision_replay(
     archive_root: Path,
     *,
-    active_index_path: Path | None = None,
-    selected_raw_ids: list[str] | None = None,
-    owned_inactive_generation: tuple[str, str] | None = None,
-    retention_observer: Callable[[int, int], None] | None = None,
-    max_payload_bytes: int | None = None,
-    max_cached_payload_bytes: int | None = None,
-    ingest_workers: int = 1,
-    commit_batch_size: int | None = None,
-    replay_commit_batch_size: int | None = None,
-    bulk_fts: bool = False,
-    bulk_build: bool = False,
-    prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
-    prepared_aggregates: Mapping[str, PreparedRetainedAggregate] | None = None,
-    prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite] | None = None,
-    prepared_replay_plans: Mapping[str, tuple[str, ...]] | None = None,
-    pipeline_decode: bool | None = None,
-    deadline_check: Callable[[], None] | None = None,
-    use_session_shards: bool = False,
-    defer_secondary_indexes: bool | None = None,
-    exact_fts_audit: bool = True,
-) -> RevisionBackfillResult:
-    """Census every retained raw, then replay byte and bundle authority cohorts.
+    reference_seal: PreparedIndexMutation,
+    active_index_path: Path,
+    selected_raw_ids: list[str],
+    prepared_inputs: Mapping[str, PreparedRetainedInput],
+    prepared_aggregates: Mapping[str, PreparedRetainedAggregate],
+    prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
+    prepared_replay_adoption: Mapping[tuple[str, tuple[str, ...]], PreparedRevisionAdoption],
+    prepared_replay_plans: Mapping[str, RevisionReplayPlan],
+    prepared_byte_outcomes: Mapping[str, PreparedRevisionReplayOutcome],
+    prepared_membership_plans: Mapping[str, PreparedMembershipReplay],
+    prepared_replay_source: PreparedRetainedReplaySource,
+    prepared_replay_schedule: ReplaySchedule,
+    prepared_logical_keys: tuple[str, ...],
+    prepared_membership_keys: tuple[str, ...],
+    prepared_byte_logical_keys: tuple[str, ...],
+    prepared_key_refusals: tuple[CohortMembershipRefusalError, ...],
+    prepared_lineage_deferrals: tuple[str, ...] = (),
+    bulk_fts: bool = True,
+    exact_fts_audit: bool = False,
+) -> PreparedRevisionReplayResult:
+    """Publish one retained component from its captured worker-sealed inputs.
 
-    Parser output is spilled beside the target archive during the census and
-    loaded one logical authority cohort at a time. Peak retained session trees
-    therefore follow the largest raw/cohort, not the archive-wide raw count.
-
-    ``max_cached_payload_bytes`` bounds the spill cache independently of
-    ``max_payload_bytes``: the latter is a component resource-envelope block
-    (``None`` means unbounded, e.g. a one-shot full-archive rebuild) while the
-    former only avoids doubling I/O for census-then-replay reparse. It
-    defaults to ``max_payload_bytes`` so every existing bounded-envelope
-    caller keeps its current exactly-sized cache; pass it explicitly to cache
-    parse output for an unbounded (``max_payload_bytes=None``) census without
-    also activating envelope blocking.
-
-    ``commit_batch_size`` (polylogue-amg1, extended to the replay phase by
-    polylogue-oikv) batches commits in BOTH phases: the CENSUS phase's
-    per-raw source.db commits (see ``_census_historical_revision_evidence``),
-    and the REPLAY phase's per-cohort index.db writes plus terminal source.db
-    parse-state markers (see ``apply_raw_revision_replay`` /
-    ``apply_raw_membership_classification``), across up to
-    ``commit_batch_size`` cohorts sharing one commit window.
-
-    ``None`` (the default) preserves the exact original per-unit commit
-    granularity for every existing caller in both phases. When set, the
-    "index commits, then source terminal marker commits" ordering invariant
-    pinned by
-    ``test_backfill_resumes_after_index_receipt_commits_before_source_terminal``
-    et al. still holds for the replay phase -- just at BATCH granularity
-    instead of per-cohort: a crash inside an open batch discards every
-    cohort in that batch (its index writes and terminal markers together,
-    since neither has committed), never leaves index ahead of source across
-    a batch boundary, and a resume reprocesses every lost cohort from
-    scratch with zero duplication (proof:
-    ``test_backfill_resumes_after_replay_batch_crash_discards_whole_batch_cleanly``).
-
-    ``bulk_fts`` (polylogue-crd8, default ``False``) is threaded to both
-    ``apply_raw_revision_replay`` and ``apply_raw_membership_classification``
-    to enable the guard-gated bulk FTS mode for whale prefix-sharing lineage
-    cascades. Ordinary convergence callers leave it off.
-
-    ``exact_fts_audit`` (default ``True``) runs the archive-wide exact
-    ``messages_fts`` audit before a non-fresh replay commits. Its cost is the
-    archive's block count, not the replayed component's, so a caller that
-    replays one component per call inside a larger pass passes ``False``:
-    every replayed session still carries its own exact FTS proof, and the
-    daemon's ``fts_readiness_binding`` stage runs the one archive-wide
-    inspection after the burst of block writes that retired its binding.
-
-    ``bulk_build`` (polylogue-v6i3, default ``False``) mirrors ``bulk_fts``'s
-    threading to the same two apply calls, enabling the broader
-    bulk-generation-build lifecycle: per-session FTS refresh is skipped during
-    replay and deferred to one archive-wide repopulate at readiness. The
-    action and delegation surfaces are query-time views and need no refresh.
-
-    ``pipeline_decode`` (Lever A, parse ∥ apply) engages a
-    :class:`_ReplaySpillPrefetcher` that decodes upcoming replay cohorts'
-    parsed sessions on ONE background thread while the single writer applies
-    the current cohort. ``None`` (the default) auto-resolves to
-    ``parallel_threads_effective()``: pipelining only under a genuinely
-    free-threaded interpreter, exactly like every other CPU-bound parse
-    thread here; ``False`` forces the exact serial decode path; ``True``
-    forces pipelining even under a GIL (tests only). All archive writes
-    remain on the calling thread in unchanged order regardless of the value
-    -- see the prefetcher's docstring for the equivalence argument and the
-    buffered-memory bound.
-
-    ``deadline_check`` (polylogue-uhgm, default ``None``) is called with no
-    arguments at the top of every REPLAY-phase cohort iteration (both the
-    byte-cohort and membership-cohort loops), i.e. between cohorts rather
-    than only after this whole function returns. It is expected to raise
-    :class:`RebuildDeadlineExceededError` to interrupt; ``None`` (every caller
-    except the resumable offline rebuild pass) reproduces the exact
-    unmodified, uninterruptible replay path.
-
-    ``use_session_shards`` selects the existing live-ingest sealed SQLite
-    shard transport for a full frozen replay into an owned inactive
-    generation. Its shard bindings are required, so a missing, partial, or
-    corrupt shard refuses the replay rather than falling back to inline row
-    binding. Retained-index and batched replays do not own that construction
-    boundary and are refused instead of being silently re-routed.
-
-    ``defer_secondary_indexes`` is an optional comparison control for a fresh
-    owned inactive generation. ``None`` uses the production cold-build
-    policy; ``False`` keeps the reader indexes maintained during replay while
-    retaining every other fresh-build optimization. ``True`` is rejected by
-    policy unless the generation is empty and exclusively owned.
+    Parsing, byte classification and row lowering belong to canonical retained
+    preparation. A changed plan or unavailable carrier refuses this attempt;
+    publication never submits compute or falls back to inline parsing.
     """
-    if (
-        use_session_shards
-        and owned_inactive_generation is None
-        and (
-            prepared_inputs is None
-            or selected_raw_ids is None
-            or any(raw_id not in prepared_inputs for raw_id in selected_raw_ids)
-        )
-    ):
-        raise ValueError("active sealed replay shards require a selected prepared component")
-    if use_session_shards and owned_inactive_generation is None and prepared_replay_plans is None:
-        raise ValueError("active sealed replay requires a captured source authority plan")
-    if use_session_shards and (replay_commit_batch_size or commit_batch_size or 0) > 1:
-        raise ValueError("sealed replay shards require per-cohort replay commits")
+    from polylogue.sources.codex_state_projection import THREAD_STATE_KIND
+    from polylogue.storage.blob_publication import ConnectionBlobPublicationRead
 
+    def attachment_view(raw_id: str, session: ParsedSession) -> Mapping[object, tuple[bytes | None, int, str]]:
+        artifact = prepared_replay_source.attachment_artifacts.get(raw_id)
+        if artifact is None:
+            raise RetainedPreparationRetryableError(f"publication has no original attachment carrier for {raw_id}")
+        return artifact.resident_attachment_blobs(
+            raw_id=raw_id,
+            source_read=publication_read,
+            session_id=str(make_session_id(session.source_name, session.provider_session_id)),
+        )
+
+    publication_started = time.perf_counter()
     adoption_deferred = 0
     quarantined = 0
-    shard_lowering_degraded = 0
     stage_timings: dict[str, float] = {}
     stage_counts: dict[str, int] = {}
-    whale_envelope: dict[str, int] = {}
+    written_session_ids: dict[str, None] = {}
+    changed_session_ids: dict[str, None] = {}
+    writer_changed_raw_ids: dict[str, None] = {}
+    written_message_count = 0
+    written_counts: dict[str, int] = {}
+    session_outputs: dict[str, tuple[str, bytes | None, bytes | None, int]] = {}
+    membership_refusals: list[tuple[str, str, MembershipDecision]] = []
+
+    refused_publication_raw_ids: set[str] = set()
+
+    def record_write_result(result: ArchiveRawParsedWriteResult) -> None:
+        nonlocal written_message_count
+        if result.publication_refused:
+            # Deterministic writer precedence (e.g. a weaker DOM capture after
+            # native evidence) refuses this output; it is settled, not retryable.
+            refused_publication_raw_ids.add(result.raw_id)
+        written_session_ids[result.session_id] = None
+        if result.content_changed:
+            writer_changed_raw_ids[result.raw_id] = None
+        if result.session_id not in prepared_replay_source.original_index_outputs:
+            raise ReferenceSealError("replay output lacks its original Index content witness")
+        before = prepared_replay_source.original_index_outputs[result.session_id]
+        with connection_cursor(
+            archive._conn, "SELECT content_hash,message_count FROM sessions WHERE session_id=?", (result.session_id,)
+        ) as rows:
+            after = rows.fetchone()
+        if after is not None:
+            session_outputs[result.session_id] = (
+                result.session_id,
+                None if before is None else before[0],
+                None if after[0] is None else bytes(after[0]),
+                int(after[1]),
+            )
+        # Membership publication can replace an existing Index projection
+        # while retaining the same Raw claim. Its acquisition-change flag is
+        # not an Index content measurement; compare the original pinned
+        # projection with the actual row produced by this writer.
+        if after is not None and (before is None or before[0] != session_outputs[result.session_id][2]):
+            changed_session_ids[result.session_id] = None
+        elif result.content_changed:
+            # Session-hash-excluded rows (an appended agent work event keeps
+            # every session-owned field) still change the session's output.
+            changed_session_ids[result.session_id] = None
+        written_message_count += result.counts.get("messages", 0)
+        for key, count in result.counts.items():
+            written_counts[key] = written_counts.get(key, 0) + count
+
+    # Deferred children publish nothing in this unit; like refused keys they
+    # carry no prepared outcome and no Source acknowledgement here.
+    refused_keys = {refusal.logical_source_key for refusal in prepared_key_refusals} | set(prepared_lineage_deferrals)
     logical_keys: set[str] = set()
-    # A full replay into an inactive candidate is the production cold-build boundary.  The
-    # policy is deliberately evaluated once here, rather than letting the
-    # opener and writer independently infer safety from incidental flags.
-    # Opening with index deferral proves emptiness before either optimization
-    # is used; a resumed/non-empty candidate is refused before any mutation.
-    owns_whole_generation = owned_inactive_generation is not None and selected_raw_ids is None
-    # polylogue-neeq4: emptiness is MEASURED here, never inferred from the
-    # deferral flags above. ``owns_whole_generation`` says only that this call
-    # owns the generation and was not narrowed to a raw subset -- a RESUMED
-    # candidate satisfies it while already holding sessions. Passing it as
-    # ``archive_empty`` therefore handed a nonempty generation ``fresh_build``
-    # and the cold-build writer shortcut, whose own absence check
-    # (archive_tiers/write.py, "fresh_build requires an empty archive
-    # generation") is an AssertionError raised mid-write. Refuse here instead,
-    # before the generation is opened for writing and before any mutation.
-    archive_empty = False
-    if owned_inactive_generation is not None and selected_raw_ids is None:
-        archive_empty = _owned_generation_is_empty(archive_root, generation=owned_inactive_generation)
-        if not archive_empty:
-            raise ValueError(
-                "cold-build deferral requires an empty archive generation; "
-                f"generation {owned_inactive_generation[0]!r} already holds sessions"
-            )
-    cold_build_shape = select_cold_build_shape(
-        destination=WriteDestination(
-            tier="index",
-            owned_rebuildable_generation=owns_whole_generation,
-        ),
-        archive_empty=archive_empty,
-        defer_secondary_indexes=defer_secondary_indexes,
-    )
-    fresh_build = cold_build_shape.fresh_build
-    if fresh_build:
-        # The same empty-generation proof licenses both the writer shortcut
-        # and one archive-wide finalization at the readiness boundary.
-        bulk_build = True
-    fresh_build_batch: set[str] | None = set() if fresh_build else None
-    # The REPLAY phase's batch size is separately tunable
-    # (``replay_commit_batch_size``; ``None`` inherits ``commit_batch_size``):
-    # each replayed cohort may flush blob-publication receipts on a SEPARATE
-    # source.db connection (a deliberate GC-safety design, see
-    # storage/blob_publication.py), and that connection waits at BEGIN
-    # IMMEDIATE behind the batch's held write lock -- a long replay batch
-    # window therefore deadlocks into 'database is locked' once the 30s busy
-    # timeout expires. Callers that batch aggressively (the full rebuild)
-    # pass ``replay_commit_batch_size=1`` to keep replay at per-cohort
-    # commits while still batching the census phase, which has no separate-
-    # connection writers inside its window.
-    effective_replay_batch = replay_commit_batch_size if replay_commit_batch_size is not None else commit_batch_size
-    replay_batch_size = (
-        effective_replay_batch if effective_replay_batch is not None and effective_replay_batch > 0 else None
-    )
-    replay_batched = replay_batch_size is not None and replay_batch_size > 1
-    archive_context = (
-        ArchiveStore.open_owned_inactive_generation(
-            archive_root,
-            generation_id=owned_inactive_generation[0],
-            owner_id=owned_inactive_generation[1],
-            defer_secondary_indexes=cold_build_shape.defer_secondary_indexes,
-        )
-        if owned_inactive_generation is not None
-        else ArchiveStore.open_existing(archive_root, read_only=False)
-    )
-    spill_cache_bytes = max_cached_payload_bytes if max_cached_payload_bytes is not None else max_payload_bytes
-    # polylogue-fpid: one background worker that builds the NEXT byte-proven
-    # cohort's PreparedSessionRows (message/block row tuples -- pure CPU,
-    # per-item hashing/JSON-encoding/enum lookups, no DB connection) while
-    # THIS cohort's apply_raw_revision_replay() does its own preamble
-    # (attachment preacquisition, blob flush, raw_revision_heads lookup) on
-    # the calling thread. Only real parallelism under a free-threaded
-    # interpreter (see ``parallel_threads_effective``'s docstring for why a
-    # GIL build must not engage worker threads here either) -- a GIL build
-    # gets ``prepare_pool=None`` and every write falls back to building rows
-    # inline, byte-identical to before this change.
-    prepare_pool = (
-        ThreadPoolExecutor(max_workers=1) if parallel_threads_effective() and not use_session_shards else None
-    )
-    with (
-        archive_context as archive,
-        _ParsedSessionSpill(
-            archive_root,
-            index_path=active_index_path,
-            max_cached_payload_bytes=spill_cache_bytes,
-            prepared_inputs=prepared_inputs,
-        ) as spill,
-        prepare_pool if prepare_pool is not None else nullcontext(),
-    ):
-        shard_transport = (
-            _FrozenReplayShardTransport(spill.scratch_directory(prefix=".frozen-replay-shards-"))
-            if use_session_shards
-            else None
-        )
-        census_started = time.perf_counter()
-        if owned_inactive_generation is not None:
-            census = _load_frozen_revision_evidence(
-                archive,
-                spill,
-                selected_raw_ids=selected_raw_ids,
-                max_payload_bytes=max_payload_bytes,
-                ingest_workers=ingest_workers,
-                prepared_inputs=prepared_inputs,
-                shard_transport=shard_transport,
-            )
-        else:
-            census = _census_historical_revision_evidence(
-                archive,
-                spill,
-                selected_raw_ids=selected_raw_ids,
-                max_payload_bytes=max_payload_bytes,
-                ingest_workers=ingest_workers,
-                commit_batch_size=commit_batch_size,
-                prepared_inputs=prepared_inputs,
-                shard_transport=shard_transport,
-            )
-        stage_timings["census"] = time.perf_counter() - census_started
-        receipt_started = time.perf_counter()
-        censused_raw_ids, _censused_keys = archive.expand_raw_membership_selection(selected_raw_ids)
-        # ``_census_historical_revision_evidence`` records each receipt at the
-        # point where it still holds that raw's parsed identities. Do not
-        # reconstruct a second receipt from durable bindings here.
-        archive.commit()
-        stage_timings["census_receipt"] = time.perf_counter() - receipt_started
-        membership_candidates = census.membership_candidates
-        provisional_full_raw_ids = census.provisional_full_raw_ids
-
-        selected_keys = archive.raw_revision_rebuild_logical_keys(selected_raw_ids)
-        logical_keys.update(selected_keys)
-        _selected_membership_raws, selected_membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
-        membership_keys = set(selected_membership_keys)
-
-        pending_replay_commits = 0
-
-        def commit_replay_unit() -> None:
-            nonlocal pending_replay_commits
-            pending_replay_commits += 1
-            if replay_batch_size is not None and pending_replay_commits >= replay_batch_size:
-                commit_started = time.perf_counter()
-                archive.commit()
-                stage_timings["replay.commit"] = stage_timings.get("replay.commit", 0.0) + (
-                    time.perf_counter() - commit_started
+    spill = _PreparedReplayInputs(prepared_inputs)
+    with _prepared_replay_archive(archive_root, reference_seal, active_index_path) as archive:
+        publication_read = ConnectionBlobPublicationRead(archive._ensure_source_conn())
+        with archive.index_mutation_scope(prepared_seal=reference_seal):
+            # Source census has its own original prepared unit. Its counts
+            # belong to that receipt; this Index publication returns only replay.
+            logical_keys.update(prepared_logical_keys)
+            membership_keys = set(prepared_membership_keys)
+            replayed = 0
+            byte_replayed_keys: set[str] = set()
+            settled_byte_keys: set[str] = set()
+            actual_terminal_raw_ids: set[str] = set()
+            work_event_keys = sorted(key for key in logical_keys if is_work_event_raw_id(key))
+            if any(is_work_event_raw_id(key) for key in membership_keys):
+                raise RetainedPreparationRetryableError(
+                    "prepared work-event envelope acquired transcript membership publication"
                 )
-                pending_replay_commits = 0
+            replay_schedule = prepared_replay_schedule
+            if set(replay_schedule.order) != (logical_keys | membership_keys).difference(work_event_keys):
+                raise RetainedPreparationRetryableError(
+                    "prepared retained replay schedule has another selected key set"
+                )
+            # Thread-state Source receipts have already been prepared/published
+            # on this witness. The companion graph/link carrier is mandatory for
+            # a normal Index route and never rehydrates original writer payloads.
+            projected_state = 0
+            for selected_raw_id in selected_raw_ids:
+                retained_input = prepared_inputs.get(selected_raw_id)
+                artifact = retained_input.prepared_artifact if retained_input is not None else None
+                if artifact is None or artifact.codex_state_kind != THREAD_STATE_KIND:
+                    continue
+                index_connection = archive.index_connection
+                if index_connection is None:
+                    if reference_seal.has_tier_capability("index"):
+                        raise RetainedPreparationRetryableError(
+                            "prepared thread projection lost its admitted Index destination"
+                        )
+                    continue
+                projected_state += int(artifact.apply_thread_projection(reference_seal, index_connection))
+            stage_counts["state_projection"] = projected_state
 
-        replayed = 0
-        byte_replayed_keys: set[str] = set()
-        # Lever A (parse ∥ apply): decode upcoming cohorts' parsed sessions
-        # off the writer thread while the single writer applies the current
-        # cohort. Gated exactly like ``prepare_pool`` above -- GIL builds
-        # keep the byte-identical serial decode path. The auto default also
-        # requires enough cohorts to amortize the worker's setup (thread
-        # spawn, two read connections, a plan scan over raw_sessions/
-        # raw_session_memberships): the live raw-materialization path
-        # (storage/derived/raw.py) replays ONE authority component per call,
-        # where a prefetcher could never get ahead of the writer anyway.
-        effective_pipeline_decode = prepared_inputs is None and (
-            pipeline_decode
-            if pipeline_decode is not None
-            else (
-                parallel_threads_effective()
-                and len(logical_keys) + len(membership_keys) >= _PIPELINE_DECODE_MIN_COHORTS
-            )
-        )
-        # polylogue-5q2u: replay in lineage order (roots, then children after
-        # their parent) instead of lexicographic order -- see
-        # ``_lineage_aware_replay_schedule``'s docstring. Scheduling-only: the
-        # SET of keys replayed and the plan/adoption outcome for each is
-        # unaffected, only wall-clock and how often the deferred-tail path
-        # (#2467) triggers. Both the pipeline-decode prefetcher and the
-        # writer's own replay loop consume this SAME order so the
-        # prefetcher's lookahead actually matches what the writer visits
-        # next.
-        # Work events replay after every session cohort (see the event phase
-        # below), so they never enter the session lineage schedule.
-        work_event_keys = sorted(key for key in logical_keys if is_work_event_raw_id(key))
-        replay_schedule = _lineage_aware_replay_schedule(
-            logical_keys.difference(work_event_keys), archive, spill, archive_root
-        )
-        # A multi-session raw's pending envelope is not a one-session chain;
-        # its sessions replay through membership governance below.
-        source_conn = archive._ensure_source_conn()
-        ordered_logical_keys = [
-            logical_key
-            for logical_key in replay_schedule.order
-            if not pending_raw_envelope_has_membership_authority(source_conn, logical_key)
-        ]
+            ordered_logical_keys = list(prepared_byte_logical_keys)
+            if ordered_logical_keys != [key for key in replay_schedule.order if key in prepared_byte_logical_keys]:
+                raise RetainedPreparationRetryableError("prepared byte replay keys have another canonical order")
 
-        def classify_byte_cohort(logical_key: str) -> RevisionReplayPlan:
-            classify_started = time.perf_counter()
-            plan = (
-                archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
-                if owned_inactive_generation is not None
-                else (
-                    archive.raw_revision_replay_plan(logical_key)
-                    if prepared_replay_plans is not None
-                    else (
-                        archive.classify_raw_revision_cohort_for_rebuild_repair_in_transaction(logical_key)
-                        if replay_batched
-                        else archive.classify_raw_revision_cohort_for_rebuild_repair(logical_key)
+            def adoption_is_current(logical_key: str, accepted_raw_ids: tuple[str, ...]) -> bool:
+                evidence = prepared_replay_adoption.get((logical_key, accepted_raw_ids))
+                if evidence is None:
+                    raise RetainedPreparationRetryableError(
+                        f"prepared replay adoption evidence is missing for {logical_key}"
                     )
-                )
-            )
-            if prepared_replay_plans is not None and plan.accepted_raw_ids != prepared_replay_plans.get(
-                logical_key, ()
-            ):
-                raise RetainedPreparationRetryableError(f"prepared byte authority plan changed for {logical_key}")
-            stage_timings["replay.classify_cohort"] = stage_timings.get("replay.classify_cohort", 0.0) + (
-                time.perf_counter() - classify_started
-            )
-            return plan
+                return evidence.adoptable
 
-        decode_prefetcher: _ReplaySpillPrefetcher | None = None
-        if effective_pipeline_decode:
-            decode_prefetcher = _ReplaySpillPrefetcher(
-                spill,
-                archive_root=archive_root,
-                index_db_path=_prefetchable_index_path(archive),
-            )
-            spill.attach_prefetcher(decode_prefetcher)
-            decode_prefetcher.start_phase(ordered_logical_keys, provisional_full_raw_ids)
-        try:
+            def selected_byte_plan(logical_key: str) -> RevisionReplayPlan:
+                plan = prepared_replay_plans.get(logical_key)
+                if plan is None or plan.logical_source_key != logical_key:
+                    raise RetainedPreparationRetryableError(f"original prepared byte plan is absent for {logical_key}")
+                return plan
+
             for logical_key in ordered_logical_keys:
-                if deadline_check is not None:
-                    deadline_check()
-                if decode_prefetcher is not None:
-                    decode_prefetcher.enter_key(logical_key)
-                # polylogue-eqnv: the offline backfill/rebuild path is the one
-                # where a stale pre-fix parser identity can split one physical
-                # document's re-acquisitions across two logical_source_keys (see
-                # ArchiveStore.classify_raw_revision_cohort_for_rebuild_repair's
-                # docstring) -- use that entry point here, which always applies
-                # the source_path cross-key guard. The live watcher
-                # (sources/live/batch.py) uses
-                # classify_raw_revision_cohort_for_live_watch instead: a
-                # watched path can be legitimately, atomically replaced with a
-                # different session's content, which must not be quarantined
-                # as "divergent evidence".
-                plan = classify_byte_cohort(logical_key)
+                if logical_key in refused_keys:
+                    continue
+                plan = selected_byte_plan(logical_key)
                 if not plan.accepted_raw_ids:
-                    # Complete snapshots that are not a unique byte-prefix chain
-                    # still carry semantic evidence. Move only that full-only
-                    # cohort to membership governance and let parsed-content
-                    # prefix rules decide it; append chains remain byte-governed.
-                    convertible = archive.convertible_full_revision_raw_ids(logical_key)
-                    if owned_inactive_generation is not None and convertible:
-                        raise FrozenSourceRemediationRequiredError(
-                            "inactive candidate found a full-revision cohort that still requires membership "
-                            f"remediation in frozen source: {logical_key}"
-                        )
-                    for raw_id in convertible:
-                        spill_started = time.perf_counter()
-                        sessions, _payload_bytes = spill.for_raw(archive, raw_id)
-                        stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
-                            time.perf_counter() - spill_started
-                        )
-                        if len(sessions) != 1:
-                            raise RuntimeError(f"full revision {raw_id} no longer parses to one session")
-                        archive.replace_raw_membership_census(
-                            raw_id,
-                            sessions,
-                            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                            censused_at_ms=0,
-                            detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
-                            retire_full_revision_governance=True,
-                        )
-                        # polylogue-eqnv: bucket by the identity the retirement
-                        # reparse just recomputed (what actually lands in
-                        # raw_session_memberships.logical_source_key inside
-                        # replace_raw_membership_census), NOT the stale outer-
-                        # loop ``logical_key`` this raw was originally censused
-                        # under. Two same-document raws retired here from
-                        # DIFFERENT stale keys (e.g. one carrying a since-fixed
-                        # parser identity bug) re-derive the SAME fresh key on
-                        # reparse; bucketing by the stale key would keep them in
-                        # separate membership cohorts below and let each be
-                        # accepted as an independent membership singleton --
-                        # reproducing the exact fidelity-downgrade defect this
-                        # retirement path exists to prevent, one layer down.
-                        fresh_session = sessions[0]
-                        fresh_key = f"{origin_from_provider(fresh_session.source_name).value}:{fresh_session.provider_session_id}"
-                        membership_candidates.setdefault(fresh_key, set()).add(raw_id)
-                        membership_keys.add(fresh_key)
+                    # Full-only non-prefix conversion belongs to the original
+                    # Source preparation unit, never this admitted Index writer.
                     membership_keys.add(logical_key)
                     continue
                 parsed_by_raw_id: dict[str, ParsedSession] = {}
                 retained_bytes = 0
                 for raw_id in plan.accepted_raw_ids:
                     spill_started = time.perf_counter()
-                    sessions, payload_bytes = spill.for_raw(archive, raw_id)
+                    sessions, payload_bytes = spill.for_raw(raw_id)
                     stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
                         time.perf_counter() - spill_started
                     )
-                    if len(sessions) != 1:
-                        raise RuntimeError(f"classified raw revision {raw_id} no longer parses to one session")
-                    parsed_by_raw_id[raw_id] = sessions[0]
+                    parsed_by_raw_id[raw_id] = prepared_session_for_logical_key(
+                        sessions, raw_id=raw_id, logical_source_key=logical_key
+                    )
                     retained_bytes += payload_bytes
-                if retention_observer is not None:
-                    retention_observer(len(parsed_by_raw_id), retained_bytes)
                 prepared_aggregate_session: ParsedSession | None = None
-                prepared_aggregate_path: Path | None = None
-                if len(plan.accepted_raw_ids) > 1 and prepared_inputs is not None:
-                    prepared_aggregate_session, prepared_aggregate_path = _validated_prepared_aggregate(
+                if len(plan.accepted_raw_ids) > 1:
+                    prepared_aggregate_session, _prepared_aggregate_path = _validated_prepared_aggregate(
                         logical_key,
                         tuple(plan.accepted_raw_ids),
                         prepared_inputs=prepared_inputs,
                         prepared_aggregates=prepared_aggregates,
                     )
-                # polylogue-fpid: kick off row-tuple construction for the chain's
-                # sole full-replace position (position 0 -- see apply_raw_
-                # revision_replay's docstring) on the background pool now, so it
-                # runs concurrently with the adoptability check below and this
-                # cohort's own apply_raw_revision_replay() preamble. A GIL build
-                # (prepare_pool is None) leaves prepared_by_raw_id empty and this
-                # write falls back to building rows inline, unchanged.
-                prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] = {}
-                if prepare_pool is not None:
-                    position0_raw_id = plan.accepted_raw_ids[0]
-                    prepared_by_raw_id[position0_raw_id] = prepare_pool.submit(
-                        prepare_session_rows, parsed_by_raw_id[position0_raw_id]
-                    )
-                accepted_sessions = [parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids]
                 adoptable_started = time.perf_counter()
-                adoptable = archive.raw_revision_replay_adoptable(
-                    [prepared_aggregate_session] if prepared_aggregate_session is not None else accepted_sessions
-                )
+                adoptable = adoption_is_current(logical_key, plan.accepted_raw_ids)
                 stage_timings["replay.adoptable_check"] = stage_timings.get("replay.adoptable_check", 0.0) + (
                     time.perf_counter() - adoptable_started
                 )
                 if not adoptable:
-                    archive.defer_raw_revision_adoption(
-                        plan.logical_source_key,
-                        plan.accepted_raw_ids,
-                        [prepared_aggregate_session] if prepared_aggregate_session is not None else accepted_sessions,
-                    )
-                    provisional_raw_ids = provisional_full_raw_ids.get(logical_key, set())
-                    plan_raw_ids = {application.raw_id for application in plan.applications}
-                    if plan_raw_ids and plan_raw_ids <= provisional_raw_ids:
-                        archive.release_provisional_full_revisions(sorted(plan_raw_ids))
+                    archive.defer_raw_revision_adoption(prepared_replay_adoption[(logical_key, plan.accepted_raw_ids)])
                     adoption_deferred += len(plan.accepted_raw_ids)
-                    # The submitted future is discarded unused here (this cohort
-                    # was deferred, not written) -- harmless: its result is a
-                    # pure, side-effect-free row-tuple build with no DB
-                    # connection, so an unconsumed Future just gets garbage
-                    # collected once the pool shuts down.
+                    settled_byte_keys.add(logical_key)
+                    continue
+                if prepared_byte_outcomes[logical_key].suppressed:
+                    adoption_deferred += len(plan.accepted_raw_ids)
+                    settled_byte_keys.add(logical_key)
                     continue
                 try:
                     tip_raw_id = plan.accepted_raw_ids[-1]
-                    prepared_write = _prepared_write_for(
+                    prepared_write = _required_prepared_write_for(
                         prepared_writes, tip_raw_id, prepared_aggregate_session or parsed_by_raw_id[tip_raw_id]
                     )
-                    _require_prepared_cross_acquisition_write(
-                        archive,
-                        prepared_aggregate_session or parsed_by_raw_id[tip_raw_id],
-                        accepted_raw_id=tip_raw_id,
-                        prepared_write=prepared_write,
-                        prepared_inputs=prepared_inputs,
-                    )
-                    if shard_transport is None:
-                        archive.apply_raw_revision_replay(
-                            plan,
-                            parsed_by_raw_id,
-                            acquired_at_ms=0,
-                            stage_timings_s=stage_timings,
-                            manage_transaction=not replay_batched,
-                            bulk_fts=bulk_fts,
-                            bulk_build=bulk_build,
-                            fresh_build=fresh_build,
-                            fresh_build_batch=fresh_build_batch,
-                            prepared_by_raw_id=prepared_by_raw_id or None,
-                            prepared_aggregate_session=prepared_aggregate_session,
-                            prepared_write=prepared_write,
+                    composed_session = prepared_aggregate_session or parsed_by_raw_id[tip_raw_id]
+                    if prepared_aggregate_session is not None:
+                        from polylogue.sources.prepared_merge import aggregate_resident_attachment_blobs
+
+                        aggregate_attachment_view = aggregate_resident_attachment_blobs(
+                            prepared_aggregates[logical_key].artifact,
+                            source_read=publication_read,
+                            session_id=str(
+                                make_session_id(composed_session.source_name, composed_session.provider_session_id)
+                            ),
+                            original_artifacts=prepared_replay_source.attachment_artifacts,
+                            accepted_raw_ids=plan.accepted_raw_ids,
                         )
                     else:
-                        composed = (
-                            [prepared_aggregate_session]
-                            if prepared_aggregate_session is not None
-                            else (
-                                [parsed_by_raw_id[tip_raw_id]]
-                                if len(plan.accepted_raw_ids) == 1
-                                else merge_parsed_session_chunks(
-                                    parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids
-                                )
-                            )
+                        aggregate_attachment_view = attachment_view(tip_raw_id, composed_session)
+                    try:
+                        _session_id, applied_raw_ids = archive.apply_raw_revision_replay(
+                            plan,
+                            parsed_by_raw_id,
+                            prepared_outcome=prepared_byte_outcomes[logical_key],
+                            acquired_at_ms=0,
+                            stage_timings_s=stage_timings,
+                            manage_transaction=False,
+                            bulk_fts=bulk_fts,
+                            bulk_build=False,
+                            fresh_build=False,
+                            fresh_build_batch=None,
+                            prepared_aggregate_rows=prepared_write.rows,
+                            prepared_aggregate_session=composed_session,
+                            preacquired_aggregate_attachment_blobs=aggregate_attachment_view,
+                            prepared_required_raw_ids=frozenset({tip_raw_id}),
+                            prepared_write=prepared_write,
+                            write_result=record_write_result,
+                            preacquired_attachment_blobs_by_raw_id={
+                                raw_id: attachment_view(raw_id, parsed_by_raw_id[raw_id])
+                                for raw_id in plan.accepted_raw_ids
+                            },
                         )
-                        if len(composed) != 1:
-                            raise ShardRefusedError("one revision chain did not compose to one shard session")
-                        shard_path = (
-                            prepared_aggregate_path
-                            if prepared_aggregate_path is not None
-                            else (
-                                shard_transport.path_for_raw(tip_raw_id)
-                                if len(plan.accepted_raw_ids) == 1
-                                else shard_transport.add_composed(tip_raw_id, composed[0])
-                            )
+                        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+                            revision_replay_terminal_raw_ids,
                         )
-                        try:
-                            with archive.attached_session_shard(shard_path, required=True) as bindings:
-                                prepared = _required_shard_prepared_rows(tip_raw_id, composed[0], bindings)
-                                archive.apply_raw_revision_replay(
-                                    plan,
-                                    parsed_by_raw_id,
-                                    acquired_at_ms=0,
-                                    stage_timings_s=stage_timings,
-                                    manage_transaction=True,
-                                    bulk_fts=bulk_fts,
-                                    bulk_build=bulk_build,
-                                    fresh_build=fresh_build,
-                                    fresh_build_batch=fresh_build_batch,
-                                    prepared_aggregate_rows=prepared[tip_raw_id],
-                                    prepared_aggregate_session=composed[0],
-                                    prepared_required_raw_ids=frozenset({tip_raw_id}),
-                                    prepared_write=prepared_write,
-                                )
-                        except PreparedSessionWriteRefusedError as exc:
-                            if prepared_inputs is not None:
-                                raise RetainedPreparationRetryableError(
-                                    f"prepared byte replay dependency changed for {logical_key}"
-                                ) from exc
-                            # polylogue-k00uq: the writer sliced this session's
-                            # messages against an already-archived parent
-                            # (``lineage_inheritance == 'prefix-sharing'``), so
-                            # the shard's rows -- sealed off-thread with no DB
-                            # read -- describe the unsliced session and are
-                            # correctly refused. The refusal is raised before
-                            # the write transaction opens, so nothing of this
-                            # unit landed; write it by the ordinary inline path
-                            # and count the named degradation. Never a skip.
-                            shard_lowering_degraded += 1
-                            _LOGGER.warning(
-                                "shard_lowering_degraded: logical_key=%s tip_raw_id=%s falling back to inline "
-                                "lowering (%s)",
-                                plan.logical_source_key,
-                                tip_raw_id,
-                                exc,
+
+                        if not applied_raw_ids and tip_raw_id in refused_publication_raw_ids:
+                            # Writer precedence refused the output: the Source
+                            # acknowledgements stand as this key's terminal
+                            # outcome and the stored session keeps its head.
+                            actual_terminal_raw_ids.update(revision_replay_terminal_raw_ids(plan))
+                            settled_byte_keys.add(logical_key)
+                            continue
+                        if applied_raw_ids != revision_replay_terminal_raw_ids(plan):
+                            raise RetainedPreparationRetryableError(
+                                "byte publication disagrees with its original Source acknowledgements"
                             )
-                            archive.apply_raw_revision_replay(
-                                plan,
-                                parsed_by_raw_id,
-                                acquired_at_ms=0,
-                                stage_timings_s=stage_timings,
-                                manage_transaction=True,
-                                bulk_fts=bulk_fts,
-                                bulk_build=bulk_build,
-                                fresh_build=fresh_build,
-                                fresh_build_batch=fresh_build_batch,
-                            )
+                        actual_terminal_raw_ids.update(applied_raw_ids)
+                    except PreparedSessionWriteRefusedError as exc:
+                        raise RetainedPreparationRetryableError(
+                            f"prepared byte replay dependency changed for {logical_key}"
+                        ) from exc
                 except sqlite3.IntegrityError as exc:
                     raise sqlite3.IntegrityError(
-                        f"backfill_historical_revision_evidence: byte-proven replay failed for "
-                        f"logical_key={plan.logical_source_key!r}: {exc}"
+                        f"apply_prepared_revision_replay: byte-proven replay failed for logical_key={plan.logical_source_key!r}: {exc}"
                     ) from exc
                 replayed += 1
                 byte_replayed_keys.add(logical_key)
-                if replay_batched:
-                    commit_replay_unit()
+            from polylogue.storage.sqlite.archive_tiers.revision_governance import apply_prepared_membership_index
 
-            if decode_prefetcher is not None:
-                # Second phase: the final membership key set (including
-                # retirement-added keys) is only known now. Retirement
-                # bindings may still sit uncommitted in the open replay
-                # batch, so the in-memory candidates map rides along.
-                decode_prefetcher.start_phase(
-                    [
-                        key
-                        for key in sorted(membership_keys)
-                        if key not in byte_replayed_keys or membership_key_has_pending_envelope_member(source_conn, key)
-                    ],
-                    membership_candidates,
-                )
-            for logical_key in sorted(membership_keys):
-                if logical_key in byte_replayed_keys and not membership_key_has_pending_envelope_member(
-                    source_conn, logical_key
+            for logical_key in (key for key in replay_schedule.order if key in membership_keys):
+                if logical_key in refused_keys:
+                    continue
+                membership_plan = prepared_membership_plans.get(logical_key)
+                if membership_plan is None:
+                    if logical_key in byte_replayed_keys or logical_key in settled_byte_keys:
+                        continue
+                    raise RetainedPreparationRetryableError(
+                        f"original prepared membership outcome is absent for {logical_key}"
+                    )
+                head_plan = membership_plan.head_plan
+                if (
+                    head_plan is None
+                    or membership_plan.source_decisions is None
+                    or membership_plan.decided_at_ms is None
                 ):
-                    continue
-                if deadline_check is not None:
-                    deadline_check()
-                if decode_prefetcher is not None:
-                    decode_prefetcher.enter_key(logical_key)
-                member_sessions: dict[str, ParsedSession] = {}
-                revisions: list[MembershipRevision] = []
-                projections = {}
-                retained_bytes = 0
-                candidates_started = time.perf_counter()
-                candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
-                candidate_raw_ids.update(membership_candidates.get(logical_key, ()))
-                stage_timings["membership.candidates"] = stage_timings.get("membership.candidates", 0.0) + (
-                    time.perf_counter() - candidates_started
-                )
-                # Cohort absorption: candidate selection is page-dependent, so a
-                # head written by an EARLIER page's membership cohort for this key
-                # may not be in this page's candidate set -- membership replay
-                # would then refuse to retire an "unrelated" quarantined head and
-                # kill the walk. Absorb the current quarantined head raw into the
-                # cohort so the real prefix classifier ranks it against the new
-                # members instead of any scalar comparison. Chain-governed
-                # (non-quarantined) heads are deliberately NOT absorbed --
-                # apply_raw_membership_classification yields to those.
-                head_raw_id = archive.raw_revision_head_raw_id(logical_key)
-                if head_raw_id is not None and archive._raw_revision_authority(head_raw_id) == "quarantined":
-                    candidate_raw_ids.add(head_raw_id)
-                for raw_id in sorted(candidate_raw_ids):
-                    spill_started = time.perf_counter()
-                    sessions, payload_bytes = spill.for_raw(archive, raw_id)
-                    stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
-                        time.perf_counter() - spill_started
+                    raise RetainedPreparationRetryableError(
+                        f"original prepared membership acknowledgements are absent for {logical_key}"
                     )
-                    for session in sessions:
-                        session_logical_key = (
-                            f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
-                        )
-                        if session_logical_key != logical_key:
-                            continue
-                        projection_started = time.perf_counter()
-                        projection = session_revision_projection(session)
-                        stage_timings["membership.project"] = stage_timings.get("membership.project", 0.0) + (
-                            time.perf_counter() - projection_started
-                        )
-                        member_sessions[raw_id] = session
-                        projections[raw_id] = projection
-                        revisions.append(
-                            MembershipRevision(
-                                raw_id,
-                                projection,
-                                session.updated_at,
-                                browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
-                                provider_message_ids=(
-                                    session.messages.provider_message_ids(include_none=True)
-                                    if isinstance(session.messages, SqliteMessageSink)
-                                    else frozenset(message.provider_message_id for message in session.messages)
-                                ),
-                                provider_attachment_ids=frozenset(
-                                    attachment.provider_attachment_id for attachment in session.attachments
-                                ),
-                            )
-                        )
-                        retained_bytes += payload_bytes
-                if retention_observer is not None:
-                    retention_observer(len(member_sessions), retained_bytes)
-                membership_classify_started = time.perf_counter()
-                # existing_accepted_raw_id is passed unconditionally (not
-                # just when head_raw_id's own authority is 'quarantined',
-                # unlike the narrower absorption-into-candidates condition
-                # above) -- the presence-guarantee-fallback guard inside
-                # classify_membership_revisions needs to know about a
-                # chain-governed (non-quarantined) existing head too, to
-                # correctly refuse ever retiring it, even though such a head
-                # is deliberately never absorbed into the comparison cohort
-                # itself.
-                classification = classify_membership_revisions(revisions, existing_accepted_raw_id=head_raw_id)
-                stage_timings["membership.classify"] = stage_timings.get("membership.classify", 0.0) + (
-                    time.perf_counter() - membership_classify_started
-                )
-                if classification.ambiguous_raw_ids:
-                    quarantined += len(classification.ambiguous_raw_ids)
-                accepted_sessions = [member_sessions[raw_id] for raw_id in classification.accepted_raw_ids]
-                if accepted_sessions and not archive.raw_revision_replay_adoptable(accepted_sessions):
-                    archive.defer_raw_revision_adoption(
-                        logical_key,
-                        classification.accepted_raw_ids,
-                        accepted_sessions,
-                    )
-                    adoption_deferred += len(classification.accepted_raw_ids)
+                classification = membership_plan.classification
+                quarantined += len(classification.ambiguous_raw_ids)
+                accepted_members = classification.accepted_raw_ids
+                if (
+                    accepted_members
+                    and head_plan.yield_to_head_raw_id is None
+                    and not adoption_is_current(logical_key, accepted_members)
+                ):
+                    archive.defer_raw_revision_adoption(prepared_replay_adoption[(logical_key, accepted_members)])
+                    adoption_deferred += len(accepted_members)
                     continue
-                try:
-                    if classification.accepted_raw_ids:
-                        accepted_raw_id = classification.accepted_raw_ids[-1]
-                        _require_prepared_cross_acquisition_write(
-                            archive,
-                            member_sessions[accepted_raw_id],
-                            accepted_raw_id=accepted_raw_id,
-                            prepared_write=_prepared_write_for(
-                                prepared_writes, accepted_raw_id, member_sessions[accepted_raw_id]
-                            ),
-                            prepared_inputs=prepared_inputs,
-                        )
-                    if shard_transport is None or not classification.accepted_raw_ids:
-                        archive.apply_raw_membership_classification(
-                            logical_key,
-                            classification,
-                            member_sessions,
-                            projections,
-                            acquired_at_ms=0,
-                            stage_timings_s=stage_timings,
-                            manage_transaction=not replay_batched,
-                            bulk_fts=bulk_fts,
-                            bulk_build=bulk_build,
-                            fresh_build=fresh_build,
-                            fresh_build_batch=fresh_build_batch,
-                            prepared_write=(
-                                _prepared_write_for(
-                                    prepared_writes,
-                                    classification.accepted_raw_ids[-1],
-                                    member_sessions[classification.accepted_raw_ids[-1]],
-                                )
-                                if classification.accepted_raw_ids
-                                else None
-                            ),
-                        )
-                    else:
-                        accepted_raw_id = classification.accepted_raw_ids[-1]
-                        accepted_session = member_sessions[accepted_raw_id]
-                        try:
-                            with archive.attached_session_shard(
-                                shard_transport.path_for_raw(accepted_raw_id), required=True
-                            ) as bindings:
-                                prepared = _required_shard_prepared_rows(accepted_raw_id, accepted_session, bindings)
-                                archive.apply_raw_membership_classification(
-                                    logical_key,
-                                    classification,
-                                    member_sessions,
-                                    projections,
-                                    acquired_at_ms=0,
-                                    stage_timings_s=stage_timings,
-                                    manage_transaction=True,
-                                    bulk_fts=bulk_fts,
-                                    bulk_build=bulk_build,
-                                    fresh_build=fresh_build,
-                                    fresh_build_batch=fresh_build_batch,
-                                    prepared_by_raw_id=prepared,
-                                    prepared_required_raw_ids=frozenset({accepted_raw_id}),
-                                    prepared_write=_prepared_write_for(
-                                        prepared_writes, accepted_raw_id, accepted_session
-                                    ),
-                                )
-                        except PreparedSessionWriteRefusedError as exc:
-                            if prepared_inputs is not None:
-                                raise RetainedPreparationRetryableError(
-                                    f"prepared membership replay dependency changed for {logical_key}"
-                                ) from exc
-                            # polylogue-k00uq, membership half: same cause and
-                            # same remedy as the byte-replay branch above.
-                            shard_lowering_degraded += 1
-                            _LOGGER.warning(
-                                "shard_lowering_degraded: logical_key=%s accepted_raw_id=%s falling back to "
-                                "inline lowering (%s)",
-                                logical_key,
-                                accepted_raw_id,
-                                exc,
-                            )
-                            archive.apply_raw_membership_classification(
-                                logical_key,
-                                classification,
-                                member_sessions,
-                                projections,
-                                acquired_at_ms=0,
-                                stage_timings_s=stage_timings,
-                                manage_transaction=True,
-                                bulk_fts=bulk_fts,
-                                bulk_build=bulk_build,
-                                fresh_build=fresh_build,
-                                fresh_build_batch=fresh_build_batch,
-                            )
-                except sqlite3.IntegrityError as exc:
-                    raise sqlite3.IntegrityError(
-                        f"backfill_historical_revision_evidence: membership replay failed for "
-                        f"logical_key={logical_key!r}: {exc}"
-                    ) from exc
-                if classification.accepted_raw_ids:
+                if (
+                    accepted_members
+                    and head_plan.yield_to_head_raw_id is None
+                    and head_plan.conflict is None
+                    and membership_plan.source_decisions.get(accepted_members[-1]) is MembershipDecision.DEFERRED
+                ):
+                    # The original Source preparation found the session
+                    # suppressed and acknowledged its accepted members as
+                    # deferred without retaining a carrier. The Index writes
+                    # nothing for it, exactly as a suppressed byte outcome.
+                    adoption_deferred += len(accepted_members)
+                    continue
+                attachments = (
+                    {}
+                    if not accepted_members
+                    else attachment_view(accepted_members[-1], membership_plan.sessions[accepted_members[-1]])
+                )
+                membership_prepared_write = None
+                if accepted_members and head_plan.yield_to_head_raw_id is None:
+                    membership_prepared_write = _required_prepared_write_for(
+                        prepared_writes,
+                        accepted_members[-1],
+                        membership_plan.sessions[accepted_members[-1]],
+                    )
+                session_id, actual_decisions = apply_prepared_membership_index(
+                    archive,
+                    logical_key,
+                    classification,
+                    membership_plan.sessions,
+                    membership_plan.projections,
+                    head_plan,
+                    decided_at_ms=membership_plan.decided_at_ms,
+                    preacquired_attachment_blobs=attachments,
+                    stage_timings_s=stage_timings,
+                    bulk_fts=bulk_fts,
+                    prepared_write=membership_prepared_write,
+                    write_result=record_write_result,
+                )
+                if actual_decisions != membership_plan.source_decisions:
+                    raise RetainedPreparationRetryableError(
+                        f"membership publication disagrees with original Source acknowledgements for {logical_key}"
+                    )
+                membership_refusals.extend(
+                    (logical_key, raw_id, decision)
+                    for raw_id, decision in actual_decisions.items()
+                    if decision is MembershipDecision.AMBIGUOUS
+                )
+                if (
+                    accepted_members
+                    and head_plan.yield_to_head_raw_id is None
+                    and actual_decisions[accepted_members[-1]] is MembershipDecision.APPLIED
+                ):
                     replayed += 1
-                if replay_batched:
-                    commit_replay_unit()
-            # A work event annotates a session that the byte and membership
-            # phases above create. Replayed any earlier, the event would
-            # create that session first and the transcript's fresh write would
-            # then meet a session it requires to be absent.
             for logical_key in work_event_keys:
-                if deadline_check is not None:
-                    deadline_check()
-                plan = classify_byte_cohort(logical_key)
+                if logical_key not in prepared_replay_source.terminal_raw_ids:
+                    adoption_deferred += 1
+                    continue
+                plan = selected_byte_plan(logical_key)
                 if plan.accepted_raw_ids != (logical_key,):
                     message = f"retained work event {logical_key} lost its singleton byte authority"
-                    if owned_inactive_generation is not None:
-                        raise FrozenSourceRemediationRequiredError(message)
                     raise RuntimeError(message)
-                (event_session,) = parse_retained_raw_sessions(archive, logical_key)
+                event_sessions, _event_bytes = spill.for_raw(logical_key)
+                event_session = prepared_session_for_revision_key(
+                    event_sessions, raw_id=logical_key, logical_source_key=logical_key
+                )
                 event_session_id = str(make_session_id(event_session.source_name, event_session.provider_session_id))
-                if (
-                    archive._conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (event_session_id,)).fetchone()
-                    is None
-                ):
-                    # The annotated session did not land in this build (its
-                    # cohort was deferred or suppressed); the event waits for
-                    # it rather than creating a headerless session.
+                with connection_cursor(
+                    archive._conn,
+                    "SELECT 1 FROM sessions WHERE session_id = ?",
+                    (event_session_id,),
+                ) as rows:
+                    event_session_exists = rows.fetchone() is not None
+                if not event_session_exists:
                     _LOGGER.warning("work_event_session_absent: raw_id=%s session_id=%s", logical_key, event_session_id)
                     adoption_deferred += 1
                     continue
-                archive._index_parsed_for_retained_raw(
+                from polylogue.storage.sqlite.archive_tiers.revision_governance import _index_parsed_for_retained_raw
+
+                event_result = _index_parsed_for_retained_raw(
+                    archive,
                     event_session,
                     raw_id=logical_key,
                     source_index=-1,
                     stage_timings_s=stage_timings,
                     stage_timing_prefix="replay.work_event",
-                    manage_transaction=not replay_batched,
+                    manage_transaction=False,
                     preacquired_attachment_blobs={},
-                    finalize_raw_parse=True,
+                    finalize_raw_parse=False,
+                    prepared_required=True,
+                    prepared_write=_required_prepared_write_for(prepared_writes, logical_key, event_session),
                 )
+                record_write_result(event_result)
                 replayed += 1
                 byte_replayed_keys.add(logical_key)
-                if replay_batched:
-                    commit_replay_unit()
-        finally:
-            if decode_prefetcher is not None:
-                stage_timings.update(decode_prefetcher.close())
-                stage_counts.update(decode_prefetcher.counts())
-        if replay_batched:
-            archive.commit()
-        if fresh_build:
-            # A candidate is publishable only after its final reader schema
-            # and all build-deferred derived surfaces exist.  Keep this one
-            # boundary in the production replay route; callers cannot publish
-            # a permanently unindexed generation by forgetting a helper.
-            archive.restore_deferred_secondary_indexes()
-            from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
-            from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
-            from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
-
-            rebuild_fts_index_sync(archive._conn)
-            rebuild_all_action_pairs_sync(archive._conn)
-            rebuild_all_delegation_facts_sync(archive._conn)
-            # The candidate's identity describes the completed reader shape,
-            # not the intentionally index-deferred write phase.
-            from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
-
-            stamp_derived_schema_identity(archive._conn, "index")
-            archive.commit()
-        elif replayed and not adoption_deferred:
-            if exact_fts_audit:
-                # A complete retained replay verifies the output relation before
-                # commit. This is a direct invariant check, not a ledger publish.
+                actual_terminal_raw_ids.add(logical_key)
+            if actual_terminal_raw_ids != prepared_replay_source.terminal_raw_ids:
+                raise RetainedPreparationRetryableError(
+                    "ordered Index outcomes disagree with original Source parse acknowledgements"
+                )
+            if replayed and not adoption_deferred and exact_fts_audit:
                 from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 
                 fts_snapshot = fts_invariant_snapshot_sync(archive._conn)
                 if not fts_snapshot.messages.ready:
                     raise RuntimeError("retained replay found messages_fts out of sync")
-            archive.commit()
-        if stage_timings:
-            stage_timings["total"] = time.perf_counter() - census_started
-            _LOGGER.info(
-                "backfill stage timings: %s",
-                " ".join(f"{key}={value:.1f}s" for key, value in sorted(stage_timings.items(), key=lambda kv: -kv[1])),
-            )
-        whale_envelope = spill.whale_envelope_report()
-    return RevisionBackfillResult(
-        census.scanned,
-        census.classified,
+            if stage_timings:
+                stage_timings["total"] = time.perf_counter() - publication_started
+                _LOGGER.info(
+                    "backfill stage timings: %s",
+                    " ".join(
+                        (f"{key}={value:.1f}s" for key, value in sorted(stage_timings.items(), key=lambda kv: -kv[1]))
+                    ),
+                )
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import publish_prepared_revision_source
+
+        # An owned inactive generation reconstructs Index from frozen Source.
+        # Its terminal commit retires this seal and grants no Source continuation.
+        if reference_seal.destination is None or reference_seal.destination.kind != "owned_inactive":
+            publish_prepared_revision_source(reference_seal, prepared_replay_source.permit)
+    return PreparedRevisionReplayResult(
+        0,
+        0,
         replayed,
-        census.quarantined + quarantined,
+        quarantined,
         adoption_deferred,
-        shard_lowering_degraded,
         stage_timings_s=stage_timings,
-        whale_envelope=whale_envelope,
         stage_counts=stage_counts,
+        written_session_ids=tuple(written_session_ids),
+        changed_session_ids=tuple(changed_session_ids),
+        writer_changed_raw_ids=tuple(writer_changed_raw_ids),
+        written_message_count=written_message_count,
+        written_counts=written_counts,
+        session_outputs=tuple(session_outputs.values()),
+        membership_refusals=tuple(membership_refusals),
     )
-
-
-def _parse_retained_raw(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
-    provider, _blob_hash, source_path, kind, payload_size = archive.raw_revision_descriptor(raw_id)
-    return parse_retained_raw_sessions(archive, raw_id), payload_size, kind
-
-
-def census_parse_worker(
-    raw_id: str,
-    provider_token: str,
-    blob_hash: str,
-    source_path: str,
-    is_stream: bool,
-    blob_root_str: str,
-    source_db_path_str: str,
-    kind_token: str,
-    native_id: str | None,
-) -> tuple[str, list[ParsedSession] | None, RetainedParseFailure | None]:
-    """Parse one retained raw's already-published blob bytes.
-
-    Pure read-only blob->ParsedSession decode; the caller already knows this
-    raw's payload size and revision kind from its own source-tier descriptor
-    lookup, so only primitive strings cross into this function -- no shared
-    ``ArchiveStore`` (and thus no thread-affine sqlite connection, see
-    ``_parse_unique_retained_raws_via_threads``) and no pickled object graph
-    to construct one. Errors are returned rather than raised so the caller
-    can apply the exact same per-raw quarantine handling as the sequential
-    path.
-
-    ``kind_token``/``native_id`` (polylogue-6lyh1) mirror
-    ``parse_retained_raw_sessions``'s own fallback-identity recovery exactly:
-    an APPEND-kind raw's own record stream may carry no self-describing
-    identity of its own (e.g. a Codex append delta has no ``session_meta``
-    record), so the identity hint recorded at write time
-    (``sources/live/batch.py``'s ``_append_payload_for_provider`` /
-    ``write_raw_payload``'s ``native_id``) must be used as the parser's
-    fallback_id instead of the bare filename stem -- otherwise a parallel
-    dispatch path silently falls back to ``Path(source_path).stem`` and
-    diverges from the sequential path whenever the source path's stem isn't
-    the provider session id (polylogue-u19l fixed this for the sequential
-    path only; every dispatcher of this worker must apply the identical
-    fallback for parallel and sequential replay to stay byte-identical).
-    Every caller resolves both values on its own calling thread (never
-    inside a worker) for the same thread-affine-connection reason
-    ``_parse_unique_retained_raws_via_threads`` avoids touching a shared
-    ``ArchiveStore`` at all.
-
-    Dispatched onto a ``ThreadPoolExecutor`` (real free-threading, see
-    ``_parse_unique_retained_raws_via_threads``) and by the pipelined replay
-    prefetcher's reparse fallback (``_ReplaySpillPrefetcher._decode``) -- the
-    function is identical every time; only the executor and the recreated
-    ``ArchiveBlobPublisher``'s process/thread affinity differ.
-    """
-    from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-    provider = Provider(provider_token)
-    kind = RawRevisionKind(kind_token)
-    fallback_id_override = native_id if kind is RawRevisionKind.APPEND else None
-    publisher = ArchiveBlobPublisher(Path(source_db_path_str), Path(blob_root_str))
-    try:
-        if provider is Provider.UNKNOWN:
-            with publisher.open(blob_hash) as detection_payload:
-                provider, _evidence = _detect_unknown_retained_provider(detection_payload, source_path)
-            if is_stream_record_provider(source_path, str(provider)):
-                with publisher.open(blob_hash) as stream_payload:
-                    sessions = _parse_stream(
-                        provider,
-                        stream_payload,
-                        source_path,
-                        fallback_id_override=fallback_id_override,
-                        archive_root=Path(blob_root_str).parent,
-                    )
-                return raw_id, sessions, None
-            _require_bounded_provider(provider, source_path)
-            payload = publisher.read_all(blob_hash)
-            payload_path = None
-            if provider is Provider.HERMES:
-                candidate_path = publisher.blob_path(blob_hash)
-                payload_path = candidate_path if candidate_path.exists() else None
-            sessions = _parse_one(
-                provider,
-                payload,
-                source_path,
-                payload_path=payload_path,
-                archive_root=Path(blob_root_str).parent,
-                fallback_id_override=fallback_id_override,
-            )
-            return raw_id, sessions, None
-        if is_stream:
-            with publisher.open(blob_hash) as stream_payload:
-                sessions = _parse_stream(
-                    provider,
-                    stream_payload,
-                    source_path,
-                    fallback_id_override=fallback_id_override,
-                    archive_root=Path(blob_root_str).parent,
-                )
-        else:
-            payload_path = None
-            if provider is Provider.HERMES:
-                candidate_path = publisher.blob_path(blob_hash)
-                payload_path = candidate_path if candidate_path.exists() else None
-            sessions = _parse_one(
-                provider,
-                publisher.read_all(blob_hash),
-                source_path,
-                payload_path=payload_path,
-                archive_root=Path(blob_root_str).parent,
-                fallback_id_override=fallback_id_override,
-            )
-        return raw_id, sessions, None
-    except Exception as exc:
-        return raw_id, None, RetainedParseFailure.of(exc)
-
-
-#: Providers whose parsed session identity is derived purely from payload
-#: bytes, never from ``source_path`` -- safe to dedup census parse ACROSS
-#: source paths sharing a ``blob_hash`` (polylogue-869u). The
-#: ``source_path``-dependent providers remain excluded below.
-#: ``Provider.ANTIGRAVITY``'s brain-metadata mode derives its
-#: ``profile_root``/artifact path from ``source_path``
-#: (the retired Antigravity brain-metadata session route);
-#: ``Provider.HERMES``'s ATOF/ATIF/verification-evidence modes likewise
-#: derive ``profile_root`` from ``source_path``. Those keep the
-#: conservative same-path-only dedup below. ``Provider.GROK`` is
-#: path-independent: its identity is content-derived (polylogue-31zag), so
-#: two same-bytes exports at different paths are one conversation. ``Provider.UNKNOWN`` (browser
-#: capture / unclassified) is also excluded out of caution -- its identity
-#: derivation is not centrally audited here.
-_PATH_INDEPENDENT_PARSE_PROVIDERS: Final[frozenset[Provider]] = frozenset(
-    {
-        Provider.CHATGPT,
-        Provider.CLAUDE_AI,
-        Provider.CLAUDE_DESIGN,
-        # Provider.CLAUDE_CODE is absent for the Gemini CLI reason below: its
-        # stream parse resolves retained ``tool-results/`` sidecars and
-        # subagent siblings from ``source_path``.
-        Provider.CODEX,
-        Provider.GEMINI,
-        # Provider.GEMINI_CLI is deliberately absent: ``parse_gemini_cli``
-        # takes ``source_path`` and resolves its ``tool-outputs/`` sidecar
-        # scope from it, so two byte-identical transcripts under different
-        # paths do NOT decode identically. Fanning one representative's
-        # ParsedSession out to both rows gave the second row the first path's
-        # recovered tool output, or none at all, depending on grouping order.
-        Provider.GROK,
-        Provider.DRIVE,
-    }
-)
-
-
-def _parse_retained_raws(
-    archive: ArchiveStore,
-    raw_ids: list[str],
-    *,
-    ingest_workers: int,
-    prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
-) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
-    """Parse a batch of retained raws, deduplicating byte-identical inputs.
-
-    Returns each outcome keyed by raw_id: either the parsed
-    ``(sessions, payload_bytes, revision_kind)`` tuple or the caught
-    exception. Rows sharing the same ``blob_hash`` for a
-    ``_PATH_INDEPENDENT_PARSE_PROVIDERS`` provider are parsed exactly once
-    and the outcome fanned out, regardless of ``source_path``: identical
-    bytes decode deterministically identically for those providers, so
-    re-parsing them per row (even under a DIFFERENT acquired path -- a
-    common re-acquisition/re-export shape) is pure waste. For every other
-    provider the dedup key still includes ``source_path`` (some parsers
-    derive identity from the path, e.g. beads workspace ids -- see
-    ``_PATH_INDEPENDENT_PARSE_PROVIDERS``'s docstring for the excluded
-    providers), so cross-path duplicates for those stay deliberately NOT
-    deduplicated. Live evidence (polylogue-869u, 2026-07-19): 87,177
-    newest-revision raws / 52.1 GiB but only 85,066 distinct blob hashes /
-    43.4 GiB -- the same bytes (e.g. one 442 MB codex rollout) recur under
-    up to 8 different ``logical_source_key``s / source paths and, before
-    this cross-path widening, paid a full parse each time. Per-row
-    ``revision_kind`` is re-attached from each row's own descriptor.
-
-    """
-    with stream_retained_raws(
-        archive,
-        raw_ids,
-        ingest_workers=ingest_workers,
-        prepared_inputs=prepared_inputs,
-    ) as outcomes:
-        return {raw_id: outcomes[raw_id] for raw_id in raw_ids}
-
-
-#: Parse tasks kept in flight per worker by :class:`_OrderedUniqueParse`.
-#:
-#: A ``ThreadPoolExecutor`` resolves a ``Future`` whether or not anyone reads
-#: it, so consuming outcomes lazily does not on its own bound memory: the
-#: parsed object graphs simply accumulate inside completed futures instead of
-#: inside a result dict. Dispatch has to be throttled as well, and this is the
-#: throttle. Above 1 a worker always has its next task queued, so the pool
-#: never idles between a consumer's two reads; the peak retained parse count
-#: is this multiple times the worker count rather than the page size.
-_INFLIGHT_PARSES_PER_WORKER: Final[int] = 2
-
-
-class _OrderedUniqueParse:
-    """Parse deduplicated raws on demand, in one fixed order, bounded in flight.
-
-    ``_parse_unique_retained_raws`` returns every outcome at once, which is
-    the shape polylogue-4j9j names: the caller's apply loop consumes outcomes
-    one at a time in ``pending_rows`` order, so a whole census page of parsed
-    ``ParsedSession`` graphs is alive simultaneously for no reason other than
-    the return type. This class resolves the same outcomes, in the same order,
-    releasing each as it is read.
-
-    Resolution order is the caller's, not completion order, so the archive
-    writes that follow stay byte-identical to both the sequential path and
-    today's eager dict -- the existing sequential-versus-parallel equivalence
-    proofs cover the new consumer unchanged.
-
-    The executor's lifetime is owned here: :meth:`close` shuts it down and
-    cancels whatever was still queued. Nothing is left for the garbage
-    collector to notice.
-    """
-
-    def __init__(
-        self,
-        archive: ArchiveStore,
-        order: Sequence[str],
-        *,
-        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
-        ingest_workers: int,
-    ) -> None:
-        self._archive = archive
-        self._order = list(order)
-        self._descriptors = descriptors
-        self._futures: dict[str, Future[tuple[str, list[ParsedSession] | None, RetainedParseFailure | None]]] = {}
-        self._pool: ThreadPoolExecutor | None = None
-        self._dispatched = 0
-        self._peak_inflight = 0
-        plan = resolve_revision_backfill_census_dispatch(
-            ingest_workers=ingest_workers,
-            record_count=len(self._order),
-            free_threaded=parallel_threads_effective(),
-        )
-        self._sequential = plan.pool_kind is PoolKind.SEQUENTIAL
-        if self._sequential:
-            if ingest_workers > 1 and len(self._order) > 1:
-                _LOGGER.warning(
-                    "parsing %d raws sequentially: this interpreter has the GIL enabled, and "
-                    "parse threads under a GIL starve the archive writer rather than speeding "
-                    "parse up. Run polylogue on a free-threaded build (3.14t) for parallel parse.",
-                    len(self._order),
-                )
-            return
-        if not self._order:
-            return
-        self._blob_root = str(archive.archive_root / "blob")
-        self._source_db_path = str(archive.source_db_path)
-        self._max_inflight = max(1, min(len(self._order), ingest_workers * _INFLIGHT_PARSES_PER_WORKER))
-        self._pool = ThreadPoolExecutor(max_workers=min(ingest_workers, len(self._order)))
-        self._refill()
-
-    @property
-    def peak_inflight(self) -> int:
-        """Largest number of parse tasks ever dispatched and unread at once."""
-        return self._peak_inflight
-
-    @property
-    def executor_running(self) -> bool:
-        """Whether this resolver still owns a live executor."""
-        return self._pool is not None
-
-    def _submit_next(self) -> None:
-        raw_id = self._order[self._dispatched]
-        self._dispatched += 1
-        provider, blob_hash, source_path, kind, _payload_size, native_id = self._descriptors[raw_id]
-        assert self._pool is not None
-        self._futures[raw_id] = self._pool.submit(
-            census_parse_worker,
-            raw_id,
-            provider.value,
-            blob_hash,
-            source_path,
-            is_stream_record_provider(source_path, str(provider)),
-            self._blob_root,
-            self._source_db_path,
-            kind.value,
-            native_id,
-        )
-        self._peak_inflight = max(self._peak_inflight, len(self._futures))
-
-    def _refill(self) -> None:
-        while len(self._futures) < self._max_inflight and self._dispatched < len(self._order):
-            self._submit_next()
-
-    def resolve(self, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
-        """Outcome for ``raw_id``, blocking only on that raw's own parse."""
-        if self._sequential:
-            self._peak_inflight = max(self._peak_inflight, 1)
-            try:
-                return _parse_retained_raw(self._archive, raw_id)
-            except Exception as exc:
-                return exc
-        while raw_id not in self._futures and self._dispatched < len(self._order):
-            self._submit_next()
-        future = self._futures.pop(raw_id)
-        self._refill()
-        try:
-            _raw_id, sessions, error = future.result()
-        except Exception as exc:
-            return exc
-        if error is not None:
-            return error.as_exception()
-        _provider, _blob_hash, _source_path, kind, payload_size, _native_id = self._descriptors[raw_id]
-        return (sessions or [], payload_size, kind)
-
-    def close(self) -> None:
-        """Shut the executor down, cancelling anything still queued."""
-        pool, self._pool = self._pool, None
-        self._futures.clear()
-        if pool is not None:
-            pool.shutdown(wait=True, cancel_futures=True)
-
-
-class _OrderedParseOutcomes(Mapping[str, "tuple[list[ParsedSession], int, RawRevisionKind] | Exception"]):
-    """Retained-raw parse outcomes resolved on first read, released after it.
-
-    A drop-in for the dict ``_parse_retained_raws`` used to return: the census
-    apply loop only ever does ``outcomes[raw_id]``. Dedup fan-out and replay
-    enrichment behave exactly as they did eagerly -- they are simply
-    performed for one raw at the moment that raw is read.
-
-    A group's parsed sessions are held only until its last member has been
-    read, so a dedup group costs one live parse rather than one per member,
-    and nothing survives the read of its final member.
-
-    Reading a raw more than once re-derives it; the census page reads each
-    raw exactly once. Iterating the mapping forces every raw in order, which
-    is what the eager ``_parse_retained_raws`` wrapper does.
-    """
-
-    def __init__(
-        self,
-        archive: ArchiveStore,
-        raw_ids: Sequence[str],
-        *,
-        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
-        key_by_raw_id: dict[str, _ParseDedupKey],
-        pending_by_key: dict[_ParseDedupKey, int],
-        representative_by_key: dict[_ParseDedupKey, str],
-        unique: _OrderedUniqueParse,
-    ) -> None:
-        self._archive = archive
-        self._raw_ids = list(raw_ids)
-        self._descriptors = descriptors
-        self._key_by_raw_id = key_by_raw_id
-        self._pending_by_key = pending_by_key
-        self._representative_by_key = representative_by_key
-        self._unique = unique
-        self._group_outcome: dict[_ParseDedupKey, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._raw_ids)
-
-    def __len__(self) -> int:
-        return len(self._raw_ids)
-
-    @property
-    def live_group_count(self) -> int:
-        """Dedup groups whose parsed sessions are currently retained."""
-        return len(self._group_outcome)
-
-    @property
-    def peak_inflight_parses(self) -> int:
-        """Largest number of parse tasks dispatched and unread at once."""
-        return self._unique.peak_inflight
-
-    @property
-    def executor_running(self) -> bool:
-        """Whether the owned parse executor is still live."""
-        return self._unique.executor_running
-
-    def _group_result(self, key: _ParseDedupKey) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
-        cached = self._group_outcome.get(key)
-        if cached is not None:
-            return cached
-        outcome = self._unique.resolve(self._representative_by_key[key])
-        self._group_outcome[key] = outcome
-        return outcome
-
-    def __getitem__(self, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
-        key = self._key_by_raw_id[raw_id]
-        group_outcome = self._group_result(key)
-        remaining = self._pending_by_key[key] - 1
-        self._pending_by_key[key] = remaining
-        if remaining <= 0:
-            self._group_outcome.pop(key, None)
-        if isinstance(group_outcome, Exception):
-            return group_outcome
-        sessions, _rep_size, _rep_kind = group_outcome
-        _provider, _blob_hash, _source_path, kind, size, _native_id = self._descriptors[raw_id]
-        return _enrich_retained_parse_outcome(
-            self._archive, raw_id, descriptor=self._descriptors[raw_id], outcome=(sessions, size, kind)
-        )
-
-
-@contextmanager
-def stream_retained_raws(
-    archive: ArchiveStore,
-    raw_ids: list[str],
-    *,
-    ingest_workers: int,
-    prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
-) -> Iterator[_OrderedParseOutcomes]:
-    """Parse ``raw_ids`` lazily, in caller order, with the executor owned here.
-
-    Same inputs, same dedup, same per-raw outcomes as
-    :func:`_parse_retained_raws`; the difference is that outcomes are produced
-    as they are read instead of all at once, so a census page's apply loop no
-    longer requires the whole page's parsed sessions to be resident.
-
-    The caller must read each raw at most once and in the order it passed. On
-    exit the executor is shut down and queued work cancelled, whether the body
-    completed or raised.
-    """
-    if prepared_inputs is not None:
-        strict_inputs = prepared_inputs
-
-        class PreparedOutcomes(Mapping[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]):
-            def __iter__(self) -> Iterator[str]:
-                return iter(raw_ids)
-
-            def __len__(self) -> int:
-                return len(raw_ids)
-
-            def __getitem__(self, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
-                if raw_id not in raw_ids:
-                    raise KeyError(raw_id)
-                return _prepared_retained_outcome(archive, raw_id, strict_inputs)
-
-        yield cast("_OrderedParseOutcomes", PreparedOutcomes())
-        return
-    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {}
-    for raw_id in raw_ids:
-        provider, blob_hash, source_path, kind, size = archive.raw_revision_descriptor(raw_id)
-        # polylogue-6lyh1: resolve the same APPEND fallback-identity hint the
-        # sequential path (``parse_retained_raw_sessions``) recovers, on this
-        # calling thread, so every parallel dispatch path below can apply the
-        # identical fallback -- see ``census_parse_worker``'s docstring.
-        native_id = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
-        descriptors[raw_id] = (provider, blob_hash, source_path, kind, size, native_id)
-
-    key_by_raw_id: dict[str, _ParseDedupKey] = {}
-    pending_by_key: dict[_ParseDedupKey, int] = {}
-    representative_by_key: dict[_ParseDedupKey, str] = {}
-    for raw_id in raw_ids:
-        provider, blob_hash, source_path, _kind, _size, native_id = descriptors[raw_id]
-        dedup_path = "" if provider in _PATH_INDEPENDENT_PARSE_PROVIDERS else source_path
-        key = (provider, blob_hash, dedup_path, native_id)
-        key_by_raw_id[raw_id] = key
-        pending_by_key[key] = pending_by_key.get(key, 0) + 1
-        representative_by_key.setdefault(key, raw_id)
-
-    # Dispatch order follows the caller's read order through each group's
-    # representative, so a bounded in-flight window always holds the raws the
-    # consumer is about to ask for rather than an arbitrary prefix.
-    order = [representative_by_key[key] for key in dict.fromkeys(key_by_raw_id[raw_id] for raw_id in raw_ids)]
-    unique = _OrderedUniqueParse(archive, order, descriptors=descriptors, ingest_workers=ingest_workers)
-    try:
-        yield _OrderedParseOutcomes(
-            archive,
-            raw_ids,
-            descriptors=descriptors,
-            key_by_raw_id=key_by_raw_id,
-            pending_by_key=pending_by_key,
-            representative_by_key=representative_by_key,
-            unique=unique,
-        )
-    finally:
-        unique.close()
-
-
-def _enrich_retained_parse_results(
-    archive: ArchiveStore,
-    *,
-    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
-    results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception],
-) -> None:
-    """Apply replay-safe provider assembly to decoded retained raws.
-
-    Initial file ingest routes every parsed session through the provider
-    assembly layer before hashing and writing it. Raw replay historically
-    skipped that layer, so even deterministic fallbacks (for example Codex's
-    first-human-message title) changed the session hash and made byte-proven
-    source cohorts permanently non-adoptable.
-
-    Replay may consume only evidence already durable in the archive: the
-    retained raw bytes plus the source tier's own acquired rows. It never
-    rediscovers mutable files beside the original source path.
-    """
-    # Unit-level parser/dedupe probes deliberately pass tiny protocol fakes;
-    # enrichment is an ArchiveStore production concern and is covered through
-    # real source-tier replay fixtures below. Do not turn those pure decode
-    # probes into accidental SQLite integration tests.
-    if not isinstance(archive, ArchiveStore):
-        return
-    for raw_id, outcome in tuple(results.items()):
-        results[raw_id] = _enrich_retained_parse_outcome(
-            archive, raw_id, descriptor=descriptors[raw_id], outcome=outcome
-        )
 
 
 def _enrich_retained_parse_outcome(
     archive: ArchiveStore,
     raw_id: str,
     *,
-    descriptor: tuple[Provider, str, str, RawRevisionKind, int, str | None],
+    descriptor: tuple[Provider, str, str, RawRevisionKind, int, str | None, str | None],
     outcome: tuple[list[ParsedSession], int, RawRevisionKind] | Exception,
 ) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
     """Enrich one decoded raw -- the per-raw body of enrichment.
@@ -4930,7 +2522,7 @@ def _enrich_retained_parse_outcome(
     # enrichment is an ArchiveStore production concern.
     if not isinstance(archive, ArchiveStore):
         return outcome
-    provider, _blob_hash, descriptor_source_path, _descriptor_kind, _size, _native_id = descriptor
+    provider, _blob_hash, descriptor_source_path, _descriptor_kind, _size, _native_id, profile_identity = descriptor
     sessions, payload_bytes, kind = outcome
     source_conn = archive._ensure_source_conn()
     sessions = _normalize_retained_parse_sessions(source_conn, raw_id, sessions)
@@ -4944,6 +2536,7 @@ def _enrich_retained_parse_outcome(
             source_conn=source_conn,
             blob_root=Path(archive.archive_root) / "blob",
             source_path=descriptor_source_path,
+            captured_zip_coordinate=archive.raw_captured_zip_coordinate(raw_id),
         ),
         payload_bytes,
         kind,
@@ -4955,15 +2548,7 @@ def _normalize_retained_parse_sessions(
     raw_id: str,
     sessions: list[ParsedSession],
 ) -> list[ParsedSession]:
-    """Apply the timestamp contract after every stateless retained decode.
-
-    ``census_parse_worker`` deliberately owns no ``ArchiveStore`` and therefore
-    cannot recover the retained file-mtime fallback itself.  Both its threaded
-    caller and the pipelined spill prefetcher pass through this helper before a
-    parsed tree can be classified, hashed, or cached.  The sequential parser
-    already normalizes internally; applying the operation again is idempotent
-    and keeps both dispatch modes byte-identical.
-    """
+    """Bind decoded timestamps to the captured retained file-mtime fallback."""
     row = source_conn.execute(
         "SELECT file_mtime_ms FROM raw_sessions WHERE raw_id = ?",
         (raw_id,),
@@ -5005,19 +2590,6 @@ def reset_replay_enrichment_degradations() -> None:
             counts.clear()
 
 
-def _replay_enrichment_reads_index(provider: Provider) -> bool:
-    """Whether :func:`_replay_safe_enrich_sessions` consults ``index_conn``.
-
-    One declaration for the index-backed branch of that function -- today only
-    Codex's retained-state title lane reads the index tier. A caller that
-    cannot hold a readable index handle (the replay prefetch worker against an
-    EXCLUSIVE-locked owned generation, see :func:`_prefetchable_index_path`)
-    uses this to defer the enrichment to a caller that can, rather than
-    producing a differently-enriched tree.
-    """
-    return provider is Provider.CODEX
-
-
 class RetainedSessionEnricher:
     """Apply retained assembly evidence to one session at a time.
 
@@ -5042,6 +2614,7 @@ class RetainedSessionEnricher:
         "_session_ids",
         "_source_conn",
         "_source_path",
+        "_captured_zip_coordinate",
     )
 
     def __init__(
@@ -5049,6 +2622,7 @@ class RetainedSessionEnricher:
         provider: Provider,
         *,
         source_path: str,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None,
         index_conn: sqlite3.Connection | None,
         source_conn: sqlite3.Connection | None,
         blob_root: Path | None,
@@ -5057,6 +2631,7 @@ class RetainedSessionEnricher:
         self._provider = provider
         self._frames = frames
         self._source_path = source_path
+        self._captured_zip_coordinate = captured_zip_coordinate
         self._index_conn = index_conn
         self._source_conn = source_conn
         self._blob_root = blob_root
@@ -5065,7 +2640,7 @@ class RetainedSessionEnricher:
         # Only a provider whose evidence is keyed by session needs the ids;
         # a bundle of any other provider keeps none of them.
         self._keeps_session_ids = _replay_enrichment_reads_index(provider)
-        self._session_ids: list[str] = []
+        self._session_ids: PickleSpool[str] = PickleSpool()
 
     def _bind(self, *, enriched: bool) -> None:
         """Take the current evidence frames, rebinding them when they near expiry."""
@@ -5095,6 +2670,7 @@ class RetainedSessionEnricher:
         return enrichment_dependency_digest(
             provider=self._provider,
             source_path=self._source_path,
+            captured_zip_coordinate=self._captured_zip_coordinate,
             provider_session_ids=self._session_ids,
             index_conn=self._index_conn,
             source_conn=self._source_conn,
@@ -5119,17 +2695,37 @@ class RetainedSessionEnricher:
                 source_conn=self._source_conn,
                 blob_root=self._blob_root,
                 source_path=self._source_path,
+                captured_zip_coordinate=self._captured_zip_coordinate,
             )[0]
         if self._cached is None:
             self._cached = _retained_enrichment_sidecar_data(
                 provider=self._provider,
                 sessions=(),
-                index_conn=self._index_conn,
-                source_conn=self._source_conn,
-                blob_root=self._blob_root,
+                evidence_reader=ConnectionRetainedEnrichmentRead(self._index_conn, self._source_conn, self._blob_root),
                 source_path=self._source_path,
+                captured_zip_coordinate=self._captured_zip_coordinate,
             )
         return stamp_enrichment_evidence(self._provider, self._cached, spec.enrich_session(session, self._cached))
+
+    def close(self) -> None:
+        from polylogue.sources.assembly import close_sidecar_data
+
+        failures: list[BaseException] = []
+        if self._cached is not None:
+            try:
+                close_sidecar_data(self._cached)
+            except BaseException as error:
+                failures.append(error)
+            else:
+                self._cached = None
+        try:
+            self._session_ids.close()
+        except BaseException as error:
+            failures.append(error)
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise BaseExceptionGroup("retained enrichment and ID tape close failed", failures)
 
     def enrich_all(self, sessions: Sequence[ParsedSession]) -> list[ParsedSession]:
         return [self(session) for session in sessions]
@@ -5208,6 +2804,7 @@ def open_retained_session_enricher(
     provider: Provider,
     *,
     source_path: str,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
     source_db_path: str | Path,
     index_db_path: str | Path,
     blob_root: str | Path,
@@ -5219,36 +2816,27 @@ def open_retained_session_enricher(
     parsed-content fallbacks, exactly as retained replay does without it.
     """
     frames = _RebindingEvidenceFrames(source_db_path=source_db_path, index_db_path=index_db_path)
-    try:
-        yield RetainedSessionEnricher(
-            provider,
-            source_path=source_path,
-            index_conn=None,
-            source_conn=None,
-            blob_root=Path(blob_root),
-            frames=frames,
-        )
-    finally:
-        frames.close()
-
-
-def enrich_sessions_from_archive(
-    archive: Any, provider: Provider, source_path: str, sessions: Sequence[ParsedSession]
-) -> list[ParsedSession]:
-    """Enrich a writer-side parse from the archive's own retained evidence.
-
-    An ``UNKNOWN`` acquisition provider resolves to the parser's, as retained
-    replay does before it enriches, so both routes find the same assembly.
-    """
-    if provider is Provider.UNKNOWN and sessions:
-        provider = sessions[0].source_name
-    return RetainedSessionEnricher(
+    enricher = RetainedSessionEnricher(
         provider,
         source_path=source_path,
-        index_conn=archive.index_connection,
-        source_conn=archive.source_connection,
-        blob_root=Path(archive.archive_root) / "blob",
-    ).enrich_all(sessions)
+        captured_zip_coordinate=captured_zip_coordinate,
+        index_conn=None,
+        source_conn=None,
+        blob_root=Path(blob_root),
+        frames=frames,
+    )
+    try:
+        yield enricher
+    finally:
+        try:
+            enricher.close()
+        finally:
+            frames.close()
+
+
+def _replay_enrichment_reads_index(provider: Provider) -> bool:
+    """Codex retained-state titles require the captured Index dependency."""
+    return provider is Provider.CODEX
 
 
 def _replay_safe_enrich_sessions(
@@ -5259,6 +2847,7 @@ def _replay_safe_enrich_sessions(
     source_conn: sqlite3.Connection | None,
     blob_root: Path | None,
     source_path: str | None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
     evidence_observer: Callable[[object], None] | None = None,
 ) -> list[ParsedSession]:
     """Enrich one retained parse without consulting ambient source files.
@@ -5271,7 +2860,7 @@ def _replay_safe_enrich_sessions(
 
     polylogue-sqy57: every handle is a REQUIRED keyword, with no default. The
     cache-miss decode paths (the spill prefetcher's reparse and
-    ``_ParsedSessionSpill.for_raw``'s inline reparse) previously omitted them
+    ``_PreparedReplayInputs.for_raw``'s inline reparse) previously omitted them
     and silently produced heuristic titles, making replay output depend on
     cache state instead of durable evidence. A caller that genuinely has no
     handle passes ``None`` and the shortfall is counted by
@@ -5285,209 +2874,85 @@ def _replay_safe_enrich_sessions(
     sidecar_data = _retained_enrichment_sidecar_data(
         provider=provider,
         sessions=sessions,
-        index_conn=index_conn,
-        source_conn=source_conn,
-        blob_root=blob_root,
+        evidence_reader=ConnectionRetainedEnrichmentRead(index_conn, source_conn, blob_root),
         source_path=source_path,
+        captured_zip_coordinate=captured_zip_coordinate,
     )
     if evidence_observer is not None:
         evidence_observer(sidecar_data)
-    return [
-        stamp_enrichment_evidence(provider, sidecar_data, spec.enrich_session(session, sidecar_data))
-        for session in sessions
-    ]
+    from polylogue.sources.assembly import close_sidecar_data
+
+    try:
+        return [
+            stamp_enrichment_evidence(provider, sidecar_data, spec.enrich_session(session, sidecar_data))
+            for session in sessions
+        ]
+
+    finally:
+        close_sidecar_data(sidecar_data)
 
 
 def _retained_enrichment_sidecar_data(
     *,
     provider: Provider,
     sessions: Sequence[ParsedSession],
-    index_conn: sqlite3.Connection | None,
-    source_conn: sqlite3.Connection | None,
-    blob_root: Path | None,
+    evidence_reader: RetainedEnrichmentRead,
     source_path: str | None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
     provider_session_ids: Iterable[str] | None = None,
 ) -> SidecarData:
-    """Read the exact retained assembly evidence used by enrichment.
-
-    ``provider_session_ids`` replaces ``sessions`` when the caller holds only
-    the identities (the evidence depends on nothing else of a session).
-    """
-
+    """Read one canonical evidence bundle through the caller's finite host."""
     sidecar_data = cast("SidecarData", {})
-    reads_index = _replay_enrichment_reads_index(provider)
-    if reads_index and index_conn is None:
-        _count_enrichment_degradation("codex_titles_without_index_conn")
-    if reads_index and index_conn is not None:
-        from polylogue.sources.codex_state_projection import read_thread_titles
-
+    if _replay_enrichment_reads_index(provider):
         thread_ids = (
-            list(provider_session_ids)
+            provider_session_ids
             if provider_session_ids is not None
-            else [session.provider_session_id for session in sessions if session.provider_session_id]
+            else (session.provider_session_id for session in sessions if session.provider_session_id)
         )
-        titles = read_thread_titles(index_conn, thread_ids=thread_ids, source_path=source_path)
-        if titles:
+        titles = evidence_reader.retained_state_titles(thread_ids, source_path)
+        if titles is None:
+            _count_enrichment_degradation("codex_titles_without_index_conn")
+        elif titles:
             sidecar_data = cast("SidecarData", {"retained_state_titles": titles})
-    if source_conn is None or blob_root is None or not source_path:
-        _count_enrichment_degradation("retained_assembly_without_source_evidence")
-    if source_conn is not None and blob_root is not None and source_path:
-        # polylogue-ximhz: Claude Code index/history and ChatGPT asset maps
-        # are retained source artifacts. Replay resolves them from the source
-        # tier and the blob store -- never from a file beside the original
-        # source path, which may no longer exist.
-        from polylogue.sources.retained_assembly import with_retained_assembly_evidence
-        from polylogue.storage.blob_store import BlobStore
+        else:
+            from polylogue.sources.retained_title_index import RetainedTitleIndex
 
-        sidecar_data = with_retained_assembly_evidence(
-            sidecar_data,
-            provider=provider,
-            source_conn=source_conn,
-            blob_store=BlobStore(blob_root),
-            source_path=source_path,
+            if isinstance(titles, RetainedTitleIndex):
+                titles.close()
+    from polylogue.sources.assembly import close_sidecar_data
+
+    retained: SidecarData | None = None
+    try:
+        retained = (
+            None
+            if not source_path
+            else evidence_reader.retained_assembly_evidence(
+                sidecar_data,
+                provider=provider,
+                source_path=source_path,
+                captured_zip_coordinate=captured_zip_coordinate,
+            )
         )
-    return sidecar_data
-
-
-def _parse_unique_retained_raws_via_threads(
-    archive: ArchiveStore,
-    raw_ids: list[str],
-    *,
-    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
-    ingest_workers: int,
-) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
-    """Thread-parallel parse over every raw, regardless of size.
-
-    A plain ``ThreadPoolExecutor`` shares parsed ``ParsedSession`` object
-    graphs by reference between threads, so neither cost that a process pool
-    has to amortize applies here: no pickle-back of the return value (#3136
-    measured 0.63x/net-loss above 256KiB) and no per-worker spawn+import tax
-    (#3149's ~1.5-2s floor -- threads share the one already-imported
-    interpreter, they never re-pay ``import polylogue``). Every raw in
-    ``raw_ids`` therefore dispatches, with no payload-size ceiling and no
-    aggregate floor; the heuristics that enforced those under the GIL are
-    retired along with the process-pool path itself.
-
-    Dispatches ``census_parse_worker`` deliberately -- NOT
-    ``_parse_retained_raw(archive, raw_id)``
-    directly. ``ArchiveStore`` lazily opens ``_source_conn`` as a plain
-    ``sqlite3.Connection`` with the default ``check_same_thread=True``
-    (``storage/sqlite/archive_tiers/archive.py:_ensure_source_conn``); the
-    caller of this function (``_parse_unique_retained_raws``) already
-    resolved every raw's descriptor sequentially on the calling thread
-    before dispatch, so calling ``archive.raw_revision_descriptor`` again
-    from a worker thread (as ``_parse_retained_raw`` does) raises
-    ``sqlite3.ProgrammingError: SQLite objects created in a thread can only
-    be used in that same thread`` -- confirmed empirically, not
-    theoretical. ``census_parse_worker`` sidesteps this entirely: it never
-    touches the shared ``ArchiveStore`` or its connections, only a fresh,
-    stateless ``ArchiveBlobPublisher`` built from primitive strings
-    (blob root + source.db path), whose blob reads are plain filesystem I/O.
-
-    Result assembly is keyed by raw_id exactly like the process-pool path,
-    so completion order never affects the archive state callers build from
-    these results.
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
-    blob_root_str = str(archive.archive_root / "blob")
-    source_db_path_str = str(archive.source_db_path)
-    with ThreadPoolExecutor(max_workers=min(ingest_workers, len(raw_ids))) as pool:
-        future_to_raw_id = {}
-        for raw_id in raw_ids:
-            provider, blob_hash, source_path, kind, _payload_size, native_id = descriptors[raw_id]
-            future = pool.submit(
-                census_parse_worker,
-                raw_id,
-                provider.value,
-                blob_hash,
-                source_path,
-                is_stream_record_provider(source_path, str(provider)),
-                blob_root_str,
-                source_db_path_str,
-                kind.value,
-                native_id,
-            )
-            future_to_raw_id[future] = raw_id
-        for future in as_completed(future_to_raw_id):
-            raw_id = future_to_raw_id[future]
-            try:
-                _raw_id, sessions, error = future.result()
-            except Exception as exc:
-                results[raw_id] = exc
+        if retained is None:
+            _count_enrichment_degradation("retained_assembly_without_source_evidence")
+            return sidecar_data
+        close_sidecar_data(sidecar_data, borrowed=retained)
+        return retained
+    except BaseException as primary:
+        failures: list[BaseException] = [primary]
+        for owned, borrowed in ((sidecar_data, retained), (retained, None)):
+            if owned is None:
                 continue
-            if error is not None:
-                results[raw_id] = error.as_exception()
-                continue
-            _provider, _blob_hash, _source_path, kind, payload_size, _native_id = descriptors[raw_id]
-            results[raw_id] = (sessions or [], payload_size, kind)
-    return results
-
-
-def _parse_unique_retained_raws(
-    archive: ArchiveStore,
-    raw_ids: list[str],
-    *,
-    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
-    ingest_workers: int,
-) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
-    """Parse already-deduplicated raws, optionally in parallel.
-
-    Read-only blob->ParsedSession decode is authority-neutral and
-    embarrassingly parallel; callers apply archive writes afterwards in a
-    fixed deterministic order independent of completion order here, so
-    parallel and sequential execution produce byte-identical archive state
-    regardless of which raws take a parallel path versus the sequential
-    path.
-
-    Parallelism is a plain ``ThreadPoolExecutor`` over every raw, with no
-    size partition and no amortization floor: parsed ``ParsedSession`` graphs
-    are shared between threads by reference, so neither of the costs that
-    used to require tuning applies.
-
-    Parallelism requires a genuinely free-threaded interpreter. ``>=3.14`` in
-    ``requires-python`` does NOT guarantee that -- a standard GIL 3.14 build
-    satisfies it -- so this still probes, and parses sequentially when the GIL
-    is enabled. That is a safety guard, not a tuning knob: polylogue-7mtf
-    measured GIL-build parse threads giving no speedup (0.93x-0.96x) while
-    inflating a concurrent SQLite writer thread's commit latency ~5000x
-    (208ms against an ~0.04ms/5ms cadence), so threads must never engage under
-    a GIL.
-
-    The retired process-pool alternative existed solely to get parallelism
-    under the GIL, and carried two measured heuristics to stay a net win
-    there: a 256 KiB payload ceiling (pickling ``ParsedSession`` graphs back
-    across the process boundary measured 0.63x, a net loss) and a 48 MiB
-    aggregate floor (per-worker spawn+import ~1.5-2.0s). On the reference
-    archive that ceiling routed 98.5% of all bytes to a single core, which is
-    what made a full index rebuild a ~9-hour job on a 24-thread machine.
-    """
-    results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
-    plan = resolve_revision_backfill_census_dispatch(
-        ingest_workers=ingest_workers, record_count=len(raw_ids), free_threaded=parallel_threads_effective()
-    )
-    if plan.pool_kind is PoolKind.SEQUENTIAL:
-        if ingest_workers > 1 and len(raw_ids) > 1:
-            _LOGGER.warning(
-                "parsing %d raws sequentially: this interpreter has the GIL enabled, and "
-                "parse threads under a GIL starve the archive writer rather than speeding "
-                "parse up. Run polylogue on a free-threaded build (3.14t) for parallel parse.",
-                len(raw_ids),
-            )
-        for raw_id in raw_ids:
             try:
-                results[raw_id] = _parse_retained_raw(archive, raw_id)
-            except Exception as exc:
-                results[raw_id] = exc
-        return results
-
-    return _parse_unique_retained_raws_via_threads(
-        archive, raw_ids, descriptors=descriptors, ingest_workers=ingest_workers
-    )
+                close_sidecar_data(owned, borrowed=borrowed)
+            except BaseException as cleanup:
+                failures.append(cleanup)
+        if len(failures) > 1:
+            raise BaseExceptionGroup("retained evidence selection and cleanup failed", failures) from None
+        raise
 
 
-def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:
+def parse_retained_raw_sessions(archive: RetainedRawRead, raw_id: str) -> list[ParsedSession]:
     """Parse retained raw evidence without eagerly loading stream records.
 
     Raw-revision replay is shared by historical repair and the live full and
@@ -5496,7 +2961,16 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     for Codex/Claude JSONL evidence.
     """
     provider, blob_hash, source_path, kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    if (
+        not is_work_event_raw_id(raw_id)
+        and declared_evidence_classification(source_path, provider=provider) is not None
+    ):
+        # A raw-only declaration is terminal even when the retained payload is
+        # empty. Do not send zero bytes through a provider JSON decoder.
+        return []
+    profile_identity = archive.raw_profile_identity(raw_id)
     fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
+    sidecar_resolver = archive.retained_sidecar_resolver()
 
     # Work events have their own durable envelope.  They are not provider
     # transcript records, so replay them before dispatching to provider parsers.
@@ -5539,16 +3013,33 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     def normalize_replay(sessions: list[ParsedSession]) -> list[ParsedSession]:
         return [normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp) for session in sessions]
 
-    # polylogue-u19l: an append-kind raw's own record stream may carry no
-    # self-describing identity of its own (a Codex append delta has no
-    # session_meta record) -- recover the identity hint recorded at write
-    # time (``sources/live/batch.py``'s ``_append_payload_for_provider`` /
-    # ``write_raw_payload``'s ``native_id``) and use it as the parser's
-    # fallback_id instead of the bare filename stem. Historical rows
-    # (written before this) have no recorded native_id and fall through to
-    # the unchanged stem-based fallback -- their stored bytes still carry
-    # the synthetic session_meta line that made this unnecessary for them.
-    fallback_id_override = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
+    # SQLite revisions are already immutable blob files. Open them directly:
+    # materializing the entire database as ``bytes`` before SQLite opens it
+    # duplicates every page in Python memory.
+    if provider in {Provider.HERMES, Provider.ANTIGRAVITY}:
+        from polylogue.sources.sqlite_export import looks_like_logical_source_path
+
+        sqlite_path = archive.raw_revision_blob_path(raw_id)
+        if sqlite_path is not None and looks_like_logical_source_path(sqlite_path):
+            return normalize_replay(
+                _parse_sqlite_path(
+                    provider,
+                    sqlite_path,
+                    source_path,
+                    fallback_id=fallback_session_id(source_path, raw_id),
+                    profile_identity=profile_identity,
+                )
+            )
+
+    fallback_id_override = (
+        _append_session_native_id(
+            archive.raw_append_logical_key(raw_id),
+            provider=provider,
+            captured_native_id=archive.raw_native_id(raw_id),
+        )
+        if kind is RawRevisionKind.APPEND
+        else None
+    )
     if provider is Provider.UNKNOWN:
         # Source-only acquisition deliberately retains unknown ZIP members
         # without decoding them.  Recovery is the first lawful point to
@@ -5560,7 +3051,7 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
             _stream_path,
             _stream_kind,
         ):
-            provider, _evidence = _detect_unknown_retained_provider(stream_payload, source_path)
+            provider, _evidence = _resolved_retained_member_provider(archive, raw_id, stream_payload, source_path)
         if is_stream_record_provider(source_path, str(provider)):
             with archive.open_raw_revision_material(raw_id) as (
                 _stream_provider,
@@ -5575,11 +3066,14 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
                         stream_path,
                         fallback_id_override=fallback_id_override,
                         archive_root=archive.archive_root,
+                        sidecar_resolver=sidecar_resolver,
+                        profile_identity=profile_identity,
                     )
                 )
-        _require_bounded_provider(provider, source_path)
+        if provider is Provider.UNKNOWN:
+            raise UnsupportedRetainedJsonShapeError(f"retained input has no recognized provider shape: {source_path}")
         _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
-        payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
+        payload_path = archive.raw_revision_blob_path(raw_id) if provider is Provider.HERMES else None
         return normalize_replay(
             _parse_one(
                 provider,
@@ -5587,6 +3081,8 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
                 source_path,
                 payload_path=payload_path,
                 archive_root=archive.archive_root,
+                sidecar_resolver=sidecar_resolver,
+                profile_identity=profile_identity,
                 fallback_id_override=fallback_id_override,
             )
         )
@@ -5599,10 +3095,12 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
                     stream_path,
                     fallback_id_override=fallback_id_override,
                     archive_root=archive.archive_root,
+                    sidecar_resolver=sidecar_resolver,
+                    profile_identity=profile_identity,
                 )
             )
     _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
-    payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
+    payload_path = archive.raw_revision_blob_path(raw_id) if provider is Provider.HERMES else None
     return normalize_replay(
         _parse_one(
             provider,
@@ -5610,17 +3108,19 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
             source_path,
             payload_path=payload_path,
             archive_root=archive.archive_root,
+            sidecar_resolver=sidecar_resolver,
+            profile_identity=profile_identity,
             fallback_id_override=fallback_id_override,
         )
     )
 
 
-def _retained_codex_state_descriptor(archive: ArchiveStore, raw_id: str) -> tuple[Path, str, str, str] | None:
+def _retained_codex_state_descriptor(archive: RetainedRawRead, raw_id: str) -> tuple[Path, str, str, str] | None:
     """Identify one immutable retained Codex state export without mutating it."""
     provider, blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
     if provider is not Provider.CODEX:
         return None
-    state_path = archive.blob_path_for_hash(blob_hash)
+    state_path = archive.raw_revision_blob_path(raw_id)
     if state_path is None:
         return None
     if not is_declared_logical_export(state_path, source_path):
@@ -5631,967 +3131,20 @@ def _retained_codex_state_descriptor(archive: ArchiveStore, raw_id: str) -> tupl
     return state_path, source_path, state_kind, blob_hash
 
 
-def _replay_retained_codex_state_evidence(archive: ArchiveStore, raw_id: str) -> bool:
-    """Apply a retained, in-scope Codex state export without minting a session.
+class _PreparedReplayInputs:
+    """Lookup view over the existing complete worker-sealed carrier."""
 
-    Source-only acquisition exports named Codex databases before it can
-    inspect their schema.  Once recovery owns the derived tier, only a
-    recognized retained export may become thread evidence.  The parser reads
-    the immutable blob path, never the original mutable state DB.
-    """
-    descriptor = _retained_codex_state_descriptor(archive, raw_id)
-    if descriptor is None:
-        return False
-    state_path, source_path, state_kind, blob_hash = descriptor
-    record_codex_state_snapshot_terminal(
-        archive,
-        raw_id,
-        state_path=state_path,
-        state_kind=state_kind,
-        source_path=source_path,
-        acquired_at_ms=archive.raw_revision_observed_at_ms(raw_id),
-        censused_at_ms=0,
-        blob_hash=blob_hash,
-    )
-    return True
-
-
-#: Lever-A prefetch-buffer budget clamp (estimated tree bytes) -- same
-#: adaptive formula as ``_ParsedSessionSpill``'s hot decoded cache (physical
-#: RAM / 16 within these bounds), but deliberately its own pair of constants:
-#: tests shrink the spill's class constants to force the sqlite/reparse
-#: for_raw fallbacks WITHOUT also starving the prefetcher whose job is to
-#: hide exactly those fallbacks.
-_PREFETCH_BUFFER_MIN_TREE_BYTES: Final[int] = 256 * 1024 * 1024
-_PREFETCH_BUFFER_MAX_TREE_BYTES: Final[int] = 2 * 1024 * 1024 * 1024
-
-#: Minimum replay cohort count for the AUTO ``pipeline_decode`` default to
-#: engage. Below this, the worker's fixed setup cost (thread spawn, two read
-#: connections, a raw_sessions/raw_session_memberships plan scan) cannot be
-#: repaid -- most notably the live raw-materialization path
-#: (``storage/derived/raw.py``), which replays exactly one authority component
-#: per ``backfill_historical_revision_evidence`` call. Explicit
-#: ``pipeline_decode=True``/``False`` bypasses this floor entirely.
-_PIPELINE_DECODE_MIN_COHORTS: Final[int] = 8
-
-
-def _prefetchable_index_path(archive: ArchiveStore) -> Path | None:
-    """The index tier a prefetch worker may open its OWN read handle to.
-
-    ``None`` means "open none". Two shapes resolve that way:
-
-    * the archive holds no index connection at all; and
-    * an owned INACTIVE generation, whose writer holds
-      ``PRAGMA locking_mode=EXCLUSIVE`` for the connection's entire lifetime
-      (``BULK_BUILD_WRITE_CONNECTION_PROFILE`` -- "exactly one writer and zero
-      readers until promoted"). A second connection to that file cannot read
-      it at ANY point during the build, so a ``busy_timeout`` there is not a
-      bridge over a short window; it is a wait that can only expire.
-
-    polylogue-cz17d: the worker opened one anyway, and the first Codex reparse
-    then sat inside ``read_thread_titles`` for the full 30 s busy timeout
-    before degrading to the empty mapping it was always going to get. That
-    wait is not off the critical path -- ``start_phase`` joins the previous
-    phase's worker ON THE WRITER THREAD -- so the whole backfill paid it:
-    30.04 s wall against 0.24 s CPU on an 8-raw owned-generation replay that
-    takes 0.10 s with the prefetcher disabled.
-
-    The lock regime is read from the live connection rather than inferred from
-    the route flag, so a profile change cannot silently re-arm the wait.
-    """
-    conn = archive.index_connection
-    if conn is None:
-        return None
-    # Deliberately unguarded: this is a local pragma read on the writer's own
-    # already-open connection, with no I/O and no lock to contend for. A
-    # failure here means the writer's handle is unusable, which the replay
-    # about to run on it must not absorb as "prefetch a little less".
-    row = conn.execute("PRAGMA main.locking_mode").fetchone()
-    if row is not None and str(row[0]).strip().lower() == "exclusive":
-        return None
-    return archive.index_db_path
-
-
-class _ReplaySpillPrefetcher:
-    """Decode upcoming replay cohorts' parsed sessions off the writer thread.
-
-    polylogue Lever A (parse ∥ apply): on the real full-rebuild receipt,
-    ``spill_load`` -- the replay loop's inline ``_ParsedSessionSpill.for_raw``
-    decode (pickle.loads from the sqlite spill, or a full reparse from raw
-    blob bytes once the bounded spill has evicted/refused an entry) -- was
-    2,830s of strictly SERIAL work interleaved with the single SQLite
-    writer's own apply work, i.e. ``parse_s + apply_s == total`` exactly.
-    This class moves that decode onto ONE background thread that walks the
-    same logical-key order the writer consumes, so the writer's
-    ``for_raw()`` becomes a buffer pop for every raw the prefetcher reached
-    first.
-
-    Correctness model -- a miss is always safe:
-
-    * The prefetcher performs **zero archive writes**. Every index/source
-      write stays on the calling (writer) thread in unchanged order, so a
-      pipelined and a sequential run produce byte-identical archive state.
-    * Decode sources are exactly the two ``for_raw()`` fallbacks, executed
-      off-thread with thread-private handles: a second read connection to
-      the disposable spill sqlite (same file, same rows, same
-      ``pickle.loads``) and :func:`census_parse_worker` (the same pure
-      blob->ParsedSession function the parallel census dispatches; its
-      sequential-vs-parallel equivalence is already pinned by
-      ``test_thread_parse_matches_sequential_archive_state``).
-    * An empty, late, failed, or budget-refused prefetch degrades to the
-      exact unmodified inline decode path -- never a different outcome. A
-      decode error is deliberately NOT buffered so the writer's own inline
-      decode raises the identical exception at the identical point.
-
-    Memory bound: buffered decoded trees are accounted in ESTIMATED TREE
-    BYTES (``estimate_parsed_tree_bytes``, same currency as the spill's hot
-    cache) against an adaptive budget of physical RAM / 16 clamped to
-    [256 MiB, 2 GiB] (identical formula to
-    ``_ParsedSessionSpill._decoded_budget``). The worker blocks before
-    decoding the next item whenever the buffer is at budget, so peak
-    residency is ``budget + one in-flight tree``; items whose raw payload
-    alone exceeds ``budget // 4`` are never prefetched at all (they decode
-    inline, exactly as today), which caps the in-flight tree. Entries the
-    writer skipped (deferred cohorts, retirement) are dropped -- and their
-    budget released -- when the writer enters the next logical key.
-
-    Threading contract: only engaged on a genuinely free-threaded
-    interpreter (``parallel_threads_effective``), matching every other
-    CPU-bound parse thread in this module -- polylogue-7mtf measured GIL
-    parse threads starving the writer instead of helping. The worker reads
-    ``_ParsedSessionSpill._decoded``/``_whales`` dicts concurrently with
-    writer mutation (per-op-atomic dict access; a stale read only causes a
-    harmless duplicate decode) and opens its own profiled source.db read frame
-    (WAL -- snapshot reads never block the writer) plus its own
-    spill-file connection (``busy_timeout`` bridges the journal-less spill's
-    short exclusive write windows).
-    """
-
-    def __init__(
-        self,
-        spill: _ParsedSessionSpill,
-        *,
-        archive_root: Path,
-        index_db_path: Path | None = None,
-        max_buffered_tree_bytes: int | None = None,
-    ) -> None:
-        self._spill = spill
-        self._archive_root = archive_root
-        self._source_db_path = archive_root / "source.db"
-        self._blob_root = archive_root / "blob"
-        # polylogue-sqy57: the worker thread must never touch the writer's
-        # handles (sqlite connections are thread-affine), so it opens its own
-        # read-only index.db snapshot from this path. ``None`` means the
-        # archive holds no index tier at all; the enrichment entry point then
-        # counts the shortfall instead of silently degrading.
-        self._index_db_path = index_db_path
-        if max_buffered_tree_bytes is not None:
-            self._budget = max_buffered_tree_bytes
-        else:
-            physical = effective_physical_memory_bytes() or 0
-            floor = _PREFETCH_BUFFER_MIN_TREE_BYTES
-            ceiling = _PREFETCH_BUFFER_MAX_TREE_BYTES
-            self._budget = max(floor, min(ceiling, physical // 16)) if physical else floor
-        self._lock = threading.Lock()
-        self._wakeup = threading.Condition(self._lock)
-        self._read_frames_lock = threading.Lock()
-        self._read_frames: set[ReadFrame] = set()
-        #: raw_id -> (sessions, payload_bytes, tree_bytes, from_reparse, seq,
-        #: needs_enrichment). ``needs_enrichment`` marks a reparse this worker
-        #: decoded but could NOT enrich, because the provider's enrichment
-        #: reads an index tier this worker holds no handle to; the writer
-        #: applies it on consumption (``_ParsedSessionSpill.for_raw``).
-        self._buffer: dict[str, tuple[list[ParsedSession], int, int, bool, int, bool]] = {}
-        self._buffered_tree_bytes = 0
-        self._key_start_seq: dict[str, int] = {}
-        self._writer_floor_seq = 0
-        self._generation = 0
-        self._closed = False
-        self._thread: threading.Thread | None = None
-        # Stats are worker/writer-shared simple counters; merged into the
-        # caller's stage-timings dict by ``close()`` on the writer thread.
-        # ``hits``/``reparse_hits`` count worker-side decodes (production,
-        # not necessarily consumption -- an entry the writer overtook is
-        # decoded but dropped); ``consumed`` counts writer-side pops that
-        # actually served a replay ``for_raw``, which is the number that
-        # proves the pipeline carried real work off the writer thread.
-        self.hits = 0
-        self.reparse_hits = 0
-        self.consumed = 0
-        self.decode_seconds = 0.0
-
-    def start_phase(self, ordered_keys: Sequence[str], extra_members: dict[str, set[str]]) -> None:
-        """Begin prefetching one replay phase's cohorts, in writer order.
-
-        Called on the writer thread. ``ordered_keys`` is the exact iteration
-        order of the writer's upcoming loop; ``extra_members`` supplements
-        the durable key->raw_ids mapping with in-memory census knowledge
-        (``provisional_full_raw_ids`` / ``membership_candidates``) so raws
-        whose durable binding sits in an uncommitted batch window are still
-        reachable. Any previous phase's worker is stopped and its unconsumed
-        buffer dropped first.
-        """
-        previous = self._thread
-        with self._wakeup:
-            self._generation += 1
-            generation = self._generation
-            self._drop_buffer_locked()
-            self._key_start_seq = {}
-            self._writer_floor_seq = 0
-            self._wakeup.notify_all()
-        if previous is not None:
-            self._cancel_read_frames()
-            previous.join()
-        if self._closed:
-            return
-        keys = tuple(ordered_keys)
-        members_snapshot = {key: frozenset(raw_ids) for key, raw_ids in extra_members.items()}
-        worker_context = contextvars.copy_context()
-        worker = threading.Thread(
-            target=worker_context.run,
-            args=(self._run, generation, keys, members_snapshot),
-            name="replay-spill-prefetch",
-            daemon=True,
-        )
-        self._thread = worker
-        worker.start()
-
-    def pop(self, raw_id: str) -> tuple[list[ParsedSession], int, bool, bool] | None:
-        """Consume one prefetched decode, releasing its budget share.
-
-        The fourth element is ``needs_enrichment``: True when the caller must
-        still run :func:`_replay_safe_enrich_sessions` on its own handles
-        before using the tree (see ``_decode``).
-        """
-        with self._wakeup:
-            entry = self._buffer.pop(raw_id, None)
-            if entry is None:
-                return None
-            sessions, payload_bytes, tree_bytes, from_reparse, _seq, needs_enrichment = entry
-            self._buffered_tree_bytes -= tree_bytes
-            self.consumed += 1
-            self._wakeup.notify_all()
-            return sessions, payload_bytes, from_reparse, needs_enrichment
-
-    def enter_key(self, logical_key: str) -> None:
-        """Writer progress signal: drop buffered entries from earlier keys."""
-        with self._wakeup:
-            floor = self._key_start_seq.get(logical_key)
-            if floor is None:
-                return
-            self._writer_floor_seq = max(self._writer_floor_seq, floor)
-            stale = [raw_id for raw_id, entry in self._buffer.items() if entry[4] < floor]
-            for raw_id in stale:
-                _sessions, _payload, tree_bytes, _from_reparse, _seq, _needs = self._buffer.pop(raw_id)
-                self._buffered_tree_bytes -= tree_bytes
-            if stale:
-                self._wakeup.notify_all()
-
-    def close(self) -> dict[str, float]:
-        """Stop the worker, drop the buffer, and return merge-able stats."""
-        with self._wakeup:
-            self._closed = True
-            self._generation += 1
-            self._drop_buffer_locked()
-            self._wakeup.notify_all()
-        self._cancel_read_frames()
-        if self._thread is not None:
-            self._thread.join()
-            self._thread = None
-        stats: dict[str, float] = {}
-        if self.decode_seconds:
-            stats["spill_prefetch.decode_concurrent"] = self.decode_seconds
-        return stats
-
-    def counts(self) -> dict[str, int]:
-        """Return discrete prefetch work counts separately from durations."""
-        if not (self.hits or self.reparse_hits or self.consumed):
-            return {}
-        return {
-            "spill_prefetch.hits": self.hits,
-            "spill_prefetch.reparse_hits": self.reparse_hits,
-            "spill_prefetch.consumed": self.consumed,
-        }
-
-    def _drop_buffer_locked(self) -> None:
-        self._buffer.clear()
-        self._buffered_tree_bytes = 0
-
-    def _register_read_frame(self, frame: ReadFrame, generation: int) -> bool:
-        """Track a worker-owned archive read so phase changes can interrupt it."""
-        with self._read_frames_lock:
-            with self._lock:
-                current = not self._closed and generation == self._generation
-            if current:
-                self._read_frames.add(frame)
-                return True
-        frame.cancel()
-        return False
-
-    def _unregister_read_frame(self, frame: ReadFrame) -> None:
-        with self._read_frames_lock:
-            self._read_frames.discard(frame)
-
-    def _cancel_read_frames(self) -> None:
-        with self._read_frames_lock:
-            for frame in tuple(self._read_frames):
-                frame.cancel()
-
-    def _run(self, generation: int, keys: tuple[str, ...], extra_members: dict[str, frozenset[str]]) -> None:
-        try:
-            self._run_inner(generation, keys, extra_members)
-        except Exception:
-            # A prefetch failure must never take down the replay: the writer
-            # keeps decoding inline, identical to prefetching never having
-            # been enabled.
-            with self._lock:
-                expected_stop = self._closed or generation != self._generation
-            if not expected_stop:
-                _LOGGER.warning("replay spill prefetch worker failed; falling back to inline decode", exc_info=True)
-
-    def _run_inner(self, generation: int, keys: tuple[str, ...], extra_members: dict[str, frozenset[str]]) -> None:
-        if not keys:
-            return
-        with ExitStack() as stack:
-            source_frame = stack.enter_context(
-                read_frame(self._source_db_path, tier=ArchiveTier.SOURCE, timeout_class="background-read")
-            )
-            if not self._register_read_frame(source_frame, generation):
-                return
-            stack.callback(self._unregister_read_frame, source_frame)
-            source_conn = source_frame.connection
-            # The optional index handle is worker-private too. A missing or
-            # locked index still degrades enrichment exactly as before.
-            index_frame: ReadFrame | None = None
-            index_conn: sqlite3.Connection | None = None
-            if self._index_db_path is not None and self._index_db_path.exists():
-                try:
-                    index_frame = stack.enter_context(
-                        read_frame(
-                            self._index_db_path,
-                            tier=ArchiveTier.INDEX,
-                            timeout_class="background-read",
-                        )
-                    )
-                    if not self._register_read_frame(index_frame, generation):
-                        return
-                    stack.callback(self._unregister_read_frame, index_frame)
-                    index_conn = index_frame.connection
-                except sqlite3.Error:
-                    _LOGGER.warning("replay prefetch could not open a read-only index handle", exc_info=True)
-                    index_frame = None
-                    index_conn = None
-            spill_conn: sqlite3.Connection | None = None
-            try:
-                plan, descriptors = self._build_plan(source_conn, keys, extra_members)
-                if not plan:
-                    return
-                spill_conn = sqlite3.connect(self._spill.path, timeout=30.0)
-                spill_conn.execute("PRAGMA busy_timeout = 30000")
-                for seq, raw_id in plan:
-                    if self._wait_for_budget(generation, seq) is False:
-                        return
-                    with self._lock:
-                        if seq < self._writer_floor_seq or raw_id in self._buffer:
-                            # Already passed by the writer (decoding it now would
-                            # be pure waste) or already buffered.
-                            continue
-                    if raw_id in self._spill._decoded or raw_id in self._spill._whales:
-                        continue
-                    decoded = self._decode(
-                        spill_conn,
-                        source_conn,
-                        index_conn,
-                        raw_id,
-                        descriptors,
-                    )
-                    if decoded is None:
-                        continue
-                    sessions, payload_bytes, from_reparse, needs_enrichment = decoded
-                    tree_bytes = estimate_parsed_tree_bytes(sessions)
-                    with self._wakeup:
-                        if self._generation != generation or self._closed:
-                            return
-                        if seq < self._writer_floor_seq:
-                            # The writer already moved past this key while we
-                            # were decoding; buffering it would only pin budget.
-                            continue
-                        self._buffer[raw_id] = (
-                            sessions,
-                            payload_bytes,
-                            tree_bytes,
-                            from_reparse,
-                            seq,
-                            needs_enrichment,
-                        )
-                        self._buffered_tree_bytes += tree_bytes
-            finally:
-                if spill_conn is not None:
-                    spill_conn.close()
-
-    def _wait_for_budget(self, generation: int, seq: int) -> bool:
-        """Block until buffer headroom exists; False means phase over."""
-        with self._wakeup:
-            while True:
-                if self._generation != generation or self._closed:
-                    return False
-                if not self._buffer or self._buffered_tree_bytes < self._budget:
-                    return True
-                if seq < self._writer_floor_seq:
-                    # Writer overtook this position while we were parked;
-                    # skip ahead rather than decode already-passed work.
-                    return True
-                self._wakeup.wait(timeout=1.0)
-
-    def _build_plan(
-        self,
-        source_conn: sqlite3.Connection,
-        keys: tuple[str, ...],
-        extra_members: dict[str, frozenset[str]],
-    ) -> tuple[list[tuple[int, str]], dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]]]:
-        """Resolve (seq, raw_id) decode order plus per-raw parse descriptors.
-
-        Durable membership comes from source.db on this thread's own
-        read-only connection (both mappings are committed before replay
-        begins; retirement-phase additions living in an open batch window
-        are covered by ``extra_members`` instead). Descriptors mirror
-        ``raw_revision_descriptor``'s SELECT exactly (plus ``native_id``,
-        polylogue-6lyh1), minus the writer-side connection affinity.
-        """
-        wanted = set(keys)
-        members: dict[str, list[str]] = {key: [] for key in keys}
-        for table in ("raw_sessions", "raw_session_memberships"):
-            for row in source_conn.execute(
-                f"SELECT logical_source_key, raw_id FROM {table} WHERE logical_source_key IS NOT NULL"
-            ):
-                key = str(row[0])
-                if key in wanted:
-                    members[key].append(str(row[1]))
-        for key, extra in extra_members.items():
-            if key in wanted:
-                members[key].extend(extra)
-        plan: list[tuple[int, str]] = []
-        key_start_seq: dict[str, int] = {}
-        seen: set[str] = set()
-        seq = 0
-        for key in keys:
-            key_start_seq[key] = seq
-            for raw_id in sorted(set(members[key])):
-                if raw_id in seen:
-                    continue
-                seen.add(raw_id)
-                plan.append((seq, raw_id))
-                seq += 1
-            # A key with no members still advances nothing; its start seq
-            # equals the next key's, which is exactly what enter_key needs.
-        with self._lock:
-            self._key_start_seq = key_start_seq
-        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {}
-        planned = [raw_id for _seq, raw_id in plan]
-        for start in range(0, len(planned), 500):
-            chunk = planned[start : start + 500]
-            placeholders = ",".join("?" for _ in chunk)
-            for row in source_conn.execute(
-                "SELECT raw_id, origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind, "
-                "blob_size, native_id "
-                f"FROM raw_sessions WHERE raw_id IN ({placeholders})",
-                chunk,
-            ):
-                provider = provider_from_origin(Origin.from_string(str(row[1])), family_hint=row[2])
-                kind = RawRevisionKind(str(row[5]))
-                # polylogue-6lyh1: mirror ``census_parse_worker``'s fallback-id
-                # contract exactly -- only an APPEND raw's recovered native_id
-                # is ever used as a fallback identity; see that function's
-                # docstring for why this must match the sequential path.
-                raw_native_id_value = row[7]
-                native_id = (
-                    str(raw_native_id_value)
-                    if kind is RawRevisionKind.APPEND
-                    and isinstance(raw_native_id_value, str)
-                    and raw_native_id_value.strip()
-                    else None
-                )
-                descriptors[str(row[0])] = (provider, str(row[3]), str(row[4]), kind, int(row[6]), native_id)
-        return plan, descriptors
-
-    def _decode(
-        self,
-        spill_conn: sqlite3.Connection,
-        source_conn: sqlite3.Connection,
-        index_conn: sqlite3.Connection | None,
-        raw_id: str,
-        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
-    ) -> tuple[list[ParsedSession], int, bool, bool] | None:
-        started = time.perf_counter()
-        rows = spill_conn.execute(
-            "SELECT parsed, payload_bytes FROM parsed_sessions WHERE raw_id = ? ORDER BY logical_key", (raw_id,)
-        ).fetchall()
-        if rows:
-            sessions = _normalize_retained_parse_sessions(
-                source_conn,
-                raw_id,
-                [cast(ParsedSession, pickle.loads(bytes(row[0]))) for row in rows],
-            )
-            self.hits += 1
-            self.decode_seconds += time.perf_counter() - started
-            return sessions, int(rows[0][1]), False, False
-        descriptor = descriptors.get(raw_id)
-        if descriptor is None:
-            return None
-        provider, blob_hash, source_path, kind, payload_bytes, native_id = descriptor
-        if payload_bytes > self._budget // 4:
-            # Oversized decode: leave it to the writer's inline path so one
-            # in-flight tree can never balloon far past the buffer budget.
-            return None
-        _same_raw_id, sessions_or_none, error = census_parse_worker(
-            raw_id,
-            provider.value,
-            blob_hash,
-            source_path,
-            is_stream_record_provider(source_path, str(provider)),
-            str(self._blob_root),
-            str(self._source_db_path),
-            kind.value,
-            native_id,
-        )
-        if error is not None or sessions_or_none is None:
-            # Do not buffer failures: the writer's inline decode raises the
-            # identical error at the identical point in the identical order.
-            return None
-        sessions_or_none = _normalize_retained_parse_sessions(source_conn, raw_id, sessions_or_none)
-        if index_conn is None and _replay_enrichment_reads_index(provider):
-            # This provider's enrichment reads the index tier and this worker
-            # holds no handle to it (``_prefetchable_index_path`` refuses one
-            # against an EXCLUSIVE-locked owned generation). Enriching here
-            # against ``index_conn=None`` would bake in the content-heuristic
-            # fallback and diverge from what the writer -- which DOES hold a
-            # readable index connection -- produces inline for the same raw.
-            # Hand the decoded tree over unenriched instead: the expensive
-            # parse still happens off the writer thread, and the writer runs
-            # the identical enrichment call at the identical point on pop.
-            self.reparse_hits += 1
-            self.decode_seconds += time.perf_counter() - started
-            return sessions_or_none, payload_bytes, True, True
-        sessions_or_none = _replay_safe_enrich_sessions(
-            provider=provider,
-            sessions=sessions_or_none,
-            index_conn=index_conn,
-            source_conn=source_conn,
-            blob_root=self._blob_root,
-            source_path=source_path,
-        )
-        self.reparse_hits += 1
-        self.decode_seconds += time.perf_counter() - started
-        return sessions_or_none, payload_bytes, True, False
-
-
-class _ParsedSessionSpill:
-    """Bounded parsed-session cache; durable raw bytes remain the replay source.
-
-    A census may span an archive-wide set of raw rows.  Its parser output must
-    not become an archive-wide second materialization.  Entries that do not
-    fit the caller's existing component envelope are deliberately not cached;
-    replay reparses them from durable source evidence.  This trades bounded
-    I/O for completeness and makes no raw cohort silently disappear.
-    """
-
-    #: Decoded-session RAM layer budget (payload-equivalent bytes). Replay
-    #: consumes a cohort almost immediately after census parses it, so a
-    #: small hot layer turns the common for_raw() into a dict hit instead of
-    #: a pickle.loads round-trip. Bounded independently of the sqlite layer.
-    #: Decoded-session RAM layer budget, accounted in ESTIMATED TREE BYTES
-    #: (polylogue-xb4i estimator) rather than raw payload bytes -- parsed
-    #: trees inflate payload 2-14x, so a payload-denominated budget either
-    #: wastes RAM headroom on text-dense sessions or overshoots on
-    #: structure-dense ones. Adaptive: physical RAM / 16, clamped to
-    #: [256 MiB, 2 GiB]; falls back to the floor when RAM is unknown.
-    _DECODED_CACHE_MIN_TREE_BYTES: Final[int] = 256 * 1024 * 1024
-    _DECODED_CACHE_MAX_TREE_BYTES: Final[int] = 2 * 1024 * 1024 * 1024
-
-    #: Whale-residency ceiling (polylogue-odm1): a single parsed tree that
-    #: exceeds ``_decoded_budget`` above is, by construction, never retained
-    #: by the hot multi-entry cache -- it previously fell all the way through
-    #: to the sqlite spill (pickle.dumps at census, pickle.loads on every
-    #: later ``for_raw()``), or, once the spill's own payload-byte budget was
-    #: also exhausted, was silently dropped and had to be REPARSED FROM RAW
-    #: BYTES on every subsequent ``for_raw()`` call -- the dominant cost on
-    #: whale-bearing rebuild pages (v42 walk receipts: spill_load = 41% of a
-    #: 1440.2s page). A whale is a transient, effectively single-occupant
-    #: resident (the hot cache already handles the "many small/medium trees"
-    #: case), so it can safely claim a much larger fraction of budgeted RAM
-    #: than the multi-entry hot pool without changing the pool's own sizing
-    #: philosophy: same ``effective_physical_memory_bytes()`` input, a wider
-    #: divisor (physical RAM / 4 instead of / 16) and a proportionally wider
-    #: absolute ceiling (8 GiB instead of 2 GiB), floored at whatever
-    #: ``_decoded_budget`` resolved to so the whale tier is never narrower
-    #: than the hot tier it complements. Bypassing the sqlite round trip
-    #: entirely (no pickle.dumps, no pickle.loads) is safe: the durable raw
-    #: bytes remain the replay fallback (``_parse_retained_raw``) if this
-    #: process dies before ``for_raw()`` is called, so nothing is lost, only
-    #: possibly reparsed once more on restart -- identical to today's
-    #: existing crash-recovery contract for the sqlite-backed spill.
-    _WHALE_CACHE_MAX_TREE_BYTES: Final[int] = 8 * 1024 * 1024 * 1024
-
-    def __init__(
-        self,
-        archive_root: Path,
-        *,
-        index_path: Path | None = None,
-        max_cached_payload_bytes: int | None,
-        prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
-    ) -> None:
+    def __init__(self, prepared_inputs: Mapping[str, PreparedRetainedInput]) -> None:
         self._prepared_inputs = prepared_inputs
-        # Place the spill beside the RESOLVED index tier, not the archive
-        # root: on deployments where the .db files are symlinks (e.g. root
-        # SSD config dir -> NVMe data disk), a spill in archive_root would
-        # put census churn on the wear-limited disk the symlinks exist to
-        # protect.
-        resolved_index_path = index_path or ArchiveLocation.resolve(archive_root).active_index_path
-        spill_dir = resolved_index_path.resolve().parent if resolved_index_path.exists() else archive_root
-        fd, name = tempfile.mkstemp(prefix=".revision-census-", suffix=".sqlite", dir=spill_dir)
-        os.close(fd)
-        self.path = Path(name)
-        self._scratch_directories: list[Path] = []
-        self.conn = sqlite3.connect(self.path)
-        # Disposable single-connection cache: durability is meaningless (the
-        # fallback is reparsing durable source evidence), so skip the
-        # journal and every fsync -- the per-add commit previously paid a
-        # synchronous journal cycle per censused raw.
-        self.conn.execute("PRAGMA journal_mode=OFF")
-        self.conn.execute("PRAGMA synchronous=OFF")
-        self.conn.execute("PRAGMA temp_store=MEMORY")
-        # Lever A: a ``_ReplaySpillPrefetcher`` reads this same file on its
-        # own connection while replay may still write here (for_raw fallback
-        # adds, whale-eviction spills). With no journal, both sides rely on
-        # plain file locking; a busy_timeout on each connection bridges the
-        # other side's short exclusive windows instead of failing instantly.
-        self.conn.execute("PRAGMA busy_timeout = 30000")
-        self.conn.execute(
-            """
-            CREATE TABLE parsed_sessions (
-                raw_id TEXT NOT NULL,
-                logical_key TEXT NOT NULL,
-                payload_bytes INTEGER NOT NULL,
-                parsed BLOB NOT NULL,
-                PRIMARY KEY(raw_id, logical_key)
-            ) STRICT
-            """
-        )
-        self.conn.execute("CREATE INDEX parsed_sessions_logical ON parsed_sessions(logical_key, raw_id)")
-        self.max_cached_payload_bytes = max_cached_payload_bytes
-        self.cached_payload_bytes = 0
-        self._decoded: dict[str, tuple[list[ParsedSession], int, int]] = {}
-        self._decoded_tree_bytes = 0
-        physical = effective_physical_memory_bytes() or 0
-        self._decoded_budget = (
-            max(self._DECODED_CACHE_MIN_TREE_BYTES, min(self._DECODED_CACHE_MAX_TREE_BYTES, physical // 16))
-            if physical
-            else self._DECODED_CACHE_MIN_TREE_BYTES
-        )
-        # Whale-residency tier (polylogue-odm1): a bounded, FIFO-evicted
-        # sibling of ``_decoded`` for parsed trees too large for the hot
-        # cache's own budget. See ``_WHALE_CACHE_MAX_TREE_BYTES`` for the
-        # sizing rationale. Its accounting is fully independent of
-        # ``_decoded_tree_bytes`` -- the two tiers never compete for the same
-        # budgeted bytes, so peak RAM is bounded by the sum of both ceilings,
-        # not by either alone.
-        self._whales: dict[str, tuple[list[ParsedSession], int, int]] = {}
-        self._whale_tree_bytes = 0
-        self._whale_budget = (
-            max(self._decoded_budget, min(self._WHALE_CACHE_MAX_TREE_BYTES, physical // 4))
-            if physical
-            else self._decoded_budget
-        )
-        # Receipt-facing counters: preserving the envelope makes a whale-path
-        # result reproducible without retaining any session content or raw id.
-        self._largest_tree_bytes_seen = 0
-        self._whale_retained_count = 0
-        self._whale_rejected_count = 0
-        self._whale_evicted_count = 0
-        #: Optional Lever-A decode prefetcher (attached by
-        #: ``backfill_historical_revision_evidence`` when pipelined decode is
-        #: engaged). ``for_raw`` consults it AFTER the free RAM tiers and
-        #: BEFORE the sqlite/reparse fallbacks it exists to hide.
-        self._prefetcher: _ReplaySpillPrefetcher | None = None
 
-    def attach_prefetcher(self, prefetcher: _ReplaySpillPrefetcher) -> None:
-        self._prefetcher = prefetcher
-
-    def __enter__(self) -> _ParsedSessionSpill:
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        del exc_type, exc, traceback
-        self.conn.close()
-        self.path.unlink(missing_ok=True)
-        for directory in self._scratch_directories:
-            shutil.rmtree(directory, ignore_errors=True)
-
-    def scratch_directory(self, *, prefix: str) -> Path:
-        """Allocate scratch beside this target archive and remove it on close."""
-        directory = Path(tempfile.mkdtemp(prefix=prefix, dir=self.path.parent))
-        self._scratch_directories.append(directory)
-        return directory
-
-    def add(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> None:
-        if self._prepared_inputs is not None:
-            # The sealed carrier remains the replay source for every cohort
-            # lookup; do not duplicate it in the process-local spill.
-            return
-        tree_bytes = estimate_parsed_tree_bytes(sessions)
-        self._largest_tree_bytes_seen = max(self._largest_tree_bytes_seen, tree_bytes)
-        if tree_bytes > self._decoded_budget and self._retain_whale(
-            raw_id, sessions, payload_bytes=payload_bytes, tree_bytes=tree_bytes
-        ):
-            # Size-partitioned spill (polylogue-odm1): a tree too big for the
-            # hot cache but within the whale ceiling bypasses the sqlite
-            # spill entirely -- no pickle.dumps now, no pickle.loads later.
-            # Correctness fallback: ``_retain_whale`` returns False (and
-            # execution falls through to the unchanged sqlite path below)
-            # whenever holding it resident would exceed the whale budget, so
-            # a session too large for EITHER tier still gets spilled exactly
-            # as before.
-            return
-        if self._spill_to_sqlite(raw_id, sessions, payload_bytes=payload_bytes):
-            self._retain_decoded(raw_id, sessions, payload_bytes=payload_bytes, tree_bytes=tree_bytes)
-
-    def _spill_to_sqlite(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> bool:
-        """Pickle ``sessions`` into the sqlite spill, subject to the caller's
-        overall payload-byte budget. Returns whether the write happened.
-        """
-        if self.max_cached_payload_bytes is None or payload_bytes > self.max_cached_payload_bytes:
-            return False
-        if self.cached_payload_bytes + payload_bytes > self.max_cached_payload_bytes:
-            return False
-        with self.conn:
-            self.conn.executemany(
-                "INSERT INTO parsed_sessions(raw_id, logical_key, payload_bytes, parsed) VALUES (?, ?, ?, ?)",
-                (
-                    (
-                        raw_id,
-                        f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}",
-                        payload_bytes,
-                        pickle.dumps(session, protocol=pickle.HIGHEST_PROTOCOL),
-                    )
-                    for session in sessions
-                ),
-            )
-        self.cached_payload_bytes += payload_bytes
-        return True
-
-    def _retain_decoded(
-        self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int, tree_bytes: int
-    ) -> None:
-        if tree_bytes > self._decoded_budget:
-            return
-        while self._decoded and self._decoded_tree_bytes + tree_bytes > self._decoded_budget:
-            oldest_raw = next(iter(self._decoded))
-            _sessions, _payload, evicted_tree = self._decoded.pop(oldest_raw)
-            self._decoded_tree_bytes -= evicted_tree
-        self._decoded[raw_id] = (sessions, payload_bytes, tree_bytes)
-        self._decoded_tree_bytes += tree_bytes
-
-    def _retain_whale(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int, tree_bytes: int) -> bool:
-        """Hold an outsized parsed tree resident, bypassing the sqlite spill.
-
-        Returns ``False`` (retaining nothing) when ``tree_bytes`` alone
-        exceeds ``_whale_budget`` -- the caller must then fall back to the
-        existing spill-or-reparse path rather than blow the memory budget.
-        Otherwise evicts oldest whale entries (FIFO, mirroring
-        ``_retain_decoded``) until the new entry fits and retains it.
-
-        A rare multi-whale page can still exceed the whale budget across
-        several distinct oversized raws even though each individually fits.
-        An entry evicted here to make room was never written to the sqlite
-        spill (that write was deliberately skipped to avoid the pickle
-        cost) -- so, unlike the hot cache's plain eviction, degrade it into
-        the sqlite spill as a courtesy on the way out (best-effort; if the
-        sqlite spill's own payload budget is also exhausted the entry is
-        dropped exactly as today's pre-lever code would drop it, falling
-        back to reparse-from-source on next access -- never worse than the
-        unpatched baseline).
-        """
-        if tree_bytes > self._whale_budget:
-            self._whale_rejected_count += 1
-            return False
-        while self._whales and self._whale_tree_bytes + tree_bytes > self._whale_budget:
-            oldest_raw = next(iter(self._whales))
-            evicted_sessions, evicted_payload, evicted_tree = self._whales.pop(oldest_raw)
-            self._whale_tree_bytes -= evicted_tree
-            self._whale_evicted_count += 1
-            self._spill_to_sqlite(oldest_raw, evicted_sessions, payload_bytes=evicted_payload)
-        self._whales[raw_id] = (sessions, payload_bytes, tree_bytes)
-        self._whale_tree_bytes += tree_bytes
-        self._whale_retained_count += 1
-        return True
-
-    def whale_envelope_report(self) -> dict[str, int]:
-        """Return aggregate whale-path evidence without session identifiers."""
-        return {
-            "decoded_cache_tree_budget_bytes": self._decoded_budget,
-            "whale_cache_tree_budget_bytes": self._whale_budget,
-            "largest_tree_bytes_seen": self._largest_tree_bytes_seen,
-            "whale_retained_count": self._whale_retained_count,
-            "whale_rejected_count": self._whale_rejected_count,
-            "whale_evicted_count": self._whale_evicted_count,
-        }
-
-    def for_raw(self, archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
-        if self._prepared_inputs is not None:
-            outcome = _prepared_retained_outcome(archive, raw_id, self._prepared_inputs)
-            if isinstance(outcome, Exception):
-                raise RetainedPreparationRetryableError(f"parser-refused raw {raw_id} reached replay") from outcome
-            sessions, payload_bytes, _kind = outcome
-            return sessions, payload_bytes
-        decoded = self._decoded.get(raw_id)
-        if decoded is not None:
-            return decoded[0], decoded[1]
-        whale = self._whales.get(raw_id)
-        if whale is not None:
-            return whale[0], whale[1]
-        if self._prefetcher is not None:
-            prefetched = self._prefetcher.pop(raw_id)
-            if prefetched is not None:
-                sessions, payload_bytes, from_reparse, needs_enrichment = prefetched
-                if needs_enrichment:
-                    # The worker decoded this raw but deferred the enrichment
-                    # it could not perform (see ``_ReplaySpillPrefetcher._decode``).
-                    # Run it here, on the writer's own handles, in the exact
-                    # shape the inline reparse fallback below uses -- that is
-                    # what keeps a pipelined run byte-identical to a serial one.
-                    provider, _blob_hash, enrich_source_path, _descriptor_kind, _size = archive.raw_revision_descriptor(
-                        raw_id
-                    )
-                    sessions = _replay_safe_enrich_sessions(
-                        provider=provider,
-                        sessions=sessions,
-                        index_conn=archive.index_connection,
-                        source_conn=archive.source_connection,
-                        blob_root=Path(archive.archive_root) / "blob",
-                        source_path=enrich_source_path,
-                    )
-                if from_reparse:
-                    # Mirror the inline reparse fallback below exactly: a
-                    # freshly reparsed raw is (re)admitted to the cache tiers
-                    # so a later ``for_raw`` for the same raw hits RAM/sqlite
-                    # instead of reparsing a third time. sqlite-sourced
-                    # prefetch entries skip this -- their spill row is still
-                    # present, identical to the inline sqlite-hit path.
-                    self.add(raw_id, sessions, payload_bytes=payload_bytes)
-                return sessions, payload_bytes
-        rows = self.conn.execute(
-            "SELECT parsed, payload_bytes FROM parsed_sessions WHERE raw_id = ? ORDER BY logical_key", (raw_id,)
-        ).fetchall()
-        if rows:
-            return [pickle.loads(bytes(row[0])) for row in rows], int(rows[0][1])
-        sessions, payload_bytes, _kind = _parse_retained_raw(archive, raw_id)
-        provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
-        sessions = _replay_safe_enrich_sessions(
-            provider=provider,
-            sessions=sessions,
-            index_conn=archive.index_connection,
-            source_conn=archive.source_connection,
-            blob_root=Path(archive.archive_root) / "blob",
-            source_path=source_path,
-        )
-        self.add(raw_id, sessions, payload_bytes=payload_bytes)
-        return sessions, payload_bytes
-
-
-def _declared_non_session_artifact_classification(
-    provider: Provider,
-    source_path: str,
-    *,
-    sample: Sequence[object] = (),
-) -> ArtifactClassification | None:
-    """Classify a declared non-session raw revision before session admission.
-
-    polylogue-b508: retained raw revisions include OriginSpec-declared fact
-    artifacts (``agent-*.meta.json`` sidecars, ``workflows/*.json`` run
-    snapshots, ``subagents/workflows/*/journal.jsonl``, ``adopt.json``
-    manifests) admitted as raw authority by ``sources/live/batch.py`` even
-    though their ``parse_policy`` is ``"fact"``, never ``"session"`` --
-    intentional, so the retained bytes stay durable raw evidence. The live
-    daemon's ingest path (``ingest_worker.py``/``batch.py``) already consults
-    this same OriginSpec rule before parsing and refuses to session-parse
-    these; this replay engine is a SEPARATE parse chokepoint that did not,
-    and would silently recreate exactly the ``<agent>.meta`` phantom sessions
-    that fix is meant to eliminate on every future rebuild. A positive JSONL
-    session proof is the one deliberate exception, matching the live route:
-    a source-only outage may retain bytes before it can inspect a path that
-    normally carries fact evidence, and recovery must not make that filename
-    permanently override later decoded session authority.
-
-    polylogue-9ykn: a path-declared rule is only half of the live path's
-    gate. ``pipeline/services/ingest_worker.py`` also runs every sampled
-    JSONL payload through ``archive.artifact_taxonomy.classify_artifact`` --
-    the richer, CONTENT-based classifier that catches a non-conversational
-    record sitting under a watched Claude Code directory with no matching
-    path rule at all (e.g. a third-party analysis index such as
-    ``conversation_relationships.jsonl`` that happens to satisfy the loose
-    per-record shape check). Without the same content check here, replay
-    (this module) would silently resurrect exactly the phantom sessions the live gate
-    now refuses, on every future rebuild -- the two "single chokepoints"
-    disagreeing is the location-as-identity defect recurring at a second
-    layer. ``sample`` -- the first up to 64 decoded records, mirroring the
-    live path's own sample bound (``ingest_worker.py``'s
-    ``_sample_jsonl_payload_with_detail(..., max_samples=64)``) -- is
-    classified only when no path rule already decided the question; an
-    empty ``sample`` (the default) preserves the original path-only
-    behavior exactly, so every existing caller is unaffected until it opts
-    in.
-    """
-    from polylogue.archive.artifact_taxonomy import classify_artifact
-
-    rule = artifact_rule_for_path(provider, source_path)
-    if rule is not None and rule.parse_policy != "session" and not sample:
-        classification = classify_artifact([], provider=provider, source_path=source_path)
-        if not classification.parse_as_session:
-            return classification
-    if not sample:
-        return None
-    from polylogue.core.json import JSONValue
-
-    # ``sample`` records come from ``_iter_json_stream`` (this module's own
-    # decode path, typed ``JsonValue`` -- ``core/query_identity.py``'s
-    # structurally-equivalent but nominally distinct alias) rather than
-    # ``classify_artifact``'s own ``core.json.JSONValue``; both describe the
-    # same decoded-JSON shape ijson/json.loads ever produce, so the cast is
-    # a type-identity bridge, not a real behavior narrowing.
-    classification = classify_artifact(cast(list[JSONValue], list(sample)), provider=provider, source_path=source_path)
-    # ``UNKNOWN`` means the taxonomy cannot decide, not that the payload is
-    # a proved sidecar.  Codex append deltas intentionally omit the
-    # session_meta header and become materializable only after the live
-    # revision layer supplies its recorded native-id hint.  Treating that
-    # undecided partial stream as an artifact skips revision binding and
-    # silently loses its append frontier.  Keep the raw evidence on the
-    # normal parser path, which either uses the hint or records a typed parse
-    # failure; only a positive non-session cohort may bypass session parsing.
-    if classification.kind is ArtifactKind.UNKNOWN:
-        return None
-    return classification if not classification.parse_as_session else None
-
-
-def _detected_provider_for_empty_replay(
-    archive: ArchiveStore,
-    raw_id: str,
-    *,
-    stored_provider: Provider,
-    source_path: str,
-) -> Provider:
-    """Resolve a provider before terminalizing an empty retained replay."""
-    if stored_provider is not Provider.UNKNOWN:
-        return stored_provider
-    with archive.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
-        provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
-    if provider is not Provider.UNKNOWN:
-        return provider
-    return provider
+    def for_raw(self, raw_id: str) -> tuple[Sequence[ParsedSession], int]:
+        prepared = self._prepared_inputs.get(raw_id)
+        if prepared is None:
+            raise RetainedPreparationRetryableError(f"prepared replay carrier is missing for raw {raw_id}")
+        sessions = _sealed_retained_sessions(prepared)
+        if isinstance(sessions, Exception):
+            raise RetainedPreparationRetryableError(f"parser-refused raw {raw_id} reached replay") from sessions
+        return sessions, prepared.payload_bytes
 
 
 LEGACY_PAGE_IMAGE_CENSUS_DETAIL = (
@@ -6599,8 +3152,11 @@ LEGACY_PAGE_IMAGE_CENSUS_DETAIL = (
     "not a logical export, so it produces no session"
 )
 
+#: Declared shapes whose bytes are one session's own record stream.
+_NATIVE_SESSION_STREAM_KINDS = frozenset({ArtifactKind.SESSION_RECORD_STREAM, ArtifactKind.COORDINATOR_SESSION_STREAM})
 
-def _retained_page_image_raw(archive: ArchiveStore, raw_id: str) -> bool:
+
+def _retained_page_image_raw(archive: RetainedRawRead, raw_id: str) -> bool:
     """Return whether this raw's retained bytes are a SQLite page image.
 
     Conservation accounting has to distinguish "parsed to nothing" from
@@ -6609,81 +3165,34 @@ def _retained_page_image_raw(archive: ArchiveStore, raw_id: str) -> bool:
     """
     try:
         _provider, blob_hash, _source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+    except DaemonOperationCancelled:
+        raise
     except Exception:
         return False
-    blob_path = archive.blob_path_for_hash(blob_hash)
+    blob_path = archive.raw_revision_blob_path(raw_id)
     return blob_path is not None and is_sqlite_page_image(blob_path)
 
 
-def _settle_terminal_decode_refusal(
-    archive: ArchiveStore,
-    raw_id: str,
-    error: Exception,
-    *,
-    source_index: int,
-    manage_transaction: bool,
-) -> bool:
-    """Record a retained decode refusal as the terminal outcome live intake records.
-
-    Returns ``False`` when ``error`` is not a decode refusal that earns
-    terminal evidence (``terminal_decode_evidence``). Otherwise the raw
-    carries ``terminal_corrupt_input`` (or the unknown-provider decode
-    kind), is marked parse-failed, and gets a complete current-parser
-    receipt with no identity. The failure artifact is not session-parsable,
-    so ``raw_membership_census_rows`` reports the raw as terminal and later
-    passes settle it without parsing it again.
-    """
-    provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
-    evidence = terminal_decode_evidence(error, provider=provider)
-    if evidence is None:
-        return False
-    conn = archive._ensure_source_conn()
-    with conn if manage_transaction else nullcontext():
-        record_raw_failure_evidence(
-            archive,
-            raw_id,
-            provider=provider,
-            source_path=source_path,
-            source_index=source_index,
-            acquired_at_ms=archive.raw_revision_observed_at_ms(raw_id),
-            kind=evidence,
-            manage_transaction=False,
-        )
-        apply_source_raw_state_update(
-            conn,
-            raw_id,
-            state=_raw_parse_failure_state(provider, error),
-            manage_transaction=False,
-        )
-        record_current_parser_source_census(conn, raw_id)
-    return True
-
-
 def _persist_terminal_non_session_artifact(
-    archive: ArchiveStore,
+    producer: SourceRawOutcomeProducer,
     raw_id: str,
     *,
     provider: Provider,
+    observed_at_ms: int,
     source_path: str,
     source_index: int,
+    stream_classification: ArtifactStreamClassification | None,
     manage_transaction: bool,
 ) -> bool:
-    """Record replay-confirmed source-only artifact authority once.
-
-    Replay reaches this function only after the real parser has consumed the
-    complete stream and produced no conversational session. The terminal
-    receipt therefore follows that one authoritative parse result instead of
-    reclassifying the raw through a second, weaker JSONL shape scan.
-    """
-    if provider is Provider.UNKNOWN:
+    """Persist the complete classification bound to the sealed retained input."""
+    if stream_classification is None or not stream_classification.proved_non_session:
         return False
-    classification = _declared_non_session_artifact_classification(provider, source_path)
-    if classification is None:
-        return False
+    classification = stream_classification.classification
+    if classification.provider is not provider:
+        raise RetainedPreparationRetryableError("prepared artifact classification provider changed")
     origin = origin_from_provider(provider)
-    observed_at_ms = archive.raw_revision_observed_at_ms(raw_id)
-    upsert_raw_artifact(
-        archive._ensure_source_conn(),
+    _upsert_raw_artifact(
+        producer,
         raw_id,
         ArchiveSourceArtifact(
             artifact_id=artifact_observation_id(
@@ -6703,8 +3212,8 @@ def _persist_terminal_non_session_artifact(
         ),
         manage_transaction=manage_transaction,
     )
-    apply_source_raw_state_update(
-        archive._ensure_source_conn(),
+    _apply_source_raw_state_update(
+        producer,
         raw_id,
         state=_raw_parse_success_state(provider),
         manage_transaction=manage_transaction,
@@ -6712,14 +3221,120 @@ def _persist_terminal_non_session_artifact(
     return True
 
 
-def _is_declared_non_session_artifact(
+def _persist_strict_session_refusal_artifact(
+    producer: SourceRawOutcomeProducer,
+    raw_id: str,
+    *,
     provider: Provider,
     source_path: str,
-    *,
-    sample: Sequence[object] = (),
+    source_index: int,
+    observed_at_ms: int,
+    stream_classification: ArtifactStreamClassification | None,
+    manage_transaction: bool,
 ) -> bool:
-    """Return whether this raw revision must not be session-parsed on replay."""
-    return _declared_non_session_artifact_classification(provider, source_path, sample=sample) is not None
+    """Retain positive session evidence when strict schema validation refuses it."""
+    if (
+        stream_classification is None
+        or not stream_classification.classification.parse_as_session
+        or stream_classification.classification.provider is not provider
+    ):
+        return False
+    classification = stream_classification.classification
+    origin = origin_from_provider(provider)
+    _upsert_raw_artifact(
+        producer,
+        raw_id,
+        ArchiveSourceArtifact(
+            artifact_id=artifact_observation_id(
+                source_name=origin.value,
+                source_path=source_path,
+                source_index=source_index,
+            ),
+            origin=origin,
+            source_path=source_path,
+            source_index=source_index,
+            artifact_kind=classification.cohort,
+            classification_reason=f"{classification.reason}; strict schema validation refused",
+            support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+            parse_as_session=True,
+            schema_eligible=True,
+            first_observed_at_ms=observed_at_ms,
+            last_observed_at_ms=observed_at_ms,
+        ),
+        manage_transaction=manage_transaction,
+    )
+    return True
+
+
+def _persist_codex_state_artifact(
+    producer: SourceRawOutcomeProducer,
+    raw_id: str,
+    *,
+    source_path: str,
+    source_index: int,
+    observed_at_ms: int,
+    state_kind: str,
+    manage_transaction: bool,
+) -> None:
+    """Record a validated Codex state database as typed non-session evidence."""
+    _upsert_raw_artifact(
+        producer,
+        raw_id,
+        ArchiveSourceArtifact(
+            artifact_id=artifact_observation_id(
+                source_name=Provider.CODEX.value,
+                source_path=source_path,
+                source_index=source_index,
+            ),
+            origin=origin_from_provider(Provider.CODEX),
+            source_path=source_path,
+            source_index=source_index,
+            artifact_kind=ArtifactKind.BINARY_DATABASE.value,
+            classification_reason=f"validated Codex state database ({state_kind})",
+            support_status=ArtifactSupportStatus.RECOGNIZED_UNPARSED,
+            parse_as_session=False,
+            schema_eligible=False,
+            first_observed_at_ms=observed_at_ms,
+            last_observed_at_ms=observed_at_ms,
+        ),
+        manage_transaction=manage_transaction,
+    )
+
+
+def _persist_legacy_page_image_artifact(
+    producer: SourceRawOutcomeProducer,
+    raw_id: str,
+    *,
+    provider: Provider,
+    source_path: str,
+    source_index: int,
+    observed_at_ms: int,
+    manage_transaction: bool,
+) -> None:
+    """Type an obsolete SQLite page image as recognized non-session evidence."""
+    origin = origin_from_provider(provider)
+    _upsert_raw_artifact(
+        producer,
+        raw_id,
+        ArchiveSourceArtifact(
+            artifact_id=artifact_observation_id(
+                source_name=origin.value,
+                source_path=source_path,
+                source_index=source_index,
+            ),
+            origin=origin,
+            source_path=source_path,
+            source_index=source_index,
+            artifact_kind=ArtifactKind.BINARY_DATABASE.value,
+            classification_reason="legacy SQLite page image",
+            support_status=ArtifactSupportStatus.RECOGNIZED_UNPARSED,
+            parse_as_session=False,
+            schema_eligible=False,
+            first_observed_at_ms=observed_at_ms,
+            last_observed_at_ms=observed_at_ms,
+        ),
+        manage_transaction=manage_transaction,
+    )
 
 
 def _parse_one(
@@ -6727,27 +3342,21 @@ def _parse_one(
     payload: bytes,
     source_path: str,
     *,
+    profile_identity: str | None = None,
     payload_path: Path | None = None,
     archive_root: Path | None = None,
+    sidecar_resolver: SidecarResolver | None,
     fallback_id_override: str | None = None,
 ) -> list[ParsedSession]:
-    # polylogue-9ykn: replay must apply the same positive-conversational-
-    # evidence gate the live ingest paths apply, on top of the path/shape
-    # gate above (``_is_declared_non_session_artifact``, polylogue-6mpy) --
-    # a source can pass that gate (its shape IS a recognized Claude Code
-    # JSONL file with no path rule) yet still parse to zero real messages
-    # (e.g. a file containing only file-history-snapshot records).
-    return require_positive_conversational_evidence(
-        _parse_one_raw(
-            provider,
-            payload,
-            source_path,
-            payload_path=payload_path,
-            archive_root=archive_root,
-            fallback_id_override=fallback_id_override,
-        ),
-        provider=provider,
-        source_path=source_path,
+    return _parse_one_raw(
+        provider,
+        payload,
+        source_path,
+        payload_path=payload_path,
+        archive_root=archive_root,
+        sidecar_resolver=sidecar_resolver,
+        profile_identity=profile_identity,
+        fallback_id_override=fallback_id_override,
     )
 
 
@@ -6756,10 +3365,15 @@ def _parse_one_raw(
     payload: bytes,
     source_path: str,
     *,
+    profile_identity: str | None = None,
     payload_path: Path | None = None,
     archive_root: Path | None = None,
+    sidecar_resolver: SidecarResolver | None,
     fallback_id_override: str | None = None,
 ) -> list[ParsedSession]:
+    if provider is Provider.HERMES and profile_identity is None:
+        raise MissingProfileIdentityError("retained Hermes input has no captured profile identity receipt")
+
     if provider is Provider.ANTIGRAVITY and Path(source_path).suffix.lower() == ".pb":
         trajectory_path = Path(source_path)
         root = trajectory_path.parent.parent
@@ -6793,9 +3407,9 @@ def _parse_one_raw(
                 "Antigravity raw replay did not reproduce exactly one requested trajectory "
                 f"{cascade_id!r} from {source_path}"
             )
-        return sessions
+        return admit_parsed_sessions_for_publication(sessions, provider=provider, source_path=source_path)
     source_name = Path(source_path).name
-    fallback_id = fallback_id_override or Path(source_path).stem
+    fallback_id = fallback_id_override or fallback_session_id(source_path, source_path)
     if provider is Provider.HERMES and looks_like_logical_source_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
             if not (
@@ -6808,18 +3422,26 @@ def _parse_one_raw(
                 # and stays replayable (polylogue-qjscw).
                 raise RuntimeError(f"retained Hermes SQLite material is not a logical export: {source_path}")
             if hermes_state.looks_like_state_db_path(sqlite_path, immutable=True):
-                return hermes_state.parse_state_db(
-                    sqlite_path,
-                    fallback_id=fallback_id,
-                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
-                    immutable=True,
+                return admit_parsed_sessions_for_publication(
+                    collect_sqlite_sessions(
+                        provider,
+                        sqlite_path,
+                        fallback_id=fallback_id,
+                        profile_identity=profile_identity,
+                    ),
+                    provider=provider,
+                    source_path=source_path,
                 )
             if hermes_verification.looks_like_verification_evidence_db_path(sqlite_path, immutable=True):
-                return hermes_verification.parse_verification_evidence_db(
-                    sqlite_path,
-                    fallback_id=fallback_id,
-                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
-                    immutable=True,
+                return admit_parsed_sessions_for_publication(
+                    hermes_verification.parse_verification_evidence_db(
+                        sqlite_path,
+                        fallback_id=fallback_id,
+                        profile_identity=profile_identity,
+                        immutable=True,
+                    ),
+                    provider=provider,
+                    source_path=source_path,
                 )
     if provider is Provider.ANTIGRAVITY and looks_like_logical_source_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
@@ -6831,7 +3453,11 @@ def _parse_one_raw(
             if is_sqlite_page_image(sqlite_path):
                 return []
             if antigravity.looks_like_trajectory_db_path(sqlite_path, immutable=True):
-                return list(antigravity.parse_trajectory_db(sqlite_path, fallback_id=fallback_id, immutable=True))
+                return admit_parsed_sessions_for_publication(
+                    collect_sqlite_sessions(provider, sqlite_path, fallback_id=fallback_id),
+                    provider=provider,
+                    source_path=source_path,
+                )
     if looks_like_sqlite_bytes(payload):
         # polylogue-qjscw: a retained SQLite PAGE IMAGE reaching this point has
         # no current parser -- every provider that can replay a database has
@@ -6843,38 +3469,130 @@ def _parse_one_raw(
         # non-session evidence instead: no session, no abort, and a receipt
         # that still names what the material was.
         return []
-    rule = artifact_rule_for_path(provider, source_path)
-    declared_path_session_evidence = False
-    if rule is not None and rule.parse_policy != "session" and is_jsonl_source_path(source_path):
-        from polylogue.archive.raw_payload.decode import jsonl_session_artifact
+    from polylogue.sources.live.batch_support import jsonl_parse_input_of_handle
 
-        declared_path_session_evidence = jsonl_session_artifact(payload, provider=provider) is not None
-    sidecar_resolver = _retained_sidecar_resolver(archive_root)
+    with BytesIO(payload) as input_handle, ExitStack() as input_lifetime:
+        input_is_jsonl = is_jsonl_source_path(source_path)
+        classified_input = (
+            input_lifetime.enter_context(jsonl_parse_input_of_handle(input_handle, check_stop=check_compute_cancelled))
+            if input_is_jsonl
+            else input_handle
+        )
+        classification = classify_artifact_stream(
+            classified_input,
+            provider=provider,
+            source_path=source_path,
+            wire_format="jsonl" if input_is_jsonl else "json",
+            check_stop=check_compute_cancelled,
+        )
+    if classification.proved_non_session:
+        return []
     if is_stream_record_provider(source_path, str(provider)):
         records = _retained_jsonl_records(payload, source_name, source_path)
-        if not declared_path_session_evidence and _is_declared_non_session_artifact(
-            provider, source_path, sample=records[:64]
-        ):
-            return []
         return parse_stream_payload(
             provider,
             records,
             fallback_id,
             source_path=source_path,
+            profile_identity=profile_identity,
             sidecar_resolver=sidecar_resolver,
         )
     records = _retained_jsonl_records(payload, source_name, source_path)
-    if not declared_path_session_evidence and _is_declared_non_session_artifact(
-        provider, source_path, sample=records[:64]
-    ):
-        return []
     return parse_payload(
         provider,
         records,
         fallback_id,
         source_path=source_path,
+        profile_identity=profile_identity,
         sidecar_resolver=sidecar_resolver,
     )
+
+
+def _iter_sqlite_path(
+    provider: Provider,
+    path: Path,
+    source_path: str,
+    store: SqliteMessageStore,
+    *,
+    fallback_id: str,
+    profile_identity: str | None,
+) -> Generator[ParsedSession, None, None]:
+    """Replay logical SQLite material through the preparation owner's sinks."""
+    if provider is Provider.HERMES:
+        if profile_identity is None:
+            raise MissingProfileIdentityError("retained Hermes input has no captured profile identity receipt")
+        if not (is_declared_logical_export(path, source_path) or is_undeclared_logical_export(path, source_path)):
+            raise RuntimeError(f"retained Hermes SQLite material is not a logical export: {source_path}")
+        if hermes_state.looks_like_state_db_path(path, immutable=True):
+            sessions = iter_sqlite_sessions(
+                provider, path, store, fallback_id=fallback_id, profile_identity=profile_identity
+            )
+        elif hermes_verification.looks_like_verification_evidence_db_path(path, immutable=True):
+            sessions = (
+                session
+                for session in hermes_verification.parse_verification_evidence_db(
+                    path,
+                    fallback_id=fallback_id,
+                    profile_identity=profile_identity,
+                    immutable=True,
+                )
+            )
+        else:
+            return
+    elif provider is Provider.ANTIGRAVITY:
+        if is_sqlite_page_image(path) or not antigravity.looks_like_trajectory_db_path(path, immutable=True):
+            return
+        sessions = iter_sqlite_sessions(provider, path, store, fallback_id=fallback_id)
+    else:
+        raise ValueError(f"SQLite replay is not supported for {provider}")
+    with closing(sessions) as selected_sessions:
+        for session in selected_sessions:
+            check_compute_cancelled()
+            if admit_parsed_sessions_for_publication([session], provider=provider, source_path=source_path):
+                yield session
+
+
+def _parse_sqlite_path(
+    provider: Provider,
+    path: Path,
+    source_path: str,
+    *,
+    fallback_id: str,
+    profile_identity: str | None,
+) -> list[ParsedSession]:
+    """Parse a retained SQLite export from its immutable blob path."""
+    if provider is Provider.HERMES:
+        if profile_identity is None:
+            raise MissingProfileIdentityError("retained Hermes input has no captured profile identity receipt")
+        if not (is_declared_logical_export(path, source_path) or is_undeclared_logical_export(path, source_path)):
+            raise RuntimeError(f"retained Hermes SQLite material is not a logical export: {source_path}")
+        if hermes_state.looks_like_state_db_path(path, immutable=True):
+            sessions = collect_sqlite_sessions(
+                provider,
+                path,
+                fallback_id=fallback_id,
+                profile_identity=profile_identity,
+            )
+        elif hermes_verification.looks_like_verification_evidence_db_path(path, immutable=True):
+            sessions = hermes_verification.parse_verification_evidence_db(
+                path,
+                fallback_id=fallback_id,
+                profile_identity=profile_identity,
+                immutable=True,
+            )
+        else:
+            sessions = []
+    elif provider is Provider.ANTIGRAVITY:
+        if is_sqlite_page_image(path):
+            return []
+        sessions = (
+            collect_sqlite_sessions(provider, path, fallback_id=fallback_id)
+            if antigravity.looks_like_trajectory_db_path(path, immutable=True)
+            else []
+        )
+    else:
+        raise ValueError(f"SQLite replay is not supported for {provider}")
+    return admit_parsed_sessions_for_publication(sessions, provider=provider, source_path=source_path)
 
 
 @contextmanager
@@ -6903,43 +3621,24 @@ def _sqlite_payload_path(
         temp_path.unlink(missing_ok=True)
 
 
-def _retained_sidecar_resolver(archive_root: Path | None) -> SidecarResolver | None:
-    """Resolve overflowed tool outputs from retained bytes during replay.
-
-    polylogue-cq1ql: replay reads a retained blob, not the file it came from,
-    so the sidecar join must read the archive too -- ``None`` (no archive root
-    in scope) keeps the routing default, which is acquisition-time filesystem
-    resolution. Every replay entry point that already carries an archive root
-    passes it, so a session replays to the same full text, outcome and
-    ownership after the original tree is gone.
-    """
-    if archive_root is None:
-        return None
-    from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
-
-    return RetainedSidecarResolver(archive_root)
-
-
 def _parse_stream(
     provider: Provider,
     payload: BinaryIO,
     source_path: str,
     *,
+    profile_identity: str | None = None,
     fallback_id_override: str | None = None,
     archive_root: Path | None = None,
+    sidecar_resolver: SidecarResolver | None,
 ) -> list[ParsedSession]:
-    # polylogue-9ykn: see ``_parse_one``'s comment -- the same positive-
-    # conversational-evidence gate applies to the streaming replay path.
-    return require_positive_conversational_evidence(
-        _parse_stream_raw(
-            provider,
-            payload,
-            source_path,
-            fallback_id_override=fallback_id_override,
-            archive_root=archive_root,
-        ),
-        provider=provider,
-        source_path=source_path,
+    return _parse_stream_raw(
+        provider,
+        payload,
+        source_path,
+        fallback_id_override=fallback_id_override,
+        archive_root=archive_root,
+        sidecar_resolver=sidecar_resolver,
+        profile_identity=profile_identity,
     )
 
 
@@ -6948,35 +3647,1508 @@ def _parse_stream_raw(
     payload: BinaryIO,
     source_path: str,
     *,
+    profile_identity: str | None = None,
     fallback_id_override: str | None = None,
     archive_root: Path | None = None,
+    sidecar_resolver: SidecarResolver | None,
 ) -> list[ParsedSession]:
+    if provider is Provider.HERMES and profile_identity is None:
+        raise MissingProfileIdentityError("retained Hermes input has no captured profile identity receipt")
+
     source_name = Path(source_path).name
-    fallback_id = fallback_id_override or Path(source_path).stem
+    fallback_id = fallback_id_override or fallback_session_id(source_path, source_path)
     stream = _retained_jsonl_stream(payload, source_name, source_path)
     return parse_stream_payload(
         provider,
         stream,
         fallback_id,
         source_path=source_path,
-        sidecar_resolver=_retained_sidecar_resolver(archive_root),
+        profile_identity=profile_identity,
+        sidecar_resolver=sidecar_resolver,
     )
 
 
 __all__ = [
-    "RAW_AUTHORITY_PARSER_FINGERPRINT",
+    "raw_authority_parser_fingerprint",
     "RetainedSessionEnricher",
-    "RawRevisionReplayResourceBlockedError",
-    "RebuildDeadlineExceededError",
-    "RevisionBackfillResult",
+    "PreparedRevisionReplayResult",
+    "RetainedRawRetryableFailure",
+    "RetainedReplayOutcome",
     "RevisionCensusResult",
-    "backfill_historical_revision_evidence",
-    "census_historical_revision_evidence",
-    "census_parse_worker",
-    "enrich_sessions_from_archive",
+    "apply_prepared_revision_replay",
+    "apply_prepared_revision_census",
+    "enrich_sessions_from_retained_read",
     "open_retained_session_enricher",
-    "record_resource_blocked_revision_census",
-    "require_current_parser_source_census",
     "uncensused_historical_revision_raw_ids",
     "parse_retained_raw_sessions",
 ]
+
+
+def session_enrichment_evidence_key_from_reader(
+    *,
+    provider: Provider,
+    source_path: str | None,
+    native_id: str,
+    evidence_reader: RetainedEnrichmentRead,
+) -> str | None:
+    """Resolve the same current key through actual ordinary or prepared inputs."""
+    if provider not in _SESSION_EVIDENCE_PROVIDERS or not source_path or not native_id:
+        return None
+    data = _retained_enrichment_sidecar_data(
+        provider=provider,
+        sessions=(),
+        provider_session_ids=[native_id],
+        evidence_reader=evidence_reader,
+        source_path=source_path,
+        captured_zip_coordinate=None,
+    )
+    key = enrichment_evidence_key(provider, data, native_id)
+    if provider is Provider.CLAUDE_CODE:
+        hook_key = evidence_reader.hook_tool_response_evidence_digest(
+            origin=origin_from_provider(provider).value,
+            session_native_ids=tuple(dict.fromkeys((native_id, native_id.split(":", 1)[0]))),
+        )
+        if hook_key is not None:
+            encoded = json.dumps((provider.value, key, "hook_tool_responses", hook_key), separators=(",", ":"))
+            key = hashlib.sha256(encoded.encode("utf-8", "surrogatepass")).hexdigest()
+    return key
+
+
+def _append_session_native_id(
+    logical_key: str | None,
+    *,
+    provider: Provider,
+    captured_native_id: str | None,
+) -> str | None:
+    if logical_key is None:
+        return captured_native_id
+    try:
+        key = canonical_authority_logical_key(logical_key)
+    except ValueError:
+        return captured_native_id
+    origin, _separator, session_native_id = key.partition(":")
+    return session_native_id if origin == origin_from_provider(provider).value else captured_native_id
+
+
+def _sealed_retained_sessions(
+    prepared: PreparedRetainedInput,
+    *,
+    stop: Callable[[], bool] | None = None,
+) -> Sequence[ParsedSession] | Exception:
+    """Read only this creator's actual sealed parser carrier.
+
+    Source descriptor/currency validation belongs to the original parent
+    before admission. Publication consumes the retained carrier without
+    rehydrating Source or reopening an enrichment generation.
+    """
+    if prepared.parser_error is not None:
+        if prepared.retained_zip_membership_unproved:
+            return RetainedZipMembershipUnprovedError(prepared.parser_error)
+        if prepared.missing_profile_identity:
+            return MissingProfileIdentityError(prepared.parser_error)
+        if prepared.unsupported_shape:
+            return UnsupportedRetainedJsonShapeError(prepared.parser_error)
+        return retained_parse_exception(prepared.parser_error, prepared.parser_decode_failure)
+    artifact = prepared.prepared_artifact
+    if artifact is None:
+        raise RetainedPreparationRetryableError(f"prepared retained carrier is missing for raw {prepared.raw_id}")
+    if (
+        artifact.blob_hash != prepared.blob_hash
+        or artifact.error is not None
+        or artifact.captured_profile_key != prepared.captured_profile_key
+    ):
+        raise RetainedPreparationRetryableError(f"prepared retained artifact changed for raw {prepared.raw_id}")
+    if artifact.enrichment_index_path is not None or artifact.enrichment_digest is not None:
+        raise RetainedPreparationRetryableError(
+            f"retained artifact carries an unrelated enrichment owner: {prepared.raw_id}"
+        )
+    try:
+        artifact.verify_files(full=False, stop=stop)
+        return artifact.session_sequence()
+    except DaemonOperationCancelled:
+        raise
+    except (OSError, ValueError) as exc:
+        raise RetainedPreparationRetryableError(
+            f"prepared retained artifact unavailable for raw {prepared.raw_id}"
+        ) from exc
+
+
+def _superseded_full_revision_identity(
+    seal: PreparedIndexMutation,
+    evidence_reader: PreparedSessionSourceRead,
+    raw_id: str,
+    revision_kind: RawRevisionKind,
+    sessions: Sequence[ParsedSession],
+) -> bool:
+    """Whether a quarantined full revision is typed under an identity it no longer parses to.
+
+    Byte-proven revisions keep their byte authority; only an unproven full
+    revision may move, and only when the current parser derives exactly one
+    identity that differs from the stored one.
+    """
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_typed_logical_key
+
+    if revision_kind is not RawRevisionKind.FULL or len(sessions) != 1:
+        return False
+    if evidence_reader.raw_revision_authority(raw_id) == RawRevisionAuthority.BYTE_PROVEN.value:
+        return False
+    stored = prepared_raw_typed_logical_key(seal, raw_id)
+    if stored is None:
+        return False
+    parsed = canonical_authority_logical_key(f"{sessions[0].source_name.value}:{sessions[0].provider_session_id}")
+    try:
+        return canonical_authority_logical_key(stored) != parsed
+    except ValueError:
+        return True
+
+
+def prepare_revision_source_census(
+    seal: PreparedIndexMutation,
+    evidence_reader: PreparedSessionSourceRead,
+    *,
+    selected_raw_ids: Sequence[str],
+    prepared_inputs: Mapping[str, PreparedRetainedInput],
+) -> _RevisionCensusState:
+    """Prepare the canonical parser census before admitting its Source writer.
+
+    The parent owns the original read window and selected Source phase. Every
+    observation uses that same state, including earlier staged refinements.
+    Blob placement precedes this phase; this body never commits or opens an
+    ArchiveStore, and the parent publishes its original captured tape.
+    """
+    from polylogue.sources.codex_state_evidence import prepare_codex_state_source_terminal
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        _PreparedSourceProducer,
+        prepare_raw_state_update,
+        prepared_parser_census_is_current,
+        refine_prepared_raw_origin,
+        replace_raw_membership_census,
+    )
+
+    state = _RevisionCensusState(0, 0, 0, set(), {}, set())
+    producer = _PreparedSourceProducer(seal)
+
+    def stage_current_parser_followup(raw_id: str, source_index: int) -> bool:
+        """Finish Source obligations not represented by a current parser receipt."""
+        if source_index >= 0 and _retained_page_image_raw(evidence_reader, raw_id):
+            provider, _blob_hash, source_path, revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+            observed_at_ms = evidence_reader.raw_revision_observation_order(raw_id)[0]
+            _persist_legacy_page_image_artifact(
+                producer,
+                raw_id,
+                provider=provider,
+                source_path=source_path,
+                source_index=source_index,
+                observed_at_ms=observed_at_ms,
+                manage_transaction=False,
+            )
+            replace_raw_membership_census(
+                seal,
+                raw_id,
+                [],
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                censused_at_ms=0,
+                detail=LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
+                retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
+                revision_authority=None,
+            )
+            return True
+        prepared = prepared_inputs.get(raw_id)
+        artifact = prepared.prepared_artifact if prepared is not None else None
+        schema_validation_required = evidence_reader.raw_schema_eligible(raw_id)
+        # A current non-session parser census alone is insufficient: an
+        # eligible structured document may legitimately yield no sessions.
+        # The provider's exact raw-only path declaration is the independent
+        # evidence that this revision does not require session validation.
+        if schema_validation_required:
+            provider, _blob_hash, source_path, _revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+            schema_validation_required = not path_declaration_refuses_session(provider, source_path)
+        if artifact is None:
+            if schema_validation_required:
+                raise RetainedPreparationRetryableError(
+                    f"current retained parser receipt lacks captured validation evidence for raw {raw_id}"
+                )
+            return False
+        if artifact.codex_state_kind is not None:
+            # Append fragments have no stable artifact-observation coordinate.
+            # Their parser receipt is byte-governed; never mint an artifact at -1.
+            if source_index < 0:
+                return False
+            _provider, _blob_hash, source_path, _revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+            acquired_at_ms = evidence_reader.raw_revision_observation_order(raw_id)[0]
+            _persist_codex_state_artifact(
+                producer,
+                raw_id,
+                source_path=source_path,
+                source_index=source_index,
+                observed_at_ms=acquired_at_ms,
+                state_kind=artifact.codex_state_kind,
+                manage_transaction=False,
+            )
+            prepare_codex_state_source_terminal(
+                seal,
+                raw_id,
+                prepared_state=artifact,
+                state_kind=artifact.codex_state_kind,
+                source_path=source_path,
+                acquired_at_ms=acquired_at_ms,
+                censused_at_ms=0,
+                source_read=evidence_reader,
+            )
+            state.transient_non_session_raw_ids.add(raw_id)
+            return True
+
+        verdict = artifact.validation_verdict
+        staged = False
+        if verdict is None:
+            if schema_validation_required:
+                raise RetainedPreparationRetryableError(
+                    f"current retained parser receipt lacks captured validation evidence for raw {raw_id}"
+                )
+        else:
+            blob_hash = evidence_reader.raw_revision_descriptor(raw_id)[1]
+            if verdict.raw_id != raw_id or verdict.revision_sha256 != blob_hash:
+                raise RetainedPreparationRetryableError(f"retained validation evidence changed for {raw_id}")
+            if evidence_reader.raw_validation_mode(raw_id) != verdict.mode:
+                prepare_raw_state_update(
+                    seal,
+                    raw_id,
+                    state=RawSessionStateUpdate(
+                        validation_status=verdict.status,
+                        validation_error=verdict.first_diagnostic,
+                        validation_drift_count=verdict.drift_count,
+                        validation_provider=artifact.resolved_provider,
+                        validation_mode=verdict.mode,
+                    ),
+                )
+                staged = True
+        return staged
+
+    def apply_outcome(raw_id: str, source_index: int) -> None:
+        check_compute_cancelled()
+        state.scanned += 1
+        state.censused.add(raw_id)
+        if source_index < 0:
+            stage_current_parser_followup(raw_id, source_index)
+            if evidence_reader.raw_has_membership_authority(raw_id):
+                record_current_parser_source_census(seal, raw_id)
+            else:
+                replace_raw_membership_census(
+                    seal,
+                    raw_id,
+                    None,
+                    parser_fingerprint=raw_authority_parser_fingerprint(),
+                    censused_at_ms=0,
+                    detail=BYTE_AUTHORITY_CENSUS_DETAIL,
+                    revision_authority=RawRevisionAuthority.BYTE_PROVEN,
+                )
+            state.quarantined += 1
+            return
+        outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
+        provider, _hash, source_path, revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+        observed_at_ms = evidence_reader.raw_revision_observation_order(raw_id)[0]
+        if isinstance(outcome, Exception):
+            if _persist_terminal_raw_refusal(
+                producer,
+                raw_id,
+                outcome,
+                provider=provider,
+                source_path=source_path,
+                source_index=source_index,
+                observed_at_ms=observed_at_ms,
+                manage_transaction=False,
+            ):
+                # Some legacy page images reach a parser-specific terminal
+                # refusal (for example, a Hermes database without profile
+                # identity) before the ordinary empty-result path. Preserve
+                # both facts: the refusal explains the parser outcome, while
+                # the binary artifact prevents the same SQLite bytes from
+                # being reconsidered as session input on the next census.
+                if _retained_page_image_raw(evidence_reader, raw_id):
+                    _persist_legacy_page_image_artifact(
+                        producer,
+                        raw_id,
+                        provider=provider,
+                        source_path=source_path,
+                        source_index=source_index,
+                        observed_at_ms=observed_at_ms,
+                        manage_transaction=False,
+                    )
+                    replace_raw_membership_census(
+                        seal,
+                        raw_id,
+                        [],
+                        parser_fingerprint=raw_authority_parser_fingerprint(),
+                        censused_at_ms=0,
+                        detail=LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
+                        retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
+                        revision_authority=None,
+                    )
+                record_current_parser_source_census(seal, raw_id)
+            else:
+                # Any other retained parser failure (an unrecognized shape, a
+                # parser exception) is this parser's settled answer for these
+                # immutable bytes: parsing them again can only fail the same
+                # way. It admits no session, so it settles as a non-session
+                # census with typed terminal evidence; a failed census would
+                # be re-censused on every pass without progress. A changed
+                # parser fingerprint re-censuses the raw.
+                _record_raw_failure_evidence(
+                    producer,
+                    raw_id,
+                    provider=provider,
+                    source_path=source_path,
+                    source_index=source_index,
+                    acquired_at_ms=observed_at_ms,
+                    kind=(
+                        RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION
+                        if provider is Provider.UNKNOWN
+                        else RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE
+                    ),
+                    manage_transaction=False,
+                )
+                _apply_source_raw_state_update(
+                    producer,
+                    raw_id,
+                    state=_raw_parse_failure_state(provider, outcome),
+                    manage_transaction=False,
+                )
+                replace_raw_membership_census(
+                    seal,
+                    raw_id,
+                    [],
+                    parser_fingerprint=raw_authority_parser_fingerprint(),
+                    censused_at_ms=0,
+                    detail=str(outcome),
+                    retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
+                    revision_authority=None,
+                )
+            state.quarantined += 1
+            return
+        sessions, _payload_bytes, _parsed_kind = outcome
+        prepared = prepared_inputs.get(raw_id)
+        artifact = prepared.prepared_artifact if prepared is not None else None
+        verdict = artifact.validation_verdict if artifact is not None else None
+        if verdict is not None and artifact is not None:
+            if (
+                verdict.raw_id != raw_id
+                or verdict.revision_sha256 != evidence_reader.raw_revision_descriptor(raw_id)[1]
+            ):
+                raise RetainedPreparationRetryableError(f"retained validation evidence changed for {raw_id}")
+            prepare_raw_state_update(
+                seal,
+                raw_id,
+                state=RawSessionStateUpdate(
+                    validation_status=verdict.status,
+                    validation_error=verdict.first_diagnostic,
+                    validation_drift_count=verdict.drift_count,
+                    validation_provider=artifact.resolved_provider,
+                    validation_mode=verdict.mode,
+                ),
+            )
+        if artifact is not None and artifact.codex_state_kind is not None:
+            _persist_codex_state_artifact(
+                producer,
+                raw_id,
+                source_path=source_path,
+                source_index=source_index,
+                observed_at_ms=observed_at_ms,
+                state_kind=artifact.codex_state_kind,
+                manage_transaction=False,
+            )
+            prepare_codex_state_source_terminal(
+                seal,
+                raw_id,
+                prepared_state=artifact,
+                state_kind=artifact.codex_state_kind,
+                source_path=source_path,
+                acquired_at_ms=observed_at_ms,
+                censused_at_ms=0,
+                source_read=evidence_reader,
+            )
+            # The companion Index projection remains on its actual prepared
+            # owner. A Source receipt alone cannot certify that projection.
+            state.transient_non_session_raw_ids.add(raw_id)
+            return
+        if sessions:
+            parsed_provider = Provider.from_string(sessions[0].source_name)
+            strict_refusal = verdict is not None and verdict.strict_refusal
+            artifact_observed = False
+            if strict_refusal and artifact is not None:
+                artifact_observed = _persist_strict_session_refusal_artifact(
+                    producer,
+                    raw_id,
+                    provider=parsed_provider,
+                    source_path=source_path,
+                    source_index=source_index,
+                    observed_at_ms=observed_at_ms,
+                    stream_classification=artifact.stream_classification(),
+                    manage_transaction=False,
+                )
+            if not artifact_observed:
+                record_session_artifact_observation(
+                    producer,
+                    raw_id=raw_id,
+                    provider=parsed_provider,
+                    source_path=source_path,
+                    source_index=source_index,
+                    observed_at_ms=observed_at_ms,
+                    manage_transaction=False,
+                )
+            if provider is Provider.UNKNOWN:
+                prepare_raw_state_update(seal, raw_id, state=RawSessionStateUpdate(payload_provider=parsed_provider))
+            refine_prepared_raw_origin(seal, raw_id, origin_from_provider(parsed_provider))
+        else:
+            if artifact is None or artifact.resolved_provider is None:
+                raise RetainedPreparationRetryableError(f"empty retained outcome has no captured provider: {raw_id}")
+            resolved_provider = artifact.resolved_provider
+            if provider is Provider.UNKNOWN and resolved_provider is not Provider.UNKNOWN:
+                prepare_raw_state_update(seal, raw_id, state=RawSessionStateUpdate(payload_provider=resolved_provider))
+            if evidence_reader.raw_captured_zip_coordinate(raw_id) is not None:
+                # A ZIP member's provider is its export's, which acquisition of
+                # the decoded container would have stamped as its origin; the
+                # placeholder converges to it. A loose non-session input keeps
+                # the placeholder and records only its detected provider.
+                refine_prepared_raw_origin(seal, raw_id, origin_from_provider(resolved_provider))
+            stream_classification = artifact.stream_classification()
+            if _retained_page_image_raw(evidence_reader, raw_id):
+                _persist_legacy_page_image_artifact(
+                    producer,
+                    raw_id,
+                    provider=resolved_provider,
+                    source_path=source_path,
+                    source_index=source_index,
+                    observed_at_ms=observed_at_ms,
+                    manage_transaction=False,
+                )
+                terminalized = True
+            else:
+                terminalized = _persist_terminal_non_session_artifact(
+                    producer,
+                    raw_id,
+                    provider=resolved_provider,
+                    observed_at_ms=observed_at_ms,
+                    source_path=source_path,
+                    source_index=source_index,
+                    stream_classification=stream_classification,
+                    manage_transaction=False,
+                )
+            # A hook-event carrier is a physical append chain: its full
+            # baseline keeps that binding for the tails grown onto it, so its
+            # census never retires it to membership governance.
+            carrier = (
+                terminalized
+                and stream_classification is not None
+                and stream_classification.classification.kind is ArtifactKind.HOOK_EVENT_CARRIER
+            )
+            if resolved_provider is not Provider.UNKNOWN:
+                byte_proven = evidence_reader.raw_revision_authority(raw_id) == RawRevisionAuthority.BYTE_PROVEN.value
+                if revision_kind in {RawRevisionKind.FULL, RawRevisionKind.APPEND} and (byte_proven or carrier):
+                    if terminalized:
+                        record_prepared_membership_census_receipt(
+                            seal,
+                            raw_id,
+                            parser_fingerprint=raw_authority_parser_fingerprint(),
+                            status="non_session",
+                            member_count=0,
+                            censused_at_ms=0,
+                            detail="",
+                            revision_authority=RawRevisionAuthority.BYTE_PROVEN if byte_proven else None,
+                        )
+                    record_current_parser_source_census(seal, raw_id, parser_sessions=sessions)
+                    if not terminalized:
+                        prepare_raw_state_update(seal, raw_id, state=_raw_parse_success_state(resolved_provider))
+                    return
+                replace_raw_membership_census(
+                    seal,
+                    raw_id,
+                    [],
+                    parser_fingerprint=raw_authority_parser_fingerprint(),
+                    censused_at_ms=0,
+                    detail=LEGACY_PAGE_IMAGE_CENSUS_DETAIL if _retained_page_image_raw(evidence_reader, raw_id) else "",
+                    retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
+                    revision_authority=None,
+                )
+                if not terminalized:
+                    prepare_raw_state_update(seal, raw_id, state=_raw_parse_success_state(resolved_provider))
+                return
+        state.classified += int(len(sessions) == 1)
+        pending = evidence_reader.raw_has_pending_envelope(raw_id)
+        # A grouped acquisition retains native_id=NULL even when its parser
+        # currently yields one session; its original membership governs that
+        # session. A native singleton learns its own key through the census.
+        # A complete session record stream (a Codex rollout, a Claude Code
+        # transcript) is one session's own byte stream by its declared shape,
+        # whatever native_id the acquisition recorded: live intake acquires it
+        # before parsing, and its appends need that byte-revision chain. A
+        # Claude Code transcript under ``projects/<proj>/<uuid>.jsonl`` is
+        # declared as the coordinator session stream.
+        stream = artifact.stream_classification() if artifact is not None else None
+        native_stream = stream is not None and stream.classification.kind in _NATIVE_SESSION_STREAM_KINDS
+        grouped = evidence_reader.raw_native_id(raw_id) is None and not native_stream
+        if (
+            len(sessions) == 1
+            and not grouped
+            and (revision_kind is RawRevisionKind.UNKNOWN or pending)
+            and not evidence_reader.raw_has_membership_authority(raw_id)
+        ):
+            record_current_parser_source_census(seal, raw_id, parser_sessions=sessions)
+        elif revision_kind is RawRevisionKind.UNKNOWN or (
+            pending
+            and (grouped or len(sessions) > 1 or evidence_reader.raw_has_membership_governed_pending_envelope(raw_id))
+        ):
+            replace_raw_membership_census(
+                seal,
+                raw_id,
+                sessions,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                censused_at_ms=0,
+                revision_authority=None,
+            )
+            for session in sessions:
+                logical_key = canonical_authority_logical_key(
+                    f"{session.source_name.value}:{session.provider_session_id}"
+                )
+                state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
+        elif _superseded_full_revision_identity(seal, evidence_reader, raw_id, revision_kind, sessions):
+            # The stored key came from a parser that no longer derives it. A
+            # receipt here could never agree with that key, so every pass would
+            # re-census it unchanged. Retire it to membership governance under
+            # the identity the current parser derives, beside any raw already
+            # typed under that identity, so the cohort is arbitrated jointly.
+            replace_raw_membership_census(
+                seal,
+                raw_id,
+                sessions,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                censused_at_ms=0,
+                detail=SUPERSEDED_IDENTITY_GOVERNANCE_DETAIL,
+                retire_full_revision_governance=True,
+                revision_authority=RawRevisionAuthority.QUARANTINED,
+            )
+            for session in sessions:
+                logical_key = canonical_authority_logical_key(
+                    f"{session.source_name.value}:{session.provider_session_id}"
+                )
+                state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
+        else:
+            record_current_parser_source_census(seal, raw_id, parser_sessions=sessions)
+
+    selection = tuple(selected_raw_ids)
+    while True:
+        rows = evidence_reader.raw_membership_census_rows(selection)
+        for raw_id, source_index, terminal_non_session, _rowid in sorted(
+            rows,
+            key=lambda row: evidence_reader.raw_revision_observation_order(row[0])[1],
+        ):
+            check_compute_cancelled()
+            if raw_id in state.censused:
+                continue
+            if prepared_parser_census_is_current(seal, raw_id):
+                # A current parser receipt may still lack the independent
+                # validation policy or typed non-session Source result needed
+                # before replay. Complete those captured obligations without
+                # re-parsing and risking a conflicting authority update.
+                stage_current_parser_followup(raw_id, source_index)
+                state.censused.add(raw_id)
+                continue
+            prepared = prepared_inputs.get(raw_id)
+            artifact = prepared.prepared_artifact if prepared is not None else None
+            # A captured Codex state still needs its real Source material and
+            # companion projection even if its earlier artifact is terminal.
+            if terminal_non_session and (artifact is None or artifact.codex_state_kind is None):
+                state.scanned += 1
+                state.censused.add(raw_id)
+                record_current_parser_source_census(seal, raw_id)
+            else:
+                apply_outcome(raw_id, source_index)
+        expanded, _keys = evidence_reader.expand_raw_membership_selection(selection)
+        if set(expanded) == set(selection):
+            break
+        if set(expanded).difference(prepared_inputs):
+            # This census can reveal a previously unselected logical sibling.
+            # Publish only this creator's prepared inputs; the resident owner's
+            # next pass enrolls the expanded cohort on a fresh original frame.
+            break
+        selection = expanded
+    return state
+
+
+def prepare_revision_source_membership_conversion(
+    seal: PreparedIndexMutation,
+    evidence_reader: PreparedSessionSourceRead,
+    *,
+    logical_keys: Sequence[str],
+    prepared_inputs: Mapping[str, PreparedRetainedInput],
+    prepared_replay_plans: Mapping[str, tuple[str, ...]],
+) -> int:
+    """Census undecided full-only observations for canonical member comparison.
+
+    Retain the original Raw governance, including already-proved byte claims.
+    The parser census adds member evidence; the existing membership/head
+    classifier still decides admission against the original accepted head.
+    """
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        prepared_convertible_full_revision_raw_ids,
+        replace_raw_membership_census,
+    )
+
+    converted = 0
+    for logical_key in sorted(logical_keys):
+        check_compute_cancelled()
+        if is_work_event_raw_id(logical_key):
+            continue
+        if evidence_reader.pending_raw_envelope_has_membership_authority(logical_key):
+            continue
+        original_members = evidence_reader.raw_membership_logical_raw_ids(logical_key)
+        if logical_key not in prepared_replay_plans and not original_members:
+            raise RetainedPreparationRetryableError(f"prepared byte selection is missing for {logical_key}")
+        cohort_raw_ids = prepared_convertible_full_revision_raw_ids(seal, logical_key)
+        if prepared_replay_plans.get(logical_key) and not any(
+            evidence_reader.raw_revision_authority(raw_id) == RawRevisionAuthority.QUARANTINED.value
+            for raw_id in cohort_raw_ids
+        ):
+            continue
+        for raw_id in cohort_raw_ids:
+            if evidence_reader.raw_has_membership_authority(raw_id):
+                continue
+            check_compute_cancelled()
+            outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
+            if isinstance(outcome, Exception):
+                raise RetainedPreparationRetryableError(
+                    f"non-prefix membership input refused for {raw_id}"
+                ) from outcome
+            sessions, _payload_bytes, _kind = outcome
+            prepared_artifact = prepared_inputs[raw_id].prepared_artifact if raw_id in prepared_inputs else None
+            stream = prepared_artifact.stream_classification() if prepared_artifact is not None else None
+            if not sessions and stream is not None and stream.proved_non_session:
+                # Proven non-session evidence (a hook-event carrier) has no
+                # membership to convert; its byte revision chain governs it.
+                continue
+            if len(sessions) != 1:
+                raise RetainedPreparationRetryableError(f"full revision {raw_id} no longer parses to one session")
+            replace_raw_membership_census(
+                seal,
+                raw_id,
+                sessions,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                censused_at_ms=0,
+                detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+                retire_full_revision_governance=False,
+                revision_authority=RawRevisionAuthority.QUARANTINED,
+            )
+            converted += 1
+    return converted
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedRevisionSourceCensus:
+    """The original Source tape and detached census outcome for one component.
+
+    A census may carry the byte classification staged on top of it in the
+    same tape; ``classification_blob_stats`` are its inputs, which must be
+    unchanged at publication.
+    """
+
+    permit: KnownTierMutationPermit
+    result: RevisionCensusResult
+    classification_result: RevisionCensusResult | None = None
+    classification_blob_stats: tuple[tuple[str, tuple[int, int, int, int, int]], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedRevisionSourceClassification:
+    permit: KnownTierMutationPermit
+    result: RevisionCensusResult
+    blob_stats: tuple[tuple[str, tuple[int, int, int, int, int]], ...]
+
+
+def prepare_revision_source_classification(
+    seal: PreparedIndexMutation,
+    evidence_reader: PreparedSessionSourceRead,
+    *,
+    selected_raw_ids: Sequence[str],
+    logical_keys: Sequence[str],
+    payload_store: BlobStore,
+) -> PreparedRevisionSourceClassification | None:
+    """Prepare byte authority on the same selected Source state as the census."""
+    changed, blob_stats = stage_revision_source_classification(
+        seal, evidence_reader, logical_keys=logical_keys, payload_store=payload_store
+    )
+    if not changed:
+        return None
+    return PreparedRevisionSourceClassification(
+        seal.prepare_source_mutation(),
+        RevisionCensusResult(0, 0, 0, tuple(selected_raw_ids), tuple(logical_keys)),
+        blob_stats,
+    )
+
+
+def stage_revision_source_classification(
+    seal: PreparedIndexMutation,
+    evidence_reader: PreparedSessionSourceRead,
+    *,
+    logical_keys: Sequence[str],
+    payload_store: BlobStore,
+) -> tuple[bool, tuple[tuple[str, tuple[int, int, int, int, int]], ...]]:
+    """Stage byte authority on the seal's selected Source state, census included.
+
+    Returns whether any cohort changed and the byte identities the
+    classification read, which publication requires unchanged.
+    """
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import prepare_raw_revision_byte_classification
+
+    changed = False
+    blob_stats: dict[str, tuple[int, int, int, int, int]] = {}
+    with seal.original_read_snapshot(), seal.source_producer():
+        for logical_key in sorted(logical_keys):
+            check_compute_cancelled()
+            if evidence_reader.pending_raw_envelope_has_membership_authority(
+                logical_key
+            ) or evidence_reader.raw_membership_logical_raw_ids(logical_key):
+                continue
+            key_changed, key_stats = prepare_raw_revision_byte_classification(
+                seal, logical_key, payload_store=payload_store
+            )
+            changed = changed or key_changed
+            for blob_hash, identity in key_stats:
+                previous = blob_stats.get(blob_hash)
+                if previous is not None and previous != identity:
+                    raise PreparedRawClassificationStaleError("classification input changed between logical cohorts")
+                blob_stats[blob_hash] = identity
+    return changed, tuple(blob_stats.items())
+
+
+def apply_prepared_revision_classification(
+    seal: PreparedIndexMutation,
+    prepared: PreparedRevisionSourceClassification,
+    *,
+    payload_store: BlobStore,
+) -> RevisionCensusResult:
+    """Validate the original byte seals, then apply its canonical Source tape."""
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import publish_prepared_revision_source
+
+    _require_classification_inputs_current(prepared.blob_stats, payload_store)
+    publish_prepared_revision_source(seal, prepared.permit)
+    return prepared.result
+
+
+class RetainedReplayScheduleRead(Protocol):
+    """The canonical representative-raw selector on the parent's Source view."""
+
+    def replay_representative_rows(self, keys: Sequence[str]) -> AbstractContextManager[sqlite3.Cursor]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedRetainedReplaySource:
+    permit: KnownTierMutationPermit
+    attachment_artifacts: Mapping[str, PreparedJsonl]
+    membership_plans: Mapping[str, PreparedMembershipReplay]
+    terminal_raw_ids: frozenset[str]
+    original_index_outputs: Mapping[str, tuple[bytes | None, int] | None]
+
+
+def _accepted_marker_request_session_binding(session: object) -> dict[str, object]:
+    """Build the small, complete session identity record used by marker replay."""
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.sources.parsers.base_models import ParsedSession
+
+    if not isinstance(session, ParsedSession):
+        raise TypeError("accepted marker request requires a parsed session")
+    content_hash = str(session_content_hash(session))
+    if session.content_hash is not None and session.content_hash != content_hash:
+        raise RetainedPreparationRetryableError("accepted marker session hash changed during preparation")
+    binding = session.model_dump(
+        mode="json",
+        exclude={"messages", "session_events", "attachments", "unit_accounting"},
+    )
+    binding["content_hash"] = content_hash
+    binding["session_id"] = str(make_session_id(session.source_name, session.provider_session_id))
+    accounting = session.unit_accounting
+    binding["unit_accounting_digest"] = None if accounting is None else accounting.stable_binding_digest()
+    return binding
+
+
+def _prepared_accepted_marker_sessions(
+    *,
+    raw_id: str,
+    artifact: PreparedJsonl,
+    selected_session_ids: set[str],
+    prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
+    marker_write_factory: Callable[[str, ParsedSession], PreparedSessionWrite],
+) -> Generator[tuple[str, PreparedSessionWrite, tuple[object, ...]], None, None]:
+    """Stream canonical marker writes, closing each owned temporary after use."""
+    from polylogue.sources.parsers.base_models import ParsedSession as ParsedSessionModel
+
+    found_binding_digests: dict[str, str] = {}
+    with closing(artifact.iter_sessions()) as parsed_sessions:
+        for session in parsed_sessions:
+            if not isinstance(session, ParsedSessionModel):
+                raise RetainedPreparationRetryableError(
+                    f"accepted marker request has an invalid retained session for {raw_id}"
+                )
+            binding = _accepted_marker_request_session_binding(session)
+            session_id = binding["session_id"]
+            if not isinstance(session_id, str) or session_id not in selected_session_ids:
+                continue
+            binding_digest = hashlib.sha256(
+                json.dumps(binding, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            prior_binding_digest = found_binding_digests.get(session_id)
+            if prior_binding_digest is not None:
+                if prior_binding_digest != binding_digest:
+                    raise RetainedPreparationRetryableError(
+                        f"accepted marker request has conflicting parsed session {raw_id}:{session_id}"
+                    )
+                continue
+            found_binding_digests[session_id] = binding_digest
+            prepared = prepared_writes.get((raw_id, session_id))
+            if prepared is None:
+                prepared = marker_write_factory(raw_id, session)
+                try:
+                    yield session_id, prepared, ()
+                finally:
+                    prepared.close()
+            else:
+                yield session_id, prepared, ()
+    missing = selected_session_ids - found_binding_digests.keys()
+    if missing:
+        missing_session_id = min(missing)
+        raise RetainedPreparationRetryableError(
+            f"accepted marker request lost selected parsed session {raw_id}:{missing_session_id}"
+        )
+
+
+def prepare_retained_replay_source(
+    seal: PreparedIndexMutation,
+    *,
+    prepared_inputs: Mapping[str, PreparedRetainedInput],
+    byte_outcomes: Mapping[str, PreparedRevisionReplayOutcome],
+    membership_plans: Mapping[str, PreparedMembershipReplay],
+    adoptions: Mapping[tuple[str, tuple[str, ...]], PreparedRevisionAdoption],
+    prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
+    marker_write_factory: Callable[[str, ParsedSession], PreparedSessionWrite],
+) -> PreparedRetainedReplaySource:
+    """Stage exact acknowledgements for the original ordered Index outcomes."""
+    from polylogue.markers.preparation import marker_recipe_fingerprint
+    from polylogue.storage.accepted_marker_producer import (
+        accepted_marker_input_is_durable,
+        prepare_accepted_marker_carrier,
+        stage_accepted_marker_carrier,
+    )
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        membership_decisions_for_head_plan,
+        prepare_membership_classification_source,
+        prepare_raw_parse_success,
+        revision_replay_terminal_raw_ids,
+    )
+    from polylogue.storage.sqlite.archive_tiers.session_suppression import _reader_suppresses
+
+    attachment_artifacts: dict[str, PreparedJsonl] = {}
+    selected_membership = dict(membership_plans)
+    terminal_raw_ids: set[str] = set()
+    produced_session_ids: set[str] = set()
+    original_index_outputs: dict[str, tuple[bytes | None, int] | None] = {}
+    decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
+    marker_recipe = marker_recipe_fingerprint()
+    marker_sessions_by_raw: dict[str, set[str]] = {}
+    with seal.original_read_snapshot(), seal.source_producer():
+
+        def request_sessions_for(raw_id: str) -> Callable[[], Iterable[Mapping[str, object]]]:
+            retained = prepared_inputs[raw_id]
+            artifact = retained.prepared_artifact
+            if artifact is None:
+                raise RetainedPreparationRetryableError(
+                    f"accepted marker request has no canonical retained parse for {raw_id}"
+                )
+
+            def sessions() -> Iterator[Mapping[str, object]]:
+                from contextlib import closing
+
+                from polylogue.sources.parsers.base_models import ParsedSession
+
+                with closing(artifact.iter_sessions()) as parsed_sessions:
+                    for session in parsed_sessions:
+                        if not isinstance(session, ParsedSession):
+                            raise RetainedPreparationRetryableError(
+                                f"accepted marker request has an invalid retained session for {raw_id}"
+                            )
+                        binding = _accepted_marker_request_session_binding(session)
+                        # Content and accounting are both bound without
+                        # serializing their disk-backed or spilled arrays.
+                        yield binding
+
+            return sessions
+
+        def accepted_marker_facts(raw_id: str) -> dict[str, str]:
+            retained = prepared_inputs[raw_id]
+            return {
+                "blob_hash": retained.blob_hash,
+                "provider": retained.provider.value,
+                "revision_kind": retained.revision_kind.value,
+                "source_path": retained.source_path,
+                "parser_fingerprint": retained.parser_fingerprint,
+                "marker_recipe": marker_recipe,
+            }
+
+        def retain_accepted_marker_session(raw_id: str, session_id: str) -> None:
+            marker_sessions_by_raw.setdefault(raw_id, set()).add(session_id)
+
+        def stage_accepted_marker_history(raw_id: str, selected_session_ids: set[str]) -> None:
+            artifact = prepared_inputs[raw_id].prepared_artifact
+            verdict = artifact.validation_verdict if artifact is not None else None
+            if verdict is not None and verdict.strict_refusal:
+                return
+            request_sessions = request_sessions_for(raw_id)
+            facts = accepted_marker_facts(raw_id)
+            if accepted_marker_input_is_durable(
+                seal,
+                raw_id=raw_id,
+                request_facts=facts,
+                request_sessions=request_sessions,
+            ):
+                return
+            artifact = prepared_inputs[raw_id].prepared_artifact
+            if artifact is None:
+                raise RetainedPreparationRetryableError(
+                    f"accepted marker request has no canonical retained parse for {raw_id}"
+                )
+
+            with closing(
+                _prepared_accepted_marker_sessions(
+                    raw_id=raw_id,
+                    artifact=artifact,
+                    selected_session_ids=selected_session_ids,
+                    prepared_writes=prepared_writes,
+                    marker_write_factory=marker_write_factory,
+                )
+            ) as marker_sessions:
+                carrier = prepare_accepted_marker_carrier(
+                    raw_id=raw_id,
+                    request_facts=facts,
+                    request_sessions=request_sessions,
+                    prepared_sessions=marker_sessions,
+                )
+                try:
+                    stage_accepted_marker_carrier(seal, carrier)
+                finally:
+                    carrier.close()
+
+        def retain_attachment_carrier(raw_id: str) -> None:
+            if raw_id in attachment_artifacts:
+                return
+            retained = prepared_inputs[raw_id]
+            artifact = retained.prepared_artifact
+            if artifact is None:
+                raise RetainedPreparationRetryableError(f"attachment preparation has no actual carrier for {raw_id}")
+            # The captured artifact survives preparation. Its lazy Source
+            # lookup belongs to the actual publishing writer, not this read
+            # window; a multi-session Raw must select its own session there.
+            attachment_artifacts[raw_id] = artifact
+
+        for logical_key, outcome in byte_outcomes.items():
+            adoption = adoptions[(logical_key, outcome.plan.accepted_raw_ids)]
+            if not adoption.adoptable or outcome.suppressed:
+                continue
+            if adoption.session_id is None:
+                raise RetainedPreparationRetryableError("accepted byte acknowledgement has no session identity")
+            for raw_id in outcome.plan.accepted_raw_ids:
+                retain_accepted_marker_session(raw_id, adoption.session_id)
+                retain_attachment_carrier(raw_id)
+            for raw_id in revision_replay_terminal_raw_ids(outcome.plan):
+                prepare_raw_parse_success(seal, raw_id, provider=prepared_inputs[raw_id].provider)
+                terminal_raw_ids.add(raw_id)
+            produced_session_ids.add(adoption.session_id)
+
+        # A refused cohort's failure state goes last, so another key's
+        # incomplete-cohort correction of a shared raw cannot clear it.
+        for logical_key, plan in sorted(
+            membership_plans.items(),
+            key=lambda item: item[1].head_plan is not None and item[1].head_plan.conflict is not None,
+        ):
+            if plan.head_plan is None:
+                raise RetainedPreparationRetryableError("membership acknowledgement has no original head decision")
+            accepted = plan.classification.accepted_raw_ids
+            skipped = False
+            if accepted and plan.head_plan.yield_to_head_raw_id is None:
+                adoption = adoptions[(logical_key, accepted)]
+                session = plan.sessions[accepted[-1]]
+                session_id = str(make_session_id(session.source_name, session.provider_session_id))
+                skipped = not adoption.adoptable or _reader_suppresses(seal.observer("user"), session_id)
+                if not skipped:
+                    for raw_id in accepted:
+                        retain_accepted_marker_session(
+                            raw_id,
+                            str(
+                                make_session_id(
+                                    plan.sessions[raw_id].source_name, plan.sessions[raw_id].provider_session_id
+                                )
+                            ),
+                        )
+                    retain_attachment_carrier(accepted[-1])
+                    produced_session_ids.add(session_id)
+            decisions = membership_decisions_for_head_plan(plan.classification, plan.head_plan, suppressed=skipped)
+            prepare_membership_classification_source(
+                seal,
+                logical_key,
+                plan.classification,
+                decisions=decisions,
+                decided_at_ms=decided_at_ms,
+                projections=plan.projections,
+                head_plan=plan.head_plan,
+            )
+            selected_membership[logical_key] = dataclasses.replace(
+                plan,
+                source_decisions=decisions,
+                decided_at_ms=decided_at_ms,
+            )
+        for raw_id, session_ids in sorted(marker_sessions_by_raw.items()):
+            stage_accepted_marker_history(raw_id, session_ids)
+        for raw_id, session_id in prepared_writes:
+            if not is_work_event_raw_id(raw_id):
+                continue
+            seal.before_index_input(
+                "sessions",
+                ("session_id",),
+                "SELECT rowid FROM sessions WHERE session_id=?",
+                (session_id,),
+            )
+            with seal.original_rows("index", "SELECT 1 FROM sessions WHERE session_id=?", (session_id,)) as rows:
+                existing_session = rows.fetchone() is not None
+            if not (existing_session or session_id in produced_session_ids) or _reader_suppresses(
+                seal.observer("user"), session_id
+            ):
+                continue
+            prepare_raw_parse_success(seal, raw_id, provider=prepared_inputs[raw_id].provider)
+            terminal_raw_ids.add(raw_id)
+        output_ids = {session_id for _raw_id, session_id in prepared_writes} | produced_session_ids
+        for plan in membership_plans.values():
+            if plan.head_plan is not None and plan.head_plan.existing_head is not None:
+                output_ids.add(str(plan.head_plan.existing_head[0]))
+        for session_id in sorted(output_ids):
+            seal.before_index_input(
+                "sessions",
+                ("content_hash", "message_count"),
+                "SELECT rowid FROM sessions WHERE session_id=?",
+                (session_id,),
+            )
+            with seal.original_rows(
+                "index", "SELECT content_hash,message_count FROM sessions WHERE session_id=?", (session_id,)
+            ) as rows:
+                row = rows.fetchone()
+            original_index_outputs[session_id] = (
+                None if row is None else (None if row[0] is None else bytes(row[0]), int(row[1]))
+            )
+    return PreparedRetainedReplaySource(
+        seal.prepare_source_mutation(),
+        attachment_artifacts,
+        selected_membership,
+        frozenset(terminal_raw_ids),
+        original_index_outputs,
+    )
+
+
+def _required_prepared_write_for(
+    prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
+    raw_id: str,
+    session: ParsedSession,
+) -> PreparedSessionWrite:
+    """Require the original canonical carrier for every selected session write."""
+    session_id = str(make_session_id(session.source_name, session.provider_session_id))
+    prepared = prepared_writes.get((raw_id, session_id))
+    if prepared is None:
+        raise RetainedPreparationRetryableError(f"prepared retained session write is missing for {raw_id}:{session_id}")
+    return prepared
+
+
+@contextmanager
+def _prepared_replay_archive(
+    archive_root: Path,
+    reference_seal: PreparedIndexMutation,
+    selected_index_path: Path,
+) -> Iterator[ArchiveStore]:
+    """Open only the actual Index destination carried by retained preparation."""
+    if selected_index_path.resolve(strict=True) != reference_seal.index_path:
+        raise RetainedPreparationRetryableError("retained replay Index differs from its original preparation")
+    destination = reference_seal.destination
+    if destination is None:
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            if archive.index_db_path.resolve(strict=True) != reference_seal.index_path:
+                raise RetainedPreparationRetryableError("retained replay active Index moved after preparation")
+            yield archive
+        return
+    destination.validate()
+    generation = destination.generation
+    if destination.kind != "owned_inactive" or generation is None:
+        raise RetainedPreparationRetryableError("retained replay lacks its actual owned generation")
+    from polylogue.sources.live.cold_build import active_cold_build_generation
+
+    cold_build = active_cold_build_generation(archive_root)
+    if cold_build is not None and cold_build.generation == generation:
+        with cold_build.open_writer() as archive:
+            yield archive
+            destination.validate()
+        return
+    with ArchiveStore.open_owned_inactive_generation(
+        Path(generation.index_path).parent,
+        generation_id=generation.generation_id,
+        owner_id=generation.owner_id,
+    ) as archive:
+        yield archive
+        destination.validate()
+
+
+def enrich_sessions_from_retained_read(
+    evidence_reader: RetainedEnrichmentRead,
+    provider: Provider,
+    source_path: str | None,
+    sessions: Sequence[ParsedSession],
+    *,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
+    evidence_observer: Callable[[object], None] | None = None,
+) -> list[ParsedSession]:
+    """Collect the shared canonical one-bundle enrichment for explicit readers."""
+    with closing(
+        iter_enriched_sessions_from_retained_read(
+            evidence_reader,
+            provider,
+            source_path,
+            sessions,
+            captured_zip_coordinate=captured_zip_coordinate,
+            evidence_observer=evidence_observer,
+        )
+    ) as enriched:
+        return list(enriched)
+
+
+def iter_enriched_sessions_from_retained_read(
+    evidence_reader: RetainedEnrichmentRead,
+    provider: Provider,
+    source_path: str | None,
+    sessions: Sequence[ParsedSession],
+    *,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
+    evidence_observer: Callable[[object], None] | None = None,
+    provider_session_ids: Iterable[str] | None = None,
+    normalize_session: Callable[[ParsedSession], ParsedSession] | None = None,
+) -> Generator[ParsedSession, None, None]:
+    """Apply actual provider assembly to the same original/selected evidence."""
+    from polylogue.sources.assembly import close_sidecar_data, get_assembly_spec
+
+    if provider is Provider.UNKNOWN and sessions:
+        provider = sessions[0].source_name
+    spec = get_assembly_spec(provider)
+
+    def recover_hook_results(session: ParsedSession) -> ParsedSession:
+        if provider is not Provider.CLAUDE_CODE:
+            return session
+        from polylogue.sources.live.hook_tool_response import (
+            recover_persisted_tool_results,
+            unresolved_persisted_truncations,
+        )
+
+        truncations = unresolved_persisted_truncations(session)
+        native_id = str(session.provider_session_id or "")
+        if not native_id:
+            return session
+        session_native_ids = tuple(dict.fromkeys((native_id, native_id.split(":", 1)[0])))
+        origin = origin_from_provider(provider).value
+        recovered = session
+        if truncations:
+            responses = evidence_reader.hook_tool_responses(
+                origin=origin,
+                # Claude journals subagent calls under the parent native id.
+                session_native_ids=session_native_ids,
+                tool_use_ids=(item.tool_use_id for item in truncations),
+            )
+            recovered = recover_persisted_tool_results(session, responses=responses)
+        hook_key = evidence_reader.hook_tool_response_evidence_digest(
+            origin=origin, session_native_ids=session_native_ids
+        )
+        if hook_key is None:
+            return recovered
+        encoded = json.dumps(
+            (provider.value, recovered.enrichment_evidence_key, "hook_tool_responses", hook_key),
+            separators=(",", ":"),
+        )
+        combined_key = hashlib.sha256(encoded.encode("utf-8", "surrogatepass")).hexdigest()
+        return recovered.model_copy(update={"enrichment_evidence_key": combined_key})
+
+    if spec is None:
+        for session in sessions:
+            check_compute_cancelled()
+            prepared = normalize_session(session) if normalize_session is not None else session
+            yield recover_hook_results(prepared)
+        return
+    sidecar_data = _retained_enrichment_sidecar_data(
+        provider=provider,
+        sessions=sessions,
+        evidence_reader=evidence_reader,
+        source_path=source_path,
+        captured_zip_coordinate=captured_zip_coordinate,
+        provider_session_ids=provider_session_ids,
+    )
+    try:
+        if evidence_observer is not None:
+            evidence_observer(sidecar_data)
+        for session in sessions:
+            check_compute_cancelled()
+            if normalize_session is not None:
+                session = normalize_session(session)
+            if (
+                provider is Provider.CLAUDE_CODE
+                and isinstance(session.messages, SqliteMessageSink)
+                and sidecar_data.get("history_paste_index", {}).get(session.provider_session_id)
+            ):
+                # `_finalize_prepared_cohort` restores the original sealed
+                # message sink without its parser writer. Keep this cloned
+                # sink's owner alive across the yield: the downstream hash and
+                # `PreparedJsonl.from_sessions` copy both consume it before
+                # requesting the next enriched session.
+                from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
+                from polylogue.sources.prepared_message_sink import SqliteMessageStore
+
+                if not isinstance(spec, ClaudeCodeAssemblySpec):
+                    raise RuntimeError("Claude Code provider resolved to a different assembly spec")
+                scratch_root = Path("/realm/tmp/work")
+                with (
+                    tempfile.TemporaryDirectory(
+                        prefix="polylogue-history-paste-output-",
+                        dir=scratch_root if scratch_root.is_dir() else None,
+                    ) as scratch_dir,
+                    closing(SqliteMessageStore(Path(scratch_dir) / "messages.sqlite")) as output_store,
+                ):
+                    enriched = spec.enrich_session(
+                        session,
+                        sidecar_data,
+                        message_sink_factory=output_store.new_sink,
+                    )
+                    yield recover_hook_results(stamp_enrichment_evidence(provider, sidecar_data, enriched))
+            else:
+                enriched = spec.enrich_session(session, sidecar_data)
+                yield recover_hook_results(stamp_enrichment_evidence(provider, sidecar_data, enriched))
+    finally:
+        primary = sys.exception()
+        try:
+            close_sidecar_data(sidecar_data)
+        except BaseException as cleanup:
+            if primary is not None:
+                raise BaseExceptionGroup("retained enrichment and sidecar cleanup failed", [primary, cleanup]) from None
+            raise
+
+
+class RetainedEnrichmentRead(Protocol):
+    """Provider metadata read through the current preparation's actual owner."""
+
+    def retained_state_titles(self, thread_ids: Iterable[str], source_path: str | None) -> Mapping[str, str] | None: ...
+
+    def hook_tool_responses(
+        self,
+        *,
+        origin: str,
+        session_native_ids: Iterable[str],
+        tool_use_ids: Iterable[str],
+    ) -> Mapping[str, Any]: ...
+
+    def hook_tool_response_evidence_digest(self, *, origin: str, session_native_ids: Iterable[str]) -> str | None: ...
+
+    def retained_assembly_evidence(
+        self,
+        sidecar_data: SidecarData,
+        *,
+        provider: Provider,
+        source_path: str,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None,
+    ) -> SidecarData | None: ...
+
+
+class ConnectionRetainedEnrichmentRead:
+    """Borrow explicit existing ordinary evidence capabilities without reopening."""
+
+    def __init__(
+        self,
+        index_connection: sqlite3.Connection | None,
+        source_connection: sqlite3.Connection | None,
+        blob_root: Path | None,
+    ) -> None:
+        self._index = index_connection
+        self._source = source_connection
+        self._blob_root = blob_root
+
+    def retained_state_titles(self, thread_ids: Iterable[str], source_path: str | None) -> Mapping[str, str] | None:
+        if self._index is None:
+            return None
+        from polylogue.sources.codex_state_projection import iter_thread_title_candidates
+        from polylogue.sources.retained_title_index import RetainedTitleIndex
+
+        with closing(iter_thread_title_candidates(self._index, thread_ids=thread_ids, source_path=source_path)) as rows:
+            return RetainedTitleIndex(rows)
+
+    def hook_tool_responses(
+        self,
+        *,
+        origin: str,
+        session_native_ids: Iterable[str],
+        tool_use_ids: Iterable[str],
+    ) -> Mapping[str, Any]:
+        if self._source is None:
+            return {}
+        from polylogue.sources.live.hook_tool_response import read_hook_tool_responses
+
+        return read_hook_tool_responses(
+            self._source,
+            origin=origin,
+            session_native_ids=tuple(session_native_ids),
+            tool_use_ids=tuple(tool_use_ids),
+        )
+
+    def hook_tool_response_evidence_digest(self, *, origin: str, session_native_ids: Iterable[str]) -> str | None:
+        if self._source is None:
+            return None
+        from polylogue.sources.live.hook_tool_response import read_hook_tool_response_evidence_digest
+
+        return read_hook_tool_response_evidence_digest(
+            self._source,
+            origin=origin,
+            session_native_ids=tuple(session_native_ids),
+        )
+
+    def retained_assembly_evidence(
+        self,
+        sidecar_data: SidecarData,
+        *,
+        provider: Provider,
+        source_path: str,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None,
+    ) -> SidecarData | None:
+        if self._source is None or self._blob_root is None:
+            return None
+        from polylogue.sources.retained_assembly import with_retained_assembly_evidence
+        from polylogue.storage.blob_store import BlobStore
+
+        return with_retained_assembly_evidence(
+            sidecar_data,
+            provider=provider,
+            source_read=ConnectionSessionSourceRead(self._source),
+            blob_store=BlobStore(self._blob_root),
+            source_path=source_path,
+            captured_zip_coordinate=captured_zip_coordinate,
+        )
+
+
+class RetainedRawRead(Protocol):
+    """The canonical parser's finite retained Source and Blob read capability."""
+
+    @property
+    def archive_root(self) -> Path: ...
+
+    def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]: ...
+
+    def raw_profile_identity(self, raw_id: str) -> str | None: ...
+
+    def raw_captured_zip_coordinate(self, raw_id: str) -> CapturedZipMemberCoordinate | None: ...
+
+    def raw_revision_file_mtime(self, raw_id: str) -> str | None: ...
+
+    def raw_native_id(self, raw_id: str) -> str | None: ...
+
+    def raw_append_logical_key(self, raw_id: str) -> str | None: ...
+
+    def open_raw_revision_material(
+        self,
+        raw_id: str,
+    ) -> AbstractContextManager[tuple[Provider, BinaryIO, str, RawRevisionKind]]: ...
+
+    def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]: ...
+
+    def open_raw_container_material(self, raw_id: str) -> AbstractContextManager[BinaryIO | None]: ...
+
+    def retained_sidecar_resolver(self) -> SidecarResolver: ...
+
+    def raw_revision_blob_path(self, raw_id: str) -> Path | None: ...
+
+
+class RetainedMembershipRead(RetainedRawRead, Protocol):
+    """Exact selected membership and original accepted-head inputs."""
+
+    def raw_membership_rebuild_raw_ids(self, logical_source_key: str) -> tuple[str, ...]: ...
+
+    def raw_membership_logical_raw_ids(self, logical_source_key: str) -> tuple[str, ...]: ...
+
+    def raw_revision_head_raw_id(self, logical_source_key: str) -> str | None: ...
+
+    def raw_revision_authority(self, raw_id: str) -> str | None: ...
+
+    def raw_revision_observation_order(self, raw_id: str) -> tuple[int, int]: ...
+
+
+class RetainedSessionRead(RetainedRawRead, RetainedEnrichmentRead, BlobPublicationSourceRead, Protocol):
+    """The parser and enrichment inputs required by a prepared cohort callback."""
+
+
+class RetainedArtifactPreparer(Protocol):
+    """Seal a retained artifact while its parent owns the original read window."""
+
+    def __call__(
+        self,
+        evidence_reader: RetainedSessionRead,
+        raw_id: str,
+        *,
+        directory: Path,
+        validation_mode: ValidationMode,
+    ) -> PreparedJsonl: ...
+
+
+def _persist_terminal_raw_refusal(
+    producer: SourceRawOutcomeProducer,
+    raw_id: str,
+    error: Exception,
+    *,
+    provider: Provider,
+    source_path: str,
+    source_index: int,
+    observed_at_ms: int,
+    manage_transaction: bool,
+) -> bool:
+    """Persist one typed retained refusal through the canonical Source hosts.
+
+    The parent retains the original parser receipt and transaction boundary.
+    This body classifies the refusal and writes its artifact/raw state on
+    either actual ordinary Source or the same selected preparation tape.
+    """
+    evidence = (
+        RawFailureEvidenceKind.TERMINAL_RETAINED_ZIP_MEMBERSHIP_UNPROVED
+        if isinstance(error, RetainedZipMembershipUnprovedError)
+        else RawFailureEvidenceKind.TERMINAL_MISSING_PROFILE_IDENTITY
+        if isinstance(error, MissingProfileIdentityError)
+        else terminal_decode_evidence(error, provider=provider)
+    )
+    if evidence is None:
+        return False
+    _record_raw_failure_evidence(
+        producer,
+        raw_id,
+        provider=provider,
+        source_path=source_path,
+        source_index=source_index,
+        acquired_at_ms=observed_at_ms,
+        kind=evidence,
+        manage_transaction=manage_transaction,
+    )
+    _apply_source_raw_state_update(
+        producer,
+        raw_id,
+        state=_raw_parse_failure_state(provider, error),
+        manage_transaction=manage_transaction,
+    )
+    return True
+
+
+class SourceRawOutcomeProducer(SourceArtifactProducer, SourceRawStateProducer, Protocol):
+    """The existing artifact and raw-state producers for one classified input."""
+
+
+if TYPE_CHECKING:
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+    from polylogue.storage.sqlite.reference_seal import KnownTierMutationPermit, PreparedIndexMutation

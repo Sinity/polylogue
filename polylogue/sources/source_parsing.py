@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import tempfile
 import zipfile
 from collections.abc import Callable, Iterable
+from contextlib import closing
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.config import Source
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
+from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.logging import ERROR, WARNING, emit, get_logger
 from polylogue.sources.assembly import SidecarData
 from polylogue.storage.blob_store import BlobStore
@@ -33,10 +38,13 @@ from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
 from .dispatch import ForeignOriginContentError, bound_location_provider, is_jsonl_source_path
 from .emitter import _SessionEmitter
 from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recognize_source_class
-from .parsers import antigravity, hermes_identity, hermes_state, hermes_verification
+from .parsers import antigravity, hermes_state, hermes_verification
 from .parsers.base import ParsedSession, RawSessionData
+from .prepared_message_sink import SqliteMessageStore
+from .retained_sqlite import iter_sqlite_sessions, resident_sqlite_session
+from .source_staging import SourceInputBinding, bind_source_input
 from .source_walk import _setup_source_walk
-from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
+from .sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
 
 logger = get_logger(__name__)
 _cursor.logger = logger
@@ -54,7 +62,7 @@ def has_decoded_session_evidence(path: Path, *, provider: Provider) -> bool:
         document = json_loads(path.read_bytes())
     except (JSONDecodeError, OSError):
         return False
-    return classify_artifact(document, provider=provider, source_path=path).parse_as_session
+    return classify_artifact(document, provider=provider).parse_as_session
 
 
 def _decoded_session_admits_path_rule(
@@ -200,6 +208,7 @@ def iter_antigravity_language_server_sessions(
                     error_detail=str(exc),
                 )
                 continue
+            check_compute_cancelled()
             yield (raw_data, session)
     except antigravity.AntigravityBinaryUnavailableError as exc:
         logger.warning(
@@ -264,7 +273,8 @@ def _antigravity_raw_snapshot(
         require_published,
     )
 
-    blob_hash, blob_size = capture_bound_path(resolved_store, pb_path, Provider.ANTIGRAVITY)
+    capture = capture_bound_path(resolved_store, pb_path, Provider.ANTIGRAVITY)
+    blob_hash, blob_size = capture.blob_hash, capture.blob_size
     receipt_id = publication_receipt_id(resolved_store, blob_hash)
     if blob_hash != source_sha256:
         release_refused_capture(resolved_store, blob_hash, receipt_id)
@@ -274,6 +284,8 @@ def _antigravity_raw_snapshot(
     return RawSessionData(
         raw_bytes=b"",
         source_path=str(pb_path),
+        canonical_source_path=capture.canonical_source_path,
+        captured_file_observation=capture.file_observation,
         source_index=None,
         file_mtime=_cursor._get_file_mtime(pb_path),
         provider_hint=Provider.ANTIGRAVITY,
@@ -302,20 +314,56 @@ def parse_one_source_path(
     blob_root: Path | None = None,
     blob_store: BlobStore | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
+    if is_sqlite_path(Path(path_str)):
+        with bind_source_input(Path(path_str)) as binding:
+            yield from _parse_one_source_path_bound(
+                path_str,
+                source_binding=binding,
+                file_mtime=file_mtime,
+                source_name=source_name,
+                sidecar_data=sidecar_data,
+                capture_raw=capture_raw,
+                cursor_state=cursor_state,
+                blob_root=blob_root,
+                blob_store=blob_store,
+            )
+    else:
+        yield from _parse_one_source_path_bound(
+            path_str,
+            source_binding=None,
+            file_mtime=file_mtime,
+            source_name=source_name,
+            sidecar_data=sidecar_data,
+            capture_raw=capture_raw,
+            cursor_state=cursor_state,
+            blob_root=blob_root,
+            blob_store=blob_store,
+        )
+
+
+def _parse_one_source_path_bound(
+    path_str: str,
+    *,
+    source_binding: SourceInputBinding | None,
+    file_mtime: str | None,
+    source_name: str,
+    sidecar_data: SidecarData,
+    capture_raw: bool,
+    cursor_state: CursorStatePayload | None = None,
+    blob_root: Path | None = None,
+    blob_store: BlobStore | None = None,
+) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Parse a single source file into ``(raw, session)`` tuples.
 
-    Module-level and picklable-by-argument so it can run inside a
-    ``ProcessPoolExecutor`` worker: all parameters are picklable (str, str,
-    str, the dataclass-backed ``SidecarData`` mapping, bool) and the yielded
-    ``RawSessionData``/``ParsedSession`` pydantic models pickle cheaply (pickle
-    round-trip is ~6x cheaper than parsing). Blob writes are content-addressed
-    and atomic (tempfile + ``os.replace`` in ``blob_store.write_from_path``), so
-    concurrent worker blob writes are process-safe.
+    Worker inputs describe source capture and sidecars explicitly; archive
+    handles remain with their creating owner. Blob writes are content-addressed
+    and atomic (tempfile plus replacement in ``blob_store.write_from_path``).
 
     Errors (parse/decode/missing-file) propagate to the caller; the sequential
     iterator records them against ``cursor_state`` and the parallel driver
     catches per-future and increments ``parse_failures``.
     """
+    check_compute_cancelled()
     path = Path(path_str)
     provider_hint = Provider.from_string(source_name)
     if (
@@ -337,7 +385,7 @@ def parse_one_source_path(
 
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
-        snapshot = snapshot_sqlite_to_blob(path, resolved_store)
+        snapshot = snapshot_sqlite_to_blob(path, resolved_store, source_binding=source_binding)
         from polylogue.storage.blob_publication import flush_blob_publications, require_published
 
         flush_blob_publications(resolved_store)
@@ -347,7 +395,9 @@ def parse_one_source_path(
         if capture_raw:
             raw_data = RawSessionData(
                 raw_bytes=b"",
-                source_path=str(original_sqlite_source_path(path) or path),
+                source_path=str(snapshot.source_path),
+                canonical_source_path=str(snapshot.identity_path),
+                captured_profile_key=None,
                 source_index=None,
                 file_mtime=file_mtime,
                 provider_hint=provider_hint,
@@ -355,8 +405,13 @@ def parse_one_source_path(
                 blob_size=snapshot.blob_size,
                 blob_publication_receipt_id=snapshot.blob_publication_receipt_id,
             )
-        for session in antigravity.parse_trajectory_db(retained_path, fallback_id=path.stem, immutable=True):
-            yield (raw_data, session)
+        with (
+            tempfile.TemporaryDirectory(prefix="polylogue-source-sqlite-") as directory,
+            closing(SqliteMessageStore(Path(directory) / "sessions.db")) as store,
+        ):
+            for session in iter_sqlite_sessions(provider_hint, retained_path, store, fallback_id=path.stem):
+                check_compute_cancelled()
+                yield (raw_data, resident_sqlite_session(session))
         return
     source_class = recognize_source_class(provider_hint, path)
     if (
@@ -393,10 +448,11 @@ def parse_one_source_path(
             blob_root=blob_root,
             blob_store=blob_store,
             sidecar_data=sidecar_data,
+            source_binding=source_binding,
         )
         return
 
-    original_source_path = original_sqlite_source_path(path) if is_sqlite_path(path) else None
+    original_source_path = source_binding.source_path if source_binding is not None and source_binding.staged else None
     if (provider_hint is Provider.HERMES or original_source_path is not None) and hermes_state.looks_like_state_db_path(
         path
     ):
@@ -405,7 +461,7 @@ def parse_one_source_path(
 
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
-        snapshot = snapshot_sqlite_to_blob(path, resolved_store)
+        snapshot = snapshot_sqlite_to_blob(path, resolved_store, source_binding=source_binding)
         from polylogue.storage.blob_publication import flush_blob_publications, require_published
 
         flush_blob_publications(resolved_store)
@@ -415,7 +471,10 @@ def parse_one_source_path(
         if capture_raw:
             raw_data = RawSessionData(
                 raw_bytes=b"",
-                source_path=str(original_source_path or path),
+                source_path=str(snapshot.source_path),
+                canonical_source_path=str(snapshot.identity_path),
+                captured_profile_key=snapshot.captured_profile_key,
+                captured_profile_source_path=str(snapshot.captured_profile_source_path),
                 source_index=None,
                 file_mtime=file_mtime,
                 provider_hint=provider_hint,
@@ -423,13 +482,20 @@ def parse_one_source_path(
                 blob_size=snapshot.blob_size,
                 blob_publication_receipt_id=snapshot.blob_publication_receipt_id,
             )
-        for session in hermes_state.parse_state_db(
-            retained_path,
-            fallback_id=path.stem,
-            profile_root=hermes_identity.profile_root_for_artifact(original_source_path or path),
-            immutable=True,
+        with (
+            tempfile.TemporaryDirectory(prefix="polylogue-source-sqlite-") as directory,
+            closing(SqliteMessageStore(Path(directory) / "sessions.db")) as store,
         ):
-            yield (raw_data, session)
+            for session in iter_sqlite_sessions(
+                Provider.HERMES,
+                retained_path,
+                store,
+                fallback_id=path.stem,
+                profile_root=profile_root_for_artifact(snapshot.source_path),
+                profile_identity=snapshot.captured_profile_key,
+            ):
+                check_compute_cancelled()
+                yield (raw_data, resident_sqlite_session(session))
         return
 
     if (
@@ -440,7 +506,7 @@ def parse_one_source_path(
 
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
-        snapshot = snapshot_sqlite_to_blob(path, resolved_store)
+        snapshot = snapshot_sqlite_to_blob(path, resolved_store, source_binding=source_binding)
         from polylogue.storage.blob_publication import flush_blob_publications, require_published
 
         flush_blob_publications(resolved_store)
@@ -450,7 +516,10 @@ def parse_one_source_path(
         if capture_raw:
             raw_data = RawSessionData(
                 raw_bytes=b"",
-                source_path=str(original_source_path or path),
+                source_path=str(snapshot.source_path),
+                canonical_source_path=str(snapshot.identity_path),
+                captured_profile_key=snapshot.captured_profile_key,
+                captured_profile_source_path=str(snapshot.captured_profile_source_path),
                 source_index=None,
                 file_mtime=file_mtime,
                 provider_hint=provider_hint,
@@ -461,9 +530,11 @@ def parse_one_source_path(
         for session in hermes_verification.parse_verification_evidence_db(
             retained_path,
             fallback_id=path.stem,
-            profile_root=hermes_identity.profile_root_for_artifact(original_source_path or path),
+            profile_root=profile_root_for_artifact(snapshot.source_path),
+            profile_identity=snapshot.captured_profile_key,
             immutable=True,
         ):
+            check_compute_cancelled()
             yield (raw_data, session)
         return
 
@@ -488,7 +559,8 @@ def parse_one_source_path(
         # Grouped files are published whole before the emitter sees their
         # records; the boundary capture refuses a foreign record before the
         # flush reserves them.
-        blob_hash, blob_size = capture_bound_path(resolved_store, path, provider_hint)
+        capture = capture_bound_path(resolved_store, path, provider_hint)
+        blob_hash, blob_size = capture.blob_hash, capture.blob_size
         from polylogue.storage.blob_publication import (
             flush_blob_publications,
             publication_receipt_id,
@@ -501,6 +573,12 @@ def parse_one_source_path(
         raw_data = RawSessionData(
             raw_bytes=b"",
             source_path=str(path),
+            canonical_source_path=capture.canonical_source_path,
+            captured_profile_key=capture.captured_profile_key if provider_hint is Provider.HERMES else None,
+            captured_profile_source_path=(
+                capture.captured_profile_source_path if provider_hint is Provider.HERMES else None
+            ),
+            captured_file_observation=capture.file_observation,
             source_index=None,
             file_mtime=file_mtime,
             provider_hint=provider_hint,
@@ -528,6 +606,7 @@ def iter_source_sessions(
         cursor_state=cursor_state,
         capture_raw=False,
     ):
+        check_compute_cancelled()
         yield session
 
 
@@ -562,74 +641,84 @@ def iter_source_sessions_with_raw(
     if walk is None:
         return
 
-    failed_count = 0
-    for path, file_mtime in walk.paths_to_process:
-        if (
-            Provider.from_string(source.name) is Provider.ANTIGRAVITY
-            and path.suffix.lower() == ".pb"
-            and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
-        ):
-            # Only the language-server prepass owns ``.pb`` conversations.
-            # ``classify_source_path`` gives a schema-verified trajectory
-            # ``.db`` the same compatibility role name, and skipping it here
-            # produced no raw record and no session on the configured-source
-            # route at all.
-            continue
-        try:
-            yield from parse_one_source_path(
-                str(path),
-                file_mtime=file_mtime,
-                source_name=source.name,
-                sidecar_data=walk.sidecar_data,
-                capture_raw=capture_raw,
-                cursor_state=cursor_state,
-                blob_root=blob_root,
-                blob_store=blob_store,
-            )
-        except ContentExcisedError as exc:
-            # Deliberately forgotten content: a typed permanent outcome, not a
-            # parse failure to retry.
-            emit(
-                "sources.parse.content_excised",
-                outcome="skipped",
-                reason="content_excised",
-                path=str(path),
-                blob_hash=exc.blob_hash.hex(),
-            )
-        except FileNotFoundError as exc:
-            failed_count += 1
-            logger.warning("File disappeared during processing (TOCTOU race): %s", path)
-            _record_cursor_failure(
-                cursor_state,
-                str(path),
-                f"File not found (may have been deleted): {exc}",
-            )
-        except ForeignOriginContentError as exc:
-            failed_count += 1
-            emit(
-                "sources.acquisition.foreign_origin_refused",
-                level=WARNING,
-                outcome="refused",
-                source_path=str(path),
-                reason=f"{exc.code}: {exc}",
-            )
-            _record_cursor_failure(cursor_state, str(path), f"{exc.code}: {exc}")
-        except (JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
-            failed_count += 1
-            logger.warning("Failed to parse %s: %s", path, exc)
-            _record_cursor_failure(cursor_state, str(path), str(exc))
-        except Exception as exc:
-            failed_count += 1
-            logger.error("Unexpected error processing %s: %s", path, exc)
-            _record_cursor_failure(cursor_state, str(path), str(exc))
+    from polylogue.sources.assembly import close_sidecar_data
 
-    _log_source_iteration_summary(
-        source_name=source.name,
-        total_paths=len(walk.paths),
-        skipped_mtime=walk.skipped_mtime,
-        failed_count=failed_count,
-        failure_kind="parse/read",
-    )
+    try:
+        failed_count = 0
+        for path, file_mtime in walk.paths_to_process:
+            check_compute_cancelled()
+            if (
+                Provider.from_string(source.name) is Provider.ANTIGRAVITY
+                and path.suffix.lower() == ".pb"
+                and antigravity.classify_source_path(path).role
+                is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
+            ):
+                # Only the language-server prepass owns ``.pb`` conversations.
+                # ``classify_source_path`` gives a schema-verified trajectory
+                # ``.db`` the same compatibility role name, and skipping it here
+                # produced no raw record and no session on the configured-source
+                # route at all.
+                continue
+            try:
+                yield from parse_one_source_path(
+                    str(path),
+                    file_mtime=file_mtime,
+                    source_name=source.name,
+                    sidecar_data=walk.sidecar_data,
+                    capture_raw=capture_raw,
+                    cursor_state=cursor_state,
+                    blob_root=blob_root,
+                    blob_store=blob_store,
+                )
+            except ContentExcisedError as exc:
+                # Deliberately forgotten content: a typed permanent outcome, not a
+                # parse failure to retry.
+                emit(
+                    "sources.parse.content_excised",
+                    outcome="skipped",
+                    reason="content_excised",
+                    path=str(path),
+                    blob_hash=exc.blob_hash.hex(),
+                )
+            except FileNotFoundError as exc:
+                failed_count += 1
+                logger.warning("File disappeared during processing (TOCTOU race): %s", path)
+                _record_cursor_failure(
+                    cursor_state,
+                    str(path),
+                    f"File not found (may have been deleted): {exc}",
+                )
+            except ForeignOriginContentError as exc:
+                failed_count += 1
+                emit(
+                    "sources.acquisition.foreign_origin_refused",
+                    level=WARNING,
+                    outcome="refused",
+                    source_path=str(path),
+                    reason=f"{exc.code}: {exc}",
+                )
+                _record_cursor_failure(cursor_state, str(path), f"{exc.code}: {exc}")
+            except (JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
+                failed_count += 1
+                logger.warning("Failed to parse %s: %s", path, exc)
+                _record_cursor_failure(cursor_state, str(path), str(exc))
+            except DaemonOperationCancelled:
+                raise
+            except Exception as exc:
+                failed_count += 1
+                logger.error("Unexpected error processing %s: %s", path, exc)
+                _record_cursor_failure(cursor_state, str(path), str(exc))
+
+        _log_source_iteration_summary(
+            source_name=source.name,
+            total_paths=len(walk.paths),
+            skipped_mtime=walk.skipped_mtime,
+            failed_count=failed_count,
+            failure_kind="parse/read",
+        )
+
+    finally:
+        close_sidecar_data(walk.sidecar_data)
 
 
 __all__ = [

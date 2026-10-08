@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
-from polylogue.sources.decoders import MAX_UNCOMPRESSED_SIZE
 from polylogue.sources.source_parsing import iter_source_sessions
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 
@@ -88,26 +87,21 @@ def test_zip_bomb_compression_ratio_blocked(tmp_path: Path) -> None:
     failed = _failed_files(cursor_state)
     failed_count = _failed_count(cursor_state)
     assert failed_count >= 1, "zip bomb was not recorded as a failed file"
-    if failed:
-        has_expected_error = any(
-            "ratio" in str(f.get("error", "")).lower() or "json" in str(f.get("error", "")).lower() for f in failed
-        )
-        assert has_expected_error or len(failed) == 0
-
-
-def test_zip_oversized_file_limit_constant(tmp_path: Path) -> None:
-    assert MAX_UNCOMPRESSED_SIZE == 10 * 1024 * 1024 * 1024
+    # The refusal is a typed per-file failure naming the archive, not a crash.
+    assert [str(f.get("path")) for f in failed] == [str(zip_path)]
 
 
 def test_zip_path_traversal_filenames_handled(tmp_path: Path) -> None:
     zip_path = tmp_path / "traversal.zip"
-    json_content = b'{"id": "traversal-test", "messages": [{"role": "user", "content": "test"}]}'
+    # A real provider export shape: member names are read as literal ZIP
+    # coordinates and never extracted, so traversal-shaped names cannot escape.
+    json_content = (Path(__file__).parents[1] / "fixtures/origin-capability/chatgpt-export.json").read_bytes()
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("../../../etc/passwd.json", json_content)
         zf.writestr("..\\..\\windows\\system.json", json_content)
         zf.writestr("normal.json", json_content)
 
-    source = Source(name="test", path=tmp_path)
+    source = Source(name="chatgpt", path=tmp_path)
     cursor_state: CursorStatePayload = _empty_cursor_state()
     payloads = list(iter_source_sessions(source, cursor_state=cursor_state))
     assert len(payloads) >= 1

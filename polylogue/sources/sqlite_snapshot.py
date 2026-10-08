@@ -2,26 +2,27 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
-import json
 import os
 import sqlite3
-import tempfile
+import stat
 from collections.abc import Sequence
-from contextlib import closing
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes as _looks_like_sqlite_bytes
+from polylogue.core.provider_identity import captured_hermes_profile_key
+from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
 from polylogue.sources.sqlite_export import (
     MemberExportScope,
+    _write_logical_export_bound,
     logical_export_digest,
-    logical_export_digest_and_size,
     looks_like_logical_export_path,
     read_export_header,
-    write_logical_export,
 )
 from polylogue.storage.blob_store import BlobStore, Heartbeat
 
@@ -30,9 +31,7 @@ if TYPE_CHECKING:
 
 _SQLITE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
-_STAGING_METADATA_SUFFIX = ".polylogue-import"
-_STAGING_METADATA_VERSION = 1
-_HERMES_RAW_ID_DOMAIN = b"polylogue:hermes-profile-raw:v2\0"
+_HERMES_RAW_ID_DOMAIN = b"polylogue:hermes-profile-raw:v3\0"
 _CODEX_STATE_RAW_ID_DOMAIN = b"polylogue:codex-state-raw:v2\0"
 # Re-exported for existing call sites; canonical constant now lives on the
 # shared, provider-agnostic detector in ``core.binary_signatures`` so it is
@@ -48,6 +47,11 @@ class SQLiteBlobSnapshot:
     blob_size: int
     source_revision: str
     source_fingerprint: str
+    source_path: Path
+    identity_path: Path
+    captured_profile_key: str
+    captured_profile_root: Path
+    captured_profile_source_path: Path
     blob_publication_receipt_id: str | None = None
 
 
@@ -75,7 +79,14 @@ def sqlite_snapshot_failure_as_oserror() -> _SQLiteSnapshotFailureAsOSError:
     return _SQLiteSnapshotFailureAsOSError()
 
 
-def hermes_profile_raw_id(source_path: Path | str, source_index: int, logical_revision: str) -> str:
+def hermes_profile_raw_id(
+    source_path: Path | str,
+    source_index: int,
+    logical_revision: str,
+    *,
+    identity_path: Path,
+    profile_identity: str,
+) -> str:
     """Identify one Hermes snapshot by profile, member, and logical content.
 
     Hermes session IDs are only unique within a profile, and the two declared
@@ -88,7 +99,11 @@ def hermes_profile_raw_id(source_path: Path | str, source_index: int, logical_re
     commit, checkpoint or vacuum; keying identity on those bytes mints a new
     raw revision for a source that did not change.
     """
-    normalized = Path(source_path).expanduser().resolve(strict=False)
+    from polylogue.core.provider_identity import profile_root_for_artifact
+
+    normalized = identity_path
+    if captured_hermes_profile_key(profile_root_for_artifact(normalized)) != profile_identity:
+        raise ValueError("Hermes raw identity requires its matching captured profile namespace")
     digest = hashlib.sha256()
     digest.update(_HERMES_RAW_ID_DOMAIN)
     digest.update(str(normalized.parent).encode("utf-8", errors="surrogatepass"))
@@ -101,7 +116,7 @@ def hermes_profile_raw_id(source_path: Path | str, source_index: int, logical_re
     return digest.hexdigest()
 
 
-def codex_state_raw_id(source_path: Path | str, logical_revision: str) -> str:
+def codex_state_raw_id(source_path: Path | str, logical_revision: str, *, identity_path: Path | None = None) -> str:
     """Identify one acquired Codex state-db snapshot by path and logical content.
 
     Codex keeps exactly one instance of each declared database per ``~/.codex``
@@ -110,7 +125,9 @@ def codex_state_raw_id(source_path: Path | str, logical_revision: str) -> str:
     :func:`sqlite_logical_revision`, for the reason given on
     :func:`hermes_profile_raw_id`.
     """
-    normalized_path = str(Path(source_path).expanduser().resolve(strict=False))
+    normalized_path = str(
+        identity_path if identity_path is not None else Path(source_path).expanduser().resolve(strict=False)
+    )
     digest = hashlib.sha256()
     digest.update(_CODEX_STATE_RAW_ID_DOMAIN)
     digest.update(normalized_path.encode("utf-8", errors="surrogatepass"))
@@ -148,18 +165,28 @@ def sqlite_database_for_sidecar(path: Path) -> Path | None:
     return None
 
 
-def sqlite_source_revision(path: Path) -> str:
-    """Fingerprint main/WAL filesystem state without reading mutable DB bytes."""
+def sqlite_source_revision(path: Path, *, source_binding: SourceInputBinding | None = None) -> str:
+    """Fingerprint the accepted physical main/WAL under its anchored parent."""
+    if source_binding is None:
+        with bind_source_input(path) as binding:
+            return sqlite_source_revision(path, source_binding=binding)
     hasher = hashlib.sha256()
-    for candidate in (path, path.with_name(f"{path.name}-wal")):
-        hasher.update(candidate.name.encode("utf-8", errors="surrogateescape"))
+    for suffix in ("", "-wal"):
+        name = source_binding.physical_path.name + suffix
+        hasher.update((source_binding.source_path.name + suffix).encode("utf-8", errors="surrogateescape"))
         hasher.update(b"\0")
         try:
-            stat = candidate.stat()
+            info = os.stat(name, dir_fd=source_binding.parent_anchor, follow_symlinks=False)
         except FileNotFoundError:
+            if not suffix:
+                raise
             hasher.update(b"missing")
         else:
-            hasher.update(f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}".encode())
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError(errno.ELOOP, "SQLite source observation requires a regular file", name)
+            if not suffix and (info.st_dev, info.st_ino) != source_binding.main_identity:
+                raise OSError(errno.ESTALE, "SQLite main identity changed", name)
+            hasher.update(f"{info.st_dev}:{info.st_ino}:{info.st_size}:{info.st_mtime_ns}".encode())
         hasher.update(b"\0")
     return hasher.hexdigest()
 
@@ -167,13 +194,13 @@ def sqlite_source_revision(path: Path) -> str:
 def declared_database_member(path: Path) -> DatabaseMemberBinding | None:
     """Return the declared member rule acquisition applies to *path*.
 
-    A staged import copy carries its original path in a provenance sidecar, so
-    the declaration is resolved from the name the operator's install uses.
+    This coordinate is already accepted acquisition evidence. Live staged
+    inputs resolve their provenance through ``bind_source_input`` first;
+    retained evidence never consults a mutable filesystem sidecar.
     """
     from polylogue.sources.origin_specs import database_member_for_filename
 
-    original = original_sqlite_source_path(path)
-    return database_member_for_filename((original or path).name)
+    return database_member_for_filename(path.name)
 
 
 def declared_logical_tables(path: Path) -> tuple[str, ...] | None:
@@ -224,19 +251,37 @@ def sqlite_logical_revision(
     return logical_export_digest(path, tables=tables, immutable=immutable)
 
 
-def sqlite_member_revision(path: Path, *, immutable: bool = False) -> str:
+def sqlite_member_revision(
+    path: Path, *, immutable: bool = False, source_binding: SourceInputBinding | None = None
+) -> str:
     """Digest the logical revision acquisition records for *path*.
 
     Acquisition retains one export per declared member, so the freshness gate
     and the raw identity must both be scoped to that member's logical tables.
     A whole-database digest would move for a commit in a table nothing reads.
     """
-    return logical_export_digest(path, scope=member_export_scope(path), immutable=immutable)
+    return sqlite_member_revision_and_size(path, immutable=immutable, source_binding=source_binding)[0]
 
 
-def sqlite_member_revision_and_size(path: Path, *, immutable: bool = False) -> tuple[str, int]:
+def sqlite_member_revision_and_size(
+    path: Path, *, immutable: bool = False, source_binding: SourceInputBinding | None = None
+) -> tuple[str, int]:
     """Return the retained logical export's revision and byte length together."""
-    return logical_export_digest_and_size(path, scope=member_export_scope(path), immutable=immutable)
+    if source_binding is None:
+        with bind_source_input(path) as binding:
+            return sqlite_member_revision_and_size(path, immutable=immutable, source_binding=binding)
+    from polylogue.sources.sqlite_export import _HashingSink
+
+    sink = _HashingSink()
+    _write_logical_export_bound(
+        path,
+        sink,
+        scope=member_export_scope(source_binding.source_path),
+        immutable=immutable,
+        source_binding=source_binding,
+        parent_anchor=source_binding.parent_anchor,
+    )
+    return sink.hexdigest(), sink.byte_count
 
 
 def is_sqlite_page_image(blob_path: Path) -> bool:
@@ -300,90 +345,40 @@ def is_declared_logical_export(blob_path: Path, source_path: Path | str) -> bool
     )
 
 
-def retained_content_revision(blob_path: Path, blob_hash: str) -> str:
-    """Return the content term identifying one retained acquisition.
-
-    Live acquisition of a mutable database identifies it by the canonical
-    logical export's digest, so import and replay use that digest directly.
-    Material that is not a canonical export is identified by its bytes.
-
-    A retained export is already the canonical form of its member's logical
-    revision, so its blob hash -- sha256 over exactly those bytes -- is that
-    term with nothing to recompute.
-
-    In particular, an old SQLite page image remains addressable by its blob
-    hash but cannot regain logical-source identity. It is historical opaque
-    material, not a compatibility input for the current source contract.
-    """
-    if looks_like_logical_export_path(blob_path):
-        return blob_hash
-    return blob_hash
-
-
 def snapshot_sqlite_database(source: Path, destination: Path) -> None:
     """Create a consistent standalone backup without writing to the source."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.unlink(missing_ok=True)
-    source_uri = f"{source.resolve().as_uri()}?mode=ro"
-    with (
-        closing(sqlite3.connect(source_uri, uri=True)) as source_conn,
-        closing(sqlite3.connect(destination)) as destination_conn,
-    ):
-        source_conn.backup(destination_conn)
+    _snapshot_sqlite_database_bound(source, destination)
 
 
-def sqlite_staging_metadata_path(staged_path: Path) -> Path:
-    """Return the non-ingestible provenance sidecar for a staged database."""
-    return staged_path.with_name(f"{staged_path.name}{_STAGING_METADATA_SUFFIX}")
+def _snapshot_sqlite_database_bound(
+    source: Path,
+    destination: Path,
+    *,
+    source_binding: SourceInputBinding | None = None,
+    expected_identity: tuple[int, int] | None = None,
+    heartbeat: Heartbeat | None = None,
+) -> dict[str, Any]:
+    """Carry the actual backup owner's accepted coordinate to staging provenance."""
+    from polylogue.sources.sqlite_export import _backup_source_database
 
-
-def original_sqlite_source_path(staged_path: Path) -> Path | None:
-    """Read the original source path recorded for a staged SQLite snapshot."""
-    metadata_path = sqlite_staging_metadata_path(staged_path)
-    try:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict) or payload.get("version") != _STAGING_METADATA_VERSION:
-        return None
-    original = payload.get("original_source_path")
-    if not isinstance(original, str) or not original:
-        return None
-    return Path(original)
-
-
-def stage_sqlite_snapshot(source: Path, destination: Path) -> None:
-    """Atomically publish a snapshot and its original-path provenance."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary_name = tempfile.mkstemp(
-        dir=destination.parent,
-        prefix=f".{destination.name}.",
-        suffix=".staging",
-    )
-    os.close(fd)
-    temporary_path = Path(temporary_name)
-    temporary_path.unlink()
-    metadata_path = sqlite_staging_metadata_path(destination)
-    metadata_temporary_path = metadata_path.with_name(f".{metadata_path.name}.{os.getpid()}.tmp")
-    try:
-        snapshot_sqlite_database(source, temporary_path)
-        metadata_temporary_path.write_text(
-            json.dumps(
-                {
-                    "version": _STAGING_METADATA_VERSION,
-                    "original_source_path": str(source.expanduser().resolve()),
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            encoding="utf-8",
-        )
-        os.chmod(metadata_temporary_path, 0o600)
-        os.replace(metadata_temporary_path, metadata_path)
-        os.replace(temporary_path, destination)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-        metadata_temporary_path.unlink(missing_ok=True)
+    with ExitStack() as owners:
+        if source_binding is None:
+            source_binding = owners.enter_context(bind_source_input(source))
+        if source_binding.physical_path == destination.resolve():
+            raise ValueError("a SQLite backup cannot replace its source")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.unlink(missing_ok=True)
+        try:
+            return _backup_source_database(
+                source,
+                destination,
+                source_binding=source_binding,
+                expected_identity=expected_identity,
+                heartbeat=heartbeat,
+            )
+        except BaseException:
+            destination.unlink(missing_ok=True)
+            raise
 
 
 def snapshot_sqlite_to_blob(
@@ -391,6 +386,7 @@ def snapshot_sqlite_to_blob(
     blob_store: BlobStore,
     *,
     heartbeat: Heartbeat | None = None,
+    source_binding: SourceInputBinding | None = None,
 ) -> SQLiteBlobSnapshot:
     """Retain *source* as one canonical logical export and return its revision.
 
@@ -413,12 +409,21 @@ def snapshot_sqlite_to_blob(
     # races the export remains dirty on the next pass, while a commit that was
     # already present is either included in the export or causes one harmless
     # extra acquisition when the token was sampled just before it.
-    source_fingerprint = sqlite_source_revision(source)
+    if source_binding is None:
+        with bind_source_input(source) as binding:
+            return snapshot_sqlite_to_blob(source, blob_store, heartbeat=heartbeat, source_binding=binding)
+    source_fingerprint = sqlite_source_revision(source, source_binding=source_binding)
     # The export is written straight into the blob store's own staging file:
     # exporting to a work file and copying it would hold two full-size copies
     # on the blob filesystem at once, which capacity preflight never budgets.
     blob_hash, blob_size = blob_store.write_from_writer(
-        lambda handle: write_logical_export(source, handle, scope=member_export_scope(source)),
+        lambda handle: _write_logical_export_bound(
+            source,
+            handle,
+            scope=member_export_scope(source_binding.source_path),
+            source_binding=source_binding,
+            parent_anchor=source_binding.parent_anchor,
+        ),
         heartbeat=heartbeat,
     )
     from polylogue.storage.blob_publication import publication_receipt_id
@@ -428,6 +433,11 @@ def snapshot_sqlite_to_blob(
         blob_size=blob_size,
         source_revision=blob_hash,
         source_fingerprint=source_fingerprint,
+        source_path=source_binding.source_path,
+        identity_path=source_binding.identity_path,
+        captured_profile_key=source_binding.captured_profile_key,
+        captured_profile_root=source_binding.captured_profile_root,
+        captured_profile_source_path=source_binding.captured_profile_source_path,
         blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
     )
 
@@ -443,13 +453,9 @@ __all__ = [
     "is_sqlite_page_image",
     "is_undeclared_logical_export",
     "is_sqlite_path",
-    "original_sqlite_source_path",
-    "retained_content_revision",
     "snapshot_sqlite_database",
     "snapshot_sqlite_to_blob",
     "sqlite_snapshot_failure_as_oserror",
-    "sqlite_staging_metadata_path",
-    "stage_sqlite_snapshot",
     "sqlite_database_for_sidecar",
     "sqlite_logical_revision",
     "sqlite_member_revision",

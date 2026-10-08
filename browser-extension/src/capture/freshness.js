@@ -1,7 +1,6 @@
-import { MAX_PROVIDER_COOLDOWN_MS, clampProviderCooldownMs } from "./provider_cooldown.js";
+import { requireProviderCooldownMs } from "./provider_cooldown.js";
 
 export const CAPTURE_FRESHNESS_QUEUE_VERSION = 1;
-export const CAPTURE_FRESHNESS_MAX_ENTRIES = 500;
 
 function entryKey(provider, nativeId) {
   return `${provider}:${nativeId}`;
@@ -30,8 +29,6 @@ export function normalizeFreshnessQueue(value) {
         : {}),
     },
     dropped_count: Number(value?.dropped_count) || 0,
-    provider_cooldown_clamps: Number(value?.provider_cooldown_clamps) || 0,
-    last_cooldown_clamp: value?.last_cooldown_clamp || null,
     sweep_partition: Number(value?.sweep_partition) || 0,
     sweep_not_before_ms: Number(value?.sweep_not_before_ms) || 0,
     last_sweep_at: value?.last_sweep_at || null,
@@ -69,9 +66,9 @@ export function scheduleFreshnessHint(queueValue, {
     key,
     provider,
     native_id: nativeId,
-    reasons: [...new Set([...(previous?.reasons || []), reason].filter(Boolean))].slice(-8),
+    reasons: [...new Set([...(previous?.reasons || []), reason].filter(Boolean))],
     provider_updated_at: hasNewRevision ? providerUpdatedAt : previous?.provider_updated_at || providerUpdatedAt || null,
-    generation_observations: [...observationsById.values()].slice(-64),
+    generation_observations: [...observationsById.values()],
     generation: (previous?.generation || 0) + 1,
     hinted_at: new Date(nowMs).toISOString(),
     first_hinted_at: previous?.first_hinted_at || new Date(nowMs).toISOString(),
@@ -87,49 +84,18 @@ export function scheduleFreshnessHint(queueValue, {
     last_error: previous?.last_error || null,
   };
   const entries = { ...queue.entries, [key]: entry };
-  const keys = Object.keys(entries);
-  let dropped = queue.dropped_count;
-  if (keys.length > CAPTURE_FRESHNESS_MAX_ENTRIES) {
-    keys
-      .filter((candidate) => candidate !== key)
-      .sort((left, right) => Date.parse(entries[left].hinted_at) - Date.parse(entries[right].hinted_at))
-      .slice(0, keys.length - CAPTURE_FRESHNESS_MAX_ENTRIES)
-      .forEach((candidate) => {
-        delete entries[candidate];
-        dropped += 1;
-      });
-  }
-  return { ...queue, entries, dropped_count: dropped };
+  return { ...queue, entries };
 }
 
 export function extendProviderCooldown(queueValue, { provider, untilMs, nowMs = Date.now() }) {
   const queue = normalizeFreshnessQueue(queueValue);
   const current = Number(queue.provider_cooldowns[provider]) || 0;
   const requested = Number(untilMs) || 0;
-  // Storage-boundary backstop. This cooldown is monotonic and persisted, so an
-  // over-long deadline that reaches here is permanent until storage is cleared.
-  // Every earlier clamp is independently reachable and independently bypassable
-  // (a future caller, a different provider path); this one is the last line.
-  const base = Number.isFinite(nowMs) ? nowMs : Date.now();
-  const clamp = clampProviderCooldownMs(requested - base);
-  const bounded = clamp.clamped ? base + MAX_PROVIDER_COOLDOWN_MS : requested;
-  const deadline = Math.max(current, bounded);
-  if (deadline === current && !clamp.clamped) return queue;
-  return {
-    ...queue,
-    provider_cooldowns: { ...queue.provider_cooldowns, [provider]: deadline },
-    // A clamp must be observable, not silent: the queue is the surface the
-    // popup and telemetry already read (`dropped_count`, `last_sweep_error`).
-    provider_cooldown_clamps: queue.provider_cooldown_clamps + (clamp.clamped ? 1 : 0),
-    last_cooldown_clamp: clamp.clamped
-      ? {
-        provider,
-        requested_until_ms: requested,
-        applied_until_ms: base + MAX_PROVIDER_COOLDOWN_MS,
-        at_ms: base,
-      }
-      : queue.last_cooldown_clamp,
-  };
+  requireProviderCooldownMs(Math.max(0, requested - nowMs), nowMs);
+  const deadline = Math.max(current, requested);
+  if (deadline === current) return queue;
+  return { ...queue, provider_cooldowns: { ...queue.provider_cooldowns, [provider]: deadline } };
+
 }
 
 export function claimDueFreshness(queueValue, { nowMs, owner, leaseMs }) {
@@ -188,14 +154,7 @@ export function completeFreshnessClaim(queueValue, claim, {
 }
 
 export function chatGptCaptureNeedsFollowUp(envelope) {
-  const payload = envelope?.raw_provider_payload;
-  const mapping = payload?.mapping;
-  const current = mapping && payload?.current_node ? mapping[payload.current_node]?.message : null;
-  if (!current) return true;
-  const role = current.author?.role;
-  const status = current.status;
-  if (role !== "assistant") return true;
-  return !["finished_successfully", "finished", "complete", "completed"].includes(status);
+  return envelope?.capture_summary?.needsFollowUp !== false;
 }
 
 export function runningPollDelayMs(pollCount) {

@@ -7,9 +7,10 @@ The public reference grammar is intentionally small and immutable:
 * ``result-set:<id>`` identifies a promoted durable result manifest.
 
 ``canonical_query_plan`` receives the typed plan after macro expansion.  It
-normalizes every string to NFC and sorts only children of commutative AND/OR
-nodes.  All other sequence order (including pipelines, ``except``, sort, and
-limit) remains semantic and therefore participates in the digest unchanged.
+normalizes declared grammar tokens and sorts only children of typed
+commutative AND/OR nodes. Opaque operands and mapping keys remain exact.
+All other sequence order (including pipelines, ``except``, sort, and limit)
+remains semantic and therefore participates in the digest unchanged.
 Relative-time bounds belong to an execution record, not this plan: callers
 hash the dynamic AST and record its resolved bounds on the execution record
 itself (e.g. a promoted ``retained_query_runs`` row).
@@ -120,31 +121,47 @@ def result_set_ref(result_set_id: str) -> ObjectRef:
     return ObjectRef(kind=RESULT_SET_REF_KIND, object_id=result_set_id)
 
 
-def _canonical_value(value: JsonValue, *, field_aliases: Mapping[str, str]) -> JsonValue:
-    if isinstance(value, str):
-        return nfc(value)
-    if value is None or isinstance(value, (bool, int, float)):
+def _canonical_value(value: JsonValue, *, field_aliases: Mapping[str, str], predicate_node: bool = True) -> JsonValue:
+    if value is None or isinstance(value, (str, bool, int, float)):
         return value
-    if isinstance(value, Mapping):
-        normalized = {nfc(str(key)): _canonical_value(item, field_aliases=field_aliases) for key, item in value.items()}
+    if isinstance(value, Sequence):
+        return [_canonical_value(item, field_aliases=field_aliases, predicate_node=False) for item in value]
+    if not isinstance(value, Mapping):
+        raise TypeError(f"query plan contains unsupported JSON value: {type(value).__name__}")
+    # A grammar-shaped mapping inside an operand is still literal data. Only
+    # the declared predicate edges below authorize another grammar traversal.
+    normalized = {
+        key: _canonical_value(item, field_aliases=field_aliases, predicate_node=False) for key, item in value.items()
+    }
+    if not predicate_node:
+        return normalized
+    kind = normalized.get("kind")
+    if not isinstance(kind, str):
+        return normalized
+    kind = nfc(kind).casefold()
+    if kind not in {"field", "and", "or", "sequence", "not", "exists", "fts", "semantic", "lineage", "logical"}:
+        return normalized
+    normalized["kind"] = kind
+    if kind == "field":
         field = normalized.get("field")
         if isinstance(field, str):
+            field = nfc(field)
             normalized["field"] = field_aliases.get(field, field)
-        operator = normalized.get("operator", normalized.get("op"))
-        if isinstance(operator, str):
-            canonical_operator = operator.casefold()
-            if "operator" in normalized:
-                normalized["operator"] = canonical_operator
-            else:
-                normalized["op"] = canonical_operator
-            operator = canonical_operator
-        children = normalized.get("children")
-        if isinstance(operator, str) and operator in _COMMUTATIVE_OPERATORS and isinstance(children, Sequence):
-            normalized["children"] = sorted(children, key=_canonical_sort_key)
-        return normalized
-    if isinstance(value, Sequence):
-        return [_canonical_value(item, field_aliases=field_aliases) for item in value]
-    raise TypeError(f"query plan contains unsupported JSON value: {type(value).__name__}")
+        # Bound field_ref coordinates were validated by the planner. Preserve
+        # their source qualification rather than applying unscoped aliases.
+    elif kind in _COMMUTATIVE_OPERATORS or kind == "sequence":
+        edge = "children" if kind in _COMMUTATIVE_OPERATORS else "steps"
+        children = value.get(edge)
+        if isinstance(children, Sequence) and not isinstance(children, str):
+            canonical_children = [_canonical_value(item, field_aliases=field_aliases) for item in children]
+            normalized[edge] = (
+                sorted(canonical_children, key=_canonical_sort_key)
+                if kind in _COMMUTATIVE_OPERATORS
+                else canonical_children
+            )
+    elif kind in {"not", "exists"} and "child" in value:
+        normalized["child"] = _canonical_value(value["child"], field_aliases=field_aliases)
+    return normalized
 
 
 def _canonical_sort_key(value: JsonValue) -> str:

@@ -16,13 +16,14 @@ from polylogue.storage.runtime import AttachmentRecord, BlockRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.queries import attachments
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.prepared_replay import write_fixture_raw_session
 
 
 @pytest.mark.asyncio
 async def test_stored_block_fields_survive_ordinary_readers_and_bounded_streams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    initialize_active_archive_root(tmp_path)
     parsed = ParsedSession(
         source_name=Provider.CHATGPT,
         provider_session_id="reader-blocks",
@@ -52,13 +53,19 @@ async def test_stored_block_fields_survive_ordinary_readers_and_bounded_streams(
             for index in range(105)
         ],
     )
-    with ArchiveStore(tmp_path) as archive:
-        session_id = archive.write_raw_and_parsed_result(
-            parsed,
-            payload=b"neutral reader blocks",
-            source_path="reader-blocks.json",
-            acquired_at_ms=1_767_000_000_000,
-        ).session_id
+
+    def seed() -> str:
+        initialize_active_archive_root(tmp_path)
+        with ArchiveStore(tmp_path) as archive:
+            return write_fixture_raw_session(
+                archive,
+                parsed,
+                payload=b"neutral reader blocks",
+                source_path="reader-blocks.json",
+                acquired_at_ms=1_767_000_000_000,
+            ).session_id
+
+    session_id = run_off_event_loop(seed)
 
     def check(messages: Sequence[Message]) -> None:
         for message in messages:

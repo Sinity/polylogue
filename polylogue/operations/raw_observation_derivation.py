@@ -2,71 +2,57 @@
 
 from __future__ import annotations
 
+from builtins import BaseExceptionGroup
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from polylogue.core.enums import ValidationMode
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.derivation import (
-    Budget,
     DerivationFrame,
-    DerivationRegistry,
-    DerivationReport,
-    PassCursor,
-    converge,
 )
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN as _RAW_OBSERVATION_DOMAIN
-from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationScope
+from polylogue.storage.derived.raw import (
+    RawObservationDerivation,
+    RawObservationInspection,
+    RawObservationScope,
+    raw_observation_recipe_version,
+)
 
 if TYPE_CHECKING:
-    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.storage.index_generation import IndexGeneration
 
 RAW_OBSERVATION_DOMAIN = _RAW_OBSERVATION_DOMAIN
-_RAW_OBSERVATION_RECIPE_VERSION = RawObservationDerivation.recipe_version
-
-
-def prepare_retained_non_json_artifact_worker(
-    raw_id: str,
-    provider_token: str,
-    blob_hash: str,
-    source_path: str,
-    kind_token: str,
-    native_id: str | None,
-    blob_root: str,
-    source_db_path: str,
-    index_db_path: str,
-    directory: str,
-    fallback_timestamp: str | None,
-) -> PreparedJsonl:
-    """Pin the archive in the worker before the source parser reads retained bytes."""
-    from polylogue.operations.operation_context import open_operation_read
-    from polylogue.sources.revision_backfill import prepare_retained_non_json_artifact
-
-    with open_operation_read(Path(source_db_path).parent) as pinned:
-        return prepare_retained_non_json_artifact(
-            pinned.archive,
-            raw_id,
-            provider_token,
-            blob_hash,
-            source_path,
-            kind_token,
-            native_id,
-            blob_root,
-            source_db_path,
-            index_db_path,
-            directory,
-            fallback_timestamp,
-        )
 
 
 def make_raw_observation_derivation(
-    archive_root: Path, *, index_db_path: Path | None = None
+    archive_root: Path,
+    *,
+    compute_adapter: BoundedComputeAdapter,
+    prepaid_blob_inputs: tuple[tuple[str, bytes, int], ...] = (),
+    index_db_path: Path | None = None,
+    owned_generation: IndexGeneration | None = None,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
 ) -> RawObservationDerivation:
-    """Construct the storage-owned raw adapter from the operations boundary."""
+    """Construct the storage-owned raw adapter from the operations boundary.
+
+    Prepaid operands require actual acquisition in this still-admitted task.
+    The original witness validates their raw/hash/size before CAS enrollment;
+    inputs paid in an earlier released phase cannot be carried here.
+    """
+    from polylogue.sources.revision_backfill import prepare_retained_non_json_artifact
+
     return RawObservationDerivation(
         archive_root,
-        prepare_non_json_artifact=prepare_retained_non_json_artifact_worker,
+        prepare_non_json_artifact=prepare_retained_non_json_artifact,
+        compute_adapter=compute_adapter,
+        prepaid_blob_inputs=prepaid_blob_inputs,
         index_db_path=index_db_path,
+        owned_generation=owned_generation,
+        validation_mode=validation_mode,
     )
 
 
@@ -112,16 +98,32 @@ def raw_observation_payload_bytes(archive_root: Path, raw_id: str) -> int:
 def raw_observation_frame(
     archive_root: Path,
     *,
-    source_roots: Sequence[Path] = (),
     raw_ids: Sequence[str] = (),
     index_db_path: Path | None = None,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
 ) -> DerivationFrame:
     index_path = index_db_path or ArchiveLocation.resolve(archive_root).active_index_path
     return DerivationFrame(
         archive_root=str(archive_root),
         source_revision=str(index_path.resolve()),
-        recipe_versions={RAW_OBSERVATION_DOMAIN: _RAW_OBSERVATION_RECIPE_VERSION},
-        scope=RawObservationScope(source_roots=tuple(source_roots), raw_ids=tuple(raw_ids)),
+        recipe_versions={RAW_OBSERVATION_DOMAIN: raw_observation_recipe_version(validation_mode)},
+        scope=RawObservationScope(raw_ids=tuple(raw_ids)),
+    )
+
+
+def raw_observation_inspection_frame(
+    archive_root: Path,
+    *,
+    index_db_path: Path | None = None,
+) -> DerivationFrame:
+    """Bind read-only discovery to parser evidence without a validation policy."""
+    index_path = index_db_path or ArchiveLocation.resolve(archive_root).active_index_path
+    adapter = RawObservationInspection(archive_root, index_db_path=index_path)
+    return DerivationFrame(
+        archive_root=str(archive_root),
+        source_revision=str(index_path.resolve()),
+        recipe_versions={RAW_OBSERVATION_DOMAIN: adapter.recipe_version},
+        scope=RawObservationScope(),
     )
 
 
@@ -153,8 +155,8 @@ def raw_observation_backlog_snapshot(
             "page_complete": True,
         }
 
-    adapter = make_raw_observation_derivation(archive_root, index_db_path=index_db_path)
-    frame = raw_observation_frame(archive_root, index_db_path=index_db_path)
+    adapter = RawObservationInspection(archive_root, index_db_path=index_db_path)
+    frame = raw_observation_inspection_frame(archive_root, index_db_path=index_db_path)
     from polylogue.sources.dispatch import is_stream_record_provider
 
     try:
@@ -162,7 +164,8 @@ def raw_observation_backlog_snapshot(
         states = adapter.inspect(frame, raw_ids)
     except FileNotFoundError as exc:
         return unavailable(str(exc))
-    pending_ids = tuple(raw_id for raw_id in raw_ids if states.get(raw_id) != "valid")
+    refusals = adapter.terminal_decode_refusals(raw_ids)
+    pending_ids = tuple(raw_id for raw_id in raw_ids if states.get(raw_id) != "valid" and raw_id not in refusals)
     if not pending_ids:
         return {
             "available": True,
@@ -226,19 +229,67 @@ def raw_observation_backlog_snapshot(
     }
 
 
-def converge_raw_observations(
+def publish_raw_observation_once(
     archive_root: Path,
+    raw_id: str,
     *,
-    source_roots: Sequence[Path],
-    limit: int,
-    cursor: PassCursor | None = None,
-) -> DerivationReport:
-    adapter = make_raw_observation_derivation(archive_root)
-    return converge(
-        DerivationRegistry((adapter,)),
-        raw_observation_frame(archive_root, source_roots=source_roots),
-        # Each discovered key needs inspection before compute and again to
-        # certify publication. Discovery alone must not exhaust that budget.
-        budget=Budget(page=min(128, limit), discovery=limit, inspection=2 * limit, compute=limit, publication=limit),
-        cursor=cursor,
+    retained_replacements: list[RawObservationReplacement],
+    compute_adapter: BoundedComputeAdapter,
+    prepaid_blob_inputs: tuple[tuple[str, bytes, int], ...] = (),
+) -> bool:
+    """Prepare one exact retained raw and publish its original carrier on this worker."""
+    from polylogue.core.compute_cancel import check_compute_cancelled
+    from polylogue.core.write_lease import coordinator_write_lease_active
+
+    if coordinator_write_lease_active():
+        raise RuntimeError("raw observation preparation requires the writer lease to be released")
+    from polylogue.sources.live.cold_build import active_cold_build_generation
+
+    cold_build = active_cold_build_generation(archive_root)
+    owned_generation = None if cold_build is None else cold_build.generation
+    index_path = None if owned_generation is None else Path(owned_generation.index_path)
+    adapter = make_raw_observation_derivation(
+        archive_root,
+        index_db_path=index_path,
+        owned_generation=owned_generation,
+        compute_adapter=compute_adapter,
+        prepaid_blob_inputs=prepaid_blob_inputs,
     )
+    frame = raw_observation_frame(archive_root, raw_ids=(raw_id,), index_db_path=index_path)
+    # A committed census, classification, byte restoration or deferred-child
+    # parent publication is this raw's own phase, not a moved input: prepare
+    # the next phase against it while the adapter reports committed progress,
+    # exactly as the derivation kernel does.
+    while True:
+        replacement = adapter.compute(frame, raw_id)
+        retained_replacements.append(replacement)
+
+        def close(replacement: RawObservationReplacement = replacement) -> None:
+            replacement.close()
+            retained_replacements.remove(replacement)
+
+        if replacement.prepared_key_refusals:
+            # One exact raw has no healthy sibling key to publish around: its
+            # refused member is this raw's outcome, never a silent deferral.
+            close()
+            raise replacement.prepared_key_refusals[0]
+        try:
+            check_compute_cancelled()
+            result = admit_stage_write(
+                "watcher.live_ingest.append.publish", partial(adapter.publish, frame, replacement)
+            )
+        except BaseException as primary:
+            try:
+                close()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("raw append publication and cleanup failed", [primary, cleanup]) from primary
+            raise
+        close()
+        if result or not adapter.publication_advanced(replacement):
+            return result
+
+
+if TYPE_CHECKING:
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.storage.derived.raw import RawObservationReplacement
+    from polylogue.storage.index_generation import IndexGeneration

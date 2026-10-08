@@ -253,6 +253,7 @@ class _FieldToken:
     field: str
     raw_value: str  # after the colon, strip outer parens → values split on |
     negated: bool
+    quoted: bool = False
 
 
 @dataclass(frozen=True)
@@ -1553,13 +1554,14 @@ class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]
         if matched is None:
             raise ExpressionCompileError(f"invalid field clause: {token}", field=None)
         negated, field_name, raw_value = matched.group(1), matched.group(2), matched.group(3)
+        quoted = raw_value.startswith('"')
         value_path_field = field_name.lower().startswith("value.")
         if raw_value.startswith('"'):
             if not value_path_field:
                 raw_value = _decode_escaped_string(Token("ESCAPED_STRING", raw_value))
         elif raw_value.startswith("("):
             raw_value = raw_value[1:-1]
-        return _FieldToken(field=field_name.lower(), raw_value=raw_value, negated=bool(negated))
+        return _FieldToken(field=field_name.lower(), raw_value=raw_value, negated=bool(negated), quoted=quoted)
 
     def neg_quoted_text(self, text: Token) -> _TextToken:
         return _TextToken(
@@ -1634,9 +1636,7 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     values = (
         _split_assertion_value_path_alternation(token.raw_value)
         if is_value_path_field and token.raw_value
-        else _split_alternation(token.raw_value)
-        if token.raw_value
-        else ()
+        else _field_token_values(token, field_name=validation_field)
     )
     if validation_field == "origin":
         known_origins = frozenset(public_origin_tokens())
@@ -3409,6 +3409,7 @@ def _explain_clause(token: _LexToken) -> QueryExpressionExplainClause:
             field=token.field,
             value=token.raw_value,
             negated=token.negated,
+            quoted=token.quoted,
         )
     if isinstance(token, _CountToken):
         return QueryExpressionExplainClause(
@@ -3701,6 +3702,13 @@ def _split_alternation(raw: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split("|") if part.strip())
 
 
+def _field_token_values(token: _FieldToken, *, field_name: str | None = None) -> tuple[str, ...]:
+    """Keep quoted scalar operands exact instead of interpreting their pipes."""
+    if token.quoted and (field_name or token.field) in {"id", "session", "title", "repo"}:
+        return (token.raw_value,)
+    return _split_alternation(token.raw_value) if token.raw_value else ()
+
+
 def _split_assertion_value_path_alternation(raw: str) -> tuple[str, ...]:
     """Split value-path alternatives while preserving JSON string literals."""
 
@@ -3903,7 +3911,7 @@ class _SpecAccumulator:
         # _FieldToken
         assert isinstance(tok, _FieldToken)
         fname = tok.field
-        values = _split_alternation(tok.raw_value) if tok.raw_value else ()
+        values = _field_token_values(tok)
 
         if fname == "repo":
             if tok.negated:
@@ -4285,9 +4293,20 @@ def compile_expression(expression: str) -> SessionQuerySpec:
         )
 
     acc = _SpecAccumulator()
+    scalar_alternatives: list[QueryPredicate] = []
     for tok in tokens:
+        if (
+            isinstance(tok, _FieldToken)
+            and tok.field in {"id", "session", "title"}
+            and not tok.negated
+            and len(_field_token_values(tok)) > 1
+        ):
+            scalar_alternatives.append(_bind_predicate_context(_field_token_to_predicate(tok), unit="session"))
+            continue
         acc.apply_token(tok)
     spec = acc.to_spec()
+    if scalar_alternatives:
+        spec = replace(spec, boolean_predicate=QueryBoolPredicate("and", tuple(scalar_alternatives)))
     if with_units:
         spec = replace(
             spec, with_units=with_units, with_unit_fields=with_unit_fields, with_unit_windows=with_unit_windows

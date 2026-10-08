@@ -74,14 +74,9 @@ def produce_direct_status(
     from polylogue.storage.archive_readiness import archive_readiness_status_from_connections
 
     index_conn = _required_index_connection(archive)
-    # The pinned snapshot names both roots: the configured archive root and the
-    # directory the served index actually lives in.  Hardcoding the match made
-    # a redirected/shadow active index report as the configured one
-    # (polylogue-bu47u); this is the same comparison
-    # ``cli/commands/paths.py`` publishes, computed from the snapshot alone so
-    # this producer still resolves nothing.
+    # The pinned snapshot names both roots from the snapshot alone, so this
+    # producer still resolves nothing (``archive_identity_status``).
     configured_root = Path(archive.archive_root)
-    active_root = Path(archive.index_db_path).parent
     source_conn = _source_connection(archive)
     ops_conn = _attached_connection(index_conn, "ops_tier")
     archive_stats = archive.stats().to_dict()
@@ -156,6 +151,11 @@ def produce_direct_status(
         component_from_raw_materialization_readiness=component_from_raw_materialization_readiness,
         component_from_raw_frontier_integrity=component_from_raw_frontier_integrity,
     )
+    from polylogue.operations.drive_readiness import configured_source_readiness_from_archive
+
+    configured_component = configured_source_readiness_from_archive(archive, config)
+    components["configured_sources"] = configured_component
+    components["attachments"] = _attachment_component(index_conn, source_conn).to_dict()
     derived_refusals = _derived_tier_refusals(tiers)
     for refusal in derived_refusals:
         component = refusal["component"]
@@ -182,6 +182,12 @@ def produce_direct_status(
     embedding_component = components.get("embeddings", {})
     attachment_component = components.get("attachments", {})
     derived_domains = [
+        DerivedDomainReadiness(
+            domain="configured_sources",
+            ready=configured_component["state"] == "ready",
+            summary=str(configured_component["summary"]),
+            determinate=configured_component["state"] != "unknown",
+        ),
         DerivedDomainReadiness(
             domain="attachments",
             ready=attachment_component.get("state") == "ready",
@@ -269,9 +275,7 @@ def produce_direct_status(
             status_snapshot=None,
         ),
         "daemon_liveness": False,
-        "archive_root": str(configured_root),
-        "active_archive_root": str(active_root),
-        "active_archive_root_matches_configured": _same_directory(configured_root, active_root),
+        **archive_identity_status(configured_root, Path(archive.index_db_path)),
         "db_exists": "index" not in archive.operation_degraded_components,
         "active_db_path": str(archive.index_db_path),
         "config_exists": config is not None,
@@ -304,6 +308,21 @@ def produce_direct_status(
     payload.update(archive_stats)
     payload.update(raw_failures)
     return normalize_raw_frontier_status_payload(payload, snapshot_state="pinned")
+
+
+def archive_identity_status(configured_root: Path, index_db_path: Path) -> dict[str, object]:
+    """Name the archive a status answer is for, on every status route.
+
+    ``active_archive_root`` is the directory the served index actually lives
+    in, so a redirected or shadow active index never reports as the
+    configured one (polylogue-bu47u).
+    """
+    active_root = index_db_path.parent
+    return {
+        "archive_root": str(configured_root),
+        "active_archive_root": str(active_root),
+        "active_archive_root_matches_configured": _same_directory(configured_root, active_root),
+    }
 
 
 def _same_directory(left: Path, right: Path) -> bool:
@@ -592,50 +611,25 @@ def _frontier_status(
     *,
     ops_db_path: Path | None = None,
 ) -> dict[str, object]:
+    from polylogue.storage.frontier_inspection import frontier_inspection_projection_from_connections
     from polylogue.storage.raw_retention import (
-        RawFrontierIntegrityProjection,
-        combine_raw_frontier_integrity_statuses,
-        missing_source_raw_integrity_status,
-        raw_frontier_integrity_snapshot_from_connections,
+        _raw_frontier_integrity_from_coverage,
         unknown_raw_frontier_integrity_projection,
     )
 
-    if source_conn is None:
-        return unknown_raw_frontier_integrity_projection("source tier is unavailable").to_dict()
-
-    snapshot = raw_frontier_integrity_snapshot_from_connections(
+    if source_conn is None or ops_conn is None or ops_db_path is None:
+        return unknown_raw_frontier_integrity_projection("required frontier tier is unavailable").to_dict()
+    # ``ops_conn`` is the pinned Index handle with Ops attached as
+    # ``ops_tier`` (``_attached_connection``); naming ``main`` there points the
+    # journal ownership check at index.db and reports the frontier unknown.
+    coverage = frontier_inspection_projection_from_connections(
         source_conn,
-        index_conn=index_conn,
-        ops_conn=ops_conn,
-        ops_db_path=ops_db_path,
+        index_conn,
+        ops_conn,
+        archive_root=ops_db_path.parent,
+        ops_schema="ops_tier",
     )
-    missing_status, missing_count, missing_samples, missing_reason = missing_source_raw_integrity_status(
-        materialization
-    )
-    statuses = (snapshot.broken_head_status, missing_status, snapshot.cursor_ahead_status)
-    return RawFrontierIntegrityProjection(
-        available="unknown" not in statuses,
-        overall_status=combine_raw_frontier_integrity_statuses(*statuses),
-        broken_head_status=snapshot.broken_head_status,
-        broken_head_count=snapshot.broken_head_count,
-        broken_head_checked_count=snapshot.broken_head_checked_count,
-        broken_head_samples=snapshot.broken_head_samples,
-        broken_head_reason=snapshot.broken_head_reason,
-        missing_source_raw_status=missing_status,
-        missing_source_raw_count=missing_count,
-        missing_source_raw_samples=missing_samples,
-        missing_source_raw_reason=missing_reason,
-        cursor_ahead_status=snapshot.cursor_ahead_status,
-        cursor_ahead_count=snapshot.cursor_ahead_count,
-        cursor_ahead_checked_count=snapshot.cursor_ahead_checked_count,
-        cursor_head_comparison_count=snapshot.cursor_head_comparison_count,
-        cursor_ahead_comparison_count=snapshot.cursor_ahead_comparison_count,
-        cursor_ahead_samples=snapshot.cursor_ahead_samples,
-        cursor_authority_gap_count=snapshot.cursor_authority_gap_count,
-        cursor_authority_gap_samples=snapshot.cursor_authority_gap_samples,
-        cursor_authority_deferred_count=snapshot.cursor_authority_deferred_count,
-        cursor_ahead_reason=snapshot.cursor_ahead_reason,
-    ).to_dict()
+    return _raw_frontier_integrity_from_coverage(coverage, materialization).to_dict()
 
 
 def _raw_failure_status(source_conn: sqlite3.Connection | None) -> dict[str, object]:
@@ -755,7 +749,7 @@ def _components(
     summary = session_summary_component_from_connection(index_conn).to_dict()
     components[str(summary["component"])] = summary
     components["embeddings"] = component_from_embedding_payload(embedding_status).to_dict()
-    components["attachments"] = _attachment_component(index_conn).to_dict()
+
     has_user = _attached_connection(index_conn, "user_tier") is not None
     has_assertions = has_user and _table_exists(index_conn, "assertions", schema="user_tier")
     if has_assertions:
@@ -800,32 +794,41 @@ def _components(
     return components
 
 
-def _attachment_component(index_conn: sqlite3.Connection) -> ComponentReadiness:
-    """Expose owed contested identity from the same index view as ordinary status."""
-    from polylogue.core.evidence import Measured, Unavailable
+def _attachment_component(
+    index_conn: sqlite3.Connection | None, source_conn: sqlite3.Connection | None
+) -> ComponentReadiness:
+    from polylogue.core.evidence import Measured
+    from polylogue.operations.attachment_convergence import inspect_attachment_readiness
     from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
-    from polylogue.storage.sqlite.queries.attachment_records import unresolved_attachment_identity_count
     from polylogue.storage.tier_access import capture_sqlite_read
 
-    evidence = capture_sqlite_read(lambda: unresolved_attachment_identity_count(index_conn))
-    if isinstance(evidence, Unavailable):
+    measured = (
+        None
+        if index_conn is None or source_conn is None
+        else capture_sqlite_read(lambda: inspect_attachment_readiness(index_conn, source_conn))
+    )
+    if not isinstance(measured, Measured):
         return ComponentReadiness(
             component="attachments",
             scope="owed_drive_references",
             state=CapabilityReadinessState.UNKNOWN,
-            summary="attachment identity unavailable",
-            counts={},
-            caveats=("attachment_identity_unavailable",),
+            summary="attachment authority unavailable",
+            caveats=("attachment_authority_unavailable",),
         )
-    assert isinstance(evidence, Measured)
-    count = evidence.value
+    counts = measured.value
+    pending = counts["allowed_unfetched"]
+    blocked = counts["unresolved_identity"] + counts["unattributed"]
     return ComponentReadiness(
         component="attachments",
         scope="owed_drive_references",
-        state=CapabilityReadinessState.DEGRADED if count else CapabilityReadinessState.READY,
-        summary="contested attachment identity" if count else "no contested attachment identity",
-        counts={"unresolved_identity": count},
-        caveats=("contested_identity",) if count else (),
+        state=CapabilityReadinessState.DEGRADED if pending or blocked else CapabilityReadinessState.READY,
+        summary="Drive attachment obligations pending"
+        if pending
+        else "Drive attachment identity or supplier blocked"
+        if blocked
+        else "Drive attachment obligations discharged",
+        counts=counts,
+        caveats=tuple(name for name in ("unresolved_identity", "unattributed", "allowed_unfetched") if counts[name]),
     )
 
 
@@ -1121,7 +1124,15 @@ def _component_readiness_ok(components: Mapping[str, Mapping[str, object]], raw_
     lifecycle_state = raw_failures.get("raw_failure_lifecycle_state")
     if lifecycle_state is not None and lifecycle_state != "healthy":
         return False
-    required_missing = {"archive_sessions", "raw_materialization", "search", "transforms", "assertions", "attachments"}
+    required_missing = {
+        "archive_sessions",
+        "raw_materialization",
+        "search",
+        "transforms",
+        "assertions",
+        "attachments",
+        "configured_sources",
+    }
     required_known = {"raw_frontier_integrity"}
     if any(name not in components for name in required_known):
         return False

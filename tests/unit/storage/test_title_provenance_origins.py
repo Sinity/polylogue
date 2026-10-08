@@ -16,6 +16,7 @@ from polylogue.sources.parsers.browser_capture import parse as parse_browser_cap
 from polylogue.sources.parsers.hermes_state import parse_state_db
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import session_summary_envelope_from_domain
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_session_sync
 from tests.infra.storage_records import db_setup
 from tests.unit.sources.parsers.test_hermes_state import _write_state_db
@@ -70,10 +71,14 @@ async def test_provider_title_survives_production_ingest_and_public_session_conv
     parsed = _parse_title_case(label, tmp_path)
     archive_root = workspace_env["archive_root"]
     db_path = db_setup(workspace_env)
-    with ArchiveStore(archive_root, initialize=True, read_only=False):
-        pass
 
-    session_id = write_session_sync(db_path, parsed)
+    def _seed_0() -> None:
+        with ArchiveStore(archive_root, initialize=True, read_only=False):
+            pass
+
+    run_off_event_loop(_seed_0)
+
+    session_id = run_off_event_loop(lambda: write_session_sync(db_path, parsed))
     origin = origin_from_provider(parsed.source_name)
     assert isinstance(origin, Origin)
 
@@ -113,10 +118,14 @@ async def test_provider_title_degrades_when_parser_provenance_is_removed(
 
     archive_root = workspace_env["archive_root"]
     db_path = db_setup(workspace_env)
-    with ArchiveStore(archive_root, initialize=True, read_only=False):
-        pass
 
-    session_id = write_session_sync(db_path, mutated)
+    def _seed_1() -> None:
+        with ArchiveStore(archive_root, initialize=True, read_only=False):
+            pass
+
+    run_off_event_loop(_seed_1)
+
+    session_id = run_off_event_loop(lambda: write_session_sync(db_path, mutated))
     with ArchiveStore(archive_root, initialize=False, read_only=True) as archive:
         stored_summary = archive.read_summary(session_id)
 

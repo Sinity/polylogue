@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -13,7 +15,92 @@ from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.pipeline import ids
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
-from polylogue.sources.prepared_message_sink import SqliteMessageStore
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+
+
+def test_disk_projection_transfers_files_and_closes_handles_before_iterator_yields(tmp_path: Path) -> None:
+    def build() -> ids.SessionRevisionProjection:
+        store = SqliteMessageStore(tmp_path / "transfer.db")
+        try:
+            sink = store.new_sink()
+            sink.extend(
+                ParsedMessage(provider_message_id=f"message-{number}", role=Role.USER, text=str(number))
+                for number in range(700)
+            )
+            return ids.session_revision_projection(_session([], [], []).model_copy(update={"messages": sink}))
+        finally:
+            store.close()
+
+    with ThreadPoolExecutor(max_workers=1) as producer:
+        projection = producer.submit(build).result()
+    with ThreadPoolExecutor(max_workers=1) as first_consumer:
+        iterator = iter(projection.message_hashes)
+        first = first_consumer.submit(next, iterator).result()
+    # The first consumer is gone; resuming and abandoning the iterator must
+    # not require that thread to close a native connection.
+    assert isinstance(first, bytes)
+    assert len(tuple(iterator)) == 699
+    abandoned = iter(projection.message_contents)
+    with ThreadPoolExecutor(max_workers=1) as second_consumer:
+        second_consumer.submit(next, abandoned).result()
+    assert isinstance(abandoned, Generator)
+    abandoned.close()
+    assert len(projection.message_contents) == 700
+    projection.close()
+    projection.close()
+    with pytest.raises(RuntimeError):
+        next(iter(projection.message_hashes))
+
+
+@pytest.mark.uses_real_clock("A failed page close retains its actual creator thread and artifact.")
+def test_projection_close_preserves_artifact_until_failed_reader_close_settles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+    from typing import Any, cast
+
+    from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError, NativeSQLCustodyOwner
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+
+    prepared = SqliteMessageStore(tmp_path / "prepared.db")
+    sink = prepared.new_sink()
+    sink.append(ParsedMessage(provider_message_id="retained", role=Role.USER, text="retained row"))
+    prepared.conn.commit()
+    prepared.close()
+    sink = SqliteMessageSink(prepared.path, sink.session_ordinal, count=len(sink))
+    projection = ids.session_revision_projection(_session([], [], []).model_copy(update={"messages": sink}))
+    actual_connect = sqlite3.connect
+    opened: list[ControlledConnection] = []
+
+    def connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        if isinstance(database, str) and "projection.db?mode=ro" in database:
+            kwargs["factory"] = ControlledConnection
+            connection = actual_connect(database, *args, **kwargs)
+            assert isinstance(connection, ControlledConnection)
+            connection.close_failure = OSError("synthetic projection page close failure")
+            opened.append(connection)
+            return connection
+        return cast(sqlite3.Connection, actual_connect(database, *args, **kwargs))
+
+    def failed_page() -> NativeSQLCustodyOwner:
+        with pytest.raises(NativeConnectionSettlementError) as refused:
+            next(iter(projection.message_hashes))
+        return refused.value.owner
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    with ThreadPoolExecutor(max_workers=1) as reader:
+        owner = reader.submit(failed_page).result()
+        assert len(opened) == 1
+        with pytest.raises(NativeConnectionSettlementError) as refused:
+            projection.close()
+        assert refused.value.owner is owner
+        artifact = projection._artifact_owner
+        assert artifact is not None
+        assert (Path(artifact._scratch.name) / "projection.db").is_file()
+        opened[0].close_failure = None
+        reader.submit(owner.close).result()
+    projection.close()
+    assert not Path(artifact._scratch.name).exists()
 
 
 def _session(
@@ -185,6 +272,58 @@ def test_disk_owner_keys_match_public_resolution_at_each_ordinal(tmp_path: Path)
         store.close()
 
 
+def test_set_based_disk_owner_resolution_matches_public_resolution_under_every_collision(tmp_path: Path) -> None:
+    """The disk resolver's set-based counts and keys equal the in-memory law.
+
+    Duplicate native ids, duplicate stable keys, a stable key colliding with
+    another message's key, shared physical coordinates and identical content
+    each change which anchor wins; a count or a lookup taken over the wrong
+    rows turns one of these comparisons red.
+    """
+    messages = [
+        ParsedMessage(provider_message_id="dup", role=Role.USER, text="a", position=0),
+        ParsedMessage(provider_message_id="dup", role=Role.USER, text="b", position=1),
+        ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same", position=2),
+        ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same", position=2),
+        ParsedMessage(
+            provider_message_id="",
+            role=Role.ASSISTANT,
+            text="x",
+            owner_coordinate=MessageOwnerCoordinate(stable_key="shared", position=4),
+        ),
+        ParsedMessage(
+            provider_message_id="",
+            role=Role.ASSISTANT,
+            text="y",
+            owner_coordinate=MessageOwnerCoordinate(stable_key="shared", position=5),
+        ),
+        ParsedMessage(
+            provider_message_id="unique",
+            role=Role.USER,
+            text="ü",
+            owner_coordinate=MessageOwnerCoordinate(stable_key="ünique-stable", position=6),
+        ),
+        ParsedMessage(provider_message_id="", role=Role.USER, text="lonely", position=7),
+    ]
+    expected = ids.message_owner_resolution(messages)
+    store = SqliteMessageStore(tmp_path / "prepared.db")
+    try:
+        sink = store.new_sink()
+        for message in messages:
+            sink.append(message)
+        with ids.disk_message_owner_resolution(sink) as actual:
+            assert tuple(actual.keys) == expected.keys
+            assert set(actual.ambiguous_keys) == expected.ambiguous_keys
+            assert set(actual.ambiguous_stable_keys) == expected.ambiguous_stable_keys
+            assert set(actual.ambiguous_provider_ids) == expected.ambiguous_provider_ids
+            assert set(actual.ambiguous_physical_coordinates) == expected.ambiguous_physical_coordinates
+            assert dict(actual.by_physical_coordinate.items()) == expected.by_physical_coordinate
+            assert dict(actual.by_stable_key.items()) == expected.by_stable_key
+            assert dict(actual.unique_provider_keys.items()) == expected.unique_provider_keys
+    finally:
+        store.close()
+
+
 def test_disk_revision_projection_matches_every_canonical_axis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     messages = [
         ParsedMessage(provider_message_id="native", role=Role.USER, text="first"),
@@ -231,6 +370,8 @@ def test_disk_revision_projection_matches_every_canonical_axis(tmp_path: Path, m
         ):
             assert frozenset(getattr(actual, field)) == getattr(expected, field)
         assert _relation(expected, actual) == "equal"
+        actual.close()
+        expected.close()
     finally:
         store.close()
 

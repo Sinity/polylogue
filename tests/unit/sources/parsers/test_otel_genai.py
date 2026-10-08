@@ -9,7 +9,7 @@ from typing import Any, cast
 
 from polylogue.core.enums import Origin, Provider, ToolOutcome, ToolResultUnknownReason
 from polylogue.core.sources import origin_from_provider
-from polylogue.sources.dispatch import detect_provider, parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, detect_provider, parse_payload
 from polylogue.sources.origin_specs import SEMCONV_SCHEMA_URL
 from polylogue.sources.parsers import otel_genai
 
@@ -109,9 +109,7 @@ def test_otel_genai_retains_usage_only_chat_span() -> None:
         "last_token_usage": {"input_tokens": 18, "output_tokens": 6, "cached_input_tokens": 0},
         "model": "gpt-4.1-mini",
     }
-    assert (
-        require_positive_conversational_evidence(sessions, provider=Provider.OTEL_GENAI, source_path=None) == sessions
-    )
+    assert admit_parsed_sessions_for_publication(sessions, provider=Provider.OTEL_GENAI, source_path=None) == sessions
 
 
 def test_otel_genai_inherits_conversation_from_trace_parent() -> None:
@@ -280,9 +278,7 @@ def test_evidence_only_genai_span_remains_an_admitted_session() -> None:
     assert len(sessions) == 1
     assert sessions[0].messages == []
     assert [event.event_type for event in sessions[0].session_events] == ["otel_span_evidence"]
-    assert (
-        require_positive_conversational_evidence(sessions, provider=Provider.OTEL_GENAI, source_path=None) == sessions
-    )
+    assert admit_parsed_sessions_for_publication(sessions, provider=Provider.OTEL_GENAI, source_path=None) == sessions
 
 
 def _attr(key: str, value: object) -> dict[str, object]:

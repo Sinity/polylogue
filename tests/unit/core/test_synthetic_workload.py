@@ -34,7 +34,7 @@ from polylogue.schemas.synthetic.workload import (
     synthetic_text,
     text_measure,
 )
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from tests.infra.synthetic_workload_bounds import clip_committed_profiles
 
 
@@ -93,7 +93,7 @@ def test_every_generated_stream_parses_through_production_dispatch(tmp_path: Pat
         records = _records(path.read_bytes())
         conversational = any(classify(record) in _CONVERSATIONAL_KINDS for record in records)
         sessions = parse_payload(origin, records, str(path), source_path=str(path))
-        admitted = require_positive_conversational_evidence(sessions, provider=origin, source_path=str(path))
+        admitted = admit_parsed_sessions_for_publication(sessions, provider=origin, source_path=str(path))
         assert bool(admitted) == conversational, path.name
         if admitted:
             admitted_streams += 1
@@ -650,7 +650,10 @@ def test_lazy_text_encodes_like_json_at_every_escape_level() -> None:
 def test_codex_apply_patch_calls_carry_their_touched_path() -> None:
     """Anti-vacuity: ``{"cmd": ...}`` arguments for apply_patch leave the parser no path to recover."""
     paths = 0
-    for item in generate_workload_corpus(seed=4, target_sessions=20, origins={"codex": 1.0}).iter_files():
+    # The measured codex profile is heavy-tailed: this seed's first 20 sessions
+    # render ~1.5 GB across 248 files, while the first 8 (~9 MiB) already carry
+    # 17 apply_patch calls -- enough to falsify a pathless rendering.
+    for item in generate_workload_corpus(seed=4, target_sessions=8, origins={"codex": 1.0}).iter_files():
         for session in parse_payload("codex", _records(item.data), item.relpath, source_path=item.relpath):
             for message in session.messages:
                 for block in message.blocks:

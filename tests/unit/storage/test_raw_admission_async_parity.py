@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import sqlite3
 from pathlib import Path
@@ -40,6 +41,7 @@ def _request(
         origin=Origin.CHATGPT_EXPORT,
         capture_mode=Provider.CHATGPT,
         source_path=source_path,
+        canonical_source_path=source_path,
         source_index=source_index,
         blob_hash=hashlib.sha256(payload).digest(),
         blob_size=len(payload),
@@ -93,8 +95,8 @@ def _snapshot(path: Path) -> dict[str, list[tuple[object, ...]]]:
 async def test_pending_preparse_admission_sync_and_aiosqlite_have_identical_durable_effects(tmp_path: Path) -> None:
     sync_root = tmp_path / "sync"
     async_root = tmp_path / "async"
-    initialize_active_archive_root(sync_root)
-    initialize_active_archive_root(async_root)
+    await asyncio.to_thread(initialize_active_archive_root, sync_root)
+    await asyncio.to_thread(initialize_active_archive_root, async_root)
     request = _request()
     plan = plan_raw_admission(request)
 
@@ -131,7 +133,7 @@ async def test_pending_preparse_admission_sync_and_aiosqlite_have_identical_dura
 
 async def test_pending_preparse_conflict_has_no_async_side_effects_after_rollback(tmp_path: Path) -> None:
     root = tmp_path / "archive"
-    initialize_active_archive_root(root)
+    await asyncio.to_thread(initialize_active_archive_root, root)
     request = _request(raw_id="immutable-raw", receipt=None)
     backend = SQLiteBackend(db_path=root / "index.db")
     async with backend.bulk_connection():
@@ -154,7 +156,7 @@ async def test_pending_preparse_conflict_has_no_async_side_effects_after_rollbac
 async def test_reacquiring_post_parse_bound_raw_keeps_its_bound_revision(tmp_path: Path) -> None:
     """Parser binding is a refinement, not a later acquisition conflict."""
     root = tmp_path / "archive"
-    initialize_active_archive_root(root)
+    await asyncio.to_thread(initialize_active_archive_root, root)
     request = _request(receipt=None)
     backend = SQLiteBackend(db_path=root / "index.db")
     async with backend.bulk_connection():
@@ -182,7 +184,7 @@ async def test_reacquiring_post_parse_bound_raw_keeps_its_bound_revision(tmp_pat
 
 async def test_two_acquisition_coordinates_share_one_blob_but_not_raw_identity(tmp_path: Path) -> None:
     root = tmp_path / "archive"
-    initialize_active_archive_root(root)
+    await asyncio.to_thread(initialize_active_archive_root, root)
     first = plan_raw_admission(_request(source_path="/captures/a.json", source_index=0, receipt=None))
     second = plan_raw_admission(_request(source_path="/captures/b.json", source_index=1, receipt=None))
     assert first.raw_id != second.raw_id
@@ -200,7 +202,7 @@ async def test_two_acquisition_coordinates_share_one_blob_but_not_raw_identity(t
 
 async def test_epoch_zero_is_valid_and_invalid_acquisition_times_are_refused_before_sql(tmp_path: Path) -> None:
     root = tmp_path / "archive"
-    initialize_active_archive_root(root)
+    await asyncio.to_thread(initialize_active_archive_root, root)
     plan = plan_raw_admission(_request(acquired_at_ms=0, receipt=None))
     with sqlite3.connect(root / "source.db") as conn:
         execute_raw_admission_plan_sync(conn, plan)
@@ -243,7 +245,11 @@ async def test_acquisition_persistence_enters_plan_executor_and_failure_leaves_n
 
     repository = SessionRepository(backend=backend)
     record = make_raw_record(
-        RawSessionData(raw_bytes=b'{"route":"entered"}', source_path="/captures/route.json"),
+        RawSessionData(
+            raw_bytes=b'{"route":"entered"}',
+            source_path="/captures/route.json",
+            canonical_source_path="/captures/route.json",
+        ),
         "chatgpt",
         blob_root=tmp_path / "blob",
     )

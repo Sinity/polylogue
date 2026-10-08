@@ -253,8 +253,12 @@ def test_an_ambiguous_refusal_lists_the_candidate_refs(refusal_archive: Path, mo
     with cli_daemon_archive(refusal_archive, monkeypatch):
         result = CliRunner().invoke(cli, ["find", "repo:polylogue", "then", "delete", "--yes"])
     assert result.exit_code != 0
-    assert "Candidates:" in result.output
-    assert "ambiguous-0" in result.output
+    # The resident single-target walk stops at its second match, so the
+    # refusal names a bounded sample and says so.
+    assert "First 2 candidates:" in result.output, result.output
+    assert sum(f"ambiguous-{index}" in result.output for index in range(3)) == 2, result.output
+    assert "then delete --all" in result.output, result.output
+    assert "--first" not in result.output, result.output
 
 
 @pytest.mark.parametrize(

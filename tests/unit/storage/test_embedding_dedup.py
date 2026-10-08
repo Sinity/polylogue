@@ -44,9 +44,6 @@ class _FakeVectorProvider:
         self.calls.append(list(texts))
         return [[0.25] * self.dimension for _ in texts]
 
-    def upsert(self, *args: object, **kwargs: object) -> None:
-        raise AssertionError("archive materialization must use the archive embedding route")
-
     def query(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
         return []
 

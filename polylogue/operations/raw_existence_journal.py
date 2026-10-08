@@ -11,13 +11,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import span
 from polylogue.storage.frontier_existence import has_consumed_journal_rows, prune_consumed_journal_rows
 
+if TYPE_CHECKING:
+    from polylogue.core.compute import BoundedComputeAdapter
 
-def make_raw_existence_journal_prune_stage(db_path: Path) -> ConvergenceStage:
+
+def make_raw_existence_journal_prune_stage(
+    db_path: Path, *, compute_adapter: BoundedComputeAdapter
+) -> ConvergenceStage:
     """Prune consumed journal rows once per pass; ``check`` is two indexed reads."""
     archive_root = db_path.parent
 
@@ -34,7 +40,11 @@ def make_raw_existence_journal_prune_stage(db_path: Path) -> ConvergenceStage:
 
     def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
         with span("daemon.stage.execute", stage="raw_existence_journal_prune", files=len(paths)) as work:
-            work.ok(pruned=prune_consumed_journal_rows(archive_root))
+            work.ok(
+                pruned=prune_consumed_journal_rows(
+                    archive_root, input_demand=compute_adapter.amend_current_input_demand
+                )
+            )
             return True
 
     return ConvergenceStage(
@@ -44,6 +54,7 @@ def make_raw_existence_journal_prune_stage(db_path: Path) -> ConvergenceStage:
         execute=execute,
         check_many=check_many,
         execute_many=execute_many,
+        writer_admission="bridged",
     )
 
 

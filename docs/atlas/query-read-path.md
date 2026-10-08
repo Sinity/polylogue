@@ -20,6 +20,24 @@ signalled by `find`, a quoted expression, or field syntax. The query DSL is
 lowered to SQL; it is not a grep-like post-filter. Pagination and cancellation
 are part of the route contract (`polylogue/archive/query/transaction.py:1-100`).
 
+Saved query definitions canonicalize the typed predicate wire shape before
+persistence. Only declared grammar tokens and field aliases are normalized;
+opaque operands and mapping keys stay exact. Boolean `kind=and/or` children
+are sorted for identity, while directional sequence steps retain order. The
+production evaluator executes the persisted predicate, so canonicalization
+must preserve its selection meaning (`core/query_identity.py`).
+
+Compact scalar alternatives such as `id:(A|B)` and `title:(alpha|beta)`
+select the same session relation as explicit OR, including under NOT. Each
+title alternative retains the ordinary substring-match semantics.
+Quoted scalar operands remain single literals, including pipes and whitespace.
+
+A temporal read with a resolved single-session reference retains that session
+even when its original selection contains text or ranking criteria. An absent
+reference selects a query set; a missing selected reference stays empty.
+Selected temporal reads do not admit a vector snapshot; ranked query-set reads
+retain their ordinary vector admission and named availability gaps.
+
 ## Shared read input
 
 `ReadRequest.normalize` and `read_contract_schema` share the flat input
@@ -130,6 +148,15 @@ resume. Evidence insert/update/delete advances the archive frame so callers
 cannot silently assemble one row from two revisions. CLI, Python API, and MCP
 preserve this contract; MCP supplies its smaller delivery budget to the owner.
 
+Owned user-target existence probes and vector reads use the shared bounded
+compute owner with `interactive-read` admission and their encoded request-byte
+charge. Cancellation keeps the original result Future alive until its creator
+has physically settled SQLite handles; a supplied vector snapshot remains on
+its original creator. This charge describes request bytes, not decoded-result
+memory. Vector publication and daemon transport waits retain their own owners.
+
+## Thread search
+The public thread insight route searches session identity, title, repository URL, branch, support level, and the payload's thread/member support signals before the requested result window. API, MCP registry projection, and insight exports share `ArchiveStore.iter_thread_insights`. Strong and moderate threads remain distinct; a root without a materialized profile remains readable from the same session evidence as an exact public thread read. Profile absence does not silently consume a page slot. Search does not hydrate all threads before selecting a page. The former async thread-list adapter and its row-only mapper are retired with their unused query DTO; exact retained thread-record reads still use their existing profile owner.
 ## Aggregate selection
 
 `query.aggregate` reduces the same canonical distinct session relation used by scalar scope reads. Explicit IDs, lexical/action matching and structural predicates intersect before order, limit, sample and offset; count, statistics and grouping reduce that selected window. Content-excluded counts use the shared survivor walk and apply the requested window after exclusion. Ordinary list totals continue to count every survivor independently of their presentation page. Statistics with content exclusion remain a typed refusal.
@@ -137,6 +164,8 @@ preserve this contract; MCP supplies its smaller delivery budget to the owner.
 Message-branch predicates retain the default top-level session scope; only explicit session lineage selectors or root choices change that scope. Row `fields`/`select` projections cannot be combined with `count` or `agg` terminals in either order. Boundary errors offer equivalent names accepted at the requested boundary, and DSL discovery uses the actual grammar metadata rather than internal plan attributes.
 
 The CLI message walk narrows every continuation request to the remaining requested delivery, through the canonical session-read window contract. It preserves the returned continuation and next offset; it does not trim a wider page after advancing its cursor. Full exports continue using their bounded window size.
+
+Repository attribution treats structured cwd, file and checkout paths as complete literal paths, including whitespace and punctuation. Writers, repository materialization, relative-path projection and stored profile names preserve those literal values, including a trailing blank in a checkout basename; a neighboring trimmed name is a separate repository. Git-root discovery observes the current filesystem on every call, honors Git ceilings and linked worktree markers, and never retains a cached absence or enclosing root across topology changes. Remote/name lexical parsing is separate; `file://` keeps the existing URL path-component interpretation: authority and fragment are excluded, and percent escapes are not decoded. Prose token extraction is not part of structured path normalization.
 
 Session-list envelopes from both full sessions and summaries use the canonical row projection for repository and working-directory display names. Full repository URLs and working-directory paths remain in their declared domain fields; explicit presentation overrides remain supported.
 
@@ -186,6 +215,59 @@ are transferred once. Detailed omission rows may yield to the requested
 budget with `omission_rows_truncated`; session totals remain exact unless
 `session_token_totals_truncated` explicitly names missing totals. Budgets below
 the final typed envelope are refused rather than enlarged.
+
+## Assertion export and identity reset
+
+Assertion export reads `created_at_ms, assertion_id` order through the resident
+`user.assertions.export` v3 contract. The first request streams that pinned User
+selection into a private SQLite relation, sorting once and counting inserted
+rows. `limit` selects the chronological export prefix, including an explicitly
+empty prefix; page size selects only a transport window. Later pages seek the
+owned relation by ordinal, without rescanning or counting User assertions.
+The opaque `selection_ref` binds the authenticated principal, filters, limit,
+and assertion-only User frame. Assertion changes refuse continuation; unrelated
+Index ingestion and User settings do not. The original attached User authority
+remains required, including for an empty export. The final page remains
+replayable until `user.assertions.export.release`; release reads no User tier.
+Equivalent starts for the same principal, filters, limit and assertion frame
+share one immutable image with independent release references held in a private
+SQLite relation with a bounded page cache; abandoned starts add no resident
+per-client entries. A release
+cannot invalidate another client's final-page replay. Observing a newer
+assertion revision retires older image bytes after page reads settle; their
+remaining handles still refuse continuation as stale. The daemon deletes
+abandoned current images after its exchanges physically settle on shutdown.
+There is no selection expiry or population cap.
+CLI JSON and JSONL exports stage the complete walk, release the image, then
+publish output; failed and cancelled walks also release it.
+Python callers use `iter_assertions_for_export`. One assertion's payload remains
+proportional to one row.
+
+Identity reset freezes the complete selector on private disk before publishing
+bounded canonical plans through an Audit preview batch. The client retains only
+that sealed request reference. Confirmation submits it to
+`mutation.identity-reset.authorize`; apply submits only the resulting sealed
+authorization request to `mutation.identity-reset`. Each continuity page holds
+at most forty plans, each plan at most the declared mutation page size. Selection,
+authorization and reservation complete before any session effect. New matching
+arrivals remain outside the frozen selection. Target pages seek immutable Audit
+part and target ordinals without decoding the complete selection.
+
+There is no implicit execution deadline or confirmation expiry for this accepted
+reset custody. Audit re-proves the originating sealed batch, authenticated
+confirmation intent, principal, exact part/hash and uncancelled phase at issuance,
+reservation and consumption, including journal replay. A reset authorization's
+real issuance timestamp is also its expiry: it has no transferable standalone
+lease. Other expired previews and authorizations retain their ordinary refusal.
+Stale plans still refuse. Cancellation or refusal after an applied prefix reports
+the partial batch, never a completed untouched suffix.
+
+The typed historical receipt sums recorded suppression, absent-index and deleted
+row counts across completed parts. Deleted rows belong to each completing apply;
+recovery does not reconstruct a lifetime deletion total. CLI dry-run and JSON ID
+arrays stream through staging; dry-run writes Audit previews but changes no
+sessions. Python target memory and continuity payloads are bounded by a page;
+Audit disk remains proportional to the selected population.
 
 ## Durable setting reads
 
@@ -243,3 +325,22 @@ current materializer version. Available thread and latency projections remain
 readable with unknown provenance; profile reads still require a profile row.
 Recorded versions are returned unchanged. Query-time projections may declare
 their own known projection version independently of profile materialization.
+
+HTTP API and server-rendered session lists compile the same complete query
+specification and execute through the canonical summary or search-envelope
+route on every page. Explicit ordering, similarity and continuation operands
+reach that owner without a first-page storage lowering. Ranked metadata comes
+from the canonical envelope and its actual lane execution; the HTTP readiness
+chip projects its terminal outcome. An unavailable search index remains an
+explicit degraded HTTP envelope, including when no hits can be returned.
+
+Ordinary list pages and totals share one pinned read and the canonical plan.
+Page windows retain latest and sample semantics; ordinary totals count the
+complete eligible scope, while latest reports at most one. Counts apply content filters in bounded
+candidate batches without collecting the complete result. Random lexical
+post-filtering streams distinct session identities; SQLite's FILE temporary
+storage owns sorting and deduplication instead of an archive-sized Python set.
+
+Canonical ranked search classifies missing or incomplete message FTS, SQLite contention, and unreadable storage as `SearchIndexUnavailableError` before surface rendering. Unrelated SQL failures propagate. HTTP consumes that typed refusal as an explicit degraded search envelope with unknown total, never an executed empty result.
+
+Quoted repository operands preserve their literal whitespace, pipes and commas. Public repository CSV filters preserve each comma-delimited segment exactly; typed collections retain each member. Facets preserve stored repository names and root path characters; remote URL labels retain URL cleanup. Query explain field clauses expose the same quoted flag used by execution.

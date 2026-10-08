@@ -301,7 +301,7 @@ def test_materialization_ors_heuristic_with_history_evidence(text: str, history_
 # ``test_retained_history_bytes_rebuild_the_same_paste_index`` goes red; the
 # full production-route proof that a replay recovers the span with the tree
 # deleted is
-# ``tests/unit/pipeline/test_ingest_worker_assembly.py::test_claude_index_and_history_resolve_with_the_original_tree_gone``.
+# ``tests/unit/pipeline/test_retained_assembly_evidence.py``.
 # ---------------------------------------------------------------------------
 
 
@@ -368,14 +368,11 @@ async def test_retained_raw_replay_resolves_the_curated_title(tmp_path: Path) ->
     import sqlite3
 
     import polylogue.sources.live.watcher as live_watcher
-    from polylogue import Polylogue
     from polylogue.core.enums import TitleSource
     from polylogue.sources.dispatch import parse_stream_payload
     from polylogue.sources.live import WatchSource
-    from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.cursor import CursorStore
-    from polylogue.sources.origin_specs import artifact_suffixes_for_provider
     from polylogue.sources.revision_backfill import _replay_safe_enrich_sessions
+    from tests.infra.live_batch import prepared_live_batch_processor
 
     archive_root = tmp_path / "archive"
     project = tmp_path / "live" / ".claude" / "projects" / "-realm-project-x"
@@ -400,23 +397,19 @@ async def test_retained_raw_replay_resolves_the_curated_title(tmp_path: Path) ->
         encoding="utf-8",
     )
 
-    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
-    processor = LiveBatchProcessor(
-        archive,
+    # The sidecar is retained through the live processor bound to the daemon's
+    # retained Raw owner.
+    async with prepared_live_batch_processor(
+        archive_root,
         (
             WatchSource(
                 name="claude-code",
                 root=project.parent,
-                suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
             ),
         ),
-        cursor=CursorStore(archive_root / "cursor.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
-    try:
+    ) as processor:
         await processor.ingest_files([index_path], emit_event=False)
-    finally:
-        await archive.close()
 
     index_path.unlink()
     transcript.unlink()
@@ -433,6 +426,7 @@ async def test_retained_raw_replay_resolves_the_curated_title(tmp_path: Path) ->
             source_conn=conn,
             blob_root=archive_root / "blob",
             source_path=str(transcript),
+            captured_zip_coordinate=None,
         )
     finally:
         conn.close()

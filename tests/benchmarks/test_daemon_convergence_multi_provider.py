@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
 from polylogue.schemas.synthetic import SyntheticCorpus
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
+from tests.infra.compute_owner import owned_compute_adapter
 from tests.infra.convergence_probe_contract import intake_measurement
 from tests.infra.workload_declarations import (
     MULTI_PROVIDER_SCALE_TIERS,
@@ -32,9 +32,11 @@ from tests.infra.workload_declarations import (
 
 def _generate_corpus(tmp_path: Path, tier: str, provider: str) -> Path:
     spec = convergence_corpus_specs(tier, provider=provider)[0]
-    root = tmp_path / "corpus" / f"{provider}-project"
+    # The writer places each session at its declared layout position below
+    # the source root.
+    root = tmp_path / "corpus"
     SyntheticCorpus.write_spec_artifacts(spec, root, prefix=provider, index_width=4)
-    return root.parent
+    return root
 
 
 # ── Probe ──────────────────────────────────────────────────────────────
@@ -48,71 +50,68 @@ def _run_convergence_probe(
 
     from polylogue.daemon.convergence import DaemonConverger
     from polylogue.daemon.convergence_stages import make_default_convergence_stages
-    from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import WatchSource
+    from tests.infra.live_batch import prepared_live_batch_processor
 
     # Archive root / config are scoped by the calling test via
     # ``monkeypatch.setenv`` so the probe never mutates process-global
-    # ``os.environ`` directly (#1878). The convergence path reads the archive
-    # root from the ``_BenchmarkPolylogue`` object, not the env.
+    # ``os.environ`` directly (#1878).
     db_path = tmp_path / "index.db"
 
     files = list(corpus_root.rglob("*.jsonl")) + list(corpus_root.rglob("*.json"))
     # Filter only session files (skip metadata)
     files = [f for f in files if not f.name.startswith(".")]
 
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
-    polylogue = _BenchmarkPolylogue(tmp_path, db_path)
-    processor = LiveBatchProcessor(
-        cast(Any, polylogue),
-        (WatchSource(name="benchmark", root=corpus_root),),
-        cursor=CursorStore(db_path),
-        parser_fingerprint="benchmark-multi-v1",
-        converger=converger,
-    )
+    with owned_compute_adapter() as compute:
+        converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute))
 
-    t_total = time.perf_counter()
-    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
-    elapsed = time.perf_counter() - t_total
-    summary = converger.summary()
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        async def ingest() -> tuple[Any, float]:
+            # The production live batch: it bootstraps the archive and runs
+            # its Source bodies and retained publication on the daemon owners.
+            async with prepared_live_batch_processor(
+                tmp_path,
+                (WatchSource(name="benchmark", root=corpus_root),),
+                parser_fingerprint="benchmark-multi-v1",
+                converger=converger,
+                compute_adapter=compute,
+            ) as processor:
+                started = time.perf_counter()
+                result = await processor.ingest_files(files, emit_event=False)
+                return result, time.perf_counter() - started
 
-    with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
-        stored_sessions = archive.count_sessions()
-        stored_messages = archive.count_session_messages(metrics.changed_session_ids)
-    measurement = intake_measurement(
-        expected_files=len(files),
-        expected_sessions=int(metrics.ingested_session_count),
-        expected_messages=int(metrics.ingested_message_count),
-        succeeded_files=metrics.succeeded_file_count,
-        failed_files=metrics.failed_file_count,
-        skipped_files=metrics.skipped_file_count,
-        excluded_files=metrics.excluded_file_count,
-        deferred_files=metrics.deferred_file_count,
-        refused_bytes=metrics.refused_bytes,
-        stored_sessions=stored_sessions,
-        stored_messages=stored_messages,
-        stage_summary=summary,
-    )
+        metrics, elapsed = asyncio.run(ingest())
+        summary = converger.summary()
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    return {
-        # Unrounded elapsed: rounding to 2 decimals would collapse a sub-10ms
-        # run to ``0.0`` and trip the ``total_s > 0`` guard (#1878). Round at
-        # display time only.
-        "total_s": elapsed,
-        "files": float(len(files)),
-        "total_files": float(len(files)),
-        **{key: float(value) for key, value in measurement.items()},
-        "parse_wall_s": metrics.parse_time_s,
-        "convergence_wall_s": metrics.convergence_time_s,
-    }
+        with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
+            stored_sessions = archive.count_sessions()
+            stored_messages = archive.count_session_messages(metrics.changed_session_ids)
+        measurement = intake_measurement(
+            expected_files=len(files),
+            expected_sessions=int(metrics.ingested_session_count),
+            expected_messages=int(metrics.ingested_message_count),
+            succeeded_files=metrics.succeeded_file_count,
+            failed_files=metrics.failed_file_count,
+            skipped_files=metrics.skipped_file_count,
+            excluded_files=metrics.excluded_file_count,
+            deferred_files=metrics.deferred_file_count,
+            refused_bytes=metrics.refused_bytes,
+            stored_sessions=stored_sessions,
+            stored_messages=stored_messages,
+            stage_summary=summary,
+        )
 
-
-class _BenchmarkPolylogue:
-    def __init__(self, archive_root: Path, db_path: Path) -> None:
-        self.archive_root = archive_root
-        self.backend = SimpleNamespace(db_path=db_path)
+        return {
+            # Unrounded elapsed: rounding to 2 decimals would collapse a sub-10ms
+            # run to ``0.0`` and trip the ``total_s > 0`` guard (#1878). Round at
+            # display time only.
+            "total_s": elapsed,
+            "files": float(len(files)),
+            "total_files": float(len(files)),
+            **{key: float(value) for key, value in measurement.items()},
+            "parse_wall_s": metrics.parse_time_s,
+            "convergence_wall_s": metrics.convergence_time_s,
+        }
 
 
 # ── Parameterized benchmark tests ─────────────────────────────────────

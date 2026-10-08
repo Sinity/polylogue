@@ -31,12 +31,15 @@ from polylogue.archive.filter.filters import SessionFilter
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.core.enums import BlockType, Provider, Role, TitleSource
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.io_phase_metrics import connect_measured
+from tests.infra.archive_templates import seeds_off_event_loop
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import db_setup
 
 
+@seeds_off_event_loop
 def _write_codex_session(db_path: Path, *, native_id: str, title: str | None) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     try:
         session = ParsedSession(
@@ -54,7 +57,7 @@ def _write_codex_session(db_path: Path, *, native_id: str, title: str | None) ->
                 ),
             ],
         )
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.commit()
     finally:
         conn.close()
@@ -134,7 +137,7 @@ def test_no_title_source_falls_back_to_structural_label(tmp_path: Path) -> None:
     with ArchiveStore(tmp_path, initialize=True, read_only=False):
         pass
 
-    conn = sqlite3.connect(db_path)
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     try:
         session = ParsedSession(
@@ -152,7 +155,7 @@ def test_no_title_source_falls_back_to_structural_label(tmp_path: Path) -> None:
                 ),
             ],
         )
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.commit()
     finally:
         conn.close()

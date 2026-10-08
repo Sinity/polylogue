@@ -1,45 +1,56 @@
-"""Record post-ingest convergence debt outcomes."""
+"""Record evaluated post-ingest convergence obligations."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
 
-from polylogue.sources.live.batch_observability import session_ids_for_source_path
 from polylogue.sources.live.convergence_debt import ConvergenceDebt
 from polylogue.sources.live.cursor import (
     ConvergenceDebtBatchEntry,
-    ConvergenceDebtClear,
+    ConvergenceDebtSettlement,
     ConvergenceDebtWrite,
     CursorStore,
 )
+
+
+def settled_convergence_stages(state: object) -> tuple[ConvergenceDebtSettlement, ...]:
+    """Carry the evaluated subject directly from the engine's state.
+
+    A file verdict does not establish any session verdict, even when those
+    sessions were acquired from that file. Skipped and unrun stages settle
+    nothing; only the evaluated subject's completed stage is authoritative.
+    """
+    from polylogue.sources.live.convergence_debt import stage_state_value
+
+    path = getattr(state, "path", None)
+    session_id = getattr(state, "session_id", None)
+    if isinstance(path, Path):
+        subject_type, subject_id = "source_path", str(path)
+    elif isinstance(session_id, str):
+        subject_type, subject_id = "session_id", session_id
+    else:
+        return ()
+    stages = getattr(state, "stages", None)
+    if not isinstance(stages, dict):
+        return ()
+    return tuple(
+        ConvergenceDebtSettlement(subject_type, subject_id, str(stage))
+        for stage, status in stages.items()
+        if stage_state_value(status) == "done"
+    )
 
 
 def record_convergence_outcomes(
     cursor: CursorStore,
     outcomes: Iterable[tuple[Path, Iterable[ConvergenceDebt]]],
     *,
-    archive_root: Path | None = None,
+    settlements: Iterable[ConvergenceDebtSettlement] = (),
 ) -> None:
-    entries: list[ConvergenceDebtBatchEntry] = []
+    entries = [ConvergenceDebtBatchEntry(tuple(settlements))]
     for path, debts in outcomes:
-        debt_items = tuple(debts)
-        # Hook-paste failures are recorded by the post-convergence owner, after
-        # the generic stage states were produced. That owner clears its row after
-        # a successful enrichment; generic outcome cleanup must not erase a retry
-        # it just recorded.
-        failed_stages = tuple(dict.fromkeys((*[debt.stage for debt in debt_items], "hook_paste_enrichment")))
-        session_ids = session_ids_for_source_path(path, archive_root=archive_root)
-        clears = [ConvergenceDebtClear("source_path", str(path), failed_stages)]
-        clears.extend(ConvergenceDebtClear("session_id", session_id, failed_stages) for session_id in session_ids)
         writes = tuple(
-            ConvergenceDebtWrite(debt.stage, subject_type, subject_id, debt.error, debt.deferred)
-            for debt in debt_items
-            for subject_type, subject_id in (
-                (("session_id", session_id) for session_id in session_ids)
-                if session_ids
-                else (("source_path", str(path)),)
-            )
+            ConvergenceDebtWrite(debt.stage, "source_path", str(path), debt.error, debt.deferred) for debt in debts
         )
-        entries.append(ConvergenceDebtBatchEntry(tuple(clears), writes))
+        entries.append(ConvergenceDebtBatchEntry(writes=writes))
     cursor.apply_convergence_debt_batch(entries)

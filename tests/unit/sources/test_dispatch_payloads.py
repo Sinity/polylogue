@@ -13,10 +13,10 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.dispatch import (
     _payload_record,
     _payload_sequence,
+    admit_parsed_sessions_for_publication,
     detect_provider,
     parse_payload,
     parse_stream_payload,
-    require_positive_conversational_evidence,
 )
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
@@ -154,7 +154,9 @@ def test_source_parser_groups_real_shaped_hermes_atof_jsonl_as_one_retained_stre
     generic hook sidecar. The actual source walk stops producing the one
     observer session and its retained whole-file raw evidence.
     """
-    source = Source(name="hermes", path=HERMES_ATOF_FIXTURE.parent)
+    # The fixture directory is not a Hermes home, so the stream is declared
+    # as the one explicit input file.
+    source = Source(name="hermes", path=HERMES_ATOF_FIXTURE)
     pairs = list(iter_source_sessions_with_raw(source, capture_raw=True))
     # fs1.14 residual scope: the real fixture's hermes.subagent.start mark
     # (data.child_session_id="child-session-redacted") now materializes a
@@ -175,7 +177,8 @@ def test_source_parser_groups_real_shaped_hermes_atof_jsonl_as_one_retained_stre
     # one shared ``profile_root_for_artifact`` helper every Hermes family uses,
     # polylogue-q5j3o) now artifact- AND profile-qualifies the observer session
     # identity.
-    from polylogue.sources.parsers.hermes_identity import profile_key, profile_root_for_artifact
+    from polylogue.core.provider_identity import profile_root_for_artifact
+    from polylogue.sources.parsers.hermes_identity import profile_key
 
     expected_key = profile_key(profile_root_for_artifact(HERMES_ATOF_FIXTURE))
     assert session.provider_session_id == f"observer:atof:real-nemo-relay-session-redacted@profile-{expected_key}"
@@ -750,8 +753,8 @@ def test_parse_stream_payload_codex_long_rollout_with_repeated_session_meta_yiel
     4 ``session_meta`` records, ~500 ``reasoning``, ~440 ``function_call``/
     ``function_call_output`` pairs, ~44 ``custom_tool_call``/
     ``custom_tool_call_output`` pairs, and 55 ``message`` records, all routed
-    through ``parse_stream_payload`` -- the exact function
-    ``pipeline/services/ingest_worker.py`` calls for streamed Codex ingest.
+    through ``parse_stream_payload`` -- the parser consumed by retained
+    revision preparation for streamed Codex ingest.
     Current code already parses the real bytes correctly (verified directly
     against the live blob); this fixture keeps that guarantee under CI.
 
@@ -869,7 +872,7 @@ def test_parse_stream_payload_codex_long_rollout_with_repeated_session_meta_yiel
     assert all(block.text is None for block in thinking_blocks)
 
 
-def test_require_positive_conversational_evidence_refuses_claude_code_stream_with_no_conversational_records(
+def test_admit_parsed_sessions_for_publication_refuses_claude_code_stream_with_no_conversational_records(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """polylogue-9ykn regression: a Claude Code JSONL stream consisting
@@ -883,18 +886,17 @@ def test_require_positive_conversational_evidence_refuses_claude_code_stream_wit
     this: a genuine per-session JSONL file whose only records were
     file-history-snapshot checkpoints).
 
-    ``require_positive_conversational_evidence`` is applied (not by
+    ``admit_parsed_sessions_for_publication`` is applied (not by
     ``parse_stream_payload`` itself, which stays pure routing -- see its
     caller-facing docstring) by every real production write path:
     ``sources/live/batch.py``'s full-ingest loop,
-    ``pipeline/services/ingest_worker.py``'s ``_parse_plan_sessions``,
     ``sources/live/append_ingest.py``, and
-    ``sources/revision_backfill.py``'s ``_parse_stream``. This test pins the
+    ``sources/revision_backfill.py``'s retained parse preparation. This test pins the
     filter function itself against the exact ``parse_stream_payload`` output
     shape those callers see.
 
     Mutation that fails this: removing the message-content check from
-    ``require_positive_conversational_evidence``, or changing it to keep
+    ``admit_parsed_sessions_for_publication``, or changing it to keep
     zero-message sessions.
     """
     payload = [
@@ -917,15 +919,13 @@ def test_require_positive_conversational_evidence_refuses_claude_code_stream_wit
     assert parsed[0].messages == []
 
     with caplog.at_level("WARNING", logger="polylogue.sources.dispatch"):
-        sessions = require_positive_conversational_evidence(
-            parsed, provider=Provider.CLAUDE_CODE, source_path=source_path
-        )
+        sessions = admit_parsed_sessions_for_publication(parsed, provider=Provider.CLAUDE_CODE, source_path=source_path)
 
     assert sessions == []
     assert any("polylogue-9ykn" in record.message and "no messages" in record.message for record in caplog.records)
 
 
-def test_require_positive_conversational_evidence_refuses_claude_ai_export_conversation_with_no_messages(
+def test_admit_parsed_sessions_for_publication_refuses_claude_ai_export_conversation_with_no_messages(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """polylogue-9ykn regression: a claude.ai export conversation with a real
@@ -934,7 +934,7 @@ def test_require_positive_conversational_evidence_refuses_claude_ai_export_conve
     a conversation -- it must not become a session either.
 
     Mutation that fails this: removing the message-content check from
-    ``require_positive_conversational_evidence``, or changing it to keep
+    ``admit_parsed_sessions_for_publication``, or changing it to keep
     zero-message sessions.
     """
     payload = {
@@ -950,7 +950,7 @@ def test_require_positive_conversational_evidence_refuses_claude_ai_export_conve
     assert parsed[0].messages == []
 
     with caplog.at_level("WARNING", logger="polylogue.sources.dispatch"):
-        sessions = require_positive_conversational_evidence(
+        sessions = admit_parsed_sessions_for_publication(
             parsed, provider=Provider.CLAUDE_AI, source_path="claude-ai-export.zip:conversations.json"
         )
 
@@ -969,12 +969,12 @@ def test_parse_payload_generic_unrecognized_record_shape_manufactures_only_a_con
     ``parse_payload``'s Claude Code single-document lowering today: it
     manufactures a one-message session whose sole message has an empty
     ``text`` and no blocks -- structurally "has a message" but zero actual
-    conversational evidence. ``require_positive_conversational_evidence``
+    conversational evidence. ``admit_parsed_sessions_for_publication``
     (checking message *content*, not just message *count*) is what actually
     refuses it before any production write path can persist it.
 
     Mutation that fails this: making the message-content check in
-    ``require_positive_conversational_evidence`` accept a message with empty
+    ``admit_parsed_sessions_for_publication`` accept a message with empty
     text and no blocks, or dropping the check back to a message-count test.
     """
     payload = {"conversation": "conv-1", "parent": "parent-1", "child": "child-1", "type": "user", "timestamp": "t"}
@@ -986,7 +986,7 @@ def test_parse_payload_generic_unrecognized_record_shape_manufactures_only_a_con
     assert not parsed[0].messages[0].blocks
 
     with caplog.at_level("WARNING", logger="polylogue.sources.dispatch"):
-        sessions = require_positive_conversational_evidence(parsed, provider=Provider.CLAUDE_CODE, source_path=None)
+        sessions = admit_parsed_sessions_for_publication(parsed, provider=Provider.CLAUDE_CODE, source_path=None)
 
     assert sessions == []
 

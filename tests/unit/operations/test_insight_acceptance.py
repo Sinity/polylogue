@@ -427,8 +427,8 @@ def test_killed_sealed_insight_page_is_terminal_at_restart_not_unknown(tmp_path:
     Anti-vacuity: re-derive through ``InsightsRebuildActuator.apply`` in its
     ``recover`` and the run ends ``recovered_complete`` with no part receipt.
     """
-    from polylogue.operations.mutation_replay import recover_interrupted_operations
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.operation_recovery import recover_on_admitted_owner
     from tests.unit.operations.test_mutation_actuators import _seed_archive_session
 
     bootstrap_archive_root(tmp_path)
@@ -475,7 +475,7 @@ def test_killed_sealed_insight_page_is_terminal_at_restart_not_unknown(tmp_path:
         )
         conn.commit()
 
-    recover_interrupted_operations(tmp_path)
+    recover_on_admitted_owner(tmp_path)
 
     with sqlite3.connect(tmp_path / "audit.db") as conn:
         assert conn.execute(

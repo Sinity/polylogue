@@ -6,20 +6,23 @@ builder holds one page per relation at a time instead of the whole session.
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING
 
 from polylogue.archive.message.models import Message
 from polylogue.archive.session.events import SessionEvent
+from polylogue.core.async_bridge import complete_without_suspension
 from polylogue.core.identity_law import transcript_order_sql
 from polylogue.storage.hydrators import message_from_record, session_event_from_record
 from polylogue.storage.runtime import BlockRecord
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import MESSAGES_SPEC
 from polylogue.storage.sqlite.queries.mappers import _row_to_content_block
 from polylogue.storage.sqlite.queries.mappers_archive import bind_message_row_mapper
-from polylogue.storage.sqlite.queries.session_events import _row_to_session_event
+from polylogue.storage.sqlite.queries.session_events import (
+    _row_to_session_event,
+    hydrate_session_event_array_items,
+)
 
 if TYPE_CHECKING:
     from polylogue.analysis.orchestration_evidence import SessionOrchestrationEvidence
@@ -120,8 +123,10 @@ def iter_orchestration_events(conn: sqlite3.Connection, session_id: str) -> Iter
             """,
             (session_id, *after, _PAGE_SIZE),
         ).fetchall()
-        for row in rows:
-            yield session_event_from_record(_row_to_session_event(row))
+        records = [_row_to_session_event(row) for row in rows]
+        hydrate_session_event_array_items(conn, records)
+        for record in records:
+            yield session_event_from_record(record)
         if len(rows) < _PAGE_SIZE:
             return
         after = (int(rows[-1]["position"]),)
@@ -180,7 +185,9 @@ def read_session_orchestration(
         session_id = archive.resolve_session_id(session_ref)
     except KeyError:
         return None
-    topology = asyncio.run(derive_session_topology_async(_TopologySnapshot(archive, raise_if_aborted), session_id))
+    topology = complete_without_suspension(
+        derive_session_topology_async(_TopologySnapshot(archive, raise_if_aborted), session_id)
+    )
     artifacts, _ = archive.raw_artifacts_for_session(session_id, limit=1, offset=0)
     predicate = QueryFieldPredicate(field="session.id", values=(session_id,), op="=").with_field_ref(
         QueryFieldRef(scope="session", name="id", source_name="session.id")

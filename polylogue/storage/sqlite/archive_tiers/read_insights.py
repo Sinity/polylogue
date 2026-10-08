@@ -56,6 +56,7 @@ class ArchiveReadInsights:
         self._normalize_origin = normalize_origin
         self._iso_from_milliseconds = iso_from_milliseconds
         self._tags_relation = tags_relation
+        self.degraded_components: tuple[str, ...] = ()
 
     def list_tool_usage_insights(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageInsight]:
         """Aggregate tool-usage insights from action rows."""
@@ -127,8 +128,16 @@ class ArchiveReadInsights:
             (*params, request.limit if request.limit is not None else -1, request.offset),
         ).fetchall()
         result: list[ToolEpisodeInsight] = []
+        self.degraded_components = ()
         for row in rows:
             state = str(row["result_state"])
+            plural = (
+                row["tool_result_block_id"] is None
+                and state != "no_result"
+                and row["outcome_unknown_reason"] != "ambiguous_tool_id_reuse"
+            )
+            if plural:
+                self.degraded_components = ("tool_episode_plural_output_omitted",)
             before, after, next_action = self._episode_context(row)
             result.append(
                 ToolEpisodeInsight(
@@ -151,7 +160,9 @@ class ArchiveReadInsights:
                     next_action=next_action,
                     followup_class=str(row["followup_class"]) if row["followup_class"] else None,
                     caveat=(
-                        "outcome unknown: no paired structural result"
+                        "parent-proven multiple results; scalar output omitted"
+                        if plural
+                        else "outcome unknown: no paired structural result"
                         if state == "no_result"
                         else "outcome unknown: paired structural result has no trusted verdict"
                         if state == "outcome_unknown" and row["tool_result_block_id"] is not None

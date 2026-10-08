@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 
 @pytest.fixture
@@ -46,6 +47,7 @@ class TestCursorStorePersistence:
             content_fingerprint="abc123",
             parser_fingerprint="v1",
             source_name="test",
+            authority=fixture_cursor_authority(source_file),
         )
         record = cursor_store.get_record(source_file)
         assert record is not None
@@ -62,6 +64,7 @@ class TestCursorStorePersistence:
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
             mtime_ns=stat.st_mtime_ns,
+            authority=fixture_cursor_authority(source_file),
         )
         record = cursor_store.get_record(source_file)
         assert record is not None
@@ -70,15 +73,19 @@ class TestCursorStorePersistence:
         assert record.mtime_ns == stat.st_mtime_ns
 
     def test_failure_count_increments(self, cursor_store: CursorStore, source_file: Path) -> None:
-        cursor_store.set(source_file, byte_size=100, content_fingerprint="abc")
-        cursor_store.mark_failed(source_file)
+        cursor_store.set(
+            source_file, byte_size=100, content_fingerprint="abc", authority=fixture_cursor_authority(source_file)
+        )
+        cursor_store.mark_failed(source_file, authority=fixture_cursor_authority(source_file))
         r1 = cursor_store.get_record(source_file)
         assert r1 is not None
         assert r1.failure_count >= 1
         assert r1.next_retry_at is not None
 
     def test_excluded_flag_is_stored(self, cursor_store: CursorStore, source_file: Path) -> None:
-        cursor_store.set(source_file, byte_size=100, content_fingerprint="abc")
+        cursor_store.set(
+            source_file, byte_size=100, content_fingerprint="abc", authority=fixture_cursor_authority(source_file)
+        )
         cursor_store.mark_excluded(source_file)
         r = cursor_store.get_record(source_file)
         assert r is not None
@@ -128,6 +135,7 @@ class TestCursorSkipDecisions:
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
             mtime_ns=stat.st_mtime_ns,
+            authority=fixture_cursor_authority(source_file),
         )
         # Simulate new parser version
         NEW_PARSER = "v2"
@@ -147,6 +155,7 @@ class TestCursorSkipDecisions:
             st_dev=stat1.st_dev,
             st_ino=stat1.st_ino,
             mtime_ns=stat1.st_mtime_ns,
+            authority=fixture_cursor_authority(f1),
         )
         # Rename
         f2 = tmp_path / "renamed.jsonl"
@@ -162,7 +171,7 @@ class TestCursorSkipDecisions:
         f = tmp_path / "quarantine.jsonl"
         f.write_text("invalid json not a real file\n")
         stat = os.stat(f)
-        cursor_store.set(f, byte_size=stat.st_size, content_fingerprint="bad")
+        cursor_store.set(f, byte_size=stat.st_size, content_fingerprint="bad", authority=fixture_cursor_authority(f))
         cursor_store.mark_excluded(f)
         excluded = cursor_store.list_excluded()
         assert str(f) in excluded

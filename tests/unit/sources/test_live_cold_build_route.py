@@ -1,25 +1,30 @@
-"""The dispatcher's own cold-build shape (polylogue-6xcqj).
+"""The live write route's cold-build shape (polylogue-6xcqj).
 
 The cold-build write shape used to be reachable only from
 ``sources/revision_backfill.py``: the ordinary live ingest pass took the live
 write profile and the full compare/replace writer no matter how empty the
-index generation was. These tests pin the shape onto the route the daemon's
-intake dispatcher actually uses -- ``LiveBatchProcessor.ingest_files`` -- and
-pin the boundary that hands the generation back to live readers.
+index generation was. These tests pin the shape onto the live write open
+(``_open_archive_for_live_write``), which the append route calls with
+``cold_build=True`` on every pass, and pin the boundary that hands the
+generation back to live readers.
 """
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 from polylogue.sources.live import WatchSource
+from polylogue.sources.live.archive_open import _open_archive_for_live_write
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.raw_owner_routes import run_ingest_files
 
 
 def _codex_session(native_id: str, text: str) -> bytes:
@@ -33,9 +38,12 @@ def _codex_session(native_id: str, text: str) -> bytes:
 
 def _processor(archive_root: Path, root: Path) -> LiveBatchProcessor:
     index_db = archive_root / "index.db"
+    # The daemon ingests into a bootstrapped root; source-only acquisition
+    # refuses a missing Source tier.
+    bootstrap_archive_root(archive_root)
     return LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="codex", root=root),),
+        (WatchSource(name="codex", root=root, layout=export_drop_layout((".jsonl",))),),
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )
@@ -50,37 +58,25 @@ def _index_pragma(archive_root: Path, pragma: str) -> object:
 
 
 def test_an_empty_generation_gives_the_live_pass_the_cold_build_shape(tmp_path: Path) -> None:
-    """The store engages the shape from generation state, not a caller flag.
+    """The live write open engages the shape from generation state, not a caller flag.
+
+    The full-ingest pass now writes Source only and publishes through the
+    retained owner (its empty-archive cold build is the owned inactive
+    generation, pinned by ``test_retained_cold_readiness``); the live append
+    route is the one that asks ``_open_archive_for_live_write`` for this shape
+    on every pass.
 
     Anti-vacuity: reverting ``_open_archive_for_live_write`` to the plain
     ``open_existing`` writer, or dropping the emptiness probe so the shape is
     never engaged, makes the ``engaged`` assertion red.
     """
-    root = tmp_path / "sessions"
-    root.mkdir()
-    (root / "one.jsonl").write_bytes(_codex_session("cold-one", "zero"))
-
-    engaged: list[bool] = []
-    processor = _processor(tmp_path, root)
-    original = ArchiveStore.open_active_cold_build.__func__  # type: ignore[attr-defined]
-
-    def recording(cls: type[ArchiveStore], archive_root: Path) -> ArchiveStore:
-        store = cast(ArchiveStore, original(cls, archive_root))
-        engaged.append(store.active_cold_build_engaged)
-        return store
-
-    ArchiveStore.open_active_cold_build = classmethod(recording)  # type: ignore[assignment]
-    try:
-        metrics = asyncio.run(processor.ingest_files([root / "one.jsonl"], emit_event=False))
-    finally:
-        ArchiveStore.open_active_cold_build = classmethod(original)  # type: ignore[assignment]
-
-    assert metrics.succeeded_file_count == 1
-    assert engaged and engaged[0] is True
+    bootstrap_archive_root(tmp_path)
+    with _open_archive_for_live_write(tmp_path, cold_build=True) as archive:
+        assert archive.active_cold_build_engaged is True
 
 
 def test_a_populated_generation_falls_back_to_the_live_shape(tmp_path: Path) -> None:
-    """The shape is licensed by emptiness, so the second pass loses it.
+    """The shape is licensed by emptiness, so the next pass loses it.
 
     This is the transition back to the live shape: nothing latches, and no
     caller has to remember to turn it off.
@@ -89,26 +85,20 @@ def test_a_populated_generation_falls_back_to_the_live_shape(tmp_path: Path) -> 
     ``SELECT 1 FROM sessions`` probe (or engage unconditionally) makes the
     second ``engaged`` assertion red.
     """
-    root = tmp_path / "sessions"
-    root.mkdir()
-    (root / "one.jsonl").write_bytes(_codex_session("cold-first", "zero"))
-    (root / "two.jsonl").write_bytes(_codex_session("cold-second", "one"))
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.base import ParsedSession
 
+    bootstrap_archive_root(tmp_path)
     engaged: list[bool] = []
-    processor = _processor(tmp_path, root)
-    original = ArchiveStore.open_active_cold_build.__func__  # type: ignore[attr-defined]
-
-    def recording(cls: type[ArchiveStore], archive_root: Path) -> ArchiveStore:
-        store = cast(ArchiveStore, original(cls, archive_root))
-        engaged.append(store.active_cold_build_engaged)
-        return store
-
-    ArchiveStore.open_active_cold_build = classmethod(recording)  # type: ignore[assignment]
-    try:
-        assert asyncio.run(processor.ingest_files([root / "one.jsonl"], emit_event=False)).succeeded_file_count == 1
-        assert asyncio.run(processor.ingest_files([root / "two.jsonl"], emit_event=False)).succeeded_file_count == 1
-    finally:
-        ArchiveStore.open_active_cold_build = classmethod(original)  # type: ignore[assignment]
+    with _open_archive_for_live_write(tmp_path, cold_build=True) as archive:
+        engaged.append(archive.active_cold_build_engaged)
+        write_fixture_index_session(
+            archive._conn,
+            ParsedSession(source_name=Provider.CODEX, provider_session_id="cold-first", title="first", messages=[]),
+        )
+        archive._conn.commit()
+    with _open_archive_for_live_write(tmp_path, cold_build=True) as archive:
+        engaged.append(archive.active_cold_build_engaged)
 
     assert engaged == [True, False]
 
@@ -129,7 +119,7 @@ def test_the_cold_build_boundary_leaves_a_readable_wal_generation(tmp_path: Path
     root.mkdir()
     (root / "one.jsonl").write_bytes(_codex_session("cold-boundary", "zero"))
     processor = _processor(tmp_path, root)
-    assert asyncio.run(processor.ingest_files([root / "one.jsonl"], emit_event=False)).succeeded_file_count == 1
+    assert run_ingest_files(processor, [root / "one.jsonl"], emit_event=False).succeeded_file_count == 1
 
     assert _index_pragma(tmp_path, "journal_mode") == "wal"
     conn = sqlite3.connect(tmp_path / "index.db")
@@ -202,7 +192,6 @@ def test_a_second_write_of_one_session_under_fresh_mode_is_refused(tmp_path: Pat
 
     from polylogue.core.enums import Provider
     from polylogue.sources.parsers.base import ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
     session = ParsedSession(
         source_name=Provider.CODEX,
@@ -213,6 +202,6 @@ def test_a_second_write_of_one_session_under_fresh_mode_is_refused(tmp_path: Pat
     with ArchiveStore.open_active_cold_build(tmp_path) as archive:
         assert archive.active_cold_build_engaged is True
         batch: set[str] = set()
-        write_parsed_session_to_archive(archive._conn, session, fresh_build=True, fresh_build_batch=batch)
+        write_fixture_index_session(archive._conn, session, fresh_build=True, fresh_build_batch=batch)
         with pytest.raises(AssertionError, match="fresh_build requires an absent session_id"):
-            write_parsed_session_to_archive(archive._conn, session, fresh_build=True, fresh_build_batch=batch)
+            write_fixture_index_session(archive._conn, session, fresh_build=True, fresh_build_batch=batch)

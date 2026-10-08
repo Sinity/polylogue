@@ -13,6 +13,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
+from polylogue.archive.context_models import ContextImage, ContextSegment, ContextSpec
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import SessionSummary
@@ -27,7 +28,6 @@ from polylogue.cli.select import SelectSessionRow
 from polylogue.cli.session_rows import SessionSelection
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
 from polylogue.core.enums import Origin
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
@@ -1000,7 +1000,7 @@ def test_read_verb_context_uses_declared_preamble_operation() -> None:
 
 def test_read_verb_context_image_invokes_declared_read() -> None:
     """Context-image predicates and page limit reach the typed read operation."""
-    from polylogue.context.compiler import ContextImage
+    from polylogue.archive.context_models import ContextImage
 
     _, child = _context_pair(query_terms=("repo:polylogue",))
     child.obj.config = SimpleNamespace()
@@ -1106,7 +1106,6 @@ def test_read_verb_context_image_projection_spec_records_resolved_refs() -> None
     """Multi-view context images should expose resolved archive refs in the projection spec."""
     _, child = _context_pair(query_terms=("repo:polylogue",))
     child.obj.config = SimpleNamespace()
-    child.obj.polylogue = SimpleNamespace(compile_context=MagicMock(name="compile_context"))
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
@@ -1120,12 +1119,21 @@ def test_read_verb_context_image_projection_spec_records_resolved_refs() -> None
             "polylogue.cli.query_verbs._resolve_query_action_session_ids",
             return_value=["codex-session:abc123"],
         ) as resolve_session_ids,
-        patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=image),
+        patch(
+            "polylogue.cli.read_dispatch.dispatch_read",
+            return_value=({"view": "context-image", "payload": image.model_dump(mode="json")}, None),
+        ) as dispatch_image,
+        patch("polylogue.cli.read_views.context.configured_mutation_operation"),
         patch("polylogue.cli.read_views.base.deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="temporal,chronicle", output_format="json", limit=2))
 
     assert resolve_session_ids.call_args.kwargs["limit"] == 2
+    operation = dispatch_image.call_args.args[1]
+    assert operation.operation == "read.context-image"
+    assert operation.payload["read_views"] == ["temporal", "chronicle"]
+    assert operation.payload["purpose"] == "continue"
+    assert operation.payload["seed_session_ids"] == ["codex-session:abc123"]
     payload = json.loads(deliver.call_args.args[1])
     assert payload["projection_spec"]["selection"]["query"] == "repo:polylogue"
     assert payload["projection_spec"]["selection"]["limit"] == 2
@@ -1140,33 +1148,38 @@ def test_read_verb_context_image_projection_spec_records_resolved_refs() -> None
 
 @pytest.mark.parametrize("view", ["summary", "transcript"])
 def test_read_verb_token_bounded_standard_views_compile_as_messages(view: str) -> None:
-    """Token-bounded summary/transcript reads use compileable message context."""
+    """Token-bounded summary/transcript reads compile message context through the declared read."""
     _, child = _context_pair(query_terms=("id:codex-session:abc123",))
     child.obj.config = SimpleNamespace()
-    captured_specs: list[ContextSpec] = []
-
-    async def compile_context(spec: ContextSpec) -> ContextImage:
-        captured_specs.append(spec)
-        return ContextImage(spec=spec, segments=())
-
-    child.obj.polylogue = SimpleNamespace(compile_context=compile_context)
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
+    image = ContextImage(
+        spec=ContextSpec(seed_refs=("session:codex-session:abc123",), read_views=("messages",)), segments=()
+    )
 
     with (
         patch("polylogue.cli.query_verbs._resolve_query_action_session_ids", return_value=["codex-session:abc123"]),
+        patch(
+            "polylogue.cli.read_dispatch.dispatch_read",
+            return_value=({"view": "context-image", "payload": image.model_dump(mode="json")}, None),
+        ) as dispatch_image,
+        patch("polylogue.cli.read_views.context.configured_mutation_operation"),
         patch("polylogue.cli.read_views.base.deliver_content"),
     ):
         wrapped(child, **_read_verb_kwargs(view=view, max_tokens=400))
 
-    assert captured_specs[0].read_views == ("messages",)
-    assert captured_specs[0].seed_refs == ("session:codex-session:abc123",)
-    assert captured_specs[0].max_tokens == 400
+    operation = dispatch_image.call_args.args[1]
+    assert operation.operation == "read.context-image"
+    assert operation.payload["read_views"] == ["messages"]
+    assert operation.payload["seed_session_ids"] == ["codex-session:abc123"]
+    assert operation.payload["max_tokens"] == 400
+    # Only the context-image lens bounds each message; a plain transcript does not.
+    assert operation.payload["max_messages_per_session"] is None
 
 
 def test_context_image_markdown_renderer_adds_document_structure() -> None:
     """Context-image Markdown should be readable as one composed packet."""
-    from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
+    from polylogue.archive.context_models import ContextImage, ContextOmission, ContextSpec
 
     projection_spec = projection_from_views(
         ("temporal", "chronicle"),
@@ -1977,11 +1990,13 @@ def test_delete_dry_run_delegates_complete_selection_without_a_candidate_prefix(
     wrapped = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
     with (
-        patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb") as probe,
+        patch("polylogue.cli.session_rows.query_session_selection") as probe,
+        patch("polylogue.cli.session_rows.query_complete_session_selection") as walk,
         patch("polylogue.cli.archive_query.execute_delete_selection") as execute,
     ):
         wrapped(child, True, False, False, "json")
     probe.assert_not_called()
+    walk.assert_not_called()
     assert execute.call_args.args[1].query_terms == ("alpha",)
     assert execute.call_args.kwargs == {"mode": "single", "force": True, "dry_run": True}
 
@@ -2025,7 +2040,7 @@ def test_terminal_idf_helper_bounds_rows(capsys: pytest.CaptureFixture[str]) -> 
 def test_multi_session_resolution_separates_a_query_miss_from_no_seed() -> None:
     """A seed query that ran and missed is not the same as no seed at all.
 
-    ``_emit_context_image`` routes an empty list to ``context_image_payload``,
+    ``run_read_context_image`` sends an empty seed list to ``read.context-image``,
     which re-selects under its own looser context-image filters. Returning
     ``[]`` for a zero-match selection therefore turned
     ``polylogue find <miss> then read --view context-image`` into a context

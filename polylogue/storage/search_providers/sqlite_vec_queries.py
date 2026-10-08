@@ -1,4 +1,4 @@
-"""Query and upsert operations for the sqlite-vec provider."""
+"""Query operations for the sqlite-vec provider."""
 
 from __future__ import annotations
 
@@ -8,18 +8,15 @@ from contextlib import AbstractContextManager, closing, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import httpx
-
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError, SessionNotFoundError
 from polylogue.core.protocols import ScopedVectorQuery
-from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec_runtime import _assert_vec0_dimension
-from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, _serialize_f32, logger
+from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, _serialize_f32
 from polylogue.storage.sqlite.connection_profile import readonly_temp_staging
 
 
 class SqliteVecQueryMixin:
-    """Vector upsert/query/stat operations."""
+    """Vector query/stat operations."""
 
     if TYPE_CHECKING:
         db_path: Path
@@ -33,8 +30,6 @@ class SqliteVecQueryMixin:
         def _ensure_vec_available(self) -> None: ...
 
         def _ensure_tables(self) -> None: ...
-
-        def _should_embed_message(self, msg: MessageRecord) -> bool: ...
 
         def _get_embeddings(
             self,
@@ -53,108 +48,6 @@ class SqliteVecQueryMixin:
         ) -> sqlite3.Connection: ...
 
         def _release_connection(self, conn: sqlite3.Connection) -> None: ...
-
-    def upsert(self, session_id: str, messages: list[MessageRecord], *, origin: str | None = None) -> None:
-        """Upsert embeddings while holding managed lifecycle admission.
-
-        ``embeddings.db`` is a split tier and intentionally has no ``sessions``
-        table. Callers supply the archive origin or use the message source identity.
-        """
-        if getattr(self, "_snapshot_connection", None) is not None:
-            raise SqliteVecError("operation vector snapshots are read-only")
-        with self._lifecycle_admission():
-            self._upsert_unlocked(session_id, messages, origin=origin)
-
-    def _upsert_unlocked(self, session_id: str, messages: list[MessageRecord], *, origin: str | None = None) -> None:
-        """Upsert message embeddings into the vector store.
-
-        Delegates the actual write to the canonical content-addressed
-        primitives (:mod:`polylogue.storage.sqlite.archive_tiers.
-        embedding_write`) instead of hand-rolled SQL, so this provider's
-        vectors are keyed and deduped exactly like the daemon catch-up path
-        (``embed_archive_session_sync``) that shares the same ``embeddings.db``
-        file (polylogue-q88p).
-        """
-        if not messages:
-            return
-
-        carried_hashes = [bytes.fromhex(msg.content_hash) for msg in messages]
-        if any(len(digest) != 32 for digest in carried_hashes):
-            raise ValueError("message content hash must be a SHA-256 value")
-        eligible = [
-            (msg, digest)
-            for msg, digest in zip(messages, carried_hashes, strict=True)
-            if self._should_embed_message(msg)
-        ]
-        if not eligible:
-            return
-        embeddable = [msg for msg, _digest in eligible]
-        content_hashes = [digest for _msg, digest in eligible]
-        self._ensure_vec_available()
-        self._ensure_tables()
-        texts = [msg.text for msg in embeddable if msg.text]
-
-        try:
-            embeddings = self._get_embeddings(texts, input_type="document")
-        except (SqliteVecError, httpx.HTTPError) as exc:
-            logger.error("Failed to generate embeddings for %s: %s", session_id, exc)
-            raise
-
-        from datetime import UTC, datetime
-
-        from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingRequestSpec
-        from polylogue.storage.sqlite.archive_tiers.embedding_write import (
-            ArchiveEmbeddingWrite,
-            upsert_message_embeddings,
-        )
-
-        conn = self._get_connection()
-        try:
-            message_origin = origin
-            if message_origin is None:
-                message_origin = next(
-                    (msg.source_name.strip() for msg in embeddable if msg.source_name and msg.source_name.strip()),
-                    None,
-                )
-            message_origin = message_origin or "unknown"
-            now_ms = int(datetime.now(UTC).timestamp() * 1000)
-            writes = [
-                ArchiveEmbeddingWrite(
-                    message_id=msg.message_id,
-                    session_id=msg.session_id,
-                    origin=message_origin,
-                    embedding=embedding,
-                    model=self.model,
-                    embedded_at_ms=now_ms,
-                    message_content_hash=content_hash,
-                    vector_derivation_hash=EmbeddingRequestSpec(
-                        recipe=EmbeddingRecipe.current(
-                            model=self.model, dimensions=self.dimension, input_type="document"
-                        ),
-                        input_text=str(msg.text),
-                    ).vector_derivation_hash,
-                )
-                for msg, embedding, content_hash in zip(embeddable, embeddings, content_hashes, strict=True)
-            ]
-            upsert_message_embeddings(conn, writes)
-
-            conn.execute(
-                """
-                INSERT INTO embedding_status (
-                    session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
-                ) VALUES (?, ?, ?, ?, 0, NULL)
-                ON CONFLICT(session_id) DO UPDATE SET
-                    origin = excluded.origin,
-                    message_count_embedded = excluded.message_count_embedded,
-                    last_embedded_at_ms = excluded.last_embedded_at_ms,
-                    needs_reindex = 0,
-                    error_message = NULL
-                """,
-                (session_id, message_origin, len(embeddable), now_ms),
-            )
-            conn.commit()
-        finally:
-            self._release_connection(conn)
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         """Run the provider route under managed lifecycle admission."""

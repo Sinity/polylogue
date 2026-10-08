@@ -40,7 +40,7 @@ from polylogue.sources import iter_source_sessions
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.sqlite.connection import open_read_connection
 from tests.infra.live_ingest import ingest_session
 from tests.infra.storage_records import db_setup
 
@@ -70,7 +70,7 @@ def _fetch_edges(db_path: Path) -> list[sqlite3.Row]:
     # TopologyEdgeStatus members (polylogue-5dfu: that enum only declares the
     # two markers the ``status`` column actually stores, REPAIRED/QUARANTINED
     # -- resolvedness is a read-time derivation from resolved_dst_session_id).
-    with open_connection(db_path) as conn:
+    with open_read_connection(db_path) as conn:
         cursor = conn.execute(
             """
             SELECT src_session_id,
@@ -204,7 +204,7 @@ class TestTopologyEdgeUnresolvedAC:
                 branch_type=None,
             )
 
-            with open_connection(db_path) as conn:
+            with open_read_connection(db_path) as conn:
                 child_before = conn.execute(
                     "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                     (child_id,),
@@ -227,7 +227,7 @@ class TestTopologyEdgeUnresolvedAC:
         assert edges[0]["status"] == "resolved"
         assert edges[0]["dst_session_id"] == parent_id
 
-        with open_connection(db_path) as conn:
+        with open_read_connection(db_path) as conn:
             child_after = conn.execute(
                 "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                 (child_id,),
@@ -291,7 +291,7 @@ class TestTopologyEdgeFastPathPreserved:
             )
 
         # Fast-path: parent_session_id on the sessions row is set.
-        with open_connection(db_path) as conn:
+        with open_read_connection(db_path) as conn:
             row = conn.execute(
                 "SELECT parent_session_id FROM sessions WHERE session_id = ?",
                 (child_cid,),
@@ -352,7 +352,7 @@ class TestTopologyEdgeOutOfOrderResolve:
         # the child's ``sessions.parent_session_id`` and
         # ``branch_type`` columns, so the fast-path ancestry walk benefits
         # without requiring re-ingest of the child.
-        with open_connection(db_path) as conn:
+        with open_read_connection(db_path) as conn:
             row = conn.execute(
                 "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                 (child_cid,),
@@ -422,7 +422,7 @@ class TestTopologyLateParentRepair:
             # ``branch_type`` is set on the child at its original write time
             # from the parser-asserted classification — it does not depend on
             # the parent being present.
-            with open_connection(db_path) as conn:
+            with open_read_connection(db_path) as conn:
                 row = conn.execute(
                     "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                     (child_cid,),
@@ -443,7 +443,7 @@ class TestTopologyLateParentRepair:
             parent_session_id = _archive_session_id(Provider.CODEX, "late-parent")
 
         # After parent arrives: fast-path AND branch_type backfilled.
-        with open_connection(db_path) as conn:
+        with open_read_connection(db_path) as conn:
             row = conn.execute(
                 "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                 (child_cid,),
@@ -490,7 +490,7 @@ class TestTopologyLateParentRepair:
         assert child_edges[0]["status"] == "resolved"
         assert child_edges[0]["dst_session_id"] == parent_session_id
 
-        with open_connection(db_path) as conn:
+        with open_read_connection(db_path) as conn:
             row = conn.execute(
                 "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                 (child_cid,),
@@ -533,7 +533,7 @@ class TestTopologyLateParentRepair:
         assert child_edges[0]["status"] == "unresolved"
         assert child_edges[0]["dst_session_id"] is None
 
-        with open_connection(db_path) as conn:
+        with open_read_connection(db_path) as conn:
             row = conn.execute(
                 "SELECT parent_session_id FROM sessions WHERE session_id = ?",
                 (child_cid,),
@@ -581,7 +581,7 @@ class TestTopologyLateParentRepair:
         assert all(e["status"] == "resolved" for e in repaired)
         assert all(e["dst_session_id"] == parent_session_id for e in repaired)
 
-        with open_connection(db_path) as conn:
+        with open_read_connection(db_path) as conn:
             rows = conn.execute(
                 "SELECT session_id, parent_session_id, branch_type "
                 "FROM sessions WHERE session_id IN (?, ?) "
@@ -630,7 +630,7 @@ class TestTopologyLateParentRepair:
                 backend=repo.backend,
             )
 
-        with open_connection(db_path) as conn:
+        with open_read_connection(db_path) as conn:
             row = conn.execute(
                 "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                 (child_cid,),
@@ -671,15 +671,21 @@ class TestTopologyLateParentRepair:
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
 
-            child_task = ingest_session(
-                child_parsed,
-                backend=repo.backend,
-            )
-            parent_task = ingest_session(
-                parent_parsed,
-                backend=repo.backend,
-            )
-            await asyncio.gather(child_task, parent_task)
+            from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+            async def ingest_until_current(parsed: ParsedSession) -> str:
+                # A writer that committed after this one's off-writer
+                # preparation makes its seal stale; the daemon treats that
+                # typed refusal as transient and prepares again. Each refusal
+                # proves the other writer committed, so the loop is bounded
+                # by the other writer's progress.
+                while True:
+                    try:
+                        return await ingest_session(parsed, backend=repo.backend)
+                    except ReferenceSealStaleError:
+                        continue
+
+            await asyncio.gather(ingest_until_current(child_parsed), ingest_until_current(parent_parsed))
             child_session_id = _archive_session_id(Provider.CODEX, "race-child")
             parent_session_id = _archive_session_id(Provider.CODEX, "race-parent")
 
@@ -689,7 +695,7 @@ class TestTopologyLateParentRepair:
         assert child_edges[0]["status"] == "resolved"
         assert child_edges[0]["dst_session_id"] == parent_session_id
 
-        with open_connection(db_path) as conn:
+        with open_read_connection(db_path) as conn:
             row = conn.execute(
                 "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                 (child_session_id,),

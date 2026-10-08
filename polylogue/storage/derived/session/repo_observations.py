@@ -76,7 +76,7 @@ def attribution_to_observations(
     observations: list[RepoObservation] = []
     seen: set[tuple[str, str]] = set()
     for root_path in attribution.repo_paths:
-        root = root_path.strip()
+        root = root_path
         if not root:
             continue
         key = (origin_url, root)

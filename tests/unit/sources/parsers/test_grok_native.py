@@ -16,6 +16,8 @@ from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers import grok
 from polylogue.sources.parsers.base import AdmissionUnit
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
+from tests.infra.retained_replay import publish_retained_payload
 
 
 @pytest.fixture
@@ -72,6 +74,44 @@ def test_native_direct_nested_replies_and_replay_have_same_semantics(bundle: dic
     assert session_revision_projection(ordinary) == session_revision_projection(replay)
 
 
+@pytest.mark.asyncio
+async def test_native_conversation_id_survives_undated_append_and_retained_reorder(
+    tmp_path: Path, bundle: dict[str, Any]
+) -> None:
+    """Native identity remains declared even when timestamps cannot order turns."""
+    from polylogue.core.enums import Provider
+
+    original = grok.parse_conversation(bundle, "first-name")
+    root = tmp_path / "archive"
+    _, written = await publish_retained_payload(
+        root,
+        provider=Provider.GROK,
+        payload=json.dumps(bundle).encode(),
+        source_path="/neutral/native.json",
+        acquired_at_ms=1,
+    )
+    assert written == ("grok-export:native-conversation",)
+    bundle["responses"]["responses"].append(
+        {"responseId": "additional", "parentResponseId": "attachment", "sender": "assistant", "message": "More context"}
+    )
+    bundle["responses"]["responses"].reverse()
+    extended = grok.parse_conversation(bundle, "different-name")
+    assert extended.provider_session_id == original.provider_session_id == "native-conversation"
+    assert {message.provider_message_id for message in original.messages} <= {
+        message.provider_message_id for message in extended.messages
+    }
+    _, written = await publish_retained_payload(
+        root,
+        provider=Provider.GROK,
+        payload=json.dumps(bundle).encode(),
+        source_path="/neutral/native.json",
+        acquired_at_ms=2,
+    )
+    assert written == ("grok-export:native-conversation",)
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        assert archive.read_summary(written[0]).message_count == 5
+
+
 def test_native_fork_keeps_parent_edges_without_guessing_selected_leaf(bundle: dict[str, Any]) -> None:
     bundle["responses"]["responses"].append(
         {
@@ -90,6 +130,7 @@ def test_native_fork_keeps_parent_edges_without_guessing_selected_leaf(bundle: d
 
 def test_native_absent_and_repeated_ids_keep_private_asset_owner_coordinates(bundle: dict[str, Any]) -> None:
     response = bundle["responses"]["responses"][-1]
+    response["partial"] = True
     bundle["responses"]["responses"] = [deepcopy(response), deepcopy(response)]
     session = grok.parse_native_bundle(bundle, "filename")[0]
     assert [message.variant_index for message in session.messages] == [0, 1]
@@ -98,12 +139,20 @@ def test_native_absent_and_repeated_ids_keep_private_asset_owner_coordinates(bun
         for asset in session.attachments
         if asset.provider_attachment_id == "file-1" and asset.owner_coordinate is not None
     ] == [(0, 0), (1, 1)]
+    response_events = [event for event in session.session_events if event.event_type == "grok_response_state"]
+    assert [event.owner_coordinate for event in response_events] == [
+        message.owner_coordinate for message in session.messages
+    ]
+    assert [event.payload["partial"] for event in response_events] == [True, True]
     del bundle["responses"]["responses"][0]["responseId"]
     session = grok.parse_native_bundle(bundle, "filename")[0]
     assert session.messages[0].provider_message_id == ""
     assert session.attachments[0].message_provider_id is None
     assert session.attachments[0].owner_coordinate is not None
     assert session.attachments[0].owner_coordinate.physical_key == (0, 0)
+    response_events = [event for event in session.session_events if event.event_type == "grok_response_state"]
+    assert response_events[0].source_message_provider_id is None
+    assert response_events[0].owner_coordinate == session.messages[0].owner_coordinate
 
 
 def test_native_unknown_structures_retain_raw_evidence(bundle: dict[str, Any]) -> None:
@@ -161,12 +210,7 @@ def test_native_result_unsupported_outcome_is_not_reported_as_absence(
     assert session.messages[0].blocks[0].is_error is None
     assert session.messages[0].blocks[0].outcome_unknown_reason == "unsupported_construct"
     with ArchiveStore(workspace_env["archive_root"]) as archive:
-        _, stored_id = archive.write_raw_and_parsed(
-            session,
-            payload=json.dumps(bundle).encode(),
-            source_path="/example/grok-native.json",
-            acquired_at_ms=1735689600000,
-        )
+        stored_id = write_index_session(archive, session)
         hydrated = archive.read_session(stored_id)
         assert hydrated.messages[0].blocks[0].tool_outcome == "unknown"
         assert hydrated.messages[0].blocks[0].tool_result_outcome_unknown_reason == "unsupported_construct"
@@ -181,6 +225,71 @@ def test_native_missing_message_id_does_not_pair_tools_by_ordinal(bundle: dict[s
     assert all(block.tool_id is None for block in session.messages[0].blocks)
 
 
+@pytest.mark.parametrize("wrapped_responses", [False, True])
+@pytest.mark.parametrize("nested_conversation", [False, True])
+def test_native_detection_and_ordinary_dispatch_preserve_endpoint_bundle(
+    bundle: dict[str, Any],
+    wrapped_responses: bool,
+    nested_conversation: bool,
+) -> None:
+    from io import BytesIO
+
+    from polylogue.core.enums import Provider
+    from polylogue.sources.dispatch import (
+        detect_provider_evidence,
+        detect_provider_from_stream_evidence,
+        parse_payload,
+    )
+
+    payload = deepcopy(bundle)
+    if wrapped_responses and isinstance(payload["responses"], list):
+        payload["responses"] = {"responses": payload["responses"]}
+    elif not wrapped_responses and isinstance(payload["responses"], dict):
+        payload["responses"] = payload["responses"]["responses"]
+    conversation = payload["conversation"]
+    if isinstance(conversation.get("conversation"), dict):
+        conversation = conversation["conversation"]
+    payload["conversation"] = {"conversation": conversation} if nested_conversation else conversation
+    # Both account-export and native shape evidence exist. The narrower native
+    # contract must decide dispatch before export lowering drops these turns.
+    payload["conversations"] = [{"conversation": {"title": "account"}, "responses": []}]
+    expected = detect_provider_evidence(payload)
+    assert expected == (Provider.GROK, "grok.looks_like_native_bundle")
+    handle = BytesIO(json.dumps(payload).encode())
+    assert detect_provider_from_stream_evidence(handle) == expected
+    assert handle.tell() == 0
+    parsed = parse_payload(Provider.GROK, payload, "fallback")
+    assert len(parsed) == 1
+    assert session_revision_projection(parsed[0]) == session_revision_projection(
+        grok.parse_conversation(payload, "fallback")
+    )
+
+
+def test_native_bundle_prepared_generic_route_matches_ordinary_parser(
+    tmp_path: Path,
+    bundle: dict[str, Any],
+) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+
+    source = tmp_path / "native.json"
+    source.write_text(json.dumps(bundle), encoding="utf-8")
+    prepared = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GROK.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert prepared.error is None
+    sessions = list(prepared.iter_sessions())
+    assert len(sessions) == 1
+    assert session_revision_projection(sessions[0]) == session_revision_projection(
+        grok.parse_conversation(bundle, "fallback")
+    )
+
+
 @pytest.mark.parametrize("sender", ["human", "user"])
 def test_native_human_sender_authorship_survives_persisted_hydration(
     bundle: dict[str, Any], workspace_env: dict[str, Path], sender: str
@@ -193,12 +302,7 @@ def test_native_human_sender_authorship_survives_persisted_hydration(
     assert session.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
     assert session.messages[0].message_type is MessageType.CONTEXT
     with ArchiveStore(archive_root) as archive:
-        _, stored_id = archive.write_raw_and_parsed(
-            session,
-            payload=json.dumps(bundle).encode(),
-            source_path="/example/grok-native.json",
-            acquired_at_ms=1735689600000,
-        )
+        stored_id = write_index_session(archive, session)
         hydrated = archive_envelope_to_session(archive.read_session(stored_id))
         message = next(iter(hydrated.messages))
         assert message.material_origin is MaterialOrigin.HUMAN_AUTHORED

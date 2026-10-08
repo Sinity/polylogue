@@ -1,6 +1,6 @@
 # Archive Backup and Restore Boundaries
 
-The fresh-start reset moves previous Polylogue core state aside intact and constructs fresh Source, User, Audit, Index and Ops tiers through the current constructor. It does not import previous core tiers or their physical authority receipts. External source files explicitly declared for intake may be ingested into the new archive. Explicitly selected purchased Embeddings may be preserved from a compatible sealed backup; matching content/model outputs must not be regenerated. The preparation witness restores only the selected `embeddings.db` bytes into an otherwise absent scratch root, then runs the ordinary owned constructor and embedding lifecycle startup. Startup creates destination-owned generation metadata; old occurrence references do not supply fresh occurrence bindings. This is separate from the complete-core verified restore operation below, which still refuses partial durable packages.
+The fresh-start reset moves previous Polylogue core state aside intact and constructs fresh Source, User, Audit, Index and Ops tiers through the current constructor. It does not import previous core tiers or their physical authority receipts. External source files explicitly declared for intake may be copied into the new intake roots and ingested, including original hook and browser capture payloads stored beside the old tiers. Preserve the originals and their declared layouts; source copies do not carry old database or capture-registry authority. Explicitly selected purchased Embeddings may be preserved from a compatible sealed backup; matching content/model outputs must not be regenerated. The preparation witness restores only the selected `embeddings.db` bytes into an otherwise absent scratch root, then runs the ordinary owned constructor and embedding lifecycle startup. Startup creates destination-owned generation metadata; old occurrence references do not supply fresh occurrence bindings. This is separate from the complete-core verified restore operation below, which still refuses partial durable packages.
 
 Polylogue stores one archive root as a split SQLite file set plus a
 content-addressed blob store. Backups must preserve the tiers by durability
@@ -102,9 +102,10 @@ polylogue ops maintenance restore-verified-backup \
 `maintenance.restore_verified_backup` verifies the complete signed package,
 blob closure, and original released train bindings. The production archive
 population owner creates the destination with the immutable six-tier v1
-baseline. A Source1 package populates its exact rows before the normal
-Source002 train runs; a Source2 package populates a destination whose own
-train has completed. SQLite backup preserves destination-owned inodes.
+baseline. A package whose durable tiers sit below the runtime versions
+populates its exact rows before the destination's own numbered trains run; a
+package at the runtime versions needs none. SQLite backup preserves
+destination-owned inodes.
 Startup checks that destination's actual train authority. Original
 format and train receipts remain byte-for-byte detached provenance under
 `.archive-population-provenance`; they are never rebound or admitted by

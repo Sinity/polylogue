@@ -10,12 +10,18 @@ with real source files under ``tmp_path``; no ambient data is read.
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import sqlite3
 import zipfile
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
+import pytest
+
+from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
     ArchiveVerificationCheck,
@@ -34,6 +40,7 @@ from polylogue.maintenance.source_manifest_continuity import (
     build_source_frontier,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+from polylogue.sources.source_acquisition_components import ZipEntryReadContext, iter_zip_entry_raw_data
 from polylogue.sources.sqlite_snapshot import sqlite_member_revision
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -148,6 +155,38 @@ def _insert_session(
         (f"{session_id}:c:0123456789abcdef0123456789abcdef.0", session_id),
     )
     return session_id
+
+
+def _record_member_fixture(
+    conn: sqlite3.Connection,
+    bundle: Path,
+    raw_id: str = "raw-session",
+    member: str = "conversations.json",
+    entry_ordinal: int = 0,
+) -> None:
+    from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
+    from polylogue.sources.source_acquisition_components import zip_acquisition_fingerprint
+    from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
+
+    record_raw_container_coordinate(
+        conn,
+        raw_id,
+        coordinate_format="zip-v2",
+        entry_ordinal=entry_ordinal,
+        split_index=0,
+        addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+        captured_coordinate=CapturedZipMemberCoordinate(
+            str(bundle.resolve()),
+            str(bundle.resolve()),
+            member,
+            entry_ordinal,
+            0,
+            MemberAddressingMode.WHOLE_MEMBER,
+            hashlib.sha256(bundle.read_bytes()).hexdigest(),
+            zip_acquisition_fingerprint(Provider.CLAUDE_CODE),
+        ),
+        manage_transaction=False,
+    )
 
 
 def _seed(root: Path) -> tuple[Path, Path]:
@@ -726,6 +765,7 @@ def test_check_json_carries_every_term_with_its_rule(tmp_path: Path) -> None:
         "materialized",
         "source_missing",
         "source_lost",
+        "missing_blob",
         "unexplained",
         "phantom_declared_non_session_lineage",
     } <= set(terms)
@@ -1132,6 +1172,26 @@ def test_historical_revision_is_not_an_orphan(tmp_path: Path) -> None:
     assert stray_check.status is OutcomeStatus.ERROR
 
 
+def test_frontier_orphan_does_not_replace_session_orphan_count(tmp_path: Path) -> None:
+    """A raw outside configured roots is not an index session with no raw."""
+    _seed(tmp_path)
+    outside = tmp_path / "outside" / "session.jsonl"
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(b"session payload")
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        source_conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (str(outside),))
+        source_conn.execute("UPDATE blob_refs SET source_path = ? WHERE ref_id = 'raw-session'", (str(outside),))
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    check = _run_with_frontier(tmp_path, _configured_frontier(tmp_path))
+
+    assert _count(check, "session_orphan") == 0
+    assert _count(check, "frontier_orphan") == 1
+
+
 def test_multi_session_raw_is_not_a_mismatch(tmp_path: Path) -> None:
     """A grouped raw that emits two sessions conserves both memberships.
 
@@ -1275,25 +1335,23 @@ def test_stale_sqlite_revision_is_not_conserved(tmp_path: Path) -> None:
     assert _count(current, "frontier_unacquired") == 0, current.evidence["terms"]
 
 
-def test_archive_member_source_is_not_lost(tmp_path: Path) -> None:
-    """A raw acquired from an archive member whose container is present is conserved.
+def test_archive_member_presence_does_not_replace_retained_cas(tmp_path: Path) -> None:
+    """A declared ZIP member proves source presence, not retained archive bytes.
 
-    Anti-vacuity: revert ``_source_exists`` to a bare ``Path(source_path).exists()``
-    and the ``archive!member`` coordinate can never resolve, so the raw is typed
-    ``source_lost`` (blocking) even though the bytes are sitting in the archive on
-    disk. The blob ref is deleted on purpose so the ladder cannot fall back to the
-    non-blocking ``source_missing`` arm -- only the on-disk probe decides.
+    Mutation: source presence bypasses a missing capture and falsely materializes
+    this raw after its blob reference is removed.
     """
     session_source, _ = _seed(tmp_path)
     payload = session_source.read_bytes()
     bundle = tmp_path / "export-bundle.zip"
     with zipfile.ZipFile(bundle, "w") as archive:
         archive.writestr("conversations.json", payload)
-    coordinate = f"{bundle}!conversations.json"
+    coordinate = f"{bundle}:conversations.json"
 
     source_conn = sqlite3.connect(tmp_path / "source.db")
     try:
         source_conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (coordinate,))
+        _record_member_fixture(source_conn, bundle)
         source_conn.execute("UPDATE raw_artifacts SET source_path = ? WHERE raw_id = 'raw-session'", (coordinate,))
         source_conn.execute("DELETE FROM blob_refs WHERE ref_id = 'raw-session'")
         source_conn.commit()
@@ -1302,16 +1360,17 @@ def test_archive_member_source_is_not_lost(tmp_path: Path) -> None:
     session_source.unlink()
 
     check = _run(tmp_path)
-    assert check.status is OutcomeStatus.OK, check.summary
+    assert check.status is OutcomeStatus.ERROR, check.summary
     assert _count(check, "source_lost") == 0
     assert _count(check, "source_missing") == 0
-    assert _count(check, "materialized") == 1
+    assert _count(check, "missing_blob") == 1
+    assert _count(check, "materialized") == 0
 
 
 def test_member_container_absent_is_lost(tmp_path: Path) -> None:
     """The member probe must not pass a coordinate whose container is gone.
 
-    Anti-vacuity: resolve ``archive!member`` by merely stripping the member and
+    Anti-vacuity: infer a member from its operational suffix and
     returning True, and this stays green while a genuinely unrecoverable raw is
     reported conserved.
     """
@@ -1340,17 +1399,240 @@ def test_member_missing_from_container_is_lost(tmp_path: Path) -> None:
     session_source, _ = _seed(tmp_path)
     bundle = tmp_path / "export-bundle.zip"
     with zipfile.ZipFile(bundle, "w") as archive:
-        archive.writestr("something-else.json", b"{}")
-    coordinate = f"{bundle}!conversations.json"
+        archive.writestr("conversations.json", session_source.read_bytes())
+    coordinate = f"{bundle}:conversations.json"
     source_conn = sqlite3.connect(tmp_path / "source.db")
     try:
         source_conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (coordinate,))
+        _record_member_fixture(source_conn, bundle)
         source_conn.execute("DELETE FROM blob_refs WHERE ref_id = 'raw-session'")
         source_conn.commit()
     finally:
         source_conn.close()
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("something-else.json", b"{}")
     session_source.unlink()
 
     check = _run(tmp_path)
     assert check.status is OutcomeStatus.ERROR, check.summary
     assert _count(check, "source_lost") == 1
+
+
+@pytest.mark.parametrize("retained", [False, True])
+@pytest.mark.parametrize("suffix", [".zip", ".data"])
+def test_non_zip_member_container_cannot_conserve_materialized_raw(tmp_path: Path, retained: bool, suffix: str) -> None:
+    """Mutation: unreadable ZIP namelist returning True hides a lost materialized member."""
+    session_source, _ = _seed(tmp_path)
+    bundle = tmp_path / f"export{suffix}"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("conversations.json", '{"id":"session","mapping":{}}')
+    with zipfile.ZipFile(bundle) as archive:
+        context = ZipEntryReadContext(
+            source=Source(name="chatgpt", path=tmp_path),
+            zip_path=bundle,
+            entry=archive.infolist()[0],
+            file_mtime=None,
+            provider_hint=Provider.CHATGPT,
+            blob_store=BlobStore(tmp_path / "blob"),
+        )
+        acquired = list(iter_zip_entry_raw_data(archive, context))
+    assert len(acquired) == 1
+    coordinate = acquired[0].source_path
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (coordinate,))
+        _record_member_fixture(conn, bundle)
+        if not retained:
+            conn.execute("DELETE FROM blob_refs WHERE ref_id = 'raw-session'")
+    bundle.write_bytes(b"demonstrably not a zip")
+    session_source.unlink()
+    check = _run(tmp_path)
+    assert _count(check, "materialized") == 0
+    assert _count(check, "source_lost") == int(not retained)
+    assert _count(check, "source_missing") == int(retained)
+    assert _count(check, "source_unavailable") == 0
+    assert check.status is (OutcomeStatus.OK if retained else OutcomeStatus.ERROR)
+
+
+@pytest.mark.parametrize("retained", [False, True])
+@pytest.mark.parametrize("suffix", [".zip", ".data"])
+def test_unreadable_member_inventory_is_retryable_and_not_loss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str, retained: bool
+) -> None:
+    """Mutation: treating a denied container as present or missing loses measurement truth."""
+    session_source, _ = _seed(tmp_path)
+    bundle = tmp_path / f"export{suffix}"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("conversations.json", session_source.read_bytes())
+    coordinate = f"{bundle}:conversations.json"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (coordinate,))
+        _record_member_fixture(conn, bundle)
+        if not retained:
+            conn.execute("DELETE FROM blob_refs WHERE ref_id = 'raw-session'")
+    original = os.open
+
+    def denied(path: Path, *args: Any, **kwargs: Any) -> int:
+        if path == bundle:
+            raise PermissionError("synthetic denied inventory")
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", denied)
+        check = _run(tmp_path)
+    assert check.status is OutcomeStatus.ERROR
+    assert _count(check, "source_unavailable") == int(retained)
+    assert _count(check, "missing_blob") == int(not retained)
+    assert _count(check, "source_lost") == 0
+    assert _count(check, "source_missing") == 0
+    assert _count(check, "materialized") == 0
+    # A new audit measures the recovered inventory rather than caching its denial.
+    recovered = _run(tmp_path)
+    assert _count(recovered, "source_unavailable") == 0
+    assert _count(recovered, "materialized") == int(retained)
+    assert _count(recovered, "missing_blob") == int(not retained)
+
+
+def test_conservation_rechecks_cached_inventory_after_container_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: caching by pathname conserves a member removed between two raw probes."""
+    from polylogue.maintenance import source_conservation
+
+    _seed(tmp_path)
+    bundle = tmp_path / "export.zip"
+    replacement = tmp_path / "replacement.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("session.json", b"{}")
+        archive.writestr("sidecar.json", b"{}")
+    with zipfile.ZipFile(replacement, "w") as archive:
+        archive.writestr("unrelated.json", b"{}")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (f"{bundle}:session.json",)
+        )
+        conn.execute(
+            "UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-sidecar'", (f"{bundle}:sidecar.json",)
+        )
+        _record_member_fixture(conn, bundle, member="session.json")
+        _record_member_fixture(conn, bundle, raw_id="raw-sidecar", member="sidecar.json", entry_ordinal=1)
+        conn.execute("DELETE FROM blob_refs")
+    original = source_conservation._source_presence
+    replaced = False
+
+    def replace_after_first_probe(
+        root: Path,
+        source_path: str,
+        inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]],
+        *,
+        captured_coordinate: str | None = None,
+    ) -> bool | None:
+        nonlocal replaced
+        present = original(root, source_path, inventories, captured_coordinate=captured_coordinate)
+        if not replaced:
+            replaced = True
+            replacement.replace(bundle)
+        return present
+
+    monkeypatch.setattr(source_conservation, "_source_presence", replace_after_first_probe)
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.ERROR
+    # Regardless of raw row order, both old names cannot be conserved.
+    assert _count(check, "source_lost") == 1
+
+
+def test_conservation_refuses_inventory_replaced_while_descriptor_is_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: descriptor inventory without path identity check publishes an old ZIP under a new path."""
+    _seed(tmp_path)
+    bundle = tmp_path / "export.zip"
+    replacement = tmp_path / "replacement.zip"
+    for path in (bundle, replacement):
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("session.json", b"{}")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (f"{bundle}:session.json",)
+        )
+        _record_member_fixture(conn, bundle, member="session.json")
+    original = zipfile.ZipFile.infolist
+
+    def replace_after_namelist(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+        names = original(archive)
+        replacement.replace(bundle)
+        return names
+
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", replace_after_namelist)
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.ERROR
+    assert _count(check, "source_unavailable") == 1
+    assert _count(check, "source_lost") == 0
+    assert _count(check, "materialized") == 0
+
+
+def test_completed_intake_does_not_owe_declared_out_of_scope_database_projection(tmp_path: Path) -> None:
+    """Mutation: physical layout discovery demands a database ordinary intake correctly excludes."""
+    from polylogue.sources.live.production_baseline import capture_production_source_baseline
+    from polylogue.sources.live.watcher import WatchSource
+    from polylogue.sources.source_layout import source_layout_for
+
+    _seed(tmp_path)
+    state = tmp_path / "codex-state"
+    state.mkdir()
+    projection = state / "thread_history_1.sqlite"
+    with sqlite3.connect(projection) as connection:
+        connection.execute("CREATE TABLE projection(value TEXT)")
+        connection.execute("INSERT INTO projection VALUES ('already represented by source sessions')")
+    hermes = tmp_path / "hermes"
+    (hermes / "sessions").mkdir(parents=True)
+    request_dump = hermes / "sessions" / "request_dump_neutral.json"
+    request_dump.write_bytes(b'{"neutral":"excluded request metadata"}')
+    baseline = capture_production_source_baseline(
+        (
+            WatchSource("codex-state", state, layout=source_layout_for("codex-state")),
+            WatchSource("hermes", hermes, layout=source_layout_for("hermes")),
+        ),
+        operation_id="excluded-projection",
+    )
+    assert baseline.accepted == ()
+    assert any(row.path == str(projection) and row.disposition == "excluded" for row in baseline.decisions)
+    with build_source_frontier(
+        [
+            SourceDeclaration("acquired", SourceRole.DIRECTORY, tmp_path / "sources", True),
+            SourceDeclaration("state", SourceRole.DIRECTORY, state, True, "codex-state"),
+            SourceDeclaration("hermes", SourceRole.DIRECTORY, hermes, True, "hermes"),
+        ]
+    ) as frontier:
+        assert frontier.complete
+        assert frontier.root_states["state"].value == "valid-empty"
+        check = _run_with_frontier(tmp_path, frontier)
+    assert check.status is OutcomeStatus.OK, check.evidence
+    assert _count(check, "frontier_unacquired") == 0
+    assert projection.is_file()
+
+
+@pytest.mark.parametrize(
+    "source_present,blob_present,term",
+    [(True, False, "missing_blob"), (False, True, "source_missing"), (False, False, "source_lost")],
+)
+def test_retained_cas_presence_is_independent_of_original_source(
+    tmp_path: Path, source_present: bool, blob_present: bool, term: str
+) -> None:
+    """Mutation: CAS existence is probed only after the original disappears."""
+    session_source, _ = _seed(tmp_path)
+    connection = sqlite3.connect(tmp_path / "source.db")
+    try:
+        digest = bytes(
+            connection.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = 'raw-session'").fetchone()[0]
+        ).hex()
+    finally:
+        connection.close()
+    if not source_present:
+        session_source.unlink()
+    if not blob_present:
+        BlobStore(tmp_path / "blob").blob_path(digest).unlink()
+    check = _run(tmp_path)
+    assert check.status is (OutcomeStatus.OK if blob_present else OutcomeStatus.ERROR)
+    assert _count(check, term) == 1
+    assert _terms(check)[term]["blocking"] is (not blob_present)
+    assert _count(check, "materialized") == 0

@@ -9,15 +9,16 @@ integrity classes with bounded default cost.
 from __future__ import annotations
 
 import sqlite3
+import zipfile
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 from typing import Any, Literal
 
-from polylogue.core.raw_coordinates import split_zip_member_text
+from polylogue.core.raw_coordinates import read_captured_zip_coordinate_receipt
 from polylogue.logging import get_logger
 from polylogue.storage.blob_liveness import (
     BlobLivenessProjection,
@@ -370,34 +371,94 @@ def _reanchored_archive_path(path: Path, archive_root: Path | None) -> Path | No
     return None
 
 
-def _source_path_availability(path: str | None, archive_root: Path | None = None) -> tuple[bool | None, str | None]:
-    """Report whether a recorded source path still resolves to material on disk.
+def _source_path_availability(
+    path: str | None,
+    archive_root: Path | None = None,
+    *,
+    captured_coordinate: str | None = None,
+    raw_evidence: Mapping[str, object] | None = None,
+) -> tuple[bool | None, str | None]:
+    """Report recorded material availability, or None when it cannot be observed.
 
-    An archive root moves, and acquisition records absolute paths, so a path
-    written under a previous root names material that is present under the
-    current one. Reporting those as missing is false loss, and this number
-    decides whether a prune was safe.
+    Captured ZIP references require the acquisition reader's exact member/content
+    proof. Relocation uses the existing path selection policy; this observation
+    does not establish ownership of a relocated path.
     """
     if not path:
         return None, None
     direct = Path(path)
-    if direct.exists():
-        return True, str(direct)
-    # Only a ``<container>:<member>`` coordinate names its container; a
-    # missing loose file whose name holds a colon names nothing else.
-    split = split_zip_member_text(path)
-    if split is not None:
-        outer_path = Path(split[0])
-        if outer_path.exists():
+    if captured_coordinate is not None:
+        coordinate = read_captured_zip_coordinate_receipt(captured_coordinate)
+        outer_path = Path(coordinate.canonical_container)
+        try:
+            outer_path.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            relocated = _reanchored_archive_path(outer_path, archive_root)
+            if relocated is not None:
+                outer_path = relocated
+        except OSError:
+            return None, str(outer_path)
+        if raw_evidence is None:
+            # A container name proves neither this recorded unit nor its bytes.
+            return None, str(outer_path)
+        from polylogue.storage.source_zip_replay import _expected_digest, zip_reacquired_unit
+
+        evidence = dict(raw_evidence)
+        evidence["captured_coordinate"] = captured_coordinate
+        if _expected_digest(evidence) is None:
+            return None, str(outer_path)
+        failure: Exception | None = None
+
+        def retain_failure(exc: Exception) -> None:
+            nonlocal failure
+            failure = exc
+
+        candidate, error = zip_reacquired_unit(
+            evidence,
+            source_path=f"{outer_path}:{coordinate.member_name}",
+            zip_payload_cache={},
+            on_failure=retain_failure,
+        )
+        if candidate is not None:
             return True, str(outer_path)
-        reanchored_outer = _reanchored_archive_path(outer_path, archive_root)
-        if reanchored_outer is not None and reanchored_outer.exists():
-            return True, str(reanchored_outer)
+        from polylogue.core.compute import DaemonOperationCancelled
+        from polylogue.core.content_identity import ContentIdentityRefusal
+
+        if isinstance(failure, DaemonOperationCancelled):
+            raise failure
+        if failure is not None and not isinstance(
+            failure,
+            (
+                FileNotFoundError,
+                NotADirectoryError,
+                zipfile.BadZipFile,
+                zipfile.LargeZipFile,
+                ValueError,
+                UnicodeError,
+                ContentIdentityRefusal,
+            ),
+        ):
+            return None, str(outer_path)
+        if error in {"replay_provider_unrecorded", "container_coordinate_missing"}:
+            return None, str(outer_path)
         return False, str(outer_path)
-    reanchored = _reanchored_archive_path(direct, archive_root)
-    if reanchored is not None and reanchored.exists():
-        return True, str(reanchored)
-    return False, str(direct)
+    try:
+        direct.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        reanchored = _reanchored_archive_path(direct, archive_root)
+        if reanchored is not None:
+            try:
+                reanchored.stat()
+            except (FileNotFoundError, NotADirectoryError):
+                pass
+            except OSError:
+                return None, str(reanchored)
+            else:
+                return True, str(reanchored)
+        return False, str(direct)
+    except OSError:
+        return None, str(direct)
+    return True, str(direct)
 
 
 def _optional_str(value: object) -> str | None:
@@ -435,6 +496,7 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
                coordinate.split_index AS split_index,
                coordinate.addressing_mode AS addressing_mode,
                coordinate.content_identity AS content_identity,
+               coordinate.captured_coordinate AS captured_coordinate,
                1 AS ref_id_has_raw_session
         FROM raw_sessions
         LEFT JOIN raw_container_coordinates coordinate ON coordinate.raw_id = raw_sessions.raw_id
@@ -471,6 +533,13 @@ def _blob_ref_reference_rows(
         ref["parse_error"] = raw.get("parse_error") if raw else None
         ref["validation_status"] = raw.get("validation_status") if raw else None
         ref["source_index"] = raw.get("source_index") if raw else None
+        ref["captured_coordinate"] = raw.get("captured_coordinate") if raw else None
+        for field in ("coordinate_format", "entry_ordinal", "split_index", "addressing_mode", "capture_mode"):
+            ref[field] = raw.get(field) if raw else None
+        # A reference to another blob cannot borrow the raw payload's value identity.
+        ref["content_identity"] = (
+            raw.get("content_identity") if raw and raw.get("blob_hash") == ref.get("blob_hash") else None
+        )
         ref["ref_id_has_raw_session"] = raw is not None
         refs.append(ref)
     return refs
@@ -486,7 +555,9 @@ def _group_reference_rows(rows: Iterable[dict[str, Any]]) -> dict[str, list[dict
 
 
 def _reference_rows_for_blob_debt(source_db: Path) -> list[dict[str, Any]]:
-    with closing(open_readonly_connection(source_db, timeout_class="background-read", validate_schema=False)) as conn:
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    with closing(open_readonly_connection(source_db, timeout_class="background-read", tier=ArchiveTier.SOURCE)) as conn:
         raw_refs = _raw_session_reference_rows(conn)
         raw_by_id = {str(row["ref_id"]): row for row in raw_refs if row.get("ref_id")}
         return [*raw_refs, *_blob_ref_reference_rows(conn, raw_by_id=raw_by_id)]
@@ -534,15 +605,25 @@ def classify_blob_reference_debt(
             ref_id_join["ref_id_without_raw_session"] += 1
 
         source_availability = [
-            _source_path_availability(_optional_str(row.get("source_path")), archive_root)[0] for row in group
+            _source_path_availability(
+                _optional_str(row.get("source_path")),
+                archive_root,
+                captured_coordinate=_optional_str(row.get("captured_coordinate")),
+                raw_evidence=row,
+            )[0]
+            for row in group
         ]
         known_source_availability = [value for value in source_availability if value is not None]
-        if not known_source_availability:
-            source_path_presence["no_source_path_recorded"] += 1
-        elif any(known_source_availability):
+        if any(known_source_availability):
             source_path_presence["recoverable_source_path_exists"] += 1
-        else:
+        elif any(
+            row.get("source_path") and value is None for row, value in zip(group, source_availability, strict=True)
+        ):
+            source_path_presence["source_path_unavailable"] += 1
+        elif known_source_availability:
             source_path_presence["source_path_missing"] += 1
+        else:
+            source_path_presence["no_source_path_recorded"] += 1
 
         statuses = {str(row.get("validation_status")) for row in group if row.get("validation_status")}
         validation_status[",".join(sorted(statuses)) if statuses else "(none)"] += 1
@@ -553,7 +634,12 @@ def classify_blob_reference_debt(
         if len(samples) < max(0, sample_size):
             sample = group[0]
             sample_source_path = _optional_str(sample.get("source_path"))
-            available, outer = _source_path_availability(sample_source_path, archive_root)
+            available, outer = _source_path_availability(
+                sample_source_path,
+                archive_root,
+                captured_coordinate=_optional_str(sample.get("captured_coordinate")),
+                raw_evidence=sample,
+            )
             size = sample.get("size_bytes")
             samples.append(
                 BlobReferenceDebtSample(

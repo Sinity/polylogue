@@ -14,7 +14,7 @@ import stat as stat_module
 import subprocess
 import time
 from collections import Counter
-from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, MutableSequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -32,6 +32,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
 from polylogue.core.timestamps import iso_from_epoch_ms
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base import (
@@ -84,9 +85,10 @@ _TRAJECTORY_SUPPORTED_STEP_TYPES = frozenset(
 )
 
 
-def trajectory_raw_id(source_path: Path | str, logical_revision: str) -> str:
+def trajectory_raw_id(source_path: Path | str, logical_revision: str, *, identity_path: Path | None = None) -> str:
     """Stable raw identity for one Antigravity trajectory-store revision."""
-    identity = f"antigravity-trajectory\0{Path(source_path).expanduser().resolve()}\0{logical_revision}"
+    coordinate = identity_path if identity_path is not None else Path(source_path).expanduser().resolve()
+    identity = f"antigravity-trajectory\0{coordinate}\0{logical_revision}"
     return hashlib.sha256(identity.encode("utf-8", errors="surrogateescape")).hexdigest()
 
 
@@ -215,6 +217,7 @@ class AntigravitySourceRole(StrEnum):
     """The admission role of one item below Antigravity's source root."""
 
     CONVERSATION_PROTOBUF = "conversation_protobuf"
+    EXPORT_DOCUMENT = "export_document"
     BRAIN_DOCUMENT = "brain_document"
     METADATA_SIDECAR = "metadata_sidecar"
     UNKNOWN = "unknown"
@@ -321,16 +324,19 @@ def census_source(root: Path) -> AntigravitySourceCensus:
             )
         )
 
-    def on_walk_error(error: OSError) -> None:
-        path = Path(error.filename) if error.filename else root
-        record_unreadable(path, f"source item is unreadable: {error}")
+    from polylogue.sources.source_walk import layout_source_candidates
+    from polylogue.sources.walk_faults import WalkRefusedError
 
-    from polylogue.sources.source_walk import _iter_source_entries
-
-    # Use the same skip-directory traversal as production admission.  Census
-    # still inspects non-regular files (including symlinks) so they remain
-    # accounted for as unsupported evidence, while admission excludes them.
-    for path in _iter_source_entries(root, onerror=on_walk_error):
+    # The declared Antigravity layout bounds the census exactly as it bounds
+    # admission. Links the layout places are still inspected, so they remain
+    # accounted for as unsupported evidence while admission excludes them.
+    try:
+        candidates = layout_source_candidates("antigravity", root)
+    except WalkRefusedError as exc:
+        candidates = []
+        for fault in exc.faults:
+            record_unreadable(fault.path, f"source item is unreadable: {fault.detail}")
+    for path in candidates:
         try:
             link_stat = path.lstat()
         except OSError as exc:
@@ -356,6 +362,7 @@ def census_source(root: Path) -> AntigravitySourceCensus:
         try:
             before = path.stat()
             digest = _file_digest(path)
+            classification = classify_source_path(path)
             after = path.stat()
         except OSError as exc:
             record_unreadable(path, f"source item is unreadable: {exc}")
@@ -371,7 +378,7 @@ def census_source(root: Path) -> AntigravitySourceCensus:
             AntigravitySourceItem(
                 path=path,
                 relative_path=_relative_path(path, root),
-                classification=classify_source_path(path),
+                classification=classification,
                 inspection=AntigravitySourceInspection.REGULAR,
                 size_bytes=after.st_size,
                 content_sha256=digest,
@@ -414,7 +421,7 @@ class AntigravityExportOutcome:
         return self.session is not None and self.error is None
 
 
-def classify_source_path(source_path: str | Path) -> AntigravitySourceClassification:
+def classify_source_path(source_path: str | Path, *, payload: object | None = None) -> AntigravitySourceClassification:
     """Classify every Antigravity path into a session, artifact, or unknown role."""
     path = Path(source_path)
     if path.suffix.lower() in _TRAJECTORY_DB_SUFFIXES and looks_like_trajectory_db_path(path):
@@ -442,6 +449,17 @@ def classify_source_path(source_path: str | Path) -> AntigravitySourceClassifica
             ArtifactKind(rule.kind),
             rule.fidelity_note,
         )
+    if rule is None and path.suffix.lower() not in _TRAJECTORY_DB_SUFFIXES and path.suffix.lower() != ".zip":
+        from polylogue.sources.origin_specs import recognize_json_source_class
+
+        recognition = recognize_json_source_class(Provider.ANTIGRAVITY, path, payload=payload)
+        if recognition is not None and recognition.source_class == "session":
+            return AntigravitySourceClassification(
+                AntigravitySourceRole.EXPORT_DOCUMENT,
+                True,
+                ArtifactKind.SESSION_DOCUMENT,
+                recognition.reason,
+            )
     return AntigravitySourceClassification(
         AntigravitySourceRole.UNKNOWN,
         False,
@@ -480,8 +498,9 @@ def _sqlite_columns(connection: sqlite3.Connection, table: str) -> frozenset[str
     directory, is the admission identity.
     """
     try:
-        quoted = '"' + table.replace('"', '""') + '"'
-        return frozenset(str(row[1]) for row in connection.execute(f"PRAGMA table_info({quoted})"))
+        from polylogue.sources.sqlite_export import readable_table_info
+
+        return frozenset(str(row[1]) for row in readable_table_info(connection, table))
     except Exception as error:
         if _is_trajectory_storage_error(error):
             return frozenset()
@@ -497,16 +516,11 @@ def _trajectory_schema_matches(connection: sqlite3.Connection) -> bool:
 
 def looks_like_trajectory_db_path(path: Path, *, immutable: bool = False) -> bool:
     """Recognize the Antigravity trajectory store by its verified schema."""
-    if path.suffix.lower() not in _TRAJECTORY_DB_SUFFIXES:
-        return False
     try:
-        from polylogue.sources.sqlite_export import open_logical_source
+        from polylogue.sources.sqlite_export import logical_source_context
 
-        connection = open_logical_source(path, immutable=immutable)
-        try:
+        with logical_source_context(path, immutable=immutable) as connection:
             return _trajectory_schema_matches(connection)
-        finally:
-            connection.close()
     except Exception as error:
         if _is_trajectory_storage_error(error):
             return False
@@ -840,44 +854,57 @@ def _trajectory_message(
     )
 
 
-def _unused_row_id(candidate: str, native_ids: set[str]) -> str:
-    """Return ``candidate``, suffixed until no provider-native id uses it."""
-    identity = candidate
-    attempt = 0
-    while identity in native_ids:
-        attempt += 1
-        identity = f"{candidate}~{attempt}"
-    return identity
+class _TrajectoryAccountingBuilder(Protocol):
+    def append(self, outcome: AdmissionOutcome) -> None: ...
+
+    def finish(self) -> ParseAccounting: ...
 
 
-def parse_trajectory_db(
-    path: Path,
-    fallback_id: str | None = None,
+def _create_trajectory_parse_tables(connection: sqlite3.Connection) -> None:
+    """Create disk-backed parser reductions in the caller-owned scratch DB."""
+    for table in (
+        "trajectory_native_ids",
+        "trajectory_alias_claimants",
+        "trajectory_summaries",
+        "trajectory_parent_references",
+        "trajectory_parent_ids",
+    ):
+        connection.execute(f"DROP TABLE IF EXISTS {table}")
+    connection.execute("CREATE TABLE trajectory_native_ids (identity TEXT COLLATE BINARY PRIMARY KEY) WITHOUT ROWID")
+    connection.execute(
+        "CREATE TABLE trajectory_alias_claimants (alias TEXT COLLATE BINARY NOT NULL, "
+        "canonical TEXT COLLATE BINARY NOT NULL, PRIMARY KEY(alias, canonical)) WITHOUT ROWID"
+    )
+    connection.execute(
+        "CREATE TABLE trajectory_summaries (ordinal INTEGER PRIMARY KEY, identity TEXT COLLATE BINARY UNIQUE, "
+        "row_json TEXT NOT NULL, matched INTEGER NOT NULL DEFAULT 0)"
+    )
+    connection.execute(
+        "CREATE TABLE trajectory_parent_references (child TEXT COLLATE BINARY NOT NULL, ordinal INTEGER NOT NULL, "
+        "row_json TEXT NOT NULL, parent TEXT COLLATE BINARY, PRIMARY KEY(child, ordinal)) WITHOUT ROWID"
+    )
+    connection.execute("CREATE TABLE trajectory_parent_ids (identity TEXT COLLATE BINARY PRIMARY KEY) WITHOUT ROWID")
+
+
+def _event_json_row(row: Mapping[str, object]) -> str:
+    return json.dumps(_event_payload_row(row), ensure_ascii=False, separators=(",", ":"))
+
+
+def _load_trajectory_identity_evidence(
+    source: sqlite3.Connection,
+    grouping: sqlite3.Connection,
     *,
-    immutable: bool = False,
-) -> Iterator[ParsedSession]:
-    """Parse Antigravity's structured trajectory store through its read route.
-
-    The parser is deliberately schema-first and fail-closed: a database with
-    a familiar filename but no verified ``trajectory_meta``/``steps`` shape
-    is not a conversation.  Unknown step formats remain session events and
-    typed admission outcomes, so the writer can never report full coverage
-    for a partially understood trajectory.
-    """
-    from polylogue.sources.sqlite_export import LogicalExportError, open_logical_source
-
-    connection = open_logical_source(path, immutable=immutable)
-    connection.row_factory = sqlite3.Row
-    try:
-        if not _trajectory_schema_matches(connection):
-            raise LogicalExportError("Antigravity SQLite lacks the declared trajectory schema")
-        meta_columns = _sqlite_columns(connection, "trajectory_meta")
-        step_columns = _sqlite_columns(connection, "steps")
-        summary_columns = _sqlite_columns(connection, "conversation_summaries")
-        parent_columns = _sqlite_columns(connection, "parent_references")
-        summaries: dict[str, sqlite3.Row] = {}
-        if summary_columns:
-            for row in connection.execute("SELECT * FROM conversation_summaries"):
+    meta_columns: Collection[str],
+    summary_columns: Collection[str],
+    parent_columns: Collection[str],
+    check_cancelled: Callable[[], None],
+) -> None:
+    """Spill identity, summary, alias, and parent evidence before parsing steps."""
+    if summary_columns:
+        cursor = source.execute("SELECT * FROM conversation_summaries")
+        try:
+            for ordinal, row in enumerate(cursor):
+                check_cancelled()
                 key = next(
                     (
                         row[column]
@@ -886,174 +913,627 @@ def parse_trajectory_db(
                     ),
                     None,
                 )
-                if key is not None:
-                    summaries[str(key)] = row
-        parent_refs: dict[str, list[dict[str, object]]] = {}
-        if parent_columns:
-            for row in connection.execute("SELECT * FROM parent_references"):
-                child = (
-                    row["cascade_id"]
-                    if "cascade_id" in parent_columns
-                    else row["trajectory_id"]
-                    if "trajectory_id" in parent_columns
-                    else None
+                if key is None:
+                    continue
+                identity = str(key)
+                grouping.execute("INSERT OR IGNORE INTO trajectory_native_ids VALUES (?)", (identity,))
+                grouping.execute(
+                    "INSERT INTO trajectory_summaries(ordinal, identity, row_json) VALUES (?, ?, ?) "
+                    "ON CONFLICT(identity) DO UPDATE SET row_json=excluded.row_json",
+                    (ordinal, identity, _event_json_row({str(k): row[k] for k in row.keys()})),  # noqa: SIM118
                 )
-                if child is not None:
-                    parent_refs.setdefault(str(child), []).append(
-                        _event_payload_row({str(key): value for key, value in zip(row.keys(), row, strict=True)})
-                    )
-        meta_rows = connection.execute("SELECT * FROM trajectory_meta ORDER BY rowid").fetchall()
-        anonymous = [
-            meta
-            for meta in meta_rows
-            if not any(
-                column in meta_columns and meta[column] not in (None, "") for column in ("trajectory_id", "cascade_id")
+        finally:
+            cursor.close()
+    if meta_columns:
+        cursor = source.execute("SELECT * FROM trajectory_meta ORDER BY rowid")
+        try:
+            for row in cursor:
+                check_cancelled()
+                canonical = next(
+                    (
+                        str(row[name])
+                        for name in ("trajectory_id", "cascade_id")
+                        if name in meta_columns and row[name] not in (None, "")
+                    ),
+                    None,
+                )
+                for name in ("trajectory_id", "cascade_id"):
+                    if name not in meta_columns or row[name] in (None, ""):
+                        continue
+                    alias = str(row[name])
+                    grouping.execute("INSERT OR IGNORE INTO trajectory_native_ids VALUES (?)", (alias,))
+                    if canonical is not None:
+                        grouping.execute(
+                            "INSERT OR IGNORE INTO trajectory_alias_claimants VALUES (?, ?)",
+                            (alias, canonical),
+                        )
+        finally:
+            cursor.close()
+    if parent_columns:
+        child_column = "cascade_id" if "cascade_id" in parent_columns else "trajectory_id"
+        cursor = source.execute("SELECT * FROM parent_references")
+        try:
+            for ordinal, row in enumerate(cursor):
+                check_cancelled()
+                child_value = row[child_column]
+                if child_value is None:
+                    continue
+                event_row = {str(key): row[key] for key in row.keys()}  # noqa: SIM118
+                reference = _event_payload_row(event_row)
+                parent = _parent_reference_id(reference)
+                grouping.execute(
+                    "INSERT INTO trajectory_parent_references VALUES (?, ?, ?, ?)",
+                    (
+                        str(child_value),
+                        ordinal,
+                        json.dumps(reference, ensure_ascii=False, separators=(",", ":")),
+                        parent,
+                    ),
+                )
+        finally:
+            cursor.close()
+
+
+def _row_identity(row: sqlite3.Row | None, column: str, columns: Collection[str]) -> str | None:
+    if row is None or column not in columns or row[column] in (None, ""):
+        return None
+    return str(row[column])
+
+
+def _trajectory_reserved(grouping: sqlite3.Connection, identity: str) -> bool:
+    return (
+        grouping.execute("SELECT 1 FROM trajectory_native_ids WHERE identity = ?", (identity,)).fetchone() is not None
+    )
+
+
+def _unused_trajectory_id(grouping: sqlite3.Connection, candidate: str) -> str:
+    identity = candidate
+    attempt = 0
+    while _trajectory_reserved(grouping, identity):
+        attempt += 1
+        identity = f"{candidate}~{attempt}"
+    return identity
+
+
+def _trajectory_step_count(
+    connection: sqlite3.Connection,
+    step_columns: Collection[str],
+    trajectory_id: str | None,
+    cascade_id: str | None,
+    meta_count: int,
+) -> int:
+    predicates: list[str] = []
+    values: list[object] = []
+    for column, value in (("trajectory_id", trajectory_id), ("cascade_id", cascade_id)):
+        if column in step_columns and value is not None:
+            predicates.append(f"{column} = ?")
+            values.append(value)
+    if predicates:
+        count = int(
+            connection.execute("SELECT COUNT(*) FROM steps WHERE " + " OR ".join(predicates), values).fetchone()[0]
+        )
+        if count:
+            return count
+    has_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
+    if meta_count == 1 and (not has_identity or not _any_step_carries_a_key(connection, step_columns)):
+        return int(connection.execute("SELECT COUNT(*) FROM steps").fetchone()[0])
+    return 0
+
+
+def _matched_summary_key(grouping: sqlite3.Connection, cascade_id: str | None, trajectory_id: str | None) -> str | None:
+    for identity in (cascade_id, trajectory_id):
+        if (
+            identity is not None
+            and grouping.execute("SELECT 1 FROM trajectory_summaries WHERE identity = ?", (identity,)).fetchone()
+        ):
+            return identity
+    return None
+
+
+def _summary_row(grouping: sqlite3.Connection, identity: str) -> dict[str, object] | None:
+    row = grouping.execute("SELECT row_json FROM trajectory_summaries WHERE identity = ?", (identity,)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def _parent_reference_query(cascade_id: str | None, trajectory_id: str | None) -> tuple[str, tuple[str, ...]]:
+    identities = [cascade_id] if cascade_id is not None else []
+    if trajectory_id is not None and trajectory_id != cascade_id:
+        identities.append(trajectory_id)
+    if not identities:
+        return "SELECT 0 WHERE 0", ()
+    placeholders = ",".join("?" for _ in identities)
+    order = "CASE child " + " ".join(f"WHEN ? THEN {i}" for i, _ in enumerate(identities)) + " ELSE 99 END"
+    return (
+        f"SELECT child, ordinal, row_json, parent FROM trajectory_parent_references WHERE child IN ({placeholders}) "
+        f"ORDER BY {order}, ordinal",
+        tuple(identities) + tuple(identities),
+    )
+
+
+def _settle_parent_references(
+    grouping: sqlite3.Connection,
+    cascade_id: str | None,
+    trajectory_id: str | None,
+    check_cancelled: Callable[[], None],
+) -> tuple[str | None, int, bool, int]:
+    grouping.execute("DELETE FROM trajectory_parent_ids")
+    sql, params = _parent_reference_query(cascade_id, trajectory_id)
+    cursor = grouping.execute(sql, params)
+    count = 0
+    try:
+        for _child, _ordinal, _row_json, parent in cursor:
+            check_cancelled()
+            count += 1
+            if parent is None:
+                continue
+            claimants = grouping.execute(
+                "SELECT canonical FROM trajectory_alias_claimants WHERE alias = ? ORDER BY canonical", (parent,)
             )
-        ]
-        if len(anonymous) > 1:
-            # Nothing stable tells several unidentified trajectories apart: a
-            # row's position or rowid changes with deletions and VACUUM, and
-            # a derived id would then move one trajectory onto another's
-            # archive identity. The export is refused rather than guessed.
-            raise LogicalExportError(
-                f"Antigravity SQLite holds {len(anonymous)} trajectories with no trajectory or cascade id; "
-                "no stable identity tells them apart"
+            try:
+                first = claimants.fetchone()
+                if first is None:
+                    grouping.execute("INSERT OR IGNORE INTO trajectory_parent_ids VALUES (?)", (parent,))
+                else:
+                    check_cancelled()
+                    grouping.execute("INSERT OR IGNORE INTO trajectory_parent_ids VALUES (?)", first)
+                    for claimant in claimants:
+                        check_cancelled()
+                        grouping.execute("INSERT OR IGNORE INTO trajectory_parent_ids VALUES (?)", claimant)
+            finally:
+                claimants.close()
+    finally:
+        cursor.close()
+    id_count = int(grouping.execute("SELECT COUNT(*) FROM trajectory_parent_ids").fetchone()[0])
+    parent_id = None
+    if id_count == 1:
+        parent_id = str(grouping.execute("SELECT identity FROM trajectory_parent_ids").fetchone()[0])
+    observed = (
+        parent_id is not None
+        and grouping.execute("SELECT 1 FROM trajectory_native_ids WHERE identity = ?", (parent_id,)).fetchone()
+        is not None
+    )
+    return parent_id, count, observed, id_count
+
+
+def _streamed_array(
+    grouping: sqlite3.Connection, values: Iterable[object], check_cancelled: Callable[[], None]
+) -> object:
+    from polylogue.sources.streamed_event_payload import SqliteJsonArrayWriter
+
+    writer = SqliteJsonArrayWriter(grouping)
+    for value in values:
+        check_cancelled()
+        writer.append(value)
+    return writer.finish()
+
+
+def _streamed_parent_ids(grouping: sqlite3.Connection, check_cancelled: Callable[[], None]) -> object:
+    cursor = grouping.execute("SELECT identity FROM trajectory_parent_ids ORDER BY identity")
+    try:
+        return _streamed_array(grouping, (str(row[0]) for row in cursor), check_cancelled)
+    finally:
+        cursor.close()
+
+
+def _streamed_parent_references(
+    grouping: sqlite3.Connection,
+    cascade_id: str | None,
+    trajectory_id: str | None,
+    check_cancelled: Callable[[], None],
+) -> object:
+    sql, params = _parent_reference_query(cascade_id, trajectory_id)
+    cursor = grouping.execute(sql, params)
+    try:
+        return _streamed_array(grouping, (json.loads(row[2]) for row in cursor), check_cancelled)
+    finally:
+        cursor.close()
+
+
+def _append_parent_reference_events(
+    events: MutableSequence[ParsedSessionEvent],
+    grouping: sqlite3.Connection,
+    cascade_id: str | None,
+    trajectory_id: str | None,
+    parent_id: str | None,
+    parent_observed: bool,
+    parent_ids_count: int,
+    check_cancelled: Callable[[], None],
+) -> None:
+    """Append the existing event payload shape backed by the shared spill."""
+    parent_ids = _streamed_parent_ids(grouping, check_cancelled)
+    references = _streamed_parent_references(grouping, cascade_id, trajectory_id, check_cancelled)
+    events.append(
+        ParsedSessionEvent(
+            event_type="antigravity_parent_reference",
+            payload={
+                "references": references,
+                "parent_provider_id": parent_id,
+                "parent_provider_ids": parent_ids,
+                "parent_observed": parent_observed,
+            },
+        )
+    )
+    if parent_ids_count > 1:
+        events.append(
+            ParsedSessionEvent(
+                event_type="antigravity_ambiguous_parent_reference",
+                payload={"parent_provider_ids": parent_ids},
             )
-        if not meta_rows:
-            # A structurally valid empty export still gets an attributable
-            # outcome when the caller supplied a path-derived identity.
-            if not fallback_id:
+        )
+
+
+def _trajectory_steps(
+    connection: sqlite3.Connection,
+    step_columns: Collection[str],
+    trajectory_id: str | None,
+    cascade_id: str | None,
+    meta_count: int,
+) -> Iterator[sqlite3.Row]:
+    """Select native step rows without changing SQLite affinity or collation."""
+    predicates: list[str] = []
+    values: list[object] = []
+    for column, value in (("trajectory_id", trajectory_id), ("cascade_id", cascade_id)):
+        if column in step_columns and value is not None:
+            predicates.append(f"{column} = ?")
+            values.append(value)
+    has_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
+    if predicates:
+        cursor = connection.execute("SELECT * FROM steps WHERE " + " OR ".join(predicates) + " ORDER BY idx", values)
+        try:
+            first = cursor.fetchone()
+            if first is not None:
+                yield first
+                yield from cursor
                 return
-            meta_rows = [None]
-        known_native_ids = {
-            str(value)
-            for meta in meta_rows
-            if meta is not None
-            for value in (meta["trajectory_id"], meta["cascade_id"])
-            if value not in (None, "")
-        }
-        # An alias may have multiple claimants; retain that ambiguity rather
-        # than allowing the last meta row to choose a parent.
-        alias_claimants: dict[str, set[str]] = {}
-        for meta in meta_rows:
-            if meta is None:
-                continue
-            canonical = meta["trajectory_id"] or meta["cascade_id"]
-            if canonical in (None, ""):
-                continue
-            for alias in (meta["trajectory_id"], meta["cascade_id"]):
-                if alias not in (None, ""):
-                    alias_claimants.setdefault(str(alias), set()).add(str(canonical))
-        # A summary with no owning meta row is later yielded as its own
-        # session keyed by its summary_key (the unmatched-summary branch
-        # below), so that key occupies this parser's session-ID namespace
-        # too -- reserve it here or a row-fallback id minted for an
-        # anonymous meta row can collide with it and two logical sessions
-        # (one materialized, one unmatched-summary) land under one identity.
-        known_native_ids |= set(summaries)
-        matched_summary_keys: set[str] = set()
-        has_step_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
-        for meta_index, meta in enumerate(meta_rows):
-            trajectory_id = (
-                str(meta["trajectory_id"])
-                if meta is not None and "trajectory_id" in meta_columns and meta["trajectory_id"] not in (None, "")
+        finally:
+            cursor.close()
+
+    if meta_count == 1 and (not has_identity or not _any_step_carries_a_key(connection, step_columns)):
+        cursor = connection.execute("SELECT * FROM steps ORDER BY idx")
+        try:
+            yield from cursor
+        finally:
+            cursor.close()
+
+
+def _inspect_trajectory_connection(
+    connection: sqlite3.Connection,
+    grouping: sqlite3.Connection,
+    path: Path,
+    *,
+    preflight: bool,
+) -> tuple[dict[str, object], int, bool]:
+    """Count parser evidence, keeping identity reservations in private storage."""
+    from polylogue.sources.dispatch import message_carries_authored_content
+    from polylogue.sources.sqlite_export import LogicalExportError
+
+    if not _trajectory_schema_matches(connection):
+        raise LogicalExportError("Antigravity SQLite lacks the declared trajectory schema")
+    meta_columns = _sqlite_columns(connection, "trajectory_meta")
+    step_columns = _sqlite_columns(connection, "steps")
+    summary_columns = _sqlite_columns(connection, "conversation_summaries")
+    grouping.execute("CREATE TABLE trajectory_native_ids (identity TEXT COLLATE BINARY PRIMARY KEY) WITHOUT ROWID")
+    grouping.execute(
+        "CREATE TABLE trajectory_summaries (ordinal INTEGER PRIMARY KEY, identity TEXT COLLATE BINARY UNIQUE, "
+        "matched INTEGER NOT NULL DEFAULT 0)"
+    )
+
+    def reserve(identity: str) -> None:
+        grouping.execute("INSERT OR IGNORE INTO trajectory_native_ids VALUES (?)", (identity,))
+
+    def reserved(identity: str) -> bool:
+        return (
+            grouping.execute("SELECT 1 FROM trajectory_native_ids WHERE identity = ?", (identity,)).fetchone()
+            is not None
+        )
+
+    if summary_columns:
+        for row in connection.execute("SELECT * FROM conversation_summaries"):
+            key = next(
+                (
+                    row[column]
+                    for column in ("cascade_id", "trajectory_id")
+                    if column in summary_columns and row[column] not in (None, "")
+                ),
+                None,
+            )
+            if key is not None:
+                identity = str(key)
+                grouping.execute("INSERT OR IGNORE INTO trajectory_summaries (identity) VALUES (?)", (identity,))
+                reserve(identity)
+    meta_count = 0
+    anonymous = 0
+    for meta in connection.execute("SELECT * FROM trajectory_meta ORDER BY rowid"):
+        meta_count += 1
+        identities = [
+            str(meta[column])
+            for column in ("trajectory_id", "cascade_id")
+            if column in meta_columns and meta[column] not in (None, "")
+        ]
+        anonymous += not identities
+        for identity in identities:
+            reserve(identity)
+    if anonymous > 1:
+        raise LogicalExportError(
+            f"Antigravity SQLite holds {anonymous} trajectories with no trajectory or cascade id; "
+            "no stable identity tells them apart"
+        )
+    fallback_id = path.stem
+    effective_meta_count = meta_count or 1
+    has_step_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
+    unattributed = (
+        not has_step_identity
+        and effective_meta_count > 1
+        and bool(connection.execute("SELECT COUNT(*) FROM steps").fetchone()[0])
+    )
+    produced: dict[str, object] = {
+        "sessions": 0,
+        "messages": 0,
+        "blocks": 0,
+        "actions": 0,
+        "raw_records": 0,
+        "session_refs": [],
+    }
+    sessions = messages = blocks = actions = admitted = 0
+    references: list[str] = []
+    degraded = False
+    meta_rows = connection.execute("SELECT * FROM trajectory_meta ORDER BY rowid") if meta_count else iter((None,))
+    for meta in meta_rows:
+        trajectory_id = (
+            str(meta["trajectory_id"]) if meta is not None and meta["trajectory_id"] not in (None, "") else None
+        )
+        cascade_id = str(meta["cascade_id"]) if meta is not None and meta["cascade_id"] not in (None, "") else None
+        row_fallback = fallback_id
+        if trajectory_id is None and cascade_id is None and reserved(row_fallback):
+            row_fallback = f"{fallback_id}:trajectory"
+            attempt = 0
+            while reserved(row_fallback):
+                attempt += 1
+                row_fallback = f"{fallback_id}:trajectory~{attempt}"
+        native_id = trajectory_id or cascade_id or row_fallback
+        own_messages = 0
+        positive = False
+        unsupported = False
+        call_count = 0
+        sole_call: tuple[str, str, bool] | None = None
+        for ordinal, row in enumerate(
+            _trajectory_steps(connection, step_columns, trajectory_id, cascade_id, effective_meta_count)
+        ):
+            row_columns = row.keys()
+            row_map = {str(key): row[key] for key in row_columns}
+            payload = _normalized_step_payload(row_map)
+            previous_count, previous_call = call_count, sole_call
+            call_count, sole_call = 0, None
+            answerable_call = (
+                (previous_call[0], previous_call[1])
+                if previous_count == 1 and previous_call is not None and previous_call[2]
                 else None
             )
-            cascade_id = (
-                str(meta["cascade_id"])
-                if meta is not None and "cascade_id" in meta_columns and meta["cascade_id"] not in (None, "")
-                else None
-            )
-            # The one unidentified row takes the path-derived fallback, unless
-            # a native id or an unmatched summary already names it.
-            row_fallback_id = fallback_id
-            if fallback_id and trajectory_id is None and cascade_id is None and fallback_id in known_native_ids:
-                row_fallback_id = _unused_row_id(f"{fallback_id}:trajectory", known_native_ids)
-            native_id = trajectory_id or cascade_id or row_fallback_id
+            try:
+                step_ordinal = int(row_map.get("idx", ordinal))
+            except (TypeError, ValueError):
+                step_ordinal = ordinal
+            step_type = str(row_map.get("step_type") or "").strip().lower()
+            step_format = str(row_map.get("step_format") or "").strip().lower()
+            if payload is None or not _trajectory_step_supported(step_type, step_format):
+                unsupported = True
+                continue
+            try:
+                message = _trajectory_message(
+                    row=row_map,
+                    payload=payload,
+                    position=own_messages,
+                    step_ordinal=step_ordinal,
+                    step_type=step_type,
+                    step_format=step_format,
+                    answerable_call=answerable_call,
+                )
+            except ValidationError:
+                unsupported = True
+                continue
+            if message is None:
+                unsupported = True
+                continue
+            own_messages += 1
+            blocks += len(message.blocks)
+            actions += sum(block.type is BlockType.TOOL_USE for block in message.blocks)
+            positive |= message_carries_authored_content(message)
+            call = message.blocks[0] if message.blocks and message.blocks[0].type is BlockType.TOOL_USE else None
+            if call is not None and call.tool_id is not None:
+                call_count = previous_count + 1
+                if call_count == 1:
+                    sole_call = (call.tool_id, call.tool_name or "", _step_tool_id(payload) is None)
+        for summary_key in (cascade_id, trajectory_id):
+            if summary_key is not None:
+                cursor = grouping.execute(
+                    "UPDATE trajectory_summaries SET matched = 1 WHERE identity = ?", (summary_key,)
+                )
+                if cursor.rowcount:
+                    break
+        sessions += 1
+        messages += own_messages
+        if not preflight:
+            references.append(f"session:{Provider.ANTIGRAVITY.value}:{native_id}")
+        admitted += positive if preflight else 0
+        degraded |= unsupported or unattributed or (preflight and not positive)
+    for row in grouping.execute("SELECT identity FROM trajectory_summaries WHERE matched = 0 ORDER BY ordinal"):
+        sessions += 1
+        if not preflight:
+            references.append(f"session:{Provider.ANTIGRAVITY.value}:{row[0]}")
+        degraded = True
+    produced.update(
+        sessions=sessions,
+        messages=messages,
+        blocks=blocks,
+        actions=actions,
+        raw_records=sessions,
+        session_refs=references,
+    )
+    return produced, admitted, degraded
+
+
+def parse_trajectory_db(
+    path: Path,
+    fallback_id: str | None = None,
+    *,
+    immutable: bool = False,
+    grouping: sqlite3.Connection,
+    message_sink_factory: Callable[[], MutableSequence[ParsedMessage]],
+    event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]],
+    accounting_factory: Callable[[dict[AdmissionUnit, int]], _TrajectoryAccountingBuilder],
+    check_cancelled: Callable[[], None] | None = None,
+) -> Iterator[ParsedSession]:
+    """Parse Antigravity's structured trajectory store through its read route.
+
+    The parser is deliberately schema-first and fail-closed: a database with
+    a familiar filename but no verified ``trajectory_meta``/``steps`` shape
+    is not a conversation.  Unknown step formats remain session events and
+    typed admission outcomes, so the writer can never report full coverage
+    for a partially understood trajectory. The retained route requires
+    caller-owned message, event, accounting, and grouping stores; it has no
+    resident-list fallback.
+    """
+    from polylogue.sources.sqlite_export import logical_source_context
+
+    with logical_source_context(path, immutable=immutable) as connection:
+        yield from iter_trajectory_connection(
+            connection,
+            path,
+            fallback_id=fallback_id,
+            grouping=grouping,
+            message_sink_factory=message_sink_factory,
+            event_sink_factory=event_sink_factory,
+            accounting_factory=accounting_factory,
+            check_cancelled=check_cancelled,
+        )
+
+
+def iter_trajectory_connection(
+    connection: sqlite3.Connection,
+    path: Path,
+    *,
+    fallback_id: str | None,
+    grouping: sqlite3.Connection,
+    message_sink_factory: Callable[[], MutableSequence[ParsedMessage]],
+    event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]],
+    accounting_factory: Callable[[dict[AdmissionUnit, int]], _TrajectoryAccountingBuilder],
+    check_cancelled: Callable[[], None] | None = None,
+) -> Iterator[ParsedSession]:
+    """Parse one source transaction into caller-owned, disk-backed sinks.
+
+    ``grouping`` is private scratch owned by the retained preparation. The
+    message, event, and accounting factories are likewise caller-owned; this
+    iterator never falls back to resident transcript or disposition lists.
+    It yields a session only after all of that session's streams are complete.
+    """
+    from polylogue.sources.sqlite_export import LogicalExportError
+
+    check_cancelled = check_cancelled or (lambda: None)
+    connection.row_factory = sqlite3.Row
+    check_cancelled()
+    if not _trajectory_schema_matches(connection):
+        raise LogicalExportError("Antigravity SQLite lacks the declared trajectory schema")
+    meta_columns = _sqlite_columns(connection, "trajectory_meta")
+    step_columns = _sqlite_columns(connection, "steps")
+    summary_columns = _sqlite_columns(connection, "conversation_summaries")
+    parent_columns = _sqlite_columns(connection, "parent_references")
+    _create_trajectory_parse_tables(grouping)
+    _load_trajectory_identity_evidence(
+        connection,
+        grouping,
+        meta_columns=meta_columns,
+        summary_columns=summary_columns,
+        parent_columns=parent_columns,
+        check_cancelled=check_cancelled,
+    )
+    meta_count = int(connection.execute("SELECT COUNT(*) FROM trajectory_meta").fetchone()[0])
+    anonymous = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM trajectory_meta WHERE "
+            + " AND ".join(f'("{name}" IS NULL OR "{name}" = \'\')' for name in ("trajectory_id", "cascade_id"))
+        ).fetchone()[0]
+    )
+    if anonymous > 1:
+        raise LogicalExportError(
+            f"Antigravity SQLite holds {anonymous} trajectories with no trajectory or cascade id; "
+            "no stable identity tells them apart"
+        )
+    if not meta_count and not fallback_id:
+        return
+    effective_meta_count = meta_count or 1
+    has_step_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
+    unattributed_count = (
+        int(connection.execute("SELECT COUNT(*) FROM steps").fetchone()[0])
+        if not has_step_identity and effective_meta_count > 1
+        else 0
+    )
+    fallback_base = fallback_id or path.stem
+    meta_cursor = connection.execute("SELECT * FROM trajectory_meta ORDER BY rowid") if meta_count else None
+    try:
+        meta_iter: Iterable[sqlite3.Row | None] = meta_cursor if meta_cursor is not None else (None,)
+        for meta_index, meta in enumerate(meta_iter):
+            check_cancelled()
+            trajectory_id = _row_identity(meta, "trajectory_id", meta_columns)
+            cascade_id = _row_identity(meta, "cascade_id", meta_columns)
+            native_id = trajectory_id or cascade_id
+            if native_id is None:
+                native_id = fallback_base
+                if _trajectory_reserved(grouping, native_id):
+                    native_id = _unused_trajectory_id(grouping, f"{fallback_base}:trajectory")
             if not native_id:
                 continue
-            if has_step_identity:
-                predicates: list[str] = []
-                values: list[object] = []
-                if "trajectory_id" in step_columns and trajectory_id is not None:
-                    predicates.append("trajectory_id = ?")
-                    values.append(trajectory_id)
-                if "cascade_id" in step_columns and cascade_id is not None:
-                    predicates.append("cascade_id = ?")
-                    values.append(cascade_id)
-                steps = (
-                    connection.execute(
-                        "SELECT * FROM steps WHERE " + " OR ".join(predicates) + " ORDER BY idx",
-                        values,
-                    ).fetchall()
-                    if predicates
-                    else []
-                )
-                if not steps and len(meta_rows) == 1 and not _any_step_carries_a_key(connection, step_columns):
-                    # A legacy single-trajectory export can declare the key
-                    # columns and still leave every cell NULL. The keyed query
-                    # then returns nothing and the safe single-meta fallback
-                    # below is unreachable, so the parser emitted an empty
-                    # session whose own accounting denominator was 0 -- every
-                    # real step silently absent from messages AND from
-                    # admission. Attribute them to the sole trajectory only
-                    # when no step row carries any key at all.
-                    steps = connection.execute("SELECT * FROM steps ORDER BY idx").fetchall()
-            elif len(meta_rows) == 1:
-                # Older exports have one trajectory_meta row and no key on
-                # steps. That shape is safe only for the single trajectory.
-                steps = connection.execute("SELECT * FROM steps ORDER BY idx").fetchall()
-            else:
-                # Multiple native trajectories with unkeyed steps cannot be
-                # separated honestly. Retain the denominator as explicit
-                # source evidence instead of merging it into every session.
-                steps = []
-            messages: list[ParsedMessage] = []
-            outcomes: list[AdmissionOutcome] = []
-            events: list[ParsedSessionEvent] = []
-            # Tool calls since the last non-call step, as (tool_id, tool_name,
-            # id_less). An ID-less result answers the run only when the run is
-            # exactly one ID-less call: with several calls in flight, or any
-            # other step in between, nothing says which call it reports.
-            call_run: list[tuple[str, str, bool]] = []
-            if not has_step_identity and len(meta_rows) > 1:
-                unassigned_count = int(connection.execute("SELECT COUNT(*) FROM steps").fetchone()[0])
-                if unassigned_count:
-                    events.append(
-                        ParsedSessionEvent(
-                            event_type="antigravity_unattributed_steps",
-                            payload={"step_count": unassigned_count, "meta_count": len(meta_rows)},
-                        )
+            step_count = _trajectory_step_count(
+                connection,
+                step_columns,
+                trajectory_id,
+                cascade_id,
+                effective_meta_count,
+            )
+            messages = message_sink_factory()
+            events = event_sink_factory()
+            accounting = accounting_factory({AdmissionUnit.PART: step_count})
+            degraded_steps = False
+            message_count = 0
+            call_count = 0
+            sole_call: tuple[str, str, bool] | None = None
+            if unattributed_count:
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="antigravity_unattributed_steps",
+                        payload={"step_count": unattributed_count, "meta_count": effective_meta_count},
                     )
-            for ordinal, row in enumerate(steps):
-                row_columns = row.keys()
-                row_map = {str(key): row[key] for key in row_columns}
-                payload = _normalized_step_payload(row_map)
-                # Every step, materialized or refused, ends the current run;
-                # only a materialized call starts or extends the next one.
-                previous_run = call_run
-                call_run = []
-                answerable_call = (
-                    (previous_run[0][0], previous_run[0][1]) if len(previous_run) == 1 and previous_run[0][2] else None
                 )
-                idx = row_map.get("idx", ordinal)
+            for ordinal, row in enumerate(
+                _trajectory_steps(connection, step_columns, trajectory_id, cascade_id, effective_meta_count)
+            ):
+                check_cancelled()
+                row_map = {str(key): row[key] for key in row.keys()}  # noqa: SIM118
+                payload = _normalized_step_payload(row_map)
+                previous_call_count, previous_sole_call = call_count, sole_call
+                call_count, sole_call = 0, None
+                answerable_call = (
+                    (previous_sole_call[0], previous_sole_call[1])
+                    if previous_call_count == 1 and previous_sole_call is not None and previous_sole_call[2]
+                    else None
+                )
                 try:
-                    step_ordinal = int(idx)
+                    step_ordinal = int(row_map.get("idx", ordinal))
                 except (TypeError, ValueError):
                     step_ordinal = ordinal
                 step_type = str(row_map.get("step_type") or "").strip().lower()
                 step_format = str(row_map.get("step_format") or "").strip().lower()
-                key = f"step:{step_ordinal}"
+                outcome_key = f"step:{step_ordinal}"
                 if payload is None:
-                    outcomes.append(
+                    accounting.append(
                         AdmissionOutcome(
                             unit=AdmissionUnit.PART,
                             ordinal=ordinal,
-                            key=key,
+                            key=outcome_key,
                             disposition=AdmissionDisposition.TYPED_REFUSAL,
                             reason=AdmissionRefusalReason.MALFORMED,
                         )
                     )
+                    degraded_steps = True
                     events.append(
                         ParsedSessionEvent(
                             event_type="antigravity_unsupported_step",
@@ -1067,15 +1547,16 @@ def parse_trajectory_db(
                     )
                     continue
                 if not _trajectory_step_supported(step_type, step_format):
-                    outcomes.append(
+                    accounting.append(
                         AdmissionOutcome(
                             unit=AdmissionUnit.PART,
                             ordinal=ordinal,
-                            key=key,
+                            key=outcome_key,
                             disposition=AdmissionDisposition.TYPED_UNKNOWN,
                             reason=AdmissionUnknownReason.UNSUPPORTED_SHAPE,
                         )
                     )
+                    degraded_steps = True
                     events.append(
                         ParsedSessionEvent(
                             event_type="antigravity_unsupported_step",
@@ -1094,23 +1575,23 @@ def parse_trajectory_db(
                     message = _trajectory_message(
                         row=row_map,
                         payload=payload,
-                        position=len(messages),
+                        position=message_count,
                         step_ordinal=step_ordinal,
                         step_type=step_type,
                         step_format=step_format,
                         answerable_call=answerable_call,
                     )
                 except ValidationError:
-                    # A malformed known step must not discard valid siblings.
-                    outcomes.append(
+                    accounting.append(
                         AdmissionOutcome(
                             unit=AdmissionUnit.PART,
                             ordinal=ordinal,
-                            key=key,
+                            key=outcome_key,
                             disposition=AdmissionDisposition.TYPED_REFUSAL,
                             reason=AdmissionRefusalReason.MALFORMED,
                         )
                     )
+                    degraded_steps = True
                     events.append(
                         ParsedSessionEvent(
                             event_type="antigravity_unsupported_step",
@@ -1124,15 +1605,16 @@ def parse_trajectory_db(
                     )
                     continue
                 if message is None:
-                    outcomes.append(
+                    accounting.append(
                         AdmissionOutcome(
                             unit=AdmissionUnit.PART,
                             ordinal=ordinal,
-                            key=key,
+                            key=outcome_key,
                             disposition=AdmissionDisposition.TYPED_UNKNOWN,
                             reason=AdmissionUnknownReason.UNSUPPORTED_SHAPE,
                         )
                     )
+                    degraded_steps = True
                     events.append(
                         ParsedSessionEvent(
                             event_type="antigravity_unsupported_step",
@@ -1147,95 +1629,78 @@ def parse_trajectory_db(
                     )
                     continue
                 messages.append(message)
+                message_count += 1
                 call = message.blocks[0] if message.blocks and message.blocks[0].type is BlockType.TOOL_USE else None
                 if call is not None and call.tool_id is not None:
-                    call_run = [*previous_run, (call.tool_id, call.tool_name or "", _step_tool_id(payload) is None)]
-                outcomes.append(
+                    call_count = previous_call_count + 1
+                    if call_count == 1:
+                        sole_call = (call.tool_id, call.tool_name or "", _step_tool_id(payload) is None)
+                accounting.append(
                     AdmissionOutcome(
-                        unit=AdmissionUnit.PART, ordinal=ordinal, key=key, disposition=AdmissionDisposition.MATERIALIZED
+                        unit=AdmissionUnit.PART,
+                        ordinal=ordinal,
+                        key=outcome_key,
+                        disposition=AdmissionDisposition.MATERIALIZED,
                     )
                 )
-            summary_key = next(
-                (value for value in (cascade_id, trajectory_id) if value is not None and value in summaries),
-                None,
-            )
-            summary = summaries.get(summary_key or "")
+            summary_key = _matched_summary_key(grouping, cascade_id, trajectory_id)
             title = None
             updated_at = None
-            if summary is not None:
-                matched_summary_keys.add(summary_key or "")
-                for key in ("title", "name", "summary"):
-                    if key in summary_columns and summary[key]:
-                        title = str(summary[key])
-                        break
-                for key in ("last_modified_time", "updated_at", "updatedAt", "modified_at"):
-                    if key in summary_columns and summary[key] is not None:
-                        updated_at = str(summary[key])
-                        break
-                events.append(
-                    ParsedSessionEvent(
-                        event_type="antigravity_conversation_summary",
-                        timestamp=updated_at,
-                        payload=_event_payload_row({str(key): summary[key] for key in tuple(summary.keys())}),
-                    )
-                )
-            matching_parent_refs = list(parent_refs.get(cascade_id or "", ()))
-            if trajectory_id and trajectory_id != cascade_id:
-                matching_parent_refs.extend(parent_refs.get(trajectory_id, ()))
-            parent_ids = {
-                claimant
-                for reference in matching_parent_refs
-                for resolved in (_parent_reference_id(reference),)
-                if resolved is not None
-                for claimant in alias_claimants.get(resolved, {resolved})
-            }
-            # Two references naming different parents are an ambiguity, not a
-            # choice: asserting whichever row the unordered SELECT returned
-            # first persisted an arbitrary durable topology edge and could
-            # extract the child against the wrong parent's prefix.
-            parent_id = next(iter(parent_ids)) if len(parent_ids) == 1 else None
-            parent_ambiguous = len(parent_ids) > 1
-            if matching_parent_refs:
-                events.append(
-                    ParsedSessionEvent(
-                        event_type="antigravity_parent_reference",
-                        payload={
-                            "references": matching_parent_refs,
-                            "parent_provider_id": parent_id,
-                            "parent_provider_ids": sorted(parent_ids),
-                            "parent_observed": parent_id in known_native_ids if parent_id else False,
-                        },
-                    )
-                )
-                if parent_ambiguous:
+            if summary_key is not None:
+                summary = _summary_row(grouping, summary_key)
+                if summary is not None:
+                    grouping.execute("UPDATE trajectory_summaries SET matched = 1 WHERE identity = ?", (summary_key,))
+                    for key in ("title", "name", "summary"):
+                        if key in summary_columns and summary.get(key):
+                            title = str(summary[key])
+                            break
+                    for key in ("last_modified_time", "updated_at", "updatedAt", "modified_at"):
+                        if key in summary_columns and summary.get(key) is not None:
+                            updated_at = str(summary[key])
+                            break
                     events.append(
                         ParsedSessionEvent(
-                            event_type="antigravity_ambiguous_parent_reference",
-                            payload={"parent_provider_ids": sorted(parent_ids)},
+                            event_type="antigravity_conversation_summary",
+                            timestamp=updated_at,
+                            payload=summary,
                         )
                     )
-                if parent_id is not None and parent_id not in known_native_ids:
+            parent_id, parent_count, parent_observed, parent_ids_count = _settle_parent_references(
+                grouping, cascade_id, trajectory_id, check_cancelled
+            )
+            if parent_count:
+                _append_parent_reference_events(
+                    events,
+                    grouping,
+                    cascade_id,
+                    trajectory_id,
+                    parent_id,
+                    parent_observed,
+                    parent_ids_count,
+                    check_cancelled,
+                )
+                if parent_id is not None and not parent_observed:
                     events.append(
                         ParsedSessionEvent(
                             event_type="antigravity_unmatched_parent_reference",
                             payload={"parent_provider_id": parent_id},
                         )
                     )
-            accounting = ParseAccounting(expected={AdmissionUnit.PART: len(steps)}, outcomes=outcomes)
-            accounting.assert_conserved()
-            if not messages:
+            unit_accounting = accounting.finish()
+            unit_accounting.assert_conserved()
+            if not message_count:
                 events.append(
                     ParsedSessionEvent(
                         event_type="antigravity_trajectory_empty",
-                        payload={"step_count": len(steps), "meta_index": meta_index},
+                        payload={"step_count": step_count, "meta_index": meta_index},
                     )
                 )
             ingest_flags = []
-            if any(outcome.disposition is not AdmissionDisposition.MATERIALIZED for outcome in outcomes):
+            if degraded_steps:
                 ingest_flags.append("degraded:unsupported-trajectory-steps")
-            if any(event.event_type == "antigravity_unattributed_steps" for event in events):
+            if unattributed_count:
                 ingest_flags.append("degraded:unattributed-trajectory-steps")
-            yield_session = ParsedSession(
+            session = ParsedSession.model_construct(
                 source_name=Provider.ANTIGRAVITY,
                 provider_session_id=native_id,
                 provider_session_aliases=[
@@ -1246,19 +1711,27 @@ def parse_trajectory_db(
                 updated_at=updated_at,
                 messages=messages,
                 session_events=events,
-                unit_accounting=accounting,
-                active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
+                unit_accounting=unit_accounting,
+                active_leaf_message_provider_id=messages[-1].provider_message_id if message_count else None,
+                attachments=[],
                 parent_session_provider_id=parent_id,
+                ingest_flags=ingest_flags,
+                models_used=[],
+                working_directories=[],
+                pending_drafts=[],
+                session_refs=[],
             )
-            yield_session = yield_session.model_copy(update={"ingest_flags": ingest_flags})
-            yield yield_session
-        for summary_key, summary in summaries.items():
-            if summary_key in matched_summary_keys:
-                continue
-            # A summary without a trajectory_meta row is still source metadata.
-            # Keep it attributable under its native key without fabricating a
-            # join to an unrelated session or discarding the row.
-            summary_payload = _event_payload_row({str(key): summary[key] for key in tuple(summary.keys())})
+            yield session
+    finally:
+        if meta_cursor is not None:
+            meta_cursor.close()
+    unmatched = grouping.execute(
+        "SELECT identity, row_json FROM trajectory_summaries WHERE matched = 0 ORDER BY ordinal"
+    )
+    try:
+        for summary_key, row_json in unmatched:
+            check_cancelled()
+            summary = json.loads(row_json)
             summary_time = next(
                 (
                     str(summary[column])
@@ -1267,25 +1740,34 @@ def parse_trajectory_db(
                 ),
                 None,
             )
-            yield ParsedSession(
+            events = event_sink_factory()
+            events.append(
+                ParsedSessionEvent(
+                    event_type="antigravity_unmatched_summary",
+                    timestamp=summary_time,
+                    payload=summary,
+                )
+            )
+            accounting = accounting_factory({})
+            session = ParsedSession.model_construct(
                 source_name=Provider.ANTIGRAVITY,
                 provider_session_id=summary_key,
                 title=None,
                 title_source=None,
                 updated_at=summary_time,
-                messages=[],
-                session_events=[
-                    ParsedSessionEvent(
-                        event_type="antigravity_unmatched_summary",
-                        timestamp=summary_time,
-                        payload=summary_payload,
-                    )
-                ],
-                unit_accounting=ParseAccounting(expected={}, outcomes=[]),
+                messages=message_sink_factory(),
+                session_events=events,
+                unit_accounting=accounting.finish(),
+                attachments=[],
                 ingest_flags=["degraded:unmatched-trajectory-summary"],
+                models_used=[],
+                working_directories=[],
+                pending_drafts=[],
+                session_refs=[],
             )
+            yield session
     finally:
-        connection.close()
+        unmatched.close()
 
 
 class _AntigravityLanguageServerExportClient(Protocol):
@@ -1677,11 +2159,11 @@ def iter_language_server_export_results(
 
 def _conversation_pb_paths(root: Path) -> list[Path]:
     """List every production-discovered conversation trajectory."""
-    from polylogue.sources.source_walk import _walk_source_paths
+    from polylogue.sources.source_walk import layout_source_paths
 
     return [
         path
-        for path in _walk_source_paths(root, provider=Provider.ANTIGRAVITY)
+        for path in layout_source_paths("antigravity", root)
         if path.suffix.lower() == ".pb"
         and classify_source_path(path).role is AntigravitySourceRole.CONVERSATION_PROTOBUF
     ]
@@ -2000,3 +2482,8 @@ __all__ = [
 # Public alias -- ``source_parsing.py`` needs the same disk-truth listing to
 # locate the raw ``.pb`` bytes for blob snapshotting per exported session.
 conversation_pb_paths = _conversation_pb_paths
+
+
+def detection_projection() -> DetectorProjection:
+    """Keep only the exact markdown-export signature fields."""
+    return DetectorProjection(fields={name: DetectorProjection() for name in ("source", "cascadeId", "markdown")})

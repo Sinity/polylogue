@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from importlib import resources
 
 from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_DDL, EMBEDDINGS_SCHEMA_VERSION
@@ -22,7 +21,7 @@ from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 # changes advance the relevant tier through a numbered migration.
 ARCHIVE_FORMAT_FLOOR_VERSION = 1
 ARCHIVE_BASELINE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = dict.fromkeys(ArchiveTier, 1)
-SOURCE_TIER_VERSION = 3
+SOURCE_TIER_VERSION = 1
 USER_TIER_VERSION = 1
 AUDIT_TIER_VERSION = 1
 
@@ -39,23 +38,9 @@ ARCHIVE_BASELINE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {
 }
 
 
-def _source_runtime_ddl() -> str:
-    """Current Source schema is its immutable baseline plus numbered steps."""
-    directory = resources.files("polylogue.storage.sqlite.migrations.source")
-    return (
-        SOURCE_DDL
-        + "\n"
-        + "\n".join(
-            directory.joinpath(name).read_text(encoding="utf-8")
-            for name in ("002_raw_artifact_failure_identity.sql", "003_attachment_coordinate_identity.sql")
-        )
-    )
-
-
-ARCHIVE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {
-    **ARCHIVE_BASELINE_DDL_BY_TIER,
-    ArchiveTier.SOURCE: _source_runtime_ddl(),
-}
+# Every tier's current schema is its baseline until a numbered durable
+# migration lands; that migration then extends this mapping.
+ARCHIVE_DDL_BY_TIER: Mapping[ArchiveTier, str] = dict(ARCHIVE_BASELINE_DDL_BY_TIER)
 
 ARCHIVE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = {
     ArchiveTier.SOURCE: SOURCE_TIER_VERSION,

@@ -12,7 +12,7 @@ import select
 import socket
 import sqlite3
 import threading
-from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from dataclasses import replace as dataclasses_replace
@@ -32,20 +32,25 @@ from polylogue.archive.query.transaction import (
     archive_read_context,
 )
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES
-from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, PolylogueError
-from polylogue.core.json import JSONDocument
-from polylogue.core.loopback import is_loopback_host
-from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transient_sqlite_lock
-from polylogue.daemon import workspace_routes
-from polylogue.daemon.events import (
-    emit_daemon_event,
-    get_latest_event_id,
-)
-from polylogue.daemon.execution import (
+from polylogue.core.compute import (
     BoundedComputeAdapter,
     DaemonBackpressureError,
     DaemonOperationCancelled,
     current_cancellation,
+)
+from polylogue.core.errors import (
+    ArchiveTierUnavailableError,
+    DatabaseError,
+    PolylogueError,
+    SearchIndexUnavailableError,
+)
+from polylogue.core.json import JSONDocument
+from polylogue.core.loopback import is_loopback_host
+from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+from polylogue.daemon import workspace_routes
+from polylogue.daemon.events import (
+    emit_daemon_event,
+    get_latest_event_id,
 )
 from polylogue.daemon.peer_identity import peer_socket_owned_by_current_uid
 from polylogue.daemon.route_contracts import (
@@ -88,6 +93,7 @@ from polylogue.daemon.webui_data import (
 )
 from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
+    DaemonWriterSettlementError,
     DaemonWriteThreadBridge,
     register_write_coordinator,
 )
@@ -143,7 +149,6 @@ if TYPE_CHECKING:
     from polylogue.operations.daemon_protocol import DaemonOperationRequest
     from polylogue.operations.mutation_transaction import MutationPrincipal
     from polylogue.storage.sqlite.archive_tiers.archive import (
-        ArchiveSessionSearchHit,
         ArchiveSessionSummary,
         ArchiveStore,
     )
@@ -619,22 +624,6 @@ def _session_list_state(outcome: OutcomeEnvelope, *, filtered: bool) -> tuple[Ro
     return "empty", "Archive contains no sessions."
 
 
-def _search_index_degraded_reason(exc: BaseException) -> str | None:
-    # A corrupt or contended database raised against ``messages_fts`` matches
-    # the same substrings as a genuinely missing FTS table.  Reporting it as
-    # ordinary missing-index degradation tells the operator to reindex when
-    # the storage itself is unreadable or merely busy, so both are classified
-    # by SQLite's result metadata first and named for what they are.
-    if is_corrupt_sqlite_database(exc):
-        return "Search index unavailable: the archive database is unreadable (corrupt or I/O error)."
-    if is_transient_sqlite_lock(exc):
-        return "Search index unavailable: the archive database is busy; retry shortly."
-    text = str(exc).lower()
-    if "search index" in text or "messages_fts" in text or "fts" in text:
-        return "Search index unavailable: message FTS table is missing or degraded."
-    return None
-
-
 def _truthy_query_param(params: dict[str, list[str]], key: str) -> bool:
     values = params.get(key) or []
     if not values:
@@ -665,77 +654,6 @@ def _csv_values(params: dict[str, list[str]], key: str) -> tuple[str, ...]:
     for value in params.get(key) or []:
         values.extend(token.strip() for token in value.split(",") if token.strip())
     return tuple(dict.fromkeys(values))
-
-
-def _archive_datetime_to_ms(value: datetime | None) -> int | None:
-    if value is None:
-        return None
-    return int(value.timestamp() * 1000)
-
-
-def _archive_filter_kwargs_from_spec(
-    spec: SessionQuerySpec,
-    *,
-    since_ms: int | None,
-    until_ms: int | None,
-) -> dict[str, object]:
-    """Storage-layer filter kwargs derived from one merged ``SessionQuerySpec``.
-
-    Every key here is accepted identically by ``ArchiveStore.list_summaries``/
-    ``search_summaries``/``count_sessions``/``count_search_sessions`` — the
-    complete filter surface those four SQL entry points share (polylogue-4p1.1
-    parity test: ``tests/unit/daemon/test_web_reader.py::
-    test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field``).
-    ``session_id`` is deliberately NOT included: it is passed as a separate
-    keyword by the caller because ``count_sessions`` does not accept it.
-
-    ``root`` (polylogue-j8u2) resolves the default result unit to top-level
-    sessions when the request left it unset -- see
-    :func:`~polylogue.archive.query.spec.resolve_default_root_filter`. This
-    keeps the daemon-proxied session-list route in parity with the declared
-    ``cli.query`` read (``polylogue/operations/daemon_reads.py``), which is now
-    the CLI's only session-query executor and applies the same resolution this
-    daemon path must match exactly (golden-parity coverage:
-    ``tests/unit/cli/test_daemon_golden_parity.py::
-    test_find_list_json_parity_between_direct_and_daemon``).
-    """
-    from polylogue.archive.query.spec import resolve_default_root_filter
-
-    origins = spec.origins
-    origin = origins[0] if len(origins) == 1 else None
-    return {
-        "origin": origin,
-        "origins": origins,
-        "excluded_origins": spec.excluded_origins,
-        "tags": spec.tags,
-        "excluded_tags": spec.excluded_tags,
-        "repo_names": spec.repo_names,
-        "project_refs": spec.project_refs,
-        "has_types": spec.has_types,
-        "has_tool_use": spec.filter_has_tool_use,
-        "has_thinking": spec.filter_has_thinking,
-        "has_paste": spec.filter_has_paste,
-        "tool_terms": spec.tool_terms,
-        "excluded_tool_terms": spec.excluded_tool_terms,
-        "action_terms": spec.action_terms,
-        "excluded_action_terms": spec.excluded_action_terms,
-        "action_sequence": spec.action_sequence,
-        "action_text_terms": spec.action_text_terms,
-        "referenced_paths": spec.referenced_path,
-        "cwd_prefix": spec.cwd_prefix,
-        "typed_only": spec.typed_only,
-        "message_type": spec.message_type,
-        "title": spec.title,
-        "min_messages": spec.min_messages,
-        "max_messages": spec.max_messages,
-        "min_words": spec.min_words,
-        "max_words": spec.max_words,
-        "since_ms": since_ms,
-        "until_ms": until_ms,
-        "since_session_id": spec.since_session_id,
-        "boolean_predicate": spec.boolean_predicate,
-        "root": resolve_default_root_filter(spec.root, boolean_predicate=spec.boolean_predicate),
-    }
 
 
 def _dump_target_ref(target_ref: TargetRefPayload) -> dict[str, object]:
@@ -906,8 +824,10 @@ def _parse_insight_includes(raw: str | None) -> tuple[str, ...]:
 
 
 def _provenance_dict(prov: Any) -> dict[str, object]:
+    # An unmaterialized insight has no recorded materializer version; keep it unknown.
+    version = getattr(prov, "materializer_version", None)
     return {
-        "materializer_version": int(getattr(prov, "materializer_version", 0)),
+        "materializer_version": None if version is None else int(version),
         "materialized_at": getattr(prov, "materialized_at", None),
         "source_updated_at": getattr(prov, "source_updated_at", None),
         "source_sort_key": getattr(prov, "source_sort_key", None),
@@ -1127,7 +1047,7 @@ def _write_route_exception_answer(handler: DaemonAPIHandler, exc: Exception, *, 
             extra_headers={"Retry-After": "2"},
         )
         return
-    if isinstance(exc, DaemonBackpressureError):
+    if isinstance(exc, (DaemonBackpressureError, DaemonWriterSettlementError)):
         handler._send_json(
             HTTPStatus.SERVICE_UNAVAILABLE,
             QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
@@ -1195,11 +1115,11 @@ def _build_query_spec_params(
 ) -> dict[str, object]:
     """Build SessionQuerySpec-compatible params from HTTP query string.
 
-    Shared by every ``/api/sessions``-style fast path (both the full-backend
-    ``_do_list`` and the split-archive ``_do_archive_session_list``,
-    polylogue-4p1.1) so a filter param is parsed once, in one place, instead
-    of being hand-mirrored per route.
+    API and server-rendered session lists pass these operands to the canonical
+    query executor, so filter, ordering and retrieval semantics have one owner.
     """
+    from polylogue.archive.query.spec import split_repo_names
+
     spec_params: dict[str, object] = {}
 
     origins = _csv_values(params, "origin")
@@ -1249,10 +1169,13 @@ def _build_query_spec_params(
     if excluded_origins:
         spec_params["exclude_origin"] = excluded_origins
 
+    repo_names = tuple(dict.fromkeys(name for value in params.get("repo", ()) for name in split_repo_names(value)))
+    if repo_names:
+        spec_params["repo"] = repo_names
+
     for key in (
         "tag",
         "exclude_tag",
-        "repo",
         "has_type",
         "referenced_path",
         "action",
@@ -1769,42 +1692,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         async with Polylogue() as polylogue:
             return await handler(polylogue)
 
-    @contextlib.contextmanager
-    def _write_authorization(self) -> Iterator[None]:
-        """Adopt the gate's grant for a write issued on this request thread.
-
-        Most gated routes hand their body to :meth:`_sync_run`, which adopts
-        the grant on the worker that actually runs it. A route that opens a
-        write connection inline is its own execution unit and presents the
-        grant here.
-        """
-        delegation = getattr(self, "_write_delegation", None)
-        if delegation is None:
-            yield
-            return
-        from polylogue.core.write_lease import WriteLeaseDelegation, adopt_write_lease
-
-        with adopt_write_lease(cast(WriteLeaseDelegation, delegation)):
-            yield
-
-    async def _run_leased_archive_query(self, handler: Callable, delegation: object) -> object:  # type: ignore[type-arg]
-        """Run one mutating route body under the write gate's explicit grant.
-
-        Adoption happens *inside* the freshly created loop's task, because that
-        task is the execution unit the delegation authorizes; adopting outside
-        it would bind the wrong task identity and be refused again.
-        """
-        from polylogue.core.write_lease import WriteLeaseDelegation, adopt_write_lease
-
-        with adopt_write_lease(cast(WriteLeaseDelegation, delegation)):
-            return await self._run_archive_query(handler)
-
-    def _archive_query_coroutine(self, handler: Callable) -> Coroutine[object, object, object]:  # type: ignore[type-arg]
-        delegation = getattr(self, "_write_delegation", None)
-        if delegation is None:
-            return cast("Coroutine[object, object, object]", self._run_archive_query(handler))
-        return self._run_leased_archive_query(handler, delegation)
-
     def _mutation_wait_budget_s(self) -> float:
         """The bound this request's mutating wait carries.
 
@@ -1824,88 +1711,74 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return declared_s
 
     def _sync_run(self, handler: Callable) -> object:  # type: ignore[type-arg]
-        """Run one route body through the daemon's single bounded scheduler.
-
-        Reads carry the interactive class and the request-thread timeout;
-        mutations carry the control class and wait for the substrate call,
-        because a route-level writer lease may not outlive its own work.
-        """
-
-        kernel = getattr(self.server, "execution_kernel", None)
+        """Run reads on compute workers and admitted writes on writer workers."""
         mutating = getattr(self, "_write_gate_depth", 0) > 0
-        if isinstance(kernel, BoundedComputeAdapter):
-            from polylogue.daemon.execution import AdmissionClass, CancellationHandle
+        if mutating:
+            from polylogue.core.write_lease import WriteLeaseDelegation
 
-            cancellation = CancellationHandle()
-            admission_class: AdmissionClass = "control" if mutating else "interactive-read"
+            bridge = getattr(self.server, "write_bridge", None)
+            delegation = getattr(self, "_write_delegation", None)
+            if not isinstance(bridge, DaemonWriteThreadBridge) or delegation is None:
+                raise RuntimeError("a mutating route needs its admitted writer delegation")
+            budget_s = self._mutation_wait_budget_s()
             with log_span(
                 "daemon.http.scheduled_route",
-                # Observability must never be the thing that breaks a route:
-                # narrow in-process handler doubles carry no request line.
                 route=_request_path_for_log(getattr(self, "path", "") or ""),
                 method=getattr(self, "command", "") or "",
-                domain=admission_class,
+                domain="control",
+            ) as route_span:
+                self._last_queue_delay_ms = 0
+                try:
+                    result = bridge.run_admitted_async(
+                        cast(WriteLeaseDelegation, delegation),
+                        lambda: self._run_archive_query(handler),
+                        timeout=budget_s,
+                    )
+                except FutureTimeoutError as error:
+                    route_span.set(reason="mutation_indeterminate", timeout_ms=round(budget_s * 1000, 3))
+                    raise DaemonMutationIndeterminate(
+                        f"mutation did not complete within {budget_s:.0f}s; "
+                        "it may still be in flight -- re-read before retrying"
+                    ) from error
+                route_span.ok()
+                return result
+
+        kernel = getattr(self.server, "execution_kernel", None)
+        if isinstance(kernel, BoundedComputeAdapter):
+            from polylogue.core.compute import CancellationHandle
+
+            cancellation = CancellationHandle()
+            with log_span(
+                "daemon.http.scheduled_route",
+                route=_request_path_for_log(getattr(self, "path", "") or ""),
+                method=getattr(self, "command", "") or "",
+                domain="interactive-read",
             ) as route_span:
                 submitted = kernel.submit(
-                    # The kernel's ThreadPoolExecutor predates every bind, so
-                    # this callable would otherwise run with no correlation
-                    # context and its events could not be joined to this span.
-                    propagate(lambda: asyncio.run(self._archive_query_coroutine(handler))),
-                    admission_class=admission_class,
+                    propagate(lambda: asyncio.run(self._run_archive_query(handler))),
+                    admission_class="interactive-read",
                     estimated_bytes=1024 * 1024,
                     cancellation=cancellation,
                 )
                 try:
-                    if mutating:
-                        # The control class reserves capacity, so queueing is
-                        # bounded by the mutation itself rather than by read
-                        # pressure -- but the mutation can still block behind a
-                        # writer lease held by a convergence pass, and an
-                        # unbounded ``result()`` gave the client no
-                        # observable bound at all (polylogue-8r4zq). The wait
-                        # carries the request deadline; exceeding it is a
-                        # typed *indeterminate* outcome, never a cancellation:
-                        # the submitted write may still land, so claiming it
-                        # did not would be the same lie in the other
-                        # direction.
-                        budget_s = self._mutation_wait_budget_s()
-                        try:
-                            result = submitted.future.result(timeout=budget_s)
-                        except FutureTimeoutError as exc:
-                            route_span.set(
-                                reason="mutation_indeterminate",
-                                timeout_ms=round(budget_s * 1000, 3),
-                            )
-                            raise DaemonMutationIndeterminate(
-                                f"mutation did not complete within {budget_s:.0f}s; "
-                                "it may still be in flight -- re-read before retrying"
-                            ) from exc
-                        route_span.ok()
-                        return result
                     try:
                         result = submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
-                    except FutureTimeoutError as exc:
+                    except FutureTimeoutError as error:
                         cancellation.cancel()
                         submitted.future.cancel()
-                        # The raised TimeoutError makes the span emit its own
-                        # ``.error`` terminal event; these fields ride along.
                         route_span.set(
-                            reason="archive_query_timeout",
-                            timeout_ms=round(_ARCHIVE_QUERY_TIMEOUT_S * 1000, 3),
+                            reason="archive_query_timeout", timeout_ms=round(_ARCHIVE_QUERY_TIMEOUT_S * 1000, 3)
                         )
                         raise TimeoutError(
                             f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
                             "the daemon may be busy with catch-up ingestion/embedding"
-                        ) from exc
+                        ) from error
                     route_span.ok()
                     return result
                 finally:
                     self._last_queue_delay_ms = int(submitted.queue_delay_s * 1000)
                     route_span.set(elapsed_ms=round(submitted.queue_delay_s * 1000, 3))
-
-        # Narrow in-process handler doubles construct no kernel. They have no
-        # concurrency to schedule, so the work runs on this thread.
-        return asyncio.run(self._archive_query_coroutine(handler))
+        return asyncio.run(self._run_archive_query(handler))
 
     @contextlib.contextmanager
     def _write_gate(self, actor: str) -> Iterator[None]:
@@ -1921,7 +1794,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         with cast(DaemonWriteThreadBridge, bridge).hold(actor) as delegation:
             self._write_gate_depth = depth + 1
             # The gate admits this request; the delegation is what authorizes
-            # its body, which runs on a kernel worker in its own event loop.
+            # its body, which runs on the admitted writer worker in its own event loop.
             self._write_delegation = delegation
             try:
                 yield
@@ -2609,8 +2482,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             default=DEFAULT_SESSION_LIST_LIMIT,
         )
         offset = max(0, self._get_int(params, "offset", 0))
+
+        async def _list(poly: Polylogue) -> object:
+            return await self._do_list(poly, query_params, limit, offset, route="/sessions")
+
         try:
-            page = self._do_archive_session_list(archive_root, params, limit, offset, "/sessions")
+            query_params = _build_query_spec_params(params, self)
+            cursor = self._get_param(params, "cursor")
+            if cursor:
+                query_params["cursor"] = cursor
+            page = self._sync_run(_list)
         except QuerySpecError as exc:
             self._send_webui_html(
                 HTTPStatus.BAD_REQUEST,
@@ -2798,7 +2679,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
 
         async def _search(poly: Polylogue) -> object:
-            return await self._do_search_list(poly, spec, limit, 0)
+            return await self._do_search_list(poly, spec, limit, 0, route="/search")
 
         try:
             result = self._sync_run(_search)
@@ -3427,16 +3308,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if cursor:
             query_params["cursor"] = cursor
 
-        archive_root = _web_reader_archive_root()
-        # The split archive list fast path is offset based. Search continuations
-        # carry a ranked keyset cursor, so send them through the canonical
-        # search builder instead of repeating page one and dropping the cursor.
-        if archive_root is not None and not cursor:
-            self._send_json(HTTPStatus.OK, self._do_archive_session_list(archive_root, params, limit, offset, route))
-            return
-
         async def _list(poly: Polylogue) -> object:
-            return await self._do_list(poly, query_params, limit, offset)
+            return await self._do_list(poly, query_params, limit, offset, route=route)
 
         result = self._sync_run(_list)
         self._send_json(HTTPStatus.OK, result)
@@ -3447,6 +3320,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         query_params: dict[str, object],
         limit: int,
         offset: int,
+        *,
+        route: str = "/api/sessions",
     ) -> object:
         from polylogue.archive.query.expression import compile_expression_into
         from polylogue.archive.query.spec import SessionQuerySpec
@@ -3466,7 +3341,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # pure-DSL queries whose clauses only set structured fields with no
         # FTS text, e.g. ``origin:codex has:paste``).
         if spec.query_terms or spec.contains_terms:
-            return await self._do_search_list(poly, spec, limit, offset)
+            return await self._do_search_list(poly, spec, limit, offset, route=route)
 
         # A pure vector-only request (similar_text, no FTS term) must surface
         # the same typed EmbeddingRetrievalNotReadyError the CLI and MCP give,
@@ -3475,12 +3350,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # are not ready), which daemon_safe_handler maps to its 409 status
         # instead of falling through to a generic ValueError (#1749).
         if spec.similar_text or spec.similar_session_id:
-            return await self._do_search_list(poly, spec, limit, offset)
+            return await self._do_search_list(poly, spec, limit, offset, route=route)
 
-        filter_obj = spec.build_filter(poly.config)
-        summaries = await filter_obj.list_summaries()
-        total = await spec.count(poly.config)
+        try:
+            summaries, total = await poly.list_session_summaries_with_count(spec)
+        except ValueError as exc:
+            if spec.session_id is None:
+                raise
+            from polylogue.archive.query.spec import QuerySpecError
 
+            raise QuerySpecError("id", spec.session_id) from exc
         diagnostics = None
         if not summaries and spec.has_filters():
             with contextlib.suppress(ImportError):
@@ -3530,7 +3409,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             ),
             "limit": limit,
             "offset": offset,
-            "route_state": _route_readiness_payload(route_state_name, "/api/sessions", reason=route_state_reason),
+            "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),
         }
         if diagnostics is not None:
             result["diagnostics"] = diagnostics.model_dump(mode="json")
@@ -3542,6 +3421,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         spec: SessionQuerySpec,
         limit: int,
         offset: int,
+        *,
+        route: str = "/api/sessions",
     ) -> object:
         """Return the canonical :class:`SearchEnvelope` for ranked queries.
 
@@ -3564,286 +3445,53 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
         except InvalidSearchCursorError as exc:
             return QueryErrorPayload(error="invalid_cursor", detail=str(exc)).model_dump(mode="json")
-        return envelope.model_dump(mode="json")
+        except ValueError as exc:
+            if spec.session_id is None:
+                raise
+            from polylogue.archive.query.spec import QuerySpecError
 
-    def _do_archive_session_list(
-        self,
-        archive_root: Path,
-        params: dict[str, list[str]],
-        limit: int,
-        offset: int,
-        route: str = "/api/sessions",
-    ) -> object:
-        from polylogue.archive.query.expression import compile_expression_into
-        from polylogue.archive.query.search_hits import search_query_text
-        from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec, parse_query_date
+            raise QuerySpecError("id", spec.session_id) from exc
+        except SearchIndexUnavailableError as exc:
+            degraded_reason = str(exc)
+            from polylogue.archive.query.search_hits import search_query_text
+            from polylogue.surfaces.payloads import build_search_envelope
 
-        # Build one SessionQuerySpec from every accepted HTTP query param via
-        # the shared builder (_build_query_spec_params), then route the free
-        # text ``query`` param through the shared expression parser/lowerer
-        # so DSL clauses like ``origin:codex has:paste since:7d`` map to the
-        # correct filter fields instead of being passed as literal FTS text
-        # (#1860). This is the single spec construction path for both this
-        # split-archive fast path and the full-backend ``_do_list`` — a
-        # filter field added to SessionQuerySpec.from_params is honored here
-        # automatically instead of silently missing until this function is
-        # separately edited (polylogue-4p1.1). ``contains`` reaches
-        # ``contains_terms`` as a literal term via ``from_params`` itself, so
-        # it never risks the ExpressionCompileError a DSL-parsed value with
-        # spaces or field-like tokens would raise (#1873 Bug 7).
-        spec_query_params = _build_query_spec_params(params, self)
-        query_str = str(spec_query_params.pop("query", "") or "").strip()
-        base = SessionQuerySpec.from_params(spec_query_params)
-        spec = compile_expression_into(query_str, base) if query_str else base
-
-        fts_terms = spec.query_terms + spec.contains_terms
-        fts_query = search_query_text(fts_terms)
-
-        # parse_query_date raises QuerySpecError (a PolylogueError carrying
-        # http_status_code=400) for unparseable dates; daemon_safe_handler maps
-        # it to the QueryErrorPayload-shaped 400 the other surfaces return.
-        since_dt = parse_query_date("since", spec.since)
-        until_dt = parse_query_date("until", spec.until)
-        since_ms = _archive_datetime_to_ms(since_dt)
-        until_ms = _archive_datetime_to_ms(until_dt)
-
-        origins = spec.origins
-        origin = origins[0] if len(origins) == 1 else None
-        # session_id is passed separately to list_summaries/search_summaries
-        # (count_sessions does not accept this param, so it cannot go in _filter_kw).
-        spec_session_id = spec.session_id
-
-        # Every remaining structured filter is read directly off the merged
-        # spec — no per-field HTTP-param re-read for anything SessionQuerySpec
-        # already models (polylogue-4p1.1).
-        _filter_kw = _archive_filter_kwargs_from_spec(spec, since_ms=since_ms, until_ms=until_ms)
-        filtered = bool(
-            fts_query
-            or spec_session_id
-            or origin
-            or origins
-            or spec.excluded_origins
-            or spec.tags
-            or spec.excluded_tags
-            or spec.repo_names
-            or spec.project_refs
-            or spec.has_types
-            or spec.tool_terms
-            or spec.excluded_tool_terms
-            or spec.action_terms
-            or spec.excluded_action_terms
-            or spec.action_sequence
-            or spec.action_text_terms
-            or spec.referenced_path
-            or spec.cwd_prefix
-            or spec.typed_only
-            or spec.message_type
-            or spec.title
-            or spec.min_messages is not None
-            or spec.max_messages is not None
-            or spec.min_words is not None
-            or spec.max_words is not None
-            or since_dt is not None
-            or until_dt is not None
-            or spec.since_session_id
-            or spec.boolean_predicate is not None
-            or spec.filter_has_paste
-            or spec.filter_has_tool_use
-            or spec.filter_has_thinking
-        )
-
-        with archive_read_context(
-            archive_root,
-            operation="http.archive.read",
-            arguments={"path": getattr(self, "path", "")},
-            projection="http-read",
-        ) as archive:
-            # Resolve an ``id:`` clause once, up front, so both branches share one
-            # miss/ambiguous policy. list_summaries/search_summaries resolve the
-            # token internally and raise KeyError (miss) / ValueError (ambiguous);
-            # left unhandled those reach the safe handler as a 500. A miss is a
-            # typed-empty page and an ambiguous prefix is a 400 query-spec error,
-            # matching the other query surfaces.
-            resolved_session_id = spec_session_id
-            if spec_session_id is not None:
-                try:
-                    resolved_session_id = archive.resolve_session_id(spec_session_id)
-                except KeyError:
-                    if fts_query:
-                        from polylogue.operations.action_contracts import query_result_action_affordance_payloads
-
-                        reason = "No session matched the id filter."
-                        return {
-                            "outcome": decide_outcome(matched=0, empty_reason="id_filter_matched_nothing").to_dict(),
-                            "query": fts_query,
-                            "retrieval_lane": "dialogue",
-                            "ranking_policy": "mixed-bm25-rrf-vector",
-                            "ranking_policy_version": "1",
-                            "hits": [],
-                            "total": 0,
-                            "limit": limit,
-                            "offset": offset,
-                            "route_state": _route_readiness_payload("no_results", route, reason=reason),
-                            "action_affordances": [
-                                action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
-                            ],
-                        }
-                    reason = "No session matched the id filter."
-                    return {
-                        "outcome": decide_outcome(matched=0, empty_reason="id_filter_matched_nothing").to_dict(),
-                        "items": [],
-                        "total": 0,
-                        "limit": limit,
-                        "offset": offset,
-                        "route_state": _route_readiness_payload("no_results", route, reason=reason),
-                    }
-                except ValueError as exc:
-                    raise QuerySpecError("id", spec_session_id) from exc
-            if fts_query:
-                from polylogue.operations.action_contracts import query_result_action_affordance_payloads
-
-                try:
-                    hits = self._run_archive_bounded_query(
-                        archive,
-                        deadline_s=None,
-                        compute=lambda: archive.search_summaries(
-                            fts_query,
-                            limit=limit,
-                            offset=offset,
-                            session_id=resolved_session_id,
-                            **_filter_kw,
-                        ),
-                    )
-                except (DatabaseError, sqlite3.Error) as exc:
-                    degraded_reason = _search_index_degraded_reason(exc)
-                    if degraded_reason is None:
-                        raise
-                    diagnostics = QueryMissDiagnosticsPayload(
-                        message=degraded_reason,
-                        filters=(f"query={fts_query!r}",),
-                        reasons=(
-                            QueryMissReasonPayload(
-                                code="search_index_degraded",
-                                severity="warning",
-                                summary=degraded_reason,
-                                detail="The sessions route returned an explicit degraded state instead of a zero-hit "
-                                "result because the archive search index could not be read.",
-                            ),
-                        ),
-                        archive_session_count=None,
-                    ).model_dump(mode="json", by_alias=True)
-                    return {
-                        "outcome": decide_outcome(matched=0, degraded=("search_index_degraded",)).to_dict(),
-                        "query": fts_query,
-                        "retrieval_lane": "dialogue",
-                        "ranking_policy": "mixed-bm25-rrf-vector",
-                        "ranking_policy_version": "1",
-                        "hits": [],
-                        "total": None,
-                        "limit": limit,
-                        "offset": offset,
-                        "diagnostics": diagnostics,
-                        "route_state": _route_readiness_payload(
-                            "degraded",
-                            route,
-                            reason=degraded_reason,
-                            component="message_fts",
-                            stale_available=False,
-                        ),
-                        "action_affordances": [
-                            action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
-                        ],
-                    }
-                total = self._run_archive_bounded_query(
-                    archive,
-                    deadline_s=None,
-                    compute=lambda: archive.count_search_sessions(
-                        fts_query,
-                        session_id=resolved_session_id,
-                        **_filter_kw,  # type: ignore[arg-type]
+            query = search_query_text(spec.query_terms + spec.contains_terms)
+            diagnostics = QueryMissDiagnosticsPayload(
+                message=degraded_reason,
+                filters=(f"query={query!r}",),
+                reasons=(
+                    QueryMissReasonPayload(
+                        code="search_index_degraded",
+                        severity="warning",
+                        summary=degraded_reason,
+                        detail="The canonical search could not read the archive search index.",
                     ),
-                )
-                search_outcome = decide_outcome(matched=len(hits))
-                route_state_name, route_state_reason = _session_list_state(search_outcome, filtered=True)
-                from polylogue.archive.query.spec import session_count_unit_label
-
-                payload: dict[str, object] = {
-                    "outcome": search_outcome.to_dict(),
-                    "query": fts_query,
-                    "retrieval_lane": "dialogue",
-                    "ranking_policy": "mixed-bm25-rrf-vector",
-                    "ranking_policy_version": "1",
-                    "hits": [self._archive_search_hit_payload(hit) for hit in hits],
-                    "total": total,
-                    "total_unit": session_count_unit_label(cast("bool | None", _filter_kw.get("root"))),
-                    "limit": limit,
-                    "offset": offset,
-                    "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),
-                    "action_affordances": [
-                        action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
-                    ],
-                }
-                if not hits:
-                    # Zero-result query: attach a diagnostics envelope (matching
-                    # the archive reader contract) so the surface can explain the
-                    # miss instead of rendering a bare empty list.
-                    archive_count = self._run_archive_bounded_query(
-                        archive,
-                        deadline_s=None,
-                        compute=lambda: archive.count_sessions(**_filter_kw),  # type: ignore[arg-type]
-                    )
-                    filters = tuple(
-                        label
-                        for label in (
-                            f"query={fts_query!r}",
-                            f"origin={origin}" if origin else None,
-                            f"tags={list(spec.tags)}" if spec.tags else None,
-                        )
-                        if label is not None
-                    )
-                    payload["diagnostics"] = QueryMissDiagnosticsPayload(
-                        message=f"No sessions matched {fts_query!r}.",
-                        filters=filters,
-                        reasons=(),
-                        archive_session_count=archive_count,
-                    ).model_dump(mode="json", by_alias=True)
-                return payload
-            summaries = self._run_archive_bounded_query(
-                archive,
-                deadline_s=None,
-                compute=lambda: archive.list_summaries(
-                    limit=limit,
-                    offset=offset,
-                    session_id=resolved_session_id,
-                    **_filter_kw,
                 ),
+                archive_session_count=None,
             )
-            # count_sessions has no session_id param, so when the page is scoped to
-            # a single resolved id an archive-wide total would be reported for a
-            # one-session match. An id matches at most one session, so the scoped
-            # total is the page length.
-            total = (
-                len(summaries)
-                if resolved_session_id is not None
-                else self._run_archive_bounded_query(
-                    archive,
-                    deadline_s=None,
-                    compute=lambda: archive.count_sessions(**_filter_kw),  # type: ignore[arg-type]
-                )
+            envelope = build_search_envelope(
+                (),
+                total=None,
+                limit=limit,
+                offset=offset,
+                query=query,
+                retrieval_lane=spec.retrieval_lane,
+                sort=spec.sort,
+                diagnostics=diagnostics,
+            ).model_copy(update={"outcome": decide_outcome(matched=0, degraded=("search_index_degraded",))})
+            payload = envelope.model_dump(mode="json")
+            payload["route_state"] = _route_readiness_payload(
+                "degraded",
+                route,
+                reason=degraded_reason,
+                component="message_fts",
             )
-            archive_list_outcome = decide_outcome(matched=len(summaries))
-            route_state_name, route_state_reason = _session_list_state(archive_list_outcome, filtered=filtered)
-            from polylogue.archive.query.spec import session_count_unit_label
-
-            return {
-                "outcome": archive_list_outcome.to_dict(),
-                "items": [self._archive_summary_payload(summary) for summary in summaries],
-                "total": total,
-                "total_unit": session_count_unit_label(cast("bool | None", _filter_kw.get("root"))),
-                "limit": limit,
-                "offset": offset,
-                "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),
-            }
+            return payload
+        payload = envelope.model_dump(mode="json")
+        state, reason = _session_list_state(envelope.outcome, filtered=spec.has_filters())
+        payload["route_state"] = _route_readiness_payload(state, route, reason=reason)
+        return payload
 
     def _archive_summary_payload(self, summary: ArchiveSessionSummary) -> dict[str, object]:
         """Project one archive summary row into the web reader's list shape.
@@ -3883,31 +3531,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "tags": list(domain.tags),
             "flags": None,
             "summary": None,
-        }
-
-    def _archive_search_hit_payload(self, hit: ArchiveSessionSearchHit) -> dict[str, object]:
-        session_id = str(hit.session_id)
-        message_id = str(hit.message_id)
-        session_ref = TargetRefPayload.session(session_id)
-        message_ref = TargetRefPayload.message(session_id=session_id, message_id=message_id)
-        return {
-            "session": {
-                "id": session_id,
-                "title": hit.title or session_id,
-                "origin": hit.origin,
-                "target_ref": _dump_target_ref(session_ref),
-                "anchor": reader_anchor("session", session_id),
-                "actions": _dump_actions(reader_session_actions()),
-            },
-            "match": {
-                "rank": hit.rank,
-                "message_id": message_id,
-                "block_id": hit.block_id,
-                "snippet": hit.snippet,
-                "target_ref": _dump_target_ref(message_ref),
-                "anchor": reader_anchor("message", message_id),
-                "actions": _dump_actions(reader_message_actions()),
-            },
         }
 
     # ------------------------------------------------------------------
@@ -5451,13 +5074,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.paths import archive_root
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_mcp_call
-        from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+        from polylogue.storage.sqlite.connection_profile import owned_daemon_connection
 
         ops_db = archive_root() / "ops.db"
-        with self._write_authorization():
+
+        async def record_call(_archive: object) -> None:
             if not ops_db.exists():
                 initialize_archive_database(ops_db, ArchiveTier.OPS)
-            with open_daemon_connection(ops_db, archive_root=ops_db.parent) as conn:
+            with owned_daemon_connection(ops_db, archive_root=ops_db.parent) as conn:
                 table_count = int(
                     conn.execute(
                         """
@@ -5469,22 +5093,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 )
             if table_count != 2:
                 initialize_archive_database(ops_db, ArchiveTier.OPS)
-            try:
-                with open_daemon_connection(ops_db, archive_root=ops_db.parent) as conn:
-                    record_mcp_call(
-                        conn,
-                        call_id=call_id,
-                        tool_name=tool_name,
-                        session_id=session_id,
-                        session_ids=session_ids,
-                        started_at_ms=started_at_ms,
-                        finished_at_ms=finished_at_ms,
-                        success=success,
-                        error_detail=error_detail,
-                    )
-            except ValueError:
-                self._send_error(HTTPStatus.CONFLICT, "call_id_conflict")
-                return
+            with owned_daemon_connection(ops_db, archive_root=ops_db.parent) as conn, conn:
+                record_mcp_call(
+                    conn,
+                    call_id=call_id,
+                    tool_name=tool_name,
+                    session_id=session_id,
+                    session_ids=session_ids,
+                    started_at_ms=started_at_ms,
+                    finished_at_ms=finished_at_ms,
+                    success=success,
+                    error_detail=error_detail,
+                )
+
+        try:
+            self._sync_run(record_call)
+        except ValueError:
+            self._send_error(HTTPStatus.CONFLICT, "call_id_conflict")
+            return
         self._send_json(HTTPStatus.OK, {"ok": True, "call_id": call_id})
 
     @daemon_safe_handler
@@ -5504,9 +5130,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         assert source is not None
 
-        from polylogue.sources.import_preflight import preflight_import_source
+        from polylogue.operations.import_operations import prepare_import_source_admission
 
-        preflight = preflight_import_source(source)
+        try:
+            admission = prepare_import_source_admission(source)
+        except (OSError, ValueError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_source_proof", str(exc))
+            return
+        preflight = admission.preflight
         if not preflight.admissible:
             self._send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, preflight.error_code, preflight.summary())
             return
@@ -5518,11 +5149,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.operations.daemon_protocol import DaemonOperationRequest
         from polylogue.operations.import_operations import ImportRequest
 
+        if (
+            body.get("source_path", admission.request.source_path) != admission.request.source_path
+            or body.get("source_name", admission.request.source_name) != admission.request.source_name
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_source_declaration")
+            return
         try:
             request = ImportRequest.model_validate(
                 {
-                    "source_path": body.get("source_path", body.get("path")),
-                    "source_name": source.name,
+                    "source_path": admission.request.source_path,
+                    "source_name": admission.request.source_name,
                     "staged_path": str(source),
                     "idempotency_key": body.get("idempotency_key"),
                 }
@@ -5539,6 +5176,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 payload={
                     "path": str(source),
                     "source_path": request.source_path,
+                    "source_name": request.source_name,
                     "idempotency_key": request.idempotency_key,
                 },
             ).to_dict()
@@ -5640,6 +5278,7 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         webui_dist_root: Path | None = None,
         archive_root: Path | None = None,
         watch_sources: Sequence[Any] | None = None,
+        execution_kernel: BoundedComputeAdapter | None = None,
     ) -> None:
         super().__init__(server_address, handler_class)
         validate_declared_route_reachability(handler_class)
@@ -5664,16 +5303,18 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
                 raise RuntimeError("HTTP daemon requires an archive root")
             archive_root = Path(configured_archive_root)
         self.archive_root = archive_root.resolve()
-        self._owned_write_runtime: _StandaloneWriteRuntime | None = None
-        if write_bridge is None:
-            self._owned_write_runtime = _StandaloneWriteRuntime(self.archive_root)
-            write_bridge = self._owned_write_runtime.bridge
-        self.write_bridge: DaemonWriteThreadBridge = write_bridge
-        self.execution_kernel = BoundedComputeAdapter(
+        self.execution_kernel = execution_kernel or BoundedComputeAdapter(
             max_workers=_ARCHIVE_QUERY_MAX_WORKERS,
             queue_units=_ARCHIVE_QUERY_MAX_QUEUED,
             thread_name_prefix="polylogue-compute",
         )
+        self._owned_write_runtime: _StandaloneWriteRuntime | None = None
+        if write_bridge is None:
+            self._owned_write_runtime = _StandaloneWriteRuntime(
+                self.archive_root, compute_adapter=self.execution_kernel
+            )
+            write_bridge = self._owned_write_runtime.bridge
+        self.write_bridge: DaemonWriteThreadBridge = write_bridge
         self._compute_close_lock = threading.Lock()
         self._compute_closed = False
         # Diagnostic alias; every submission goes through the adapter above.
@@ -5699,10 +5340,20 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
             write_bridge=self.write_bridge,
             now=time,
         )
+        from polylogue.core.enums import ValidationMode
+        from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+
         self.operation_runtime = DaemonOperationRuntime(
             self.archive_root,
             write_bridge=self.write_bridge,
             execution_kernel=self.execution_kernel,
+            raw_observation_owner=RawObservationConvergenceOwner(
+                self.archive_root,
+                compute_adapter=self.execution_kernel,
+                write_bridge=self.write_bridge,
+                write_coordinator=self.write_bridge.coordinator,
+                validation_mode=ValidationMode.from_string(operation_settings.schema_validation),
+            ),
             owner_loop=self.write_bridge.owner_loop,
             session_maintenance=self.session_profile_callback.maintenance,
             read_dependencies_factory=lambda: DaemonReadDependencies(
@@ -5752,6 +5403,38 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         super().server_close()
 
 
+async def _recover_startup_with_compute(
+    bridge: DaemonWriteThreadBridge, kernel: BoundedComputeAdapter, archive_root: Path
+) -> None:
+    """Use the eventual daemon creator for original preparation and short publication."""
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.core.write_lease import adopt_write_lease
+    from polylogue.operations.mutation_replay import RECOVERY_SERVICE_ACTOR_REF, recover_interrupted_operations
+    from polylogue.storage.sqlite.connection_profile import retained_native_settlement_owners_on_current_thread
+
+    def admit_write(actor: str, work: Callable[[], Any]) -> Any:
+        with bridge.hold(actor) as delegation, adopt_write_lease(delegation):
+            return work()
+
+    def recover() -> None:
+        kernel.require_current_creator()
+        with stage_write_admission(admit_write):
+            recover_interrupted_operations(
+                archive_root,
+                resolver_actor_ref=RECOVERY_SERVICE_ACTOR_REF,
+                input_demand=kernel.amend_current_input_demand,
+            )
+
+    await bridge.coordinator.run_prepared_sync(
+        "daemon.operation_recovery.startup",
+        recover,
+        submit_worker=lambda worker: (
+            kernel.submit(propagate(worker), admission_class="control", estimated_bytes=0, exclusive_bytes=True).future
+        ),
+        settlement_owners=retained_native_settlement_owners_on_current_thread,
+    )
+
+
 class _StandaloneWriteRuntime:
     """Coordinator loop for HTTP-server use outside ``polylogued``.
 
@@ -5759,7 +5442,7 @@ class _StandaloneWriteRuntime:
     derivation task of its own.
     """
 
-    def __init__(self, archive_root: Path) -> None:
+    def __init__(self, archive_root: Path, *, compute_adapter: BoundedComputeAdapter) -> None:
         ready = threading.Event()
         self.loop = asyncio.new_event_loop()
         self.coordinator: DaemonWriteCoordinator | None = None
@@ -5780,12 +5463,14 @@ class _StandaloneWriteRuntime:
             raise RuntimeError("standalone daemon HTTP writer loop failed to start")
         assert self.coordinator is not None
         self.bridge: DaemonWriteThreadBridge = DaemonWriteThreadBridge(self.coordinator, self.loop)
-        from polylogue.operations.mutation_replay import recover_interrupted_operations
         from polylogue.operations.operation_context import prepare_operation_journals
 
         try:
             self.bridge.run_sync("daemon.operation_journals.startup", prepare_operation_journals, archive_root)
-            self.bridge.run_sync("daemon.operation_recovery.startup", recover_interrupted_operations, archive_root)
+            recovery = asyncio.run_coroutine_threadsafe(
+                _recover_startup_with_compute(self.bridge, compute_adapter, archive_root), self.loop
+            )
+            self.bridge._await_owner_settlement("daemon.operation_recovery.startup", recovery)
         except BaseException:
             self.close()
             raise

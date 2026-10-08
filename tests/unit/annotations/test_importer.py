@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -25,6 +25,7 @@ from polylogue.operations.mutation_transaction import OperationExecutor
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.daemon_operations import running_daemon_operations
 from tests.infra.live_ingest import write_index_session
 from tests.infra.user_tier import connect_user_db
@@ -144,16 +145,21 @@ async def test_import_roundtrip_keeps_failures_candidates_and_independent_batche
     monkeypatch.setattr(OperationExecutor, "execute_bound", spy)
 
     archive_root = workspace_env["archive_root"]
-    with ArchiveStore(archive_root) as archive:
-        session_id = write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="annotation-target",
-                title="Annotation target",
-                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
-            ),
-        )
+
+    def _seed_archive_1() -> Any:
+        with ArchiveStore(archive_root) as archive:
+            session_id = write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="annotation-target",
+                    title="Annotation target",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                ),
+            )
+            return (session_id,)
+
+    (session_id,) = run_off_event_loop(_seed_archive_1)
     index_db = archive_root / "index.db"
     assert session_id == "codex-session:annotation-target"
     rows = [
@@ -237,19 +243,24 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
     this production-route test.
     """
     archive_root = workspace_env["archive_root"]
-    with ArchiveStore(archive_root) as archive:
-        parent_session_id = write_index_session(archive, _delegation_parent())
-        write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CLAUDE_CODE,
-                provider_session_id="import-child",
-                title="Annotation import delegation child",
-                messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="working")],
-                parent_session_provider_id="import-parent",
-                branch_type=BranchType.SUBAGENT,
-            ),
-        )
+
+    def _seed_archive_2() -> Any:
+        with ArchiveStore(archive_root) as archive:
+            parent_session_id = write_index_session(archive, _delegation_parent())
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="import-child",
+                    title="Annotation import delegation child",
+                    messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="working")],
+                    parent_session_provider_id="import-parent",
+                    branch_type=BranchType.SUBAGENT,
+                ),
+            )
+            return (parent_session_id,)
+
+    (parent_session_id,) = run_off_event_loop(_seed_archive_2)
     instruction_block_id = f"{parent_session_id}:n:dispatch:0"
     target_ref = f"delegation:{instruction_block_id}"
     evidence_ref = f"block:{instruction_block_id}"
@@ -379,7 +390,7 @@ async def test_interrupted_import_is_resolved_complete_or_absent_at_restart(
     """
     import sqlite3
 
-    from polylogue.operations.mutation_replay import recover_interrupted_operations
+    from tests.infra.operation_recovery import recover_on_admitted_owner
 
     started: list[str] = []
 
@@ -397,16 +408,20 @@ async def test_interrupted_import_is_resolved_complete_or_absent_at_restart(
         raise _Killed
 
     archive_root = workspace_env["archive_root"]
-    with ArchiveStore(archive_root) as archive:
-        write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="annotation-target",
-                title="Annotation target",
-                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
-            ),
-        )
+
+    def _seed_archive_3() -> Any:
+        with ArchiveStore(archive_root) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="annotation-target",
+                    title="Annotation target",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                ),
+            )
+
+    run_off_event_loop(_seed_archive_3)
     registry = AnnotationSchemaRegistry()
     registry.register(_schema())
     jsonl = json.dumps(
@@ -427,7 +442,7 @@ async def test_interrupted_import_is_resolved_complete_or_absent_at_restart(
         )
         conn.commit()
 
-    recover_interrupted_operations(archive_root)
+    recover_on_admitted_owner(archive_root)
 
     with sqlite3.connect(archive_root / "audit.db") as conn:
         status, reason = conn.execute(
@@ -453,19 +468,23 @@ async def test_interrupted_import_reusing_a_batch_id_is_not_mistaken_for_its_pre
     """
     import sqlite3
 
-    from polylogue.operations.mutation_replay import recover_interrupted_operations
+    from tests.infra.operation_recovery import recover_on_admitted_owner
 
     archive_root = workspace_env["archive_root"]
-    with ArchiveStore(archive_root) as archive:
-        write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="annotation-target",
-                title="Annotation target",
-                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
-            ),
-        )
+
+    def _seed_archive_4() -> Any:
+        with ArchiveStore(archive_root) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="annotation-target",
+                    title="Annotation target",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                ),
+            )
+
+    run_off_event_loop(_seed_archive_4)
     registry = AnnotationSchemaRegistry()
     registry.register(_schema())
 
@@ -503,7 +522,7 @@ async def test_interrupted_import_reusing_a_batch_id_is_not_mistaken_for_its_pre
         )
         conn.commit()
 
-    recover_interrupted_operations(archive_root)
+    recover_on_admitted_owner(archive_root)
 
     with sqlite3.connect(archive_root / "audit.db") as conn:
         assert conn.execute(

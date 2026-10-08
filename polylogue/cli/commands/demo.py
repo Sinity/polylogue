@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sqlite3
 from pathlib import Path
 
@@ -27,48 +26,50 @@ from polylogue.demo import (
 from polylogue.paths import archive_root
 
 
-def _root_is_explicit(root: Path | None) -> bool:
-    """Return whether the archive root came from an explicit operator override.
+def _overlaps(left: Path, right: Path) -> bool:
+    return left == right or left.is_relative_to(right) or right.is_relative_to(left)
 
-    True only for a ``--root`` CLI flag or a non-empty, non-whitespace-only
-    ``POLYLOGUE_ARCHIVE_ROOT`` environment variable -- never for the ambient
-    ``archive_root()`` default (``polylogue.toml``/XDG fallback), which is
-    exactly the resolution chain the live daemon shares (polylogue-o3a1t).
-    Gates ``demo seed``'s default-root safety guard: an explicit override is
-    the operator's own consent and is never second-guessed.
 
-    ``polylogue.paths.archive_root()`` itself treats an empty or
-    whitespace-only ``POLYLOGUE_ARCHIVE_ROOT`` as unset and falls through to
-    ``polylogue.toml``/XDG resolution (``polylogue/paths/_roots.py``:
-    ``os.environ.get("POLYLOGUE_ARCHIVE_ROOT", "").strip()``). Checking mere
-    membership in ``os.environ`` here disagreed with that: an operator or
-    agent running ``POLYLOGUE_ARCHIVE_ROOT="" polylogue demo seed`` would
-    have this function report "explicit root given" (disarming the
-    collision guard) while the actual resolved root silently fell through to
-    the live fallback archive -- the exact collision the guard exists to
-    catch, bypassed by an empty string (polylogue-dl6af gap 3). Stripping
-    before checking truthiness keeps this in lockstep with
-    ``archive_root()``'s own emptiness rule.
+def _require_scratch_target(target: Path, *, purpose: str) -> Path:
+    """Return ``target`` resolved, refusing any overlap with the configured archive.
+
+    Demo seeding is the only CLI route that owns archive tiers offline, and it
+    owns only a scratch root no daemon serves. The configured archive is
+    written solely through ``polylogued`` -- even when it is still empty, which
+    is exactly when the content-based guard in :mod:`polylogue.demo.seed`
+    cannot tell it from a fresh scratch root. ``purpose`` names what the
+    target is (an archive root or the tour's output directory that
+    ``--force`` deletes first).
     """
 
-    if root is not None:
-        return True
-    return bool(os.environ.get("POLYLOGUE_ARCHIVE_ROOT", "").strip())
+    from polylogue.cli.shared.helpers import DaemonRequiredError
+
+    resolved = target.expanduser().resolve()
+    configured = archive_root().expanduser().resolve()
+    if _overlaps(resolved, configured):
+        raise DaemonRequiredError(
+            f"the demo {purpose} {resolved} overlaps the configured archive {configured}, which only "
+            "`polylogued run` writes. Point the demo at a separate scratch --root, or seed the configured "
+            "archive through the daemon with `polylogue import --demo`",
+            operation="maintenance.demo.augment",
+            archive_root=configured,
+        )
+    return resolved
 
 
 def _seed_demo_archive(
     env: AppEnv,
-    resolved_root: Path,
+    target: Path,
     *,
     force: bool,
     with_overlays: bool,
-    explicit_root: bool,
 ) -> DemoSeedResult:
-    """Seed an isolated synthetic root through canonical live acquisition."""
+    """Seed an isolated synthetic scratch root through canonical live acquisition."""
     del env
     from polylogue.cli.shared.helpers import DaemonRequiredError
     from polylogue.demo.seed import _archive_root_has_real_content, _archive_root_is_demo_owned
 
+    resolved_root = _require_scratch_target(target, purpose="archive root")
     if _archive_root_has_real_content(resolved_root) and not _archive_root_is_demo_owned(resolved_root):
         raise DaemonRequiredError(
             "demo seed cannot acquire into an existing real archive locally; start `polylogued run` "
@@ -76,14 +77,7 @@ def _seed_demo_archive(
             operation="ingest",
             archive_root=resolved_root,
         )
-    return asyncio.run(
-        seed_demo_archive(
-            resolved_root,
-            force=force,
-            with_overlays=with_overlays,
-            explicit_root=explicit_root,
-        )
-    )
+    return asyncio.run(seed_demo_archive(resolved_root, force=force, with_overlays=with_overlays))
 
 
 @click.group("demo")
@@ -96,8 +90,8 @@ def demo_command() -> None:
     "--root",
     "root",
     type=click.Path(path_type=Path),
-    default=None,
-    help="Archive root to seed. Defaults to POLYLOGUE_ARCHIVE_ROOT.",
+    required=True,
+    help="Scratch archive root to seed. Must not be, contain, or lie inside the configured archive.",
 )
 @click.option("--force", is_flag=True, help="Replace the generated demo source directory before seeding.")
 @click.option("--with-overlays", is_flag=True, help="Seed deterministic user overlays after archive ingest.")
@@ -112,22 +106,15 @@ def demo_command() -> None:
 @click.pass_obj
 def seed_command(
     env: AppEnv,
-    root: Path | None,
+    root: Path,
     force: bool,
     with_overlays: bool,
     output_format: str,
 ) -> None:
-    """Create a ready-to-query deterministic demo archive."""
+    """Create a ready-to-query deterministic demo archive in a scratch root."""
 
-    resolved_root = (root or archive_root()).expanduser().resolve()
     try:
-        result = _seed_demo_archive(
-            env,
-            resolved_root,
-            force=force,
-            with_overlays=with_overlays,
-            explicit_root=_root_is_explicit(root),
-        )
+        result = _seed_demo_archive(env, root, force=force, with_overlays=with_overlays)
     except DemoSeedTargetUnsafeError as exc:
         raise click.ClickException(str(exc)) from exc
     payload = result.to_payload()
@@ -156,22 +143,19 @@ def seed_command(
     "--root",
     "root",
     type=click.Path(path_type=Path),
-    default=None,
-    help=(
-        "Archive root to inspect. When neither --root nor POLYLOGUE_ARCHIVE_ROOT is set, "
-        "the command seeds ./polylogue-receipts-demo/archive first."
-    ),
+    required=True,
+    help=("Scratch archive root to inspect or seed. Must be explicit and must not overlap the configured archive."),
 )
 @click.option(
     "--seed/--no-seed",
     default=None,
-    help="Seed the deterministic archive before inspection; defaults to yes only for the self-contained path.",
+    help="Seed the scratch archive before inspection; defaults to no with an explicit root.",
 )
 @click.option(
     "--force/--no-force",
     default=True,
     show_default=True,
-    help="Replace the self-contained demo archive when seeding.",
+    help="Replace the generated demo source directory when seeding.",
 )
 @click.option(
     "--format",
@@ -184,7 +168,7 @@ def seed_command(
 @click.option(
     "--completion-claims-only",
     is_flag=True,
-    help="Inspect only the completion-claim cohort; suitable for an operator-owned archive.",
+    help="Inspect only the completion-claim cohort in the scratch archive.",
 )
 @click.option(
     "--compact",
@@ -192,7 +176,7 @@ def seed_command(
     help="Keep plain output to the claim, test outcomes, and anti-grep control.",
 )
 def receipts_command(
-    root: Path | None,
+    root: Path,
     seed: bool | None,
     force: bool,
     output_format: str,
@@ -201,24 +185,26 @@ def receipts_command(
 ) -> None:
     """Compare a demo assistant claim with structural tool evidence."""
 
-    has_configured_root = _root_is_explicit(root)
-    if root is not None:
-        resolved_root = root.expanduser().resolve()
-    elif has_configured_root:
-        resolved_root = archive_root().expanduser().resolve()
-    else:
-        resolved_root = (Path.cwd() / "polylogue-receipts-demo" / "archive").resolve()
+    from polylogue.cli.shared.helpers import DaemonRequiredError
 
-    should_seed = (not has_configured_root) if seed is None else seed
+    try:
+        resolved_root = _require_scratch_target(root, purpose="archive root")
+    except DaemonRequiredError as exc:
+        if output_format != "json":
+            raise
+        from polylogue.cli.shared.machine_errors import error_daemon_required
+
+        error_daemon_required(
+            str(exc),
+            command=["demo", "receipts"],
+            operation=exc.operation,
+            archive_root=exc.archive_root,
+        ).emit()
+
+    should_seed = False if seed is None else seed
     if should_seed:
         try:
-            _seed_demo_archive(
-                AppEnv(),
-                resolved_root,
-                force=force,
-                with_overlays=False,
-                explicit_root=has_configured_root,
-            )
+            _seed_demo_archive(AppEnv(), resolved_root, force=force, with_overlays=False)
         except DemoSeedTargetUnsafeError as exc:
             raise click.ClickException(str(exc)) from exc
 
@@ -239,7 +225,7 @@ def receipts_command(
         payload["seeded_for_command"] = should_seed
         click.echo(json.dumps(payload, sort_keys=True))
     else:
-        archive_label = None if has_configured_root else "<demo-archive>"
+        archive_label = "<demo-archive>"
         click.echo(
             render_demo_receipts(
                 result,
@@ -313,8 +299,8 @@ def verify_command(
     "--root",
     "root",
     type=click.Path(path_type=Path),
-    default=None,
-    help="Archive root to seed. Defaults to <out-dir>/archive.",
+    required=True,
+    help="Explicit scratch archive root to seed. Must not overlap the configured archive.",
 )
 @click.option("--force/--no-force", default=True, show_default=True, help="Replace the output directory first.")
 @click.option(
@@ -329,15 +315,20 @@ def verify_command(
 def tour_command(
     env: AppEnv,
     out_dir: Path,
-    root: Path | None,
+    root: Path,
     force: bool,
     output_format: str,
 ) -> None:
     """Run a one-command public demo tour and write shareable artifacts."""
 
+    # Checked before the tour starts: ``--force`` deletes the output directory
+    # first, so an out-dir holding the configured archive would be destroyed
+    # long before the seed's own target check could refuse.
+    _require_scratch_target(out_dir, purpose="tour output directory")
+    scratch_root = _require_scratch_target(root, purpose="archive root")
     result = run_demo_tour(
         output_dir=out_dir,
-        archive_root=root,
+        archive_root=scratch_root,
         force=force,
         seed_archive=lambda target, **options: _seed_demo_archive(env, target, **options),
     )

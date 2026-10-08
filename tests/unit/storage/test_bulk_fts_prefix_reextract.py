@@ -38,15 +38,17 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.fts.sql import FTS_BULK_SESSION_WRITE_GUARD
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.revision_application import assert_session_fts_exact_sync
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -124,7 +126,7 @@ def _write_partial_tail_scenario(conn: sqlite3.Connection, *, bulk_fts: bool) ->
             _tool_msg("cy", Role.ASSISTANT, "child reply", 3, "pytest tests/unit -q"),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_fixture_index_session(conn, child)
     parent = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="parent",
@@ -135,7 +137,7 @@ def _write_partial_tail_scenario(conn: sqlite3.Connection, *, bulk_fts: bool) ->
             _msg("p2", Role.USER, "parent continues alone", 2),
         ],
     )
-    write_parsed_session_to_archive(conn, parent, bulk_fts=bulk_fts)
+    write_fixture_index_session(conn, parent, bulk_fts=bulk_fts)
     return child_id
 
 
@@ -155,7 +157,7 @@ def _write_full_tail_scenario(conn: sqlite3.Connection, *, bulk_fts: bool) -> st
             _msg("c1", Role.ASSISTANT, "hi there", 1),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_fixture_index_session(conn, child)
     parent = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="parent",
@@ -165,7 +167,7 @@ def _write_full_tail_scenario(conn: sqlite3.Connection, *, bulk_fts: bool) -> st
             _msg("p1", Role.ASSISTANT, "hi there", 1),
         ],
     )
-    write_parsed_session_to_archive(conn, parent, bulk_fts=bulk_fts)
+    write_fixture_index_session(conn, parent, bulk_fts=bulk_fts)
     return child_id
 
 
@@ -188,13 +190,13 @@ def test_bulk_fts_off_reextract_matches_trigger_maintained_fts(tmp_path: Path, s
 @pytest.mark.parametrize("scenario", [_write_partial_tail_scenario, _write_full_tail_scenario])
 def test_bulk_fts_on_produces_identical_fts_rows_as_off(tmp_path: Path, scenario: _Scenario) -> None:
     """THE key equivalence proof: bulk mode must not change FTS content, only how it gets there."""
-    conn_off = _connect(tmp_path / "off.db")
+    conn_off = _connect(tmp_path / "off" / "index.db")
     child_id_off = scenario(conn_off, bulk_fts=False)
     rows_off = _fts_rows_for_session(conn_off, child_id_off)
     assert_session_fts_exact_sync(conn_off, child_id_off)
     conn_off.close()
 
-    conn_on = _connect(tmp_path / "on.db")
+    conn_on = _connect(tmp_path / "on" / "index.db")
     child_id_on = scenario(conn_on, bulk_fts=True)
     rows_on = _fts_rows_for_session(conn_on, child_id_on)
     assert_session_fts_exact_sync(conn_on, child_id_on)
@@ -233,14 +235,14 @@ def test_full_replace_bulk_guard_rebuilds_the_fts_surface(tmp_path: Path) -> Non
         title="before",
         messages=[_tool_msg("m0", Role.ASSISTANT, "before", 0, "rg before-command")],
     )
-    session_id = write_parsed_session_to_archive(conn, original)
+    session_id = write_fixture_index_session(conn, original)
     replacement = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="full-replace",
         title="after",
         messages=[_tool_msg("m1", Role.ASSISTANT, "after", 0, "pytest after-command")],
     )
-    assert write_parsed_session_to_archive(conn, replacement) == session_id
+    assert write_fixture_index_session(conn, replacement) == session_id
 
     assert_session_fts_exact_sync(conn, session_id)
     assert (
@@ -268,7 +270,7 @@ def test_bulk_fts_guard_row_cleared_even_on_exception(tmp_path: Path) -> None:
             _msg("cx", Role.USER, "child diverges here", 2),
         ],
     )
-    write_parsed_session_to_archive(conn, child)
+    write_fixture_index_session(conn, child)
 
     def _boom(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("injected dependent-delete failure")
@@ -286,7 +288,7 @@ def test_bulk_fts_guard_row_cleared_even_on_exception(tmp_path: Path) -> None:
             ],
         )
         with pytest.raises(RuntimeError, match="injected dependent-delete failure"):
-            write_parsed_session_to_archive(conn, parent, bulk_fts=True)
+            write_fixture_index_session(conn, parent, bulk_fts=True)
     finally:
         _write_module._delete_prefix_message_dependents = original
 

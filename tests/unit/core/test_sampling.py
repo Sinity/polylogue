@@ -10,6 +10,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -77,13 +78,13 @@ def _insert_raw_session(
     the 32-byte ``blob_hash`` digest (BLOB) and millisecond timestamps (#1743).
     """
     from polylogue.storage.blob_store import BlobStore
-    from polylogue.storage.sqlite.connection import open_connection
 
     blob_store = BlobStore(db_path.parent / "blob")
     hash_hex, blob_size = blob_store.write_from_bytes(raw_content)
     raw_id = f"raw-{hash_hex[:16]}"
     acquired_at_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
-    with open_connection(db_path) as conn:
+    # Raw evidence lives in the Source tier; plant it as an independent writer.
+    with closing(sqlite3.connect(db_path.with_name("source.db"))) as conn:
         conn.execute(
             """
             INSERT INTO raw_sessions (
@@ -543,7 +544,6 @@ class TestLoadSamplesFromDb:
         skipped without opening its raw content a second time.
         """
         from polylogue.storage.blob_store import BlobStore
-        from polylogue.storage.sqlite.connection import open_connection
 
         db = _archive_index_db(tmp_path)
         # A record-granularity Codex session needs at least one supported
@@ -562,7 +562,7 @@ class TestLoadSamplesFromDb:
         acquired_at_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
         first_raw_id = "raw-dup-first"
         second_raw_id = "raw-dup-second"
-        with open_connection(db) as conn:
+        with closing(sqlite3.connect(db.with_name("source.db"))) as conn:
             for raw_id, source_path in (
                 (first_raw_id, "/tmp/first.jsonl"),
                 (second_raw_id, "/tmp/second.jsonl"),

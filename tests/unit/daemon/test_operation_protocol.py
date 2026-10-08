@@ -212,6 +212,53 @@ def test_confirmation_bound_mutation_refuses_an_unconfirmed_request(tmp_path: Pa
         assert _session_ids(stack.archive_root) == [session_id]
 
 
+def test_accepted_ingest_waits_out_audit_continuity_contention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A concurrent continuity transition at the accepted load is waited out.
+
+    After acceptance, the ingest loads its own audited execution under a
+    settled audit read. Another request's continuity transition can hold the
+    archive's continuity lock at that instant; the accepted ingest must still
+    complete. Anti-vacuity: take that read without ``wait_for_lock`` again and
+    the held lock refuses it with ``AuditContinuityPendingError``, so the
+    accepted ingest ends ``indeterminate`` with stop reason ``refused``.
+    """
+    import threading
+
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+    from polylogue.storage.sqlite.audit_continuity import _coordinator_lock
+
+    first, _second = _two_sessions(tmp_path / "capture-files")
+    contended: list[str] = []
+    original_phase = DaemonOperationRuntime.compute_phase
+
+    async def contended_phase(self: DaemonOperationRuntime, work: object) -> object:
+        if getattr(work, "__name__", "") == "load_started":
+            lock = _coordinator_lock(self.archive_root)
+            held = threading.Event()
+            release = threading.Event()
+
+            def hold() -> None:
+                with lock:
+                    held.set()
+                    release.wait(timeout=5.0)
+
+            holder = threading.Thread(target=hold, name="continuity-contender", daemon=True)
+            holder.start()
+            assert held.wait(timeout=5.0)
+            contended.append("load_started")
+            threading.Timer(0.3, release.set).start()
+        return await original_phase(self, work)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(DaemonOperationRuntime, "compute_phase", contended_phase)
+    with running_daemon_operations(tmp_path / "archive", session_derivation=True) as stack:
+        envelope = stack.client.operation_to_completion(
+            "ingest", {"path": str(first)}, archive_root=str(stack.archive_root), request_id="contended-ingest"
+        )
+
+    assert contended == ["load_started"]
+    assert envelope is not None and envelope["outcome"] == "completed", envelope
+
+
 def test_cli_delete_refuses_a_selection_that_drifted_after_authorization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -228,6 +275,7 @@ def test_cli_delete_refuses_a_selection_that_drifted_after_authorization(
     from polylogue.cli.shared.types import AppEnv
     from polylogue.config import Config
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.write_lease import authorized_session_removal, write_lease
 
     first, second = _two_sessions(tmp_path / "capture-files")
     with cli_daemon_archive(tmp_path / "archive", monkeypatch, session_derivation=True) as stack:
@@ -241,7 +289,16 @@ def test_cli_delete_refuses_a_selection_that_drifted_after_authorization(
         def submit_then_drift(config: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
             result = submit(config, operation, payload)  # type: ignore[arg-type]
             if operation == "mutation.session.delete.authorize":
-                with ArchiveStore.open_existing(stack.archive_root, read_only=False) as archive:
+                # The drift is another authorized removal of one target. An
+                # unauthorized disappearance is itself refused, because the
+                # audited preview still references the session (2e9aae50de).
+                with (
+                    write_lease("test.delete.drift", archive_root=stack.archive_root),
+                    authorized_session_removal(
+                        archive_root=stack.archive_root, plan_hash="test-drift-plan", session_ids=(drifted,)
+                    ),
+                    ArchiveStore.open_existing(stack.archive_root, read_only=False) as archive,
+                ):
                     archive.delete_sessions((drifted,))
             return result
 
@@ -263,17 +320,16 @@ def test_cli_delete_refuses_a_selection_that_drifted_after_authorization(
 def test_cli_delete_of_a_zero_match_selection_submits_no_delete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A delete whose selection matched nothing sends no delete operation at all.
+    """A delete whose selection matched nothing authorizes and executes nothing.
 
-    The query runs through the real daemon and matches no session; the verb
-    refuses with its typed empty-selection usage error and the archive is
-    unchanged. A delete request for an empty selection would be a request the
-    daemon can only refuse, and a preview over it would mint an authorization
-    for nothing.
+    The selection is resolved by the daemon's resident preview (c4e75fe32d):
+    the CLI no longer reads IDs itself, so the preview is how it learns the
+    selection is empty. The verb then refuses with its typed empty-selection
+    usage error before any authorization, and the archive is unchanged.
 
-    Anti-vacuity: let the ``delete`` verb pass an empty selection on to
-    the resident preview without its measured empty-selection branch and the CLI submits
-    ``mutation.session.delete.preview`` for nothing.
+    Anti-vacuity: drop the verb's ``count == 0`` branch after the preview and
+    the CLI goes on to submit ``mutation.session.delete.authorize`` for an
+    empty selection.
     """
     import polylogue.cli.archive_query as archive_query
     from polylogue.cli.click_app import cli
@@ -297,7 +353,7 @@ def test_cli_delete_of_a_zero_match_selection_submits_no_delete(
         from polylogue.cli.contextual_errors import EmptySelectionError
 
         assert result.exit_code == EmptySelectionError.exit_code, (result.output, repr(result.exception))
-        assert submitted == []
+        assert submitted == ["mutation.session.delete.preview"]
         assert _session_ids(stack.archive_root) == before
 
 

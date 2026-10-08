@@ -17,21 +17,23 @@ import pytest
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.materials import (
     MaterialObservation,
-    acquire_material,
-    admit_material,
-    admit_material_file,
     get_material,
     link_material,
     list_materials,
+    prepare_material,
+    prepare_material_acquisition,
+    prepare_material_file,
     read_material,
 )
-from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.material_preparation import apply_material_preparation, material_publisher
 
 
 @pytest.fixture
-def material_db() -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(SOURCE_DDL)
+def material_db(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+    with ArchiveStore(tmp_path, initialize=True, read_only=False):
+        pass
+    conn = sqlite3.connect(tmp_path / "source.db")
     try:
         yield conn
     finally:
@@ -39,14 +41,16 @@ def material_db() -> Iterator[sqlite3.Connection]:
 
 
 def _admit(conn: sqlite3.Connection, tmp_path: Path, payload: bytes, media_type: str, name: str) -> MaterialObservation:
-    return admit_material(
+    return apply_material_preparation(
         conn,
-        blob_store=BlobStore(tmp_path / "blobs"),
-        source_uri=f"https://example.test/{name}",
-        referrer_ref=f"test:{name}",
+        prepared=prepare_material(
+            blob_store=material_publisher(conn, BlobStore(tmp_path / "blobs")),
+            source_uri=f"https://example.test/{name}",
+            referrer_ref=f"test:{name}",
+            payload=payload,
+            media_type=media_type,
+        ),
         observed_at_ms=100,
-        payload=payload,
-        media_type=media_type,
     )
 
 
@@ -90,26 +94,30 @@ def test_material_zip_manifest_does_not_copy_entry_names(material_db: sqlite3.Co
 def test_material_readmission_returns_the_persisted_row(material_db: sqlite3.Connection, tmp_path: Path) -> None:
     """Readmission reported its own arguments while the stored row kept the originals."""
     store = BlobStore(tmp_path / "blobs")
-    first = admit_material(
+    first = apply_material_preparation(
         material_db,
-        blob_store=store,
-        source_uri="https://example.test/item",
-        referrer_ref="test:metadata",
-        payload=b"text",
+        prepared=prepare_material(
+            blob_store=material_publisher(material_db, store),
+            source_uri="https://example.test/item",
+            referrer_ref="test:metadata",
+            payload=b"text",
+            filename="first.txt",
+            media_type="text/plain",
+        ),
         observed_at_ms=100,
-        filename="first.txt",
-        media_type="text/plain",
     )
-    second = admit_material(
+    second = apply_material_preparation(
         material_db,
-        blob_store=store,
-        source_uri="https://example.test/item",
-        referrer_ref="test:metadata",
-        payload=b"text",
+        prepared=prepare_material(
+            blob_store=material_publisher(material_db, store),
+            source_uri="https://example.test/item",
+            referrer_ref="test:metadata",
+            payload=b"text",
+            filename="renamed.md",
+            media_type="text/markdown",
+            privacy_classification="restricted",
+        ),
         observed_at_ms=200,
-        filename="renamed.md",
-        media_type="text/markdown",
-        privacy_classification="restricted",
     )
     assert second == get_material(material_db, first.material_id)
     assert (second.created_at_ms, second.acquired_at_ms) == (100, 200)
@@ -138,12 +146,14 @@ def test_material_invalid_url_is_a_durable_malformed_claim(
     material_db: sqlite3.Connection, tmp_path: Path, url: str
 ) -> None:
     """URL parsing raised out of the API before any durable claim was written."""
-    observation = acquire_material(
+    observation = apply_material_preparation(
         material_db,
-        source_uri=url,
-        referrer_ref="test:bad-url",
+        prepared=prepare_material_acquisition(
+            source_uri=url,
+            referrer_ref="test:bad-url",
+            blob_store=material_publisher(material_db, BlobStore(tmp_path / "blobs")),
+        ),
         observed_at_ms=100,
-        blob_store=BlobStore(tmp_path / "blobs"),
     )
     assert observation.acquisition_state == "malformed"
     assert not observation.retryable
@@ -157,12 +167,14 @@ def test_material_invalid_http_target_is_a_durable_claim(
         raise http.client.InvalidURL("control character in target")
 
     monkeypatch.setattr("polylogue.storage.materials._acquire_response", invalid_target)
-    observation = acquire_material(
+    observation = apply_material_preparation(
         material_db,
-        source_uri="https://example.test/bad",
-        referrer_ref="test:bad-target",
+        prepared=prepare_material_acquisition(
+            source_uri="https://example.test/bad",
+            referrer_ref="test:bad-target",
+            blob_store=material_publisher(material_db, BlobStore(tmp_path / "blobs")),
+        ),
         observed_at_ms=100,
-        blob_store=BlobStore(tmp_path / "blobs"),
     )
     assert observation.acquisition_state == "malformed"
     assert get_material(material_db, observation.material_id) == observation
@@ -170,13 +182,16 @@ def test_material_invalid_http_target_is_a_durable_claim(
 
 def test_material_evidence_listing_returns_one_observation_per_identity(
     material_db: sqlite3.Connection,
+    tmp_path: Path,
 ) -> None:
     """Two relations to one evidence ref listed the same observation twice."""
-    observation = admit_material(
+    observation = apply_material_preparation(
         material_db,
-        blob_store=None,
-        source_uri="https://example.test/item",
-        referrer_ref="test:link",
+        prepared=prepare_material(
+            blob_store=material_publisher(material_db, BlobStore(tmp_path / "blobs")),
+            source_uri="https://example.test/item",
+            referrer_ref="test:link",
+        ),
         observed_at_ms=100,
     )
     link_material(material_db, observation.material_id, "work:one", relation="supports", observed_at_ms=100)
@@ -200,12 +215,14 @@ def test_material_chunked_response_ignores_stale_content_length(
     response.headers["Transfer-Encoding"] = "chunked"
     response.headers["Content-Length"] = "999"
     monkeypatch.setattr("polylogue.storage.materials._acquire_response", lambda url, timeout: (response, url))
-    observation = acquire_material(
+    observation = apply_material_preparation(
         material_db,
-        source_uri="https://example.test/chunked",
-        referrer_ref="test:chunked",
+        prepared=prepare_material_acquisition(
+            source_uri="https://example.test/chunked",
+            referrer_ref="test:chunked",
+            blob_store=material_publisher(material_db, BlobStore(tmp_path / "blobs")),
+        ),
         observed_at_ms=100,
-        blob_store=BlobStore(tmp_path / "blobs"),
     )
     assert observation.acquisition_state == "acquired"
     assert observation.byte_size == 8
@@ -221,12 +238,14 @@ def test_material_http_error_retains_redirect_destination(
         raise urllib.error.HTTPError(final_url, 410, "Gone", Message(), None)
 
     monkeypatch.setattr("polylogue.storage.materials._acquire_response", error)
-    observation = acquire_material(
+    observation = apply_material_preparation(
         material_db,
-        source_uri="https://example.test/redirect",
-        referrer_ref="test:redirect",
+        prepared=prepare_material_acquisition(
+            source_uri="https://example.test/redirect",
+            referrer_ref="test:redirect",
+            blob_store=material_publisher(material_db, BlobStore(tmp_path / "blobs")),
+        ),
         observed_at_ms=100,
-        blob_store=BlobStore(tmp_path / "blobs"),
     )
     assert observation.acquisition_state == "expired"
     assert observation.source_uri == "https://example.test/redirect"
@@ -242,12 +261,14 @@ def test_material_relative_file_admission_retains_success_or_absence(
     path = Path("material.txt")
     if exists:
         path.write_bytes(b"retained")
-    observation = admit_material_file(
+    observation = apply_material_preparation(
         material_db,
-        path=path,
-        referrer_ref="test:local",
+        prepared=prepare_material_file(
+            path=path,
+            referrer_ref="test:local",
+            blob_store=material_publisher(material_db, BlobStore(tmp_path / "blobs")),
+        ),
         observed_at_ms=100,
-        blob_store=BlobStore(tmp_path / "blobs"),
     )
     assert observation.source_uri == (tmp_path / "material.txt").as_uri()
     assert observation.acquisition_state == ("acquired" if exists else "unavailable")

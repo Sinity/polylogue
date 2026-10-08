@@ -198,9 +198,11 @@ def test_storage_correctness_json_runs_archive_backed_checks(
 
     report_dir = tmp_path / "reports"
 
-    assert main(["run", "storage-correctness", "--json", "--report-dir", str(report_dir)]) == 0
+    status = main(["run", "storage-correctness", "--json", "--report-dir", str(report_dir)])
+    output = capsys.readouterr().out
+    assert status == 0, output
 
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(output)
     report_payload = json.loads((report_dir / "storage-correctness.json").read_text(encoding="utf-8"))
     assert payload["scenario"] == "storage-correctness"
     assert payload["ok"] is True
@@ -225,7 +227,7 @@ def test_storage_correctness_json_runs_archive_backed_checks(
     assert checks["fts-trigger-drift"]["details"]["drifted_readiness"]["ready"] is False
     assert checks["fts-trigger-drift"]["details"]["drifted_readiness"]["triggers_present"] is False
     assert "Search index is incomplete" in checks["fts-trigger-drift"]["details"]["search_failure"]
-    assert checks["fts-trigger-drift"]["details"]["production_repair"] is True
+    assert checks["fts-trigger-drift"]["details"]["schema_restored"] is True
     assert checks["fts-trigger-drift"]["details"]["after_readiness"]["ready"] is True
     assert checks["fts-trigger-drift"]["details"]["after_fts_rows"] == 1
     assert checks["blob-gc-invariant"]["details"]["reservation_count"] == 1
@@ -253,10 +255,10 @@ def test_storage_correctness_rejects_a_non_canonical_stored_content_hash(
     """
     from devtools import storage_correctness_scenario
 
-    # The raw-and-parsed write route decides the stored digest in revision
-    # governance; the scenario's own canonical hash is imported separately.
+    # The retained parser binds the stored digest in the original prepared
+    # artifact; the scenario computes its expected digest independently.
     monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.revision_governance.session_content_hash",
+        "polylogue.sources.prepared_jsonl.session_content_hash",
         lambda _session: "07" * 32,
     )
 
@@ -264,9 +266,11 @@ def test_storage_correctness_rejects_a_non_canonical_stored_content_hash(
 
     [idempotent] = [check for check in result.check_results if check.name == "idempotent-reingest"]
     assert idempotent.passed is False
+    assert idempotent.error is not None
+    assert "07" * 32 in idempotent.error, idempotent.error
 
 
-def test_storage_correctness_rejects_production_repair_without_trigger_recreation(
+def test_storage_correctness_rejects_schema_construction_without_trigger_recreation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from devtools import storage_correctness_scenario

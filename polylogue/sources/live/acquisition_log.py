@@ -208,51 +208,24 @@ def sweep_unclaimed_files(
     return UnclaimedSweepResult(scanned=scanned, unclaimed=tuple(unclaimed))
 
 
-#: Bounded prefix read for the sweep's own best-effort shape check -- mirrors
-#: ``source_acquisition_components._DETECTION_PREFIX_SIZE``'s order of
-#: magnitude without importing it (this module must stay import-light: it is
-#: reused from both the daemon watcher and any diagnostic CLI/test caller).
-_SWEEP_DETECTION_PREFIX_SIZE = 65536
-
-
 def default_file_claim_check(path: Path) -> tuple[bool, str]:
-    """Real shape-detection claim check for :func:`sweep_unclaimed_files`.
-
-    Reads a bounded prefix and runs it through the same detector stack
-    production acquisition uses (``sources.dispatch``), so "unclaimed" here
-    means the same thing it means during real ingest: no detector recognized
-    the file's shape, not merely "not on some caller-tracked allowlist".
-    """
+    """Check the complete input using the acquisition detector owner."""
     from polylogue.core.enums import Provider
-    from polylogue.sources.dispatch import detect_provider_from_raw_bytes_evidence
+    from polylogue.sources.dispatch import detect_provider_from_raw_stream_evidence, is_jsonl_source_path
 
     try:
         with path.open("rb") as handle:
-            prefix = handle.read(_SWEEP_DETECTION_PREFIX_SIZE)
+            if not handle.read(1):
+                return False, "empty file"
+            handle.seek(0)
+            detected, evidence = detect_provider_from_raw_stream_evidence(
+                handle,
+                path.name,
+                Provider.UNKNOWN,
+                truncated_tail_ok=is_jsonl_source_path(str(path)),
+            )
     except OSError as exc:
         return False, f"unreadable: {type(exc).__name__}: {exc}"
-    if not prefix.strip():
-        return False, "empty file"
-    detected, evidence = detect_provider_from_raw_bytes_evidence(
-        prefix,
-        path.name,
-        Provider.UNKNOWN,
-        truncated_tail_ok=True,
-    )
     if detected is Provider.UNKNOWN:
         return False, f"no detector matched ({evidence})"
     return True, evidence
-
-
-__all__ = [
-    "GIT_DIR_NAME",
-    "UNRECOGNIZED_ORIGIN",
-    "AcquisitionStageTimings",
-    "ClaimCheck",
-    "UnclaimedSweepResult",
-    "default_file_claim_check",
-    "iter_files_excluding_git",
-    "log_file_acquisition_decision",
-    "log_unclaimed_file",
-    "sweep_unclaimed_files",
-]

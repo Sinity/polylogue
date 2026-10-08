@@ -9,7 +9,7 @@ import json
 import shutil
 import tempfile
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,7 +18,7 @@ from typing import cast
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.raw_payload.decode import JSONRecord
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONValue, json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.provider_identity import canonical_schema_provider as _canonical_schema_provider
 from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.core.schema_subjects import SCHEMA_PACKAGE_DIRECTORIES, SCHEMA_SUBJECTS
@@ -104,12 +104,14 @@ def _publication_omission_bound(schema: SchemaInputDocument) -> int:
     )
 
 
-def _structure_witnesses(samples: Sequence[object]) -> tuple[tuple[str, ...], ...]:
+def _structure_witnesses(
+    samples: Sequence[object], *, store: Callable[[object], JSONDocument] | None = None
+) -> tuple[tuple[str, ...], ...]:
     """Return canonical and shipped-order aliases for every sampled record."""
 
     aliases: list[tuple[str, ...]] = []
     for sample in samples:
-        schema = observed_structure_schema(sample)
+        schema = observed_structure_schema(sample, store=store)
         canonical = structure_schema_digest(schema)
         legacy = legacy_structure_schema_digest(schema)
         aliases.append((canonical,) if canonical == legacy else (canonical, legacy))
@@ -206,12 +208,12 @@ class _SchemaEvidence:
 
 
 @dataclass(frozen=True)
-class _ObservedPayload:
+class SchemaObservation:
     artifact_kind: str
     bundle_scope: str | None
     exact_structure_id: str | None
     profile_tokens: tuple[str, ...]
-    schema_samples: Sequence[object] = ()
+    source_witnesses: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1058,9 +1060,18 @@ class SchemaRegistry:
         payload: object,
         *,
         source_path: str | None,
-    ) -> list[_ObservedPayload]:
+        compact_values: bool = True,
+        schema_store: Callable[[object], JSONDocument] | None = None,
+    ) -> list[SchemaObservation]:
         provider_token = _provider_token(provider)
         config = resolve_provider_config(provider_token)
+        catalog = self.load_package_catalog(provider_token)
+        needs_source_witnesses = catalog is not None and any(
+            is_source_structure_witness(structure_id)
+            for package in catalog.packages
+            for element in package.elements
+            for structure_id in element.exact_structure_ids
+        )
         fallback_bundle_scope = derive_bundle_scope(provider_token, source_path)
         admitted_artifact_kind = None
         if provider_token == "gemini-cli" and isinstance(payload, list):
@@ -1079,14 +1090,17 @@ class SchemaRegistry:
             config=config,
             max_samples=_PROFILE_SAMPLE_LIMIT,
             admitted_artifact_kind=admitted_artifact_kind,
+            compact_values=compact_values,
         )
         return [
-            _ObservedPayload(
+            SchemaObservation(
                 artifact_kind=unit.artifact_kind,
                 bundle_scope=unit.bundle_scope or fallback_bundle_scope,
                 exact_structure_id=unit.exact_structure_id or None,
                 profile_tokens=unit.profile_tokens,
-                schema_samples=unit.schema_samples,
+                source_witnesses=(
+                    _structure_witnesses(unit.schema_samples, store=schema_store) if needs_source_witnesses else ()
+                ),
             )
             for unit in units
         ]
@@ -1094,21 +1108,14 @@ class SchemaRegistry:
     def _resolve_observation(
         self,
         packages: Sequence[SchemaVersionPackage],
-        observation: _ObservedPayload,
+        observation: SchemaObservation,
         *,
         package_rank: Mapping[str, int],
         observation_index: int,
     ) -> _ResolutionCandidate | None:
         candidates: list[_ResolutionCandidate] = []
         observed_profile_tokens = set(observation.profile_tokens)
-        source_witnesses: tuple[tuple[str, ...], ...] = ()
-        if any(
-            is_source_structure_witness(structure_id)
-            for package in packages
-            if (element := package.element(observation.artifact_kind)) is not None
-            for structure_id in element.exact_structure_ids
-        ):
-            source_witnesses = _structure_witnesses(observation.schema_samples)
+        source_witnesses = observation.source_witnesses
         for package in packages:
             element = package.element(observation.artifact_kind)
             if element is None:
@@ -1178,7 +1185,7 @@ class SchemaRegistry:
         self,
         provider: str,
         *,
-        observations: Sequence[_ObservedPayload],
+        observations: Sequence[SchemaObservation],
         source_path: str | None,
     ) -> SchemaResolution | None:
         default_package = self.get_package(provider, version="default")
@@ -1221,12 +1228,77 @@ class SchemaRegistry:
         *,
         source_path: str | None = None,
     ) -> SchemaResolution | None:
+        observations = self._observed_payloads(_provider_token(provider), payload, source_path=source_path)
+        return self.resolve_observation(provider, observations, source_path=source_path)
+
+    def observe_stream(
+        self,
+        provider: str,
+        path: Path,
+        *,
+        source_path: str | None = None,
+        cohort: str = "session_document",
+    ) -> tuple[tuple[SchemaObservation, ...], str]:
+        """Measure an exhausted JSON document with private disk-backed shape state.
+
+        One decoded scalar remains subject to the existing SQLite value bound;
+        record count, property count and schema tree size do not bound support.
+        """
+        from polylogue.schemas.observation_spill import StreamedJSONDocument
+
+        payload_store = StreamedJSONDocument(path)
+        with payload_store as payload:
+            return self.observe_payload(
+                provider,
+                payload,
+                source_path=source_path,
+                cohort=cohort,
+                schema_store=payload_store.store_schema,
+            )
+
+    def observe_payload(
+        self,
+        provider: str,
+        payload: JSONValue,
+        *,
+        source_path: str | None = None,
+        cohort: str = "session_document",
+        schema_store: Callable[[object], JSONDocument] | None = None,
+    ) -> tuple[tuple[SchemaObservation, ...], str]:
+        """Observe an already-open payload without taking ownership of its storage.
+
+        Callers that pass a lazy spill-backed value keep its context open until
+        this method returns. ``schema_store`` lets witness schemas share that
+        same backing store instead of materializing a variable schema tree.
+        """
+        # Compaction changes prose values only. Resolution depends on their
+        # types, so retain the lazy input instead of copying its whole tree.
+        observations = tuple(
+            self._observed_payloads(
+                _provider_token(provider),
+                payload,
+                source_path=source_path,
+                compact_values=False,
+                schema_store=schema_store,
+            )
+        )
+        from polylogue.schemas.observation_identity import schema_cluster_id
+
+        return observations, schema_cluster_id(payload, cohort)
+
+    def resolve_observation(
+        self,
+        provider: str,
+        observations: Sequence[SchemaObservation],
+        *,
+        source_path: str | None = None,
+    ) -> SchemaResolution | None:
+        """Resolve complete semantic observations through package precedence."""
         provider_token = _provider_token(provider)
         catalog = self.load_package_catalog(provider_token)
         if catalog is None or not catalog.packages:
             return None
 
-        observations = self._observed_payloads(provider_token, payload, source_path=source_path)
         ranked_packages = self._ranked_packages(catalog)
         package_rank = self._package_rank_from_sorted(ranked_packages)
         best_candidate: _ResolutionCandidate | None = None
@@ -1275,4 +1347,11 @@ class SchemaRegistry:
         return resolution.package_version if resolution is not None else None
 
 
-__all__ = ["SCHEMA_DIR", "SchemaProvider", "SchemaRegistry", "canonical_schema_provider", "schema_subject_diagnostics"]
+__all__ = [
+    "SCHEMA_DIR",
+    "SchemaProvider",
+    "SchemaRegistry",
+    "SchemaObservation",
+    "canonical_schema_provider",
+    "schema_subject_diagnostics",
+]

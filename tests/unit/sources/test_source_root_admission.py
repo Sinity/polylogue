@@ -14,9 +14,11 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
-from polylogue.sources.source_acquisition import iter_source_raw_data
+from polylogue.sources.parsers.base_models import RawSessionData
+from polylogue.sources.source_acquisition import iter_source_acquisition_records
 from polylogue.sources.source_root_admission import SourceRootRefusedError
 from polylogue.storage.blob_store import BlobStore
+from tests.infra.source_builders import acquired_payloads
 
 _SESSION_LINE = {
     "sessionId": "capture-1",
@@ -42,9 +44,15 @@ def _archive(root: Path) -> Path:
     return root
 
 
-def _acquire(source_root: Path, destination: Path) -> list[object]:
+def _acquire(source_root: Path, destination: Path) -> list[RawSessionData]:
     store = BlobStore(destination / "blob")
-    return list(iter_source_raw_data(Source(name="claude-code", path=source_root), blob_store=store))
+    return list(
+        acquired_payloads(
+            # An explicitly named import directory: walked as an export drop at
+            # any depth, so nested archive roots are what bounds it.
+            iter_source_acquisition_records(Source(name="inbox", path=source_root), blob_store=store)
+        )
+    )
 
 
 def test_acquisition_refuses_a_foreign_archive_drive_cache(tmp_path: Path) -> None:
@@ -52,7 +60,7 @@ def test_acquisition_refuses_a_foreign_archive_drive_cache(tmp_path: Path) -> No
     read as a source into the operator's archive.
 
     Mutation: drop the ``refuse_non_capture_source_root`` call from
-    ``iter_source_raw_data``. The development archive's cache is admitted and
+    ``iter_source_acquisition_records``. The development archive's cache is admitted and
     its bytes reach the destination blob store."""
     dev_archive = _archive(tmp_path / "polylogue-dev" / "xdg" / "polylogue")
     cache = dev_archive / "drive-cache" / "gemini"
@@ -124,3 +132,36 @@ def test_acquisition_admits_a_symlinked_alias_of_the_destination_archive(tmp_pat
     records = _acquire(cache, destination)
 
     assert len(records) == 1
+
+
+def test_acquisition_prunes_a_nested_foreign_archive_and_keeps_provider_capture(tmp_path: Path) -> None:
+    imports = tmp_path / "imports"
+    capture = _write_session(imports / "capture")
+    foreign = _archive(imports / "foreign")
+    _write_session(foreign / "drive-cache" / "gemini")
+    records = _acquire(imports, _archive(tmp_path / "destination"))
+    assert [record.source_path for record in records] == [str(capture)]
+
+
+def test_nested_archive_pruning_is_shared_by_walk_and_census(tmp_path: Path) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.sources.source_walk import census_source_root, layout_source_paths
+
+    # A Claude Code projects root (its rules anchor at ``projects/``).
+    imports = tmp_path / "imports" / "projects"
+    capture = _write_session(imports / "-neutral-project")
+    # A copied archive sitting where the layout reaches (a project directory).
+    _write_session(_archive(imports / "-foreign-project"))
+    assert layout_source_paths("claude-code", imports) == [capture]
+    census = census_source_root(imports, provider=Provider.CLAUDE_CODE)
+    assert census.candidate_count == 1
+    assert census.is_complete
+
+
+def test_nested_destination_archive_keeps_its_own_capture_subtree(tmp_path: Path) -> None:
+    imports = tmp_path / "imports"
+    destination = _archive(imports / "destination")
+    capture = _write_session(destination / "inbox")
+    _write_session(_archive(imports / "foreign") / "inbox")
+    records = _acquire(imports, destination)
+    assert [record.source_path for record in records] == [str(capture)]

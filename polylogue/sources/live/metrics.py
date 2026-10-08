@@ -148,6 +148,10 @@ class LiveBatchMetrics:
     cgroup_memory_peak_mb: float | None = None
     cgroup_memory_swap_current_mb: float | None = None
     stale_cursor_write_count: int = 0
+    #: Exact source paths whose cursor publication lost its freshness check.
+    #: Used by page adapters to retry only those files; deliberately omitted
+    #: from telemetry payloads because paths are scheduling evidence.
+    stale_cursor_paths: tuple[str, ...] = ()
     #: Fixed-cost raw-retention work paid after a successful live page.  This
     #: remains separate from parse/convergence timing so a page-size change
     #: cannot hide a recurring retention cost inside materialization.

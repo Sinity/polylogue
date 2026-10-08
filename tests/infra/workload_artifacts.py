@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol, cast
 from unittest.mock import patch
 
-from polylogue.config import Config, Source
+from polylogue.config import Source
 from polylogue.core.durable_fs import atomic_replace, sync_directory
 from polylogue.core.enums import Provider
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
@@ -62,8 +62,8 @@ from polylogue.storage.blob_gc import unlink_unreferenced_blob_hashes_under_excl
 from polylogue.storage.blob_integrity import BlobIntegrityFinding, referenced_blob_hashes, scan_blob_integrity
 from polylogue.storage.blob_publication import abandon_blob_publication_receipts, inspect_blob_publication_receipts
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER, schema_identity
+from polylogue.storage.sqlite.write_lease import ARCHIVE_WRITE_CUSTODY_LOCK_NAME
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient, provider_source_package
 from tests.infra.workload_declarations import (
     BENCHMARK_WORKLOAD_PROFILES,
@@ -81,7 +81,7 @@ if TYPE_CHECKING:
 # Part of the artifact key, so a change to the manifest's shape or to what
 # sealing guarantees gives published artifacts a distinct identity instead of
 # leaving two code versions to overwrite each other's tree at one key.
-_ARTIFACT_PROTOCOL_VERSION = 6
+_ARTIFACT_PROTOCOL_VERSION = 8
 _SEEDED_KEY = re.compile(r"seeded-archive:sha256:([0-9a-f]{64})\Z")
 #: Bounded rebuild attempts when a same-process SQLite lock (SQLITE_LOCKED,
 #: not SQLITE_BUSY) aborts an artifact build. See the retry site below.
@@ -114,7 +114,6 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_DEPENDENCY_ROOTS = (
     _REPOSITORY_ROOT / "polylogue" / "schemas" / "synthetic",
     _REPOSITORY_ROOT / "polylogue" / "operations" / "canonical_archive_ingest.py",
-    _REPOSITORY_ROOT / "polylogue" / "pipeline" / "services" / "ingest_worker.py",
     _REPOSITORY_ROOT / "polylogue" / "sources" / "source_parsing.py",
     _REPOSITORY_ROOT / "polylogue" / "schemas" / "runtime_registry.py",
     _REPOSITORY_ROOT / "polylogue" / "schemas" / "operator",
@@ -360,6 +359,7 @@ class CorpusArtifactManifest:
     files: tuple[dict[str, object], ...]
     receipt: dict[str, object]
     resources: ArtifactResourceMeasurement
+    original_tier_identities: dict[str, str]
 
     def __post_init__(self) -> None:
         reject_semantic_metadata(self.receipt, location="corpus artifact manifest receipt")
@@ -567,6 +567,36 @@ class SeededArchiveQueryLease:
         self.close()
 
 
+def _original_tier_identities(root: Path, value: object) -> dict[str, str]:
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_MARKER_NAME
+
+    required = {"source", "user", "audit"} if (root / ARCHIVE_FORMAT_MARKER_NAME).is_file() else set()
+    if not isinstance(value, dict) or set(value) != required:
+        raise ValueError("artifact original durable tier identities are missing or malformed")
+    for identity in value.values():
+        if not isinstance(identity, str) or re.fullmatch(r"[0-9a-f]{64}", identity) is None:
+            raise ValueError("artifact original durable tier identity is malformed")
+    return dict(value)
+
+
+def _capture_original_tier_identities(root: Path) -> dict[str, str]:
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_MARKER_NAME
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.migration_runner import _durable_archive_identity_digest
+
+    if not (root / ARCHIVE_FORMAT_MARKER_NAME).is_file():
+        return {}
+    identities: dict[str, str] = {}
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT):
+        with closing(
+            sqlite3.connect((root / f"{tier.value}.db").absolute().as_uri() + "?mode=ro&immutable=1", uri=True)
+        ) as conn:
+            identities[tier.value] = _durable_archive_identity_digest(conn, tier)
+    return identities
+
+
 @dataclass(frozen=True)
 class ImmutableTreeArtifact:
     """An atomically published, read-only fixture tree.
@@ -580,11 +610,17 @@ class ImmutableTreeArtifact:
     key: str
     files: tuple[dict[str, object], ...]
     resources: ArtifactResourceMeasurement
+    original_tier_identities: dict[str, str]
 
     @property
     def manifest_id(self) -> str:
         payload = json.dumps(
-            {"key": self.key, "files": self.files, "resources": self.resources.to_payload()},
+            {
+                "key": self.key,
+                "files": self.files,
+                "resources": self.resources.to_payload(),
+                "original_tier_identities": self.original_tier_identities,
+            },
             sort_keys=True,
         ).encode()
         return f"immutable-tree:sha256:{hashlib.sha256(payload).hexdigest()}"
@@ -594,12 +630,39 @@ class ImmutableTreeArtifact:
         """Take an already-materialized tree as a clone source.
 
         A tree a caller sealed itself, or a clone of one, is a legitimate
-        clone origin. Adoption carries the tree's location and key only: the
-        file set is enumerated at clone time, and construction cost belongs to
-        whoever built it, so an adopted handle reports no measurement of its
-        own.
+        clone origin. Adoption authenticates the declared original identities; the
+        file set and original tier identities are captured before relocation.
+        Construction cost belongs to whoever built it; adoption reports none.
         """
-        return cls(root=root, key=key, files=(), resources=ArtifactResourceMeasurement.unmeasured())
+        manifest_path = root / "manifest.json"
+        if manifest_path.is_file():
+            with os.fdopen(_open_no_follow(manifest_path, os.O_RDONLY), "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if not isinstance(payload, dict) or payload.get("protocol_version") != _ARTIFACT_PROTOCOL_VERSION:
+                raise ValueError("artifact manifest protocol is unsupported")
+            if "facts" in payload:
+                manifest = _manifest_from_payload(dict(payload))
+                identities = _original_tier_identities(root, manifest.original_tier_identities)
+                files = manifest.files
+            else:
+                identities = _original_tier_identities(root, payload.get("original_tier_identities"))
+                files = tuple(payload["files"])
+                declared = cls(
+                    root, str(payload["key"]), files, ArtifactResourceMeasurement(**payload["resources"]), identities
+                )
+                if payload.get("manifest_id") != declared.manifest_id:
+                    raise ValueError("artifact manifest identity mismatch")
+            _assert_authenticated_source_files(root, _manifest_file_entries(files))
+        else:
+            identities = _capture_original_tier_identities(root)
+            files = _archive_files(root)
+        return cls(
+            root=root,
+            key=key,
+            files=files,
+            resources=ArtifactResourceMeasurement.unmeasured(),
+            original_tier_identities=identities,
+        )
 
 
 def seal_fixture_tree(root: Path) -> None:
@@ -645,6 +708,7 @@ def build_immutable_tree(
                 return None
             files = _manifest_file_entries(tuple(payload["files"]))
             resources = ArtifactResourceMeasurement(**payload["resources"])
+            identities = _original_tier_identities(final_root, payload.get("original_tier_identities"))
             expected_paths = {path for path, _, _ in files}
             actual_paths = {
                 str(path.relative_to(final_root))
@@ -661,12 +725,16 @@ def build_immutable_tree(
                 path = final_root / relative
                 if not _is_regular(path) or _safe_stat(path).st_size != size or _sha256(path) != digest:
                     return None
-            return ImmutableTreeArtifact(
+            artifact = ImmutableTreeArtifact(
                 root=final_root,
                 key=key,
                 files=tuple({"path": path, "size": size, "sha256": digest} for path, size, digest in files),
                 resources=resources,
+                original_tier_identities=identities,
             )
+            if payload.get("manifest_id") != artifact.manifest_id:
+                return None
+            return artifact
         except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
             return None
 
@@ -699,22 +767,27 @@ def build_immutable_tree(
                 # Finalize SQLite before inventory, then write the manifest
                 # before sealing. Standalone templates have their own seal.
                 _sqlite_integrity(staging)
+                identities = _capture_original_tier_identities(staging)
                 files = _archive_files(staging)
+                resources = _measure_resources(staging, files, probe=probe)
+                artifact = ImmutableTreeArtifact(staging, key, files, resources, identities)
                 manifest = {
                     "protocol_version": _ARTIFACT_PROTOCOL_VERSION,
                     "key": key,
                     "files": files,
-                    "resources": _measure_resources(staging, files, probe=probe).to_payload(),
+                    "resources": resources.to_payload(),
+                    "original_tier_identities": identities,
+                    "manifest_id": artifact.manifest_id,
                 }
                 (staging / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
                 _publish_sealed_staging(staging, final_root, probe=probe)
             except Exception:
                 _remove_tree(staging)
                 raise
-            artifact = load()
-            if artifact is None:
+            published = load()
+            if published is None:
                 raise RuntimeError("published immutable tree failed validation")
-            return artifact
+            return published
     finally:
         _release_lock_domain(domain)
 
@@ -768,6 +841,7 @@ def _clone_immutable_tree_unlocked(
     """Clone an immutable tree into a private writable root."""
     _assert_no_symlinks(artifact.root)
     _assert_no_symlink_ancestors(destination.parent)
+    _original_tier_identities(artifact.root, artifact.original_tier_identities)
     if destination.resolve(strict=False) == artifact.root.resolve(strict=True):
         raise ValueError("clone source and destination are the same")
     if _is_symlink_node(destination):
@@ -802,7 +876,14 @@ def _clone_immutable_tree_unlocked(
                 retained_artifact_reference=retained_artifact_reference,
                 retain_manifest=retain_manifest,
                 authenticate_copy=authenticate_copy,
-                protected_names=frozenset({".archive-population.pending", ".archive-ownership.lock", "daemon.pid"}),
+                protected_names=frozenset(
+                    {
+                        ".archive-population.pending",
+                        ".archive-ownership.lock",
+                        "daemon.pid",
+                        ARCHIVE_WRITE_CUSTODY_LOCK_NAME,
+                    }
+                ),
             )
     return _clone_into_reserved_destination(
         artifact,
@@ -908,6 +989,7 @@ def _clone_into_reserved_destination(
             path.chmod(path.stat().st_mode | stat.S_IWUSR)
     destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
     from polylogue.storage.sqlite.archive_population import populate_authenticated_archive
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     try:
         proof = populate_authenticated_archive(
@@ -917,6 +999,9 @@ def _clone_into_reserved_destination(
             source_files=source_files,
             retained_artifact_reference=retained_artifact_reference,
             validate_source_files=lambda: _assert_authenticated_source_files(artifact.root, source_files),
+            original_tier_identities={
+                ArchiveTier(tier): value for tier, value in artifact.original_tier_identities.items()
+            },
         )
         changed = proof.replaced_paths if proof is not None else frozenset()
         actual = {
@@ -927,10 +1012,14 @@ def _clone_into_reserved_destination(
             and str(path.relative_to(destination)) not in changed
             and str(path.relative_to(destination)) not in protected_names
         }
-        if actual != {path: value for path, value in expected.items() if path not in changed}:
+        unchanged_expected = {path: value for path, value in expected.items() if path not in changed}
+        if actual != unchanged_expected:
             if not protected_names:
                 clear_reserved(remove_root=True)
-            raise ValueError("immutable fixture population changed an unowned file")
+            raise ValueError(
+                "immutable fixture population changed an unowned file "
+                f"({_describe_file_set_mismatch(unchanged_expected, actual)})"
+            )
     except BaseException:
         # A failed durable population is explicit pending evidence. Ordinary
         # fixture admission refuses it; never erase that custody as copy debris.
@@ -1354,7 +1443,11 @@ def _is_reserved_root_file(path: Path, root: Path) -> bool:
         relative = path.relative_to(root)
     except ValueError:
         return False
-    return len(relative.parts) == 1 and relative.name in {"manifest.json", ".build.lock"}
+    return len(relative.parts) == 1 and relative.name in {
+        "manifest.json",
+        ".build.lock",
+        ARCHIVE_WRITE_CUSTODY_LOCK_NAME,
+    }
 
 
 def _is_symlink_node(path: Path) -> bool:
@@ -2289,7 +2382,7 @@ def _canonical_facts(key: SeededArchiveKey) -> tuple[SyntheticArtifactFacts, ...
     )
 
 
-def _validate_frontier_convergence(root: Path) -> None:
+def _validate_retained_artifact_completeness(root: Path) -> None:
     """Require a published artifact to be query-ready, not merely ingested."""
     readiness = raw_materialization_readiness_snapshot(root)
     if not raw_materialization_ready(readiness):
@@ -3060,7 +3153,7 @@ def _validate_artifact(root: Path, key: SeededArchiveKey) -> SeededArchiveArtifa
         ):
             return None
         _validate_facts(root, manifest.facts)
-        _validate_frontier_convergence(root)
+        _validate_retained_artifact_completeness(root)
         write_bits = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
         for path in (root, *_pinned_paths(root)):
             if _is_symlink_node(path) or _safe_stat(path).st_mode & write_bits:
@@ -3154,8 +3247,10 @@ def _publish_sealed_staging(staging: Path, final_root: Path, *, probe: _Construc
             # rename within the final directory's parent (the same-parent
             # operation remains atomic without reopening either tree).
             handoff = final_root.parent / f".{final_root.name}.{uuid.uuid4().hex}.handoff"
-            # The same reserved clone owner fences the actual handoff before
-            # copying, while the final artifact remains atomically unpublished.
+            # Publication moves the same sealed artifact, not a new archive
+            # consumer. Keep its literal files and manifest unchanged.
+            entries: tuple[tuple[str, int, str], ...] | None = None
+            manifest_digest: str | None = None
             if (staging / "manifest.json").is_file():
                 with os.fdopen(
                     _open_no_follow(staging / "manifest.json", os.O_RDONLY), "r", encoding="utf-8"
@@ -3163,74 +3258,14 @@ def _publish_sealed_staging(staging: Path, final_root: Path, *, probe: _Construc
                     payload = json.load(handle)
                 entries = _manifest_file_entries(tuple(payload["files"]))
                 _assert_authenticated_source_files(staging, entries)
-                changed: frozenset[str] = frozenset()
-
-                def authenticate(target: Path, ignored: frozenset[str]) -> None:
-                    nonlocal changed
-                    changed = ignored
-                    expected = {path: (size, digest) for path, size, digest in entries if path not in ignored}
-                    actual = {
-                        path: (size, digest)
-                        for path, size, digest in _manifest_file_entries(_archive_files(target))
-                        if path not in ignored
-                    }
-                    if actual != expected:
-                        raise ValueError("publication population changed an unowned file")
-
-                if "facts" in payload:
-                    source_manifest = _read_manifest(staging / "manifest.json")
-                    source_manifest_id = source_manifest.manifest_id
-                    tree = ImmutableTreeArtifact(
-                        staging, source_manifest_id, source_manifest.files, source_manifest.resources
-                    )
-                else:
-                    tree = ImmutableTreeArtifact(
-                        staging,
-                        str(payload["key"]),
-                        tuple(payload["files"]),
-                        ArtifactResourceMeasurement(**payload["resources"]),
-                    )
-                    source_manifest_id = tree.manifest_id
-                _clone_immutable_tree_unlocked(
-                    tree,
-                    handoff,
-                    source_manifest_id=source_manifest_id,
-                    retained_artifact_reference=False,
-                    retain_manifest=True,
-                    authenticate_copy=authenticate,
-                )
-                from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_MARKER_NAME
-
-                if (staging / ARCHIVE_FORMAT_MARKER_NAME).is_file():
-                    # Destination train admission opens Source in WAL mode.
-                    # Its connections have drained when population returns;
-                    # collapse that private destination before measuring and
-                    # sealing it for ordinary mode=ro frontier readers.
-                    _sqlite_integrity(handoff)
-                    unchanged = tuple(entry for entry in entries if entry[0] not in changed)
-                    expected = {path: (size, digest) for path, size, digest in unchanged}
-                    actual = {
-                        path: (size, digest)
-                        for path, size, digest in _manifest_file_entries(_archive_files(handoff))
-                        if path not in changed
-                    }
-                    if actual != expected:
-                        raise ValueError(
-                            "publication population changed files outside its authenticated proof"
-                        ) from None
-                    files = _archive_files(handoff)
-                    resources = _measure_resources(handoff, files, probe=probe, measure_rows="facts" in payload)
-                    if "facts" in payload:
-                        manifest = replace(_read_manifest(staging / "manifest.json"), files=files, resources=resources)
-                        payload = manifest.to_payload()
-                    else:
-                        payload["files"] = files
-                        payload["resources"] = resources.to_payload()
-                    _write_private_text(
-                        handoff / "manifest.json", json.dumps(payload, sort_keys=True, ensure_ascii=False) + "\n"
-                    )
-            else:
-                _copy_tree(staging, handoff)
+                manifest_digest = _sha256(staging / "manifest.json")
+            _copy_tree(staging, handoff)
+            if entries is not None:
+                _assert_authenticated_source_files(staging, entries)
+                if _manifest_file_entries(_archive_files(handoff)) != entries:
+                    raise ValueError("publication handoff changed authenticated files") from None
+                if _sha256(handoff / "manifest.json") != manifest_digest:
+                    raise ValueError("publication handoff changed manifest bytes") from None
             # Seal the handoff before it can be renamed.  A killed copy can
             # leave only a private handoff; final visibility is one rename of
             # an already sealed tree, never a writable directory.
@@ -3378,6 +3413,28 @@ def build_seeded_archive(
         return _build_seeded_archive_inner(selected_specs, key=key, cache_root=selected_root)
     finally:
         _release_lock_domain(domain)
+
+
+def copy_seeded_archive(
+    artifact: SeededArchiveArtifact,
+    specs: Iterable[CorpusSpec] | None = None,
+    *,
+    cache_root: Path,
+) -> SeededArchiveArtifact:
+    """Publish a validated artifact into another cache without rebuilding it.
+
+    A test that mutates or collects its own cache starts from the shared
+    build. The copy is never trusted as copied: the ordinary lookup in the
+    new cache validates every member against the manifest and its key, so a
+    mismatch is rebuilt there like any other invalid artifact.
+    """
+    destination = cache_root.expanduser() / "artifacts" / artifact.root.name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with _shared_seeded_artifact_read_locks(artifact):
+        _copy_tree(artifact.root, destination)
+    # Published artifacts are sealed read-only; an unsealed copy is invalid.
+    _make_read_only(destination)
+    return build_seeded_archive(specs, cache_root=cache_root)
 
 
 def _complete_orphan_blob_hashes(archive_root: Path, *, expected_count: int) -> set[str]:
@@ -3538,18 +3595,29 @@ def _build_seeded_archive_inner(
                 )
                 if orphan_finding is not None:
                     _dispose_seeded_archive_orphans(staging, orphan_finding)
-                inspect_raw_authority_frontier(
-                    Config(
-                        archive_root=staging,
-                        render_root=staging / "render",
-                        sources=[],
-                        db_path=staging / "index.db",
-                    )
-                )
                 facts = tuple(item.facts for written in written_batches for item in written.batch.artifacts)
                 _sqlite_integrity(staging)
                 _validate_facts(staging, facts)
-                _validate_frontier_convergence(staging)
+                from polylogue.storage.frontier_inspection import read_frontier_coverage_for_archive
+
+                async def inspect_final_staging(root: Path) -> None:
+                    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+                    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+                    async with prepared_live_convergence_owner(root) as owner:
+                        await owner.run_convergence_sync(
+                            "artifact.frontier.inspect",
+                            inspect_prepared_raw_authority_frontier,
+                            root,
+                            input_demand=owner._compute_adapter.amend_current_input_demand,
+                        )
+
+                asyncio.run(inspect_final_staging(staging))
+                _sqlite_integrity(staging)
+                coverage = read_frontier_coverage_for_archive(staging)
+                if not coverage.get("current") or not coverage.get("healthy"):
+                    raise RuntimeError(f"seeded archive build lacks original frontier coverage: {coverage}")
+                _validate_retained_artifact_completeness(staging)
                 archive_id = f"archive:seeded:{final_root.name}"
                 profile_id = _profile_id(key)
                 build_id = _build_id()
@@ -3573,6 +3641,7 @@ def _build_seeded_archive_inner(
                     files=files,
                     receipt=dict(receipt.to_payload()),
                     resources=_measure_resources(staging, files, probe=probe, measure_rows=True),
+                    original_tier_identities=_capture_original_tier_identities(staging),
                 )
                 _write_private_text(
                     staging / "manifest.json",
@@ -3848,7 +3917,11 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
         if disk_manifest != artifact.manifest:
             raise ValueError("published artifact manifest changed before clone")
         tree = ImmutableTreeArtifact(
-            artifact.root, disk_manifest.manifest_id, disk_manifest.files, disk_manifest.resources
+            artifact.root,
+            disk_manifest.manifest_id,
+            disk_manifest.files,
+            disk_manifest.resources,
+            disk_manifest.original_tier_identities,
         )
 
         def authenticate(destination: Path, ignored: frozenset[str]) -> None:
@@ -3862,12 +3935,11 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
             retain_manifest=True,
             authenticate_copy=authenticate,
         )
+        # Pin the clone root's identity without locking it. The clone is a
+        # live archive root, and the directory flock on an archive root
+        # belongs to the audit writer (``audit_leaf``); a shared hold here
+        # refuses every daemon that serves the clone.
         integrity_fd = _open_pinned_dir(destination)
-        try:
-            fcntl.flock(integrity_fd, fcntl.LOCK_SH)
-        except BaseException:
-            os.close(integrity_fd)
-            raise
         return SeededArchiveClone(
             root=destination,
             source_manifest_id=result.source_manifest_id,

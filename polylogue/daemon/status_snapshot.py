@@ -23,6 +23,7 @@ from polylogue.core.refs import ObjectRef
 from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.daemon.discovery_progress import overlay_active_discovery
 from polylogue.daemon.fts_status import fts_readiness_info
+from polylogue.operations.daemon_status import archive_identity_status
 from polylogue.operations.quick_check import observe_quick_check, unmeasured_quick_check
 from polylogue.paths import archive_root
 from polylogue.readiness.capability import (
@@ -283,7 +284,8 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         browser_capture_status_public_payload,
     )
 
-    dbf = resolve_active_index_path(archive_root())
+    configured_root = archive_root()
+    dbf = resolve_active_index_path(configured_root)
     wal = dbf.with_suffix(".db-wal")
     fts_payload: dict[str, object] = {}
     quick_check = unmeasured_quick_check("minimal status path did not open the index database")
@@ -312,6 +314,10 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         },
         "live": False,
         "browser_capture": json_document(browser_capture),
+        # The archive this daemon answers for, as the rich payload names it:
+        # a reader must not mistake another archive's minimal envelope for
+        # this one while the rich snapshot refreshes.
+        **archive_identity_status(configured_root, dbf),
         "db_path": str(dbf),
         "db_size_bytes": dbf.stat().st_size if dbf.exists() else None,
         "wal_size_bytes": wal.stat().st_size if wal.exists() else None,
@@ -435,6 +441,10 @@ def _minimal_component_readiness(payload: Mapping[str, object]) -> dict[str, obj
             "unknown",
             "minimal snapshot",
         ),
+        "configured_sources": _minimal_component(
+            "configured_sources", "configured_sources", "unknown", "minimal snapshot"
+        ),
+        "attachments": _minimal_component("attachments", "owed_drive_references", "unknown", "minimal snapshot"),
         "daemon_ingest": _minimal_component("daemon_ingest", "daemon", "unknown", "minimal snapshot"),
         "embeddings": _minimal_component("embeddings", "semantic", "unknown", "minimal snapshot"),
         "search": _minimal_component(

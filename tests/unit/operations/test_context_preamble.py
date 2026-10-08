@@ -30,6 +30,13 @@ class _Archive:
 async def test_pinned_preamble_uses_captured_git_and_clock_without_side_effects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The pinned preamble completes on a thread that is already driving a loop.
+
+    The web reader's admitted read runs this work nested on a compute worker
+    whose loop is running, so this test calls it from inside one. Anti-vacuity:
+    drive the builder through ``asyncio.run`` again and the call raises
+    "asyncio.run() cannot be called from a running event loop".
+    """
     import polylogue.context.preamble as preamble
 
     def refuse_git(_cwd: str | None) -> Any:
@@ -42,7 +49,7 @@ async def test_pinned_preamble_uses_captured_git_and_clock_without_side_effects(
     monkeypatch.setattr(preamble, "_record_preamble_ledger", refuse_ledger)
     archive = _Archive()
     observed_at = datetime(2026, 9, 26, 12, 30, tzinfo=timezone.utc)
-    result = await execute_context_preamble(
+    result = execute_context_preamble(
         archive,  # type: ignore[arg-type]
         session_id=None,
         require_session=False,
@@ -86,14 +93,12 @@ def test_pinned_preamble_reads_judged_guidance_from_attached_user_snapshot(tmp_p
         )
     with ArchiveStore.open_existing(archive_root) as archive:
         archive.begin_read_snapshot()
-        result = run_coroutine_sync(
-            execute_context_preamble(
-                archive,
-                session_id="codex:seed",
-                require_session=False,
-                observed_at=datetime(2026, 9, 26, tzinfo=timezone.utc),
-                observed_project_state=(None, None),
-            )
+        result = execute_context_preamble(
+            archive,
+            session_id="codex:seed",
+            require_session=False,
+            observed_at=datetime(2026, 9, 26, tzinfo=timezone.utc),
+            observed_project_state=(None, None),
         )
         from polylogue.operations.daemon_reads import execute_read_operation
 

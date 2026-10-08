@@ -8,8 +8,10 @@ import sqlite3
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, urlsplit
 
 from polylogue.config import Config
 
@@ -28,6 +30,21 @@ class DaemonResidencyUndecidableError(RuntimeError):
     """
 
     code = "daemon_residency_undecidable"
+
+
+_OFFLINE_ARCHIVE_WRITER_ROOT: ContextVar[Path | None] = ContextVar(
+    "polylogue_offline_archive_writer_root", default=None
+)
+
+
+def current_offline_archive_writer_root() -> Path | None:
+    """Return the archive owned by the current scoped offline writer, if any.
+
+    ``asyncio.to_thread`` propagates this context to the actual writer thread,
+    so a CLI boundary can recognize the one-shot archive owner that holds the
+    shared daemon-start lock and archive identity claim.
+    """
+    return _OFFLINE_ARCHIVE_WRITER_ROOT.get()
 
 
 class ArchiveWriterOwnershipError(RuntimeError):
@@ -74,6 +91,54 @@ class ArchiveWriterOwnershipUndecidableError(ArchiveWriterOwnershipError):
     """
 
     code = "archive_writer_ownership_undecidable"
+
+
+# The six tier file names. A path is an archive tier open when its file name
+# is one of these; the containing directory is deliberately not consulted.
+ARCHIVE_TIER_FILENAMES = frozenset(
+    {
+        "source.db",
+        "index.db",
+        "embeddings.db",
+        "user.db",
+        "audit.db",
+        "ops.db",
+    }
+)
+
+
+def guarded_archive_tier_path(database: Any, *, uri: bool = False) -> Path | None:
+    """Return the archive tier path this open would write, else ``None``."""
+    if isinstance(database, int):  # an already-open descriptor: not our boundary
+        return None
+    if isinstance(database, bytes):
+        database = database.decode("utf-8", "surrogateescape")
+    try:
+        text = str(database if isinstance(database, str) else Path(database))
+    except TypeError:
+        return None
+    if not text or text.startswith(":memory:"):
+        return None
+    if uri or text.startswith("file:"):
+        split = urlsplit(text)
+        if split.scheme and split.scheme != "file":
+            return None
+        query = split.query
+        # ``mode`` and ``immutable`` are the only read-only declarations SQLite
+        # honours in a URI; anything else is a writable open.
+        for part in query.split("&"):
+            key, _, value = part.partition("=")
+            if key == "mode" and value in {"ro"}:
+                return None
+            if key == "immutable" and value not in {"", "0", "false"}:
+                return None
+        text = unquote(split.path if split.path else split.netloc)
+        if text.startswith(":memory:") or not text:
+            return None
+    path = Path(text)
+    if path.name not in ARCHIVE_TIER_FILENAMES:
+        return None
+    return path
 
 
 def _pidfile_holder_is_live(pidfile: Path) -> bool:
@@ -173,29 +238,11 @@ def scoped_offline_archive_writer(archive_root: Path, *, owner_id: str) -> Itera
                 resident_writer=writer,
             ) from exc
         with OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root), owner_id=owner_id) as owner:
-            yield owner
-    finally:
-        os.close(fd)
-
-
-@contextmanager
-def hold_daemon_start_exclusion(archive_root: Path) -> Iterator[None]:
-    """Hold a shared pidfile lock so a daemon cannot start mid-writer command."""
-    root = archive_root.expanduser().resolve()
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(root / "daemon.pid", os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o600)
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            pid = resident_daemon_pid(root)
-            writer = f"polylogued PID {pid}" if pid is not None else "resident daemon"
-            raise ArchiveWriterOwnershipError(
-                f"{writer} owns {root}; submit the operation to that daemon",
-                archive_root=root,
-                resident_writer=writer,
-            ) from exc
-        yield
+            token = _OFFLINE_ARCHIVE_WRITER_ROOT.set(root)
+            try:
+                yield owner
+            finally:
+                _OFFLINE_ARCHIVE_WRITER_ROOT.reset(token)
     finally:
         os.close(fd)
 
@@ -248,8 +295,6 @@ def _residency_checked_connect(database: Any, *args: Any, **kwargs: Any) -> sqli
     assert original is not None
     refuse = _REFUSE
     if refuse is not None:
-        from polylogue.storage.sqlite.write_guard import guarded_archive_tier_path
-
         path = guarded_archive_tier_path(database, uri=bool(kwargs.get("uri", False)))
         if path is not None:
             refuse(path)
@@ -263,19 +308,16 @@ def refuse_writable_tier_opens(refuse: Callable[[Path], None]) -> Iterator[None]
     The seam a one-shot writer needs to re-ask "does a daemon own this archive
     *now*?" at each mutation rather than once at entry. It lives here rather
     than in the CLI because deciding *which* opens are writable archive-tier
-    opens is storage's definition
-    (:func:`~polylogue.storage.sqlite.write_guard.guarded_archive_tier_path`),
-    and restating it beside the caller would fork a load-bearing rule; the
+    opens is defined by :func:`guarded_archive_tier_path` in this module, and
+    restating it beside the caller would fork a load-bearing rule; the
     surface layering ratchet also forbids a fresh ``cli -> storage`` edge.
 
     Process-wide rather than thread-local, because the CLI writes from
     ``asyncio`` tasks and worker threads: a thread-local boundary would leave
     exactly those writes unchecked.
 
-    This is *not* the write lease and does not replace
-    :func:`~polylogue.storage.sqlite.write_guard.install_archive_write_guard`.
-    It asks one question -- is someone else the archive's writer right now --
-    and answers only with the caller's refusal.
+    This is not the write lease. It lets the caller recheck archive residency
+    at each writable tier open and apply its own refusal.
     """
     global _INTERCEPT_DEPTH, _ORIGINAL_CONNECT, _REFUSE
     with _INTERCEPT_LOCK:
@@ -301,13 +343,14 @@ def writable_tier_opens_are_checked() -> bool:
 
 
 __all__ = [
+    "ARCHIVE_TIER_FILENAMES",
     "DaemonResidencyUndecidableError",
+    "guarded_archive_tier_path",
     "offline_maintenance_block_reason",
     "offline_writer_block_reason",
     "refuse_writable_tier_opens",
     "resident_daemon_pid",
     "running_daemon_pid",
     "scoped_offline_archive_writer",
-    "hold_daemon_start_exclusion",
     "writable_tier_opens_are_checked",
 ]

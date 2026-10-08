@@ -423,7 +423,8 @@ def enqueue_action(
         for attachment, source in sources:
             target = _action_dir(root, action_id) / "attachments" / attachment.attachment_id
             _ensure_directory(target.parent)
-            clone_or_copy_replace(source, target)
+            with _open_verified_attachment(source, attachment.sha256, attachment.size_bytes) as stream:
+                clone_or_copy_replace(stream, target)
         _write_action(root, action)
     except Exception:
         for path in sorted(_action_dir(root, action_id).glob("**/*"), reverse=True):

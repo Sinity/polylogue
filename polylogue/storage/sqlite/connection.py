@@ -6,12 +6,13 @@ import atexit
 import os
 import sqlite3
 import threading
+from builtins import BaseExceptionGroup
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import polylogue.paths as _paths
+from polylogue.core.sql_settlement import current_native_sql_lifetimes
 from polylogue.logging import get_logger
 from polylogue.storage.fts.pl_fold import register_pl_fold
 from polylogue.storage.io_phase_metrics import connect_measured
@@ -25,23 +26,24 @@ from polylogue.storage.sqlite.connection_profile import (
     WRITE_CACHE_SIZE_KIB,
     WRITE_CONNECTION_PROFILE,
     WRITE_MMAP_SIZE_BYTES,
+    NativeSQLCustodyOwner,
     _attach_sibling_tiers,
+    _close_failed_native_construction,
+    configured_archive_root,
+    execute_pragma_statement,
     open_readonly_connection,
     write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.schema import _ensure_schema, assert_readable_archive_layout
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
-from polylogue.storage.sqlite.write_lease import require_write_lease
-
-if TYPE_CHECKING:
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.write_lease import require_write_lease, write_lease
 
 logger = get_logger(__name__)
 
 
 def _apply_pragma_statements(conn: sqlite3.Connection, statements: Sequence[str]) -> None:
     for statement in statements:
-        conn.execute(statement)
+        execute_pragma_statement(conn, statement)
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
@@ -65,12 +67,12 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
     return False
 
 
-def _configure_read_connection(conn: sqlite3.Connection) -> None:
+def _configure_read_connection(conn: sqlite3.Connection, *, archive_root: Path) -> None:
     """Apply read-safe settings without taking write-oriented locks."""
     # The profiled reader already applied its pragmas before installing the
     # read authorizer, which denies re-assigning them here.
     conn.row_factory = sqlite3.Row
-    _attach_sibling_tiers(conn)
+    _attach_sibling_tiers(conn, archive_root=archive_root)
     register_pl_fold(conn)
 
 
@@ -93,61 +95,60 @@ def _schema_lock_for_path(path: Path) -> threading.Lock:
         return lock
 
 
-def _is_initialized_archive_index(path: Path) -> bool:
+def _is_initialized_archive_index(path: Path, *, archive_root: Path | None = None) -> bool:
     if path.name != "index.db":
         return False
-    root = path.parent
+    root = archive_root if archive_root is not None else path.parent
     return all((root / filename).exists() for filename in ("source.db", "index.db", "user.db", "ops.db"))
 
 
-def _get_cached_connection(path: Path) -> sqlite3.Connection:
-    """Return a thread-local cached connection for the given path.
+def _get_cached_connection(path: Path, *, archive_root: Path) -> sqlite3.Connection:
+    """Return the current admitted operation's cached connection for a path.
 
-    Creates a new connection on first access per (thread, path) pair.
+    Creates a new connection on first access per (operation, thread, path) pair.
     Connections are configured with WAL, foreign keys, busy_timeout,
     sqlite-vec, and connection-local runtime setup — all exactly once per connection.
     """
+    cache: dict[str, NativeSQLCustodyOwner] = getattr(_connection_cache, "conns", {})
     from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
     assert_population_admitted(path)
-    cache: dict[str, sqlite3.Connection] = getattr(_connection_cache, "conns", {})
     if not hasattr(_connection_cache, "conns"):
         _connection_cache.conns = cache
 
     key = str(path)
+    require_write_lease(f"cached write connection({path})", archive_root=archive_root)
     if key in cache:
-        return cache[key]
+        return cache[key].admit_cached_reuse()
 
     if path.name == "index.db":
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
         # File presence is not lineage admission: historical four-file roots
         # must pass the format-marker gate before any tier is opened.
-        initialize_active_archive_root(path.parent)
+        initialize_active_archive_root(archive_root)
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    require_write_lease(f"cached write connection({path})", archive_root=path.parent)
-    conn = connect_measured(path, timeout=DB_TIMEOUT)
+    require_write_lease(f"cached write connection({path})", archive_root=archive_root)
+    conn = connect_measured(path, uri=True, timeout=DB_TIMEOUT)
+    owner = NativeSQLCustodyOwner(conn, cache_entry=(cache, key))
+    cache[key] = owner
     try:
         os.chmod(path, 0o600)
         conn.row_factory = sqlite3.Row
         _apply_pragma_statements(conn, write_connection_pragma_statements(WRITE_CONNECTION_PROFILE))
         _load_sqlite_vec(conn)
-        _attach_sibling_tiers(conn)
+        _attach_sibling_tiers(conn, archive_root=archive_root)
         register_pl_fold(conn)
         with _schema_lock_for_path(path):
-            if path.name == "index.db" and not _is_initialized_archive_index(path):
+            if path.name == "index.db" and not _is_initialized_archive_index(path, archive_root=archive_root):
                 raise RuntimeError(f"Archive root was not initialized for {path}")
             if path.name != "index.db":
                 _ensure_schema(conn)
-    except BaseException:
-        # Pragma/schema setup can fail (e.g. locked database). Close the
-        # just-opened connection before propagating so it is neither cached
-        # nor orphaned.
-        conn.close()
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
         raise
 
-    cache[key] = conn
     return conn
 
 
@@ -161,23 +162,33 @@ def _clear_connection_cache() -> None:
 
     Also useful in test teardown to ensure test isolation.
     """
-    cache: dict[str, sqlite3.Connection] = getattr(_connection_cache, "conns", {})
-    for conn in cache.values():
-        with suppress(Exception):
-            conn.close()
-    _connection_cache.conns = {}
+    cache: dict[str, NativeSQLCustodyOwner] = getattr(_connection_cache, "conns", {})
+    failures: list[BaseException] = []
+    for owner in tuple(cache.values()):
+        try:
+            owner.close()
+        except BaseException as error:
+            failures.append(error)
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise BaseExceptionGroup("Cached connection cleanup failed", failures)
 
 
 atexit.register(_clear_connection_cache)
 
 
 @contextmanager
-def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -> Iterator[sqlite3.Connection]:
-    """Context manager for thread-local, reusable sqlite3 connections.
+def connection_context(
+    db_path: Path | str | sqlite3.Connection | None = None,
+    *,
+    archive_root: Path | None = None,
+) -> Iterator[sqlite3.Connection]:
+    """Reuse native connections only inside one admitted archive operation.
 
-    Connections are cached per (thread, db_path) pair, so repeated calls
-    within the same thread reuse the same connection instead of opening
-    and closing one each time.
+    A standalone context owns one physical write lease. Nested contexts reuse
+    the current operation's connection, which outer settlement actually closes.
+    A caller-owned transaction must settle before that outer operation ends.
 
     Args:
         db_path: Path to the database file, or an existing connection.
@@ -193,14 +204,34 @@ def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -
         return
 
     path = Path(db_path) if db_path else _paths.db_path()
-    yield _get_cached_connection(path)
+    root = configured_archive_root(path, archive_root)
+    require_write_lease(f"cached connection({path})", archive_root=root)
+    if not path.parent.exists():
+        if path.name == "index.db":
+            from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+            initialize_active_archive_root(root)
+        else:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with write_lease(f"cached connection({path})", archive_root=root):
+        connection = _get_cached_connection(path, archive_root=root)
+        owner = _connection_cache.conns[str(path)]
+        try:
+            yield connection
+        except BaseException as primary:
+            _close_failed_native_construction(owner, primary)
+            raise
 
 
 open_connection = connection_context
 
 
 @contextmanager
-def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.Connection]:
+def open_read_connection(
+    db_path: Path | str | None = None,
+    *,
+    archive_root: Path | None = None,
+) -> Iterator[sqlite3.Connection]:
     """Open a short-lived read-only connection when the DB already exists.
 
     This avoids writer-style setup (`journal_mode`, schema ensure) for read
@@ -210,33 +241,22 @@ def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.
     """
     path = Path(db_path) if db_path else _paths.db_path()
     if not path.exists():
-        with open_connection(path) as conn:
+        with open_connection(path, archive_root=archive_root) as conn:
             yield conn
         return
 
     conn = open_readonly_connection(path, timeout_class="interactive-read", validate_schema=False)
-    _configure_read_connection(conn)
+    owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=current_native_sql_lifetimes())
     try:
-        if not _is_initialized_archive_index(path):
+        _configure_read_connection(conn, archive_root=configured_archive_root(path, archive_root))
+        if not _is_initialized_archive_index(path, archive_root=configured_archive_root(path, archive_root)):
             assert_readable_archive_layout(conn)
         yield conn
-    finally:
-        conn.close()
-
-
-def create_default_backend() -> SQLiteBackend:
-    """Create a SQLiteBackend with the default database path.
-
-    This is a convenience function for creating backends when
-    no custom path is needed.
-
-    Returns:
-        SQLiteBackend connected to the default database location
-    """
-    # Late import to avoid circular dependency
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-    return SQLiteBackend(db_path=None)
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
 
 
 def _build_scope_filter(
@@ -318,7 +338,6 @@ __all__ = [
     "_build_source_path_scope_filter",
     "_build_source_scope_filter",
     "connection_context",
-    "create_default_backend",
     "open_connection",
     "open_read_connection",
 ]

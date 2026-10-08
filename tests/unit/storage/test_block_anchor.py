@@ -20,14 +20,15 @@ from polylogue.storage.block_anchor import (
     parse_block_anchor,
     resolve_block_anchor,
 )
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -89,7 +90,7 @@ def test_resolve_block_anchor_ok_when_unchanged(tmp_path: Path) -> None:
                 )
             ],
         )
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         anchor = _anchor_for(conn, session_id, "m1", 0)
 
         resolution = resolve_block_anchor(conn, anchor, position_hint=0)
@@ -122,7 +123,7 @@ def test_resolve_block_anchor_drifted_position_after_reorder(tmp_path: Path) -> 
                 )
             ],
         )
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         anchor = _anchor_for(conn, session_id, "m1", 0)  # anchors "first" at position 0
 
         reordered = session.model_copy(
@@ -140,7 +141,7 @@ def test_resolve_block_anchor_drifted_position_after_reorder(tmp_path: Path) -> 
                 ]
             }
         )
-        write_parsed_session_to_archive(conn, reordered)
+        write_fixture_index_session(conn, reordered)
 
         resolution = resolve_block_anchor(conn, anchor, position_hint=0)
         assert resolution.state == "drifted_position"
@@ -171,7 +172,7 @@ def test_resolve_block_anchor_ambiguous_on_duplicate_evidence(tmp_path: Path) ->
                 )
             ],
         )
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         anchor = _anchor_for(conn, session_id, "m1", 0)
 
         resolution = resolve_block_anchor(conn, anchor)
@@ -203,7 +204,7 @@ def test_resolve_block_anchor_drifted_message_when_content_moves_within_session(
                 ),
             ],
         )
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         anchor = _anchor_for(conn, session_id, "m1", 0)
 
         # Re-ingest with the SAME evidence now attached to m2 instead of m1
@@ -227,7 +228,7 @@ def test_resolve_block_anchor_drifted_message_when_content_moves_within_session(
                 ]
             }
         )
-        write_parsed_session_to_archive(conn, moved)
+        write_fixture_index_session(conn, moved)
 
         resolution = resolve_block_anchor(conn, anchor)
         assert resolution.state == "drifted_message"
@@ -252,7 +253,7 @@ def test_resolve_block_anchor_hash_mismatch_never_guesses(tmp_path: Path) -> Non
                 )
             ],
         )
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         anchor = _anchor_for(conn, session_id, "m1", 0)
 
         rewritten = session.model_copy(
@@ -267,7 +268,7 @@ def test_resolve_block_anchor_hash_mismatch_never_guesses(tmp_path: Path) -> Non
                 ]
             }
         )
-        write_parsed_session_to_archive(conn, rewritten)
+        write_fixture_index_session(conn, rewritten)
 
         resolution = resolve_block_anchor(conn, anchor, position_hint=0)
         assert resolution.state == "hash_mismatch"
@@ -292,7 +293,7 @@ def test_resolve_block_anchor_missing_when_nothing_matches(tmp_path: Path) -> No
                 )
             ],
         )
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         anchor = _anchor_for(conn, session_id, "m1", 0)
 
         # Delete the session entirely -- the anchor now resolves nowhere.
@@ -326,7 +327,7 @@ def test_resolve_block_anchor_relocated_lineage_in_composed_child_view(tmp_path:
                 ),
             ],
         )
-        parent_id = write_parsed_session_to_archive(conn, parent)
+        parent_id = write_fixture_index_session(conn, parent)
         child = ParsedSession(
             source_name=Provider.CODEX,
             provider_session_id="anchor-lineage-child",
@@ -339,7 +340,7 @@ def test_resolve_block_anchor_relocated_lineage_in_composed_child_view(tmp_path:
                 )
             ],
         )
-        child_id = write_parsed_session_to_archive(conn, child)
+        child_id = write_fixture_index_session(conn, child)
         anchor = _anchor_for(conn, parent_id, "m1", 0)
         branch_point = conn.execute(
             "SELECT message_id FROM messages WHERE session_id = ? AND native_id = 'm1'",
@@ -432,8 +433,8 @@ def test_resolve_block_anchor_quarantined_edge_precedes_lineage_search(tmp_path:
             provider_session_id="anchor-quarantined-parent",
             messages=[],
         )
-        session_id = write_parsed_session_to_archive(conn, session)
-        parent_id = write_parsed_session_to_archive(conn, other)
+        session_id = write_fixture_index_session(conn, session)
+        parent_id = write_fixture_index_session(conn, other)
         anchor = _anchor_for(conn, session_id, "m1", 0)
         conn.execute(
             """

@@ -21,12 +21,18 @@ from polylogue import Polylogue
 from polylogue.analysis.archive import ArchiveInferenceProvenance, ArchiveInsightProvenance, SessionProfileInsight
 from polylogue.analysis.archive_models import SessionEvidencePayload, SessionInferencePayload
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 
 
-def _archive(tmp_path: Path) -> Polylogue:
+def _archive_on_writer(tmp_path: Path) -> Polylogue:
     with ArchiveStore(tmp_path):
         pass
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
+
+
+def _archive(tmp_path: Path) -> Polylogue:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _archive_on_writer(tmp_path))
 
 
 def _provenance() -> ArchiveInsightProvenance:

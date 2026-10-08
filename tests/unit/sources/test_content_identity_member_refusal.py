@@ -11,9 +11,12 @@ import pytest
 from polylogue.config import Source
 from polylogue.core import content_identity
 from polylogue.core.enums import Provider
-from polylogue.sources.source_acquisition import iter_source_raw_data
+from polylogue.core.raw_coordinates import zip_member_source_index
+from polylogue.sources.source_acquisition import iter_source_acquisition_records
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
+from tests.infra.source_builders import acquired_payloads, live_zip_capture
 
 
 def test_a_refused_member_is_recorded_and_its_siblings_are_acquired(
@@ -32,10 +35,12 @@ def test_a_refused_member_is_recorded_and_its_siblings_are_acquired(
 
     cursor_state: CursorStatePayload = {}
     records = list(
-        iter_source_raw_data(
-            Source(name="chatgpt", path=source_root),
-            blob_store=BlobStore(tmp_path / "archive" / "blob"),
-            cursor_state=cursor_state,
+        acquired_payloads(
+            iter_source_acquisition_records(
+                Source(name="chatgpt", path=source_root),
+                blob_store=BlobStore(tmp_path / "archive" / "blob"),
+                cursor_state=cursor_state,
+            )
         )
     )
 
@@ -61,7 +66,7 @@ def test_a_refused_member_is_a_typed_production_baseline_fault(tmp_path: Path, m
         archive.writestr("b.json", json.dumps([{"id": "kept", "mapping": {}}]).encode())
 
     baseline = capture_production_source_baseline(
-        (WatchSource("chatgpt", root, suffixes=(".zip",)),), operation_id="identity-refusal"
+        (WatchSource("chatgpt", root, layout=export_drop_layout((".zip",))),), operation_id="identity-refusal"
     )
 
     faults = {row.path: row.reason for row in baseline.decisions if row.disposition == "fault"}
@@ -103,12 +108,16 @@ def test_a_live_zip_refusal_is_recorded_debt_until_the_zip_is_clean(
     )
 
     def extract() -> set[str]:
-        records, _bytes = processor._extract_zip_member_records(
-            zip_path,
-            blob_store=BlobStore(tmp_path / "blob"),
-            fallback_provider=Provider.CHATGPT,
-            file_mtime="2026-09-28T00:00:00+00:00",
-        )
+        with live_zip_capture(tmp_path) as (publisher, zip_inputs):
+            extracted = processor._extract_source_only_zip_member_records(
+                zip_path,
+                blob_store=publisher,
+                zip_inputs=zip_inputs,
+                fallback_provider=Provider.CHATGPT,
+                file_mtime="2026-09-28T00:00:00+00:00",
+            )
+            assert extracted is not None
+            records, _bytes = extracted
         return {record.source_path for _raw_id, record in records}
 
     assert extract() == {f"{zip_path}:b.json"}
@@ -145,17 +154,22 @@ def test_a_refused_split_element_does_not_drop_the_elements_after_it(
 
     cursor_state: CursorStatePayload = {}
     records = list(
-        iter_source_raw_data(
-            Source(name="chatgpt", path=source_root),
-            blob_store=BlobStore(tmp_path / "archive" / "blob"),
-            cursor_state=cursor_state,
+        acquired_payloads(
+            iter_source_acquisition_records(
+                Source(name="chatgpt", path=source_root),
+                blob_store=BlobStore(tmp_path / "archive" / "blob"),
+                cursor_state=cursor_state,
+            )
         )
     )
 
     blob_store = BlobStore(tmp_path / "archive" / "blob")
     acquired_ids = {json.loads(blob_store.read_all(str(record.blob_hash)))["id"] for record in records}
     assert acquired_ids == {"first", "second", "after"}
-    assert sorted(int(record.source_index or 0) for record in records) == [0, 1, 3]
+    # ``source_index`` is the canonical member coordinate of each split element.
+    assert sorted(int(record.source_index or 0) for record in records) == [
+        zip_member_source_index(entry_ordinal=0, split_index=index) for index in (0, 1, 3)
+    ]
     failures = cursor_state.get("failed_files", [])
     assert any(
         failure["path"] == f"{zip_path}:conversations.json" and "object key" in failure["error"] for failure in failures
@@ -283,7 +297,7 @@ def test_a_refused_split_element_is_a_baseline_fault_beside_its_siblings(
         archive.writestr("conversations.json", _split_member_with_a_refused_element())
 
     baseline = capture_production_source_baseline(
-        (WatchSource("chatgpt", root, suffixes=(".zip",)),), operation_id="split-refusal"
+        (WatchSource("chatgpt", root, layout=export_drop_layout((".zip",))),), operation_id="split-refusal"
     )
     member = f"{zip_path}:conversations.json"
     faults = {row.path: row.reason for row in baseline.decisions if row.disposition == "fault"}
@@ -313,7 +327,7 @@ def test_the_parse_route_captures_elements_after_a_refused_one(tmp_path: Path, m
         )
     )
     source_indexes = sorted(int(raw.source_index or 0) for raw, _session in yielded if raw is not None)
-    assert source_indexes == [0, 1, 3]
+    assert source_indexes == [zip_member_source_index(entry_ordinal=0, split_index=index) for index in (0, 1, 3)]
 
 
 def test_member_revision_hashes_through_the_identity_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

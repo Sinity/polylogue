@@ -157,6 +157,9 @@ class SessionSummaryReplacement:
     generation_binding: str | None = None
     empty: bool = False
 
+    def close(self) -> None:
+        """The aggregate values own no physical resources."""
+
     @property
     def input_binding(self) -> str:
         """The complete input value projection for this aggregate's output.
@@ -419,11 +422,13 @@ class SessionSummaryDerivation:
         write_connection: Callable[[], sqlite3.Connection],
         *,
         session_scope: Callable[[object], Sequence[str] | None],
+        archive_root: Path,
         generation_binding: Callable[[], str] | None = None,
     ) -> None:
         self._read_connection = read_connection
         self._write_connection = write_connection
         self._session_scope = session_scope
+        self._archive_root = archive_root.resolve()
         self._generation_binding = generation_binding
 
     def _frame_recipe_current(self, frame: object) -> bool:
@@ -542,7 +547,7 @@ class SessionSummaryDerivation:
         if not isinstance(replacement, SessionSummaryReplacement):
             raise TypeError(f"expected SessionSummaryReplacement, got {type(replacement).__name__}")
         generation = self._generation_binding
-        with write_lease(f"derivation.{self.domain}"):
+        with write_lease(f"derivation.{self.domain}", archive_root=self._archive_root):
             if not self._frame_recipe_current(frame):
                 return False
             if (

@@ -1,17 +1,10 @@
-"""Fault injection tests for pipeline resilience.
-
-Tests that the pipeline gracefully handles errors at each stage rather than
-crashing with unhandled exceptions. Each test injects a specific fault and
-verifies the pipeline recovers, logs, or surfaces the error cleanly.
-"""
+"""Current decoder/parser edge cases and pipeline service laws."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import sqlite3
-from collections.abc import Sequence
-from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal, cast
@@ -22,11 +15,12 @@ from hypothesis import HealthCheck, given, settings
 from typing_extensions import TypedDict
 
 from polylogue.archive.message.roles import Role
-from polylogue.archive.raw_payload.decode import JSONValue
+from polylogue.archive.raw_payload.decode import JSONValue, RawPayloadEnvelope
 from polylogue.config import Source
-from polylogue.core.enums import BlockType, IngestOutcome, Provider, ValidationStatus
+from polylogue.core.enums import BlockType, Provider, ValidationStatus
+from polylogue.core.json import JSONDecodeError
 from polylogue.pipeline.services.acquisition import AcquisitionService
-from polylogue.pipeline.services.parsing import ParseResult, ParsingService
+from polylogue.pipeline.services.parsing import ParseResult
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.sources.parsers.base import (
     ParsedContentBlock,
@@ -34,12 +28,12 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     RawSessionData,
 )
+from polylogue.sources.retained_acquisition import SourceInputRecord
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.runtime import RawSessionRecord
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import close_fixture_index_connection, write_fixture_index_session
 from tests.infra.strategies import (
     AcquisitionInputSpec,
     ParseMergeEvent,
@@ -57,8 +51,6 @@ pytestmark = pytest.mark.uses_real_clock(
     "Resilience harness sets acquired_at to now() as opaque metadata; no production timing comparison."
 )
 
-SessionJson = dict[str, JSONValue]
-
 
 class SessionNode(TypedDict):
     message: dict[str, JSONValue]
@@ -66,119 +58,56 @@ class SessionNode(TypedDict):
     children: list[str]
 
 
-def _make_raw_record(
-    raw_id: str,
-    provider: str,
-    content: bytes,
-    path: str = "/exports/test.json",
-) -> RawSessionRecord:
-    from polylogue.storage.blob_store import get_blob_store
-
-    # Write content to blob store
-    blob_store = get_blob_store()
-    actual_raw_id, blob_size = blob_store.write_from_bytes(content)
-    now = datetime.now(timezone.utc).isoformat()
-
-    return RawSessionRecord(
-        raw_id=actual_raw_id,  # Use the actual hash as raw_id
-        source_name=provider,
-        source_path=path,
-        source_index=None,
-        blob_size=blob_size,
-        acquired_at=now,
-        file_mtime=now,
-    )
-
-
-def _make_parsing_service(tmp_path: Path) -> ParsingService:
-    """Shared factory to avoid boilerplate in each test."""
-    from polylogue.config import Config
-    from polylogue.storage.repository import SessionRepository
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-    db = SQLiteBackend(db_path=tmp_path / "test.db")
-    config = Config(
-        sources=[],
-        archive_root=tmp_path / "archive",
-        render_root=tmp_path / "render",
-    )
-    return ParsingService(
-        repository=SessionRepository(backend=db),
-        archive_root=tmp_path / "archive",
-        config=config,
-    )
-
-
 def _provider_hint(value: str | None) -> Provider | None:
     return None if value is None else Provider.from_string(value)
 
 
-# ---------------------------------------------------------------------------
-# Fault 1: Parsing service handles valid JSON with unknown chatgpt structure
-# ---------------------------------------------------------------------------
+# Parser robustness laws exercise the current decoder and dispatch boundary.
+# The removed ingest_worker was a private writer mechanism; retained publication
+# and refusal outcomes are owned by test_raw_observation_derivation and
+# test_retained_schema_drift_route.
 
 
-def test_parse_unknown_chatgpt_structure_returns_empty(tmp_path: Path) -> None:
-    """Valid JSON but missing chatgpt mapping field returns empty, not an exception."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
+def _decode_and_parse(
+    content: bytes, provider: Provider, source_path: str, fallback_id: str
+) -> tuple[RawPayloadEnvelope, list[ParsedSession]]:
+    from polylogue.archive.raw_payload.decode import build_raw_payload_envelope
+    from polylogue.sources.dispatch import parse_payload
 
-    payload = json.dumps({"unexpected": "structure", "no_mapping": True}).encode()
-    record = _make_raw_record("unknown-struct", "chatgpt", payload)
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.error is None or isinstance(result.sessions, list)
-
-
-# ---------------------------------------------------------------------------
-# Fault 2: Parsing service handles JSON with completely missing required fields
-# ---------------------------------------------------------------------------
-
-
-def test_parse_chatgpt_no_messages_returns_empty(tmp_path: Path) -> None:
-    """ChatGPT payload with empty mapping returns empty list."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    payload = json.dumps(
-        {
-            "title": "No Messages",
-            "mapping": {},
-            "create_time": 1700000000,
-            "update_time": 1700000001,
-        }
-    ).encode()
-    record = _make_raw_record("no-messages", "chatgpt", payload)
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.error is None or isinstance(result.sessions, list)
+    envelope = build_raw_payload_envelope(
+        content,
+        source_path=source_path,
+        fallback_provider=provider,
+        jsonl_dict_only=source_path.endswith((".jsonl", ".jsonl.txt.json")),
+    )
+    return envelope, parse_payload(envelope.provider, envelope.payload, fallback_id, source_path=source_path)
 
 
-# ---------------------------------------------------------------------------
-# Fault 3: Parsing surfaces error when all JSONL lines are invalid
-# ---------------------------------------------------------------------------
+def test_chatgpt_unknown_and_empty_documents_produce_no_sessions() -> None:
+    for payload in (
+        {"unexpected": "structure", "no_mapping": True},
+        {"title": "No Messages", "mapping": {}, "create_time": 1700000000, "update_time": 1700000001},
+    ):
+        envelope, sessions = _decode_and_parse(
+            json.dumps(payload).encode(), Provider.CHATGPT, "session.json", "fallback"
+        )
+        assert envelope.wire_format == "json"
+        assert sessions == []
 
 
-def test_parse_jsonl_all_invalid_lines_surfaces_error(tmp_path: Path) -> None:
-    """JSONL where every line is invalid surfaces an error (by design).
+def test_all_invalid_jsonl_is_a_typed_decode_refusal() -> None:
+    from polylogue.archive.raw_payload.decode import build_raw_payload_envelope
 
-    ingest_worker catches all exceptions and returns them in result.error.
-    Tests document this as the expected behavior so callers know to handle errors.
-    """
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    content = b"NOT JSON\nALSO NOT JSON\nSTILL NOT JSON\n"
-    record = _make_raw_record("all-invalid-jsonl", "claude-code", content, "/exports/session.jsonl")
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.error is not None
+    with pytest.raises(JSONDecodeError):
+        build_raw_payload_envelope(
+            b"NOT JSON\nALSO NOT JSON\nSTILL NOT JSON\n",
+            source_path="session.jsonl",
+            fallback_provider=Provider.CLAUDE_CODE,
+            jsonl_dict_only=True,
+        )
 
 
-# ---------------------------------------------------------------------------
-# Fault 4: Parsing handles JSONL with mixed valid and invalid lines
-# ---------------------------------------------------------------------------
-
-
-def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path: Path) -> None:
-    """JSONL with some valid lines: valid lines parsed, invalid lines skipped."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    # Mix valid claude-code JSONL with invalid lines
+def test_mixed_valid_invalid_claude_jsonl_keeps_valid_messages() -> None:
     content = (
         b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"Hello"},'
         b'"uuid":"m1","timestamp":"2025-01-01T00:00:00Z"}\n'
@@ -186,272 +115,132 @@ def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path: Path) -> None:
         b'{"parentUuid":"m1","type":"assistant","message":{"role":"assistant",'
         b'"content":[{"type":"text","text":"Hi"}]},"uuid":"m2","timestamp":"2025-01-01T00:00:01Z"}\n'
     )
-    record = _make_raw_record("mixed-jsonl", "claude-code", content, "/exports/session.jsonl")
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions is not None
-    if result.sessions:
-        assert result.sessions[0].parsed_session.source_name == "claude-code"
+    envelope, sessions = _decode_and_parse(content, Provider.CLAUDE_CODE, "session.jsonl", "fallback")
+    assert envelope.malformed_jsonl_lines == 1
+    assert len(sessions) == 1
+    assert sessions[0].source_name is Provider.CLAUDE_CODE
+    assert [message.text for message in sessions[0].messages if message.text] == ["Hello", "Hi"]
 
 
-def test_jsonl_stream_shape_beats_drive_cache_json_suffix(tmp_path: Path) -> None:
-    """Drive-acquired JSONL snapshots may carry a trailing ``.json`` suffix."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
+def test_jsonl_shape_precedes_drive_cache_json_suffix() -> None:
     content = (
         b'{"type":"summary","summary":"continued session","leafUuid":"leaf-1"}\n'
-        b'{"parentUuid":null,"isSidechain":false,"userType":"external",'
-        b'"cwd":"/realm/project/polylogue","sessionId":"session-from-drive",'
-        b'"version":"1.0.6","type":"user","timestamp":"2025-06-06T12:55:19.000Z",'
+        b'{"parentUuid":null,"isSidechain":false,"userType":"external","cwd":"/fixture",'
+        b'"sessionId":"session-from-drive","version":"1.0.6","type":"user",'
+        b'"timestamp":"2025-06-06T12:55:19.000Z","uuid":"m1",'
         b'"message":{"role":"user","content":[{"type":"text","text":"hello from drive cache"}]}}\n'
-        b'{"parentUuid":"m1","isSidechain":false,"userType":"external",'
-        b'"cwd":"/realm/project/polylogue","sessionId":"session-from-drive",'
-        b'"version":"1.0.6","type":"assistant","timestamp":"2025-06-06T12:55:20.000Z",'
+        b'{"parentUuid":"m1","isSidechain":false,"userType":"external","cwd":"/fixture",'
+        b'"sessionId":"session-from-drive","version":"1.0.6","type":"assistant",'
+        b'"timestamp":"2025-06-06T12:55:20.000Z","uuid":"m2",'
         b'"message":{"role":"assistant","content":[{"type":"text","text":"parsed as stream"}]}}\n'
     )
-    record = _make_raw_record(
-        "drive-jsonl",
-        "gemini",
-        content,
-        "/drive-cache/gemini/session-from-drive.jsonl.txt.json",
+    envelope, sessions = _decode_and_parse(
+        content, Provider.GEMINI, "/drive-cache/gemini/session-from-drive.jsonl.txt.json", "fallback"
     )
-
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-
-    assert result.error is None
-    assert len(result.sessions) == 1
-    parsed = result.sessions[0].parsed_session
-    assert parsed.source_name == "claude-code"
-    assert parsed.provider_session_id == "session-from-drive"
-    assert [message.text for message in parsed.messages if message.text] == [
+    assert envelope.wire_format == "jsonl"
+    assert envelope.provider is Provider.CLAUDE_CODE
+    assert len(sessions) == 1
+    assert sessions[0].provider_session_id == "session-from-drive"
+    assert [message.text for message in sessions[0].messages if message.text] == [
         "continued session",
         "hello from drive cache",
         "parsed as stream",
     ]
 
 
-# ---------------------------------------------------------------------------
-# Fault 5: Parsing handles valid JSON for unknown provider gracefully
-# ---------------------------------------------------------------------------
-
-
-def test_parse_unknown_source_name(tmp_path: Path) -> None:
-    """Unknown provider name falls back gracefully."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    record = _make_raw_record(
-        "unknown-provider",
-        "not-a-real-provider",
-        json.dumps({"id": "conv-1", "title": "Test"}).encode(),
-    )
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
-    # polylogue-u1ww0: an unparseable record must never be reported as a
-    # successful ingest that contributed nothing. Anti-vacuity: restoring the
-    # old silent-success branch in ``_run_parse_plan`` makes all three
-    # assertions below fail (outcome_code becomes "success", error None).
-    assert not result.sessions
-    assert result.outcome_code == IngestOutcome.UNSUPPORTED_SHAPE.value
-    assert result.error is not None and "no parser is registered" in result.error
-    assert result.evidence_ref is not None and result.evidence_ref.startswith("unrecognized_artifact:")
-
-
-# ---------------------------------------------------------------------------
-# Fault 6: Parsing handles claude-code JSONL with null fields
-# ---------------------------------------------------------------------------
-
-
-def test_parse_claude_code_jsonl_with_null_fields(tmp_path: Path) -> None:
-    """Claude-code JSONL with null fields in messages is handled gracefully."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
+def test_claude_jsonl_null_content_is_not_materialized() -> None:
     content = (
         b'{"parentUuid":null,"type":"user","message":{"role":"user","content":null},'
         b'"uuid":"m1","timestamp":"2025-01-01T00:00:00Z"}\n'
     )
-    record = _make_raw_record("null-fields", "claude-code", content, "/exports/session.jsonl")
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
+    _envelope, sessions = _decode_and_parse(content, Provider.CLAUDE_CODE, "session.jsonl", "fallback")
+    assert sessions == []
 
 
-# ---------------------------------------------------------------------------
-# Fault 7: Parsing handles very large valid session
-# ---------------------------------------------------------------------------
-
-
-def test_parse_very_large_session_does_not_crash(tmp_path: Path) -> None:
-    """Very large valid chatgpt payload is handled without crashing."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    messages: dict[str, SessionNode] = {}
-    prev_id: str | None = None
-    for i in range(50):
-        node_id = f"node-{i}"
-        messages[node_id] = {
+def test_large_chatgpt_session_parses_all_messages() -> None:
+    mapping: dict[str, SessionNode] = {}
+    previous: str | None = None
+    for index in range(50):
+        node_id = f"node-{index}"
+        mapping[node_id] = {
             "message": {
-                "id": f"msg-{i}",
-                "author": {"role": "user" if i % 2 == 0 else "assistant"},
+                "id": f"msg-{index}",
+                "author": {"role": "user" if index % 2 == 0 else "assistant"},
                 "content": {"content_type": "text", "parts": ["x" * 1000]},
-                "create_time": 1700000000 + i,
+                "create_time": 1700000000 + index,
             },
-            "parent": prev_id,
+            "parent": previous,
             "children": [],
         }
-        if prev_id:
-            messages[prev_id]["children"] = [node_id]
-        prev_id = node_id
-
-    payload = json.dumps(
-        {
-            "title": "Large Session",
-            "mapping": messages,
-            "create_time": 1700000000,
-            "update_time": 1700000100,
-        }
-    ).encode()
-
-    record = _make_raw_record("large-content", "chatgpt", payload)
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions is not None
-    assert len(result.sessions) > 0
+        if previous is not None:
+            mapping[previous]["children"] = [node_id]
+        previous = node_id
+    payload = {
+        "title": "Large Session",
+        "mapping": mapping,
+        "create_time": 1700000000,
+        "update_time": 1700000100,
+    }
+    _envelope, sessions = _decode_and_parse(json.dumps(payload).encode(), Provider.CHATGPT, "session.json", "fallback")
+    assert len(sessions) == 1
+    assert len(sessions[0].messages) == 50
+    assert all(len(message.text or "") == 1000 for message in sessions[0].messages)
 
 
-# ---------------------------------------------------------------------------
-# Fault 8: Parsing handles chatgpt with deeply nested but invalid mapping
-# ---------------------------------------------------------------------------
-
-
-def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path: Path) -> None:
-    """ChatGPT payload with malformed node structure returns empty, not exception."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    # Mapping nodes missing 'message' key
-    payload = json.dumps(
-        {
-            "title": "Malformed Nodes",
-            "mapping": {
-                "node-1": {"parent": None, "children": ["node-2"]},
-                "node-2": {"parent": "node-1", "children": [], "no_message_key": True},
-            },
-            "create_time": 1700000000,
-            "update_time": 1700000001,
-        }
-    ).encode()
-    record = _make_raw_record("malformed-nodes", "chatgpt", payload)
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
-
-
-# ---------------------------------------------------------------------------
-# Fault 11: Parsing handles a chatgpt bundle (list) where one item is invalid
-# ---------------------------------------------------------------------------
-
-
-def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path: Path) -> None:
-    """ChatGPT bundle list with one invalid item: valid items parsed, invalid skipped."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    payload = json.dumps(
-        [
-            {
-                "id": "conv-1",
-                "title": "Valid Session",
-                "mapping": {
-                    "m1": {
-                        "message": {
-                            "id": "m1",
-                            "author": {"role": "user"},
-                            "content": {"content_type": "text", "parts": ["Hi"]},
-                            "create_time": 1700000000,
-                        },
-                        "parent": None,
-                        "children": [],
-                    }
+def test_malformed_chatgpt_nodes_are_skipped_without_losing_valid_sibling() -> None:
+    payload = {
+        "title": "Mixed Nodes",
+        "mapping": {
+            "bad": {"parent": None, "children": [], "no_message_key": True},
+            "good": {
+                "parent": None,
+                "children": [],
+                "message": {
+                    "id": "good-message",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["kept"]},
+                    "create_time": 1700000000,
                 },
-                "create_time": 1700000000,
-                "update_time": 1700000001,
             },
-            {"invalid": "no title or mapping"},  # Should be skipped
-        ]
-    ).encode()
-    record = _make_raw_record("bundle-one-invalid", "chatgpt", payload)
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
+        },
+        "create_time": 1700000000,
+        "update_time": 1700000001,
+    }
+    _envelope, sessions = _decode_and_parse(json.dumps(payload).encode(), Provider.CHATGPT, "session.json", "fallback")
+    assert len(sessions) == 1
+    assert [message.text for message in sessions[0].messages if message.text] == ["kept"]
 
 
-# ---------------------------------------------------------------------------
-# Fault 12: Parsing handles gemini with missing text fields
-# ---------------------------------------------------------------------------
-
-
-def test_parse_gemini_missing_text_fields(tmp_path: Path) -> None:
-    """Gemini payload with messages missing text fields is handled gracefully."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    payload = json.dumps(
-        {
-            "sessions": [
-                {
-                    "chunks": [
-                        {"role": "user"},  # no text field
-                        {"role": "model"},  # no text field
-                    ]
-                }
-            ]
-        }
-    ).encode()
-    record = _make_raw_record("gemini-no-text", "gemini", payload)
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
-    # polylogue-u1ww0: same rule for a payload whose shape no parser claims.
-    assert not result.sessions
-    assert result.outcome_code == IngestOutcome.UNSUPPORTED_SHAPE.value
-    assert result.error is not None and "was not recognized" in result.error
-    assert result.evidence_ref == "unrecognized_artifact:unknown"
-    # polylogue-u1ww0 conservation guard: ``source_conservation``'s term
-    # ladder types ``parse_error IS NOT NULL`` as the NON-blocking
-    # ``parse_failure`` term *before* the blocking ``unclassified_shape``
-    # term. A refusal must therefore stay out of parse_error, or an
-    # unrecognized record would silently stop blocking the conservation
-    # gate. Anti-vacuity: setting parse_error=... on the refusal branch in
-    # ``_non_session_plan_result`` makes this assertion fail.
-    assert result.parse_error is None
-
-
-# ---------------------------------------------------------------------------
-# polylogue-u1ww0: legitimately-empty must stay distinguishable from refused
-# ---------------------------------------------------------------------------
-
-
-def test_recognized_non_session_artifact_is_not_a_refusal(tmp_path: Path) -> None:
-    """A declared non-session artifact yields zero sessions without an error.
-
-    The fix for the silent-success defect must not collapse the two
-    situations: a Claude Code tool-result sidecar is *recognized* (its payload here is
-    deliberately session-shaped, which is the documented trap -- only the path
-    rule can refuse it), and its
-    kind declares it is evidence rather than a conversation, so zero sessions
-    is the complete correct result and the batch skips it. It is still not
-    reported as a session-ingest SUCCESS.
-
-    Anti-vacuity: if the refusal branch were widened to cover every
-    ``parse_as_session is False`` artifact, ``result.error`` would become
-    non-None here and the batch would record this sidecar as a failed raw id.
-    """
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    record = _make_raw_record(
-        "tool-result-sidecar",
-        "claude-code",
-        json.dumps({"uuid": "s1", "name": "export", "messages": [{"role": "user", "content": "hi"}]}).encode(),
-        "/home/u/.claude/projects/proj/abcd-1234/tool-results/output.txt",
+def test_chatgpt_bundle_keeps_valid_item_and_skips_invalid_item() -> None:
+    valid = {
+        "id": "conv-1",
+        "title": "Valid Session",
+        "mapping": {
+            "m1": {
+                "message": {
+                    "id": "m1",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["Hi"]},
+                    "create_time": 1700000000,
+                },
+                "parent": None,
+                "children": [],
+            }
+        },
+        "create_time": 1700000000,
+        "update_time": 1700000001,
+    }
+    _envelope, sessions = _decode_and_parse(
+        json.dumps([valid, {"invalid": "no title or mapping"}]).encode(), Provider.CHATGPT, "bundle.json", "fallback"
     )
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
+    assert [session.provider_session_id for session in sessions] == ["conv-1"]
+    assert [message.text for message in sessions[0].messages if message.text] == ["Hi"]
 
-    assert not result.sessions
-    assert result.error is None, f"a declared evidence artifact must not be a refusal: {result!r}"
-    assert result.outcome_code != IngestOutcome.SUCCESS.value
-    assert result.outcome_code == IngestOutcome.UNSUPPORTED_SHAPE.value
-    assert result.evidence_ref is not None and result.evidence_ref.startswith("artifact_not_session:")
+
+def test_gemini_missing_text_fields_produce_no_sessions() -> None:
+    payload = {"sessions": [{"chunks": [{"role": "user"}, {"role": "model"}]}]}
+    _envelope, sessions = _decode_and_parse(json.dumps(payload).encode(), Provider.GEMINI, "session.json", "fallback")
+    assert sessions == []
 
 
 # =====================================================================
@@ -465,14 +254,22 @@ async def test_acquisition_law_preserves_coordinates_deduplicates_blobs_and_norm
     batch: tuple[AcquisitionInputSpec, ...],
 ) -> None:
     """Acquisition preserves observations while identical payloads share one blob."""
+    from polylogue.daemon.drive_catchup import DriveCatchupExecution
+    from tests.infra.archive_templates import run_off_event_loop
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
     with TemporaryDirectory() as tempdir:
-        backend = SQLiteBackend(db_path=Path(tempdir) / "acquire.db")
+        archive_root = Path(tempdir)
+        run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
+        backend = SQLiteBackend(db_path=archive_root / "index.db")
         source_name = "generated-source"
 
         raw_items = [
             RawSessionData(
                 raw_bytes=build_acquisition_raw_bytes(spec),
                 source_path=f"/tmp/{index}.json",
+                # Every file-backed raw carries the canonical path acquisition froze.
+                canonical_source_path=f"/tmp/{index}.json",
                 source_index=index,
                 provider_hint=_provider_hint(spec.provider_hint),
             )
@@ -480,10 +277,16 @@ async def test_acquisition_law_preserves_coordinates_deduplicates_blobs_and_norm
         ]
 
         try:
-            with patch("polylogue.pipeline.services.acquisition.iter_source_raw_data", return_value=iter(raw_items)):
-                result = await AcquisitionService(backend=backend).acquire_sources(
-                    [Source(name=source_name, path=Path("/tmp/inbox"))]
-                )
+            with patch(
+                "polylogue.pipeline.services.acquisition.iter_source_acquisition_records",
+                return_value=iter(SourceInputRecord('["physical-file-v1",0]', item) for item in raw_items),
+            ):
+                # Acquisition publishes through the daemon's admitted writer.
+                async with prepared_live_convergence_owner(archive_root) as owner:
+                    execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+                    result = await AcquisitionService(backend=backend, execution=execution).acquire_sources(
+                        [Source(name=source_name, path=Path("/tmp/inbox"))]
+                    )
 
             assert result.counts["acquired"] == len(batch)
             assert result.counts["skipped"] == 0
@@ -496,7 +299,7 @@ async def test_acquisition_law_preserves_coordinates_deduplicates_blobs_and_norm
                 assert stored is not None
                 assert stored.blob_hash is not None
                 blob_hashes.add(stored.blob_hash)
-                raw_bytes = BlobStore(Path(tempdir) / "blob").read_all(stored.blob_hash)
+                raw_bytes = BlobStore(archive_root / "blob").read_all(stored.blob_hash)
                 payload_id = json.loads(raw_bytes)["id"]
                 assert payload_id == spec.payload_id
                 expected_provider = spec.provider_hint or "unknown"
@@ -622,228 +425,20 @@ async def test_parse_result_merge_law_accumulates_counts_and_processed_ids(event
     assert result.processed_ids == expected["processed_ids"]
 
 
-def test_ingest_worker_decodes_and_dispatches_provider(tmp_path: Path) -> None:
-    """ingest_record should decode blob, detect provider, and handle gracefully."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    # Create a minimal valid ChatGPT payload that will be decoded and detected
-    payload = json.dumps(
-        {
-            "id": "conv-1",
-            "title": "Test Session",
-            "mapping": {},
-            "create_time": 1700000000,
-            "update_time": 1700000001,
-        }
-    ).encode()
-
-    raw_record = _make_raw_record(
-        raw_id="ignored",  # _make_raw_record uses actual content hash
-        provider="chatgpt",
-        content=payload,
-        path="/tmp/session.json",
-    )
-
-    # Call ingest_record directly without mocking (tests real code path)
-    result = ingest_record(raw_record, str(tmp_path / "archive"), "off")
-
-    # Verify the result structure
-    assert result.raw_id is not None  # Should be the actual hash
-    assert result.payload_provider is not None  # Provider detected
-    # polylogue-9ykn: an empty ``mapping`` carries no positive conversational
-    # evidence (zero messages) -- ingest_record now refuses to materialize a
-    # session for it (via require_positive_conversational_evidence, applied
-    # in _parse_plan_sessions) and records a bounded, honest parse error
-    # instead of the old "materializable session with zero messages"
-    # default. See test_ingest_worker_quarantines_session_artifact_with_no_
-    # sessions below for the equivalent no-sessions-at-all case this now
-    # shares an error shape with.
-    assert isinstance(result.sessions, list)
-    assert len(result.sessions) == 0
-    assert result.error == "parse: session artifact produced no materializable sessions"
-
-
-def test_ingest_worker_quarantines_session_artifact_with_no_sessions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A parser that emits no sessions must not stamp raw state as clean."""
-    from polylogue.pipeline.services import ingest_worker
-
-    payload = json.dumps(
-        {
-            "id": "conv-empty",
-            "title": "Empty parser result",
-            "mapping": {},
-            "create_time": 1700000000,
-            "update_time": 1700000001,
-        }
-    ).encode()
-    raw_record = _make_raw_record(
-        raw_id="ignored",
-        provider="chatgpt",
-        content=payload,
-        path="/tmp/session.json",
-    )
-
-    monkeypatch.setattr(ingest_worker, "_parse_plan_sessions", lambda *_args, **_kwargs: [])
-
-    result = ingest_worker.ingest_record(raw_record, str(tmp_path / "archive"), "off")
-
-    assert result.sessions == []
-    assert result.error == "parse: session artifact produced no materializable sessions"
-    assert result.parse_error == result.error
-
-
-def test_ingest_worker_reuses_schema_resolution_and_walks_drift(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Parse-path validation reuses one schema resolution and now walks drift.
-
-    polylogue-da1: the format-drift sentinel classifies every validated
-    sample's drift signal (unknown fields vs. missing/changed fields), which
-    requires ``include_drift=True`` on the per-sample ``validate()`` call --
-    previously ``False`` because nothing consumed ``drift_warnings``.
-    """
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-    from polylogue.schemas import ValidationResult
-    from polylogue.schemas.packages import SchemaResolution
-    from polylogue.schemas.validator import PayloadValidation, SchemaValidator
-
-    payload = json.dumps(
-        {
-            "id": "conv-1",
-            "title": "Test Session",
-            "mapping": {},
-            "create_time": 1700000000,
-            "update_time": 1700000001,
-        }
-    ).encode()
-    raw_record = _make_raw_record(
-        raw_id="ignored",
-        provider="chatgpt",
-        content=payload,
-        path="/tmp/session.json",
-    )
-
-    resolution = SchemaResolution(
-        provider="chatgpt",
-        package_version="v1",
-        element_kind="session_document",
-        exact_structure_id="shape-1",
-        bundle_scope=None,
-        reason="exact_structure",
-    )
-    observed: dict[str, object] = {}
-
-    class _CapturingRegistry:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def resolve_payload(
-            self,
-            provider: str | Provider,
-            payload: JSONValue,
-            *,
-            source_path: str | None = None,
-        ) -> SchemaResolution:
-            self.calls += 1
-            observed["registry_provider"] = provider
-            observed["registry_source_path"] = source_path
-            observed["registry_payload"] = payload
-            return resolution
-
-    registry = _CapturingRegistry()
-    monkeypatch.setattr("polylogue.pipeline.services.ingest_worker._SCHEMA_REGISTRY", registry)
-
-    class _CapturingValidator:
-        provider = "chatgpt"
-
-        def validation_samples(self, payload: JSONValue, max_samples: int | None = None) -> list[JSONValue]:
-            return [payload]
-
-        def validate(self, _sample: object, *, include_drift: bool | None = None) -> ValidationResult:
-            observed["include_drift"] = include_drift
-            return ValidationResult(is_valid=True)
-
-    def _fake_validate_payload(
-        provider: str | Provider,
-        payload: JSONValue,
-        *,
-        source_path: str | None = None,
-        schema_resolution: SchemaResolution | None = None,
-        schema_resolution_is_explicit: bool = True,
-        strict: bool = True,
-        max_samples: int | None = None,
-    ) -> PayloadValidation:
-        del max_samples
-        observed["validator_provider"] = provider
-        observed["validator_source_path"] = source_path
-        observed["validator_payload"] = payload
-        observed["validator_schema_resolution"] = schema_resolution
-        observed["schema_resolution_is_explicit"] = schema_resolution_is_explicit
-        observed["validator_strict"] = strict
-        validator = _CapturingValidator()
-        samples = tuple(validator.validation_samples(payload))
-        results = tuple(validator.validate(sample, include_drift=True) for sample in samples)
-        return PayloadValidation(
-            validator=cast(SchemaValidator, validator),
-            samples=samples,
-            results=results,
-            schema_resolution=schema_resolution,
-            schema_resolution_is_explicit=schema_resolution_is_explicit,
-        )
-
-    def _fake_parse_payload(
-        provider: str | Provider,
-        payload: JSONValue,
-        fallback_id: str,
-        _depth: int = 0,
-        *,
-        schema_resolution: SchemaResolution | None = None,
-        source_path: str | None = None,
-        sidecar_resolver: object | None = None,
-    ) -> Sequence[ParsedSession]:
-        del sidecar_resolver, source_path
-        observed["parse_provider"] = provider
-        observed["parse_schema_resolution"] = schema_resolution
-        observed["parse_fallback_id"] = fallback_id
-        return [
-            ParsedSession(
-                source_name=Provider.CHATGPT,
-                provider_session_id=fallback_id,
-                title="Test Session",
-                created_at="2023-11-14T22:13:20Z",
-                updated_at="2023-11-14T22:13:21Z",
-                messages=[
-                    ParsedMessage(
-                        provider_message_id="msg-1",
-                        role=Role.USER,
-                        text="hello",
-                    )
-                ],
-                attachments=[],
-            )
-        ]
-
-    monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.validate_payload", _fake_validate_payload)
-    monkeypatch.setattr("polylogue.sources.dispatch.parse_payload", _fake_parse_payload)
-
-    result = ingest_record(raw_record, str(tmp_path / "archive"), "strict")
-
-    assert result.error is None
-    assert registry.calls == 1
-    assert observed["validator_schema_resolution"] is resolution
-    assert observed["schema_resolution_is_explicit"] is False
-    assert observed["parse_schema_resolution"] is resolution
-    assert observed["include_drift"] is True
+# The old ingest_worker outcome/schema hooks no longer exist. Current typed
+# refusal, non-session and drift outcomes are asserted at their retained owner
+# in test_raw_observation_derivation and test_retained_schema_drift_route.
 
 
 def _open_index_archive(tmp_path: Path) -> sqlite3.Connection:
-    index_path = tmp_path / "archive" / "index.db"
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(index_path)
+    """Bootstrap the archive and open its Index through a measured creator.
+
+    The fixture writer captures Index mutations against the connection's
+    original physical creator, which a bare ``sqlite3.connect`` lacks.
+    """
+    archive_root = bootstrap_archive_root(tmp_path / "archive")
+    conn = connect_measured(archive_root / "index.db")
     conn.row_factory = sqlite3.Row
-    initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
 
 
@@ -875,7 +470,7 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
 
     conn = _open_index_archive(tmp_path)
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             session,
             content_hash=hashlib.sha256(b"tool-conv-1").hexdigest(),
@@ -886,7 +481,7 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
         ).fetchall()
         action_count = conn.execute("SELECT COUNT(*) FROM actions WHERE session_id = ?", (session_id,)).fetchone()[0]
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
     assert len(message_hashes) == 1
     assert message_hashes[0]["content_hash"]
@@ -927,7 +522,7 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
 
     conn = _open_index_archive(tmp_path)
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             session,
             content_hash=hashlib.sha256(b"duplicate-message-conv").hexdigest(),
@@ -945,7 +540,7 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
             "SELECT message_count FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()[0]
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
     # Id-less messages, so both ids come from the content fallback.
     ordered_ids = [str(row["message_id"]) for row in message_rows]
@@ -957,96 +552,3 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
         ordered_ids[1]: "newer text",
     }
     assert session_message_count == 2
-
-
-def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path: Path) -> None:
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    content = (
-        b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2025-01-01T00:00:00Z"}}\n'
-        b'{"type":"message","id":"msg-1","role":"user","timestamp":"2025-01-01T00:00:01Z",'
-        b'"content":[{"type":"input_text","text":"hello"}]}\n'
-        b'{"type":"message","id":"msg-2","role":"assistant","timestamp":"2025-01-01T00:00:02Z",'
-        b'"content":[{"type":"output_text","text":"hi"}]}\n'
-    )
-    record = _make_raw_record("codex-streaming", "codex", content, "/exports/codex.jsonl")
-
-    with (
-        patch(
-            "polylogue.archive.raw_payload.build_raw_payload_envelope",
-            side_effect=AssertionError("legacy full envelope decode should be bypassed"),
-        ),
-        patch(
-            "polylogue.archive.raw_payload.decode._sample_jsonl_payload_with_detail",
-            side_effect=AssertionError("validation-off stream ingest should not pre-sample large JSONL"),
-        ),
-    ):
-        result = ingest_record(record, str(tmp_path / "archive"), "off")
-
-    assert result.error is None
-    assert len(result.sessions) == 1
-    assert result.sessions[0].parsed_session.source_name == "codex"
-
-
-def test_ingest_record_streams_detected_codex_jsonl_without_full_envelope_decode(tmp_path: Path) -> None:
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    content = (
-        b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2025-01-01T00:00:00Z"}}\n'
-        b'{"type":"message","id":"msg-1","role":"user","timestamp":"2025-01-01T00:00:01Z",'
-        b'"content":[{"type":"input_text","text":"hello"}]}\n'
-    )
-    record = _make_raw_record("unknown-codex-stream", "unknown", content, "/exports/codex.jsonl")
-
-    with patch(
-        "polylogue.archive.raw_payload.build_raw_payload_envelope",
-        side_effect=AssertionError("detected Codex JSONL should be streamed, not fully decoded"),
-    ):
-        result = ingest_record(record, str(tmp_path / "archive"), "advisory")
-
-    assert result.error is None
-    assert len(result.sessions) == 1
-    assert result.sessions[0].parsed_session.source_name == "codex"
-
-
-def test_ingest_record_streams_headerless_codex_append_with_fallback_identity(tmp_path: Path) -> None:
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    content = (
-        b'{"type":"response_item","payload":{"type":"message","role":"user",'
-        b'"content":[{"type":"input_text","text":"append delta"}]}}\n'
-    )
-    record = _make_raw_record("codex-append", "unknown", content, "/exports/rollout-append.jsonl")
-
-    with patch(
-        "polylogue.archive.raw_payload.build_raw_payload_envelope",
-        side_effect=AssertionError("headerless Codex append must use stream parsing"),
-    ):
-        result = ingest_record(record, str(tmp_path / "archive"), "advisory")
-
-    assert result.error is None
-    assert len(result.sessions) == 1
-    parsed = result.sessions[0].parsed_session
-    assert parsed.source_name == "codex"
-    assert parsed.provider_session_id == "rollout-append"
-
-
-def test_ingest_record_stream_plan_trusts_known_provider(tmp_path: Path) -> None:
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    content = (
-        b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2025-01-01T00:00:00Z"}}\n'
-        b'{"type":"message","id":"msg-1","role":"user","timestamp":"2025-01-01T00:00:01Z",'
-        b'"content":[{"type":"input_text","text":"hello"}]}\n'
-    )
-    record = _make_raw_record("codex-stream-known-provider", "codex", content, "/exports/codex.jsonl")
-
-    with patch(
-        "polylogue.sources.dispatch.detect_provider",
-        side_effect=AssertionError("known JSONL stream provider should not be re-sniffed"),
-    ):
-        result = ingest_record(record, str(tmp_path / "archive"), "off")
-
-    assert result.error is None
-    assert len(result.sessions) == 1
-    assert result.sessions[0].parsed_session.source_name == "codex"

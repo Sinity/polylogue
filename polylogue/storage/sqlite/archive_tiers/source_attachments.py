@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from builtins import BaseExceptionGroup
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal, get_args
 
 from polylogue.core.enums import Origin
 from polylogue.core.errors import PolylogueError
+from polylogue.storage.io_phase_metrics import connection_cursor
 
 from .common import require_vocabulary
 
@@ -137,58 +141,86 @@ def record_source_attachments(
                 raise ValueError(f"source generation is already sealed: {source_generation_id}")
         return
 
-    for attachment, origin, disposition in normalized:
-        # Reachability is deliberately storage-local and derived from the
-        # disposition, so there is no second independently extendable list:
-        # acquired is current; every other owned disposition is unavailable.
-        offered = _offered_attachment(attachment, origin, disposition)
-        # Select positionally and zip: the caller's ``row_factory`` is not
-        # this module's to assume, and a plain tuple row has no name lookup.
-        stored_row = conn.execute(
-            f"SELECT {', '.join(_COMPARED_FIELDS)} FROM source_attachments "
-            "WHERE source_generation_id = ? AND reference_id = ?",
-            (source_generation_id, attachment.reference_id),
-        ).fetchone()
-        if stored_row is not None:
-            stored = {
-                field: bytes(value) if isinstance(value, memoryview) else value
-                for field, value in zip(_COMPARED_FIELDS, tuple(stored_row), strict=True)
-            }
-            _apply_replay(
-                conn,
-                source_generation_id=source_generation_id,
-                reference_id=attachment.reference_id,
-                stored=stored,
-                offered=offered,
-                observed_at_ms=observed_at_ms,
+    with _attachment_batch(conn):
+        for attachment, origin, disposition in normalized:
+            # Reachability is deliberately storage-local and derived from the
+            # disposition, so there is no second independently extendable list:
+            # acquired is current; every other owned disposition is unavailable.
+            offered = _offered_attachment(attachment, origin, disposition)
+            # Select positionally and zip: the caller's ``row_factory`` is not
+            # this module's to assume, and a plain tuple row has no name lookup.
+            stored_row = conn.execute(
+                f"SELECT {', '.join(_COMPARED_FIELDS)} FROM source_attachments "
+                "WHERE source_generation_id = ? AND reference_id = ?",
+                (source_generation_id, attachment.reference_id),
+            ).fetchone()
+            if stored_row is not None:
+                stored = {
+                    field: bytes(value) if isinstance(value, memoryview) else value
+                    for field, value in zip(_COMPARED_FIELDS, tuple(stored_row), strict=True)
+                }
+                _apply_replay(
+                    conn,
+                    source_generation_id=source_generation_id,
+                    reference_id=attachment.reference_id,
+                    stored=stored,
+                    offered=offered,
+                    observed_at_ms=observed_at_ms,
+                )
+                continue
+            conn.execute(
+                """INSERT INTO source_attachments(
+                    source_generation_id, reference_id, origin, source_class,
+                    reachability, reference_count, payload_identity, blob_hash,
+                    byte_count, disposition, reason, evidence_ref,
+                    observed_at_ms, updated_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    source_generation_id,
+                    attachment.reference_id,
+                    offered["origin"],
+                    offered["source_class"],
+                    offered["reachability"],
+                    offered["reference_count"],
+                    offered["payload_identity"],
+                    offered["blob_hash"],
+                    offered["byte_count"],
+                    offered["disposition"],
+                    offered["reason"],
+                    offered["evidence_ref"],
+                    observed_at_ms,
+                    observed_at_ms,
+                ),
             )
-            continue
-        conn.execute(
-            """INSERT INTO source_attachments(
-                source_generation_id, reference_id, origin, source_class,
-                reachability, reference_count, payload_identity, blob_hash,
-                byte_count, disposition, reason, evidence_ref,
-                observed_at_ms, updated_at_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                source_generation_id,
-                attachment.reference_id,
-                offered["origin"],
-                offered["source_class"],
-                offered["reachability"],
-                offered["reference_count"],
-                offered["payload_identity"],
-                offered["blob_hash"],
-                offered["byte_count"],
-                offered["disposition"],
-                offered["reason"],
-                offered["evidence_ref"],
-                observed_at_ms,
-                observed_at_ms,
-            ),
-        )
     if commit:
         conn.commit()
+
+
+@contextmanager
+def _attachment_batch(conn: sqlite3.Connection) -> Iterator[None]:
+    """Reject the whole offered batch without discarding its caller's writes."""
+    # RELEASE of an outermost savepoint commits. Retain an ordinary transaction
+    # so commit=False remains a participating, uncommitted publication.
+    if not conn.in_transaction:
+        with connection_cursor(conn, "BEGIN"):
+            pass
+    with connection_cursor(conn, "SAVEPOINT source_attachment_batch"):
+        pass
+    try:
+        yield
+        with connection_cursor(conn, "RELEASE source_attachment_batch"):
+            pass
+    except BaseException as primary:
+        cleanup: list[BaseException] = []
+        for statement in ("ROLLBACK TO source_attachment_batch", "RELEASE source_attachment_batch"):
+            try:
+                with connection_cursor(conn, statement):
+                    pass
+            except BaseException as error:
+                cleanup.append(error)
+        if cleanup:
+            raise BaseExceptionGroup("attachment batch rollback failed", [primary, *cleanup]) from None
+        raise
 
 
 def _preflight_source_attachments(
@@ -307,7 +339,18 @@ def source_attachment_census(conn: sqlite3.Connection, source_generation_id: str
             ORDER BY origin, source_class, reachability, disposition""",
         (source_generation_id,),
     ).fetchall()
-    groups = [dict(row) for row in rows]
+    fields = (
+        "origin",
+        "source_class",
+        "reachability",
+        "disposition",
+        "reference_rows",
+        "reference_count",
+        "distinct_payloads",
+        "distinct_blobs",
+        "bytes",
+    )
+    groups = [dict(zip(fields, row, strict=True)) for row in rows]
     distinct_bytes = conn.execute(
         """SELECT COALESCE(SUM(byte_count), 0) FROM (
              SELECT blob_hash, MAX(byte_count) AS byte_count

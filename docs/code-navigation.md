@@ -52,8 +52,9 @@ entire package tree:
    provider detection and lowering into parser-ready units.
 2. [`polylogue/sources/origin_specs.py`](../polylogue/sources/origin_specs.py) —
    declared source/origin capabilities and parser bindings.
-3. [`polylogue/pipeline/services/ingest_batch/`](../polylogue/pipeline/services/ingest_batch/) —
-   acquire, parse, materialize, and index orchestration.
+3. [`polylogue/pipeline/services/parsing_workflow.py`](../polylogue/pipeline/services/parsing_workflow.py)
+   and [`polylogue/pipeline/services/ingest_batch.py`](../polylogue/pipeline/services/ingest_batch.py) —
+   acquired Raw orchestration through the retained preparation and publication owner.
 4. [`polylogue/storage/sqlite/archive_tiers/revision_governance.py`](../polylogue/storage/sqlite/archive_tiers/revision_governance.py) —
    the authority-sensitive source/index write boundary.
 5. [`polylogue/storage/sqlite/archive_tiers/write.py`](../polylogue/storage/sqlite/archive_tiers/write.py) —

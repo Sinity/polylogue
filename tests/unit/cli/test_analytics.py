@@ -10,11 +10,14 @@ from polylogue import Polylogue
 from polylogue.analysis.archive import ArchiveCoverageInsight, ArchiveCoverageInsightQuery
 from polylogue.core.enums import MaterialOrigin
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.storage_records import SessionBuilder
 
 
 def _archive(tmp_path: Path) -> Polylogue:
-    initialize_active_archive_root(tmp_path)
+    # Async tests call this from inside their loop; bootstrap takes a
+    # synchronous write lease, which refuses to block a running loop.
+    run_off_event_loop(lambda: initialize_active_archive_root(tmp_path))
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
 

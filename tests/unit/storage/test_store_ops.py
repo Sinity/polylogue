@@ -10,7 +10,7 @@ import json
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Never, TypeVar, cast
@@ -38,6 +38,7 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.daemon_operations import daemon_serving_archive
 from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import (
@@ -56,9 +57,6 @@ from tests.infra.strategies.storage import (
 from tests.infra.strategies.storage import (
     tag_assignment_strategy as infra_tag_assignment_strategy,
 )
-
-_SimilarityT = TypeVar("_SimilarityT")
-
 
 pytestmark = pytest.mark.uses_real_clock(
     "Backend round-trip tests use now() to label a row; storage echoes it back without comparison."
@@ -402,20 +400,24 @@ async def test_backend_referenced_path_filter_contract(workspace_env: dict[str, 
 async def test_list_summaries_by_query_uses_current_session_columns(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     db_path = tmp_path / "index.db"
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session(
-                "conv-large-meta",
-                source_name="codex",
-                title="Large Meta Session",
-                metadata={"tag": "kept"},
-            ),
-            messages=[],
-            attachments=[],
-            conn=conn,
-        )
+
+    def _seed_0() -> None:
+        with open_connection(db_path) as conn:
+            store_records(
+                session=make_session(
+                    "conv-large-meta",
+                    source_name="codex",
+                    title="Large Meta Session",
+                    metadata={"tag": "kept"},
+                ),
+                messages=[],
+                attachments=[],
+                conn=conn,
+            )
+
+    run_off_event_loop(_seed_0)
 
     backend = SQLiteBackend(db_path=db_path)
     repo = SessionRepository(backend=backend)
@@ -1617,12 +1619,14 @@ class TestCacheThreadSafety:
         assert final_stats["cache_version"] == expected_version
 
 
+_VectorResultT = TypeVar("_VectorResultT")
+
+
 class _VectorSpy:
     model = "test-model"
 
     def __init__(self) -> None:
         self.query_calls: list[tuple[str, int]] = []
-        self.upsert_calls: list[tuple[str, list[MessageRecord]]] = []
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         self.query_calls.append((text, limit))
@@ -1631,30 +1635,28 @@ class _VectorSpy:
     def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
         return [("msg-1", 0.125)]
 
-    def upsert(
+    def scoped_query(
         self,
-        session_id: str,
-        messages: list[MessageRecord],
+        session_ids: Iterable[str],
         *,
-        origin: str | None = None,
-    ) -> None:
-        del origin
-        self.upsert_calls.append((session_id, messages))
-
-    def scoped_query(self, *args: object, **kwargs: object) -> Never:
-        raise AssertionError("document-only fixture does not perform scoped retrieval")
+        index_connection: sqlite3.Connection,
+        configure_connection: Callable[[sqlite3.Connection], None],
+        check_cancelled: Callable[[], None],
+        text: str | None = None,
+        seed_session_id: str | None = None,
+    ) -> Never:
+        raise AssertionError("this fixture does not perform scoped vector reads")
 
     async def read_similarity(
         self,
         *,
         index_path: Path,
-        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], _SimilarityT],
+        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], _VectorResultT],
         text: str | None = None,
         seed_session_id: str | None = None,
         limit: int = 10,
-    ) -> _SimilarityT:
-        self.query_calls.append((text or seed_session_id or "", limit))
-        return cast(_SimilarityT, [_session_model("conv-1")])
+    ) -> _VectorResultT:
+        raise AssertionError("this fixture does not perform retained-session reads")
 
 
 class TestRepositoryVectorAsyncBoundary:
@@ -1665,53 +1667,43 @@ class TestRepositoryVectorAsyncBoundary:
     ) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "vectors.db")
         repo = SessionRepository(backend=backend)
-        provider = _VectorSpy()
+        import threading
 
         async def forbidden_get_many(*args: object, **kwargs: object) -> Never:
             raise AssertionError("hydration must finish in the provider snapshot")
 
         monkeypatch.setattr(repo, "get_many", forbidden_get_many)
 
-        to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
+        from polylogue.core.compute import compute_adapter, current_cancellation
+        from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 
-        async def fake_to_thread(func: Callable[..., object], /, *args: object, **kwargs: object) -> object:
-            to_thread_calls.append((func, args, kwargs))
-            return func(*args, **kwargs)
+        provider = SqliteVecProvider(voyage_key="neutral", db_path=tmp_path / "embeddings.db")
+        creator = threading.get_ident()
+        worker_threads: list[int] = []
+        observed: list[tuple[Path, str | None, int]] = []
 
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        def read_original(
+            *,
+            index_path: Path,
+            project: object,
+            text: str | None,
+            seed_session_id: str | None,
+            limit: int,
+        ) -> list[Session]:
+            assert seed_session_id is None
+            assert text is not None
+            worker_threads.append(threading.get_ident())
+            assert current_cancellation() is not None
+            assert compute_adapter().snapshot().active_input_bytes == len(text.encode("utf-8"))
+            observed.append((index_path, text, limit))
+            return [_session_model("conv-1")]
 
+        monkeypatch.setattr(provider, "_read_similarity", read_original)
         result = await repo.search_similar("semantic query", limit=4, vector_provider=provider)
-
         assert [str(session.id) for session in result] == ["conv-1"]
-        assert provider.query_calls == [("semantic query", 4)]
-        assert to_thread_calls == []
-
-    async def test_embed_session_offloads_vector_upsert(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        messages = [make_message("msg-embed", "conv-embed", text="Message long enough to embed.")]
-        backend = SQLiteBackend(db_path=tmp_path / "vectors.db")
-        repo = SessionRepository(backend=backend)
-        monkeypatch.setattr(repo.queries, "get_messages", AsyncMock(return_value=messages))
-        provider = _VectorSpy()
-
-        to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
-
-        async def fake_to_thread(func: Callable[..., object], /, *args: object, **kwargs: object) -> object:
-            to_thread_calls.append((func, args, kwargs))
-            return func(*args, **kwargs)
-
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
-
-        result = await repo.embed_session("conv-embed", vector_provider=provider)
-
-        assert result == 1
-        assert provider.upsert_calls == [("conv-embed", messages)]
-        assert len(to_thread_calls) == 1
-        assert getattr(to_thread_calls[0][0], "__self__", None) is provider
-        assert getattr(to_thread_calls[0][0], "__name__", "") == "upsert"
+        assert observed == [(backend.db_path, "semantic query", 4)]
+        assert len(worker_threads) == 1
+        assert worker_threads[0] != creator
 
     async def test_similarity_search_offloads_vector_query(
         self,
@@ -1723,21 +1715,28 @@ class TestRepositoryVectorAsyncBoundary:
         provider = _VectorSpy()
         monkeypatch.setattr(repo, "_get_message_session_mapping", AsyncMock(return_value={"msg-1": "conv-1"}))
 
-        to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
+        import threading
 
-        async def fake_to_thread(func: Callable[..., object], /, *args: object, **kwargs: object) -> object:
-            to_thread_calls.append((func, args, kwargs))
-            return func(*args, **kwargs)
+        from polylogue.core.compute import compute_adapter, current_cancellation
 
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        creator = threading.get_ident()
+        actual_query = provider.query
+        worker_threads: list[int] = []
+
+        def query(text: str, limit: int = 10) -> list[tuple[str, float]]:
+            worker_threads.append(threading.get_ident())
+            assert current_cancellation() is not None
+            assert compute_adapter().snapshot().active_input_bytes == len(text.encode("utf-8"))
+            return actual_query(text, limit=limit)
+
+        monkeypatch.setattr(provider, "query", query)
 
         result = await repo.similarity_search("semantic query", limit=4, vector_provider=provider)
 
         assert result == [("conv-1", "msg-1", 0.125)]
         assert provider.query_calls == [("semantic query", 4)]
-        assert len(to_thread_calls) == 1
-        assert getattr(to_thread_calls[0][0], "__self__", None) is provider
-        assert getattr(to_thread_calls[0][0], "__name__", "") == "query"
+        assert len(worker_threads) == 1
+        assert worker_threads[0] != creator
 
 
 # ============================================================================
@@ -1760,20 +1759,24 @@ class TestInfraTagAssignment:
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             archive_root = Path(tmp_dir) / "archive"
-            bootstrap_ready_archive_root(archive_root)
             db_path = archive_root / "index.db"
-            seed_session_graph(db_path, spec.sessions)
 
             # The tag primitive the daemon's TagAddActuator applies. A daemon
             # per Hypothesis example would test process lifecycle, not tag
             # storage laws; the facade route is covered by the
             # daemon-served tests above.
             from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+            from tests.infra.archive_templates import run_off_event_loop
 
-            with ArchiveStore(archive_root) as store:
-                for conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
-                    for tag in tags:
-                        store.add_user_tags((native_session_id_for(conv.provider, conv.session_id),), (tag,))
+            def seed() -> None:
+                bootstrap_ready_archive_root(archive_root)
+                seed_session_graph(db_path, spec.sessions)
+                with ArchiveStore(archive_root) as store:
+                    for conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
+                        for tag in tags:
+                            store.add_user_tags((native_session_id_for(conv.provider, conv.session_id),), (tag,))
+
+            run_off_event_loop(seed)
 
             repo = archive_for_scenario_db(db_path)
             try:

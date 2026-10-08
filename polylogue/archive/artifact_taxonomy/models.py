@@ -108,7 +108,7 @@ class ArtifactKind(StrEnum):
 
 @dataclass(frozen=True)
 class ArtifactClassification:
-    """Heuristic classification of a raw payload or document sample."""
+    """Taxonomy classification whose caller declares complete or sampled evidence."""
 
     provider: Provider
     kind: ArtifactKind

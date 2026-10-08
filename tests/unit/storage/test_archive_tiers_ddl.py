@@ -1221,7 +1221,11 @@ def test_archive_tiers_bootstrap_sets_user_version(tmp_path: Path, tier: Archive
 
     _apply_tier(conn, tier)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == ARCHIVE_TIER_SPECS[tier].version
+    spec = ARCHIVE_TIER_SPECS[tier]
+    expected = (
+        spec.baseline_version if tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT) else spec.version
+    )
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == expected
 
 
 def test_archive_tiers_database_bootstrap_creates_parent_directory(tmp_path: Path) -> None:

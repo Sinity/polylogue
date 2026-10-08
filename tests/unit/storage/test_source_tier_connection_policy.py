@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from polylogue.storage.blob_publication import BlobPublicationReceipt, BlobPublicationReservationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE, write_connection_pragma_statements
+from polylogue.storage.sqlite.write_lease import write_lease
 
 # The reviewed durability contract for the DURABLE source tier, written as
 # literals on purpose. ``docs/durability-by-tier.md`` publishes source.db as
@@ -41,11 +43,17 @@ def test_durable_source_tier_profile_declares_its_reviewed_durability_contract()
 
 
 def _writer_pragmas(conn: sqlite3.Connection) -> tuple[str, int, int, int]:
+    def value(pragma: str) -> str | int:
+        with closing(conn.execute("PRAGMA " + pragma)) as cursor:
+            row = cursor.fetchone()
+        assert row is not None and isinstance(row[0], (str, int))
+        return row[0]
+
     return (
-        str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower(),
-        int(conn.execute("PRAGMA synchronous").fetchone()[0]),
-        int(conn.execute("PRAGMA busy_timeout").fetchone()[0]),
-        int(conn.execute("PRAGMA foreign_keys").fetchone()[0]),
+        str(value("journal_mode")).lower(),
+        int(value("synchronous")),
+        int(value("busy_timeout")),
+        int(value("foreign_keys")),
     )
 
 
@@ -67,9 +75,11 @@ def test_fresh_archive_source_writer_handle_uses_durable_mode_and_local_policy(t
     leaves its synchronous/busy-timeout values at SQLite defaults.
     """
     root = tmp_path / "archive"
+    root.mkdir()
 
-    with ArchiveStore(root, initialize=True, read_only=False) as archive:
-        _assert_source_writer_policy(archive._ensure_source_conn())
+    with write_lease("test.source-writer-policy", archive_root=root):
+        with ArchiveStore(root, initialize=True, read_only=False) as archive:
+            _assert_source_writer_policy(archive._ensure_source_conn())
 
 
 def test_existing_wal_source_writer_reuses_its_handle_without_reconfiguring_database_mode(tmp_path: Path) -> None:
@@ -89,10 +99,11 @@ def test_existing_wal_source_writer_reuses_its_handle_without_reconfiguring_data
     holder = sqlite3.connect(root / "source.db")
     holder.execute("BEGIN IMMEDIATE")
     try:
-        with ArchiveStore(root, initialize=False, read_only=False) as archive:
-            source = archive._ensure_source_conn()
-            assert source is archive._ensure_source_conn()
-            _assert_source_writer_policy(source)
+        with write_lease("test.existing-source-writer-policy", archive_root=root):
+            with ArchiveStore(root, initialize=False, read_only=False) as archive:
+                source = archive._ensure_source_conn()
+                assert source is archive._ensure_source_conn()
+                _assert_source_writer_policy(source)
     finally:
         holder.rollback()
         holder.close()
@@ -124,9 +135,10 @@ def test_reservation_path_observes_its_actual_source_writer_handle_policy(
         return conn
 
     monkeypatch.setattr(BlobPublicationReservationStore, "_open_connection", observe_open)
-    BlobPublicationReservationStore(root / "source.db").reserve_many(
-        [BlobPublicationReceipt("receipt", "00" * 32, 1, "test-publisher")]
-    )
+    with write_lease("test.reservation-writer-policy", archive_root=root):
+        BlobPublicationReservationStore(root / "source.db").reserve_many(
+            [BlobPublicationReceipt("receipt", "00" * 32, 1, "test-publisher")]
+        )
 
     assert observed == [
         (
@@ -138,3 +150,139 @@ def test_reservation_path_observes_its_actual_source_writer_handle_policy(
     ]
     with sqlite3.connect(root / "source.db") as source:
         assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (1,)
+
+
+def test_captured_blob_reservation_advances_only_its_existing_seal(tmp_path: Path) -> None:
+    """The real publisher reserves a captured claim under the original observer."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    prepared = publisher.prepare_from_bytes(b"synthetic captured publication")
+    claim = publisher.prepare_claim(prepared)
+    with PreparedIndexMutation(root / "index.db", archive_root=root) as seal:
+        before = {tier: seal.observer_version(tier) for tier in ("source", "index", "user", "audit")}
+        publisher.queue_prepared(prepared, claim=claim)
+        publisher.prepare_flush(reference_seal=seal)
+        with write_lease("test.captured-blob-publication", archive_root=root):
+            assert publisher.flush(reference_seal=seal) == (claim.receipt,)
+            seal.validate_observers_current()
+            assert seal.observer_version("source") != before["source"]
+            assert {tier: seal.observer_version(tier) for tier in ("index", "user", "audit")} == {
+                tier: before[tier] for tier in ("index", "user", "audit")
+            }
+            # Re-reserving this exact durable receipt is a true no-op, not a
+            # fresh baseline which can absorb a different Source mutation.
+            source_version = seal.observer_version("source")
+        permit, excised = BlobPublicationReservationStore(root / "source.db").prepare_many(
+            (claim.receipt,),
+            reference_seal=seal,
+        )
+        assert excised == frozenset()
+        with write_lease("test.same-captured-reservation", archive_root=root):
+            with permit.hold_authority(), permit.mutation_connection() as source:
+                with closing(source.execute("BEGIN IMMEDIATE")):
+                    pass
+                permit.apply_source_statements(source)
+                permit.allow_commit(source)
+                source.commit()
+                seal.accept_known_tier_commit(permit.committed())
+            assert seal.observer_version("source") == source_version
+            seal.validate_observers_current()
+        assert publisher.blob_path(claim.receipt.blob_hash).read_bytes() == b"synthetic captured publication"
+
+
+def test_captured_publisher_refuses_a_different_source_authority(tmp_path: Path) -> None:
+    """A real queued claim cannot advance a seal for another archive."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealError
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    original = tmp_path / "original"
+    other = tmp_path / "other"
+    for root in (original, other):
+        with ArchiveStore(root, initialize=True, read_only=False):
+            pass
+    publisher = ArchiveBlobPublisher(other / "source.db", other / "blob")
+    prepared = publisher.prepare_from_bytes(b"synthetic foreign authority")
+    claim = publisher.prepare_claim(prepared)
+    publisher.queue_prepared(prepared, claim=claim)
+    try:
+        with PreparedIndexMutation(original / "index.db", archive_root=original) as seal:
+            before = seal.observer_version("source")
+            with write_lease("test.foreign-publication", archive_root=original):
+                with pytest.raises(ReferenceSealError):
+                    publisher.flush(reference_seal=seal)
+            seal.validate_observers_current()
+            assert seal.observer_version("source") == before
+            with sqlite3.connect(other / "source.db") as source:
+                assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
+            assert not publisher._store.blob_path(claim.receipt.blob_hash).exists()
+    finally:
+        publisher.discard_pending()
+
+
+def test_captured_publisher_accepts_the_same_source_through_a_directory_alias(tmp_path: Path) -> None:
+    """A configured alias names the same physical Source authority."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    publisher = ArchiveBlobPublisher(alias / "source.db", alias / "blob")
+    prepared = publisher.prepare_from_bytes(b"synthetic aliased authority")
+    claim = publisher.prepare_claim(prepared)
+    publisher.queue_prepared(prepared, claim=claim)
+    try:
+        with PreparedIndexMutation(root / "index.db", archive_root=root) as seal:
+            publisher.prepare_flush(reference_seal=seal)
+            with write_lease("test.aliased-publication", archive_root=root):
+                assert publisher.flush(reference_seal=seal) == (claim.receipt,)
+            seal.validate_observers_current()
+        assert publisher.blob_path(claim.receipt.blob_hash).read_bytes() == b"synthetic aliased authority"
+    finally:
+        publisher.discard_pending()
+
+
+def test_captured_publisher_refuses_source_alias_retarget_after_preparation(tmp_path: Path) -> None:
+    """Retargeting a configured alias does not authorize a new Source tier."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealError
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    original = tmp_path / "original"
+    other = tmp_path / "other"
+    for root in (original, other):
+        with ArchiveStore(root, initialize=True, read_only=False):
+            pass
+    alias = tmp_path / "alias"
+    alias.symlink_to(original, target_is_directory=True)
+    publisher = ArchiveBlobPublisher(alias / "source.db", original / "blob")
+    prepared = publisher.prepare_from_bytes(b"synthetic retargeted authority")
+    claim = publisher.prepare_claim(prepared)
+    publisher.queue_prepared(prepared, claim=claim)
+    try:
+        with PreparedIndexMutation(original / "index.db", archive_root=original) as seal:
+            before = seal.observer_version("source")
+            publisher.prepare_flush(reference_seal=seal)
+            alias.unlink()
+            alias.symlink_to(other, target_is_directory=True)
+            with write_lease("test.retargeted-publication", archive_root=original):
+                with pytest.raises(ReferenceSealError):
+                    publisher.flush(reference_seal=seal)
+            seal.validate_observers_current()
+            assert seal.observer_version("source") == before
+            for root in (original, other):
+                with sqlite3.connect(root / "source.db") as source:
+                    assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
+            assert not publisher._store.blob_path(claim.receipt.blob_hash).exists()
+    finally:
+        publisher.discard_pending()

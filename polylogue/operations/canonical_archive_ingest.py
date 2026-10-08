@@ -7,15 +7,20 @@ import contextvars
 import os
 import sqlite3
 import threading
-from collections.abc import Awaitable, Callable, Iterator
-from contextlib import closing, contextmanager
+from builtins import BaseExceptionGroup
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager, closing, contextmanager
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from polylogue.config import Source
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+if TYPE_CHECKING:
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 
 _ONE_SHOT_MARKER = ".one-shot-ingest-owner"
 
@@ -29,14 +34,57 @@ class _ShutdownCoordinator(Protocol):
 
 
 async def _wait_for_coordinator_idle(coordinator: _ShutdownCoordinator) -> None:
-    """Do not let an archive owner unwind while its synchronous writer runs.
+    """Settle the original writer before its archive or compute owner unwinds."""
 
-    A bounded shutdown returning ``False`` means the admitted writer still
-    owns the archive. Callers may remove or replace the archive as soon as
-    this function returns, so keep waiting until that writer has settled.
-    """
-    while not await coordinator.shutdown(timeout=30.0):
-        await asyncio.sleep(0)
+    async def drain() -> None:
+        while not await coordinator.shutdown(timeout=30.0):
+            await asyncio.sleep(0)
+
+    settlement = asyncio.create_task(drain())
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(settlement)
+            break
+        except asyncio.CancelledError as failure:
+            cancellation = cancellation or failure
+        except BaseException as failure:
+            if cancellation is not None:
+                raise BaseExceptionGroup(
+                    "one-shot writer settlement failed after cancellation", [cancellation, failure]
+                ) from failure
+            raise
+    if cancellation is not None:
+        raise cancellation
+
+
+@asynccontextmanager
+async def one_shot_compute_owner(*, parse_workers: int | None = None) -> AsyncIterator[BoundedComputeAdapter]:
+    """Own the one-shot execution kernel; callers settle their writer before leaving."""
+    adapter = (
+        BoundedComputeAdapter(thread_name_prefix="polylogue-one-shot")
+        if parse_workers is None
+        else BoundedComputeAdapter(max_workers=parse_workers, thread_name_prefix="polylogue-one-shot")
+    )
+    try:
+        yield adapter
+    finally:
+        shutdown = asyncio.create_task(asyncio.to_thread(adapter.shutdown, wait=True))
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(shutdown)
+                break
+            except asyncio.CancelledError as failure:
+                cancellation = cancellation or failure
+            except BaseException as failure:
+                if cancellation is not None:
+                    raise BaseExceptionGroup(
+                        "one-shot compute settlement failed after cancellation", [cancellation, failure]
+                    ) from failure
+                raise
+        if cancellation is not None:
+            raise cancellation
 
 
 async def _ingest_selected_paths(
@@ -154,6 +202,7 @@ async def ingest_sources_archive(
     archive_root: Path,
     sources: list[Source],
     *,
+    compute_adapter: BoundedComputeAdapter,
     parse_workers: int | None = None,
 ) -> ParseResult:
     """Offer declared files to the same cursor, raw, and convergence route as the daemon.
@@ -163,15 +212,12 @@ async def ingest_sources_archive(
     the daemon operation instead.
     """
     from polylogue import Polylogue
-    from polylogue.archive.query.execution_control import QueryExecutionContext
     from polylogue.daemon.convergence import DaemonConverger
     from polylogue.daemon.convergence_stages import make_default_convergence_stages
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
     from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError, resident_daemon_pid
-    from polylogue.operations.operation_context import open_operation_read
     from polylogue.sources.live.batch import LiveBatchProcessor
     from polylogue.sources.live.cursor import CursorStore
-    from polylogue.sources.live.parse_prefetch import LiveParseStage
     from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
     from polylogue.sources.source_root_admission import refuse_non_capture_source_root
     from polylogue.sources.source_walk import _resolve_source_paths
@@ -223,7 +269,9 @@ async def ingest_sources_archive(
                 exact_paths=frozenset({resolved_source_path}) if is_individual_file else None,
             )
         )
-        paths.extend(_resolve_source_paths(Source(name=source.name, path=resolved_source_path)))
+        paths.extend(
+            _resolve_source_paths(Source(name=source.name, path=resolved_source_path), destination=archive_root)
+        )
     paths = list(dict.fromkeys(paths))
     result = ParseResult()
     if not paths:
@@ -236,13 +284,18 @@ async def ingest_sources_archive(
         with ArchiveStore.open_existing(root, read_only=False):
             pass
 
-    await coordinator.run_sync("demo.ingest.initialize", initialize)
-    archive = Polylogue(archive_root=root)
-    parse_stage = LiveParseStage(
-        max_workers=max(1, parse_workers) if parse_workers is not None else None,
-        shard_directory=root / "parse-shards",
-        use_processes=parse_workers != 1,
-    )
+    try:
+        await coordinator.run_sync("demo.ingest.initialize", initialize)
+        archive = Polylogue(archive_root=root)
+        sqlite_capture_stage = live_sqlite_capture_stage(compute_adapter)
+    except BaseException as primary:
+        try:
+            await _wait_for_coordinator_idle(coordinator)
+        except BaseException as cleanup:
+            raise BaseExceptionGroup(
+                "one-shot initialization and writer settlement failed", [primary, cleanup]
+            ) from primary
+        raise
     try:
         cursor = await coordinator.run_sync("demo.ingest.cursor", lambda: CursorStore(root / "index.db"))
 
@@ -250,20 +303,30 @@ async def ingest_sources_archive(
             require_offline_owner()
             return await coordinator.run_sync(actor, function, *args, **kwargs)  # type: ignore[arg-type]
 
+        from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+        from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
+
+        service_compute = compute_adapter
+        raw_owner = RawObservationConvergenceOwner(
+            root,
+            compute_adapter=service_compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            write_coordinator=coordinator,
+        )
+
         processor = LiveBatchProcessor(
             archive,
             watch_sources,
             cursor=cursor,
             parser_fingerprint=_PARSER_FINGERPRINT,
-            converger=DaemonConverger(stages=make_default_convergence_stages(root / "index.db")),
-            sync_runner=run_writer,
-            parse_stage=parse_stage,
-            read_snapshot=lambda root: open_operation_read(
-                root,
-                execution_context=QueryExecutionContext.create(
-                    query_text="live-existing-session-preparation", workload_class="scan"
-                ),
+            converger=DaemonConverger(
+                stages=make_default_convergence_stages(root / "index.db", compute_adapter=service_compute)
             ),
+            sync_runner=run_writer,
+            append_runner=raw_owner.ingest_append_plans,
+            retained_runner=raw_owner.ingest_retained_raw_ids,
+            convergence_runner=raw_owner.run_convergence_sync,
+            sqlite_capture_stage=sqlite_capture_stage,
         )
         metrics_by_pass = await _ingest_selected_paths(
             paths,
@@ -279,7 +342,7 @@ async def ingest_sources_archive(
             await _wait_for_coordinator_idle(coordinator)
         finally:
             try:
-                parse_stage.shutdown()
+                sqlite_capture_stage.shutdown()
             finally:
                 await archive.close()
 
@@ -380,12 +443,21 @@ async def ingest_one_shot_archive(
     root = archive_root.expanduser().resolve()
     with scoped_one_shot_archive_owner(root):
         admit_one_shot_root(root)
-        return await ingest_sources_archive(root, sources, parse_workers=parse_workers)
+        async with one_shot_compute_owner(parse_workers=parse_workers) as adapter:
+            return await ingest_sources_archive(root, sources, compute_adapter=adapter, parse_workers=parse_workers)
+
+
+def live_sqlite_capture_stage(compute_adapter: BoundedComputeAdapter) -> LiveSQLiteCaptureStage:
+    """The live watcher's SQLite capture stage on the owner's compute adapter."""
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
+
+    return LiveSQLiteCaptureStage(compute_adapter=compute_adapter)
 
 
 __all__ = [
     "admit_one_shot_root",
     "ingest_one_shot_archive",
     "ingest_sources_archive",
+    "live_sqlite_capture_stage",
     "scoped_one_shot_archive_owner",
 ]

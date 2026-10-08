@@ -1,7 +1,11 @@
+import { Blob as NativeBlob } from "node:buffer";
 import { describe, expect, it, vi } from "vitest";
 import { CaptureJobClient, canonicalJson, deriveAccountScope } from "../src/backfill/capture_jobs.js";
 
 describe("CaptureJob extension recovery", () => {
+  it("writes CAPTURE key order across supplementary Unicode keys", () => {
+    expect(canonicalJson({ "\u{10000}": 2, "\uE000": 1 })).toBe('{"\uE000":1,"\u{10000}":2}');
+  });
   it("binds the default fetch to the worker global", async () => {
     const previousFetch = globalThis.fetch;
     const fetchImpl = vi.fn(function fetchWithReceiver() {
@@ -9,9 +13,9 @@ describe("CaptureJob extension recovery", () => {
       return Promise.resolve({
         ok: true,
         json: async () => ({
-          schema: "polylogue.capture-jobs.capabilities.v1",
-          protocol_min: 1,
-          protocol_max: 1,
+          schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1",
+          protocol_min: 2,
+          protocol_max: 2,
           scope_namespace: "cjs1:worker-global",
         }),
       });
@@ -36,7 +40,7 @@ describe("CaptureJob extension recovery", () => {
     expect(scope).toMatch(/^h1:/);
     expect(scope).not.toContain("account");
     const responses = [
-      { schema: "polylogue.capture-jobs.capabilities.v1", protocol_min: 1, protocol_max: 1, scope_namespace: "cjs1:receiver-namespace" },
+      { schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1", protocol_min: 2, protocol_max: 2, scope_namespace: "cjs1:receiver-namespace" },
       { jobs: [] },
       { job: { job_id: "receiver-job", provider: "chatgpt", intent_key: "intent", revision: 0, lease_generation: 0 } },
       { job: { job_id: "receiver-job", provider: "chatgpt", intent_key: "intent", revision: 1, lease_generation: 1 }, lease: { lease_id: "lease", generation: 1, proof: "proof" } },
@@ -76,13 +80,39 @@ describe("CaptureJob extension recovery", () => {
     });
     const client = new CaptureJobClient({ baseUrl: "http://receiver", token: "receiver-token", cache, fetchImpl });
 
-    const first = await client.adoptExisting(job, "opaque-scope", "replacement-profile");
-    const second = await client.adoptExisting(job, "opaque-scope", "replacement-profile");
+    const first = await client.adoptExisting(job, { kind: "account", key: "h1:" + "A".repeat(43) }, "replacement-profile");
+    const second = await client.adoptExisting(job, { kind: "account", key: "h1:" + "A".repeat(43) }, "replacement-profile");
 
     expect(first.job.revision).toBe(1);
     expect(second.job.revision).toBe(1);
     expect(cache.set).toHaveBeenCalledTimes(2);
     expect(requestIds[0]).toBe(requestIds[1]);
+  });
+
+  it("consumes discovery pages and adopts one checkpoint at a time without dropping held leases", async () => {
+    const events = []; const cursor = { created_at: "2026-01-01T00:00:00Z", job_id: "b" };
+    const client = new CaptureJobClient({ baseUrl: "http://receiver", token: "synthetic-token", cache: {}, fetchImpl: async (url, options) => {
+      const path = new globalThis.URL(url).pathname;
+      if (path.endsWith("capabilities")) return { ok: true, json: async () => ({ schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1", scope_namespace: "cjs1:synthetic" }) };
+      if (path.endsWith("discover")) {
+        const body = JSON.parse(options.body); events.push(body.cursor ? "page-2" : "page-1");
+        const ids = body.cursor ? ["c"] : ["a", "b"];
+        if (body.cursor) expect(body.cursor).toEqual(cursor);
+        return { ok: true, json: async () => ({ jobs: ids.map((id) => ({ job_id: id, provider: "chatgpt", intent_key: id, checkpoint: { artifact_ref: id } })), cursor: body.cursor ? null : cursor }) };
+      }
+      const id = path.split("/").at(-2); events.push(`adopt-${id}`);
+      if (id === "b") return { ok: false, status: 409, json: async () => ({ error: { code: "lease_held" } }) };
+      return { ok: true, json: async () => ({ job: { job_id: id }, lease: { lease_id: id } }) };
+    } });
+    const iterator = client.discoverRecovery("chatgpt", "synthetic-account", "synthetic-session");
+    expect(events).toEqual([]);
+    expect((await iterator.next()).value.job.job_id).toBe("a");
+    expect(events).toEqual(["page-1", "adopt-a"]);
+    expect((await iterator.next()).value).toMatchObject({ job: { job_id: "b" }, recovery_state: "lease_held" });
+    expect(events).toEqual(["page-1", "adopt-a", "adopt-b"]);
+    expect((await iterator.next()).value.job.job_id).toBe("c");
+    expect((await iterator.next()).done).toBe(true);
+    expect(events).toEqual(["page-1", "adopt-a", "adopt-b", "page-2", "adopt-c"]);
   });
 
   it("keeps discovery scope stable when the receiver bearer rotates", async () => {
@@ -94,9 +124,9 @@ describe("CaptureJob extension recovery", () => {
           return {
             ok: true,
             json: async () => ({
-              schema: "polylogue.capture-jobs.capabilities.v1",
-              protocol_min: 1,
-              protocol_max: 1,
+              schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1",
+              protocol_min: 2,
+              protocol_max: 2,
               scope_namespace: "cjs1:stable-receiver-namespace",
             }),
           };
@@ -105,44 +135,37 @@ describe("CaptureJob extension recovery", () => {
         return { ok: true, json: async () => ({ jobs: [] }) };
       });
       const client = new CaptureJobClient({ baseUrl: "http://receiver", token, cache, fetchImpl });
-      await client.discoverRecovery("chatgpt", "same-account", "replacement-profile");
+      for await (const entry of client.discoverRecovery("chatgpt", "same-account", "replacement-profile")) expect(entry).toBeDefined();
     }
 
     expect(discovered.map((request) => request.token)).toEqual(["Bearer old-bearer", "Bearer rotated-bearer"]);
-    expect(discovered[0].body.account_scope).toBe(discovered[1].body.account_scope);
+    expect(discovered[0].body.scope.key).toBe(discovered[1].body.scope.key);
   });
 
-  it("bounds a stalled CaptureJob receiver request", async () => {
+  it("allows a slow progressing CaptureJob response without a deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(async () => ({ ok: true,
+        json: async () => new Promise((resolve) => globalThis.setTimeout(() => resolve({ completed: true }), 48_000)),
+      }));
+      const client = new CaptureJobClient({ baseUrl: "http://receiver", token: "receiver-token", fetchImpl });
+      const pending = client.request("GET", "/v1/capture-jobs/capabilities");
+      await vi.advanceTimersByTimeAsync(48_000);
+      await expect(pending).resolves.toEqual({ completed: true });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("propagates explicit cancellation through a CaptureJob request", async () => {
+    const controller = new globalThis.AbortController();
     const fetchImpl = vi.fn(async (_url, options) => new Promise((_resolve, reject) => {
-      options.signal.addEventListener("abort", () => reject(new Error("aborted")));
+      options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
     }));
-    const client = new CaptureJobClient({
-      baseUrl: "http://receiver",
-      token: "receiver-token",
-      cache: { get: vi.fn(), set: vi.fn() },
-      fetchImpl,
-      requestTimeoutMs: 1,
-    });
-
-    await expect(client.scopeNamespace()).rejects.toThrow("capture_job_request_timeout");
-  });
-
-  it("keeps the CaptureJob timeout active while reading the response body", async () => {
-    const fetchImpl = vi.fn(async (_url, options) => ({
-      ok: true,
-      json: async () => new Promise((_resolve, reject) => {
-        options.signal.addEventListener("abort", () => reject(new Error("aborted")));
-      }),
-    }));
-    const client = new CaptureJobClient({
-      baseUrl: "http://receiver",
-      token: "receiver-token",
-      cache: { get: vi.fn(), set: vi.fn() },
-      fetchImpl,
-      requestTimeoutMs: 1,
-    });
-
-    await expect(client.scopeNamespace()).rejects.toThrow("capture_job_request_timeout");
+    const client = new CaptureJobClient({ baseUrl: "http://receiver", token: "receiver-token", fetchImpl });
+    const pending = client.request("GET", "/v1/capture-jobs/capabilities", null, { signal: controller.signal });
+    const cancelled = new Error("operator_cancelled");
+    const result = expect(pending).rejects.toBe(cancelled);
+    controller.abort(cancelled);
+    await result;
   });
 
   it("renews the proven lease before checkpointing the returned revision", async () => {
@@ -152,7 +175,7 @@ describe("CaptureJob extension recovery", () => {
       set: vi.fn(async (patch) => Object.assign(cache.values, patch)),
     };
     const responses = [
-      { schema: "polylogue.capture-jobs.capabilities.v1", protocol_min: 1, protocol_max: 1, scope_namespace: "cjs1:receiver-namespace" },
+      { schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1", protocol_min: 2, protocol_max: 2, scope_namespace: "cjs1:receiver-namespace" },
       { jobs: [] },
       { job: { job_id: "receiver-job", provider: "chatgpt", intent_key: "intent", revision: 0, lease_generation: 0 } },
       {
@@ -180,12 +203,15 @@ describe("CaptureJob extension recovery", () => {
     const renewed = await client.update(adopted, {
       state: "held", attempt: 2, reason: "provider_safety_interstitial", next_eligible_at: null,
     });
-    await client.checkpoint(renewed, { version: 1, jobs: [], queue: [], revisions: [] });
+    const body = new NativeBlob([canonicalJson({ version: 1, jobs: [], queue: [], revisions: [] })]);
+    await client.checkpoint(renewed, { body, digest: `sha256:${"a".repeat(64)}` });
 
     const updateBody = JSON.parse(fetchImpl.mock.calls[4][1].body);
-    const checkpointBody = JSON.parse(fetchImpl.mock.calls[5][1].body);
+    const checkpointBody = JSON.parse(fetchImpl.mock.calls[5][1].headers["X-Polylogue-Checkpoint"]);
     expect(updateBody).toMatchObject({ expected_revision: 1, lease_id: "lease", proof: "proof" });
     expect(checkpointBody).toMatchObject({ expected_revision: 2, lease_id: "lease", proof: "proof" });
-    expect(checkpointBody.checkpoint.sequence).toBe(0);
+    expect(checkpointBody.sequence).toBe(0);
+    expect(fetchImpl.mock.calls[5][1].body).toBe(body);
+    expect(await body.text()).toBe('{"jobs":[],"queue":[],"revisions":[],"version":1}');
   });
 });

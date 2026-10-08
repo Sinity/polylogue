@@ -10,6 +10,8 @@ and the recomputed result reflects the new member, not the cached one.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -27,7 +29,20 @@ from polylogue.storage.raw_authority_verdict_cache import (
     write_raw_authority_verdict_cache,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
+
+
+@contextmanager
+def _archive_writer(root: Path) -> Iterator[ArchiveStore]:
+    """Hold the archive write lease, as the daemon's cache stage does, around a writable store.
+
+    The verdict cache writes Source rows directly on the store's connection;
+    the tier's authorizer admits them only under the archive write lease.
+    """
+    with write_lease("test.raw-authority-verdict-cache", archive_root=root):
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            yield archive
 
 
 def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_source_key: str) -> str:
@@ -35,6 +50,7 @@ def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_so
         provider=Provider.CODEX,
         payload=payload,
         source_path="session.jsonl",
+        canonical_source_path="session.jsonl",
         acquired_at_ms=1,
         raw_id=raw_id,
     )
@@ -47,7 +63,7 @@ def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_so
 
 def test_cold_cache_computes_and_persists(tmp_path: Path) -> None:
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _archive_writer(tmp_path) as archive:
         _bind_full(archive, raw_id="oldest", payload=b"one\n", logical_source_key="codex:s1")
         _bind_full(archive, raw_id="newest", payload=b"one\ntwo\n", logical_source_key="codex:s1")
 
@@ -66,7 +82,7 @@ def test_cold_cache_computes_and_persists(tmp_path: Path) -> None:
 
 def test_second_read_does_not_recompute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _archive_writer(tmp_path) as archive:
         _bind_full(archive, raw_id="only", payload=b"payload", logical_source_key="codex:s1")
 
         first = get_or_compute_raw_authority_verdicts(archive, "codex:s1", now_ms=1000)
@@ -84,7 +100,7 @@ def test_second_read_does_not_recompute(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_new_revision_invalidates_the_cache(tmp_path: Path) -> None:
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _archive_writer(tmp_path) as archive:
         _bind_full(archive, raw_id="only", payload=b"payload", logical_source_key="codex:s1")
         first = get_or_compute_raw_authority_verdicts(archive, "codex:s1", now_ms=1000)
         assert first == {"only": RawAuthorityVerdict.SOLE_COPY}
@@ -105,7 +121,7 @@ def test_new_revision_invalidates_the_cache(tmp_path: Path) -> None:
 
 def test_changed_content_fingerprint_invalidates_the_cache(tmp_path: Path) -> None:
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _archive_writer(tmp_path) as archive:
         _bind_full(archive, raw_id="oldest", payload=b"one\n", logical_source_key="codex:s1")
         _bind_full(archive, raw_id="newest", payload=b"one\ntwo\n", logical_source_key="codex:s1")
         _bind_full(archive, raw_id="replacement", payload=b"diverged", logical_source_key="codex:replacement")
@@ -139,12 +155,13 @@ def test_changed_content_fingerprint_invalidates_the_cache(tmp_path: Path) -> No
 def test_append_authority_promotion_invalidates_the_cache(tmp_path: Path) -> None:
     """The cache must follow the persisted byte-proof links used by append verdicts."""
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _archive_writer(tmp_path) as archive:
         _bind_full(archive, raw_id="baseline", payload=b"one\n", logical_source_key="codex:s1")
         append_id = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=b"two\n",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=1,
             raw_id="append",
@@ -164,7 +181,7 @@ def test_append_authority_promotion_invalidates_the_cache(tmp_path: Path) -> Non
         )
 
         initial = get_or_compute_raw_authority_verdicts(archive, "codex:s1", now_ms=1000)
-        archive.classify_raw_revision_cohort_for_live_watch("codex:s1")
+        archive.classify_raw_revision_cohort_for_rebuild_repair("codex:s1")
 
         stale = read_cached_raw_authority_verdicts(archive, "codex:s1")
         promoted = get_or_compute_raw_authority_verdicts(archive, "codex:s1", now_ms=2000)
@@ -183,7 +200,7 @@ def test_append_authority_promotion_invalidates_the_cache(tmp_path: Path) -> Non
 def test_write_requires_full_cohort_and_replaces_prior_rows(tmp_path: Path) -> None:
     """A rewrite must clear the cohort's whole prior row set, not accumulate."""
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _archive_writer(tmp_path) as archive:
         _bind_full(archive, raw_id="oldest", payload=b"one\n", logical_source_key="codex:s1")
         _bind_full(archive, raw_id="newest", payload=b"one\ntwo\n", logical_source_key="codex:s1")
 
@@ -212,7 +229,7 @@ def test_write_requires_full_cohort_and_replaces_prior_rows(tmp_path: Path) -> N
 
 def test_missing_cohort_returns_no_verdicts_and_no_cache_write(tmp_path: Path) -> None:
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _archive_writer(tmp_path) as archive:
         verdicts = get_or_compute_raw_authority_verdicts(archive, "codex:does-not-exist", now_ms=1000)
 
         rows = archive._ensure_source_conn().execute("SELECT COUNT(*) FROM raw_authority_verdicts").fetchall()
@@ -223,7 +240,7 @@ def test_missing_cohort_returns_no_verdicts_and_no_cache_write(tmp_path: Path) -
 
 def test_warmup_is_bounded_and_caches_append_cohorts(tmp_path: Path) -> None:
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _archive_writer(tmp_path) as archive:
         _bind_full(archive, raw_id="full-oldest", payload=b"one\n", logical_source_key="codex:full")
         _bind_full(archive, raw_id="full-newest", payload=b"one\ntwo\n", logical_source_key="codex:full")
         _bind_full(archive, raw_id="full-single", payload=b"single", logical_source_key="codex:full-single")
@@ -231,6 +248,7 @@ def test_warmup_is_bounded_and_caches_append_cohorts(tmp_path: Path) -> None:
             provider=Provider.CODEX,
             payload=b"append-payload",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=1,
             raw_id="append-only",
         )
@@ -291,7 +309,7 @@ def test_warmup_is_bounded_and_caches_append_cohorts(tmp_path: Path) -> None:
 
 def test_warmup_does_not_recompute_fresh_cohorts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _archive_writer(tmp_path) as archive:
         _bind_full(archive, raw_id="only", payload=b"payload", logical_source_key="codex:s1")
         warm_raw_authority_verdict_cache(archive, max_cohorts=1, now_ms=1000)
 
@@ -314,7 +332,7 @@ def test_rekeyed_raw_replaces_its_stale_cache_row(tmp_path: Path) -> None:
     which stalled the converger 84 times in rehearsal-10 (2026-09-05).
     """
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _archive_writer(tmp_path) as archive:
         _bind_full(archive, raw_id="moved", payload=b"one\n", logical_source_key="codex:pending")
         write_raw_authority_verdict_cache(
             archive, "codex:pending", {"moved": RawAuthorityVerdict.VERIFIED}, now_ms=1000
@@ -328,7 +346,7 @@ def test_rekeyed_raw_replaces_its_stale_cache_row(tmp_path: Path) -> None:
 def test_find_work_classifies_every_cohort_in_two_statements(tmp_path: Path) -> None:
     """Anti-vacuity: a per-cohort probe issues two statements per cohort, red at three cohorts."""
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _archive_writer(tmp_path) as archive:
         _bind_full(archive, raw_id="fresh-1", payload=b"fresh\n", logical_source_key="codex:fresh")
         _bind_full(archive, raw_id="stale-1", payload=b"stale\n", logical_source_key="codex:stale")
         _bind_full(archive, raw_id="cold-1", payload=b"cold\n", logical_source_key="codex:cold")

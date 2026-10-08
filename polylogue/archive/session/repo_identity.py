@@ -5,11 +5,9 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Iterable
-from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
-_PATH_DELIMITERS = {"#", "`", '"', "\\", ":", "(", ")", "\n", "\r", "\t", " ", "<", ">", ",", ";", "'"}
 _REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$")
 _PLAIN_REPO_NAME_RE = re.compile(r"^[a-z0-9_.-]+$")
 _NON_PROBING_ABSOLUTE_PREFIXES = (
@@ -20,20 +18,11 @@ _NON_PROBING_ABSOLUTE_PREFIXES = (
 )
 
 
-def _extract_local_path_candidate(value: str) -> str | None:
-    raw = value.strip()
-    if raw.startswith("file://"):
-        parsed = urlparse(raw)
-        raw = parsed.path
-    if not raw.startswith(("/", "~/")):
-        return None
-    chars: list[str] = []
-    for char in raw:
-        if char in _PATH_DELIMITERS:
-            break
-        chars.append(char)
-    candidate = "".join(chars).strip()
-    return candidate or None
+def _literal_local_path(value: str) -> str | None:
+    """Interpret a declared filesystem path, never a token from prose."""
+    if value.startswith("file://"):
+        value = urlparse(value).path
+    return value if value.startswith(("/", "~/")) else None
 
 
 def _lexical_expanduser(value: str) -> str:
@@ -135,38 +124,29 @@ def _repo_name_from_remote(value: str) -> str | None:
     return None
 
 
-@lru_cache(maxsize=4096)
-def _normalize_repo_path_cached(value: object, ceilings: tuple[str, ...]) -> str | None:
-    raw = str(value or "").strip()
-    if not raw:
+def normalize_repo_path(value: object) -> str | None:
+    """Discover the current Git root of a complete structured local path.
+
+    Paths remain literal, including whitespace and punctuation. Filesystem
+    observations are fresh on every call: a negative or enclosing-root result
+    cannot survive repository creation or deletion in the same process.
+    """
+    raw = str(value or "")
+    path_candidate = _literal_local_path(raw)
+    if path_candidate is None or _is_non_probing_absolute_path(path_candidate):
         return None
-    path_candidate = _extract_local_path_candidate(raw)
-    if path_candidate is None:
-        return None
-    if _is_non_probing_absolute_path(path_candidate):
-        return None
-    git_root = _find_git_root(Path(path_candidate).expanduser().resolve(strict=False), ceilings)
+    git_root = _find_git_root(Path(path_candidate).expanduser().resolve(strict=False), _git_ceiling_directories())
     return str(git_root) if git_root is not None else None
 
 
-def normalize_repo_path(value: object) -> str | None:
-    return _normalize_repo_path_cached(value, _git_ceiling_directories())
-
-
-@lru_cache(maxsize=4096)
-def _normalize_repo_name_cached(value: object, ceilings: tuple[str, ...]) -> str | None:
-    raw = str(value or "").strip()
+def normalize_repo_name(value: object) -> str | None:
+    raw = str(value or "")
     if not raw:
         return None
-    repo_path = _normalize_repo_path_cached(raw, ceilings)
+    repo_path = normalize_repo_path(raw)
     if repo_path is not None:
-        name = Path(repo_path).name.strip()
-        return name or None
+        return Path(repo_path).name or None
     return _repo_name_from_remote(raw)
-
-
-def normalize_repo_name(value: object) -> str | None:
-    return _normalize_repo_name_cached(value, _git_ceiling_directories())
 
 
 def normalize_repo_names(
@@ -174,21 +154,24 @@ def normalize_repo_names(
     *,
     repo_paths: Iterable[object] = (),
 ) -> tuple[str, ...]:
-    normalized: set[str] = set()
+    literal_names: set[str] = set()
+    for repo_path in repo_paths:
+        repo_root = normalize_repo_path(repo_path)
+        if repo_root is not None and (name := Path(repo_root).name):
+            literal_names.add(name)
+    normalized = set(literal_names)
     for value in values:
-        raw = str(value or "").strip()
+        literal = str(value or "")
+        if literal in literal_names:
+            # A known checkout basename is filesystem evidence, not a
+            # whitespace-padded lexical name or remote operand.
+            continue
+        raw = literal.strip()
         if raw and _PLAIN_REPO_NAME_RE.fullmatch(raw):
             normalized.add(raw)
             continue
         repo_name = normalize_repo_name(value)
         if repo_name is not None:
-            normalized.add(repo_name)
-    for repo_path in repo_paths:
-        repo_root = normalize_repo_path(repo_path)
-        if repo_root is None:
-            continue
-        repo_name = Path(repo_root).name
-        if repo_name:
             normalized.add(repo_name)
     return tuple(sorted(normalized))
 
@@ -215,8 +198,8 @@ def repo_relative_path(path: str, root_path: str) -> str:
     prefix of ``path`` (e.g. the checkout root could not be resolved for
     this session, or the path is outside any known checkout).
     """
-    candidate = path.strip()
-    root = root_path.strip()
+    candidate = path
+    root = root_path
     if not candidate or not root:
         return candidate
     normalized_root = root.rstrip("/")

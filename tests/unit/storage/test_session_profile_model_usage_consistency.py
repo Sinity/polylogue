@@ -50,9 +50,12 @@ from polylogue.storage.derived.session.rebuild import (
     rebuild_session_insights_async,
     rebuild_session_insights_sync,
 )
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
+from polylogue.storage.sqlite.write_lease import async_write_lease
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.index_writer import write_fixture_index_session
 
 # Realistic Codex cumulative usage: input is inclusive of cached (96% cached,
 # matching the corpus finding in provider_usage_disjoint_lanes's docstring),
@@ -136,7 +139,7 @@ def _claude_code_session(session_id: str) -> ParsedSession:
 
 def _make_archive_conn(tmp_path: Path) -> sqlite3.Connection:
     initialize_active_archive_root(tmp_path)
-    conn = sqlite3.connect(tmp_path / "index.db")
+    conn = connect_measured(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -184,7 +187,7 @@ def _profile_totals(conn: sqlite3.Connection, session_id: str) -> tuple[int, int
 def test_codex_profile_tokens_match_model_usage_after_sync_rebuild(tmp_path: Path) -> None:
     conn = _make_archive_conn(tmp_path)
     session_id = "codex-session:model-usage-consistency-sync"
-    write_parsed_session_to_archive(conn, _codex_session("model-usage-consistency-sync"))
+    write_fixture_index_session(conn, _codex_session("model-usage-consistency-sync"))
 
     # Sanity: session_model_usage carries the real (large) cumulative usage,
     # not the near-empty per-message fields.
@@ -211,31 +214,39 @@ def test_codex_profile_tokens_match_model_usage_after_sync_rebuild(tmp_path: Pat
 
 async def test_codex_profile_tokens_match_model_usage_after_async_rebuild(tmp_path: Path) -> None:
     session_id = "codex-session:model-usage-consistency-async"
-    sync_conn = _make_archive_conn(tmp_path)
-    write_parsed_session_to_archive(sync_conn, _codex_session("model-usage-consistency-async"))
-    model_usage = _model_usage_totals(sync_conn, session_id)
-    sync_conn.close()
 
-    async with aiosqlite.connect(tmp_path / "index.db") as conn:
-        conn.row_factory = aiosqlite.Row
-        await conn.execute("PRAGMA foreign_keys = ON")
-        await rebuild_session_insights_async(conn, session_ids=[session_id])
-        await conn.commit()
+    def seed() -> tuple[int, int, int, int]:
+        # The fixture producer takes its own writer lease off the event loop;
+        # it must not inherit the async test's lease.
+        sync_conn = _make_archive_conn(tmp_path)
+        try:
+            write_fixture_index_session(sync_conn, _codex_session("model-usage-consistency-async"))
+            return _model_usage_totals(sync_conn, session_id)
+        finally:
+            sync_conn.close()
 
-    verify_conn = sqlite3.connect(tmp_path / "index.db")
-    verify_conn.row_factory = sqlite3.Row
-    try:
-        profile_totals = _profile_totals(verify_conn, session_id)
-    finally:
-        verify_conn.close()
+    model_usage = run_off_event_loop(seed)
+    async with async_write_lease("test.runtime.async-fixture", archive_root=tmp_path):
+        async with aiosqlite.connect(tmp_path / "index.db") as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys = ON")
+            await rebuild_session_insights_async(conn, session_ids=[session_id])
+            await conn.commit()
 
-    assert profile_totals == model_usage
-    assert profile_totals == (
-        _CODEX_EXPECTED_INPUT,
-        _CODEX_EXPECTED_OUTPUT,
-        _CODEX_EXPECTED_CACHE_READ,
-        _CODEX_EXPECTED_CACHE_WRITE,
-    )
+        verify_conn = sqlite3.connect(tmp_path / "index.db")
+        verify_conn.row_factory = sqlite3.Row
+        try:
+            profile_totals = _profile_totals(verify_conn, session_id)
+        finally:
+            verify_conn.close()
+
+        assert profile_totals == model_usage
+        assert profile_totals == (
+            _CODEX_EXPECTED_INPUT,
+            _CODEX_EXPECTED_OUTPUT,
+            _CODEX_EXPECTED_CACHE_READ,
+            _CODEX_EXPECTED_CACHE_WRITE,
+        )
 
 
 def test_claude_code_profile_tokens_match_model_usage_no_regression(tmp_path: Path) -> None:
@@ -243,7 +254,7 @@ def test_claude_code_profile_tokens_match_model_usage_no_regression(tmp_path: Pa
     already correct) must keep matching session_model_usage after the fix."""
     conn = _make_archive_conn(tmp_path)
     session_id = "claude-code-session:model-usage-consistency"
-    write_parsed_session_to_archive(conn, _claude_code_session("model-usage-consistency"))
+    write_fixture_index_session(conn, _claude_code_session("model-usage-consistency"))
 
     model_usage = _model_usage_totals(conn, session_id)
     assert model_usage == (1_000, 500, 200, 100)
@@ -266,7 +277,7 @@ def test_codex_profile_undercounts_without_model_usage_anti_vacuity(tmp_path: Pa
 
     conn = _make_archive_conn(tmp_path)
     session_id = "codex-session:model-usage-consistency-anti-vacuity"
-    write_parsed_session_to_archive(conn, _codex_session("model-usage-consistency-anti-vacuity"))
+    write_fixture_index_session(conn, _codex_session("model-usage-consistency-anti-vacuity"))
     model_usage = _model_usage_totals(conn, session_id)
     assert model_usage[0] == _CODEX_EXPECTED_INPUT
 
@@ -313,47 +324,66 @@ async def test_profile_rows_and_usage_overlay_share_one_snapshot(
 ) -> None:
     """Anti-vacuity: without one snapshot, a commit between the two reads pairs
     the old profile title with the replaced usage row (9000 input tokens)."""
-    from polylogue.archive.semantic.cost_records import ModelUsageTotals
-    from polylogue.storage.derived.session.profile_cost import read_model_usage_batch_async as read_usage
-    from polylogue.storage.query_models import SessionProfileListQuery
-    from polylogue.storage.sqlite.queries import session_insight_profile_reads
 
-    writer = _make_archive_conn(tmp_path)
-    try:
-        # WAL lets the interleaved writer commit while the reader holds its snapshot.
-        writer.execute("PRAGMA journal_mode = WAL")
-        session_id = write_parsed_session_to_archive(writer, _claude_code_session("profile-snapshot"))
-        rebuild_session_insights_sync(writer, session_ids=[session_id])
-        writer.commit()
-        title = writer.execute("SELECT title FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0]
-        committed = False
+    def seed() -> str:
+        # The fixture producer takes its own writer lease off the event loop;
+        # it must not inherit the async test's lease.
+        conn = _make_archive_conn(tmp_path)
+        try:
+            # WAL lets the interleaved writer commit while the reader holds its snapshot.
+            conn.execute("PRAGMA journal_mode = WAL")
+            seeded = write_fixture_index_session(conn, _claude_code_session("profile-snapshot"))
+            rebuild_session_insights_sync(conn, session_ids=[seeded])
+            conn.commit()
+            return seeded
+        finally:
+            conn.close()
 
-        async def interleaved(conn: aiosqlite.Connection, ids: list[str]) -> dict[str, list[ModelUsageTotals]]:
-            nonlocal committed
-            if not committed:
-                committed = True
-                writer.execute("UPDATE session_profiles SET title = 'replacement' WHERE session_id = ?", (session_id,))
-                writer.execute("UPDATE session_model_usage SET input_tokens = 9000 WHERE session_id = ?", (session_id,))
-                writer.commit()
-            return await read_usage(conn, ids)
+    session_id = run_off_event_loop(seed)
+    async with async_write_lease("test.runtime.async-fixture", archive_root=tmp_path):
+        from polylogue.archive.semantic.cost_records import ModelUsageTotals
+        from polylogue.storage.derived.session.profile_cost import read_model_usage_batch_async as read_usage
+        from polylogue.storage.query_models import SessionProfileListQuery
+        from polylogue.storage.sqlite.queries import session_insight_profile_reads
 
-        monkeypatch.setattr(session_insight_profile_reads, "read_model_usage_batch_async", interleaved)
-        async with aiosqlite.connect(tmp_path / "index.db") as reader:
-            reader.row_factory = aiosqlite.Row
-            if route == "single":
-                profile = await session_insight_profile_reads.get_session_profile(reader, session_id)
-            elif route == "batch":
-                profile = (await session_insight_profile_reads.get_session_profiles_batch(reader, [session_id]))[
-                    session_id
-                ]
-            else:
-                (profile,) = await session_insight_profile_reads.list_session_profiles(
-                    reader, SessionProfileListQuery()
-                )
-            assert not reader.in_transaction
-        assert committed
-        assert profile is not None
-        assert profile.title == title
-        assert profile.total_input_tokens == 1_000
-    finally:
-        writer.close()
+        writer = connect_measured(tmp_path / "index.db")
+        writer.row_factory = sqlite3.Row
+        try:
+            title = writer.execute("SELECT title FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[
+                0
+            ]
+            committed = False
+
+            async def interleaved(conn: aiosqlite.Connection, ids: list[str]) -> dict[str, list[ModelUsageTotals]]:
+                nonlocal committed
+                if not committed:
+                    committed = True
+                    writer.execute(
+                        "UPDATE session_profiles SET title = 'replacement' WHERE session_id = ?", (session_id,)
+                    )
+                    writer.execute(
+                        "UPDATE session_model_usage SET input_tokens = 9000 WHERE session_id = ?", (session_id,)
+                    )
+                    writer.commit()
+                return await read_usage(conn, ids)
+
+            monkeypatch.setattr(session_insight_profile_reads, "read_model_usage_batch_async", interleaved)
+            async with aiosqlite.connect(tmp_path / "index.db") as reader:
+                reader.row_factory = aiosqlite.Row
+                if route == "single":
+                    profile = await session_insight_profile_reads.get_session_profile(reader, session_id)
+                elif route == "batch":
+                    profile = (await session_insight_profile_reads.get_session_profiles_batch(reader, [session_id]))[
+                        session_id
+                    ]
+                else:
+                    (profile,) = await session_insight_profile_reads.list_session_profiles(
+                        reader, SessionProfileListQuery()
+                    )
+                assert not reader.in_transaction
+            assert committed
+            assert profile is not None
+            assert profile.title == title
+            assert profile.total_input_tokens == 1_000
+        finally:
+            writer.close()

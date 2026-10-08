@@ -17,10 +17,12 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.content_identity import structural_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
-from polylogue.core.raw_coordinates import zip_member_raw_id
-from polylogue.operations import archive_backup as backup_mod
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode, zip_member_raw_id
+from polylogue.operations import archive_backup as backup_operations
 from polylogue.operations.archive_backup import backup_archive
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.sources.source_acquisition_components import zip_acquisition_fingerprint
+from polylogue.storage import backup_package as backup_mod
 from polylogue.storage.backup_attestation import attestation_key_path
 from polylogue.storage.backup_blob_closure import (
     SOURCE_DECLARED_ABSENT_AUTHORITY,
@@ -37,8 +39,10 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root,
     initialize_archive_database,
 )
+from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.durable_tier_fixtures import (
     checkpoint_durable_tier,
     initialize_runtime_source_fixture,
@@ -48,6 +52,39 @@ from tests.infra.durable_tier_fixtures import (
 )
 from tests.infra.live_ingest import write_index_session
 from tests.infra.storage_records import SessionBuilder, db_setup
+
+
+def _record_zip_fixture_coordinate(
+    conn: sqlite3.Connection,
+    raw_id: str,
+    container: Path,
+    *,
+    mode: MemberAddressingMode,
+    canonical_container: Path | None = None,
+    content_identity: str | None = None,
+    member_name: str = "conversations.json",
+) -> None:
+    declared = canonical_container or container
+    record_raw_container_coordinate(
+        conn,
+        raw_id,
+        coordinate_format="zip-v2",
+        entry_ordinal=0,
+        split_index=0,
+        addressing_mode=mode,
+        content_identity=content_identity,
+        captured_coordinate=CapturedZipMemberCoordinate(
+            str(declared.resolve()),
+            str(declared.resolve()),
+            member_name,
+            0,
+            0,
+            mode,
+            hashlib.sha256(container.read_bytes()).hexdigest(),
+            zip_acquisition_fingerprint(Provider.CHATGPT),
+        ),
+        manage_transaction=False,
+    )
 
 
 def _tier_files(*tiers: ArchiveTier) -> list[str]:
@@ -557,27 +594,40 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     assert receipt["verdict"] == "success"
     assert receipt["manifest_sha256"] == hashlib.sha256((backup_root / "manifest.json").read_bytes()).hexdigest()
     artifact_inventory = {item["path"]: item for item in receipt["artifact_inventory"]}
-    # Format birth authority and released Source002 history are retained
-    # together; neither is rebuildable cache.
-    assert set(artifact_inventory) == {
-        "blob",
-        f"blob/{blob_hash[:2]}",
-        f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
-        "blob-inventory.json",
-        "blob-reference-evidence.json",
-        "embeddings.db",
-        "audit.db",
-        "manifest.json",
-        "source.db",
-        "user.db",
-        ".polylogue-format.json",
-        ".maintenance-state",
-        ".maintenance-state/durable-change-trains",
-        ".maintenance-state/durable-change-trains/source-002.json",
+    # Format birth authority and every released Source train's history are
+    # retained together; neither is rebuildable cache.
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    released_trains = {
+        f".maintenance-state/durable-change-trains/source-{step:03d}.json"
+        for step in range(2, ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] + 1)
     }
-    train_path = Path(".maintenance-state/durable-change-trains/source-002.json")
-    assert (backup_root / train_path).read_bytes() == (archive_root / train_path).read_bytes()
-    assert not (backup_root / train_path.with_suffix(".json.lock")).exists()
+    # The history directory exists only to carry released trains.
+    history_directories = (
+        {".maintenance-state", ".maintenance-state/durable-change-trains"} if released_trains else set()
+    )
+    expected_inventory = (
+        released_trains
+        | history_directories
+        | {
+            "blob",
+            f"blob/{blob_hash[:2]}",
+            f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
+            "blob-inventory.json",
+            "blob-reference-evidence.json",
+            "embeddings.db",
+            "audit.db",
+            "manifest.json",
+            "source.db",
+            "user.db",
+            ".polylogue-format.json",
+        }
+    )
+    assert set(artifact_inventory) == expected_inventory, sorted(set(artifact_inventory) ^ expected_inventory)
+    for released in sorted(released_trains):
+        train_path = Path(released)
+        assert (backup_root / train_path).read_bytes() == (archive_root / train_path).read_bytes()
+        assert not (backup_root / train_path.with_suffix(".json.lock")).exists()
     assert artifact_inventory["user.db"]["sha256"] == hashlib.sha256((backup_root / "user.db").read_bytes()).hexdigest()
     assert "verification-receipt.json" not in artifact_inventory
     assert {artifact["path"] for artifact in receipt["tier_artifacts"]} == {
@@ -691,11 +741,7 @@ def test_full_evidence_backup_carries_recovered_missing_raw_blob(
             (blob_hash, raw_id, "raw_payload", recorded_path, len(payload), 1),
         )
         if source_kind == "zip":
-            conn.execute(
-                "INSERT INTO raw_container_coordinates (raw_id, coordinate_format, entry_ordinal, split_index)"
-                " VALUES (?, 'zip-v2', ?, ?)",
-                (raw_id, 0, 0),
-            )
+            _record_zip_fixture_coordinate(conn, raw_id, source_path, mode=MemberAddressingMode.ELEMENT_OF_CONTAINER)
 
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
 
@@ -838,10 +884,12 @@ def test_full_evidence_backup_proves_retired_root_recorded_path(
             "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
             (blob_hash, raw_id, "raw_payload", retired_recorded_path, len(payload), 1),
         )
-        conn.execute(
-            "INSERT INTO raw_container_coordinates (raw_id, coordinate_format, entry_ordinal, split_index)"
-            " VALUES (?, 'zip-v2', ?, ?)",
-            (raw_id, 0, 0),
+        _record_zip_fixture_coordinate(
+            conn,
+            raw_id,
+            source_path,
+            mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
+            canonical_container=tmp_path / "retired-root" / "inbox" / "export.zip",
         )
 
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
@@ -855,14 +903,16 @@ def test_full_evidence_backup_proves_retired_root_recorded_path(
 def test_resolved_direct_path_keeps_colon_as_filename_data(tmp_path: Path) -> None:
     """Anti-vacuity: treating every colon as a ZIP separator mangles this path."""
     source = str(tmp_path / "session:export.json")
-    assert backup_mod._resolved_source_path(source, tmp_path) == source
+    from polylogue.storage.source_blob_restoration import retained_source_location
+
+    assert retained_source_location({"source_path": source}, tmp_path) == (source, False)
 
 
-def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
+def test_full_evidence_backup_refuses_coordinate_less_zip_row(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """A legacy ZIP row still replays through acquisition without coordinate metadata."""
+    """An operational suffix cannot establish a missing member coordinate."""
     archive_root = workspace_env["archive_root"]
     source_path = tmp_path / "legacy.zip"
     records = [
@@ -875,12 +925,7 @@ def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
     payload = dumps_bytes(records[2])
     blob_hash = hashlib.sha256(payload).digest()
     recorded_path = f"{source_path}:conversations.json"
-    # No ``raw_container_coordinates`` row for this raw id: the replay path
-    # reads the coordinate columns through a LEFT JOIN and must work from the
-    # recorded member suffix alone. The pre-reset version of this fixture
-    # dropped the whole table, which this lineage's source tier carries from
-    # birth -- that made the archive contradict its own format marker and the
-    # backup was refused before the replay under test ran.
+    # The intentionally absent coordinate receipt must remain unproven.
     with seed_durable_tier(archive_root / "source.db") as conn:
         conn.execute(
             """
@@ -908,9 +953,8 @@ def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
 
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
 
-    assert result.ok, result.error
-    assert result.verified
-    assert result.verification["recovered_source_blob_count"] == 1
+    assert not result.ok
+    assert result.verification["recovered_source_blob_count"] == 0
 
 
 def test_full_evidence_backup_streams_a_recovered_whole_zip_member(
@@ -955,6 +999,13 @@ def test_full_evidence_backup_streams_a_recovered_whole_zip_member(
         conn.execute(
             "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
             (blob_hash, hashlib.sha256(member).hexdigest(), "raw_payload", recorded_path, len(member), 1),
+        )
+
+        _record_zip_fixture_coordinate(
+            conn,
+            hashlib.sha256(member).hexdigest(),
+            source_path,
+            mode=MemberAddressingMode.WHOLE_MEMBER,
         )
 
     original_read = zipfile.ZipExtFile.read
@@ -1126,6 +1177,18 @@ def test_backup_replays_legacy_append_from_preceding_full_snapshot(
             ) VALUES (?, ?, ?, ?, ?, -1, ?, ?, 2, 'passed', 'unknown')""",
             (f"append-{origin}", origin, capture_mode, identity, str(source_path), append_hash, len(expected)),
         )
+        # Currency is durable receipt order: the full observation, then the append.
+        for raw_id, blob_hash, size in (
+            (f"prior-{origin}", prior_hash, len(prefix)),
+            (f"append-{origin}", append_hash, len(expected)),
+        ):
+            conn.execute(
+                "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
+                (blob_hash, raw_id, "raw_payload", str(source_path), size, 1),
+            )
+    # Backup reads these proofs from its checkpointed copy of the tier; fold
+    # the seeded WAL into the main file the same way.
+    checkpoint_durable_tier(archive_root / "source.db")
 
     unproven: list[dict[str, str]] = []
     proofs = backup_mod._source_recoverability_proofs(
@@ -1135,7 +1198,7 @@ def test_backup_replays_legacy_append_from_preceding_full_snapshot(
         unproven=unproven,
     )
 
-    assert len(proofs) == 1
+    assert len(proofs) == 1, (proofs, unproven)
     assert proofs[0]["kind"] == "historical_append_segment_sha256"
     assert proofs[0]["append_start_offset"] == str(len(prefix))
     assert proofs[0]["append_end_offset"] == str(len(prefix) + len(append))
@@ -1279,6 +1342,14 @@ def test_backup_reanchors_dead_root_before_zip_member_replay(
             ) VALUES (?, 'chatgpt-export', ?, 0, ?, ?, 1, 'passed')""",
             ("zip-dead-root", stale_source_path, blob_hash, len(member_payload)),
         )
+        _record_zip_fixture_coordinate(
+            conn,
+            "zip-dead-root",
+            zip_path,
+            mode=MemberAddressingMode.WHOLE_MEMBER,
+            canonical_container=tmp_path / "old-clone" / "inbox" / "bundle.zip",
+            member_name="conversation.json",
+        )
 
     unproven: list[dict[str, str]] = []
     proofs = backup_mod._source_recoverability_proofs(
@@ -1317,12 +1388,12 @@ def test_backup_proves_zip_member_by_structural_identity_after_reserialization(
             ) VALUES (?, 'chatgpt-export', 'chatgpt', ?, 0, ?, ?, 1, 'passed')""",
             ("structural-zip", source_path, blob_hash, len(dumps_bytes(expected))),
         )
-        conn.execute(
-            """INSERT INTO raw_container_coordinates (
-                raw_id, coordinate_format, entry_ordinal, split_index,
-                addressing_mode, content_identity
-            ) VALUES (?, 'zip-v2', 0, 0, 'element_of_container', ?)""",
-            ("structural-zip", content_identity),
+        _record_zip_fixture_coordinate(
+            conn,
+            "structural-zip",
+            zip_path,
+            mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
+            content_identity=content_identity,
         )
         assert (
             conn.execute("SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id='structural-zip'").fetchone()[0]
@@ -1388,7 +1459,10 @@ def test_full_evidence_backup_restores_index_only_attachment_blob(
             )
         ],
     )
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+    with (
+        write_lease("test.backup-fixture", archive_root=archive_root),
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+    ):
         write_index_session(archive, session)
 
     blob_hash = hashlib.sha256(payload).hexdigest()
@@ -1436,7 +1510,10 @@ def test_full_evidence_backup_keeps_index_only_attachment(
             )
         ],
     )
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+    with (
+        write_lease("test.backup-fixture", archive_root=archive_root),
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+    ):
         write_index_session(archive, session)
 
     blob_hash = hashlib.sha256(payload).hexdigest()
@@ -1480,7 +1557,10 @@ def test_backup_attachment_oracle_rejects_a_projection_that_omits_readable_index
             )
         ],
     )
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+    with (
+        write_lease("test.backup-fixture", archive_root=archive_root),
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+    ):
         write_index_session(archive, session)
 
     original_inventory = backup_mod._inventory_from_liveness
@@ -1516,7 +1596,10 @@ def test_backup_creation_oracle_rejects_projection_omitting_independent_attachme
         messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="attachment", position=0)],
         attachments=[ParsedAttachment(provider_attachment_id="a1", message_provider_id="m1", inline_bytes=payload)],
     )
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+    with (
+        write_lease("test.backup-fixture", archive_root=archive_root),
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+    ):
         write_index_session(archive, session)
     omitted_hash = hashlib.sha256(payload).hexdigest()
     original_projection = backup_mod._source_blob_liveness_projection
@@ -1871,7 +1954,8 @@ def test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory(
     publisher = ArchiveBlobPublisher(archive_root / "source.db", blob_root)
     payload = b"reservation-only backup evidence"
     blob_hash, _ = publisher.write_from_bytes(payload)
-    publisher.flush()
+    with write_lease("test.backup-fixture", archive_root=archive_root):
+        publisher.flush()
 
     result = backup_archive(output_dir=tmp_path / "backups", verify=True)
 
@@ -2062,7 +2146,9 @@ def test_pre_generation_source_uses_declared_absence(
     # Anything that opened the tier while restating it may have left a WAL
     # beside it, and backup publication refuses an unbound SQLite sidecar
     # before it reads any schema -- which would mask the refusal under test.
-    checkpoint_durable_tier(generation_backup_root / "source.db")
+    # Every tier bootstraps in WAL, so fold each tier the restatement opened.
+    for tier_path in sorted(generation_backup_root.glob("*.db")):
+        checkpoint_durable_tier(tier_path)
     assert not list(generation_backup_root.glob("*.db-wal"))
     with pytest.raises(RuntimeError, match="only valid before source generations exist"):
         backup_mod._verify_archive_file_set_backup(generation_backup_root)
@@ -2180,20 +2266,10 @@ def test_backup_reservation_only_bytes_are_not_committed_reference_debt(tmp_path
 
 
 def test_backup_refuses_source_schema_without_hook_evidence(tmp_path: Path) -> None:
-    """An authoritative source missing a declared blob carrier column is refused.
+    """A canonical blob-owner query refuses a missing carrier column.
 
-    ``raw_hook_events.blob_hash`` is the carrier column ``BLOB_OWNERS``
-    declares for the hook-event owner, so a source tier that still carries the
-    stamp this runtime writes -- and is therefore taken as canonical authority
-    -- cannot be read past it. The pre-reset fixture dropped ``native_id``,
-    which no longer appears in ``BLOB_OWNERS``, so nothing refused.
-
-    Anti-vacuity: remove the ``raw_hook_events`` entry from ``BLOB_OWNERS`` (or
-    the ``_column_exists`` branch in ``_schema_blockers``) and the damaged
-    source is read as if it were complete. The companion test
-    ``test_full_evidence_backup_keeps_index_only_attachment`` removes the same
-    column under a *foreign* stamp and pins the opposite outcome -- fallback,
-    not refusal -- so a blanket refusal cannot pass either.
+    Removing raw_hook_events from BLOB_OWNERS would make this damaged source
+    look complete. The actual owner query must fail before copying any bytes.
     """
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
@@ -2203,7 +2279,7 @@ def test_backup_refuses_source_schema_without_hook_evidence(tmp_path: Path) -> N
     backup_root = tmp_path / "backup"
     backup_root.mkdir()
 
-    with pytest.raises(RuntimeError, match="raw_hook_events is missing columns: blob_hash"):
+    with pytest.raises(RuntimeError):
         backup_mod._copy_referenced_blobs(
             source_db=archive_root / "source.db",
             source_blob_root=archive_root / "blob",
@@ -2238,7 +2314,7 @@ def test_backup_archive_verify_marks_failed_artifact_unhealthy(
             conn.execute("CREATE TABLE IF NOT EXISTS marker (value TEXT NOT NULL)")
 
     monkeypatch.setattr(
-        "polylogue.operations.archive_backup._verify_archive_file_set_backup",
+        "polylogue.storage.backup_package._verify_archive_file_set_backup",
         lambda _path: {"ok": False, "error": "bad"},
     )
 
@@ -2447,7 +2523,8 @@ def test_backup_verifies_a_multi_chunk_blob_without_materializing_it(
     payload = (b"multi-chunk backup evidence " * 64) * 1024
     assert len(payload) > 1024 * 1024
     blob_hash, _ = publisher.write_from_bytes(payload)
-    publisher.flush()
+    with write_lease("test.backup-fixture", archive_root=archive_root):
+        publisher.flush()
 
     result = backup_archive(output_dir=tmp_path / "backups", verify=True)
 
@@ -2573,6 +2650,7 @@ def test_verified_backup_restore_owns_destination_train_and_preserves_original_e
             origin=Origin.CODEX_SESSION,
             capture_mode=Provider.CODEX,
             source_path="/synthetic/restore-custody",
+            canonical_source_path="/synthetic/restore-custody",
             source_index=0,
             native_id=None,
             payload=payload,
@@ -2581,19 +2659,22 @@ def test_verified_backup_restore_owns_destination_train_and_preserves_original_e
     result = backup_archive(output_dir=tmp_path / "backups", profile=profile, verify=True)
     assert result.ok and result.verified and result.output_path is not None
     package = Path(result.output_path)
-    original_history = (package / ".maintenance-state/durable-change-trains/source-002.json").read_bytes()
+    # The fresh v1 archive released no train, so the package carries no
+    # train history and restore has none to detach.
+    assert not (package / ".maintenance-state/durable-change-trains").exists()
     receipt_bytes = (package / "verification-receipt.json").read_bytes()
     destination = tmp_path / "restored"
-    detail = backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+    detail = backup_operations.restore_verified_backup(backup_dir=package, destination=destination)
     assert detail["operational_admission"] == ("ready" if profile == "full_evidence" else "degraded")
     assert detail["unrestored_purchased_tiers"] == ([] if include_embeddings else ["embeddings.db"])
     assert detail["restored_tiers"] == sorted(json.loads((package / "manifest.json").read_text())["included_tiers"])
-    assert (destination / ".maintenance-state/durable-change-trains/source-002.json").read_bytes() != original_history
-    assert (package / ".maintenance-state/durable-change-trains/source-002.json").read_bytes() == original_history
+    assert not list((destination / ".maintenance-state/durable-change-trains").glob("source-*.json"))
     assert (package / "verification-receipt.json").read_bytes() == receipt_bytes
     namespace = hashlib.sha256(str(detail["source_manifest_id"]).encode()).hexdigest()
     provenance = destination / ".archive-population-provenance" / namespace
-    assert (provenance / "original-history/source-002.json").read_bytes() == original_history
+    assert not (provenance / "original-history").exists()
+    receipts = json.loads((provenance / "source.json").read_text())["original_receipts"]
+    assert [item[0] for item in receipts] == [".polylogue-format.json"]
     assert (provenance / "original-backup/verification-receipt.json").read_bytes() == receipt_bytes
     for tier in ("source", "user", "audit"):
         with (
@@ -2619,8 +2700,8 @@ def test_verified_backup_restore_does_not_claim_partial_profiles_are_operational
     result = backup_archive(output_dir=tmp_path / "backups", profile=profile, verify=True)
     assert result.ok and result.verified and result.output_path is not None
     destination = tmp_path / "restored"
-    with pytest.raises(backup_mod.ArchiveRestoreRefusalError) as refusal:
-        backup_mod.restore_verified_backup(backup_dir=Path(result.output_path), destination=destination)
+    with pytest.raises(backup_operations.ArchiveRestoreRefusalError) as refusal:
+        backup_operations.restore_verified_backup(backup_dir=Path(result.output_path), destination=destination)
     assert refusal.value.code == "restore_partial_durable_core"
     assert not destination.exists()
 
@@ -2641,8 +2722,8 @@ def test_verified_backup_restore_refuses_existing_destination_without_changing_e
     evidence = destination / "retained.txt"
     evidence.write_bytes(b"retained")
     receipt = (backup / "verification-receipt.json").read_bytes()
-    with pytest.raises(backup_mod.ArchiveRestoreRefusalError, match="restore_destination_exists"):
-        backup_mod.restore_verified_backup(backup_dir=backup, destination=destination)
+    with pytest.raises(backup_operations.ArchiveRestoreRefusalError, match="restore_destination_exists"):
+        backup_operations.restore_verified_backup(backup_dir=backup, destination=destination)
     assert evidence.read_bytes() == b"retained"
     assert (backup / "verification-receipt.json").read_bytes() == receipt
 
@@ -2667,7 +2748,7 @@ def test_verified_backup_restore_refuses_modified_signed_evidence_before_destina
     from polylogue.storage.sqlite.migration_runner import MigrationError
 
     with pytest.raises(MigrationError):
-        backup_mod.restore_verified_backup(backup_dir=backup, destination=destination)
+        backup_operations.restore_verified_backup(backup_dir=backup, destination=destination)
     assert not destination.exists()
     assert receipt_path.read_bytes() == changed_receipt
 
@@ -2720,8 +2801,8 @@ def test_restore_pending_population_excludes_actual_readers_and_second_creator(
                 with pytest.raises(ArchivePopulationPendingError):
                     initialize_active_archive_root(target)
                 observed.append("bootstrap")
-                with pytest.raises(backup_mod.ArchiveRestoreRefusalError) as refusal:
-                    backup_mod.restore_verified_backup(backup_dir=package, destination=target)
+                with pytest.raises(backup_operations.ArchiveRestoreRefusalError) as refusal:
+                    backup_operations.restore_verified_backup(backup_dir=package, destination=target)
                 assert refusal.value.code == "restore_destination_exists"
                 observed.append("second-creator")
             except BaseException as exc:
@@ -2735,7 +2816,7 @@ def test_restore_pending_population_excludes_actual_readers_and_second_creator(
         return proof
 
     monkeypatch.setattr(archive_population, "populate_authenticated_archive", populate)
-    result = backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+    result = backup_operations.restore_verified_backup(backup_dir=package, destination=destination)
     assert observed == ["archive", "profile", "verified-leaf", "attached-query", "bootstrap", "second-creator"]
     assert result["operational_admission"] == "ready"
     with ArchiveStore.open_existing(destination, read_only=True):
@@ -2766,7 +2847,7 @@ def test_failed_restore_retains_pending_evidence_and_refuses_restart(
 
     monkeypatch.setattr(archive_population, "populate_authenticated_archive", interrupt)
     with pytest.raises(KeyboardInterrupt):
-        backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+        backup_operations.restore_verified_backup(backup_dir=package, destination=destination)
     assert (destination / POPULATION_PENDING).is_file()
     assert (destination / "source.db").is_file()
     assert (package / "verification-receipt.json").read_bytes() == original_receipt
@@ -2777,7 +2858,7 @@ def test_failed_restore_retains_pending_evidence_and_refuses_restart(
             pass
 
 
-def test_verified_source1_backup_restores_through_destination_owned_source002(
+def test_verified_baseline_backup_restores_under_destination_owned_authority(
     workspace_paths: dict[str, Path], tmp_path: Path
 ) -> None:
     import struct
@@ -2812,6 +2893,7 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
                     origin=Origin.CODEX_SESSION,
                     capture_mode=Provider.CODEX,
                     source_path="/synthetic/baseline-restore",
+                    canonical_source_path="/synthetic/baseline-restore",
                     source_index=0,
                     native_id=None,
                     payload=payload,
@@ -2861,18 +2943,20 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
     from tests.infra.workload_artifacts import _archive_files
 
     package_before = (_archive_files(package), (package / "manifest.json").read_bytes())
-    detail = backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+    detail = backup_operations.restore_verified_backup(backup_dir=package, destination=destination)
     assert (_archive_files(package), (package / "manifest.json").read_bytes()) == package_before
     assert not any(package.glob("*.db-wal"))
     assert not any(package.glob("*.db-shm"))
     assert detail["operational_admission"] == "degraded"
     assert detail["requires_convergence"] == ["index.db", "ops.db"]
-    assert isinstance(detail["restored_tiers"], list)
-    assert "index.db" not in detail["restored_tiers"]
-    assert "ops.db" not in detail["restored_tiers"]
-    assert "embeddings.db" in detail["restored_tiers"]
+    restored_tiers = detail["restored_tiers"]
+    assert isinstance(restored_tiers, list)
+    assert "index.db" not in restored_tiers
+    assert "ops.db" not in restored_tiers
+    assert "embeddings.db" in restored_tiers
     assert (package / ".maintenance-state/durable-change-trains/.bootstrap").read_bytes() == original_marker
-    assert (destination / ".maintenance-state/durable-change-trains/source-002.json").is_file()
+    # The baseline is the current Source schema: the destination owns no train.
+    assert not list((destination / ".maintenance-state/durable-change-trains").glob("source-*.json"))
     namespace = hashlib.sha256(str(detail["source_manifest_id"]).encode()).hexdigest()
     assert (
         destination / ".archive-population-provenance" / namespace / "original-history/.bootstrap"
@@ -2892,8 +2976,41 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
     original_stat, destination_stat = (original / "source.db").stat(), (destination / "source.db").stat()
     assert (original_stat.st_dev, original_stat.st_ino) != (destination_stat.st_dev, destination_stat.st_ino)
     with closing(sqlite3.connect(destination / "source.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
-        assert migration_runner._durable_literal_rows_digest(conn) == before
+        from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+        # The destination reaches this runtime's Source version through any
+        # numbered steps it owns. The retained version-1 rows are compared
+        # literally on the version-1 relations and columns, and every relation
+        # a later step adds starts empty.
+        restored_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        assert restored_version == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE], (restored_version, detail)
+        with closing(
+            sqlite3.connect(package.joinpath("source.db").as_uri() + "?mode=ro&immutable=1", uri=True)
+        ) as baseline:
+            baseline_tables = [
+                str(row[0])
+                for row in baseline.execute(
+                    "SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' "
+                    "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                )
+            ]
+            for table in baseline_tables:
+                columns = ",".join(
+                    f'"{row[1]}"' for row in baseline.execute("SELECT * FROM pragma_table_info(?)", (table,))
+                )
+                retained = sorted(map(repr, baseline.execute(f'SELECT {columns} FROM "{table}"')))
+                restored = sorted(map(repr, conn.execute(f'SELECT {columns} FROM "{table}"')))
+                assert restored == retained, table
+        added = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+            if str(row[0]) not in baseline_tables
+        ]
+        for name in added:
+            assert conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone() == (0,), name
     # The ordinary startup owner validates the new physical receipt; no copied
     # baseline history is admitted as destination authority.
     initialize_active_archive_root(destination)
@@ -2970,7 +3087,7 @@ def test_verified_restore_refuses_unsafe_derived_leaf_and_retains_pending_custod
 
     monkeypatch.setattr(archive_population, "_populate_authenticated_archive", replace_derived_leaf)
     with pytest.raises(archive_population.ArchivePopulationError) as exc:
-        backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+        backup_operations.restore_verified_backup(backup_dir=package, destination=destination)
     assert exc.value.code == (
         "unsupported_derived_version" if leaf_kind in {"ahead", "pre_reset"} else "invalid_derived_leaf"
     )

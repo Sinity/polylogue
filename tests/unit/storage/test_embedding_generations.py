@@ -876,3 +876,34 @@ def test_collect_refuses_late_lease(tmp_path: Path) -> None:
         EmbeddingGenerationStore._write_receipt = write_receipt  # type: ignore[method-assign]
     assert leased, "the test never published a competing lease"
     assert leased[0] in {generation.generation_id for generation in store._generations()}
+
+
+def test_bootstrap_creates_embeddings_in_its_sealed_generation_mode(tmp_path: Path) -> None:
+    """The embeddings tier is born in rollback-journal mode, every other tier in WAL.
+
+    Anti-vacuity: create embeddings.db in the WAL writer mode and the first
+    read-only open after adoption leaves -wal/-shm beside the sealed
+    generation, which the lifecycle then refuses as an uncheckpointed WAL.
+    """
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    modes = {}
+    for name in ("source.db", "index.db", "embeddings.db"):
+        with closing(sqlite3.connect(tmp_path / name)) as conn:
+            modes[name] = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert modes == {"source.db": "wal", "index.db": "wal", "embeddings.db": "delete"}
+
+
+def test_generation_admission_requires_current_excision_completion_relation(tmp_path: Path) -> None:
+    """A current-format candidate cannot publish an unusable completion contract."""
+    candidate = tmp_path / "candidate.db"
+    _sqlite(candidate, "missing-completions")
+    with sqlite3.connect(candidate) as conn:
+        conn.execute("DROP TABLE excision_embedding_completions")
+
+    with pytest.raises(EmbeddingGenerationError, match="missing.*excision_embedding_completions"):
+        EmbeddingGenerationStore(tmp_path).replace(candidate)
+    assert not (tmp_path / "embeddings.db").exists()

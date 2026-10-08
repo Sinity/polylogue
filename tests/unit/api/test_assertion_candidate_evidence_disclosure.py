@@ -20,10 +20,11 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 
 
-def _seed_candidate(root: Path) -> tuple[str, str]:
+def _seed_candidate_on_writer(root: Path) -> tuple[str, str]:
     with ArchiveStore(root) as archive:
         session_id = write_index_session(
             archive,
@@ -70,6 +71,11 @@ def _seed_candidate(root: Path) -> tuple[str, str]:
             now_ms=1_700_000_000_000,
         )
     return session_id, "assertion:candidate-evidence-review"
+
+
+def _seed_candidate(root: Path) -> tuple[str, str]:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_candidate_on_writer(root))
 
 
 async def test_review_discloses_bounded_typed_evidence_previews(tmp_path: Path) -> None:

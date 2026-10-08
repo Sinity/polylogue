@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -36,6 +37,19 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.excision_execution import run_in_excision_owner
+
+
+def _refused_demand(_byte_count: int) -> None:
+    raise AssertionError("a refused lifecycle request reached Excision byte demand")
+
+
+def _refused_sink(_summary: object, _literal: object) -> None:
+    raise AssertionError("a refused lifecycle request delivered an Excision product")
+
+
+# A refused request never reaches the Excision operation owner.
+_REFUSED_OWNER: dict[str, Any] = {"input_demand": _refused_demand, "result_sink": _refused_sink}
 
 
 @pytest.fixture
@@ -158,7 +172,7 @@ class TestFaultInjection:
                 row = drive_lifecycle_request(conn, fake, assertion_id, now_ms=2)
             assert row.state == "rejected"
 
-            outcome = apply_primary_invalidation_if_confirmed(tmp_path, conn, assertion_id)
+            outcome = apply_primary_invalidation_if_confirmed(tmp_path, conn, assertion_id, **_REFUSED_OWNER)
             assert outcome.success is False
             assert outcome.reason == "rejected"
 
@@ -178,14 +192,14 @@ class TestFaultInjection:
                     conn, target_ref="session:codex-session:x", mode="primary", reason="r", now_ms=1
                 )
             # still pending: no drive at all yet
-            outcome_pending = apply_primary_invalidation_if_confirmed(tmp_path, conn, assertion_id)
+            outcome_pending = apply_primary_invalidation_if_confirmed(tmp_path, conn, assertion_id, **_REFUSED_OWNER)
             assert outcome_pending.success is False
             assert outcome_pending.reason == "pending_confirmation"
 
             fake = SinexContractFake()
             with conn:
                 drive_lifecycle_request(conn, fake, assertion_id, now_ms=2)  # -> acknowledged
-            outcome_ack = apply_primary_invalidation_if_confirmed(tmp_path, conn, assertion_id)
+            outcome_ack = apply_primary_invalidation_if_confirmed(tmp_path, conn, assertion_id, **_REFUSED_OWNER)
             assert outcome_ack.success is False
             assert outcome_ack.reason == "pending_confirmation"
         finally:
@@ -235,7 +249,12 @@ class TestModeGates:
 
 
 class TestPrimaryInvalidatesOnlyAfterConfirmation:
-    def test_confirmed_request_actually_excises_the_local_replica(self, tmp_path: Path, user_db: Path) -> None:
+    @pytest.mark.parametrize(
+        "confirmation_view", ["committed", "uncommitted", "stale_snapshot", "changed_after_prepare"]
+    )
+    def test_confirmed_request_actually_excises_the_local_replica(
+        self, tmp_path: Path, user_db: Path, confirmation_view: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         source_db = tmp_path / "source.db"
         index_db = tmp_path / "index.db"
         initialize_runtime_source_fixture(source_db)
@@ -248,6 +267,7 @@ class TestPrimaryInvalidatesOnlyAfterConfirmation:
                 source_conn,
                 origin="codex-session",
                 source_path="/fake/x.jsonl",
+                canonical_source_path="/fake/x.jsonl",
                 source_index=0,
                 payload=b"hello",
                 acquired_at_ms=1,
@@ -270,7 +290,10 @@ class TestPrimaryInvalidatesOnlyAfterConfirmation:
         finally:
             index_conn.close()
 
-        conn = sqlite3.connect(user_db)
+        conn = sqlite3.connect(user_db, check_same_thread=False)
+        # The resident writer profile keeps user.db in WAL, so a stale reader
+        # snapshot does not block the confirming commit.
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             with conn:
                 assertion_id = submit_lifecycle_request(
@@ -279,12 +302,65 @@ class TestPrimaryInvalidatesOnlyAfterConfirmation:
             fake = SinexContractFake()
             with conn:
                 drive_lifecycle_request(conn, fake, assertion_id, now_ms=2)  # acknowledged
-            with conn:
-                row = drive_lifecycle_request(conn, fake, assertion_id, now_ms=3)  # confirmed
-            assert row.state == "confirmed"
+            stale_reader = None
+            try:
+                if confirmation_view == "stale_snapshot":
+                    stale_reader = sqlite3.connect(user_db, check_same_thread=False)
+                    stale_reader.execute("BEGIN")
+                    stale_row = read_lifecycle_request(stale_reader, assertion_id)
+                    assert stale_row is not None and stale_row.state == "acknowledged"
+                row = drive_lifecycle_request(conn, fake, assertion_id, now_ms=3)
+                assert row.state == "confirmed"
+                if confirmation_view != "uncommitted":
+                    conn.commit()
+                caller = stale_reader if stale_reader is not None else conn
+                caller_row = read_lifecycle_request(caller, assertion_id)
+                assert caller_row is not None
+                assert caller_row.state == ("acknowledged" if stale_reader is not None else "confirmed")
+                if confirmation_view == "changed_after_prepare":
+                    from polylogue.operations.mutation_transaction import OperationExecutor
 
-            outcome = apply_primary_invalidation_if_confirmed(tmp_path, conn, assertion_id)
-            assert outcome.success is True
+                    prepare = OperationExecutor.prepare_bound_for_archive
+
+                    def change_request_after_preparation(self: OperationExecutor, *args: Any, **kwargs: Any) -> Any:
+                        preview = prepare(self, *args, **kwargs)
+                        conn.execute(
+                            "UPDATE assertions SET value_json = json_set(value_json, '$.state', 'rejected') "
+                            "WHERE assertion_id = ?",
+                            (assertion_id,),
+                        )
+                        conn.commit()
+                        return preview
+
+                    monkeypatch.setattr(
+                        OperationExecutor, "prepare_bound_for_archive", change_request_after_preparation
+                    )
+                # The Excision operation owner supplies its original creator
+                # admission and result delivery; the caller's handle is read
+                # on that owner's worker.
+                outcome, products = run_in_excision_owner(
+                    tmp_path,
+                    lambda input_demand, sink: apply_primary_invalidation_if_confirmed(
+                        tmp_path, caller, assertion_id, input_demand=input_demand, result_sink=sink
+                    ),
+                )
+                assert len(products) == (1 if outcome.success else 0)
+                if confirmation_view == "uncommitted":
+                    assert outcome.success is False
+                    assert outcome.reason == "pending_confirmation"
+                    conn.rollback()
+                elif confirmation_view == "changed_after_prepare":
+                    assert outcome.success is False and outcome.reason == "request_changed"
+                else:
+                    assert outcome.success is True
+                    # Confirmation and its recorded intent survive apply and
+                    # a fresh reader, independently of caller snapshots.
+                    with sqlite3.connect(user_db) as restarted:
+                        retained = read_lifecycle_request(restarted, assertion_id)
+                    assert retained is not None and retained == row
+            finally:
+                if stale_reader is not None:
+                    stale_reader.close()
         finally:
             conn.close()
 
@@ -293,13 +369,13 @@ class TestPrimaryInvalidatesOnlyAfterConfirmation:
             remaining = index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         finally:
             index_conn.close()
-        assert remaining == 0
+        assert remaining == (1 if confirmation_view in {"uncommitted", "changed_after_prepare"} else 0)
 
     def test_unknown_request_id_cannot_report_success(self, tmp_path: Path, user_db: Path) -> None:
         conn = sqlite3.connect(user_db)
         try:
             outcome = apply_primary_invalidation_if_confirmed(
-                tmp_path, conn, "assertion-excision_request:does-not-exist"
+                tmp_path, conn, "assertion-excision_request:does-not-exist", **_REFUSED_OWNER
             )
             assert outcome.success is False
             assert outcome.reason == "unknown_request"

@@ -29,6 +29,7 @@ def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_so
         provider=Provider.CODEX,
         payload=payload,
         source_path="session.jsonl",
+        canonical_source_path="session.jsonl",
         acquired_at_ms=1,
         raw_id=raw_id,
     )
@@ -55,6 +56,7 @@ def _bind_append(
         provider=Provider.CODEX,
         payload=payload,
         source_path="session.jsonl",
+        canonical_source_path="session.jsonl",
         source_index=-1,
         acquired_at_ms=1,
         raw_id=raw_id,
@@ -121,6 +123,7 @@ def test_unresolved_kind_projects_unchecked_alongside_a_proven_sibling(tmp_path:
             provider=Provider.CODEX,
             payload=b"not yet classified",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=1,
             raw_id="pending",
         )
@@ -165,7 +168,7 @@ def test_live_append_chain_projects_the_same_closed_verdict_vocabulary(tmp_path:
             acquisition_generation=2,
         )
 
-        plan = archive.classify_raw_revision_cohort_for_live_watch("codex:s1")
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex:s1")
         verdicts = project_raw_authority_verdicts(archive, "codex:s1")
 
     assert set(plan.accepted_raw_ids) == {"baseline", "append-one", "append-two"}
@@ -199,7 +202,7 @@ def test_verdicts_match_direct_classification_of_the_same_bytes(tmp_path: Path) 
         _bind_full(archive, raw_id="oldest", payload=b"one\n", logical_source_key="codex:s1")
         _bind_full(archive, raw_id="newest", payload=b"one\ntwo\n", logical_source_key="codex:s1")
 
-        plan = archive.classify_raw_revision_cohort_for_live_watch("codex:s1")
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex:s1")
         verdicts = project_raw_authority_verdicts(archive, "codex:s1")
 
         row = (

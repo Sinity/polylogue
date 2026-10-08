@@ -11,6 +11,7 @@
   `user`, `audit`). Safe path: `require_vocabulary` at the write boundary.
   Derived tiers may carry such checks.
 - Flag a writable open or commit on a live archive that bypasses the daemon
-  writer route without `declared_unguarded_write` (P1).
+  writer route without archive-bound custody or exact owned offline destination
+  authority (P1).
 - Flag rebuildable state (`index.db`, `ops.db`) used as the authority for a
   durable mutation (P1).

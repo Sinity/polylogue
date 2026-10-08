@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import builtins
 import sqlite3
 from contextlib import closing
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.archive.hydration import archive_envelope_to_session
+from polylogue.core.compute import compute_adapter
 from polylogue.core.enums import Origin
 from polylogue.core.errors import VectorRuntimeUnavailableError
 from polylogue.core.protocols import VectorProvider
@@ -213,43 +214,6 @@ class RepositoryVectorMixin:
 
         return {row["message_id"]: row["session_id"] for row in rows}
 
-    async def embed_session(
-        self,
-        session_id: str,
-        vector_provider: VectorProvider | None = None,
-    ) -> int:
-        vector_provider = resolve_optional_vector_provider(vector_provider)
-
-        if vector_provider is None:
-            raise ValueError("No vector provider available. Set VOYAGE_API_KEY.")
-
-        messages = await self.queries.get_messages(session_id)
-        if not messages:
-            return 0
-
-        origin = next(
-            (
-                source_name.strip()
-                for message in messages
-                if (source_name := getattr(message, "source_name", "")) and source_name.strip()
-            ),
-            None,
-        )
-        if origin is None:
-            await asyncio.to_thread(
-                vector_provider.upsert,
-                session_id,
-                messages,
-            )
-        else:
-            await asyncio.to_thread(
-                vector_provider.upsert,
-                session_id,
-                messages,
-                origin=origin,
-            )
-        return len(messages)
-
     async def similarity_search(
         self,
         query: str,
@@ -261,10 +225,14 @@ class RepositoryVectorMixin:
         if vector_provider is None:
             raise ValueError("No vector provider configured")
 
-        results = await asyncio.to_thread(
-            vector_provider.query,
-            query,
-            limit=limit,
+        results = (
+            await compute_adapter()
+            .submit(
+                partial(vector_provider.query, query, limit=limit),
+                admission_class="interactive-read",
+                estimated_bytes=len(query.encode("utf-8")),
+            )
+            .wait()
         )
         if not results:
             return []

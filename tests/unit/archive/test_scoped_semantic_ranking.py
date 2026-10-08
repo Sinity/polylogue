@@ -10,14 +10,30 @@ from typing import Any, Never, cast
 
 import pytest
 
-from polylogue.archive.query.archive_execution import archive_search_hits, list_archive, list_summaries_archive
+from polylogue.archive.query.archive_execution import (
+    archive_search_hits,
+    count_archive,
+    list_archive,
+    list_summaries_archive,
+)
 from polylogue.archive.query.execution_control import QueryCancelledError
 from polylogue.archive.query.expression import ExpressionCompileError, compile_expression
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.session.domain_models import Session
+from polylogue.config import Config
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
 from polylogue.operations.operation_context import open_operation_read
-from tests.infra.scoped_semantic import declare_ranking_repository, ranking_archive
+from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.scoped_semantic import declare_ranking_repository
+from tests.infra.scoped_semantic import ranking_archive as _ranking_archive
+
+
+def ranking_archive(
+    *args: Any, **kwargs: Any
+) -> tuple[Config, SqliteVecProvider, dict[tuple[str, str], tuple[str, str]], list[dict[str, object]]]:
+    """Seed off the event loop: a synchronous write lease may not block it."""
+    return run_off_event_loop(lambda: _ranking_archive(*args, **kwargs))
 
 
 def test_rare_scope_precedes_vector_ranking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -36,6 +52,27 @@ def test_rare_scope_precedes_vector_ranking(tmp_path: Path, monkeypatch: pytest.
     assert result.execution.completed_lanes == ("vector",)
     assert result.execution.exactness == "exact"
     assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_semantic_count_applies_content_postfilters_like_the_ranked_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    config, provider, _ids, _requests = ranking_archive(
+        root,
+        [
+            ("kept", "m", "Candidate has sufficient semantic prose", 0.0),
+            ("excluded", "m", "Candidate has excluded semantic prose", 1.0),
+        ],
+        query_axis=0.0,
+        monkeypatch=monkeypatch,
+    )
+    plan = SessionQueryPlan(similar_text="question", negative_terms=("excluded",), vector_provider=provider)
+    page = await list_summaries_archive(plan, archive_root=root, config=config)
+    total = await count_archive(plan, archive_root=root, config=config)
+    assert len(page) == 1
+    assert total == 1
 
 
 @pytest.mark.parametrize("full", (False, True))
@@ -530,7 +567,12 @@ def test_sql_comparison_keys_match_current_python_owner_on_held_rows(
             for sort in ("date", "messages", "words", "longest", "tokens"):
                 for reverse in (False, True):
                     plan = SessionQueryPlan(sort=sort, reverse=reverse)
-                    expected = plan._sort_sessions(sessions) if full else plan._sort_summaries(summaries)
+                    # Numeric order keys are transcript metrics, including for
+                    # summary results. Their independent oracle is the full
+                    # composed session, not the date-only summary comparator.
+                    numeric = sort in {"messages", "tokens", "words", "longest"}
+                    use_full = full or numeric
+                    expected = plan._sort_sessions(sessions) if use_full else plan._sort_summaries(summaries)
                     with frame.archive.scoped_search_population(selected_ids):
                         hits = [
                             frame.archive.semantic_summaries([(ids[(sid, "m0")][1], 0.0)], limit=1)[0]
@@ -542,7 +584,7 @@ def test_sql_comparison_keys_match_current_python_owner_on_held_rows(
                                 (str(row.id), *session_order_values(plan, row), ordinal)
                                 for ordinal, row in enumerate(sessions, start=1)
                             )
-                            if full
+                            if use_full
                             else (
                                 (str(row.id), *summary_order_values(plan, row), ordinal)
                                 for ordinal, row in enumerate(summaries, start=1)
@@ -714,19 +756,19 @@ def test_scoped_ranking_keeps_borrowed_index_after_path_replacement(
     assert len(requests) == 1
 
 
-def test_public_upsert_preserves_original_hash_for_compatible_scoped_query(
+def test_session_embedding_preserves_index_hash_for_compatible_scoped_query(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.core.enums import MaterialOrigin, Role
-    from polylogue.core.types import ContentHash, MessageId, SessionId
-    from polylogue.storage.runtime import MessageRecord
+    """The session embedding route keys its vector by the index content hash,
+    and a compatible model's scoped query reads it without a new purchase."""
+    from polylogue.storage.embeddings.materialization import embed_archive_session_sync
     from tests.infra.scoped_semantic import axis_vector
 
     root = tmp_path / "archive"
     text = "Actual public producer sends this exact canonical authored prose"
     config, provider, ids, requests = ranking_archive(
-        root, [("only", "m", text, 2.0)], query_axis=0.0, monkeypatch=monkeypatch
+        root, [("only", "m", text, None)], query_axis=0.0, monkeypatch=monkeypatch
     )
     sid, mid = ids[("only", "m")]
     calls: list[str] = []
@@ -737,15 +779,8 @@ def test_public_upsert_preserves_original_hash_for_compatible_scoped_query(
 
     monkeypatch.setattr(provider, "_get_embeddings", embed)
     provider.model = "voyage-4"
-    message = MessageRecord(
-        message_id=MessageId(mid),
-        session_id=SessionId(sid),
-        role=Role.USER,
-        material_origin=MaterialOrigin.HUMAN_AUTHORED,
-        text=text,
-        content_hash=ContentHash((b"m" * 32).hex()),
-    )
-    provider.upsert(sid, [message], origin="codex-session")
+    outcome = embed_archive_session_sync(root / "index.db", provider, sid)
+    assert (outcome.status, outcome.embedded_message_count) == ("embedded", 1)
     with closing(sqlite3.connect(root / "embeddings.db")) as observer, closing(observer.cursor()) as cursor:
         assert (
             cursor.execute(

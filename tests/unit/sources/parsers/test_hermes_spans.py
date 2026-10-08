@@ -252,11 +252,8 @@ def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_
     # source_path now yields an artifact- AND profile-qualified identity and
     # a parent session_links join key -- see
     # test_dispatch_threads_source_path_directory_as_profile_root_for_atif.
-    from polylogue.sources.parsers.hermes_identity import (
-        profile_key,
-        profile_root_for_artifact,
-        qualified_session_id,
-    )
+    from polylogue.core.provider_identity import profile_root_for_artifact
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
 
     expected_key = profile_key(profile_root_for_artifact(REAL_ATOF_FIXTURE))
     assert session.provider_session_id == f"observer:atof:real-nemo-relay-session-redacted@profile-{expected_key}"
@@ -331,7 +328,8 @@ def test_real_atof_fixture_subagent_mark_materializes_delegation_edge() -> None:
     )
     assert len(sessions) == 2
 
-    from polylogue.sources.parsers.hermes_identity import profile_key, profile_root_for_artifact
+    from polylogue.core.provider_identity import profile_root_for_artifact
+    from polylogue.sources.parsers.hermes_identity import profile_key
 
     expected_key = profile_key(profile_root_for_artifact(REAL_ATOF_FIXTURE))
     parent = next(s for s in sessions if s.provider_session_id.startswith("observer:atof:real-nemo-relay-session"))

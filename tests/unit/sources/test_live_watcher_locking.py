@@ -10,24 +10,31 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
-import threading
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
 from polylogue.daemon.intake import AdmissionOutcome
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.live.parse_prefetch import LiveParseStage
+from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
+from polylogue.sources.revision_backfill import RetainedReplayOutcome
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.cursor_authority import fixture_cursor_authority
+from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
-def _make_watcher(tmp_path: Path, root: Path) -> LiveWatcher:
+def _make_watcher(
+    tmp_path: Path, root: Path, *, write_coordinator: DaemonWriteCoordinator | None = None
+) -> LiveWatcher:
     polylogue = cast(
         Any,
         SimpleNamespace(
@@ -36,7 +43,9 @@ def _make_watcher(tmp_path: Path, root: Path) -> LiveWatcher:
         ),
     )
     cursor = CursorStore(tmp_path / "archive.sqlite")
-    return LiveWatcher(polylogue, (WatchSource(name="test", root=root),), cursor=cursor)
+    return LiveWatcher(
+        polylogue, (WatchSource(name="test", root=root),), cursor=cursor, write_coordinator=write_coordinator
+    )
 
 
 @pytest.mark.parametrize("route", ["append", "full"])
@@ -62,7 +71,7 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
             source_root.mkdir()
             path = source_root / "session.jsonl"
             path.write_text('{{"type":"session_meta","payload":{{"id":"exit-proof"}}}}\\n')
-            coordinator = DaemonWriteCoordinator()
+            coordinator = DaemonWriteCoordinator(archive_root=root)
             cursor = CursorStore(root / "index.db")
             polylogue = SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db"))
             watcher = LiveWatcher(
@@ -71,21 +80,22 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
                 cursor=cursor,
                 write_coordinator=coordinator,
             )
-            # This proof targets the writer bridge's process-exit semantics.
-            # Disable the independent prefetch lane so an executor worker
-            # cannot determine the subprocess lifetime instead.
-            watcher._parse_stage.shutdown()
-            watcher._parse_stage = None
-            watcher._batch_processor._parse_stage = None
+            # This proof targets the writer bridge's process-exit semantics:
+            # each injected route blocks inside the coordinator's bridge.
             started = threading.Event()
             def stuck(*args, **kwargs):
                 started.set()
                 threading.Event().wait()
 
+            async def stuck_append(*args, **kwargs):
+                return await coordinator.run_sync("watcher.live_ingest.append", stuck)
+
             if {route!r} == "append":
                 stat = path.stat()
                 watcher._batch_processor._append_plan = lambda *args, **kwargs: _AppendPlan(
                     path=path,
+                    canonical_source_path=str(path),
+                    captured_profile_key=None,
                     source_name="codex",
                     start_offset=0,
                     last_complete_newline=stat.st_size,
@@ -97,14 +107,20 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
                     payload_hash="exit-proof",
                     cursor_fingerprint="base",
                     bytes_read=stat.st_size,
+                    native_id_hint="exit-proof",
+                    acquisition_native_id_hint="exit-proof",
                 )
-                watcher._batch_processor._ingest_append_plans = stuck
+                watcher._batch_processor._append_runner = stuck_append
             else:
                 watcher._batch_processor._append_plan = lambda *args, **kwargs: None
                 watcher._batch_processor._ingest_full_paths_sync = stuck
 
             caller = asyncio.create_task(watcher._ingest_files([path]))
             while not started.is_set():
+                if caller.done():
+                    # Surface a route that failed before reaching the writer.
+                    caller.result()
+                    raise AssertionError("route finished without reaching the writer")
                 await asyncio.sleep(0.001)
             caller.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -164,7 +180,9 @@ async def test_a_locked_archive_leaves_the_whole_page_retryable_and_unacknowledg
     second = root / "b-session.jsonl"
     first.write_text('{"role":"user","content":"a"}\n')
     second.write_text('{"role":"user","content":"b"}\n')
-    watcher = _make_watcher(tmp_path, root)
+    # Page admission initializes the cursor on the daemon writer.
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    watcher = _make_watcher(tmp_path, root, write_coordinator=coordinator)
     calls: list[list[Path]] = []
 
     async def locked_ingest(paths: list[Path], **_kwargs: object) -> None:
@@ -177,11 +195,14 @@ async def test_a_locked_archive_leaves_the_whole_page_retryable_and_unacknowledg
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=watcher._sources),
         source,
     )
-    page = await adapter.discover(limit=8)
-    assert {Path(cast(Any, item.payload)) for item in page} == {first, second}
+    try:
+        page = await adapter.discover(limit=8)
+        assert {Path(cast(Any, item.payload)) for item in page} == {first, second}
 
-    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
-        await adapter.admit_page(page)
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await adapter.admit_page(page)
+    finally:
+        assert await coordinator.shutdown(timeout=float("inf"))
 
     # One page, one batch attempt -- not one per file.
     assert calls == [[first, second]]
@@ -257,7 +278,7 @@ async def test_default_cursor_initialization_waits_for_batch_writer_lease(
         if event.phase == "queued" and event.actor.startswith("watcher."):
             watcher_queued.set()
 
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=observe)
     polylogue = cast(
         Any,
         SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db")),
@@ -316,6 +337,7 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(source),
     )
     source.write_bytes(complete + b'{"role":"assistant"')
     watcher_queued = asyncio.Event()
@@ -332,7 +354,7 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
         return original_set(*args, **kwargs)
 
     monkeypatch.setattr(cursor, "set", observed_set)
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=observe)
     watcher = _make_watcher(tmp_path, root)
     watcher._cursor = cursor
     watcher._batch_processor._cursor = cursor
@@ -373,18 +395,19 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
 
 @pytest.mark.asyncio
 async def test_watcher_queues_behind_daemon_maintenance_writer(tmp_path: Path) -> None:
-    """A page's off-writer parse yields to maintenance before publication.
+    """A page's off-writer preparation yields to maintenance before publication.
 
-    This exercises the production watcher -> batch -> parse-prefetch route and
-    a real temporary SQLite archive.  The parser is paused after the batch has
-    recorded its initial ops evidence but before the archive publication.  A
-    maintenance writer must run during that pause; the later archive write
-    then queues behind it.  Reinstating ``coordinator.run('watcher.live_ingest',
-    ...)`` around the whole page leaves maintenance blocked until parsing ends,
-    so ``maintenance_entered`` never sets and pytest-timeout fails the test.
+    This exercises the production watcher -> batch -> raw-owner retained route
+    and a real temporary SQLite archive.  Retained preparation is paused after
+    the batch has acquired its raw but before the archive publication.  A
+    maintenance writer must run during that pause; the later publication
+    (``watcher.live_ingest.retained``) then queues behind it.  Reinstating
+    ``coordinator.run('watcher.live_ingest', ...)`` around the whole page leaves
+    maintenance blocked until preparation ends, so ``maintenance_entered``
+    never sets and pytest-timeout fails the test.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     source_root = tmp_path / "sources"
     source_root.mkdir()
     source = source_root / "session.jsonl"
@@ -405,61 +428,70 @@ async def test_watcher_queues_behind_daemon_maintenance_writer(tmp_path: Path) -
             )
         )
     )
-    loop = asyncio.get_running_loop()
-    parser_started = asyncio.Event()
-    release_parser = threading.Event()
-    stage = LiveParseStage(max_workers=1, max_inflight_bytes=1_000_000)
-    original_warm_paths = stage.warm_paths
-
-    # ``warm_paths`` is the batch's off-writer preparation of path-backed
-    # sources (``LiveBatchProcessor._ingest_full_paths``); pausing it holds
-    # the page between its ops evidence and its archive publication. Every
-    # wait below is on the event it means; pytest-timeout bounds a hang.
-    def paused_warm_paths(*args: Any, **kwargs: Any) -> frozenset[str]:
-        loop.call_soon_threadsafe(parser_started.set)
-        release_parser.wait()
-        return original_warm_paths(*args, **kwargs)
-
-    stage.warm_paths = paused_warm_paths  # type: ignore[method-assign]
+    preparation_started = asyncio.Event()
+    release_preparation = asyncio.Event()
     events: list[DaemonWriteEvent] = []
     coordinator = DaemonWriteCoordinator(observer=events.append, archive_root=archive_root)
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     polylogue = cast(
         Any,
         SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
     )
-    watcher = LiveWatcher(
-        polylogue,
-        (WatchSource(name="codex", root=source_root),),
-        cursor=CursorStore(archive_root / "index.db"),
-        write_coordinator=coordinator,
-        parse_stage=stage,
-    )
-    maintenance_entered = asyncio.Event()
-    release_maintenance = asyncio.Event()
-
-    async def maintenance() -> None:
-        maintenance_entered.set()
-        await release_maintenance.wait()
-
-    ingest_task = asyncio.create_task(watcher._ingest_files([source]))
     try:
-        await parser_started.wait()
-        maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
-        await maintenance_entered.wait()
-    finally:
-        # A failure above must not leave the parse thread parked forever.
-        release_parser.set()
-    await asyncio.sleep(0)
-    release_maintenance.set()
-    metrics = await ingest_task
-    await maintenance_task
+        async with prepared_live_convergence_owner(
+            archive_root, compute_adapter=compute, write_coordinator=coordinator
+        ) as raw_owner:
+            # Retained preparation is the batch's off-writer work for path-backed
+            # sources; pausing it holds the page between acquisition and its
+            # archive publication. Every wait below is on the event it means;
+            # pytest-timeout bounds a hang.
+            async def paused_retained(
+                raw_ids: Sequence[str],
+                *,
+                on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
+            ) -> RetainedReplayOutcome:
+                preparation_started.set()
+                await release_preparation.wait()
+                return await raw_owner.ingest_retained_raw_ids(raw_ids, on_terminal_refusal=on_terminal_refusal)
 
-    assert metrics.succeeded_file_count == 1
-    actors = [event.actor for event in events if event.phase == "queued"]
-    maintenance_index = actors.index("maintenance.raw_materialization")
-    assert any(actor.startswith("watcher.live_ingest.") for actor in actors[maintenance_index + 1 :])
-    watcher.stop()
-    assert await coordinator.shutdown(timeout=1.0)
+            watcher = LiveWatcher(
+                polylogue,
+                (WatchSource(name="codex", root=source_root),),
+                cursor=CursorStore(archive_root / "index.db"),
+                write_coordinator=coordinator,
+                sqlite_capture_stage=LiveSQLiteCaptureStage(compute_adapter=compute),
+                append_runner=raw_owner.ingest_append_plans,
+                convergence_runner=raw_owner.run_convergence_sync,
+                retained_runner=paused_retained,
+            )
+            maintenance_entered = asyncio.Event()
+            release_maintenance = asyncio.Event()
+
+            async def maintenance() -> None:
+                maintenance_entered.set()
+                await release_maintenance.wait()
+
+            ingest_task = asyncio.create_task(watcher._ingest_files([source]))
+            try:
+                await preparation_started.wait()
+                maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
+                await maintenance_entered.wait()
+            finally:
+                # A failure above must not leave the preparation parked forever.
+                release_preparation.set()
+            await asyncio.sleep(0)
+            release_maintenance.set()
+            metrics = await ingest_task
+            await maintenance_task
+
+            assert metrics.succeeded_file_count == 1
+            actors = [event.actor for event in events if event.phase == "queued"]
+            maintenance_index = actors.index("maintenance.raw_materialization")
+            assert any(actor.startswith("watcher.live_ingest.") for actor in actors[maintenance_index + 1 :])
+            watcher.stop()
+    finally:
+        assert await coordinator.shutdown(timeout=1.0)
+        await asyncio.to_thread(compute.shutdown, wait=True)
 
 
 def test_a_wrong_shaped_coordinator_cannot_silently_ungate_writes(tmp_path: Path) -> None:

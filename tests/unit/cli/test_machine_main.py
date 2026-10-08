@@ -37,6 +37,34 @@ def test_daemon_required_envelope_preserves_resolved_archive_root(
     assert details["archive_root"] == "/archives/old"
 
 
+def test_plain_daemon_absent_refusal_names_the_remedy_not_an_unexpected_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without a machine format, the daemon-absent refusal stays typed.
+
+    Anti-vacuity: drop the plain-mode ``OperationUnavailableError`` branch and
+    the generic handler prints ``unexpected error: OperationUnavailableError``
+    and exits 1.
+    """
+    from polylogue.cli.render.outcome import FAILED_READ_EXIT_CODE
+
+    def unavailable(*, standalone_mode: bool = False) -> None:
+        del standalone_mode
+        raise OperationUnavailableError(
+            "start polylogued run to serve this operation: insights.list", operation="insights.list"
+        )
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_machine_entry(unavailable, ["analyze", "insights"])
+
+    assert exc_info.value.code == FAILED_READ_EXIT_CODE
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert TRACEBACK_SENTINEL not in combined
+    assert "unexpected error" not in combined
+    assert "Error: start polylogued run to serve this operation: insights.list" in combined
+
+
 def test_run_machine_entry_plain_polylogue_error_emits_click_style_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

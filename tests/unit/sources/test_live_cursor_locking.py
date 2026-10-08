@@ -12,6 +12,8 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_observability import record_attempt_progress
 from polylogue.sources.live.batch_support import _AppendPlan
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 
 def test_cursor_progress_writes_do_not_raise_on_transient_sqlite_lock(
@@ -120,7 +122,7 @@ def test_record_failed_cursor_does_not_reincrement_already_excluded_cursor(tmp_p
     source.write_text('{"a":1}\n')
     store = CursorStore(tmp_path / "live.sqlite")
     for _ in range(_MAX_CURSOR_FAILURES_BEFORE_EXCLUDE):
-        store.mark_failed(source)
+        store.mark_failed(source, authority=fixture_cursor_authority(source))
     excluded_record = store.get_record(source)
     assert excluded_record is not None
     assert excluded_record.excluded
@@ -157,7 +159,7 @@ def test_failed_retry_of_an_excluded_cursor_rebinds_it_to_the_failed_observation
     source.write_text('{"a":1}\n')
     store = CursorStore(tmp_path / "live.sqlite")
     for _ in range(_MAX_CURSOR_FAILURES_BEFORE_EXCLUDE):
-        store.mark_failed(source, failed_stat=source.stat())
+        store.mark_failed(source, failed_stat=source.stat(), authority=fixture_cursor_authority(source))
     with source.open("a") as handle:
         handle.write('{"b":2}\n')
     appended = source.stat()
@@ -194,6 +196,7 @@ def test_failed_persistence_preserves_last_committed_cursor_offset(tmp_path: Pat
         byte_offset=len(committed),
         last_complete_newline=len(committed),
         parser_fingerprint="fp:test",
+        authority=fixture_cursor_authority(source),
     )
     processor = LiveBatchProcessor(
         cast(Any, object()),
@@ -226,6 +229,7 @@ async def test_archive_lock_never_advances_or_excludes_cursor(
     payload = b'{"type":"session_meta","payload":{"id":"retry-me"}}\n'
     source.write_bytes(payload)
     cursor = CursorStore(tmp_path / "ops.db")
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="codex", root=root),),
@@ -240,6 +244,8 @@ async def test_archive_lock_never_advances_or_excludes_cursor(
         stat = source.stat()
         plan = _AppendPlan(
             path=source,
+            canonical_source_path=str(source),
+            captured_profile_key=None,
             source_name="codex",
             start_offset=0,
             last_complete_newline=stat.st_size,
@@ -253,11 +259,12 @@ async def test_archive_lock_never_advances_or_excludes_cursor(
             bytes_read=len(payload),
         )
         monkeypatch.setattr(processor, "_append_plan", lambda *_args, **_kwargs: plan)
-        monkeypatch.setattr(
-            processor,
-            "_ingest_append_plans",
-            lambda _plans: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
-        )
+
+        async def locked_append(*_args: object, **_kwargs: object) -> object:
+            raise sqlite3.OperationalError("database is locked")
+
+        # Append plans publish only through the processor's supplied raw-owner runner.
+        monkeypatch.setattr(processor, "_append_runner", locked_append)
     else:
         monkeypatch.setattr(processor, "_append_plan", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(processor, "_ingest_full_paths", locked_full)

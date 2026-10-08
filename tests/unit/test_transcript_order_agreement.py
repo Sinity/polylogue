@@ -29,6 +29,7 @@ from polylogue.storage.sqlite.queries.message_query_reads import (
     get_messages_paginated,
     iter_messages,
 )
+from tests.infra.archive_templates import seeds_off_event_loop
 from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest, invoke_surface_async
@@ -67,6 +68,7 @@ def _message(native_id: str, position: int, text: str) -> ParsedMessage:
     )
 
 
+@seeds_off_event_loop
 def _seed(root: Path) -> tuple[str, str]:
     """Write an adversarially clocked session and a prefix-sharing fork of it."""
     with ArchiveStore(root) as store:

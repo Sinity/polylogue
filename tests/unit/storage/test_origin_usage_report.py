@@ -13,19 +13,21 @@ from polylogue.core.evidence_families import (
     USAGE_LANE_EXACT_TOKENS_FAMILY,
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.usage import (
     origin_usage_report_from_connection,
     provider_usage_coverage_matrix,
     provider_usage_event_identity,
 )
+from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.session_profiles import write_session_profile
 
 
 def _connect(path: Path, tier: ArchiveTier = ArchiveTier.INDEX) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, tier)
@@ -135,7 +137,7 @@ def test_origin_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_pa
         ],
     )
 
-    write_parsed_session_to_archive(conn, session)
+    write_fixture_index_session(conn, session)
     conn.execute(
         """
         INSERT INTO session_provider_usage_events (
@@ -218,7 +220,7 @@ def test_provider_usage_ledger_keeps_cross_provider_lanes_disjoint(tmp_path: Pat
     conn = _connect(tmp_path / "index.db")
 
     def write_session(provider: Provider, session_id: str) -> str:
-        return write_parsed_session_to_archive(
+        return write_fixture_index_session(
             conn,
             ParsedSession(source_name=provider, provider_session_id=session_id, title=session_id, messages=[]),
         )
@@ -621,6 +623,9 @@ def test_origin_usage_report_handles_empty_origin_filter(tmp_path: Path) -> None
 
 
 def test_origin_usage_report_exposes_source_debt_and_stale_rollups(tmp_path: Path) -> None:
+    # Source rows are seeded before the fixture writer runs, so the archive
+    # (and its format birth marker) must exist before any tier is opened.
+    bootstrap_archive_root(tmp_path)
     index_conn = _connect(tmp_path / "index.db")
     source_conn = _connect(tmp_path / "source.db", ArchiveTier.SOURCE)
     _insert_raw_session(source_conn, raw_id="raw-materialized", native_id="provider-usage-report")
@@ -663,7 +668,7 @@ def test_origin_usage_report_exposes_source_debt_and_stale_rollups(tmp_path: Pat
         ],
     )
 
-    write_parsed_session_to_archive(index_conn, session, raw_id="raw-materialized")
+    write_fixture_index_session(index_conn, session, raw_id="raw-materialized")
     index_conn.execute(
         """
         UPDATE session_model_usage
@@ -722,7 +727,7 @@ def test_origin_usage_report_treats_codex_cumulative_as_session_global(tmp_path:
         ],
     )
 
-    write_parsed_session_to_archive(conn, session)
+    write_fixture_index_session(conn, session)
     report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
 
     row = report.origins[0]
@@ -771,7 +776,7 @@ def test_origin_usage_report_ignores_reasoning_only_cumulative_rows(tmp_path: Pa
         ],
     )
 
-    write_parsed_session_to_archive(conn, session)
+    write_fixture_index_session(conn, session)
     report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
 
     row = report.origins[0]
@@ -962,7 +967,7 @@ def test_origin_usage_report_ignores_whitespace_only_cumulative_tail_for_stale_a
             ),
         ],
     )
-    write_parsed_session_to_archive(conn, session)
+    write_fixture_index_session(conn, session)
     conn.execute(
         """
         UPDATE session_model_usage
@@ -999,7 +1004,7 @@ def test_origin_usage_report_overflow_fallback_uses_model_whitespace_contract(tm
     )
 
     def write_session(event_count: int) -> None:
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -1057,7 +1062,7 @@ def test_origin_usage_report_does_not_mark_event_only_origin_stale_without_rollu
             )
         ],
     )
-    write_parsed_session_to_archive(conn, session)
+    write_fixture_index_session(conn, session)
     conn.execute("DELETE FROM session_model_usage WHERE session_id = 'codex-session:event-only-origin'")
 
     report = origin_usage_report_from_connection(
@@ -1104,7 +1109,7 @@ def test_origin_usage_report_handles_large_accepted_last_usage_totals(tmp_path: 
             ),
         ],
     )
-    write_parsed_session_to_archive(conn, session)
+    write_fixture_index_session(conn, session)
 
     report = origin_usage_report_from_connection(
         conn,
@@ -1234,7 +1239,7 @@ def test_provider_usage_coverage_matrix_marks_estimate_only_exports(tmp_path: Pa
         ],
     )
 
-    write_parsed_session_to_archive(conn, session)
+    write_fixture_index_session(conn, session)
     report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
 
     row = report.origins[0]
@@ -1407,7 +1412,7 @@ def test_whitespace_only_model_name_is_both_counted_and_sampled(tmp_path: Path) 
                 )
             ],
         )
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.execute(
             """
             INSERT INTO session_provider_usage_events (
@@ -1437,7 +1442,7 @@ def test_request_lane_reportedness_requires_request_counter_evidence(tmp_path: P
         }
         if request_input is not None:
             payload["last_token_usage"] = {"input_tokens": request_input}
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -1475,7 +1480,7 @@ def test_cumulative_lane_reportedness_keeps_an_explicit_zero(tmp_path: Path) -> 
             "last_token_usage": {"input_tokens": 3, "output_tokens": 1},
             "total_token_usage": {"input_tokens": 0},
         }
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -1509,7 +1514,7 @@ def test_stored_price_does_not_hide_a_missing_cache_rate(tmp_path: Path, monkeyp
 
     conn = _connect(tmp_path / "index.db")
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -1564,7 +1569,7 @@ def test_usage_cli_renders_disjoint_lanes_and_unavailable_requests(tmp_path: Pat
 
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,

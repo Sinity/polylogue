@@ -10,13 +10,11 @@ cannot regress silently again. The suite has no other check that the corpus
 every snapshot test reads is itself production-valid, which is why the original
 symptom could only surface as a confusing snapshot diff.
 
-The corpus is two ChatGPT-export sessions whose raws are FULL baselines
-(``acquisition_generation=0``, no predecessor, ``asserted`` authority), and
-``raw_revision_heads`` is empty. An empty head table is CORRECT for a plain
-import: accepted heads are established by the revision-replay/membership
-governance path, not by ordinary ingest. So ``_check_broken_active_chains``
-validates the two session raws through ``_validate_active_revision_chain`` and
-finds nothing broken -- there is no byte head to validate against.
+The corpus is two ChatGPT-export sessions. Single-pass ingest settles each
+through membership governance, so ``raw_revision_heads`` holds two semantic
+heads and their raws are retired from byte-revision governance. The frontier
+check visits both session raws and finds nothing broken; a semantic head has
+no byte predecessor chain to validate.
 
 The second test is the red twin. Without it, the first test cannot distinguish
 "the invariant holds" from "the invariant is asleep" -- and an integrity check
@@ -28,6 +26,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 
 from polylogue.storage.raw_retention import RawFrontierIntegritySnapshot, raw_frontier_integrity_snapshot
@@ -70,25 +69,23 @@ def test_broken_predecessor_chain_in_the_same_corpus_is_reported(
 ) -> None:
     """Red twin: the invariant is not vacuously green on this corpus shape.
 
-    Point one session's raw at a predecessor that does not exist. That is a
+    Remove the raw one accepted head names from the source tier. That is a
     genuinely broken active chain, and the check must name it -- otherwise the
-    green result above proves nothing about the corpus.
+    green result above proves nothing about the corpus. The corpus heads are
+    membership-governed semantic heads, which carry no byte predecessor chain,
+    so a forged byte predecessor on their raw is not evidence they consult.
     """
     root = named_seeded_archive_rw("cli-chatgpt").root
 
+    with closing(sqlite3.connect(root / "index.db")) as index:
+        raw_id = str(
+            index.execute("SELECT accepted_raw_id FROM raw_revision_heads ORDER BY accepted_raw_id LIMIT 1").fetchone()[
+                0
+            ]
+        )
     conn = sqlite3.connect(root / "source.db")
     with conn:
-        raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id LIMIT 1").fetchone()[0])
-        conn.execute(
-            """
-            UPDATE raw_sessions
-            SET revision_kind = 'append',
-                predecessor_raw_id = 'polylogue-ku00r-missing-predecessor',
-                baseline_raw_id = 'polylogue-ku00r-missing-predecessor'
-            WHERE raw_id = ?
-            """,
-            (raw_id,),
-        )
+        conn.execute("DELETE FROM raw_sessions WHERE raw_id = ?", (raw_id,))
     conn.close()
 
     snapshot = _snapshot(root)

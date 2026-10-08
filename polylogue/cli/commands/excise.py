@@ -10,15 +10,16 @@ explicitly out of this command's scope (polylogue-303r.6); see
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import click
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
+
     from polylogue.surfaces.payloads import MutationStatus
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.paths import archive_root
 
 
 def _submit(env: AppEnv, operation: str, payload: dict[str, object]) -> dict[str, object]:
@@ -55,6 +56,134 @@ def _emit(
         )
         return
     env.ui.console.print(plain_message)
+
+
+def _receipt_summary(session_id: str, domain_receipt: dict[str, object], reference: object) -> str:
+    """Render scalar receipt facts without opening the complete domain document."""
+    detail_message = (
+        f"Excised session {session_id}: {domain_receipt.get('counts', {})} "
+        f"(receipt: {domain_receipt.get('receipt_assertion_id', reference)})"
+    )
+    for field, description in (
+        ("cascaded_session_ids_count", "lineage-dependent sessions also excised"),
+        ("retained_hook_events_count", "hook events remain readable"),
+        ("retained_source_containers_count", "source containers retain bytes for other live sessions"),
+        ("shared_blob_hashes_count", "blobs retained for other live sessions"),
+    ):
+        count = domain_receipt.get(field)
+        if type(count) is not int or count < 0:
+            raise click.ClickException(f"Excision committed; invalid receipt summary field {field}.")
+        if count:
+            detail_message += f"; {count} {description}"
+    if domain_receipt.get("complete") is False:
+        detail_message += "; INCOMPLETE"
+    return detail_message
+
+
+def _read_excision_plan(env: AppEnv, session_id: str, *, cascade_lineage: bool) -> dict[str, Any]:
+    from polylogue.cli.operation_kernel import OperationKernelError, configured_read_operation
+
+    try:
+        result = configured_read_operation(
+            env.config,
+            "session.excision.plan",
+            {"session_id": session_id, "cascade_lineage": cascade_lineage},
+        ).value
+    except OperationKernelError as exc:
+        from polylogue.cli.render.outcome import exit_for_read_failure
+
+        exit_for_read_failure(exc)
+    if not isinstance(result, dict):
+        raise click.ClickException("session.excision.plan returned an invalid result")
+    if result.get("refused"):
+        detail = str(result.get("detail") or "lineage dependents prevent excision")
+        raise _LineagePlanRefusalError(detail)
+    plan = result.get("plan")
+    if not isinstance(plan, dict):
+        raise click.ClickException("session.excision.plan omitted its plan")
+    return plan
+
+
+class _LineagePlanRefusalError(ValueError):
+    """The pinned planner found dependents that the selected cascade omits."""
+
+
+def _emit_complete_receipt(env: AppEnv, result: dict[str, object], *, session_id: str, affected_count: int) -> None:
+    """Verify the entire request-owned document before emitting any machine bytes."""
+    import codecs
+    import hashlib
+
+    from polylogue.cli.operation_kernel import (
+        OperationFailedError,
+        OperationKernelError,
+        iter_configured_operation_result,
+    )
+    from polylogue.core.staged_content import staged_binary_content
+    from polylogue.surfaces.payloads import MutationResultPayload
+
+    document = result.get("result_document")
+    summary = result.get("result")
+    reference = summary.get("receipt_assertion_id") if isinstance(summary, dict) else None
+    reference = reference or result.get("receipt_ref")
+    request_id = document.get("request_id") if isinstance(document, dict) else None
+    effect = result.get("effect")
+    emitting = False
+    try:
+        if not isinstance(document, dict):
+            raise OperationFailedError("operation_result_delivery_failed", "missing complete receipt document")
+        length = document.get("byte_length")
+        expected_digest = document.get("sha256")
+        if (
+            not isinstance(request_id, str)
+            or not request_id
+            or type(length) is not int
+            or length < 0
+            or not isinstance(expected_digest, str)
+            or len(expected_digest) != 64
+        ):
+            raise OperationFailedError("operation_result_delivery_failed", "invalid receipt document identity")
+        with staged_binary_content() as stage:
+            digest = hashlib.sha256()
+            decoder = codecs.getincrementaldecoder("utf-8")("strict")
+            received = 0
+            chunks = cast("Generator[bytes, None, None]", iter_configured_operation_result(env.config, document))
+            try:
+                for chunk in chunks:
+                    decoder.decode(chunk)
+                    received += len(chunk)
+                    digest.update(chunk)
+                    stage.write(chunk)
+            finally:
+                chunks.close()
+            decoder.decode(b"", final=True)
+            if not received or received != length or digest.hexdigest() != expected_digest:
+                raise OperationFailedError("operation_result_delivery_failed", "incomplete or corrupt receipt document")
+            stage.seek(0)
+            prefix = MutationResultPayload(
+                status="ok",
+                operation="excise",
+                session_id=session_id,
+                affected_count=affected_count,
+                detail=str(reference) if reference else None,
+            ).to_json(exclude_none=True)
+            emitting = True
+            click.echo(prefix[:-1].encode("utf-8") + b',"domain_receipt":', nl=False)
+            while chunk := stage.read(64 * 1024):
+                click.echo(chunk, nl=False)
+            click.echo(b"}")
+    except (OperationKernelError, OSError, ValueError, KeyboardInterrupt) as exc:
+        if emitting:
+            # stdout cannot be rolled back; never append an error document to a partial write.
+            raise
+        failure = OperationFailedError(
+            "operation_result_delivery_cancelled"
+            if isinstance(exc, KeyboardInterrupt)
+            else "operation_result_delivery_failed",
+            f"Excision completed with {effect} (receipt {reference}); complete receipt delivery failed. Do not repeat the excision.",
+            {"reference": reference, "effect_committed": effect == "committed", "effect": effect},
+            request_id=request_id if isinstance(request_id, str) else None,
+        )
+        raise failure from exc
 
 
 @click.command("excise")
@@ -126,8 +255,6 @@ def excise_command(
       user.db (survives an ops.db reset) and stops there. Local content is
       NOT touched by this command in mirror/primary mode.
     """
-    root = archive_root()
-
     if mode != "standalone":
         target_ref = f"session:{session_id}"
         if dry_run:
@@ -188,12 +315,10 @@ def excise_command(
         )
         return
 
-    from polylogue.security.excision import LineageDependentsError, plan_session_excision
-
-    if dry_run:
-        try:
-            plan = plan_session_excision(root, session_id, cascade_lineage=cascade_lineage)
-        except LineageDependentsError as exc:
+    try:
+        plan = _read_excision_plan(env, session_id, cascade_lineage=cascade_lineage)
+    except _LineagePlanRefusalError as exc:
+        if dry_run:
             _emit(
                 env,
                 status="aborted",
@@ -204,7 +329,19 @@ def excise_command(
                 detail=str(exc),
             )
             return
-        if not plan.found:
+        else:
+            _emit(
+                env,
+                status="aborted",
+                session_id=session_id,
+                affected_count=0,
+                output_format=output_format,
+                plain_message=f"Refusing to excise {session_id!r}: {exc}",
+                detail=str(exc),
+            )
+            return
+    if dry_run:
+        if not plan.get("found"):
             _emit(
                 env,
                 status="not_found",
@@ -215,78 +352,69 @@ def excise_command(
             )
             return
         if output_format == "json":
-            click.echo(__import__("json").dumps({"status": "preview", "plan": plan.as_dict()}))
+            click.echo(__import__("json").dumps({"status": "preview", "plan": plan}))
             return
         env.ui.summary(
             f"Would excise session {session_id}",
             [
-                f"  source.db raw rows: {plan.source_raw_rows}"
-                + (f" (including {plan.source_fact_rows} fact/plan snapshot row(s))" if plan.source_fact_rows else "")
+                f"  source.db raw rows: {plan['source_raw_rows']}"
                 + (
-                    f" (including {plan.source_sidecar_rows} tool-output sidecar row(s))"
-                    if plan.source_sidecar_rows
+                    f" (including {plan['source_fact_rows']} fact/plan snapshot row(s))"
+                    if plan["source_fact_rows"]
+                    else ""
+                )
+                + (
+                    f" (including {plan['source_sidecar_rows']} tool-output sidecar row(s))"
+                    if plan["source_sidecar_rows"]
                     else ""
                 ),
-                f"  source.db hook events: {plan.source_hook_events}",
-                f"  source.db container members: {plan.source_container_members}"
+                f"  source.db hook events: {plan['source_hook_events']}",
+                f"  source.db container members: {plan['source_container_members']}"
                 + (
-                    f" (releasing {plan.source_container_items} container item(s))"
-                    if plan.source_container_items
+                    f" (releasing {plan['source_container_items']} container item(s))"
+                    if plan["source_container_items"]
                     else ""
                 ),
-                f"  source.db blob refs: {plan.source_blob_refs}",
-                f"  source.db marker carriers: {plan.source_marker_inputs_pending} pending, "
-                f"{plan.source_marker_inputs_accepted} accepted",
+                f"  source.db blob refs: {plan['source_blob_refs']}",
+                f"  source.db marker carriers: {plan['source_marker_inputs_pending']} pending, "
+                f"{plan['source_marker_inputs_accepted']} accepted",
                 *(
-                    [f"  marker carrier digests: {', '.join(plan.marker_input_digests)}"]
-                    if plan.marker_input_digests
+                    [f"  marker carrier digests: {', '.join(plan['marker_input_digests'])}"]
+                    if plan["marker_input_digests"]
                     else []
                 ),
-                f"  index.db sessions: {plan.index_sessions}",
-                f"  index.db messages: {plan.index_messages}",
-                f"  index.db blocks: {plan.index_blocks}",
-                f"  embeddings.db vectors: {plan.embeddings_vectors}",
-                f"  user.db assertions: {plan.user_assertions}",
+                f"  index.db sessions: {plan['index_sessions']}",
+                f"  index.db messages: {plan['index_messages']}",
+                f"  index.db blocks: {plan['index_blocks']}",
+                f"  embeddings.db vectors: {plan['embeddings_vectors']}",
+                f"  user.db assertions: {plan['user_assertions']}",
                 *(
                     [
                         "  WARNING container(s) retained for other live sessions, still holding these "
-                        f"bytes: {', '.join(plan.retained_source_containers)}"
+                        f"bytes: {', '.join(plan['retained_source_containers'])}"
                     ]
-                    if plan.retained_source_containers
+                    if plan["retained_source_containers"]
                     else []
                 ),
                 *(
-                    [f"  already excised blob hashes: {', '.join(plan.already_excised_blob_hashes)}"]
-                    if plan.already_excised_blob_hashes
+                    [f"  already excised blob hashes: {', '.join(plan['already_excised_blob_hashes'])}"]
+                    if plan["already_excised_blob_hashes"]
                     else []
                 ),
                 *(
                     [
-                        f"  WARNING lineage-dependent sessions ({len(plan.lineage_dependent_session_ids)}) would "
+                        f"  WARNING lineage-dependent sessions ({len(plan['lineage_dependent_session_ids'])}) would "
                         "lose composed content unless --cascade-lineage is also passed: "
-                        + ", ".join(plan.lineage_dependent_session_ids)
+                        + ", ".join(plan["lineage_dependent_session_ids"])
                     ]
-                    if plan.lineage_dependent_session_ids
+                    if plan["lineage_dependent_session_ids"]
                     else []
                 ),
             ],
         )
         return
 
-    try:
-        plan = plan_session_excision(root, session_id, cascade_lineage=cascade_lineage)
-    except LineageDependentsError as exc:
-        _emit(
-            env,
-            status="aborted",
-            session_id=session_id,
-            affected_count=0,
-            output_format=output_format,
-            plain_message=f"Refusing to excise {session_id!r}: {exc}",
-            detail=str(exc),
-        )
-        return
-    if not plan.found:
+    if not plan.get("found"):
         _emit(
             env,
             status="not_found",
@@ -309,12 +437,12 @@ def excise_command(
             )
             return
         confirm_message = (
-            f"Permanently excise session {session_id!r} ({plan.index_messages} message(s), "
-            f"{plan.source_raw_rows} raw row(s))? This cannot be undone by re-ingest."
+            f"Permanently excise session {session_id!r} ({plan['index_messages']} message(s), "
+            f"{plan['source_raw_rows']} raw row(s))? This cannot be undone by re-ingest."
         )
-        if plan.lineage_dependent_session_ids:
+        if plan["lineage_dependent_session_ids"]:
             confirm_message += (
-                f" This will ALSO permanently excise {len(plan.lineage_dependent_session_ids)} "
+                f" This will ALSO permanently excise {len(plan['lineage_dependent_session_ids'])} "
                 "lineage-dependent session(s) (--cascade-lineage)."
             )
         if not env.ui.confirm(confirm_message, default=False):
@@ -338,44 +466,21 @@ def excise_command(
     domain_receipt = domain_receipt if isinstance(domain_receipt, dict) else {}
     affected_raw = result.get("affected_count")
     affected_count = affected_raw if isinstance(affected_raw, int) else 0
-    cascaded_session_ids: tuple[str, ...] = tuple(
-        str(item) for item in cast("list[object]", domain_receipt.get("cascaded_session_ids", ()))
-    )
-    detail_message = (
-        f"Excised session {session_id}: {domain_receipt.get('counts', {})} "
-        f"(receipt: {domain_receipt.get('receipt_assertion_id', result.get('reference', 'unknown'))})"
-    )
-    if cascaded_session_ids:
-        detail_message += f"; also excised lineage-dependent session(s): {', '.join(cascaded_session_ids)}"
-    retained_hook_events: tuple[str, ...] = tuple(
-        str(item) for item in cast("list[object]", domain_receipt.get("retained_hook_events", ()))
-    )
-    if retained_hook_events:
-        # An excision that leaves session-addressable payloads behind is a
-        # partial result. Say so on the success line rather than letting the
-        # per-tier counts read as the whole job.
-        detail_message += (
-            f"; INCOMPLETE: {len(retained_hook_events)} hook event(s) for this session were NOT excised "
-            "and remain readable in source.db"
-        )
-    retained_containers: tuple[str, ...] = tuple(
-        str(item) for item in cast("list[object]", domain_receipt.get("retained_source_containers", ()))
-    )
-    if retained_containers:
-        # The container blob still holds this session's bytes because another
-        # session's member of the same export is still live (polylogue-q4f6d).
-        detail_message += (
-            f"; INCOMPLETE: {len(retained_containers)} source container(s) still hold this session's "
-            f"bytes for other live sessions: {', '.join(retained_containers)}"
-        )
-    shared_blobs = cast("list[object]", domain_receipt.get("shared_blob_hashes", ()))
-    if shared_blobs:
-        # Excision forgets this session, not the other sessions that share a
-        # content-addressed blob with it; those blobs stay theirs, unmarked.
-        detail_message += (
-            f"; kept {len(shared_blobs)} blob(s) another live session still references "
-            "(excising that session too forgets them)"
-        )
+    if output_format == "json":
+        from polylogue.cli.operation_kernel import OperationFailedError
+        from polylogue.cli.shared.machine_errors import MachineError
+
+        try:
+            _emit_complete_receipt(env, result, session_id=session_id, affected_count=affected_count)
+        except OperationFailedError as exc:
+            MachineError(
+                code=exc.code,
+                message=str(exc),
+                command=("ops", "excise"),
+                details={**exc.data, "request_id": exc.request_id, "operation": "operation.result"},
+            ).emit()
+        return
+    detail_message = _receipt_summary(session_id, domain_receipt, result.get("receipt_ref"))
     _emit(
         env,
         status="ok",
@@ -383,7 +488,7 @@ def excise_command(
         affected_count=affected_count,
         output_format=output_format,
         plain_message=detail_message,
-        detail=cast(str | None, domain_receipt.get("receipt_assertion_id")) or str(result.get("reference", "")),
+        detail=cast(str | None, domain_receipt.get("receipt_assertion_id")) or str(result.get("receipt_ref", "")),
     )
 
 

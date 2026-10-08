@@ -25,16 +25,15 @@ from typing import Any
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
-from polylogue import Polylogue
 from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.revision_backfill import _parse_one, backfill_historical_revision_evidence
+from polylogue.sources.revision_backfill import _parse_one
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.sqlite_export import read_export_header
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.agent_thread_state import read_spawn_edges, read_thread_titles
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.live_batch import prepared_live_batch_processor
+from tests.infra.raw_owner_routes import cold_rebuilt_index
 
 _THREAD_ID = "8c1d2e3f-4a5b-4c6d-8e7f-901234567890"
 _CHILD_THREAD_ID = "9d2e3f4a-5b6c-4d7e-9f80-123456789012"
@@ -147,34 +146,18 @@ _CODEX_ROWS = {
 }
 
 
-async def _ingest(archive_root: Path, data_root: Path, source: WatchSource, paths: list[Path]) -> None:
-    archive = Polylogue(archive_root=archive_root, db_path=data_root / "cursor.db")
-    processor = LiveBatchProcessor(
-        archive,
-        (source,),
-        cursor=CursorStore(data_root / "cursor.db"),
-        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
-    try:
+async def _ingest(archive_root: Path, source: WatchSource, paths: list[Path]) -> None:
+    async with prepared_live_batch_processor(
+        archive_root, (source,), parser_fingerprint=live_watcher._PARSER_FINGERPRINT
+    ) as processor:
         metrics = await processor.ingest_files(paths, emit_event=False)
-        assert metrics.failed_file_count == 0
-    finally:
-        await archive.close()
+    assert metrics.failed_file_count == 0
 
 
-def _replay_from_source_tier(archive_root: Path) -> None:
-    """Discard the derived tier and rebuild it from the retained exports alone."""
-    index_db = archive_root / "index.db"
-    index_db.unlink()
-    for sidecar in archive_root.glob("index.db-*"):
-        sidecar.unlink()
-    initialize_active_archive_root(archive_root)
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        conn.execute("UPDATE raw_sessions SET parsed_at_ms = NULL, parse_error = NULL")
-        conn.execute("DELETE FROM raw_membership_census")
-        conn.execute("DELETE FROM raw_authority_parser_census")
-        conn.commit()
-    backfill_historical_revision_evidence(archive_root)
+async def _replay_from_source_tier(archive_root: Path, statements: dict[str, str]) -> dict[str, list[tuple[Any, ...]]]:
+    """Rebuild the derived tier from the retained exports alone and read it back."""
+    async with cold_rebuilt_index(archive_root) as index_db:
+        return _derived_rows(index_db, statements)
 
 
 @pytest.mark.asyncio
@@ -183,15 +166,14 @@ async def test_hermes_state_export_replays_into_the_same_sessions(workspace_env:
     root = workspace_env["data_root"] / "hermes"
     state_db = root / "state.db"
     _write_hermes_state_db(state_db)
-    source = WatchSource(name="hermes", root=root, suffixes=(".db", ".sqlite", ".json", ".jsonl"))
+    source = WatchSource(name="hermes", root=root, layout=export_drop_layout((".db", ".sqlite", ".json", ".jsonl")))
 
-    await _ingest(archive_root, workspace_env["data_root"], source, [state_db])
+    await _ingest(archive_root, source, [state_db])
     live = _derived_rows(archive_root / "index.db", _HERMES_ROWS)
     assert live["sessions"], "sanity: live ingest produced a session"
     assert live["messages"], "sanity: live ingest produced messages"
 
-    _replay_from_source_tier(archive_root)
-    replayed = _derived_rows(archive_root / "index.db", _HERMES_ROWS)
+    replayed = await _replay_from_source_tier(archive_root, _HERMES_ROWS)
 
     assert replayed == live
 
@@ -203,9 +185,9 @@ async def test_hermes_backup_db_export_replays_into_the_same_sessions(workspace_
     backup_db = root / "backup.db"
     _write_hermes_state_db(backup_db)
     _add_hermes_verification_tables(backup_db)
-    source = WatchSource(name="hermes", root=root, suffixes=(".db", ".sqlite", ".json", ".jsonl"))
+    source = WatchSource(name="hermes", root=root, layout=export_drop_layout((".db", ".sqlite", ".json", ".jsonl")))
 
-    await _ingest(archive_root, workspace_env["data_root"], source, [backup_db])
+    await _ingest(archive_root, source, [backup_db])
     live = _derived_rows(archive_root / "index.db", _HERMES_ROWS)
     assert live["sessions"], "sanity: schema detection recognized Hermes in backup.db"
 
@@ -221,8 +203,7 @@ async def test_hermes_backup_db_export_replays_into_the_same_sessions(workspace_
     assert header.tables
     assert header.member is None, "an undeclared filename must not create a member binding"
 
-    _replay_from_source_tier(archive_root)
-    replayed = _derived_rows(archive_root / "index.db", _HERMES_ROWS)
+    replayed = await _replay_from_source_tier(archive_root, _HERMES_ROWS)
 
     assert replayed == live
 
@@ -233,16 +214,15 @@ async def test_codex_state_export_replays_into_the_same_projection(workspace_env
     root = workspace_env["data_root"] / "codex-state"
     state_db = root / "state_5.sqlite"
     _write_codex_state_db(state_db)
-    source = WatchSource(name="codex-state", root=root, suffixes=(".sqlite", ".db"))
+    source = WatchSource(name="codex-state", root=root, layout=export_drop_layout((".sqlite", ".db")))
 
-    await _ingest(archive_root, workspace_env["data_root"], source, [state_db])
+    await _ingest(archive_root, source, [state_db])
     live = _derived_rows(archive_root / "index.db", _CODEX_ROWS)
     with sqlite3.connect(archive_root / "index.db") as index_conn:
         assert read_thread_titles(index_conn) == {_THREAD_ID: "A curated thread title"}
         assert read_spawn_edges(index_conn) == {(_THREAD_ID, _CHILD_THREAD_ID): "closed"}
 
-    _replay_from_source_tier(archive_root)
-    replayed = _derived_rows(archive_root / "index.db", _CODEX_ROWS)
+    replayed = await _replay_from_source_tier(archive_root, _CODEX_ROWS)
 
     assert replayed == live
 
@@ -254,4 +234,12 @@ def test_hermes_page_image_is_refused_by_the_retained_replay_route(tmp_path: Pat
     _write_hermes_state_db(state_db)
 
     with pytest.raises(RuntimeError, match="is not a logical export"):
-        _parse_one(Provider.HERMES, state_db.read_bytes(), str(state_db), payload_path=state_db)
+        _parse_one(
+            Provider.HERMES,
+            state_db.read_bytes(),
+            str(state_db),
+            payload_path=state_db,
+            sidecar_resolver=None,
+            # The receipt gate precedes the export check; this law is the page-image refusal.
+            profile_identity="synthetic-profile",
+        )

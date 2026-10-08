@@ -31,28 +31,36 @@ from typing import cast
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, Origin, Provider
 from polylogue.pipeline import ids as pipeline_ids
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionRows,
+    PreparedSessionWrite,
     PreparedSessionWriteRefusedError,
     prepare_session_rows,
     prepare_session_shard,
     prepare_session_write,
     prepared_session_rows_from_shard,
     read_archive_session_envelope,
-    write_parsed_session_to_archive,
+)
+from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+from tests.infra.index_writer import (
+    fixture_index_mutation_scope,
+    write_fixture_index_session,
+    write_fixture_prepared_session,
 )
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -184,14 +192,15 @@ def _write_all(conn: sqlite3.Connection, sessions: list[ParsedSession], *, prepa
     for session in sessions:
         chash = str(session_content_hash(session))
         rows = prepare_session_rows(session) if prepared else None
-        write_parsed_session_to_archive(conn, session, content_hash=chash, prepared=rows)
+        write_fixture_index_session(conn, session, content_hash=chash, prepared_rows=rows)
 
 
 def test_prepared_and_inline_writes_produce_identical_rows(tmp_path: Path) -> None:
     sessions = _synthetic_sessions()
 
-    inline_conn = _connect(tmp_path / "inline.db")
-    prepared_conn = _connect(tmp_path / "prepared.db")
+    # Each comparison archive owns its own active Index.
+    inline_conn = _connect(tmp_path / "inline" / "index.db")
+    prepared_conn = _connect(tmp_path / "prepared" / "index.db")
     try:
         _write_all(inline_conn, sessions, prepared=False)
         _write_all(prepared_conn, sessions, prepared=True)
@@ -228,11 +237,11 @@ def test_valid_prepared_rows_are_used_verbatim_without_rebuilding(
         monkeypatch.setattr(archive_tier_write, "_build_message_rows", _boom)
         monkeypatch.setattr(archive_tier_write, "_build_block_rows", _boom)
 
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepared,
+            prepared_rows=prepared,
         )
 
         stored_messages = conn.execute(
@@ -278,7 +287,7 @@ def test_writer_accepts_parse_bound_hash_without_recomputing(tmp_path: Path, mon
     monkeypatch.setattr(archive_tier_write, "_build_block_rows", _boom)
     conn = _connect(tmp_path / "bound.db")
     try:
-        session_id = write_parsed_session_to_archive(conn, bound, prepared=prepared)
+        session_id = write_fixture_index_session(conn, bound, prepared_rows=prepared)
         assert conn.execute("SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
     finally:
         conn.close()
@@ -297,11 +306,11 @@ def test_valid_identity_carrier_is_reused_without_writer_recomputation(
     monkeypatch.setattr(archive_tier_write, "message_content_identities", _boom)
     conn = _connect(tmp_path / "carrier.db")
     try:
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepared,
+            prepared_rows=prepared,
         )
     finally:
         conn.close()
@@ -318,11 +327,11 @@ def test_corrupt_identity_carrier_is_refused(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "corrupt-carrier.db")
     try:
         with pytest.raises(PreparedSessionWriteRefusedError, match="disagrees with message rows"):
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn,
                 session,
                 content_hash=str(session_content_hash(session)),
-                prepared=corrupt,
+                prepared_rows=corrupt,
             )
     finally:
         conn.close()
@@ -375,11 +384,11 @@ def test_seeded_corpus_stores_identity_golden_fixture(tmp_path: Path) -> None:
     try:
         for session in _synthetic_sessions():
             prepared = prepare_session_rows(session)
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn,
                 session,
                 content_hash=str(session_content_hash(session)),
-                prepared=prepared,
+                prepared_rows=prepared,
             )
 
         observed = {
@@ -395,6 +404,8 @@ def test_seeded_corpus_stores_identity_golden_fixture(tmp_path: Path) -> None:
     finally:
         conn.close()
 
+    # Content-derived ids equal message_content_identity of the current
+    # identity payload (typed lowering, python-mode model dumps).
     assert observed == {
         "sessions": [
             ("codex-session:duplicate-native-ids", "675394355f0dd0809ccac312e6c0b8258d948cd6bae827626cd44d6d207aa491"),
@@ -402,16 +413,16 @@ def test_seeded_corpus_stores_identity_golden_fixture(tmp_path: Path) -> None:
             ("codex-session:tool-use-and-thinking", "b388bae80e73def1b0c39c892a27ab887bca6b7b65128e823ae698025e54123f"),
         ],
         "messages": [
-            "codex-session:duplicate-native-ids:c:51df76b4cf624cadeb3cf1b2dfcf0334.0",
-            "codex-session:duplicate-native-ids:c:72f749a44016ab7561e4d3dc39527788.0",
+            "codex-session:duplicate-native-ids:c:71b9c4bb640966a23595ee589a5e1a76.0",
+            "codex-session:duplicate-native-ids:c:f88028512715e01b32558cd5c33ef802.0",
             "codex-session:plain-text:n:m0",
             "codex-session:plain-text:n:m1",
             "codex-session:tool-use-and-thinking:n:t0",
             "codex-session:tool-use-and-thinking:n:t1",
         ],
         "blocks": [
-            "codex-session:duplicate-native-ids:c:51df76b4cf624cadeb3cf1b2dfcf0334.0:0",
-            "codex-session:duplicate-native-ids:c:72f749a44016ab7561e4d3dc39527788.0:0",
+            "codex-session:duplicate-native-ids:c:71b9c4bb640966a23595ee589a5e1a76.0:0",
+            "codex-session:duplicate-native-ids:c:f88028512715e01b32558cd5c33ef802.0:0",
             "codex-session:plain-text:n:m0:0",
             "codex-session:plain-text:n:m1:0",
             "codex-session:tool-use-and-thinking:n:t0:0",
@@ -437,11 +448,11 @@ def test_new_session_skips_field_path_union(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setattr(archive_tier_write, "_union_with_existing_rows", _boom)
     conn = _connect(tmp_path / "index.db")
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepared,
+            prepared_rows=prepared,
         )
         assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0] == 2
     finally:
@@ -488,11 +499,11 @@ def test_stale_prepared_rows_fall_back_to_fresh_content(tmp_path: Path) -> None:
 
     conn = _connect(tmp_path / "index.db")
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             mutated,
             content_hash=str(session_content_hash(mutated)),
-            prepared=stale_prepared,
+            prepared_rows=stale_prepared,
         )
         stored_text = conn.execute(
             "SELECT user_context_text FROM messages WHERE session_id = ?",
@@ -522,7 +533,7 @@ def test_prepared_rows_are_ignored_when_no_content_hash_supplied(tmp_path: Path)
         # No AssertionError from a monkeypatched builder here -- this test
         # only proves the reuse guard degrades safely, not that the builder
         # was skipped (it correctly is NOT skipped in this case).
-        session_id = write_parsed_session_to_archive(conn, session, prepared=prepared)
+        session_id = write_fixture_index_session(conn, session, prepared_rows=prepared)
         stored = conn.execute(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?",
             (session_id,),
@@ -573,7 +584,7 @@ def test_prepared_write_preserves_prefix_sharing_context_without_writer_lowering
     )
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(conn, parent, content_hash=str(session_content_hash(parent)))
+        write_fixture_index_session(conn, parent, content_hash=str(session_content_hash(parent)))
         prepared = prepare_session_write(conn, child, merge_append=False)
 
         def _boom(*args: object, **kwargs: object) -> object:
@@ -583,13 +594,13 @@ def test_prepared_write_preserves_prefix_sharing_context_without_writer_lowering
         monkeypatch.setattr(archive_tier_write, "_extract_prefix_tail", _boom)
         monkeypatch.setattr(archive_tier_write, "_build_message_rows", _boom)
         monkeypatch.setattr(archive_tier_write, "_build_block_rows", _boom)
-        child_id = write_parsed_session_to_archive(
-            conn,
-            child,
-            content_hash=str(session_content_hash(child)),
-            prepared_write=prepared,
-            prepared_required=True,
-        )
+        with fixture_index_mutation_scope(conn):
+            child_id = write_fixture_index_session(
+                conn,
+                child,
+                content_hash=str(session_content_hash(child)),
+                prepared_write=prepared,
+            )
         assert [row[0] for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (child_id,))] == [
             "c"
         ]
@@ -630,28 +641,32 @@ def test_disk_prepared_write_keeps_lineage_tail_and_rows_off_heap(
     store = SqliteMessageStore(tmp_path / "child-prepared.db")
     sink = store.new_sink()
     sink.extend(child.messages)
+    # The parse side seals its canonical normalized writer operand with the
+    # messages (prepared_jsonl._append_artifact_session); a sealed sink
+    # without one is refused at preparation.
+    sink.normalized_messages(child.session_events, origin=Origin.CODEX_SESSION)
     store.conn.commit()
     store.close()
     sealed = SqliteMessageSink(store.path, sink.session_ordinal, count=len(sink))
     publication = child.model_copy(update={"messages": sealed, "content_hash": str(session_content_hash(child))})
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(conn, parent, content_hash=str(session_content_hash(parent)))
-        prepared = prepare_session_write(conn, publication, merge_append=False)
-        assert not isinstance(prepared.rows.message_rows, tuple)
-        assert len(prepared.context.messages) == 1
+        write_fixture_index_session(conn, parent, content_hash=str(session_content_hash(parent)))
 
         def forbid_row_lowering(*_args: object, **_kwargs: object) -> object:
             raise AssertionError("writer rebuilt prepared lineage rows")
 
-        monkeypatch.setattr(archive_tier_write, "_iter_message_rows", forbid_row_lowering)
-        monkeypatch.setattr(archive_tier_write, "_iter_block_rows", forbid_row_lowering)
-        child_id = write_parsed_session_to_archive(
+        def keep_rows_off_heap(prepared: PreparedSessionWrite) -> None:
+            assert not isinstance(prepared.rows.message_rows, tuple)
+            assert len(prepared.context.messages) == 1
+            monkeypatch.setattr(archive_tier_write, "_iter_message_rows", forbid_row_lowering)
+            monkeypatch.setattr(archive_tier_write, "_iter_block_rows", forbid_row_lowering)
+
+        child_id = write_fixture_prepared_session(
             conn,
             publication,
+            inspect=keep_rows_off_heap,
             content_hash=publication.content_hash,
-            prepared_write=prepared,
-            prepared_required=True,
         )
         assert [row[0] for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (child_id,))] == [
             "c"
@@ -685,7 +700,7 @@ def test_prepared_lineage_refuses_changed_earlier_parent_prefix(tmp_path: Path) 
     )
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(conn, parent, content_hash=str(session_content_hash(parent)))
+        write_fixture_index_session(conn, parent, content_hash=str(session_content_hash(parent)))
         prepared = prepare_session_write(conn, child, merge_append=False)
         changed_parent = parent.model_copy(
             update={
@@ -695,20 +710,20 @@ def test_prepared_lineage_refuses_changed_earlier_parent_prefix(tmp_path: Path) 
                 ]
             }
         )
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             changed_parent,
             content_hash=str(session_content_hash(changed_parent)),
             force_replace=True,
         )
         with pytest.raises(PreparedSessionWriteRefusedError, match="lineage prefix changed"):
-            write_parsed_session_to_archive(
-                conn,
-                child,
-                content_hash=str(session_content_hash(child)),
-                prepared_write=prepared,
-                prepared_required=True,
-            )
+            with fixture_index_mutation_scope(conn):
+                write_fixture_index_session(
+                    conn,
+                    child,
+                    content_hash=str(session_content_hash(child)),
+                    prepared_write=prepared,
+                )
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE native_id = 'waiting-child'").fetchone()[0] == 0
     finally:
         conn.close()
@@ -764,12 +779,13 @@ def test_prepared_cross_acquisition_union_matches_inline_and_skips_writer_merge(
         }
     )
 
-    expected = _connect(tmp_path / "expected.db")
-    actual = _connect(tmp_path / "actual.db")
+    # Each comparison archive owns its own active Index.
+    expected = _connect(tmp_path / "expected" / "index.db")
+    actual = _connect(tmp_path / "actual" / "index.db")
     try:
-        write_parsed_session_to_archive(expected, rich, raw_id="older", content_hash=str(session_content_hash(rich)))
-        write_parsed_session_to_archive(expected, poor, raw_id="newer", content_hash=str(session_content_hash(poor)))
-        session_id = write_parsed_session_to_archive(
+        write_fixture_index_session(expected, rich, raw_id="older", content_hash=str(session_content_hash(rich)))
+        write_fixture_index_session(expected, poor, raw_id="newer", content_hash=str(session_content_hash(poor)))
+        session_id = write_fixture_index_session(
             actual, rich, raw_id="older", content_hash=str(session_content_hash(rich))
         )
         store = SqliteMessageStore(tmp_path / "prepared-poor.db")
@@ -787,31 +803,29 @@ def test_prepared_cross_acquisition_union_matches_inline_and_skips_writer_merge(
         def forbid_inline(*_args: object, **_kwargs: object) -> object:
             raise AssertionError("writer rebuilt or merged prepared field rows")
 
-        monkeypatch.setattr(archive_tier_write, "_union_with_existing_rows", forbid_inline)
-        monkeypatch.setattr(archive_tier_write, "_iter_message_rows", forbid_inline)
-        monkeypatch.setattr(archive_tier_write, "_iter_block_rows", forbid_inline)
-        prepared = prepare_session_write(
+        def forbid_writer_merge(prepared: PreparedSessionWrite) -> None:
+            assert prepared.cross_acquisition_union is not None
+            assert not isinstance(prepared.cross_acquisition_union.rows.message_rows, tuple)
+            monkeypatch.setattr(archive_tier_write, "_union_with_existing_rows", forbid_inline)
+            monkeypatch.setattr(archive_tier_write, "_iter_message_rows", forbid_inline)
+            monkeypatch.setattr(archive_tier_write, "_iter_block_rows", forbid_inline)
+
+        # Retained preparation needs its original Source read capability, so
+        # it runs on an original seal (prepare_session_write refuses raw_id
+        # without one); the writer's inline builders are forbidden from
+        # preparation onward.
+        write_fixture_prepared_session(
             actual,
             publication,
-            merge_append=False,
-            raw_id="newer",
+            inspect=forbid_writer_merge,
             prepared_rows=input_rows,
-        )
-        assert prepared.cross_acquisition_union is not None
-        assert not isinstance(prepared.cross_acquisition_union.rows.message_rows, tuple)
-        write_parsed_session_to_archive(
-            actual,
-            publication,
             raw_id="newer",
             content_hash=publication.content_hash,
-            prepared_write=prepared,
-            prepared_required=True,
         )
         for table in ("sessions", "messages", "blocks"):
             assert [tuple(row) for row in actual.execute(f"SELECT * FROM {table} ORDER BY rowid")] == [
                 tuple(row) for row in expected.execute(f"SELECT * FROM {table} ORDER BY rowid")
             ]
-        prepared.close()
     finally:
         expected.close()
         actual.close()
@@ -841,34 +855,39 @@ def test_prepared_cross_acquisition_union_refuses_changed_predecessor(tmp_path: 
     )
     conn = _connect(tmp_path / "index.db")
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             first,
             raw_id="old",
             content_hash=str(session_content_hash(first)),
         )
-        prepared = prepare_session_write(conn, second, merge_append=False, raw_id="second")
-        assert prepared.cross_acquisition_union is not None
-        write_parsed_session_to_archive(
-            conn,
-            competing,
-            raw_id="competing",
-            content_hash=str(session_content_hash(competing)),
-            force_replace=True,
-        )
-        with pytest.raises(PreparedSessionWriteRefusedError, match="predecessor changed"):
-            write_parsed_session_to_archive(
+
+        def compete(prepared: PreparedSessionWrite) -> None:
+            assert prepared.cross_acquisition_union is not None
+            write_fixture_index_session(
+                conn,
+                competing,
+                raw_id="competing",
+                content_hash=str(session_content_hash(competing)),
+                force_replace=True,
+            )
+
+        # Retained preparation runs on its original seal. A competing commit
+        # after preparation is now refused at the seal's writer validation
+        # (the Index incarnation it prepared against moved) before the
+        # writer's own predecessor check is reached; the refusal keeps the
+        # competing row.
+        with pytest.raises(ReferenceSealStaleError, match="incarnation changed"):
+            write_fixture_prepared_session(
                 conn,
                 second,
+                inspect=compete,
                 raw_id="second",
                 content_hash=str(session_content_hash(second)),
-                prepared_write=prepared,
-                prepared_required=True,
             )
         assert (
             conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == "competing"
         )
-        prepared.close()
     finally:
         conn.close()
 
@@ -899,31 +918,38 @@ def test_a_dropped_prepared_union_still_refreshes_replaced_attachments(tmp_path:
     tables = ("attachments", "attachment_refs")
     snapshots = []
     for prepared_route in (False, True):
-        conn = _connect(tmp_path / f"index-{prepared_route}.db")
+        conn = _connect(tmp_path / f"route-{prepared_route}" / "index.db")
         try:
-            write_parsed_session_to_archive(conn, first, raw_id="old", content_hash=str(session_content_hash(first)))
-            prepared = (
-                prepare_session_write(conn, second, merge_append=False, raw_id="second") if prepared_route else None
-            )
-            if prepared is not None:
-                assert prepared.cross_acquisition_union is not None
-            write_parsed_session_to_archive(
-                conn,
-                second,
-                raw_id="second",
-                content_hash=str(session_content_hash(second)),
-                force_replace=True,
-                prepared_write=prepared,
-                prepared_required=prepared is not None,
-            )
+            write_fixture_index_session(conn, first, raw_id="old", content_hash=str(session_content_hash(first)))
+            if not prepared_route:
+                write_fixture_index_session(
+                    conn,
+                    second,
+                    raw_id="second",
+                    content_hash=str(session_content_hash(second)),
+                    force_replace=True,
+                )
+            else:
+
+                def require_union(prepared: PreparedSessionWrite) -> None:
+                    assert prepared.cross_acquisition_union is not None
+
+                # Retained preparation runs on its original seal and prepares
+                # the union; publication's force_replace precedence overrules it.
+                write_fixture_prepared_session(
+                    conn,
+                    second,
+                    inspect=require_union,
+                    raw_id="second",
+                    content_hash=str(session_content_hash(second)),
+                    publish_options={"force_replace": True},
+                )
             snapshots.append(
                 {
                     table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
                     for table in tables
                 }
             )
-            if prepared is not None:
-                prepared.close()
         finally:
             conn.close()
     assert snapshots[1] == snapshots[0]

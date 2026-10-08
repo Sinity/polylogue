@@ -51,6 +51,14 @@ class DatabaseError(PolylogueError):
     http_status_code: int = HTTPStatus.SERVICE_UNAVAILABLE
 
 
+class SearchIndexUnavailableError(DatabaseError):
+    """Canonical search-index read refusal, classified before rendering."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        self.reason = reason
+        super().__init__(message)
+
+
 class VectorReadUnavailableError(DatabaseError):
     """Retained vector evidence could not answer a read, with its typed reason."""
 
@@ -91,6 +99,15 @@ class ArchiveTierUnavailableError(DatabaseError):
     @property
     def public_message(self) -> str:
         return f"{self.tier} archive tier is unavailable. {self.guidance}"
+
+
+class RefusedBeforeEffectError(Exception):
+    """A write refused inside its own transaction and rolled it back: no effect.
+
+    Raised only where the refusal provably precedes every commit of the
+    mutation, so an operation owner records a typed no-effect refusal rather
+    than an indeterminate outcome.
+    """
 
 
 class SchemaRefusalError(DatabaseError):
@@ -248,6 +265,7 @@ class UnsupportedInsightFilterError(PolylogueError):
 
 __all__ = [
     "ArchiveTierUnavailableError",
+    "RefusedBeforeEffectError",
     "InsightMaintenanceRequiresDaemonError",
     "DatabaseError",
     "EmbeddingRetrievalNotReadyError",
@@ -258,6 +276,7 @@ __all__ = [
     "SchemaSkew",
     "SchemaSkewError",
     "SessionNotFoundError",
+    "SearchIndexUnavailableError",
     "UnsupportedInsightFilterError",
     "VectorReadUnavailableError",
     "VectorRuntimeUnavailableError",

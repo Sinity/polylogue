@@ -340,6 +340,7 @@ def _row_int(row: object, index: int, key: str) -> int:
 def iter_pending_sessions(
     backend: RepositoryBackendProtocol,
     *,
+    archive_root: Path,
     rebuild: bool = False,
     max_sessions: int | None = None,
     max_messages: int | None = None,
@@ -351,7 +352,7 @@ def iter_pending_sessions(
     """
     from polylogue.storage.sqlite.connection import open_read_connection
 
-    with open_read_connection(backend.db_path) as conn:
+    with open_read_connection(backend.db_path, archive_root=archive_root) as conn:
         return select_pending_session_window(
             conn,
             rebuild=rebuild,
@@ -834,91 +835,41 @@ def archive_embeddable_messages_relation(conn: sqlite3.Connection, *, alias: str
     message stayed pending forever (polylogue-crcst).
     """
 
-    message_columns = _table_columns(conn, "messages")
     base_alias = f"{alias}_base"
     messages_ref = archive_embedding_messages_table_ref(conn, alias=base_alias)
-    content_hash_expr = f"{base_alias}.content_hash" if "content_hash" in message_columns else "NULL"
-    origin_expr = (
-        f"(SELECT source_session.origin FROM sessions AS source_session WHERE source_session.session_id = {base_alias}.session_id)"
-        if "origin" in _table_columns(conn, "sessions")
-        else "NULL"
-    )
+    content_hash_expr = f"{base_alias}.content_hash"
+    origin_expr = f"(SELECT source_session.origin FROM sessions AS source_session WHERE source_session.session_id = {base_alias}.session_id)"
     register_embedding_identity_sql(conn, recipe=recipe)
     recipe_literal = f"X'{recipe.recipe_hash.hex()}'"
 
     base_where = archive_embeddable_message_where(base_alias)
-    if _archive_message_blocks_available(conn):
-        blocks_ref = (
-            "blocks AS b INDEXED BY idx_blocks_session_position"
-            if _index_exists(conn, "idx_blocks_session_position")
-            else "blocks AS b"
-        )
-        prose_expr = message_prose_sql(base_alias, separator="char(10)||char(10)", block_types=("text",))
-        hash_expr = f"{VECTOR_DERIVATION_HASH_SQL_FUNCTION}({recipe_literal}, {prose_expr})"
-        selected_columns = (
-            f"{base_alias}.message_id AS message_id, "
-            f"{base_alias}.session_id AS session_id, "
-            f"{content_hash_expr} AS content_hash, {origin_expr} AS origin, "
-            f"{hash_expr} AS vector_derivation_hash, {prose_expr} AS text"
-        )
-        return f"""
-        (
-            SELECT {selected_columns}
-            FROM {messages_ref}
-            LEFT JOIN {blocks_ref}
-              ON b.session_id = {base_alias}.session_id
-             AND b.message_id = {base_alias}.message_id
-             AND b.block_type = 'text'
-             AND b.text IS NOT NULL
-            WHERE {base_where}
-            GROUP BY {base_alias}.message_id, {base_alias}.session_id, {content_hash_expr}
-            HAVING LENGTH(TRIM(COALESCE({prose_expr}, ''))) >= 20
-        ) AS {alias}
-        """
-    if "text" in message_columns:
-        hash_expr = f"{VECTOR_DERIVATION_HASH_SQL_FUNCTION}({recipe_literal}, {base_alias}.text)"
-        selected_columns = (
-            f"{base_alias}.message_id AS message_id, "
-            f"{base_alias}.session_id AS session_id, "
-            f"{content_hash_expr} AS content_hash, {origin_expr} AS origin, "
-            f"{hash_expr} AS vector_derivation_hash, {base_alias}.text AS text"
-        )
-        return f"""
-        (
-            SELECT {selected_columns}
-            FROM {messages_ref}
-            WHERE {base_where}
-              AND LENGTH(TRIM(COALESCE({base_alias}.text, ''))) >= 20
-        ) AS {alias}
-        """
+    blocks_ref = (
+        "blocks AS b INDEXED BY idx_blocks_session_position"
+        if _index_exists(conn, "idx_blocks_session_position")
+        else "blocks AS b"
+    )
+    prose_expr = message_prose_sql(base_alias, separator="char(10)||char(10)", block_types=("text",))
+    hash_expr = f"{VECTOR_DERIVATION_HASH_SQL_FUNCTION}({recipe_literal}, {prose_expr})"
     selected_columns = (
         f"{base_alias}.message_id AS message_id, "
         f"{base_alias}.session_id AS session_id, "
         f"{content_hash_expr} AS content_hash, {origin_expr} AS origin, "
-        "NULL AS vector_derivation_hash, NULL AS text"
+        f"{hash_expr} AS vector_derivation_hash, {prose_expr} AS text"
     )
     return f"""
     (
         SELECT {selected_columns}
         FROM {messages_ref}
+        LEFT JOIN {blocks_ref}
+          ON b.session_id = {base_alias}.session_id
+         AND b.message_id = {base_alias}.message_id
+         AND b.block_type = 'text'
+         AND b.text IS NOT NULL
         WHERE {base_where}
+        GROUP BY {base_alias}.message_id, {base_alias}.session_id, {content_hash_expr}
+        HAVING LENGTH(TRIM(COALESCE({prose_expr}, ''))) >= 20
     ) AS {alias}
     """
-
-
-def _archive_message_blocks_available(conn: sqlite3.Connection) -> bool:
-    block_columns = _table_columns(conn, "blocks")
-    required_columns = {"session_id", "message_id", "block_type", "text"}
-    return required_columns.issubset(block_columns)
-
-
-def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    try:
-        with contextlib.closing(conn.execute(f"PRAGMA table_info({table})")) as cursor:
-            rows = cursor.fetchall()
-    except sqlite3.Error:
-        return set()
-    return {str(row[1]) for row in rows}
 
 
 def mark_all_archive_sessions_needs_reindex(index_db_path: Path, *, embeddings_db_path: Path | None = None) -> None:

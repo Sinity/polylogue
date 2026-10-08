@@ -14,40 +14,15 @@
   const assetFetchRequestMessage = "polylogue.grok.assetFetchRequest";
   const assetFetchResponseMessage = "polylogue.grok.assetFetchResponse";
   const currentOrigin = window.location.origin;
-  const nativeFetchTimeoutMs = 8000;
-  const assetFetchTimeoutMs = 9000;
-  const assetAbsoluteMaxBytes = 25 * 1024 * 1024;
 
-  window.__polylogueGrokCapturedFetches = Array.isArray(window.__polylogueGrokCapturedFetches)
-    ? window.__polylogueGrokCapturedFetches
-    : [];
-
-  function post(capture) {
-    window.postMessage({ type: nativeCaptureMessage, capture }, currentOrigin);
+  function remember(capture, ownerId) {
+    window.polylogueAssetStream.pageMessage({ type: nativeCaptureMessage, capture }, ownerId);
   }
 
-  function remember(capture) {
-    window.__polylogueGrokCapturedFetches.push(capture);
-    if (window.__polylogueGrokCapturedFetches.length > 8) {
-      window.__polylogueGrokCapturedFetches.splice(0, window.__polylogueGrokCapturedFetches.length - 8);
-    }
-    post(capture);
-  }
-
-  const existingCaptures = window.__polylogueGrokCapturedFetches.slice(-8);
-  window.__polylogueGrokCapturedFetches = existingCaptures;
-  for (const capture of existingCaptures) post(capture);
-
-  if (window.__polylogueGrokFetchHookInstalled) return;
-  window.__polylogueGrokFetchHookInstalled = true;
+  if (window.__polylogueGrokFetchHookInstalled === 2) return;
+  window.__polylogueGrokFetchHookInstalled = 2;
 
   const originalFetch = window.fetch;
-
-  function timeoutError(label, timeoutMs) {
-    const error = new Error(`${label}_timeout_after_${timeoutMs}ms`);
-    error.name = "PolylogueTimeoutError";
-    return error;
-  }
 
   function conversationUrl(conversationId, suffix = "") {
     return new URL(
@@ -56,114 +31,79 @@
     );
   }
 
-  async function fetchJson(url, label) {
-    const controller = new globalThis.AbortController();
-    const timeoutId = window.setTimeout(
-      () => controller.abort(timeoutError(label, nativeFetchTimeoutMs)),
-      nativeFetchTimeoutMs,
-    );
-    let response;
+  async function fetchStaged(url, signal, bundleRef, name, ownerId) {
+    signal.throwIfAborted();
+    const prepared = await window.polylogueAssetStream.prepareResponse("grok", signal, url.href, { id: bundleRef, name }, "native-response", false, null, null, false, null, ownerId);
+    let response; let bodyRef;
     try {
-      response = await originalFetch.call(window, url.href, {
-        credentials: "include",
-        cache: "no-store",
-        signal: controller.signal,
-      });
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
+      response = await originalFetch.call(window, url.href, { credentials: "include", cache: "no-store", signal });
+      bodyRef = await prepared.consume(response);
+    } catch (error) { await prepared.fail(error); throw error; }
     const contentType = response.headers.get("content-type") || "";
-    const bodyText = contentType.includes("application/json") ? await response.clone().text() : "";
-    let parsed = null;
-    if (bodyText) {
-      try {
-        parsed = JSON.parse(bodyText);
-      } catch {
-        parsed = null;
-      }
+    if (!bodyRef) await window.polylogueAssetStream.nativeBundle("outcome", { bundleRef, name,
+      outcome: { ok: response.ok, status: response.status, retry_after: response.headers.get("retry-after") || null } }, signal, ownerId);
+    return { url: url.href, ok: response.ok, status: response.status, contentType, bodyRef,
+      retryAfter: response.headers.get("retry-after") || null, capturedAt: new Date().toISOString() };
+  }
+  async function fetchConversation(conversationId, signal, ownerId) {
+    const begun = await window.polylogueAssetStream.nativeBundle("begin", { nativeId: conversationId, bundleId: crypto.randomUUID() }, signal, ownerId);
+    const bundleRef = begun.bundle_ref;
+    const reply = (name, suffix = "") => begun.replies[name]
+      ? Promise.resolve({ url: conversationUrl(conversationId, suffix).href, ok: true, status: 200, bodyRef: begun.replies[name], capturedAt: new Date().toISOString() })
+      : fetchStaged(conversationUrl(conversationId, suffix), signal, bundleRef, name, ownerId);
+    const conversation = await reply("conversation");
+    if (!conversation.ok || !conversation.bodyRef) return { ...conversation, error: "conversation_metadata_fetch_failed" };
+    const responses = await reply("responses", "/responses");
+    if (!responses.ok || !responses.bodyRef) return { ...responses, relatedRefs: { conversation: conversation.bodyRef }, error: "conversation_responses_fetch_failed" };
+    let nodes = null;
+    try { nodes = await reply("response_nodes", "/response-node"); }
+    catch {
+      signal.throwIfAborted();
+      await window.polylogueAssetStream.nativeBundle("outcome", { bundleRef, name: "response_nodes", outcome: { ok: false, status: null, error: "provider_transport_failure" } }, signal, ownerId);
     }
-    return { ok: response.ok, status: response.status, contentType, bodyText, parsed };
+    if (nodes?.status === 429) return { ...nodes, relatedRefs: { conversation: conversation.bodyRef, responses: responses.bodyRef } };
+    const complete = await window.polylogueAssetStream.nativeBundle("finish", { bundleRef }, signal, ownerId);
+    return { ...responses, relatedRefs: { conversation: conversation.bodyRef, ...(nodes?.bodyRef ? { response_nodes: nodes.bodyRef } : {}) }, acquisition: complete.acquisition };
   }
 
-  // A Grok conversation's content lives across three independent endpoints:
-  // metadata+identity (title/temporary/timestamps), the actual turn content
-  // (`/responses` -- confirmed live 2026-07-31 to carry `message` text,
-  // `steps`, attachments, tool/search evidence; `/response-node` alone is
-  // just an id/parent skeleton with no message content), and any
-  // still-generating tail (`inflightResponses`, best-effort). Bundle all
-  // three into one combined JSON body so grok.js has a single capture
-  // artifact to parse, exactly like the other bridges hand back one
-  // conversation payload.
-  async function fetchConversation(conversationId) {
-    const conversationResult = await fetchJson(conversationUrl(conversationId), "conversation_metadata");
-    if (!conversationResult.ok || !conversationResult.parsed) {
-      return {
-        url: conversationUrl(conversationId).href,
-        status: conversationResult.status,
-        ok: false,
-        contentType: conversationResult.contentType,
-        body: conversationResult.bodyText,
-        capturedAt: new Date().toISOString(),
-        error: "conversation_metadata_fetch_failed",
-      };
+  const requestControllers = new Map();
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || event.origin !== currentOrigin) return;
+    const data = window.polylogueAssetStream.readPageMessage(event);
+    if (!data) return;
+    if (data.type !== "polylogue.grok.cancelRequest") return;
+    const controller = requestControllers.get(`${data.ownerId}:${data.requestId}`);
+    if (controller) controller.abort(new globalThis.DOMException("capture_cancelled", "AbortError"));
+    else {
+      window.polylogueAssetStream.pageMessage({ type: nativeFetchResponseMessage, requestId: data.requestId, error: "capture_cancelled" }, data.ownerId);
+      window.polylogueAssetStream.pageMessage({ type: assetFetchResponseMessage, requestId: data.requestId, outcome: { status: "cancelled" } }, data.ownerId);
     }
-    const responsesResult = await fetchJson(conversationUrl(conversationId, "/responses"), "conversation_responses");
-    if (!responsesResult.ok || !Array.isArray(responsesResult.parsed?.responses)) {
-      return {
-        url: conversationUrl(conversationId, "/responses").href,
-        status: responsesResult.status,
-        ok: false,
-        contentType: responsesResult.contentType,
-        body: responsesResult.bodyText,
-        capturedAt: new Date().toISOString(),
-        error: "conversation_responses_fetch_failed",
-      };
-    }
-    // response-node is best-effort: it only ever adds inflight-generation
-    // skeleton entries, never turn content, so its failure must not fail
-    // the whole capture.
-    let inflightResponses = [];
-    try {
-      const responseNodeResult = await fetchJson(conversationUrl(conversationId, "/response-node"), "response_node");
-      if (responseNodeResult.ok && Array.isArray(responseNodeResult.parsed?.inflightResponses)) {
-        inflightResponses = responseNodeResult.parsed.inflightResponses;
-      }
-    } catch {
-      inflightResponses = [];
-    }
-    const combined = {
-      ...conversationResult.parsed,
-      responses: responsesResult.parsed.responses,
-      inflightResponses,
-    };
-    return {
-      url: conversationUrl(conversationId).href,
-      status: 200,
-      ok: true,
-      contentType: "application/json",
-      body: JSON.stringify(combined),
-      capturedAt: new Date().toISOString(),
-    };
-  }
+  });
+  window.addEventListener("pagehide", () => {
+    for (const controller of requestControllers.values()) controller.abort();
+  });
 
   window.addEventListener("message", async (event) => {
     if (event.source !== window || event.origin !== currentOrigin) return;
-    const data = event.data || {};
+    const data = window.polylogueAssetStream.readPageMessage(event);
+    if (!data) return;
     if (data.type !== nativeFetchRequestMessage || !data.requestId || !data.conversationId) return;
+    const controller = new AbortController();
+    requestControllers.set(`${data.ownerId}:${data.requestId}`, controller);
     try {
-      const capture = await fetchConversation(data.conversationId);
-      if (capture.ok && capture.body) remember(capture);
-      window.postMessage({ type: nativeFetchResponseMessage, requestId: data.requestId, capture }, currentOrigin);
+      const capture = await fetchConversation(data.conversationId, controller.signal, data.ownerId);
+      if (capture.ok && capture.bodyRef) remember(capture, data.ownerId);
+      window.polylogueAssetStream.pageMessage({ type: nativeFetchResponseMessage, requestId: data.requestId, capture }, data.ownerId);
     } catch (error) {
-      window.postMessage(
+      window.polylogueAssetStream.pageMessage(
         {
           type: nativeFetchResponseMessage,
           requestId: data.requestId,
           error: String(error && error.message ? error.message : error),
         },
-        currentOrigin,
+        data.ownerId,
       );
-    }
+    } finally { requestControllers.delete(`${data.ownerId}:${data.requestId}`); }
   });
 
   // --- Attachment byte acquisition -----------------------------------
@@ -185,67 +125,7 @@
     return outcome;
   }
 
-  function boundedMaxBytes(request) {
-    const requested = Number(request.maxBytes);
-    if (!Number.isFinite(requested) || requested <= 0) return assetAbsoluteMaxBytes;
-    return Math.min(requested, assetAbsoluteMaxBytes);
-  }
-
-  function declaredContentLength(response) {
-    const raw = response.headers.get("content-length");
-    if (!raw || !/^\d+$/.test(raw)) return null;
-    const parsed = Number(raw);
-    return Number.isSafeInteger(parsed) ? parsed : null;
-  }
-
-  async function readBoundedBody(response, maxBytes) {
-    if (!response.body || typeof response.body.getReader !== "function") {
-      const buffer = await response.arrayBuffer();
-      if (buffer.byteLength > maxBytes) return { tooLarge: true, sizeBytes: buffer.byteLength };
-      return { tooLarge: false, buffer };
-    }
-    const reader = response.body.getReader();
-    const chunks = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        return { tooLarge: true, sizeBytes: total };
-      }
-      chunks.push(value);
-    }
-    const merged = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return { tooLarge: false, buffer: merged.buffer };
-  }
-
-  function arrayBufferToBase64(buffer) {
-    const bytes = new Uint8Array(buffer);
-    const chunkSize = 0x8000;
-    let binary = "";
-    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + chunkSize));
-    }
-    return window.btoa(binary);
-  }
-
-  function bytesToHex(buffer) {
-    return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  }
-
-  async function sha256Hex(buffer) {
-    if (!globalThis.crypto?.subtle) throw new Error("asset_sha256_unavailable");
-    return bytesToHex(await globalThis.crypto.subtle.digest("SHA-256", buffer));
-  }
-
-  async function fetchAssetBytes(request) {
+  async function fetchAssetBytes(request, signal) {
     let assetUrl;
     try {
       assetUrl = new URL(`/${String(request.key).replace(/^\/+/, "")}`, "https://assets.grok.com");
@@ -264,75 +144,39 @@
     ) {
       return assetOutcome("invalid_request", { detail: "asset_key_invalid" });
     }
-    const controller = new globalThis.AbortController();
-    const timeoutId = window.setTimeout(
-      () => controller.abort(timeoutError("asset_bytes_fetch", assetFetchTimeoutMs)),
-      assetFetchTimeoutMs,
-    );
-    let response;
-    try {
-      response = await originalFetch.call(window, assetUrl.href, {
-        credentials: "include",
-        cache: "no-store",
-        signal: controller.signal,
-      });
-    } catch (error) {
-      const timedOut = error?.name === "AbortError" || error?.name === "PolylogueTimeoutError";
-      return assetOutcome("request_failed", { detail: timedOut ? "request_timeout" : "request_failed" });
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
+    signal.throwIfAborted();
+    const response = await originalFetch.call(window, assetUrl.href, { credentials: "include", cache: "no-store", signal });
+    if (response.status === 429) return { status: "rate_limited", http_status: 429, retry_after: response.headers.get("retry-after") || null, response_url: response.url || assetUrl.href };
     if ([401, 403, 404, 410].includes(response.status)) {
       return assetOutcome("signed_url_expired", { httpStatus: response.status, detail: `asset_http_${response.status}` });
     }
     if (!response.ok) {
       return assetOutcome("request_failed", { httpStatus: response.status, detail: `asset_http_${response.status}` });
     }
-    const maxBytes = boundedMaxBytes(request);
-    const contentLength = declaredContentLength(response);
-    if (contentLength !== null && contentLength > maxBytes) {
-      return assetOutcome("too_large", { httpStatus: response.status, detail: "content_length_over_limit", sizeBytes: contentLength });
-    }
-    const bodyResult = await readBoundedBody(response, maxBytes);
-    if (bodyResult.tooLarge) {
-      return assetOutcome("too_large", { httpStatus: response.status, detail: "downloaded_bytes_over_limit", sizeBytes: bodyResult.sizeBytes });
-    }
-    const buffer = bodyResult.buffer;
-    let contentSha256;
-    try {
-      contentSha256 = await sha256Hex(buffer);
-    } catch {
-      return assetOutcome("integrity_error", { detail: "sha256_unavailable" });
-    }
-    return assetOutcome("acquired", {
-      httpStatus: response.status,
-      asset: {
-        base64: arrayBufferToBase64(buffer),
-        size_bytes: buffer.byteLength,
-        sha256: contentSha256,
-        mime_type: response.headers.get("content-type") || null,
-        name: request.name || null,
-      },
-    });
+    const asset = await window.polylogueAssetStream.stream(response, request.requestId, signal, { ownerId: request.ownerId });
+    return assetOutcome("acquired", { httpStatus: response.status,
+      asset: { ...asset, mime_type: response.headers.get("content-type") || null, name: request.name || null } });
   }
 
   window.addEventListener("message", async (event) => {
     if (event.source !== window || event.origin !== currentOrigin) return;
-    const data = event.data || {};
+    const data = window.polylogueAssetStream.readPageMessage(event);
+    if (!data) return;
     if (data.type !== assetFetchRequestMessage || !data.requestId || !data.request) return;
+    const controller = new AbortController();
+    requestControllers.set(`${data.ownerId}:${data.requestId}`, controller);
     try {
-      const outcome = await fetchAssetBytes(data.request);
-      window.postMessage({ type: assetFetchResponseMessage, requestId: data.requestId, outcome }, currentOrigin);
-    } catch (error) {
-      const timedOut = error?.name === "AbortError" || error?.name === "PolylogueTimeoutError";
-      window.postMessage(
+      const outcome = await fetchAssetBytes({ ...data.request, requestId: data.requestId, ownerId: data.ownerId }, controller.signal);
+      window.polylogueAssetStream.pageMessage({ type: assetFetchResponseMessage, requestId: data.requestId, outcome }, data.ownerId);
+    } catch {
+      window.polylogueAssetStream.pageMessage(
         {
           type: assetFetchResponseMessage,
           requestId: data.requestId,
-          outcome: assetOutcome("request_failed", { detail: timedOut ? "request_timeout" : "request_failed" }),
+          outcome: assetOutcome(controller.signal.aborted ? "cancelled" : "request_failed", { detail: controller.signal.aborted ? "capture_cancelled" : "request_failed" }),
         },
-        currentOrigin,
+        data.ownerId,
       );
-    }
+    } finally { requestControllers.delete(`${data.ownerId}:${data.requestId}`); }
   });
 })();

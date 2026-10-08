@@ -23,9 +23,11 @@ from polylogue.core.enums import (
     TitleSource,
     ToolResultUnknownReason,
 )
+from polylogue.core.hashing import hash_text
 from polylogue.core.timestamps import format_timestamp
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction, detect_micro_compaction
+from polylogue.sources import value_bounds
 from polylogue.sources.providers.claude_code_models import ClaudeCodeBackgroundTaskNotification
 
 if TYPE_CHECKING:
@@ -34,7 +36,7 @@ if TYPE_CHECKING:
     # -- a module-level runtime import here is a circular import. This type is
     # only used for an optional parameter annotation; the value is never
     # constructed or introspected by name at runtime in this module.
-    from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult
+    from polylogue.sources.live.tool_result_sidecars import SidecarDebt, SidecarJoinResult
 
 from ..base import (
     ParsedContentBlock,
@@ -1651,11 +1653,11 @@ def _tool_execution_result_payload(item: dict[str, object]) -> dict[str, object]
     found only two of its ~60 observed subfields read anywhere
     (``backgroundTaskId``, ``retrieval_status``/``task`` -- see
     ``_background_task_id``/``_task_output_outcome`` above); this covers the
-    remaining structurally bounded facts. Deliberately excluded: free-text
+    remaining structural facts. Deliberately excluded: free-text
     output fields (``stdout``/``stderr``/``output``/``fullOutput``) that
     duplicate content already visible in the message's own ``tool_result``
     block and could be unbounded in size; ``filenames``/``file.filePath`` are
-    kept because they are bounded path lists, not command output.
+    kept in full because they are declared path evidence, not command output.
     """
     tool_result = item.get("toolUseResult")
     if not isinstance(tool_result, dict):
@@ -1700,9 +1702,9 @@ def _tool_execution_result_payload(item: dict[str, object]) -> dict[str, object]
         payload["file_path"] = tool_result["filePath"]
     filenames = tool_result.get("filenames")
     if isinstance(filenames, list):
-        bounded_filenames = [name for name in filenames if isinstance(name, str)]
-        if bounded_filenames:
-            payload["filenames"] = bounded_filenames[:50]
+        valid_filenames = [name for name in filenames if isinstance(name, str)]
+        if valid_filenames:
+            payload["filenames"] = valid_filenames
     structured_patch = tool_result.get("structuredPatch")
     if isinstance(structured_patch, list) and structured_patch:
         hunks = [hunk for hunk in structured_patch if isinstance(hunk, dict)]
@@ -3149,7 +3151,23 @@ def apply_tool_result_sidecars(session: ParsedSession, join_result: SidecarJoinR
     if not join_result.matched and not join_result.debt:
         return session
 
+    # Keep this source parser's live acquisition dependency lazy: importing
+    # the sidecar module at module load time would recreate the dispatch cycle.
+    from polylogue.sources.live.tool_result_sidecars import SidecarDebt
+
     replacements = {match.tool_use_id: match for match in join_result.matched if match.was_truncated}
+    # The hash of the text each replaced block actually carries. Matches hold
+    # no text, so each replacement is read here, one file at a time, and the
+    # event describes what was attached even if a live file changed since
+    # the join measured it.
+    attached_hashes: dict[str, str] = {}
+    attachment_debt: dict[str, SidecarDebt] = {}
+
+    def attached_text(tool_id: str) -> str:
+        text = value_bounds.require_storable_string(replacements[tool_id].read_text(), kind="claude code tool sidecar")
+        attached_hashes[tool_id] = hash_text(text)
+        return text
+
     messages = session.messages
     if replacements:
         for index, message in enumerate(session.messages):
@@ -3157,16 +3175,48 @@ def apply_tool_result_sidecars(session: ParsedSession, join_result: SidecarJoinR
                 block.type is BlockType.TOOL_RESULT and block.tool_id in replacements for block in message.blocks
             ):
                 continue
-            new_blocks = [
-                block.model_copy(update={"text": replacements[block.tool_id].full_text})
-                if block.type is BlockType.TOOL_RESULT and block.tool_id in replacements
-                else block
-                for block in message.blocks
-            ]
+            new_blocks = []
+            for block in message.blocks:
+                if block.type is not BlockType.TOOL_RESULT or block.tool_id not in replacements:
+                    new_blocks.append(block)
+                    continue
+                match = replacements[block.tool_id]
+                try:
+                    new_blocks.append(block.model_copy(update={"text": attached_text(block.tool_id)}))
+                except OSError as exc:
+                    attachment_debt[match.filename] = SidecarDebt(
+                        filename=match.filename,
+                        byte_size=match.byte_size,
+                        reason=f"read_error:{type(exc).__name__}",
+                        file_mtime_ms=match.file_mtime_ms,
+                    )
+                    new_blocks.append(block)
+                except value_bounds.ValueBoundRefusedError:
+                    attachment_debt[match.filename] = SidecarDebt(
+                        filename=match.filename,
+                        byte_size=match.byte_size,
+                        reason=value_bounds.VALUE_BOUND_REFUSED,
+                        file_mtime_ms=match.file_mtime_ms,
+                    )
+                    new_blocks.append(block)
             messages[index] = message.model_copy(update={"blocks": new_blocks})
 
     events = session.session_events
     for match in join_result.matched:
+        if debt := attachment_debt.get(match.filename):
+            events.append(
+                ParsedSessionEvent(
+                    event_type="claude_tool_result_sidecar",
+                    timestamp=_sidecar_event_timestamp(debt.file_mtime_ms),
+                    payload={
+                        "acquisition_status": "debt",
+                        "filename": debt.filename,
+                        "byte_size": debt.byte_size,
+                        "reason": debt.reason,
+                    },
+                )
+            )
+            continue
         events.append(
             ParsedSessionEvent(
                 event_type="claude_tool_result_sidecar",
@@ -3176,7 +3226,7 @@ def apply_tool_result_sidecars(session: ParsedSession, join_result: SidecarJoinR
                     "tool_use_id": match.tool_use_id,
                     "filename": match.filename,
                     "byte_size": match.byte_size,
-                    "content_hash": match.content_hash,
+                    "content_hash": attached_hashes.get(match.tool_use_id, match.content_hash),
                     "content_replaced": match.was_truncated,
                 },
             )

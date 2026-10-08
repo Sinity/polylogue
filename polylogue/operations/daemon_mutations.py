@@ -5,7 +5,8 @@ from __future__ import annotations
 import functools
 import json
 import tempfile
-from collections.abc import Iterator, Sequence
+from builtins import BaseExceptionGroup
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -31,13 +32,15 @@ from polylogue.operations.mutation_actuators import (
     SessionDeleteArgs,
 )
 from polylogue.operations.mutation_transaction import (
-    MAX_MUTATION_PLAN_TARGETS,
+    MUTATION_PLAN_PAGE_SIZE,
     ConfirmationRequiredError,
     MutationPreview,
     OperationExecutor,
+    StartedBoundMutation,
     compute_parameter_digest,
 )
-from polylogue.operations.operation_context import OperationContext, OperationControlRead, PinnedOperationRead
+from polylogue.operations.operation_context import OperationControlRead, PinnedOperationRead
+from polylogue.operations.operation_context_types import OperationContext
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.query_rows import query_session_row
 
@@ -83,25 +86,6 @@ def _execute_named_mutation(
     }
 
 
-def mutation_session_excision(
-    request: DaemonOperationRequest,
-    context: OperationContext,
-    audit: AuditRepository,
-    snapshot: PinnedOperationRead,
-) -> dict[str, object]:
-    from polylogue.operations.mutation_actuators import SessionExcisionActuator, SessionExcisionArgs
-
-    payload = request.payload
-    args = SessionExcisionArgs(
-        archive_root=context.archive_root,
-        session_id=str(payload["session_id"]),
-        reason=str(payload["reason"]),
-        actor=str(payload["actor"]),
-        cascade_lineage=bool(payload.get("cascade_lineage", False)),
-    )
-    return _execute_named_mutation(request, context, audit, snapshot, SessionExcisionActuator(), args)
-
-
 def mutation_session_lifecycle_request(
     request: DaemonOperationRequest,
     context: OperationContext,
@@ -123,66 +107,113 @@ def mutation_session_lifecycle_request(
     return _execute_named_mutation(request, context, audit, snapshot, SessionLifecycleRequestActuator(), args)
 
 
+def identity_reset_targets(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead | OperationControlRead,
+) -> dict[str, object]:
+    from polylogue.surfaces.outcome import decide_outcome
+
+    offset = int(cast(int, request.payload.get("offset", 0)))
+    ids, total = audit.identity_reset_preview_target_page(
+        str(request.payload["preview_request_id"]),
+        context.principal,
+        archive_identity=snapshot.identity.authority_identity_digest,
+        offset=offset,
+        page_size=int(cast(int, request.payload.get("page_size", 256))),
+    )
+    next_offset = offset + len(ids)
+    return {
+        "session_ids": list(ids),
+        "total": total,
+        "offset": offset,
+        "next_offset": next_offset if next_offset < total else None,
+        "outcome": decide_outcome(matched=total).to_dict(),
+    }
+
+
+def mutation_identity_reset_authorize(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    from polylogue.operations.daemon_protocol import AcceptedOperationReference
+    from polylogue.operations.mutation_actuators import IdentityResetActuator
+
+    if request.payload.get("confirm") is not True:
+        raise ConfirmationRequiredError("identity reset requires explicit confirmation")
+    binding = _binding(request, context, snapshot)
+    operation = runtime_operation_binding(IdentityResetActuator())
+    with _fenced_on_failure(audit, binding):
+        for offset, refs, final in _mutation_reference_pages(
+            request,
+            context,
+            audit,
+            snapshot,
+            authorize=True,
+            kind="authorization-batch",
+        ):
+            previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs)
+            with audit.bind_identity_reset_request(
+                binding,
+                request,
+                transition="issue_authorization_batch",
+                page=(offset, final),
+            ):
+                executor = OperationExecutor()
+                authorizations = tuple(
+                    executor.authorize_bound(
+                        operation,
+                        preview,
+                        context.principal,
+                        confirmation_strength="bound_token",
+                        identity_reset_custody=audit.require_accepted_identity_reset_custody(
+                            preview,
+                            context.principal,
+                            ordinal=offset + index,
+                            issued_at_ms=int(time() * 1000),
+                        ),
+                    )
+                    for index, preview in enumerate(previews)
+                )
+                audit.issue_authorization_batch(previews, context.principal, authorizations)
+    record = audit.machine_request(binding)
+    assert record is not None
+    return {"status": "authorized", "reference": AcceptedOperationReference.from_record(record).to_dict()}
+
+
 def mutation_identity_reset(
     request: DaemonOperationRequest,
     context: OperationContext,
     audit: AuditRepository,
     snapshot: PinnedOperationRead,
 ) -> dict[str, object]:
-    from polylogue.operations.mutation_actuators import IdentityResetActuator, IdentityResetArgs
-
-    payload = request.payload
-    args = IdentityResetArgs(
-        archive_root=context.archive_root,
-        session_ids=tuple(cast(list[str], payload["session_ids"])),
-        reason=str(payload["reason"]),
-    )
-    return _execute_named_mutation(request, context, audit, snapshot, IdentityResetActuator(), args)
-
-
-def mutation_raw_authority_blocker_resolve(
-    request: DaemonOperationRequest,
-    context: OperationContext,
-    audit: AuditRepository,
-    snapshot: PinnedOperationRead,
-) -> dict[str, object]:
-    from polylogue.operations.mutation_actuators import BlockerResolveActuator, BlockerResolveArgs
-
-    payload = request.payload
-    args = BlockerResolveArgs(
-        archive_root=context.archive_root,
-        blocker_id=str(payload["blocker_id"]),
-        resolution=str(payload["resolution"]),
-    )
-    return _execute_named_mutation(request, context, audit, snapshot, BlockerResolveActuator(), args)
-
-
-def maintenance_raw_authority_frontier(
-    request: DaemonOperationRequest,
-    context: OperationContext,
-    audit: AuditRepository,
-    snapshot: PinnedOperationRead,
-) -> dict[str, object]:
-    """Publish the accepted-frontier census under the resident writer's admission.
-
-    The census writes a ``raw_authority_blockers`` row for every blocking plan
-    and tombstones the obligations current evidence disproves, so the daemon
-    runs it rather than a CLI process beside it.
-    """
-    del audit, snapshot
-    from polylogue.config import Config
-    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
-
-    census = inspect_raw_authority_frontier(
-        Config(archive_root=context.archive_root, render_root=context.archive_root, sources=[])
-    )
-    return {
-        "operation": request.operation,
-        "outcome": "completed",
-        "sequence": 1,
-        "effect": "committed",
-        "result": census.to_dict(),
-    }
+    binding = _binding(request, context, snapshot)
+    with _fenced_on_failure(audit, binding):
+        for offset, refs, final in _mutation_reference_pages(
+            request,
+            context,
+            audit,
+            snapshot,
+            authorize=False,
+            kind="execution-batch",
+        ):
+            with audit.bind_identity_reset_request(
+                binding,
+                request,
+                transition="accept_execution_batch",
+                page=(offset, final),
+            ):
+                audit.accept_execution_batch(refs, context.principal)
+    state = _execute_batch(request, context, audit, snapshot, ())
+    if state["outcome"] == "completed":
+        result = state.get("result")
+        if not isinstance(result, dict):
+            raise ValueError("identity reset historical result is unavailable")
+        return result
+    return state
 
 
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")
@@ -476,6 +507,29 @@ def maintenance_secret_scan(
     }
 
 
+def maintenance_schema_quarantine(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Persist schema-verification quarantine verdicts under the resident writer."""
+    del audit, snapshot
+    from polylogue.schemas.validation.corpus import quarantine_raw_sessions
+
+    verdicts = cast(Sequence[Mapping[str, object]], request.payload["verdicts"])
+    marked = quarantine_raw_sessions(
+        context.archive_root, [(str(verdict["raw_id"]), str(verdict["reason"])) for verdict in verdicts]
+    )
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed" if marked else "no-effect",
+        "result": {"affected_count": marked},
+    }
+
+
 def mutation_work_evidence_graph_replace(
     request: DaemonOperationRequest,
     context: OperationContext,
@@ -703,7 +757,7 @@ def mutation_session_delete_authorize(
     binding = _binding(request, context, snapshot)
     operation = runtime_operation_binding(SessionDeleteActuator())
     with _fenced_on_failure(audit, binding):
-        for offset, refs, final in _delete_reference_pages(
+        for offset, refs, final in _mutation_reference_pages(
             request, context, audit, snapshot, authorize=True, kind="authorization-batch"
         ):
             previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs)
@@ -720,7 +774,7 @@ def mutation_session_delete_authorize(
     result: dict[str, object] = {
         "status": "authorized",
         "reference": AcceptedOperationReference.from_record(record).to_dict(),
-        "source_request_id": audit.machine_delete_preview_origin(binding),
+        "source_request_id": audit.machine_preview_origin(binding),
     }
     if record["part_count"] == 1:
         result["authorization_ref"] = next(audit.iter_machine_parts(binding))["artifact_ref"]
@@ -734,7 +788,7 @@ def mutation_session_delete_cancel(
 
     binding = _binding(request, context, snapshot)
     with _fenced_on_failure(audit, binding):
-        for offset, refs, final in _delete_reference_pages(
+        for offset, refs, final in _mutation_reference_pages(
             request, context, audit, snapshot, authorize=True, kind="cancelled-preview-batch"
         ):
             previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs)
@@ -745,7 +799,7 @@ def mutation_session_delete_cancel(
     return {
         "status": "cancelled",
         "reference": AcceptedOperationReference.from_record(record).to_dict(),
-        "source_request_id": audit.machine_delete_preview_origin(binding),
+        "source_request_id": audit.machine_preview_origin(binding),
     }
 
 
@@ -763,8 +817,21 @@ def _part_args(
         if requested_session_ids is not None
         else tuple(target.ref.removeprefix("session:") for target in preview.plan.targets)
     )
+    if preview.plan.operation == "mutate-identity-reset":
+        from polylogue.operations.mutation_actuators import IdentityResetActuator, IdentityResetArgs
+
+        return runtime_operation_binding(IdentityResetActuator()), IdentityResetArgs(
+            archive.user_db_path.parent,
+            tuple(cast(list[str], preview.plan.context["session_ids"])),
+            str(preview.plan.context["reason"]),
+        )
     if preview.plan.operation == "mutate-delete-session":
         return runtime_operation_binding(SessionDeleteActuator()), SessionDeleteArgs(archive, ids)
+    if requested_session_ids is None and preview.plan.operation in {
+        "mutate-bulk-tag-sessions",
+        "mutate-bulk-set-metadata",
+    }:
+        ids = tuple(cast(list[str], preview.plan.context["requested_session_ids"]))
     if preview.plan.operation == "mutate-bulk-tag-sessions":
         return runtime_operation_binding(BulkTagActuator()), BulkTagArgs(
             archive, ids, tuple(cast(list[str], preview.plan.context["tags"]))
@@ -859,9 +926,9 @@ def _execute_batch(
                 )
                 requested_ids = None
                 if request.operation in {"mutation.session.tag", "mutation.session.metadata"}:
-                    offset = _audit_int(part["ordinal"], field="part ordinal") * MAX_MUTATION_PLAN_TARGETS
+                    offset = _audit_int(part["ordinal"], field="part ordinal") * MUTATION_PLAN_PAGE_SIZE
                     requested_ids = tuple(
-                        cast(list[str], request.payload["session_ids"])[offset : offset + MAX_MUTATION_PLAN_TARGETS]
+                        cast(list[str], request.payload["session_ids"])[offset : offset + MUTATION_PLAN_PAGE_SIZE]
                     )
                 operation, args = _part_args(archive, preview, requested_session_ids=requested_ids)
                 with audit.bind_machine_request(
@@ -885,7 +952,7 @@ def mutation_session_delete_execute(
 ) -> dict[str, object]:
     binding = _binding(request, context, snapshot)
     with _fenced_on_failure(audit, binding):
-        for offset, refs, final in _delete_reference_pages(
+        for offset, refs, final in _mutation_reference_pages(
             request, context, audit, snapshot, authorize=False, kind="execution-batch"
         ):
             with audit.bind_machine_request(binding, transition="accept_execution_batch", page=(offset, final)):
@@ -909,8 +976,8 @@ def _inline_mutation(
         ids = tuple(cast(list[str], request.payload["session_ids"]))
         operation = runtime_operation_binding(BulkMetadataSetActuator() if metadata else BulkTagActuator())
         args: list[object] = []
-        for offset in range(0, len(ids), MAX_MUTATION_PLAN_TARGETS):
-            chunk = ids[offset : offset + MAX_MUTATION_PLAN_TARGETS]
+        for offset in range(0, len(ids), MUTATION_PLAN_PAGE_SIZE):
+            chunk = ids[offset : offset + MUTATION_PLAN_PAGE_SIZE]
             if metadata:
                 pairs = tuple((str(pair[0]), pair[1]) for pair in cast(list[list[object]], request.payload["pairs"]))
                 args.append(BulkMetadataSetArgs(snapshot.archive, chunk, pairs))
@@ -1389,7 +1456,189 @@ def mutation_judgment_record(
     }
 
 
-def _source_delete_parts(
+def _observe_frontier_authority(request: DaemonOperationRequest, context: OperationContext) -> OperationControlRead:
+    """Control provenance plus the Index condition the frontier owner reads.
+
+    Control authority carries Source/Audit versions only. Frontier inspection
+    also reads the active Index, so a caller's Index precondition is observed
+    on that tier instead of being compared against an absent version.
+    """
+    from polylogue.archive.query.execution_control import QueryExecutionContext
+    from polylogue.operations.daemon_execution import _observe_explicit_index_condition
+    from polylogue.operations.operation_context import observe_control_authority
+
+    read_control = context.read_control or QueryExecutionContext(
+        call_id=str(request.request_id),
+        query_ref=request.fingerprint,
+        deadline_monotonic=None,
+        owner_ref=context.principal.actor_ref,
+    )
+    authority = _observe_explicit_index_condition(
+        request,
+        observe_control_authority(context.archive_root),
+        archive_root=context.archive_root,
+        read_control=read_control,
+    )
+    read_control.mark_cleanup_complete()
+    return authority
+
+
+async def execute_raw_authority_blocker_resolve_operation(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+) -> Any:
+    """Acknowledge one frontier obligation on its original admitted preparation owner."""
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
+    from polylogue.operations.daemon_protocol import validate_operation_result
+    from polylogue.operations.mutation_actuators import BlockerResolveActuator, BlockerResolveArgs
+    from polylogue.operations.operation_context import observe_control_authority
+    from polylogue.storage.frontier_inspection import prepared_frontier_blocker_acknowledgement
+
+    request = validate_execution_request(request, context)
+    if request.payload.get("confirm") is not True:
+        raise ConfirmationRequiredError(f"{request.operation} requires explicit confirmation")
+    runtime = context.runtime
+    assert runtime is not None
+    await runtime.recover_interrupted_operations(resolver_actor_ref=context.principal.actor_ref)
+    started = monotonic()
+    audit = runtime.audit_for_request(request, context)
+
+    def execute() -> Any:
+        authority = _observe_frontier_authority(request, context)
+        _validate_identity(request, context, authority)
+        runtime.observe_snapshot(request, authority)
+        blocker_id = str(request.payload["blocker_id"])
+        resolution = str(request.payload["resolution"]).strip()
+        actuator = BlockerResolveActuator()
+        binding = runtime_operation_binding(actuator)
+        executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
+        begun = None
+        try:
+            with prepared_frontier_blocker_acknowledgement(
+                context.archive_root,
+                blocker_id,
+                resolution=resolution,
+                input_demand=runtime.prepared_compute_adapter().amend_current_input_demand,
+            ) as prepared:
+                args = BlockerResolveArgs(context.archive_root, blocker_id, resolution, prepared)
+
+                def begin() -> StartedBoundMutation:
+                    # Re-observe the same authority the admission read did:
+                    # control provenance alone carries no Index version, so a
+                    # caller's Index precondition compared against it always
+                    # refused as ``schema_version_mismatch``.
+                    current = _observe_frontier_authority(request, context)
+                    _validate_identity(request, context, current)
+                    if current.identity != authority.identity:
+                        raise ValueError("archive changed before blocker acknowledgement authorization")
+                    runtime.begin_unbound_write(request, snapshot=authority)
+                    preview = executor.prepare_bound_for_archive(
+                        binding, args, context.principal, archive_root=context.archive_root
+                    )
+                    authorization = executor.authorize_bound(
+                        binding, preview, context.principal, confirmation_strength="bound_token"
+                    )
+                    return executor.begin_bound(binding, preview, authorization, args)
+
+                begun = admit_stage_write("operation.frontier.blocker.begin", begin)
+            # Starting the audited attempt changes Source continuity. Capture the
+            # publication operands only afterwards; the original seal is settled,
+            # never refreshed or reused after that durable intent.
+            with prepared_frontier_blocker_acknowledgement(
+                context.archive_root,
+                blocker_id,
+                resolution=resolution,
+                input_demand=runtime.prepared_compute_adapter().amend_current_input_demand,
+            ) as prepared:
+                args = BlockerResolveArgs(context.archive_root, blocker_id, resolution, prepared)
+                receipt = admit_stage_write(
+                    "operation.frontier.blocker.publish", lambda: actuator.apply(begun.plan, args)
+                )
+        except BaseException as exc:
+            if begun is None:
+                raise
+            error_summary = str(exc)[:512]
+            try:
+                admit_stage_write(
+                    "operation.frontier.blocker.indeterminate",
+                    lambda: executor.finalize_bound(
+                        begun,
+                        error_summary=error_summary,
+                        unknown_reason="acknowledgement failed after durable intent",
+                    ),
+                )
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("Acknowledgement and audit finalization failed", [exc, cleanup]) from exc
+            raise
+        finalized = admit_stage_write(
+            "operation.frontier.blocker.finalize", lambda: executor.finalize_bound(begun, receipt=receipt)
+        )
+        assert finalized is not None
+        receipt = finalized
+        result = {
+            "operation": request.operation,
+            "outcome": "completed",
+            "sequence": 1,
+            "effect": "committed" if receipt.affected_count else "no-effect",
+            "affected_count": receipt.affected_count,
+            "receipt_ref": receipt.receipt_ref,
+            "result": dict(receipt.domain_receipt),
+        }
+        validate_operation_result(request.operation, result)
+        settled = observe_control_authority(context.archive_root)
+        return operation_envelope(
+            request, context, snapshot=settled, admitted_snapshot=authority, started_at=started, result=result
+        )
+
+    return await runtime.prepared_phase("frontier.blocker.resolve", execute, estimated_bytes=0, exclusive_bytes=True)
+
+
+async def execute_raw_authority_frontier_operation(request: DaemonOperationRequest, context: OperationContext) -> Any:
+    """Measure original frontier inputs through this operation's supplied owner."""
+    from dataclasses import asdict
+
+    from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
+    from polylogue.operations.daemon_protocol import validate_operation_result
+    from polylogue.operations.operation_context import observe_control_authority
+    from polylogue.storage.frontier_inspection import FrontierInspectionOutcome, inspect_prepared_raw_authority_frontier
+
+    request = validate_execution_request(request, context)
+    runtime = context.runtime
+    if runtime is None:
+        raise PermissionError("daemon_required")
+    started = monotonic()
+
+    def accept() -> None:
+        authority = _observe_frontier_authority(request, context)
+        _validate_identity(request, context, authority)
+        runtime.observe_snapshot(request, authority)
+        runtime.begin_unbound_write(request, snapshot=authority)
+
+    await runtime.write_phase("frontier.accept", accept)
+
+    def inspect() -> FrontierInspectionOutcome:
+        adapter = runtime.prepared_compute_adapter()
+        return inspect_prepared_raw_authority_frontier(
+            context.archive_root,
+            input_demand=adapter.amend_current_input_demand,
+            check_physical_dependencies=True,
+        )
+
+    measured = await runtime.prepared_phase("frontier.inspect", inspect, estimated_bytes=0, exclusive_bytes=True)
+    result = {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "no-effect" if measured.mode == "current" else "committed",
+        "result": asdict(measured),
+    }
+    validate_operation_result(request.operation, result)
+    authority = observe_control_authority(context.archive_root)
+    return operation_envelope(request, context, snapshot=authority, started_at=started, result=result)
+
+
+def _source_mutation_parts(
     request: DaemonOperationRequest,
     context: OperationContext,
     audit: AuditRepository,
@@ -1401,12 +1650,19 @@ def _source_delete_parts(
     key = "preview_request_id" if authorize else "authorization_request_id"
     target = request.payload.get(key)
     if target is None:
+        if request.operation.startswith("mutation.identity-reset"):
+            raise ValueError("reset phase requires its sealed source request")
         ref = str(request.payload["preview_ref" if authorize else "authorization_ref"])
         return iter(({"ordinal": 0, "artifact_ref": ref},)), 1
     record = audit.machine_request_for_principal(
         snapshot.identity.authority_identity_digest, str(target), context.principal.actor_ref
     )
-    expected = "mutation.session.delete.preview" if authorize else "mutation.session.delete.authorize"
+    family = (
+        "mutation.identity-reset"
+        if request.operation.startswith("mutation.identity-reset")
+        else "mutation.session.delete"
+    )
+    expected = f"{family}.preview" if authorize else f"{family}.authorize"
     kind = "preview-batch" if authorize else "authorization-batch"
     if record is None or record["operation_name"] != expected or record["artifact_kind"] != kind:
         raise ValueError("delete operation reference does not name a sealed phase")
@@ -1419,7 +1675,7 @@ def _source_delete_parts(
     return audit.iter_machine_parts(source), _audit_int(record["part_count"], field="part count")
 
 
-def _delete_reference_pages(
+def _mutation_reference_pages(
     request: DaemonOperationRequest,
     context: OperationContext,
     audit: AuditRepository,
@@ -1432,7 +1688,7 @@ def _delete_reference_pages(
     accepted = _accepted_pages(audit, binding, kind)
     if accepted is None:
         return
-    parts, total = _source_delete_parts(request, context, audit, snapshot, authorize=authorize)
+    parts, total = _source_mutation_parts(request, context, audit, snapshot, authorize=authorize)
     refs: list[str] = []
     offset = accepted
     for part in parts:
@@ -1701,7 +1957,51 @@ def _prepare_mutation_selection(
         )
 
 
-async def execute_session_delete_preview_operation(request: DaemonOperationRequest, context: OperationContext) -> Any:
+def _prepare_identity_reset_selection(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    document: BinaryIO,
+) -> _PreparedMutationSelection:
+    """Freeze source identities on disk before publishing any reset authority."""
+    from polylogue.archive.query.transaction import archive_snapshot_epoch
+    from polylogue.operations.cli_aux_reads import _iter_sessions_from_source_path, _resolve_session_prefixes
+    from polylogue.operations.daemon_execution import _validate_identity
+    from polylogue.operations.operation_context import abort_checkpoint, open_operation_read
+    from polylogue.storage.sqlite.connection_profile import readonly_temp_staging
+
+    runtime = context.runtime
+    assert runtime is not None
+    checkpoint = abort_checkpoint(context.read_control) if context.read_control is not None else lambda: None
+    with open_operation_read(context.archive_root, publication_guard=runtime.publication_guard) as pinned:
+        _validate_identity(request, context, pinned)
+        runtime.observe_snapshot(request, pinned)
+        authority = OperationControlRead(pinned.identity, dict(pinned.schema_versions), pinned.degraded_components)
+        frame = f"{pinned.archive.index_db_path.resolve()}:{archive_snapshot_epoch(pinned.archive)}"
+        session = request.payload.get("session")
+        selected = (
+            iter(_resolve_session_prefixes(pinned.archive, [session]))
+            if isinstance(session, str)
+            else _iter_sessions_from_source_path(pinned.archive, Path(str(request.payload["source_path"])))
+        )
+        count = 0
+        sample: list[str] = []
+        try:
+            with readonly_temp_staging(pinned.archive._conn, temp_store="FILE"):
+                for session_id in selected:
+                    checkpoint()
+                    document.write(json.dumps(session_id).encode("utf-8") + b"\n")
+                    count += 1
+                    if len(sample) < 5:
+                        sample.append(session_id)
+        finally:
+            if not isinstance(session, str):
+                cast(Any, selected).close()
+        checkpoint()
+        document.flush()
+        return _PreparedMutationSelection(authority, frame, count, tuple(sample))
+
+
+async def execute_selected_preview_operation(request: DaemonOperationRequest, context: OperationContext) -> Any:
     """Prepare any canonical selection on the resident owner without client IDs."""
     from polylogue.archive.query.transaction import archive_snapshot_epoch
     from polylogue.operations.daemon_execution import _validate_identity, operation_envelope
@@ -1718,13 +2018,22 @@ async def execute_session_delete_preview_operation(request: DaemonOperationReque
             _validate_identity(request, context, pinned)
             runtime.observe_snapshot(request, pinned)
             authority = OperationControlRead(pinned.identity, dict(pinned.schema_versions), pinned.degraded_components)
-            return authority, audit.machine_request(_binding(request, context, authority))
+            # A lookup on a compute worker holds no writer lease; it reads the
+            # settled audit tier, never audit's writer leaf.
+            with audit.settled_machine_read():
+                return authority, audit.machine_request(_binding(request, context, authority))
 
     authority, existing = await runtime.compute_phase(prior)
     with tempfile.TemporaryFile(mode="w+b") as document:
         selection = None
         if existing is None:
-            selection = await runtime.compute_phase(lambda: _prepare_mutation_selection(request, context, document))
+            selection = await runtime.compute_phase(
+                lambda: (
+                    _prepare_identity_reset_selection
+                    if request.operation == "mutation.identity-reset.preview"
+                    else _prepare_mutation_selection
+                )(request, context, document)
+            )
             authority = selection.authority
         elif existing["artifact_kind"] != "preview-batch":
             raise MutationSelectionError(
@@ -1743,7 +2052,7 @@ async def execute_session_delete_preview_operation(request: DaemonOperationReque
                         raise MutationSelectionError(
                             "selection_frame_changed", "The deletion selection changed before acceptance."
                         )
-                if selection.session_count == 0:
+                if selection.session_count == 0 and request.operation != "mutation.identity-reset.preview":
                     return {
                         "status": "prepared",
                         "operation": "delete",
@@ -1751,11 +2060,16 @@ async def execute_session_delete_preview_operation(request: DaemonOperationReque
                         "session_ids_sample": [],
                         "affected_count": 0,
                     }
-                total = (selection.session_count + MAX_MUTATION_PLAN_TARGETS - 1) // MAX_MUTATION_PLAN_TARGETS
+                total = max(1, (selection.session_count + MUTATION_PLAN_PAGE_SIZE - 1) // MUTATION_PLAN_PAGE_SIZE)
                 offset = 0
                 chunk: list[str] = []
                 pending: list[MutationPreview] = []
-                operation = runtime_operation_binding(SessionDeleteActuator())
+                from polylogue.operations.mutation_actuators import IdentityResetActuator, IdentityResetArgs
+
+                reset = request.operation == "mutation.identity-reset.preview"
+                operation: OperationBinding[Any, object] = runtime_operation_binding(
+                    IdentityResetActuator() if reset else SessionDeleteActuator()
+                )
                 with (
                     _fenced_on_failure(audit, binding),
                     ArchiveStore.open_existing(context.archive_root, read_only=False) as archive,
@@ -1764,7 +2078,11 @@ async def execute_session_delete_preview_operation(request: DaemonOperationReque
                     executor = OperationExecutor()
 
                     def retain() -> None:
-                        args = SessionDeleteArgs(archive, tuple(chunk))
+                        args = (
+                            IdentityResetArgs(context.archive_root, tuple(chunk), str(request.payload["reason"]))
+                            if reset
+                            else SessionDeleteArgs(archive, tuple(chunk))
+                        )
                         raw = operation.actuator.prepare(args)
                         pending.append(
                             executor.prepare_bound(
@@ -1798,11 +2116,11 @@ async def execute_session_delete_preview_operation(request: DaemonOperationReque
                         if not isinstance(sid, str) or not sid:
                             raise ValueError("sealed deletion identity is invalid")
                         chunk.append(sid)
-                        if len(chunk) == MAX_MUTATION_PLAN_TARGETS:
+                        if len(chunk) == MUTATION_PLAN_PAGE_SIZE:
                             retain()
                             if len(pending) == MACHINE_PAGE_PARTS:
                                 accept()
-                    if chunk:
+                    if chunk or selection.session_count == 0:
                         retain()
                     if pending:
                         accept()
@@ -1810,7 +2128,7 @@ async def execute_session_delete_preview_operation(request: DaemonOperationReque
                         raise ValueError("sealed deletion part count differs from its complete selection")
             return audit.machine_preview_summary(binding)
 
-        result = await runtime.write_phase("session.delete.preview", prepare)
+        result = await runtime.write_phase(request.operation, prepare)
     return operation_envelope(request, context, snapshot=authority, started_at=started, result=result)
 
 
@@ -1860,7 +2178,7 @@ def _combined_user_intents(
         if not isinstance(sid, str) or not sid:
             raise ValueError("sealed mutation identity is invalid")
         chunk.append(sid)
-        if len(chunk) == MAX_MUTATION_PLAN_TARGETS:
+        if len(chunk) == MUTATION_PLAN_PAGE_SIZE:
             yield from intents(tuple(chunk))
             chunk.clear()
             emitted = True
@@ -1885,7 +2203,10 @@ async def execute_session_mark_operation(request: DaemonOperationRequest, contex
             _validate_identity(request, context, pinned)
             runtime.observe_snapshot(request, pinned)
             authority = OperationControlRead(pinned.identity, dict(pinned.schema_versions), pinned.degraded_components)
-            return authority, audit.machine_request(_binding(request, context, authority))
+            # A lookup on a compute worker holds no writer lease; it reads the
+            # settled audit tier, never audit's writer leaf.
+            with audit.settled_machine_read():
+                return authority, audit.machine_request(_binding(request, context, authority))
 
     authority, existing = await runtime.compute_phase(prior)
     with tempfile.TemporaryFile(mode="w+b") as document:
@@ -1917,7 +2238,7 @@ async def execute_session_mark_operation(request: DaemonOperationRequest, contex
                     len(cast(list[str], request.payload.get(field) or []))
                     for field in ("add_marks", "remove_marks", "remove_tags")
                 ) + (request.payload.get("note_text") is not None)
-                chunks = max(1, (selection.session_count + MAX_MUTATION_PLAN_TARGETS - 1) // MAX_MUTATION_PLAN_TARGETS)
+                chunks = max(1, (selection.session_count + MUTATION_PLAN_PAGE_SIZE - 1) // MUTATION_PLAN_PAGE_SIZE)
                 total = selection.session_count * per_session + chunks * sum(
                     bool(request.payload.get(field)) for field in ("tags", "pairs")
                 )

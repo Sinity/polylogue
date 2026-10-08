@@ -13,16 +13,18 @@ import pytest
 from polylogue.core.enums import Provider, Role
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import claude_ai_object_envelope
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.claude import common as claude_common
 from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import ClaudeChatEvidence, SqliteMessageStore, normalize_active_branch
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
-from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.retained_jsonl import retained_raw_fixture
 
 
 def _conversation(message_count: int = 300) -> dict[str, object]:
@@ -79,7 +81,7 @@ def _conversation(message_count: int = 300) -> dict[str, object]:
 
 
 def _expected(payload: dict[str, object], source: Path) -> ParsedSession:
-    [expected] = require_positive_conversational_evidence(
+    [expected] = admit_parsed_sessions_for_publication(
         parse_payload(Provider.CLAUDE_AI, [payload], "fallback"),
         provider=Provider.CLAUDE_AI,
         source_path=str(source),
@@ -113,7 +115,7 @@ def _refuse_whole_document(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError("whole-document decode or parse was used")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse)
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse)
 
     def refuse_resident(self: object, _value: object) -> None:
         raise AssertionError("streamed Claude AI evidence was held in a resident store")
@@ -304,34 +306,26 @@ def test_retained_claude_ai_object_uses_streamed_replay_route(tmp_path: Path, mo
     payload = _conversation()
     blob_root = tmp_path / "blob"
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(payload).encode())
-    source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(path)
-        else:
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
-    _refuse_whole_document(monkeypatch)
-    artifact = revision_backfill.prepare_retained_jsonl_artifact(
-        "synthetic-raw",
-        Provider.CLAUDE_AI.value,
-        blob_hash,
-        str(tmp_path / "claude" / "conversation.json"),
-        "full",
-        None,
-        str(blob_root),
-        str(source_db),
-        str(index_db),
-        str(tmp_path / "prepared"),
-        "2025-01-02T03:04:05Z",
-    )
-    assert artifact.error is None
-    assert artifact.positive_evidence_filtered
-    [actual] = artifact.iter_sessions()
-    assert actual.provider_session_id == "claude-conversation"
-    assert len(actual.messages) == 302
-    assert actual.created_at == "2026-01-01T00:00:00+00:00"
+    with retained_raw_fixture(
+        root=tmp_path,
+        provider=Provider.CLAUDE_AI,
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "claude" / "conversation.json"),
+        file_mtime="2025-01-02T03:04:05Z",
+    ) as (reader, raw_id):
+        _refuse_whole_document(monkeypatch)
+        artifact = revision_backfill.prepare_retained_jsonl_artifact(
+            reader, raw_id, directory=BlobStore(blob_root)._ensure_private_staging_root() / "prepared"
+        )
+        try:
+            assert artifact.error is None, artifact.error
+            assert artifact.positive_evidence_filtered
+            [actual] = artifact.iter_sessions()
+            assert actual.provider_session_id == "claude-conversation"
+            assert len(actual.messages) == 302
+            assert actual.created_at == "2026-01-01T00:00:00+00:00"
+        finally:
+            artifact.discard()
 
 
 def test_sink_active_path_walk_starts_at_the_leaf_row(tmp_path: Path) -> None:
@@ -358,3 +352,51 @@ def test_sink_active_path_walk_starts_at_the_leaf_row(tmp_path: Path) -> None:
     # Only the leaf occurrence and its own parent chain: the later "b"
     # (parent "x") is a different message that repeats the provider id.
     assert [message.is_active_path for message in resident] == [True, True, None, None]
+
+
+@pytest.mark.parametrize("prepared", [False, True], ids=["conventional", "prepared"])
+def test_real_claude_repeated_occurrence_events_keep_their_message(tmp_path: Path, prepared: bool) -> None:
+    from contextlib import closing
+
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "claude-ai" / "event-occurrences.json"
+    source = tmp_path / "conversation.json"
+    source.write_bytes(fixture.read_bytes())
+    artifact = None
+    try:
+        if prepared:
+            artifact = prepare_jsonl_blob(
+                str(source),
+                str(source),
+                Provider.CLAUDE_AI.value,
+                "fallback",
+                is_stream=False,
+                shard_directory=str(tmp_path / "prepared"),
+            )
+            assert artifact.error is None
+            with closing(artifact.iter_sessions()) as sessions:
+                parsed = next(sessions)
+        else:
+            parsed = _expected(json.loads(source.read_text()), source)
+        with closing(connect_measured(tmp_path / "index.db")) as conn, conn:
+            conn.row_factory = sqlite3.Row
+            initialize_archive_tier(conn, ArchiveTier.INDEX)
+            sid = write_fixture_index_session(conn, parsed)
+            rows = conn.execute(
+                "SELECT e.event_type, e.payload_json, b.text FROM session_events e "
+                "JOIN blocks b ON b.message_id = e.source_message_id "
+                "WHERE e.session_id = ? AND b.block_type = 'text'",
+                (sid,),
+            ).fetchall()
+        summaries = {json.loads(row[1])["summary"]: row[2] for row in rows if row[0] == "claude_ai_compaction_summary"}
+        assert summaries == {"first summary": "first occurrence", "second summary": "second occurrence"}
+        configurations = {json.loads(row[1])["model"]: row[2] for row in rows if row[0] == "model_configuration"}
+        assert configurations == {"synthetic-first": "first occurrence", "synthetic-second": "second occurrence"}
+        revisions = {json.loads(row[1])["updated_at"]: row[2] for row in rows if row[0] == "message_revision"}
+        # The parser stores provider timestamps as normalized ISO-8601.
+        assert revisions == {
+            "2026-01-01T00:01:00+00:00": "first occurrence",
+            "2026-01-01T00:03:00+00:00": "second occurrence",
+        }
+    finally:
+        if artifact is not None:
+            artifact.discard()

@@ -27,19 +27,18 @@ from typing import Any, cast
 
 import pytest
 
-from polylogue.daemon.convergence import DaemonConverger
-from polylogue.daemon.convergence_stages import make_default_convergence_stages
 from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassReport, IntakeClassSpec, IntakePass
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.schemas.synthetic import SyntheticCorpus
-from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.storage import frontier_existence, raw_retention
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.daemon_cold_start import write_fixture
+from tests.infra.live_batch import prepared_live_batch_processor
+from tests.infra.live_ingest import prepared_live_convergence_owner
 from tests.infra.workload_declarations import convergence_corpus_specs
 
 _MAX_DISPATCHER_PASSES = 64
@@ -79,12 +78,14 @@ def _write_corpus(root: Path, *, prefix: str = "dispatcher-measure", keep_files:
     with a 120 s default per-test timeout.
     """
     spec = convergence_corpus_specs("xs-tiny-files")[0]
-    project = root / "corpus" / "test-project"
-    SyntheticCorpus.write_spec_artifacts(spec, project, prefix=prefix, index_width=4)
+    # The corpus root is a Claude Code projects directory; the writer puts
+    # each session in a project directory below it.
+    corpus = root / "corpus"
+    SyntheticCorpus.write_spec_artifacts(spec, corpus, prefix=prefix, index_width=4)
     if keep_files is not None:
-        for extra in _jsonl_files(project.parent)[keep_files:]:
+        for extra in _jsonl_files(corpus)[keep_files:]:
             extra.unlink()
-    return project.parent
+    return corpus
 
 
 def _jsonl_files(corpus_root: Path) -> list[Path]:
@@ -112,37 +113,28 @@ def _run_direct_ingest(corpus_root: Path, archive_root: Path) -> dict[str, float
     archive-wide convergence on one arm only, so the two arms would not be
     the same unit of work.
 
-    Both arms use the same test-owned parse stage. This isolated unit harness
-    has no daemon raw-materialization owner to drain a shard preparation that
-    is deferred pending authority, so the stage has no shard directory. The
-    stage is shut down inside each measured interval.
+    Both arms parse through the processor's own preparation route.
     """
     files = _jsonl_files(corpus_root)
-    db_path = archive_root / "index.db"
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
-    polylogue = SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=db_path))
-    parse_stage = LiveParseStage()
-    processor = LiveBatchProcessor(
-        cast(Any, polylogue),
-        (WatchSource(name="claude-code", root=corpus_root),),
-        cursor=CursorStore(db_path),
-        parser_fingerprint="dispatcher-measure-direct",
-        converger=converger,
-        parse_stage=parse_stage,
-    )
-    started = time.perf_counter()
-    try:
-        metrics = asyncio.run(
-            processor.ingest_files(
+    # The fixture writer's lease names an existing archive root; it bootstraps the tiers.
+    archive_root.mkdir(parents=True, exist_ok=True)
+
+    async def run() -> tuple[Any, float]:
+        async with prepared_live_batch_processor(
+            archive_root,
+            (WatchSource(name="claude-code", root=corpus_root),),
+            parser_fingerprint="dispatcher-measure-direct",
+        ) as processor:
+            started = time.perf_counter()
+            metrics = await processor.ingest_files(
                 files,
                 queued_file_count=len(files),
                 emit_event=True,
                 whole_archive_convergence=False,
             )
-        )
-    finally:
-        parse_stage.shutdown()
-    elapsed = time.perf_counter() - started
+            return metrics, time.perf_counter() - started
+
+    metrics, elapsed = asyncio.run(run())
     payload = _payload_bytes(files)
     return {
         "total_s": elapsed,
@@ -165,75 +157,80 @@ def _run_dispatcher_ingest(
     files = _jsonl_files(corpus_root)
     db_path = archive_root / "index.db"
     source = WatchSource(name="claude-code", root=corpus_root)
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
     polylogue = SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=db_path))
     writer_events: list[DaemonWriteEvent] = []
     batch_payloads: list[dict[str, object]] = []
-    parse_stage = LiveParseStage()
 
     def record_batch_event(name: str, payload: dict[str, object]) -> None:
         if name == "ingestion_batch":
             batch_payloads.append(payload)
 
-    coordinator = (
-        DaemonWriteCoordinator(observer=writer_events.append, archive_root=archive_root)
-        if observe_writer_holds
-        else None
-    )
-
-    watcher = LiveWatcher(
-        cast(Any, polylogue),
-        (source,),
-        cursor=CursorStore(db_path),
-        converger=converger,
-        write_coordinator=coordinator,
-        event_emitter=record_batch_event if observe_writer_holds else None,
-        parse_stage=parse_stage,
-    )
-    adapter = FileIntakeAdapter(
-        DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=(source,)),
-        source,
-        class_name="configured_local",
-    )
-    dispatcher = FairIntakeDispatcher(
-        (IntakeClassSpec(name="configured_local", adapter=adapter, page_size=32),),
-        frame="test:dispatcher-measure",
-    )
-
-    async def drain() -> tuple[int, int, int, int, int]:
+    async def drain() -> tuple[int, int, int, int, int, float]:
         admitted = 0
         failed = 0
         retried = 0
         deferred = 0
         passes = 0
+        # The writer's lease names an existing archive root; bootstrap fills it.
+        archive_root.mkdir(parents=True, exist_ok=True)
+        coordinator = DaemonWriteCoordinator(
+            observer=writer_events.append if observe_writer_holds else None, archive_root=archive_root
+        )
+        await coordinator.run_sync("fixture.dispatcher.bootstrap", lambda: bootstrap_archive_root(archive_root))
         try:
-            while passes < _MAX_DISPATCHER_PASSES:
-                result = await dispatcher.run_once()
-                passes += 1
-                admitted += result.admitted
-                for report in result.classes:
-                    retried += report.retried
-                    deferred += report.deferred
-                    failed += report.retried + report.isolated
-                if result.quiescent and not adapter.discovery_pending:
-                    if admitted == len(files):
-                        break
-                    # A preparation deferral can leave a retry cursor due
-                    # after this otherwise idle pass. Give it a bounded turn.
-                    await asyncio.sleep(0.25)
-            else:
-                raise AssertionError(f"dispatcher did not drain in {_MAX_DISPATCHER_PASSES} passes")
+            async with prepared_live_convergence_owner(archive_root, write_coordinator=coordinator) as owner:
+                watcher = LiveWatcher(
+                    cast(Any, polylogue),
+                    (source,),
+                    cursor=await coordinator.run_sync(
+                        "fixture.dispatcher.cursor",
+                        lambda: CursorStore(db_path, ops_db_path=archive_root / "ops.db"),
+                    ),
+                    write_coordinator=coordinator,
+                    event_emitter=record_batch_event if observe_writer_holds else None,
+                    append_runner=owner.ingest_append_plans,
+                    retained_runner=owner.ingest_retained_raw_ids,
+                    convergence_runner=owner.run_convergence_sync,
+                )
+                adapter = FileIntakeAdapter(
+                    DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=(source,)),
+                    source,
+                    class_name="configured_local",
+                )
+                dispatcher = FairIntakeDispatcher(
+                    (IntakeClassSpec(name="configured_local", adapter=adapter, page_size=32),),
+                    frame="test:dispatcher-measure",
+                )
+                # Time the scheduled passes only, the same unit the direct arm
+                # times: archive bootstrap, owner composition and coordinator
+                # shutdown are fixture setup on both arms.
+                started = time.perf_counter()
+                try:
+                    while passes < _MAX_DISPATCHER_PASSES:
+                        result = await dispatcher.run_once()
+                        passes += 1
+                        admitted += result.admitted
+                        for report in result.classes:
+                            retried += report.retried
+                            deferred += report.deferred
+                            failed += report.retried + report.isolated
+                        if result.quiescent and not adapter.discovery_pending:
+                            if admitted == len(files):
+                                break
+                            # A preparation deferral can leave a retry cursor due
+                            # after this otherwise idle pass. Give it a bounded turn.
+                            await asyncio.sleep(0.25)
+                    else:
+                        raise AssertionError(f"dispatcher did not drain in {_MAX_DISPATCHER_PASSES} passes")
+                    elapsed = time.perf_counter() - started
+                finally:
+                    watcher.stop()
         finally:
-            watcher.stop()
-            parse_stage.shutdown()
-            if coordinator is not None:
-                assert await coordinator.shutdown(timeout=1.0)
-        return admitted, failed, retried, deferred, passes
+            assert await coordinator.shutdown(timeout=float("inf"))
+        return admitted, failed, retried, deferred, passes, elapsed
 
-    started = time.perf_counter()
-    admitted, failed, retried, deferred, passes = asyncio.run(drain())
+    admitted, failed, retried, deferred, passes, elapsed = asyncio.run(drain())
     assert admitted == len(files), f"dispatcher published {admitted} of {len(files)} expected files"
-    elapsed = time.perf_counter() - started
     payload = _payload_bytes(files)
     released = [event for event in writer_events if event.phase == "released"]
     # The dispatcher no longer takes one page-wide lease.  Its ordinary batch

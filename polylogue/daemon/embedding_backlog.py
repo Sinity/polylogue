@@ -123,13 +123,13 @@ async def periodic_embedding_backlog_check(
             # this loop waits on releases -- matching the prior ordering
             # where composition ran once, immediately after the catch-up
             # wait, never before it and never once per tick.
+            from polylogue.core.compute import compute_adapter
             from polylogue.daemon.embedding_owner import compose_embedding_convergence
-            from polylogue.daemon.execution import daemon_compute_adapter
             from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge, daemon_write_coordinator
 
             resolved_callback = compose_embedding_convergence(
                 db,
-                compute_adapter=daemon_compute_adapter(),
+                compute_adapter=compute_adapter(),
                 write_bridge=DaemonWriteThreadBridge(daemon_write_coordinator(), asyncio.get_running_loop()),
             ).callback
         with span("daemon.embed.backlog_pass") as pass_span:

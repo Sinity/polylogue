@@ -38,7 +38,8 @@ from polylogue.surfaces.payloads import MutationResultPayload
 if TYPE_CHECKING:
     from polylogue.operations.audit import AuditRepository
     from polylogue.operations.daemon_protocol import DaemonOperationRequest
-    from polylogue.operations.operation_context import OperationContext, PinnedOperationRead
+    from polylogue.operations.operation_context import PinnedOperationRead
+    from polylogue.operations.operation_context_types import OperationContext
 
 
 def _text(payload: dict[str, object], key: str, default: str = "") -> str:

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from devtools.pytest_invocation import CLOSED_WORLD_COLLECTION_ARGS, effective_hypothesis_profile
-from devtools.pytest_rerun import testmon_rerun_environment
+from devtools.pytest_options import declared_testmon_environment
 from devtools.testmon_provision import testmon_environment
 from devtools.verify_runs import aggregate_pytest_statistics, git_worktree_content_sha256
 
@@ -100,7 +100,7 @@ class ExecutionSourceGuard:
 
         if provenance is None or provenance.get("git_worktree_content_sha256") != self.digest:
             self.failure = "copied source differs from admitted execution content"
-        declared = testmon_rerun_environment(list(command))
+        declared = declared_testmon_environment(list(command))
         if declared is not None:
             profile, _source = effective_hypothesis_profile(command, environment, default="default")
             if declared != testmon_environment(self.copy, profile):

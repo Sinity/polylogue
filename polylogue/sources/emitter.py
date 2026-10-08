@@ -15,7 +15,13 @@ from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.logging import get_logger
 
-from .acquisition_boundary import admit_bound_bytes, bind_stream, drain_bound
+from .acquisition_boundary import (
+    admit_bound_bytes,
+    bind_stream,
+    bound_profile_identity,
+    bound_source_observation,
+    drain_bound,
+)
 from .assembly import get_assembly_spec
 from .cursor import _ParseContext
 from .decoder_json import JsonValue
@@ -71,11 +77,13 @@ class _SessionEmitter:
     __slots__ = (
         "_ctx",
         "_schema_registry",
+        "_profile_identity",
     )
 
     def __init__(self, ctx: _ParseContext) -> None:
         self._ctx = ctx
         self._schema_registry: SchemaRegistryType | None = None
+        self._profile_identity: str | None = None
 
     def emit(
         self,
@@ -102,7 +110,31 @@ class _SessionEmitter:
         handle = bind_stream(handle, stream_name, self._ctx.bound_provider)
         if pre_read_bytes is not None:
             admit_bound_bytes(pre_read_bytes, stream_name, self._ctx.bound_provider)
-        emitted = self._emit_stream(handle, stream_name, pre_read_bytes, precomputed_raw, session_artifact)
+        canonical, observed = bound_source_observation(handle)
+        profile = bound_profile_identity(handle)
+        self._profile_identity = (
+            profile.key
+            if profile is not None
+            else precomputed_raw.captured_profile_key
+            if precomputed_raw is not None
+            else None
+        )
+
+        def captured_records() -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
+            for raw, session in self._emit_stream(
+                handle, stream_name, pre_read_bytes, precomputed_raw, session_artifact
+            ):
+                if raw is not None:
+                    if raw.canonical_source_path is None:
+                        raw.canonical_source_path = canonical
+                    if raw.captured_file_observation is None:
+                        raw.captured_file_observation = observed
+                    if profile is not None and session.source_name is Provider.HERMES:
+                        raw.captured_profile_key = profile.key
+                        raw.captured_profile_source_path = str(profile.source_path)
+                yield raw, session
+
+        emitted = captured_records()
         if self._ctx.bound_provider is None:
             yield from emitted
             return
@@ -200,6 +232,7 @@ class _SessionEmitter:
             self._ctx.fallback_id,
             schema_resolution=resolved.schema_resolution,
             source_path=self._ctx.source_path_str,
+            profile_identity=self._profile_identity,
         ):
             yield (raw_data, self._maybe_enrich(conv))
 
@@ -272,6 +305,7 @@ class _SessionEmitter:
                     self._ctx.fallback_id,
                     schema_resolution=resolved.schema_resolution,
                     source_path=self._ctx.source_path_str,
+                    profile_identity=self._profile_identity,
                 ):
                     yield (raw_data, self._maybe_enrich(conv, resolved.provider))
                 source_index += 1

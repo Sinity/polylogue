@@ -64,9 +64,6 @@ _ALLOWED: dict[str, set[str]] = {
     # The one lifecycle owner: composes profile families and writes them. The
     # convergence domain drives it; nothing else may compose a family.
     "storage/derived/session/rebuild.py": {_ROW_WRITE},
-    # The domain publisher: stamps/clears the binding column and drops an
-    # excess key's rows. It composes nothing itself -- it calls rebuild.
-    "storage/derived/session/derivation.py": {_DELETE, _UPDATE},
     # Delete-side upkeep only, inside the caller's session-delete transaction.
     "storage/derived/session/refresh.py": {_DELETE},
     # SQL helpers the writers above call. Not lifecycles.

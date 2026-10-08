@@ -13,10 +13,11 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.core.enums import Provider
-from polylogue.operations.raw_observation_derivation import converge_raw_observations
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.cursor_authority import fixture_cursor_authority
+from tests.infra.raw_owner_routes import converge_pending_raws_with_owner
 
 
 def _write_unparsed_raw(archive_root: Path, *, source_path: Path, native_id: str) -> str:
@@ -46,6 +47,7 @@ def _write_unparsed_raw(archive_root: Path, *, source_path: Path, native_id: str
             provider=Provider.CHATGPT,
             payload=json.dumps(payload).encode(),
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=1,
         )
 
@@ -102,6 +104,7 @@ def test_restart_rewinds_cursor_then_common_raw_derivation_recovers_retained_byt
         parser_fingerprint="test-parser",
         content_fingerprint="claimed-complete",
         tail_hash="claimed-complete",
+        authority=fixture_cursor_authority(source_path),
     )
     store.begin_ingest_attempt(paths=[source_path], input_bytes=source_path.stat().st_size, queued_file_count=1)
 
@@ -116,11 +119,7 @@ def test_restart_rewinds_cursor_then_common_raw_derivation_recovers_retained_byt
             0,
         )
 
-    recovered = converge_raw_observations(
-        tmp_path,
-        source_roots=(source_path.parent,),
-        limit=1,
-    )
+    recovered = converge_pending_raws_with_owner(tmp_path, limit=1)
     assert recovered.done == recovered.work.published == 1
     assert recovered.failed == recovered.pending == 0
     assert _sessions_for_raw(tmp_path, raw_id) == [("cursor-ahead", raw_id)]
@@ -132,7 +131,7 @@ def test_common_raw_derivation_restart_recovers_output_loss_without_ops_hints(tm
     source_root = tmp_path / "sources"
     source_root.mkdir()
     first = _write_unparsed_raw(tmp_path, source_path=source_root / "first.json", native_id="first")
-    initial = converge_raw_observations(tmp_path, source_roots=(source_root,), limit=1)
+    initial = converge_pending_raws_with_owner(tmp_path, limit=1)
     assert initial.done == 1 and initial.failed == initial.pending == 0
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -143,7 +142,7 @@ def test_common_raw_derivation_restart_recovers_output_loss_without_ops_hints(tm
         conn.commit()
     second = _write_unparsed_raw(tmp_path, source_path=source_root / "second.json", native_id="second")
 
-    restarted = converge_raw_observations(tmp_path, source_roots=(source_root,), limit=2)
+    restarted = converge_pending_raws_with_owner(tmp_path, limit=2)
     assert restarted.done == restarted.work.published == 2
     assert restarted.failed == restarted.pending == 0
     assert _sessions_for_raw(tmp_path, first) == [("first", first)]

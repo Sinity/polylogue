@@ -1,9 +1,7 @@
-"""Ingest orchestration: acquire → unified ingest (validate + parse + write).
+"""Ingest orchestration: acquire, then publish through the retained Raw owner.
 
-Validation is unconditionally part of ingest — done inline in subprocess
-workers. No separate validation stage. Records already validated are still
-re-validated (cheap — schema check is <1ms per record, and the blob is
-already decoded for parsing anyway).
+Acquisition retains each input; the caller's retained owner prepares and
+publishes every acquired Raw. There is no separate validation stage.
 """
 
 from __future__ import annotations
@@ -25,8 +23,6 @@ if TYPE_CHECKING:
     from polylogue.pipeline.services.parsing import ParsingService
 
 logger = get_logger(__name__)
-
-_BULK_FTS_RAW_BATCH_BYTES = 64 * 1024 * 1024
 
 
 def _iter_raw_id_batches(
@@ -69,7 +65,7 @@ def _emit_ingest_batch_start(
     total_raw: int,
     raw_blob_sizes: dict[str, int],
     progress_callback: ProgressCallback | None,
-) -> int:
+) -> None:
     batch_blob_bytes = _raw_batch_bytes(raw_blob_sizes, batch_ids)
     batch_blob_mb = batch_blob_bytes / (1024 * 1024)
     if progress_callback is not None:
@@ -89,7 +85,6 @@ def _emit_ingest_batch_start(
         total_raw=total_raw,
         blob_mb=round(batch_blob_mb, 1),
     )
-    return batch_blob_bytes
 
 
 def _append_unique_raw_ids(
@@ -169,15 +164,13 @@ async def ingest_sources(
     progress_callback: ProgressCallback | None = None,
     parse_records: bool = True,
     skip_acquire: bool = False,
-    force_write: bool = False,
     max_pass_seconds: float | None = None,
 ) -> IngestResult:
     """Canonical ingestion orchestration.
 
     Two-stage flow:
     1. Acquire: walk sources, hash files to blob store
-    2. Ingest: unified decode + validate + parse + transform + write
-       (validation is inline in subprocess workers, not a separate stage)
+    2. Ingest: the retained Raw owner prepares and publishes each acquired Raw
 
     ``max_pass_seconds`` (polylogue-qlae, default ``None`` = unbounded)
     threads through to the parse stage's ``parse_from_raw`` call -- see its
@@ -194,7 +187,13 @@ async def ingest_sources(
     backend = service._require_backend()
     source_names = [source.name for source in sources]
     # Raw rows scope by their configured-source filesystem path, not origin.
-    source_paths = [str(source.path) for source in sources if source.path is not None]
+    from polylogue.sources.drive.witness import drive_source_prefix
+
+    source_paths = [
+        drive_source_prefix(source.name) if source.is_drive else str(source.path)
+        for source in sources
+        if source.is_drive or source.path is not None
+    ]
 
     # Stage 1: Acquire
     t0 = time.perf_counter()
@@ -225,7 +224,7 @@ async def ingest_sources(
     ingest_state.record_validation_candidates([])
     ingest_state.record_validation_result([])
 
-    # Stage 2: Unified ingest (validate + parse + transform + write)
+    # Stage 2: retained publication of every acquired and backlog Raw
     parse_raw_ids: list[str] = []
     parse_result = ParseResult()
     if parse_records:
@@ -270,7 +269,6 @@ async def ingest_sources(
             parse_result = await service.parse_from_raw(
                 raw_ids=parse_raw_ids,
                 progress_callback=progress_callback,
-                force_write=force_write,
                 max_pass_seconds=max_pass_seconds,
             )
         ingest_state.record_parse_completed()
@@ -327,13 +325,11 @@ async def parse_from_raw(
     raw_ids: list[str] | None = None,
     provider: str | None = None,
     progress_callback: ProgressCallback | None = None,
-    force_write: bool = False,
     max_pass_seconds: float | None = None,
 ) -> ParseResult:
     """Parse raw_sessions from DB into sessions.
 
-    Uses the unified ingest batch processor (decode + validate + parse +
-    transform + write in one pass). Derived session-insight materialization
+    Each raw batch publishes through the service's retained Raw owner. Derived session-insight materialization
     happens in an explicit downstream pipeline stage.
 
     ``max_pass_seconds`` checks elapsed time between raw batches, after at
@@ -344,7 +340,6 @@ async def parse_from_raw(
     from polylogue.pipeline.services.ingest_batch import process_ingest_batch
 
     result = ParseResult()
-    backend = service._require_backend()
     t_start = time.perf_counter()
     pass_started_monotonic = time.monotonic()
     batches_processed = 0
@@ -361,7 +356,7 @@ async def parse_from_raw(
         processed_so_far = 0
         for batch_ids in _iter_raw_id_batches(
             raw_headers,
-            max_records=service.raw_batch_size,
+            max_records=service.RAW_BATCH_SIZE,
             max_blob_bytes=service.raw_batch_blob_limit_bytes,
         ):
             if batches_processed > 0 and _pass_deadline_exceeded():
@@ -376,7 +371,7 @@ async def parse_from_raw(
                 )
                 break
             next_batch = batches_processed + 1
-            batch_blob_bytes = _emit_ingest_batch_start(
+            _emit_ingest_batch_start(
                 batch=next_batch,
                 batch_ids=batch_ids,
                 processed_raw=processed_so_far,
@@ -385,22 +380,13 @@ async def parse_from_raw(
                 progress_callback=progress_callback,
             )
             t_batch = time.perf_counter()
-            batch_observation = await process_ingest_batch(
-                service,
-                backend,
-                batch_ids,
-                result,
-                progress_callback,
-                force_write=force_write,
-                suspend_fts_triggers=batch_blob_bytes >= _BULK_FTS_RAW_BATCH_BYTES,
-            )
+            batch_observation = await process_ingest_batch(service, batch_ids, result, progress_callback)
             batches_processed += 1
             batch_elapsed = time.perf_counter() - t_batch
             processed_so_far += len(batch_ids)
-            if batch_observation is not None:
-                batch_observation["batch"] = batches_processed
-                batch_observation["processed_raw"] = processed_so_far
-                result.batch_observations.append(batch_observation)
+            batch_observation["batch"] = batches_processed
+            batch_observation["processed_raw"] = processed_so_far
+            result.batch_observations.append(batch_observation)
             if progress_callback is not None:
                 progress_callback(
                     0,
@@ -423,7 +409,7 @@ async def parse_from_raw(
         processed_so_far = 0
         for batch_ids in _iter_raw_id_batches(
             raw_headers,
-            max_records=service.raw_batch_size,
+            max_records=service.RAW_BATCH_SIZE,
             max_blob_bytes=service.raw_batch_blob_limit_bytes,
         ):
             if batches_processed > 0 and _pass_deadline_exceeded():
@@ -438,7 +424,7 @@ async def parse_from_raw(
                 )
                 break
             next_batch = batches_processed + 1
-            batch_blob_bytes = _emit_ingest_batch_start(
+            _emit_ingest_batch_start(
                 batch=next_batch,
                 batch_ids=batch_ids,
                 processed_raw=processed_so_far,
@@ -447,21 +433,12 @@ async def parse_from_raw(
                 progress_callback=progress_callback,
             )
             t_batch = time.perf_counter()
-            batch_observation = await process_ingest_batch(
-                service,
-                backend,
-                batch_ids,
-                result,
-                progress_callback,
-                force_write=force_write,
-                suspend_fts_triggers=batch_blob_bytes >= _BULK_FTS_RAW_BATCH_BYTES,
-            )
+            batch_observation = await process_ingest_batch(service, batch_ids, result, progress_callback)
             batches_processed += 1
             processed_so_far += len(batch_ids)
-            if batch_observation is not None:
-                batch_observation["batch"] = batches_processed
-                batch_observation["processed_raw"] = processed_so_far
-                result.batch_observations.append(batch_observation)
+            batch_observation["batch"] = batches_processed
+            batch_observation["processed_raw"] = processed_so_far
+            result.batch_observations.append(batch_observation)
             if progress_callback is not None:
                 progress_callback(
                     0,

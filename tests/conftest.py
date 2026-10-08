@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import gc
 import hashlib
@@ -11,6 +12,7 @@ import sys
 import threading
 import zlib
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from datetime import UTC
 from pathlib import Path
 from types import FrameType, ModuleType
 from typing import TYPE_CHECKING, Any
@@ -43,6 +45,7 @@ pytest_plugins = (
     "tests.infra.frozen_clock",
     "tests.infra.clock_guard",
     "tests.infra.durability_faults",
+    "tests.infra.compute_owner",
 )
 
 if TYPE_CHECKING:
@@ -90,6 +93,9 @@ def pytest_configure(config: pytest.Config) -> None:
         raise pytest.UsageError(bare)
     global _SESSION_ARCHIVE_ROOT
     _SESSION_ARCHIVE_ROOT = pin_session_archive_root(os.environ)
+    from tests.infra.fingerprint_warmup import warm_source_fingerprints
+
+    warm_source_fingerprints()
     sys.stderr.write(f"pytest: polylogue package → {resolved_polylogue_path()} (checkout: {_TESTS_REPO_ROOT})\n")
     sys.stderr.write(f"pytest: session archive root → {_SESSION_ARCHIVE_ROOT}\n")
 
@@ -308,7 +314,7 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if report.failed:
         original = _SHORTENED_NODEIDS.get(report.nodeid)
         if original is not None:
-            from devtools.pytest_rerun import report_nodeid_to_selector
+            from devtools.pytest_stream_report import report_nodeid_to_selector
 
             # Both sides in selector form: an xdist ``@group`` suffix in either
             # one is not collectible, and the rerun strips it before lookup.
@@ -458,6 +464,12 @@ _MANAGED_VERIFY_ENV = frozenset(
     }
 )
 
+# The native browser-extension integration test needs the pinned package from
+# the Nix development environment. It is a test dependency path, not operator
+# archive configuration, so keep this one declared value through the POLYLOGUE
+# host-configuration scrub below.
+_TEST_RUNTIME_ENV = frozenset({"POLYLOGUE_FAKE_INDEXEDDB_PACKAGE"})
+
 _BROAD_PREWARM_ENV = "POLYLOGUE_BROAD_PREWARM"
 
 
@@ -505,7 +517,15 @@ def _close_test_opened_sqlite_connections(
         return conns
 
     def _close_current_thread() -> None:
+        from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_on_current_thread
+
+        owned = {id(owner.connection) for owner in retained_native_sql_owners_on_current_thread()}
         for conn in _bucket():
+            # A controlled factory can appear under tests/ before the actual
+            # producer registers its handle. Never become a second closer for
+            # that production owner or bypass its retained failure obligations.
+            if id(conn) in owned:
+                continue
             try:
                 conn.close()
             except Exception:
@@ -569,7 +589,13 @@ def _close_test_opened_sqlite_connections(
             import asyncio
 
             async def _close_async() -> None:
+                from polylogue.storage.sqlite.async_sqlite import _BACKEND_CONNECTIONS, _BACKEND_CONNECTIONS_LOCK
+
                 for conn in still_open:
+                    with _BACKEND_CONNECTIONS_LOCK:
+                        owner = _BACKEND_CONNECTIONS.get(id(conn))
+                        if owner is not None and owner.connection is conn:
+                            continue
                     try:
                         await conn.close()
                     except Exception:
@@ -698,11 +724,11 @@ def _clear_polylogue_env(
     reset_mcp_call_log()
 
     # Drop the process-global shared compute adapter.
-    # ``polylogue.daemon.execution._SHARED_COMPUTE_ADAPTER`` is published once
+    # ``polylogue.core.compute._SHARED_COMPUTE_ADAPTER`` is published once
     # per process by whichever daemon owns an API server
-    # (``publish_daemon_compute_adapter(api_server.execution_kernel)`` in
+    # (``publish_compute_adapter(api_server.execution_kernel)`` in
     # daemon/cli.py) and is read by every lease-free background derivation via
-    # ``daemon_compute_adapter()``. A test that patches the API server with a
+    # ``compute_adapter()``. A test that patches the API server with a
     # ``MagicMock`` publishes ``mock.execution_kernel`` into that global, and a
     # test that owns a real adapter leaves a *shut down* one behind. Both
     # survive into later tests, where ``convergence._converge_serialized`` then
@@ -713,9 +739,9 @@ def _clear_polylogue_env(
     # Process-lifetime publication is correct for a real daemon, whose adapter
     # outlives every request. It is only wrong for a test process that starts
     # and discards many daemons, so the production route is not weakened.
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
+    from polylogue.core.compute import reset_compute_adapter
 
-    reset_daemon_compute_adapter()
+    assert reset_compute_adapter(join_timeout_s=5) == ()
 
     # Strip every POLYLOGUE_* host env var so tests never inherit operator
     # configuration (archive root, daemon api host/port, validation mode,
@@ -731,7 +757,11 @@ def _clear_polylogue_env(
         # config) for lanes that intentionally run without packaged provider
         # schema data; it must survive this sweep or it could never take
         # effect inside the test suite that is its only consumer.
-        if key.startswith("POLYLOGUE_") and key not in {ALLOW_MISSING_SCHEMAS_ENV, *_MANAGED_VERIFY_ENV}:
+        if key.startswith("POLYLOGUE_") and key not in {
+            ALLOW_MISSING_SCHEMAS_ENV,
+            *_MANAGED_VERIFY_ENV,
+            *_TEST_RUNTIME_ENV,
+        }:
             monkeypatch.delenv(key, raising=False)
 
     for key in (
@@ -893,9 +923,9 @@ def storage_repository(workspace_env: dict[str, Path]) -> SessionRepository:
     creating the default backend.
     """
     from polylogue.storage.repository import SessionRepository
-    from polylogue.storage.sqlite.connection import create_default_backend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
-    backend = create_default_backend()
+    backend = SQLiteBackend(db_path=None)
     return SessionRepository(backend=backend)
 
 
@@ -1166,7 +1196,7 @@ async def sqlite_backend(tmp_path: Path) -> AsyncIterator[SQLiteBackend]:
     from polylogue.storage.sqlite import SQLiteBackend
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     db_path = tmp_path / "index.db"
     backend = SQLiteBackend(db_path=db_path)
     yield backend
@@ -1238,7 +1268,7 @@ def raw_synthetic_samples() -> list[RawSessionRecord]:
         List of RawSessionRecord objects (synthetic data, always available)
     """
     import hashlib
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.storage.runtime import RawSessionRecord
@@ -1256,8 +1286,9 @@ def raw_synthetic_samples() -> list[RawSessionRecord]:
                     raw_id=raw_id,
                     source_name=spec.provider,
                     source_path=f"<synthetic:{spec.provider}:{idx}>",
+                    canonical_source_path=f"<synthetic:{spec.provider}:{idx}>",
                     blob_size=len(raw_bytes),
-                    acquired_at=datetime.now(timezone.utc).isoformat(),
+                    acquired_at=datetime.now(UTC).isoformat(),
                 )
             )
     return samples

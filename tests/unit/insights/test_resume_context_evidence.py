@@ -7,12 +7,8 @@ import pytest
 
 from polylogue.analysis.resume import classify_resume_context_evidence
 from polylogue.analysis.work_evidence import WorkEvidenceNode
-from polylogue.context.compiler import (
-    ContextImage,
-    ContextSegment,
-    ContextSpec,
-    context_snapshot_record_from_image,
-)
+from polylogue.archive.context_models import ContextImage, ContextSegment, ContextSpec
+from polylogue.context.compiler import context_snapshot_record_from_image
 from polylogue.core.refs import ActorRef, EvidenceRef, ExecutionContextRef, ObjectRef
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import (
     ArchiveContextDeliveryEnvelope,

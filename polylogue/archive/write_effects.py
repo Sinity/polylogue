@@ -304,7 +304,13 @@ def commit_archive_write_effects(
         else []
     )
     t_commit = time.perf_counter()
-    conn.commit()
+    from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
+
+    mutation_scope = current_index_mutation_scope()
+    if mutation_scope is not None and mutation_scope.conn is conn:
+        mutation_scope.commit()
+    else:
+        conn.commit()
     commit_elapsed_s = time.perf_counter() - t_commit
     if policy.run_archive_effects:
         receipts.extend(_run_registered_effects(WRITE_EFFECT_REGISTRY, "post-commit", ctx, timings))

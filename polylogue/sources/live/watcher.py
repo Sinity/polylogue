@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
+import threading
 import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager, suppress
@@ -25,8 +26,11 @@ from typing import Any, Protocol, cast
 
 from polylogue.archive.revision_authority import decided_unresolved_membership_sql, raw_receipt_order_sql
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.evidence import Measured
 from polylogue.core.protocols import ArchiveRootOwner
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import provider_from_origin
+from polylogue.core.stage_admission import admit_stage_write, stage_write_admission
 from polylogue.logging import get_logger
 from polylogue.sources.hooks import (
     HookSpoolSourceSpec,
@@ -40,6 +44,9 @@ from polylogue.sources.live.batch import (
     fingerprint_file,
 )
 from polylogue.sources.live.batch_support import (
+    LiveRetainedRunner,
+    _AppendPlan,
+    _AppendResult,
     _archive_blob_exists,
     claude_semantic_frontier_for_prefix,
     cursor_ctime_ns,
@@ -52,13 +59,22 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import (
     CursorObservationRebase,
+    CursorPathAuthority,
     CursorRecord,
     CursorStore,
 )
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
-from polylogue.sources.live.parse_prefetch import LiveParseStage, ReadSnapshot
 from polylogue.sources.live.source_selection import deepest_source_for_path
+from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
+from polylogue.sources.parsers.hermes_identity import declares_profile_identity
+from polylogue.sources.source_layout import (
+    SourceLayout,
+    declared_source_layout,
+    hook_carrier_layout,
+    source_layout_for,
+)
+from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
 from polylogue.sources.sqlite_snapshot import (
     is_sqlite_path,
     sqlite_database_for_sidecar,
@@ -67,6 +83,8 @@ from polylogue.sources.sqlite_snapshot import (
 )
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.write_lease import UnleasedWriteError
+from polylogue.storage.tier_access import capture_sqlite_read
 
 logger = get_logger(__name__)
 # Bump whenever parser semantics change the values derived from already-
@@ -82,7 +100,9 @@ logger = get_logger(__name__)
 # v5: Hermes ``.jsonl.txt`` traces are recognized as JSONL (rs02d 10.F010),
 # so a cursor excluded as an unsupported source class under v4 must get a
 # fresh attempt.
-_PARSER_FINGERPRINT = "live-batched-v5"
+# v6: recursive reserved-value identity and complete branch witnesses change
+# parsed identities, including for sources whose observed bytes are unchanged.
+_PARSER_FINGERPRINT = "live-batched-v6"
 # polylogue-11cg9: the dispatcher's byte budget bounds an admitted page's
 # *size* but not the *time* a single full-ingest pass can hold the sole
 # archive writer -- a handful of files, or one slow-to-parse file, can still
@@ -93,7 +113,7 @@ _PARSER_FINGERPRINT = "live-batched-v5"
 # acquired files, full-ingest progress groups and archive-write records (a
 # single session write cannot be split mid-transaction), never mid-record, so
 # overshoot is one work item. Past the writer gate's own declared hold bound
-# the same checkpoints end the pass with ``WriteHoldBudgetError``.
+# elapsed writer thresholds are diagnostic and never refuse an admitted item.
 _LIVE_INGEST_MAX_PASS_SECONDS = 20.0
 _RAW_RETENTION_RETRY_BUDGET_SECONDS = 30.0
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
@@ -118,9 +138,14 @@ _INCOMPLETE_APPEND_PROBE_CHUNK_BYTES = 1024 * 1024
 _STUCK_DEFERRED_APPEND_AGE_S = 60.0 * 60.0
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson", ".db", ".sqlite", ".sqlite3")
 
-#: The Codex artifact rules the ``codex-state`` source admits beside its
-#: databases: the raw-only JSONL sidecars at the install root.
-CODEX_STATE_SIDECAR_KINDS = frozenset({"session_index", "prompt_history_log"})
+
+# Lifecycle evidence kinds are carried by failed raws; only a classification
+# artifact can declare a raw non-session.
+_FAILURE_EVIDENCE_KINDS_SQL = ", ".join(f"'{kind.value}'" for kind in RawFailureEvidenceKind)
+
+
+def _stat_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
 class _ArchivedCursorReconciliation(str, Enum):
@@ -204,35 +229,78 @@ def _directory_identity(path: Path) -> tuple[int, int] | None:
     return (stat.st_dev, stat.st_ino)
 
 
-#: Directory names no watched root ever descends into.
-_DEFAULT_IGNORED_DIR_NAMES: frozenset[str] = frozenset({".git", "__pycache__", "node_modules", "venv", ".venv"})
+def _relative_parts(path: Path, root: Path) -> tuple[str, ...] | None:
+    """``path`` relative to ``root``: lexically first, then by resolved location."""
+
+    try:
+        return Path(os.path.abspath(path)).relative_to(Path(os.path.abspath(root))).parts
+    except ValueError:
+        pass
+    try:
+        return path.resolve().relative_to(root.resolve()).parts
+    except (OSError, ValueError):
+        return None
+
+
+#: Pause before re-listing the watched directories after one vanished mid-arm.
+_WATCH_REARM_RETRY_S = 0.5
+
+
+class _RearmSignal:
+    """The ``stop_event`` handed to one ``awatch`` arming.
+
+    It reports set when the watcher stops or when the watched directory set
+    has to change; ``watchfiles`` polls ``is_set`` between steps.
+    """
+
+    def __init__(self, stop: asyncio.Event) -> None:
+        self._stop = stop
+        self._requested = False
+
+    def request(self) -> None:
+        self._requested = True
+
+    def is_set(self) -> bool:
+        return self._requested or self._stop.is_set()
 
 
 @dataclass(frozen=True, slots=True)
 class WatchSource:
-    """A directory to watch for live session files."""
+    """A source root and the declared layout of the material below it.
+
+    Every route that enumerates a source -- daemon discovery, the live event
+    filter, the cold-build baseline, one-shot ingest and schema inference --
+    admits only what ``layout`` places (``polylogue.sources.source_layout``).
+    A canonical watch-source name resolves its declared layout; a caller with
+    a synthetic root passes one explicitly. ``exact_paths`` names explicitly
+    declared input files, which are admitted as given.
+    """
 
     name: str
     root: Path
-    suffixes: tuple[str, ...] = (".jsonl",)
-    ignored_dir_names: frozenset[str] = _DEFAULT_IGNORED_DIR_NAMES
+    # Resolved from ``name`` in ``__post_init__`` when not given explicitly.
+    layout: SourceLayout = cast(SourceLayout, None)
     # Hook sources carry durable topology identity.  Ordinary sources retain
     # their historical name-only contract.
     source_id: str | None = None
     role: str | None = None
-    # Most provider sources use OriginSpec path rules as an admission
-    # escape-hatch for extensionless or otherwise path-scoped artifacts.
-    # ``None`` admits every declared rule of the source's provider. A source
-    # whose suffix set is deliberately a hard boundary names the only rule
-    # kinds it admits (the default Codex state database source admits its
-    # install-level JSONL sidecars and nothing else).
-    path_artifact_kinds: frozenset[str] | None = None
     required: bool = False
-    recursive: bool = True
     exact_paths: frozenset[Path] | None = None
+
+    def __post_init__(self) -> None:
+        if self.layout is None:
+            object.__setattr__(self, "layout", source_layout_for(self.name))
 
     def exists(self) -> bool:
         return self.root.exists()
+
+    def artifact_kind(self, path: Path) -> str | None:
+        """The declared artifact kind at ``path``, or ``None`` outside the layout."""
+
+        parts = _relative_parts(path, self.root)
+        if not parts:
+            return None
+        return self.layout.artifact_kind(parts)
 
     def accepts(self, path: Path) -> bool:
         if self.exact_paths is not None:
@@ -240,24 +308,15 @@ class WatchSource:
                 return path.resolve() in self.exact_paths
             except OSError:
                 return False
-        name = path.name.lower()
-        # A declared artifact rule is the source-owned escape hatch for
-        # extensionless and path-scoped artifacts. Check it before suffixes,
-        # then keep suffixes as the ordinary source filter.
-        from polylogue.sources.origin_specs import artifact_rule_for_path
+        return self.artifact_kind(path) is not None
 
-        try:
-            provider = Provider.from_string(self.name)
-        except ValueError:
-            return any(name.endswith(suffix) for suffix in self.suffixes)
-        rule = artifact_rule_for_path(provider, str(path))
-        if rule is not None and (self.path_artifact_kinds is None or rule.kind in self.path_artifact_kinds):
-            return True
-        return any(name.endswith(suffix) for suffix in self.suffixes)
+    def admits_directory(self, path: Path) -> bool:
+        """Whether a directory under the root can hold an artifact of this source."""
 
-    def ignores_directory(self, path: Path) -> bool:
-        """Return whether a subtree cannot contain a live source artifact."""
-        return not self.recursive or path.name in self.ignored_dir_names
+        parts = _relative_parts(path, self.root)
+        if parts is None:
+            return False
+        return not parts or self.layout.admits_directory(parts)
 
 
 #: The harnesses that write hook carriers. Each gets its own watched
@@ -284,9 +343,9 @@ def hook_carrier_watch_sources(specs: Iterable[HookSpoolSourceSpec]) -> tuple[Wa
             # by-name lookup silently sees only the last one.
             name=f"{provider}-hooks",
             root=hook_carrier_provider_dir(provider, spec.root),
-            suffixes=(".ndjson",),
             source_id=f"{spec.source_id}:{provider}",
             role=spec.role,
+            layout=hook_carrier_layout(Provider.from_string(provider)),
         )
         for spec in specs
         for provider in HOOK_CARRIER_PROVIDERS
@@ -365,7 +424,7 @@ class LiveWatcher:
     no schedule of its own -- it turns a filesystem event into a bumped
     intake revision plus a wakeup, so the dispatcher's next pass is prompt
     rather than waiting out its idle delay. It also owns the batch
-    processor, the cursor store and the parse stage the adapter's ingest
+    processor, the cursor store and the supplied capture stage the adapter's ingest
     runs through.
     """
 
@@ -375,14 +434,15 @@ class LiveWatcher:
         sources: Iterable[WatchSource],
         *,
         cursor: CursorStore | None = None,
-        max_workers: int | None = None,
         converger: object | None = None,  # DaemonConverger | None — avoids circular import
         event_emitter: LiveBatchEventEmitter | None = None,
         write_coordinator: WriteCoordinator | None = None,
-        parse_stage: LiveParseStage | None = None,
-        read_snapshot: ReadSnapshot | None = None,
+        sqlite_capture_stage: LiveSQLiteCaptureStage | None = None,
         embedding_owner: EmbeddingConvergenceOwner | None = None,
         session_profile_callback: SessionProfileConvergenceCallback | None = None,
+        append_runner: Callable[[Any, list[_AppendPlan]], Awaitable[_AppendResult]] | None = None,
+        convergence_runner: Callable[..., Awaitable[Any]] | None = None,
+        retained_runner: LiveRetainedRunner | None = None,
         intake_wakeup: asyncio.Event | None = None,
     ) -> None:
         self._polylogue = polylogue
@@ -392,7 +452,6 @@ class LiveWatcher:
             initialize=write_coordinator is None,
             ops_db_path=Path(polylogue.archive_root) / "ops.db",
         )
-        self._max_workers = max_workers
         self._converger = converger
         self._write_coordinator = write_coordinator
         # Injected rather than imported: the provider call this owner performs
@@ -405,32 +464,15 @@ class LiveWatcher:
         self._intake_revisions = dict.fromkeys((source.root for source in self._sources), 0)
         self._event_emitter = event_emitter
         self._published_source_halts: dict[str, str] = {}
-        # polylogue-wf8a: always on -- pre-parsing runs entirely BEFORE the
-        # write coordinator is ever asked for the writer hold
-        # (``LiveBatchProcessor._ingest_full_paths``), so it never contends
-        # with an active writer thread for the GIL regardless of interpreter
-        # build (see ``polylogue.sources.live.parse_prefetch`` for the full
-        # safety argument). An
-        # explicit ``parse_stage`` always wins (tests / callers that want to
-        # own the stage's lifecycle themselves); otherwise one is created
-        # here, owned by this watcher, and shut down in ``stop()``.
-        self._owns_parse_stage = parse_stage is None
-        # polylogue-bp12n.6: a stage the watcher owns also writes each parsed
-        # file's rows into a shard the writer copies. The directory is
-        # disposable scratch beside the tiers it feeds; nothing in it
-        # survives ``stop()``.
-        self._parse_stage: LiveParseStage | None = (
-            parse_stage
-            if parse_stage is not None
-            else LiveParseStage(
-                shard_directory=Path(polylogue.archive_root) / "parse-shards",
-                use_processes=True,
-            )
-        )
+        # The watcher owns the supplied capture stage's lifecycle. The stage
+        # borrows the resident kernel and never shuts that kernel down.
+        self._sqlite_capture_stage = sqlite_capture_stage
         self._ingest_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._watcher_ready = asyncio.Event()
-        self._archived_cursor_conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
+        # Per thread: selection runs on a worker thread off the writer, and a
+        # connection never crosses threads.
+        self._archived_cursor_local = threading.local()
         self._batch_processor = LiveBatchProcessor(
             polylogue,
             self._sources,
@@ -439,9 +481,14 @@ class LiveWatcher:
             converger=converger,
             stop_requested=self._stop.is_set,
             event_emitter=event_emitter,
-            sync_runner=self._run_writer_sync,
-            parse_stage=self._parse_stage,
-            read_snapshot=read_snapshot,
+            # Without a write coordinator there is no writer to run Source
+            # bodies on; the processor then refuses them instead of running
+            # them unleased.
+            sync_runner=self._run_writer_sync if write_coordinator is not None else None,
+            append_runner=append_runner,
+            convergence_runner=convergence_runner,
+            retained_runner=retained_runner,
+            sqlite_capture_stage=self._sqlite_capture_stage,
         )
 
     async def _run_writer_sync(
@@ -452,10 +499,91 @@ class LiveWatcher:
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        """Run blocking watcher writes without joining the loop executor at exit."""
+        """Run blocking watcher writes on the coordinator's writer."""
         if self._write_coordinator is None:
-            return await asyncio.to_thread(function, *args, **kwargs)
+            raise UnleasedWriteError(f"{actor} writes the archive and requires the daemon write coordinator")
         return await self._write_coordinator.run_sync(actor, function, *args, **kwargs)
+
+    @property
+    def _archived_cursor_conns(self) -> tuple[sqlite3.Connection, sqlite3.Connection] | None:
+        conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = getattr(
+            self._archived_cursor_local, "conns", None
+        )
+        return conns
+
+    @_archived_cursor_conns.setter
+    def _archived_cursor_conns(self, conns: tuple[sqlite3.Connection, sqlite3.Connection] | None) -> None:
+        self._archived_cursor_local.conns = conns
+
+    async def classify_ingest_candidates_off_writer(
+        self, paths: Sequence[Path]
+    ) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        """Run :meth:`classify_ingest_candidates` with the writer released.
+
+        Selection reads cursors and archive rows and hashes source bytes; a
+        whole-file reconciliation hash under the writer queued every other
+        archive writer behind it. Each cursor correction it decides is a short
+        section admitted onto the writer, which first re-checks that the file
+        observation and cursor row it was decided from still hold.
+        """
+        coordinator = self._write_coordinator
+        if coordinator is None:
+            raise UnleasedWriteError("watcher.intake.select writes cursors and requires the daemon write coordinator")
+        loop = asyncio.get_running_loop()
+
+        def admission(actor: str, work: Callable[[], Any]) -> Any:
+            return asyncio.run_coroutine_threadsafe(coordinator.run_sync(actor, work), loop).result()
+
+        def select() -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            with stage_write_admission(admission):
+                return self.classify_ingest_candidates(paths)
+
+        selection = asyncio.ensure_future(asyncio.to_thread(select))
+        try:
+            return await asyncio.shield(selection)
+        except asyncio.CancelledError:
+            # The worker may be inside an admitted write; let it settle while
+            # the loop still serves it, then propagate the cancellation.
+            with suppress(BaseException):
+                await selection
+            raise
+
+    def _admit_observed_cursor_write(
+        self,
+        actor: str,
+        path: Path,
+        *,
+        stat: os.stat_result,
+        expected: CursorRecord | None,
+        write: Callable[[], object],
+    ) -> bool:
+        """Apply one selection cursor write if its observation still holds.
+
+        The decision was made, and its bytes hashed, without the writer. Under
+        the writer the file's identity and the cursor row are compared with
+        what the decision read; a changed file or a cursor another writer
+        moved refuses the write, and the caller treats the file as needing
+        ingest.
+        """
+
+        def guarded() -> bool:
+            try:
+                current = path.stat()
+            except OSError:
+                return False
+            if _stat_identity(current) != _stat_identity(stat):
+                return False
+            if self._cursor.get_record(path) != expected:
+                return False
+            write()
+            return True
+
+        return bool(admit_stage_write(actor, guarded))
+
+    @property
+    def has_write_coordinator(self) -> bool:
+        """Whether archive writes run on a daemon write coordinator."""
+        return self._write_coordinator is not None
 
     @property
     def watcher_ready(self) -> asyncio.Event:
@@ -484,7 +612,7 @@ class LiveWatcher:
                 backlog = self._batch_processor._raw_retention_backlog_paths(exclude=set())
                 if not backlog or backlog == previous:
                     return
-                await self._run_writer_sync(
+                await self._batch_processor._run_source_writer(
                     "watcher.live_ingest.raw_compaction_retry",
                     self._batch_processor._compact_superseded_raw_snapshots,
                     [],
@@ -523,7 +651,7 @@ class LiveWatcher:
             self._watcher_ready.set()
             raise WatcherRootsUnavailableError("no configured source root exists")
 
-        watch_task = asyncio.create_task(self._watch_changes(roots))
+        watch_task = asyncio.create_task(self._watch_changes())
         await asyncio.sleep(0)
         try:
             # Discovery is owned by FairIntakeDispatcher, so nothing here
@@ -539,24 +667,96 @@ class LiveWatcher:
             with suppress(asyncio.CancelledError):
                 await watch_task
 
-    async def _watch_changes(self, roots: list[Path]) -> None:
+    def watched_directories(self) -> list[Path]:
+        """Every existing directory some source's declared layout reaches.
+
+        The live watch is installed on exactly these directories, each
+        non-recursively, so a subtree outside every layout (a nested copy of
+        a provider tree, ``.git``, an install's caches) costs no inotify watch
+        and raises no event. A directory symlink is followed only while its
+        target stays inside the source root, as discovery follows it; a
+        target already entered is not entered again.
+        """
+
+        directories: list[Path] = []
+        listed: set[Path] = set()
+        for source in self._sources:
+            root = source.root
+            if not root.is_dir():
+                continue
+            try:
+                root_real = os.path.realpath(root)
+            except OSError:
+                continue
+            entered = {root_real}
+            stack = [root]
+            while stack:
+                directory = stack.pop()
+                if directory not in listed:
+                    listed.add(directory)
+                    directories.append(directory)
+                try:
+                    with os.scandir(directory) as entries:
+                        children = [Path(entry.path) for entry in entries if entry.is_dir()]
+                except OSError:
+                    continue
+                for child in sorted(children):
+                    if not source.admits_directory(child):
+                        continue
+                    try:
+                        real = os.path.realpath(child)
+                    except OSError:
+                        continue
+                    if real in entered or (real != root_real and not real.startswith(root_real + os.sep)):
+                        continue
+                    entered.add(real)
+                    stack.append(child)
+        return directories
+
+    async def _watch_changes(self) -> None:
+        """Watch the layout-reachable directories, re-arming as the set changes.
+
+        A new directory a layout reaches (a fresh session's ``subagents/``)
+        re-arms the watch with it included, and a watched directory that
+        disappears re-arms it without. Files written into a new directory
+        before its watch exists are covered by the intake hint its creation
+        event raises: discovery rescans the source.
+        """
+
         from watchfiles import Change, awatch
 
-        async for changes in awatch(
-            *roots,
-            watch_filter=self._watch_filter,
-            stop_event=self._stop,
-            recursive=True,
-        ):
-            for change, raw_path in changes:
-                if change is Change.deleted:
-                    continue
-                self._note_intake_hint(Path(raw_path))
+        while not self._stop.is_set():
+            directories = await asyncio.to_thread(self.watched_directories)
+            if not directories:
+                return
+            watched = set(directories)
+            rearm = _RearmSignal(self._stop)
+            try:
+                async for changes in awatch(
+                    *directories,
+                    watch_filter=self._watch_filter,
+                    stop_event=rearm,
+                    recursive=False,
+                ):
+                    for change, raw_path in changes:
+                        path = Path(raw_path)
+                        if change is Change.deleted:
+                            if path in watched:
+                                rearm.request()
+                            continue
+                        if path not in watched and path.is_dir() and self._source_for_directory(path) is not None:
+                            rearm.request()
+                        self._note_intake_hint(path)
+            except FileNotFoundError:
+                # A directory vanished between listing and watching: list
+                # again. Its disappearance is ordinary producer churn.
+                self._note_intake_hint(directories[0])
+                await asyncio.sleep(_WATCH_REARM_RETRY_S)
 
     def stop(self) -> None:
         self._stop.set()
-        if self._parse_stage is not None and self._owns_parse_stage:
-            self._parse_stage.shutdown()
+        if self._sqlite_capture_stage is not None:
+            self._sqlite_capture_stage.shutdown()
 
     def _hook_sources(self) -> tuple[WatchSource, ...]:
         """Return the declared hook-carrier sources, preserving configured order.
@@ -650,8 +850,35 @@ class LiveWatcher:
                 ):
                     needed.append(path)
         if rebases:
-            self._cursor.rebase_authoritative_observations(rebases)
+            needed.extend(self._admit_rebases(rebases))
         return tuple(needed)
+
+    def _admit_rebases(self, rebases: Sequence[CursorObservationRebase]) -> list[Path]:
+        """Persist proved rebases under the writer; return paths whose file moved since."""
+        moved: list[Path] = []
+
+        def write() -> None:
+            current: list[CursorObservationRebase] = []
+            for rebase in rebases:
+                try:
+                    observed = rebase.path.stat()
+                except OSError:
+                    moved.append(rebase.path)
+                    continue
+                if (observed.st_dev, observed.st_ino, observed.st_size, observed.st_mtime_ns) != (
+                    rebase.st_dev,
+                    rebase.st_ino,
+                    rebase.expected.byte_size,
+                    rebase.mtime_ns,
+                ):
+                    moved.append(rebase.path)
+                    continue
+                current.append(rebase)
+            # The store compares each row with its expected record itself.
+            self._cursor.rebase_authoritative_observations(current)
+
+        admit_stage_write("watcher.intake.cursor_rebase", write)
+        return moved
 
     def _needs_work(self, path: Path) -> bool:
         """Return True if the file is new, grown, or fingerprint-changed."""
@@ -701,8 +928,21 @@ class LiveWatcher:
         rebase_queue: list[CursorObservationRebase] | None = None,
     ) -> bool:
         size = stat.st_size
+        if cursor is not None and (
+            cursor.source_name == Provider.HERMES.value or self._source_name_for(path) == Provider.HERMES.value
+        ):
+            # Equal bytes and inode do not prove an equal declared profile.
+            # Check before every exclusion, deferral, or content-based skip.
+            from polylogue.sources.parsers.hermes_identity import observe_profile_namespace
+
+            try:
+                observed_profile = observe_profile_namespace(path, stat)
+            except OSError:
+                return True
+            if cursor.captured_profile_key is None or cursor.captured_profile_key != observed_profile.key:
+                return True
         if cursor is None:
-            if not self._reconcile_archived_cursor(path, stat=stat):
+            if not self._reconcile_archived_cursor(path, stat=stat, expected=None):
                 return True
             cursor = self._cursor.get_record(path)
             return cursor is not None and size > cursor.byte_offset
@@ -731,30 +971,60 @@ class LiveWatcher:
             # accepted head -- a source whose stat changes on every poll, a
             # live database, re-entered that window on every poll.
             return not (identity_unchanged and cursor.parser_fingerprint == _PARSER_FINGERPRINT)
+        if cursor.parser_fingerprint != _PARSER_FINGERPRINT:
+            # Retry and deferred-reconciliation state belongs to the parser
+            # that produced it. Do not restamp its old outcome from archive
+            # corroboration or postpone the new parser's first attempt.
+            return True
         if cursor.failure_count == 0 and cursor.content_fingerprint is None and cursor.next_retry_at is not None:
             if not _retry_due(cursor.next_retry_at):
                 return False
-            reconciliation = self._reconcile_archived_cursor_outcome(path, stat=stat)
+            reconciliation = self._reconcile_archived_cursor_outcome(path, stat=stat, expected=cursor)
             if reconciliation is _ArchivedCursorReconciliation.RECONCILED:
                 reconciled = self._cursor.get_record(path)
                 return reconciled is not None and size > reconciled.byte_offset
             if reconciliation is _ArchivedCursorReconciliation.UNAVAILABLE:
-                self._cursor.defer_full_cursor_reconciliation(path)
-                return False
-            self._invalidate_deferred_full_cursor(path, stat=stat)
+                return not self._admit_observed_cursor_write(
+                    "watcher.intake.cursor_defer",
+                    path,
+                    stat=stat,
+                    expected=cursor,
+                    write=lambda: self._cursor.defer_full_cursor_reconciliation(path),
+                )
+            self._admit_observed_cursor_write(
+                "watcher.intake.cursor_invalidate",
+                path,
+                stat=stat,
+                expected=cursor,
+                write=lambda: self._invalidate_deferred_full_cursor(path, stat=stat),
+            )
             return True
         if cursor.failure_count > 0:
-            if self._reconcile_archived_cursor(path, stat=stat):
+            if self._reconcile_archived_cursor(path, stat=stat, expected=cursor):
                 cursor = self._cursor.get_record(path)
                 return cursor is not None and size > cursor.byte_offset
             return _retry_due(cursor.next_retry_at)
-        parser_matches = cursor.parser_fingerprint == _PARSER_FINGERPRINT
-        if not parser_matches:
-            return True
         if self._is_hermes_database(path) or self._is_declared_codex_database(path):
-            if cursor.tail_hash == sqlite_source_revision(path):
-                return False
-            return self._database_content_changed(path, cursor)
+            database_cursor = cursor
+
+            def database_changed() -> bool:
+                with bind_source_input(path) as binding:
+                    if self._is_hermes_database(path) and (
+                        database_cursor.captured_profile_key is None
+                        or database_cursor.captured_profile_key != binding.captured_profile_key
+                    ):
+                        return True
+                    if database_cursor.tail_hash == sqlite_source_revision(path, source_binding=binding):
+                        return False
+                    return self._database_content_changed(path, database_cursor, source_binding=binding)
+
+            try:
+                changed = capture_sqlite_read(database_changed)
+            except (OSError, UnicodeDecodeError):
+                # An unreadable or undecodable source is not proof of freshness.
+                return True
+            # A failed SQLite read is not proof of freshness either.
+            return changed.value if isinstance(changed, Measured) else True
         if size == cursor.byte_size and cursor.content_fingerprint is not None:
             # Only an exact recorded observation authorizes the hot skip.
             # A bounded tail cannot prove that an earlier same-size prefix was
@@ -798,11 +1068,20 @@ class LiveWatcher:
                     cursor.byte_size - cursor.byte_offset,
                     cursor.byte_offset,
                 )
-                self._cursor.mark_failed(path, failed_stat=stat)
-                return False
+                # The deferral above rewrote the row; compare against what it left.
+                stuck = self._cursor.get_record(path) or cursor
+                return not self._admit_observed_cursor_write(
+                    "watcher.intake.cursor_stuck_append",
+                    path,
+                    stat=stat,
+                    expected=stuck,
+                    write=lambda: self._cursor.mark_failed(
+                        path, authority=CursorPathAuthority.of_record(stuck), failed_stat=stat
+                    ),
+                )
             prefix_hash = cursor_prefix_hash(cursor.tail_hash)
             if prefix_hash is None:
-                if self._reconcile_archived_cursor(path, stat=stat):
+                if self._reconcile_archived_cursor(path, stat=stat, expected=cursor):
                     reconciled = self._cursor.get_record(path)
                     return reconciled is None or size > reconciled.byte_offset
                 return True
@@ -869,8 +1148,17 @@ class LiveWatcher:
                     stat.st_size - cursor.byte_offset,
                     cursor.byte_offset,
                 )
-                self._cursor.mark_failed(path, failed_stat=stat)
-                return False
+                # The deferral above rewrote the row; compare against what it left.
+                stuck = self._cursor.get_record(path) or cursor
+                return not self._admit_observed_cursor_write(
+                    "watcher.intake.cursor_stuck_append",
+                    path,
+                    stat=stat,
+                    expected=stuck,
+                    write=lambda: self._cursor.mark_failed(
+                        path, authority=CursorPathAuthority.of_record(stuck), failed_stat=stat
+                    ),
+                )
             return not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor)
         if cursor.content_fingerprint is None:
             return True
@@ -939,22 +1227,38 @@ class LiveWatcher:
         # polylogue-hat0: this probe found no complete trailing record, not a
         # resolved authority state -- preserve any existing pending-authority
         # marker unchanged rather than clearing it.
-        record_deferred_append_cursor(
-            self._cursor,
+        # A refused write (the file or cursor moved since the probe) is not a
+        # deferral: the caller routes the file to ingest.
+        return self._admit_observed_cursor_write(
+            "watcher.intake.cursor_defer_append",
             path,
-            cursor=cursor,
-            parser_fingerprint=_PARSER_FINGERPRINT,
-            source_name=self._source_name_for(path),
-            deferred_end_offset=cursor.deferred_end_offset,
+            stat=stat,
+            expected=cursor,
+            write=lambda: record_deferred_append_cursor(
+                self._cursor,
+                path,
+                cursor=cursor,
+                parser_fingerprint=_PARSER_FINGERPRINT,
+                source_name=self._source_name_for(path),
+                deferred_end_offset=cursor.deferred_end_offset,
+            ),
         )
-        return True
 
     def _invalidate_deferred_full_cursor(self, path: Path, *, stat: os.stat_result) -> None:
         """Clear a busy-handoff defer when current bytes reject archive authority."""
 
+        existing = self._cursor.get_record(path)
+        authority = CursorPathAuthority.of_record(existing) if existing is not None else None
+        if authority is None:
+            try:
+                authority = CursorPathAuthority.observe(path)
+            except FileNotFoundError:
+                self._cursor.mark_failed(path, authority=None)
+                return
         updated = self._cursor.set(
             path,
             stat.st_size,
+            authority=authority,
             byte_offset=0,
             last_complete_newline=0,
             parser_fingerprint=_PARSER_FINGERPRINT,
@@ -972,10 +1276,11 @@ class LiveWatcher:
         if not updated:
             raise sqlite3.OperationalError(f"failed to invalidate deferred cursor for {path}")
 
-    def _reconcile_archived_cursor(self, path: Path, *, stat: os.stat_result) -> bool:
+    def _reconcile_archived_cursor(self, path: Path, *, stat: os.stat_result, expected: CursorRecord | None) -> bool:
         """Restore a missing/stale cursor from proven archive raw state."""
 
-        return self._reconcile_archived_cursor_outcome(path, stat=stat) is _ArchivedCursorReconciliation.RECONCILED
+        outcome = self._reconcile_archived_cursor_outcome(path, stat=stat, expected=expected)
+        return outcome is _ArchivedCursorReconciliation.RECONCILED
 
     @contextmanager
     def _archived_cursor_reconciliation_scope(self) -> Iterator[None]:
@@ -1035,7 +1340,9 @@ class LiveWatcher:
         """
         rows = source_conn.execute(
             f"""
-            SELECT raw_id, origin, blob_hash, blob_size, acquired_at_ms
+            SELECT raw_id, origin, blob_hash, blob_size, acquired_at_ms,
+                   (SELECT profile_key FROM raw_profile_identity_receipts AS p
+                    WHERE p.raw_id = raw_sessions.raw_id)
             FROM raw_sessions
             WHERE source_path = ?
               AND COALESCE(source_index, 0) >= 0
@@ -1080,7 +1387,8 @@ class LiveWatcher:
             "tuple[object, ...] | None",
             source_conn.execute(
                 f"""
-                SELECT r.raw_id, r.origin, r.blob_hash, r.blob_size, r.acquired_at_ms
+                SELECT r.raw_id, r.origin, r.blob_hash, r.blob_size, r.acquired_at_ms,
+                       (SELECT profile_key FROM raw_profile_identity_receipts AS p WHERE p.raw_id = r.raw_id)
                 FROM raw_sessions AS r
                 WHERE r.source_path = ?
                   AND COALESCE(r.source_index, 0) >= 0
@@ -1130,14 +1438,27 @@ class LiveWatcher:
         source_conn: sqlite3.Connection,
         index_conn: sqlite3.Connection,
     ) -> bool:
-        """True unless ``path`` has session authority the index cannot show."""
+        """True unless ``path`` has session authority the index cannot show.
+
+        A raw its artifact classification declares non-session (a Claude Code
+        tool-result sidecar, a workflow fact) is parsed but never yields a
+        session, so the index can never show it; counting it as session
+        authority demoted every settled sidecar's cursor and re-ingested it on
+        each periodic scan.
+        """
         has_session_raw = source_conn.execute(
-            """
+            f"""
             SELECT 1 FROM raw_sessions
             WHERE source_path = ?
               AND COALESCE(source_index, 0) >= 0
               AND (parsed_at_ms IS NOT NULL OR revision_authority IN ('asserted', 'byte_proven'))
               AND parse_error IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM raw_artifacts AS a
+                  WHERE a.raw_id = raw_sessions.raw_id
+                    AND a.parse_as_session = 0
+                    AND a.artifact_kind NOT IN ({_FAILURE_EVIDENCE_KINDS_SQL})
+              )
             LIMIT 1
             """,
             (str(path),),
@@ -1180,6 +1501,7 @@ class LiveWatcher:
         path: Path,
         *,
         stat: os.stat_result,
+        expected: CursorRecord | None,
     ) -> _ArchivedCursorReconciliation:
         """Restore a missing/stale cursor from proven archive raw state.
 
@@ -1196,6 +1518,8 @@ class LiveWatcher:
             # Force a fresh source observation instead of deferring on an
             # index that this mode is explicitly forbidden to read.
             return _ArchivedCursorReconciliation.INCOMPATIBLE
+        # ``expected`` is the cursor row the caller decided from (bulk-read
+        # for a page); the restore re-checks it under the writer.
         shared = self._archived_cursor_conns
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         try:
@@ -1215,7 +1539,19 @@ class LiveWatcher:
             return _ArchivedCursorReconciliation.UNAVAILABLE
         if row is None:
             return _ArchivedCursorReconciliation.INCOMPATIBLE
-        _raw_id, origin, blob_hash, blob_size, _acquired_at_ms = row
+        _raw_id, origin, blob_hash, blob_size, _acquired_at_ms = row[:5]
+        captured_profile_key = cast("str | None", row[5]) if len(row) > 5 else None
+        if origin is not None and provider_from_origin(Origin.from_string(str(origin))) is Provider.HERMES:
+            from polylogue.sources.parsers.hermes_identity import observe_profile_namespace
+
+            if captured_profile_key is None:
+                return _ArchivedCursorReconciliation.INCOMPATIBLE
+            try:
+                observed_profile = observe_profile_namespace(path, stat)
+            except OSError:
+                return _ArchivedCursorReconciliation.UNAVAILABLE
+            if observed_profile.key != captured_profile_key:
+                return _ArchivedCursorReconciliation.INCOMPATIBLE
         archived_size = int(cast("int | None", blob_size) or 0)
         current_size = int(stat.st_size)
         if archived_size <= 0 or archived_size > current_size:
@@ -1268,32 +1604,49 @@ class LiveWatcher:
                 tail_hash,
                 ctime_ns=stat.st_ctime_ns,
             )
-        self._cursor.set(
-            path,
-            archived_size,
-            byte_offset=last_complete_newline,
-            last_complete_newline=last_complete_newline,
-            parser_fingerprint=_PARSER_FINGERPRINT,
-            content_fingerprint=content_fingerprint,
-            tail_hash=tail_hash,
-            source_name=provider_from_origin(Origin.from_string(str(origin))).value
+        try:
+            authority = CursorPathAuthority.observe(path)
+        except FileNotFoundError:
+            return _ArchivedCursorReconciliation.UNAVAILABLE
+        if not declares_profile_identity(source_provider):
+            # Acquisition captures a profile namespace only for Hermes (and
+            # not-yet-detected) inputs; every other origin's raw carries none,
+            # so its cursor carries none either.
+            authority = CursorPathAuthority(authority.canonical_source_path, None)
+        if authority.captured_profile_key != captured_profile_key:
+            # The archived raw was captured under another profile namespace.
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
+        source_name = (
+            provider_from_origin(Origin.from_string(str(origin))).value
             if origin is not None
-            else self._source_name_for(path),
-            st_dev=stat.st_dev,
-            st_ino=stat.st_ino,
-            mtime_ns=stat.st_mtime_ns,
+            else self._source_name_for(path)
         )
-        self._cursor.reset_failures(path)
+
+        def restore() -> None:
+            self._cursor.set(
+                path,
+                archived_size,
+                authority=authority,
+                byte_offset=last_complete_newline,
+                last_complete_newline=last_complete_newline,
+                parser_fingerprint=_PARSER_FINGERPRINT,
+                content_fingerprint=content_fingerprint,
+                tail_hash=tail_hash,
+                source_name=source_name,
+                st_dev=stat.st_dev,
+                st_ino=stat.st_ino,
+                mtime_ns=stat.st_mtime_ns,
+            )
+            self._cursor.reset_failures(path)
+
+        # The hashes above ran without the writer; the restore re-checks the
+        # file and cursor it was proved against before it writes.
+        if not self._admit_observed_cursor_write(
+            "watcher.intake.cursor_reconcile", path, stat=stat, expected=expected, write=restore
+        ):
+            return _ArchivedCursorReconciliation.UNAVAILABLE
         logger.info("live.watcher: reconciled cursor from archive source row for %s", path)
         return _ArchivedCursorReconciliation.RECONCILED
-
-    def offer_parse_lookahead(self, paths: Sequence[Path], *, source_name: str) -> None:
-        """Offer the paths a later batch will ingest in full for read-ahead parsing.
-
-        Nothing is read or submitted here: the next ingest filters and
-        submits the offer while it owns the stage under the ingest lock.
-        """
-        self._batch_processor.offer_parse_lookahead(paths, source_name=source_name)
 
     async def _ingest_files(
         self,
@@ -1314,22 +1667,17 @@ class LiveWatcher:
         """
         from polylogue.core.degraded import is_fully_degraded
 
-        try:
-            if not is_fully_degraded():
-                # A degraded batch returns its skip metrics without the gate.
-                self._batch_processor.require_cursor_authority(paths)
-            async with self._ingest_lock:
-                return await self._batch_processor.ingest_files(
-                    paths,
-                    queued_file_count=queued_file_count,
-                    skipped_file_count=skipped_file_count,
-                    max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
-                    whole_archive_convergence=whole_archive_convergence,
-                )
-        finally:
-            # A lookahead belongs to the batch it was offered beside, including
-            # one the authority gate refused before it took the lock.
-            self._batch_processor.drop_parse_lookahead()
+        if not is_fully_degraded():
+            # A degraded batch returns its skip metrics without the gate.
+            self._batch_processor.require_cursor_authority(paths)
+        async with self._ingest_lock:
+            return await self._batch_processor.ingest_files(
+                paths,
+                queued_file_count=queued_file_count,
+                skipped_file_count=skipped_file_count,
+                max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
+                whole_archive_convergence=whole_archive_convergence,
+            )
 
     async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
         """Converge this batch's embeddings after the ingest lease is released."""
@@ -1368,21 +1716,38 @@ class LiveWatcher:
             return source.name
         return path.parent.name
 
+    def _file_symlink_escapes_source(self, path: Path) -> bool:
+        """Whether ``path`` is a file symlink whose target leaves its source root.
+
+        Discovery refuses such a link as ``escaping_symlink``; a live event for
+        the same link must not admit material the source was never configured
+        to read. An explicitly declared file is its own containment.
+        """
+        if not path.is_symlink():
+            return False
+        source = deepest_source_for_path(path, self._sources)
+        if source is None:
+            return True
+        try:
+            target = path.resolve()
+            if source.exact_paths is not None and target in source.exact_paths:
+                return False
+            return not target.is_relative_to(source.root.resolve())
+        except OSError:
+            return True
+
     def _source_accepts(self, path: Path) -> bool:
         source = deepest_source_for_path(path, self._sources)
         return source.accepts(path) if source is not None else False
 
     def _is_hermes_database(self, path: Path) -> bool:
-        resolved = path.resolve()
-        for source in self._sources:
-            if source.name != "hermes":
-                continue
-            try:
-                if resolved.is_relative_to(source.root.resolve()) and source.accepts(path):
-                    return is_sqlite_path(path)
-            except OSError:
-                continue
-        return False
+        source = deepest_source_for_path(path, self._sources)
+        return (
+            source is not None
+            and source.name == Provider.HERMES.value
+            and source.accepts(path)
+            and is_sqlite_path(path)
+        )
 
     def _is_declared_codex_database(self, path: Path) -> bool:
         """Return whether *path* is a Codex database this watcher acquires.
@@ -1404,7 +1769,9 @@ class LiveWatcher:
         member = capability.member(path.name)
         return member is not None and member.disposition != "out-of-scope"
 
-    def _database_content_changed(self, path: Path, cursor: CursorRecord) -> bool:
+    def _database_content_changed(
+        self, path: Path, cursor: CursorRecord, *, source_binding: SourceInputBinding
+    ) -> bool:
         """Return whether a database's logical content moved past the cursor.
 
         A database's page image differs after every commit, checkpoint and
@@ -1424,7 +1791,7 @@ class LiveWatcher:
         if recorded is None:
             return True
         try:
-            return sqlite_member_revision(path) != recorded
+            return sqlite_member_revision(path, source_binding=source_binding) != recorded
         except (sqlite3.Error, OSError, UnicodeDecodeError):
             # Acquisition owns the consistent read and reports its own typed
             # failure; a locked or damaged database is not silently fresh.
@@ -1432,23 +1799,19 @@ class LiveWatcher:
 
     def _canonical_watch_path(self, path: Path) -> Path | None:
         if self._source_accepts(path):
-            return path
+            return None if self._file_symlink_escapes_source(path) else path
         database = sqlite_database_for_sidecar(path)
         if database is not None and self._is_hermes_database(database):
             return database
         return None
 
     def _source_for_directory(self, path: Path) -> WatchSource | None:
-        """Return the watched source owning a non-ignored directory."""
+        """Return the watched source whose layout reaches this directory."""
 
         source = deepest_source_for_path(path, self._sources)
         if source is None:
             return None
-        try:
-            relative = path.resolve().relative_to(source.root.resolve())
-        except (OSError, ValueError):
-            return None
-        return None if any(source.ignores_directory(Path(part)) for part in relative.parts) else source
+        return source if source.admits_directory(path) else None
 
     def _directory_is_watch_relevant(self, path: Path) -> bool:
         """Return whether a directory is owned or leads to a configured source root."""
@@ -1497,8 +1860,8 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
     daemon-owned watcher.
 
     """
-    from polylogue.core.enums import Provider
     from polylogue.paths import (
+        antigravity_cli_path,
         antigravity_path,
         archive_root,
         browser_capture_spool_root,
@@ -1509,92 +1872,52 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         gemini_cli_path,
         hermes_sessions_path,
     )
-    from polylogue.sources.origin_specs import artifact_suffixes_for_provider
 
+    def declared(name: str, root: Path) -> WatchSource:
+        return WatchSource(name=name, root=root, layout=declared_source_layout(name))
+
+    # Each source is admitted only at the positions its declared layout names
+    # (``polylogue.sources.source_layout``); overlapping roots never descend
+    # into each other's trees because no layout reaches them.
     return (
-        WatchSource(
-            name="claude-code",
-            root=claude_code_path(),
-            suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
-        ),
+        declared("claude-code", claude_code_path()),
         # polylogue-t0p: Claude Code's live plan-snapshot directory
         # (~/.claude/todos/) is a sibling of claude_code_path(), not nested
-        # under it -- a second, narrower WatchSource rooted there, same
-        # precedent as "codex-state" below, so the main claude-code root
-        # doesn't have to widen its own suffix/path assumptions to reach a
-        # completely different directory tree.
-        WatchSource(
-            name="claude-code-todos",
-            root=claude_code_todos_path(),
-            suffixes=(".json",),
-        ),
+        # under it.
+        declared("claude-code-todos", claude_code_todos_path()),
         # polylogue-ximhz: ``~/.claude/history.jsonl`` is the prompt-submission
         # log whose rows carry the paste evidence no transcript records, and it
-        # sits beside the sessions root rather than under it. Rooted at the
-        # install directory with no suffixes at all, so only the declared
-        # ``prompt_history_log`` path rule admits a file; the two large
-        # sibling trees have their own sources and are not descended twice.
-        WatchSource(
-            name="claude-code-history",
-            root=claude_code_path().parent,
-            suffixes=(),
-            recursive=False,
-        ),
-        WatchSource(name="codex", root=codex_path()),
-        # polylogue-0jf4: Codex also keeps live SQLite state (thread titles,
-        # spawn topology, goals, memories) as siblings of the sessions/
-        # directory, not under it -- a second, narrower WatchSource rooted at
-        # ~/.codex (codex_path().parent) rather than widening the "codex"
-        # source's own root, so a broadened suffix set never has to reason
-        # about history.jsonl/config.toml/log/ under the shared root. Suffix
-        # filtering alone (".sqlite"/".db") keeps this cheap; the acquisition
-        # path (sources/live/batch.py) re-verifies table shape by name and
-        # structure before treating anything as in-scope evidence. The only
-        # other files it admits are the install-level ``session_index.jsonl``
-        # and ``history.jsonl`` sidecars, by their declared exact-coordinate
-        # rules: retained replay reads them for Codex titles and history.
-        WatchSource(
-            name="codex-state",
-            root=codex_path().parent,
-            suffixes=(".sqlite", ".db"),
-            path_artifact_kinds=CODEX_STATE_SIDECAR_KINDS,
-        ),
-        # polylogue-rovf5: Codex keeps harness-authored memory documents in
-        # ~/.codex/memories/, a sibling of sessions/. Rooted there rather
-        # than widening "codex-state" so no Codex root admits ``.md``
-        # globally: the source carries no suffixes at all and only the
-        # declared ``agent_memory_document`` path rule admits a file.
-        # Overlap with the shallower "codex-state" root is resolved by
-        # ``deepest_source_for_path``, which prefers this one.
-        WatchSource(
-            name="codex-memories",
-            root=codex_memories_path(),
-            suffixes=(),
-        ),
-        WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
-        # Hermes emits four independently durable source classes under its
-        # runtime root: state.db, optional session snapshots, NeMo Relay ATIF
-        # documents, and append-only ATOF JSONL.  The ledger database is
-        # admitted as a live SQLite source too; parsing it remains a separate
-        # fidelity/normalization contract rather than an implicit filename
-        # fallback.
-        WatchSource(
-            name="hermes",
-            root=hermes_root if hermes_root is not None else hermes_sessions_path(),
-            suffixes=(".json", ".jsonl", ".db", ".sqlite", ".sqlite3"),
-        ),
+        # sits beside the sessions root rather than under it. Its layout is
+        # that one file; the install directory is never descended.
+        declared("claude-code-history", claude_code_path().parent),
+        declared("codex", codex_path()),
+        # polylogue-0jf4: Codex keeps live SQLite state (thread titles, spawn
+        # topology, goals, memories) and the install-level ``session_index``
+        # and ``history`` JSONL sidecars as siblings of sessions/. The layout
+        # names each declared database member and sidecar at its position;
+        # the acquisition path (sources/live/batch.py) still verifies table
+        # shape before treating a database as in-scope evidence.
+        declared("codex-state", codex_path().parent),
+        # polylogue-rovf5: harness-authored memory documents in
+        # ~/.codex/memories/.
+        declared("codex-memories", codex_memories_path()),
+        declared("gemini-cli", gemini_cli_path()),
+        # Hermes keeps state.db, verification_evidence.db, session snapshots,
+        # NeMo Relay ATIF documents and the ATOF stream under its home, and a
+        # complete home per profile under profiles/<name>/.
+        declared("hermes", hermes_root if hermes_root is not None else hermes_sessions_path()),
         # Antigravity conversations are opaque protobufs. The ordinary live
         # batch route hands those files to the vendor language-server adapter;
         # brain documents and metadata remain source artifacts.
-        WatchSource(
-            name="antigravity",
-            root=antigravity_path(),
-            suffixes=artifact_suffixes_for_provider(Provider.ANTIGRAVITY),
-        ),
-        WatchSource(name="browser-capture", root=browser_capture_spool_root(), suffixes=(".json",)),
-        # #1683: inbox accepts archive, zip, and json-line formats so that
-        # GDPR exports (typically .zip) and raw .json dumps are observed.
-        WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
+        declared("antigravity", antigravity_path()),
+        # Antigravity's CLI writes one trajectory SQLite store per
+        # conversation under ~/.gemini/antigravity-cli/conversations/.
+        declared("antigravity-cli", antigravity_cli_path()),
+        declared("browser-capture", browser_capture_spool_root()),
+        # #1683: the inbox admits archive, zip, and json-line formats at any
+        # depth so that GDPR exports (typically .zip) and raw .json dumps are
+        # observed.
+        declared("inbox", archive_root() / "inbox"),
         *hook_carrier_watch_sources(hook_spool_sources()),
     )
 

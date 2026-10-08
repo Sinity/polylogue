@@ -23,9 +23,11 @@ from polylogue.api import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.index_writer import write_fixture_index_session
 
 _SESSION_ID = "codex-session:compaction-pathology"
 # Positions 0..2 are replaced; position 3 is the summary that stands in for them.
@@ -42,8 +44,12 @@ def _message(native_id: str, role: Role, text: str) -> ParsedMessage:
 
 
 def _seed(db_path: Path) -> None:
+    run_off_event_loop(lambda: _seed_on_writer(db_path))
+
+
+def _seed_on_writer(db_path: Path) -> None:
     _seed_tiers(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     session = ParsedSession(
@@ -68,7 +74,7 @@ def _seed(db_path: Path) -> None:
             )
         ],
     )
-    write_parsed_session_to_archive(conn, session)
+    write_fixture_index_session(conn, session)
     conn.commit()
     conn.close()
 
@@ -169,8 +175,27 @@ async def test_compaction_snapshot_includes_parent_prefix_evidence(workspace_env
     from polylogue.storage.sqlite.run_projection_relations import context_snapshot_relation_sql
 
     db_path = workspace_env["archive_root"] / "index.db"
-    _seed_tiers(db_path)
+    run_off_event_loop(lambda: _seed_lineage_on_writer(db_path))
     conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            f"{context_snapshot_relation_sql()} "
+            "SELECT session_id, evidence_refs_json FROM context_snapshots WHERE boundary = 'compaction'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["session_id"] == "codex-session:compaction-child"
+    assert row["evidence_refs_json"] == (
+        '["codex-session:compaction-parent::codex-session:compaction-parent:n:p0",'
+        '"codex-session:compaction-parent::codex-session:compaction-parent:n:p1"]'
+    )
+
+
+def _seed_lineage_on_writer(db_path: Path) -> None:
+    _seed_tiers(db_path)
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     parent = ParsedSession(
@@ -178,7 +203,7 @@ async def test_compaction_snapshot_includes_parent_prefix_evidence(workspace_env
         provider_session_id="compaction-parent",
         messages=[_message("p0", Role.USER, "parent prefix"), _message("p1", Role.ASSISTANT, "parent answer")],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_fixture_index_session(conn, parent)
     child = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="compaction-child",
@@ -193,18 +218,6 @@ async def test_compaction_snapshot_includes_parent_prefix_evidence(workspace_env
             )
         ],
     )
-    write_parsed_session_to_archive(conn, child)
+    write_fixture_index_session(conn, child)
     conn.commit()
-    try:
-        row = conn.execute(
-            f"{context_snapshot_relation_sql()} "
-            "SELECT session_id, evidence_refs_json FROM context_snapshots WHERE boundary = 'compaction'"
-        ).fetchone()
-    finally:
-        conn.close()
-
-    assert row["session_id"] == "codex-session:compaction-child"
-    assert row["evidence_refs_json"] == (
-        '["codex-session:compaction-parent::codex-session:compaction-parent:n:p0",'
-        '"codex-session:compaction-parent::codex-session:compaction-parent:n:p1"]'
-    )
+    conn.close()

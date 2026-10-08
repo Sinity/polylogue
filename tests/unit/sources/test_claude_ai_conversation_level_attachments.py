@@ -9,13 +9,17 @@ inline bytes without a unique owner are dropped before persistence.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-from polylogue.sources.parsers.claude.ai_parser import parse_ai
+from polylogue.core.enums import Provider
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from tests.infra.live_ingest import write_index_session
+from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.live_ingest import prepared_live_convergence_owner
+from tests.infra.retained_jsonl import acquire_full_revision
 
 _TIMESTAMP = "2026-01-01T00:00:00Z"
 
@@ -40,8 +44,28 @@ def _conversation(*, message_files: list[dict[str, Any]], conversation_files: li
 
 def _write(root: Path, payload: dict[str, Any]) -> tuple[int, int]:
     """Write the parsed conversation and return (attachment rows, ref rows)."""
-    with ArchiveStore(root) as archive:
-        write_index_session(archive, parse_ai(payload, "fallback"))
+
+    async def publish() -> None:
+        root.mkdir(mode=0o700, parents=True)
+        async with prepared_live_convergence_owner(root) as owner:
+
+            def acquire() -> str:
+                bootstrap_archive_root(root)
+                with ArchiveStore.open_existing(root, read_only=False) as archive:
+                    return acquire_full_revision(
+                        archive,
+                        provider=Provider.CLAUDE_AI,
+                        source_path=root.parent / "source" / "claude.json",
+                        payload=json.dumps(payload).encode(),
+                        native_id=payload["uuid"],
+                        generation=0,
+                        acquired_at_ms=1,
+                    )
+
+            raw_id = await owner._write_coordinator.run_sync("fixture.claude.attachments.acquire", acquire)
+            (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
+
+    asyncio.run(publish())
     conn = sqlite3.connect(root / "index.db")
     try:
         return (

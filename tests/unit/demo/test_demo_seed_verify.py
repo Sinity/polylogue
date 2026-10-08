@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -11,6 +12,7 @@ import pytest
 
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 from polylogue.config import Source
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.demo import (
     DemoSeedTargetUnsafeError,
     apply_demo_post_ingest_augmentation,
@@ -180,8 +182,8 @@ async def test_seed_demo_excludes_acquisition_without_certifying_voyage(
     """Real enabled daemon selection must respect exact synthetic ownership."""
     import asyncio
 
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.embedding_owner import compose_embedding_convergence
-    from polylogue.daemon.execution import BoundedComputeAdapter
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
     from polylogue.storage.archive_identity import demo_owned_session_ids
     from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter
@@ -483,10 +485,10 @@ async def test_apply_demo_post_ingest_augmentation_matches_direct_seed(
         ).fetchone()
     assert pre_row is None or not pre_row[0]
 
-    apply_demo_post_ingest_augmentation(archive_root)
+    await asyncio.to_thread(apply_demo_post_ingest_augmentation, archive_root)
     # Idempotent: a repeated call (e.g. a second ``--wait``) must not error or
     # change the outcome.
-    apply_demo_post_ingest_augmentation(archive_root)
+    await asyncio.to_thread(apply_demo_post_ingest_augmentation, archive_root)
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         cost_row = conn.execute(
@@ -554,11 +556,19 @@ async def test_seed_demo_archive_forces_sequential_parse_workers(
     calls = 0
     workers: int | None = None
 
-    async def spy(archive_root: Path, sources: list[Source], *, parse_workers: int | None = None) -> ParseResult:
+    async def spy(
+        archive_root: Path,
+        sources: list[Source],
+        *,
+        compute_adapter: BoundedComputeAdapter,
+        parse_workers: int | None = None,
+    ) -> ParseResult:
         nonlocal calls, workers
         calls += 1
         workers = parse_workers
-        return await canonical_ingest(archive_root, sources, parse_workers=parse_workers)
+        return await canonical_ingest(
+            archive_root, sources, compute_adapter=compute_adapter, parse_workers=parse_workers
+        )
 
     monkeypatch.setattr(seed_module, "ingest_sources_archive", spy)
 
@@ -596,53 +606,22 @@ async def test_seed_demo_archive_self_heals_a_stale_schema_on_a_demo_owned_root(
 
 
 @pytest.mark.asyncio
-async def test_seed_demo_archive_refuses_the_default_root_collision(tmp_path: Path) -> None:
-    """Demo seed refuses to write synthetic content into a root holding real sessions.
+async def test_seed_demo_archive_refuses_real_content(tmp_path: Path) -> None:
+    """Demo seeding never adds synthetic data to a root holding real sessions.
 
-    Guards polylogue-o3a1t: ``demo seed``'s default archive-root resolution
-    shares ``archive_root()``/``polylogue.toml`` with the live daemon, so an
-    operator or agent who forgets ``--root`` can have it resolve straight to
-    their live production archive. ``demo seed`` adds rows rather than
-    refusing to run against existing content, so without this guard the
-    collision would silently seed synthetic fixture sessions into a real
-    archive.
-
-    ANTI-VACUITY: the production entry point exercised is
-    ``polylogue.demo.seed.seed_demo_archive`` with ``explicit_root=False``
-    (what the CLI passes when neither ``--root`` nor
-    ``POLYLOGUE_ARCHIVE_ROOT`` was given). Deleting the
-    ``_guard_demo_seed_target`` call from ``seed_demo_archive`` makes this
-    test fail by seeding successfully instead of raising.
+    Anti-vacuity: delete the ``_guard_demo_seed_target`` call from
+    ``_seed_demo_archive_owned`` and this seeds instead of raising.
     """
 
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from tests.infra.storage_records import SessionBuilder
 
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    SessionBuilder(archive_root / "index.db", "real-session").provider("claude-code").save()
-
-    with pytest.raises(DemoSeedTargetUnsafeError, match="real ingested session"):
-        await seed_demo_archive(archive_root, force=False, explicit_root=False)
-
-    # Nothing was touched: no demo fixture source, no ownership manifest.
-    assert not (archive_root / DEMO_SOURCE_DIRNAME).exists()
-    assert not (archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).exists()
-
-
-@pytest.mark.asyncio
-async def test_seed_demo_archive_explicit_root_refuses_real_content(tmp_path: Path) -> None:
-    """An explicit location does not authorize adding demo data to a real archive."""
-
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-    from tests.infra.storage_records import SessionBuilder
-
-    archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     SessionBuilder(archive_root / "index.db", "real-session").provider("claude-code").save()
 
     with pytest.raises(DemoSeedTargetUnsafeError, match="real archive content"):
-        await seed_demo_archive(archive_root, force=False, explicit_root=True)
+        await seed_demo_archive(archive_root, force=False)
     assert not (archive_root / DEMO_SOURCE_DIRNAME).exists()
     assert not (archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).exists()
 
@@ -655,7 +634,7 @@ async def test_seed_demo_archive_never_self_heals_a_root_that_held_real_content(
     from tests.infra.storage_records import SessionBuilder
 
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     SessionBuilder(archive_root / "index.db", "real-session").provider("claude-code").save()
 
     with sqlite3.connect(archive_root / "index.db") as conn:
@@ -807,7 +786,7 @@ async def test_record_demo_ownership_treats_missing_index_as_unsafe_not_empty(tm
     # rebuilt. Bootstrap the whole root first and then drop the rebuildable
     # tier: a source.db created on its own has no provenance marker, so durable
     # admission rejects the root before the missing-index case is reached.
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     (archive_root / "index.db").unlink(missing_ok=True)
     initialize_runtime_source_fixture(archive_root / "source.db")
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -833,7 +812,7 @@ async def test_record_demo_ownership_treats_missing_index_as_unsafe_not_empty(tm
     assert not (archive_root / "index.db").exists()
 
     with pytest.raises(DemoSeedTargetUnsafeError, match="real archive content"):
-        await seed_demo_archive(archive_root, force=True, explicit_root=True)
+        await seed_demo_archive(archive_root, force=True)
     assert not (archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).exists()
     assert not (archive_root / "index.db").exists()
 
@@ -843,6 +822,8 @@ def test_demo_generated_tier_reconvergence_applies_source_train_without_replacin
 ) -> None:
     from polylogue.demo.seed import _reconverge_stale_demo_generated_tiers
     from polylogue.operations.canonical_archive_ingest import scoped_one_shot_archive_owner
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from tests.infra.durable_tier_fixtures import bootstrap_baseline_archive
     from tests.infra.index_replacement import source_baseline
 
@@ -857,7 +838,7 @@ def test_demo_generated_tier_reconvergence_applies_source_train_without_replacin
     with scoped_one_shot_archive_owner(root):
         assert _reconverge_stale_demo_generated_tiers(root) == ()
     with sqlite3.connect(root / "source.db") as source:
-        assert source.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert source.execute("PRAGMA user_version").fetchone()[0] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
         assert source.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id").fetchall() == [
             tuple(row) for row in rows
         ]

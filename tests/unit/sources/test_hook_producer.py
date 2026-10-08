@@ -41,7 +41,10 @@ from polylogue.sources.hooks import hook_carrier_dir, hook_carrier_provider_dir
 # on this path needs it any more.
 # ``fcntl`` is a builtin C module: the shared/exclusive carrier lock needs it
 # and it costs no Python-level import work.
-_ALLOWED_IMPORTS = frozenset({"__future__", "datetime", "fcntl", "json", "os", "pathlib", "sys", "types"})
+# ``threading`` backs the in-process legacy-compaction mutex (POSIX record
+# locks do not serialize threads); under ``-S`` it imports in ~3 ms, against
+# ~16 ms for ``pathlib``.
+_ALLOWED_IMPORTS = frozenset({"__future__", "datetime", "fcntl", "json", "os", "pathlib", "sys", "threading", "types"})
 
 _PAYLOAD = '{"session_id":"producer-session","permission_mode":"bypassPermissions","tool_name":"Bash"}'
 

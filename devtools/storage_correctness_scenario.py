@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
 import time
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -17,15 +20,33 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.core.errors import DatabaseError
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.core.timestamp_authority import normalize_session_timestamps
+from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+from polylogue.operations.canonical_archive_ingest import (
+    _wait_for_coordinator_idle,
+    admit_one_shot_root,
+    one_shot_compute_owner,
+    scoped_one_shot_archive_owner,
+)
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.acquisition_boundary import bound_profile_identity, bound_source_observation, open_bound_path
+from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.storage.blob_gc import MIN_AGE_S, read_gc_history, run_blob_gc_report
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync, message_fts_readiness_sync
+from polylogue.storage.index_generation import ActiveWriterLease
 from polylogue.storage.search import search_messages
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+from polylogue.storage.sqlite.archive_tiers.write import (
+    prepare_session_write,
+    read_archive_session_envelope,
+    write_parsed_session_to_archive,
+)
+from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+from polylogue.storage.sqlite.write_lease import write_lease
 
 STORAGE_CORRECTNESS_SCENARIO_NAME = "storage-correctness"
 STORAGE_CORRECTNESS_SCOPE_ADJUDICATION = {
@@ -37,17 +58,31 @@ STORAGE_CORRECTNESS_SCOPE_ADJUDICATION = {
 }
 
 
-def _write_index_session(archive: ArchiveStore, session: ParsedSession, *, content_hash: str) -> str:
+def _write_index_session(archive: ArchiveStore, session: ParsedSession) -> str:
     """Write scenario data through the shipped canonical index row writer."""
-    connection = sqlite3.connect(str(archive.index_db_path))
-    connection.row_factory = sqlite3.Row
+    root = archive.index_db_path.parent
+    exclusion = ActiveWriterLease(root)
+    exclusion.acquire()
+    seal: PreparedIndexMutation | None = None
     try:
-        connection.execute("PRAGMA foreign_keys = ON")
-        from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
-
-        return write_parsed_session_to_archive(connection, session, content_hash=content_hash)
+        with PreparedIndexMutation(archive.index_db_path, archive_root=root) as seal:
+            with seal.original_read_snapshot():
+                prepared = prepare_session_write(
+                    seal.observer("index"), session, merge_append=False, before_input=seal.before_index_input
+                )
+            seal.retain_publication_lifetime(exclusion, prepared.close)
+            with archive.index_mutation_scope(prepared_seal=seal) as scope:
+                return write_parsed_session_to_archive(
+                    archive._conn,
+                    session,
+                    content_hash=prepared.input_content_hash.hex(),
+                    prepared_write=prepared,
+                    mutation_scope=scope,
+                    manage_transaction=False,
+                )
     finally:
-        connection.close()
+        if seal is None or not seal.publication_lifetime_bound:
+            exclusion.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,66 +187,58 @@ def _row_count(conn: sqlite3.Connection, table: str, where: str = "", params: tu
 
 
 def _storage_idempotent_reingest_check() -> dict[str, object]:
-    session = _parsed_session(
-        "storage-idempotent",
-        (
-            _parsed_message("m0", Role.USER, "idempotent user storage token", 0),
-            _parsed_message("m1", Role.ASSISTANT, "idempotent assistant storage token", 1),
-        ),
-        title="Storage idempotent",
-    )
     with _storage_archive_root() as temp_root:
         root = Path(temp_root)
-        with ArchiveStore(root) as archive:
-            first = archive.write_raw_and_parsed_result(
-                session,
-                payload=b'{"session":"storage-idempotent","version":1}',
-                source_path="/scenario/storage-idempotent.json",
-                acquired_at_ms=1_767_000_000_000,
+        acquisitions, expected_hash_hex = asyncio.run(
+            _retained_lab_ingest(
+                root,
+                "storage-idempotent",
+                (("user", "idempotent user storage token"), ("assistant", "idempotent assistant storage token")),
+                (
+                    ("storage-idempotent.jsonl", 1_767_000_000_000),
+                    ("storage-idempotent-repeat.jsonl", 1_767_000_000_001),
+                ),
             )
-            second = archive.write_raw_and_parsed_result(
-                session,
-                payload=b'{"session":"storage-idempotent","version":1}',
-                source_path="/scenario/storage-idempotent-repeat.json",
-                acquired_at_ms=1_767_000_000_001,
-            )
-        with sqlite3.connect(root / "index.db") as conn:
+        )
+        first, second = acquisitions
+        first_counts = _retained_lab_counts(first)
+        repeat_counts = _retained_lab_counts(second)
+        written_ids = {session_id for receipt in first for session_id in receipt.written_session_ids}
+        if len(written_ids) != 1:
+            raise AssertionError(f"first ingest must write exactly one session, got {written_ids}")
+        session_id = next(iter(written_ids))
+        with closing(sqlite3.connect(root / "index.db")) as conn:
             conn.row_factory = sqlite3.Row
             session_row = conn.execute(
-                "SELECT content_hash, raw_id FROM sessions WHERE session_id = ?",
-                (first.session_id,),
+                "SELECT content_hash,raw_id FROM sessions WHERE session_id=?", (session_id,)
             ).fetchone()
             if session_row is None:
                 raise AssertionError("idempotent scenario did not persist a session row")
             derived_counts = {
-                "sessions": _row_count(conn, "sessions", "session_id = ?", (first.session_id,)),
-                "messages": _row_count(conn, "messages", "session_id = ?", (first.session_id,)),
-                "blocks": _row_count(conn, "blocks", "session_id = ?", (first.session_id,)),
+                "sessions": _row_count(conn, "sessions", "session_id=?", (session_id,)),
+                "messages": _row_count(conn, "messages", "session_id=?", (session_id,)),
+                "blocks": _row_count(conn, "blocks", "session_id=?", (session_id,)),
                 "message_fts": _row_count(conn, "messages_fts"),
             }
-        with sqlite3.connect(root / "source.db") as source_conn:
+        with closing(sqlite3.connect(root / "source.db")) as source_conn:
             raw_count = _row_count(source_conn, "raw_sessions")
     stored_hash = session_row["content_hash"]
     stored_hash_hex = stored_hash.hex() if isinstance(stored_hash, bytes) else str(stored_hash)
-    if first.content_changed is not True:
+    if not any(receipt.writer_changed_raw_ids for receipt in first):
         raise AssertionError("first ingest should write the derived session")
-    if second.content_changed is not False or second.counts["skipped_sessions"] != 1:
-        raise AssertionError(f"repeat ingest should skip unchanged content, got {second.counts}")
+    if any(receipt.writer_changed_raw_ids for receipt in second) or repeat_counts["skipped_sessions"] != 1:
+        raise AssertionError(f"repeat ingest should skip unchanged content, got {repeat_counts}")
     if derived_counts != {"sessions": 1, "messages": 2, "blocks": 2, "message_fts": 2}:
         raise AssertionError(f"repeat ingest changed derived row counts: {derived_counts}")
     if raw_count != 2:
-        raise AssertionError(f"raw source rows should retain both ArchiveStore writes, got {raw_count}")
-    # The table's length CHECK already guarantees a non-empty 32-byte value,
-    # so presence proves nothing: the stored hash must be the canonical hash
-    # of the session the writer normalized, computed independently here.
-    expected_hash_hex = str(session_content_hash(normalize_session_timestamps(session)))
+        raise AssertionError(f"raw source rows should retain both acquisitions, got {raw_count}")
     if stored_hash_hex != expected_hash_hex:
         raise AssertionError(
             f"stored content hash {stored_hash_hex} is not the canonical session hash {expected_hash_hex}"
         )
     return {
-        "first_counts": first.counts,
-        "repeat_counts": second.counts,
+        "first_counts": first_counts,
+        "repeat_counts": repeat_counts,
         "derived_counts": derived_counts,
         "raw_sessions": raw_count,
         "content_hash": stored_hash_hex,
@@ -219,21 +246,19 @@ def _storage_idempotent_reingest_check() -> dict[str, object]:
 
 
 def _storage_fts_trigger_drift_check() -> dict[str, object]:
-    session = _parsed_session(
-        "storage-fts",
-        (_parsed_message("m0", Role.USER, "stable fts repair sentinel", 0),),
-        title="Storage FTS",
-    )
     with _storage_archive_root() as temp_root:
         root = Path(temp_root)
-        with ArchiveStore(root) as archive:
-            first = archive.write_raw_and_parsed_result(
-                session,
-                payload=b'{"session":"storage-fts","version":1}',
-                source_path="/scenario/storage-fts.json",
-                acquired_at_ms=1_767_000_000_000,
+        acquisitions, _ = asyncio.run(
+            _retained_lab_ingest(
+                root,
+                "storage-fts",
+                (("user", "stable fts repair sentinel"),),
+                (("storage-fts.jsonl", 1_767_000_000_000),),
             )
-            with sqlite3.connect(root / "index.db") as conn:
+        )
+        first = acquisitions[0]
+        with ArchiveStore.open_existing(root, read_only=True):
+            with closing(sqlite3.connect(root / "index.db")) as conn:
                 conn.execute("DROP TRIGGER messages_fts_ai")
                 conn.commit()
                 drifted_readiness = message_fts_readiness_sync(conn)
@@ -245,7 +270,7 @@ def _storage_fts_trigger_drift_check() -> dict[str, object]:
                 raise AssertionError("search should fail while a canonical messages_fts trigger is missing")
             # Trigger presence belongs to canonical schema construction. FTS
             # derivation refuses incompatible schema instead of repairing it.
-            with sqlite3.connect(root / "index.db") as conn:
+            with closing(sqlite3.connect(root / "index.db")) as conn:
                 ensure_fts_index_sync(conn)
                 conn.commit()
                 after_readiness = message_fts_readiness_sync(conn)
@@ -258,18 +283,20 @@ def _storage_fts_trigger_drift_check() -> dict[str, object]:
         "ready": True,
         "triggers_present": True,
     }
-    if first.content_changed is not True:
+    if not any(receipt.writer_changed_raw_ids for receipt in first):
         raise AssertionError("first FTS scenario ingest should write content")
     if bool(drifted_readiness["ready"]) or bool(drifted_readiness["triggers_present"]):
         raise AssertionError(f"dropped trigger did not fail exact readiness: {drifted_readiness}")
     if after_readiness != exact_ready:
-        raise AssertionError(f"production FTS repair did not restore exact readiness: {after_readiness}")
+        raise AssertionError(f"canonical FTS schema construction did not restore exact readiness: {after_readiness}")
     if after_rows != 1 or len(search_hits) != 1:
-        raise AssertionError(f"FTS repair did not restore searchable row: after={after_rows}, hits={search_hits}")
+        raise AssertionError(
+            f"FTS schema construction did not restore searchable row: after={after_rows}, hits={search_hits}"
+        )
     return {
         "drifted_readiness": drifted_readiness,
         "search_failure": search_failure,
-        "production_repair": bool(after_readiness["ready"]),
+        "schema_restored": bool(after_readiness["ready"]),
         "after_readiness": after_readiness,
         "after_fts_rows": after_rows,
         "search_hits": [asdict(hit) for hit in search_hits],
@@ -295,7 +322,8 @@ def _storage_blob_gc_invariant_check() -> dict[str, object]:
         publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
         reserved_hash, reserved_size = publisher.write_from_bytes(reserved_payload)
         referenced_hash, referenced_size = publisher.write_from_bytes(referenced_payload)
-        publisher.flush()
+        with write_lease("storage.lab.blob.publication", archive_root=root):
+            publisher.flush()
         referenced_receipt = publisher.receipt_id(referenced_hash)
         if referenced_receipt is None:
             raise AssertionError("published raw blob did not retain a receipt")
@@ -305,6 +333,7 @@ def _storage_blob_gc_invariant_check() -> dict[str, object]:
                 blob_hash_hex=referenced_hash,
                 blob_size=referenced_size,
                 source_path="/scenario/storage-gc-referenced.json",
+                canonical_source_path="/scenario/storage-gc-referenced.json",
                 acquired_at_ms=1_767_000_000_000,
                 raw_id="storage-gc-referenced",
                 blob_publication_receipt_id=referenced_receipt,
@@ -331,7 +360,8 @@ def _storage_blob_gc_invariant_check() -> dict[str, object]:
             )
             reservation_count = _row_count(conn, "blob_publication_reservations")
             conn.commit()
-        report = run_blob_gc_report(root / "index.db", root / "blob", max_batch=10)
+        with write_lease("storage.lab.blob.gc", archive_root=root):
+            report = run_blob_gc_report(root / "index.db", root / "blob", max_batch=10)
         history = read_gc_history(root / "index.db", limit=1)
         survivors = {
             "reserved": store.exists(reserved_hash),
@@ -402,9 +432,9 @@ def _storage_lineage_composition_check() -> dict[str, object]:
     with _storage_archive_root() as temp_root:
         root = Path(temp_root)
         with ArchiveStore(root) as archive:
-            parent_id = _write_index_session(archive, parent, content_hash=str(session_content_hash(parent)))
-            child_id = _write_index_session(archive, child, content_hash=str(session_content_hash(child)))
-            _write_index_session(archive, parent_grown, content_hash=str(session_content_hash(parent_grown)))
+            parent_id = _write_index_session(archive, parent)
+            child_id = _write_index_session(archive, child)
+            _write_index_session(archive, parent_grown)
             archive.commit()
         with sqlite3.connect(root / "index.db") as conn:
             conn.row_factory = sqlite3.Row
@@ -501,3 +531,109 @@ __all__ = [
     "run_storage_correctness",
     "storage_correctness_scenario_entry",
 ]
+
+
+async def _retained_lab_ingest(
+    root: Path,
+    native_id: str,
+    messages: tuple[tuple[str, str], ...],
+    acquisitions: tuple[tuple[str, int], ...],
+) -> tuple[tuple[tuple[PreparedRevisionReplayResult, ...], ...], str]:
+    """Retain the actual writer receipts from neutral, canonical Codex inputs."""
+    records = [
+        {"type": "session_meta", "payload": {"id": native_id, "timestamp": "2026-01-01T00:00:00Z"}},
+        *(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": f"m{ordinal}",
+                    "role": role,
+                    "content": [{"type": "input_text" if role == "user" else "output_text", "text": text}],
+                },
+            }
+            for ordinal, (role, text) in enumerate(messages)
+        ),
+    ]
+    payload = b"\n".join(json.dumps(record).encode() for record in records) + b"\n"
+    with scoped_one_shot_archive_owner(root):
+        admit_one_shot_root(root)
+        async with one_shot_compute_owner(parse_workers=1) as compute:
+            coordinator = DaemonWriteCoordinator(archive_root=root)
+            owner = RawObservationConvergenceOwner(
+                root,
+                compute_adapter=compute,
+                write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+                write_coordinator=coordinator,
+            )
+            try:
+                expected = await compute.submit(
+                    partial(parse_payload, Provider.CODEX, records, native_id), estimated_bytes=len(payload)
+                ).wait()
+                if len(expected) != 1:
+                    raise AssertionError("neutral Codex input must contain exactly one session")
+                from polylogue.core.enums import TitleSource
+                from polylogue.sources.assembly_codex import CodexAssemblySpec
+
+                expected_session = CodexAssemblySpec().enrich_session(expected[0], {})
+                if (
+                    expected_session.title != messages[0][1]
+                    or expected_session.title_source is not TitleSource.HEURISTIC
+                    or expected_session.title_ref != "message:m0"
+                ):
+                    raise AssertionError("neutral Codex title assembly lost its original prompt evidence")
+                expected_hash = str(session_content_hash(normalize_session_timestamps(expected_session)))
+
+                def acquire(
+                    original_payload: bytes,
+                    path: Path,
+                    canonical: str,
+                    profile_key: str | None,
+                    acquired_at_ms: int,
+                    file_mtime_ms: int,
+                ) -> str:
+                    with ArchiveStore(root) as archive:
+                        return archive.write_raw_payload(
+                            provider=Provider.CODEX,
+                            payload=original_payload,
+                            source_path=str(path),
+                            canonical_source_path=canonical,
+                            captured_profile_key=profile_key,
+                            acquired_at_ms=acquired_at_ms,
+                            file_mtime_ms=file_mtime_ms,
+                        )
+
+                outcomes: list[tuple[PreparedRevisionReplayResult, ...]] = []
+                for name, acquired_at_ms in acquisitions:
+                    path = root / name
+                    path.write_bytes(payload)
+                    with open_bound_path(path, None) as original:
+                        profile = bound_profile_identity(original)
+                        canonical, observation = bound_source_observation(original)
+                        original_payload = original.read()
+                        if observation is None or canonical is None or original_payload != payload:
+                            raise AssertionError("neutral lab source changed during acquisition")
+                        raw_id = await coordinator.run_sync(
+                            "storage.lab.acquire",
+                            partial(
+                                acquire,
+                                original_payload,
+                                path,
+                                canonical,
+                                profile.key if profile is not None else None,
+                                acquired_at_ms,
+                                observation[3] // 1_000_000,
+                            ),
+                        )
+                    outcomes.append((await owner.ingest_retained_raw_ids((raw_id,))).require_complete())
+                return tuple(outcomes), expected_hash
+            finally:
+                await _wait_for_coordinator_idle(coordinator)
+
+
+def _retained_lab_counts(receipts: tuple[PreparedRevisionReplayResult, ...]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for receipt in receipts:
+        for name, value in receipt.written_counts.items():
+            counts[name] = counts.get(name, 0) + value
+    return counts

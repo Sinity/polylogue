@@ -11,10 +11,11 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from tests.infra.fts import completed_fts_readiness
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
@@ -26,7 +27,9 @@ def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
     """
     db = tmp_path / "index.db"
     initialize_archive_database(db, ArchiveTier.INDEX)
-    conn = sqlite3.connect(db)
+    conn = connect_measured(db)
+    # The archive writer reads rows by column name, as on production connections.
+    conn.row_factory = sqlite3.Row
     try:
         session = ParsedSession(
             source_name=Provider.CODEX,
@@ -56,7 +59,7 @@ def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
                 ),
             ],
         )
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.commit()
         text_blocks = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL").fetchone()[0])
         search_blocks = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0])
@@ -230,17 +233,17 @@ def test_unbound_archive_fallback_measures_every_count_in_one_snapshot(
 
     index = tmp_path / "index.db"
     initialize_archive_database(index, ArchiveTier.INDEX)
-    writer = sqlite3.connect(index)
+    writer = connect_measured(index)
     try:
         assert str(writer.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() == "wal"
-        write_parsed_session_to_archive(writer, _text_session("snapshot-first", "first committed text"))
+        write_fixture_index_session(writer, _text_session("snapshot-first", "first committed text"))
         writer.commit()
         assert fts_readiness_binding(writer) is None
         committed_before = int(writer.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0])
         assert committed_before > 0
 
         def concurrent_commit() -> None:
-            write_parsed_session_to_archive(writer, _text_session("snapshot-second", "second committed text"))
+            write_fixture_index_session(writer, _text_session("snapshot-second", "second committed text"))
             writer.commit()
 
         from polylogue.storage.sqlite.connection_profile import open_readonly_connection as real_open

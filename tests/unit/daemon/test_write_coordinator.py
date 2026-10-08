@@ -5,18 +5,25 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
+import select
+import signal
 import sqlite3
 import subprocess
 import sys
 import textwrap
 import threading
 import time
+from builtins import BaseExceptionGroup
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue import logging as plog
-from polylogue.core.write_lease import arm_write_lease_enforcement, install_archive_write_guard
+from polylogue.archive.write_gateway import ArchiveWriteGateway
+from polylogue.core.write_lease import arm_write_lease_enforcement
 from polylogue.daemon import write_coordinator as write_coordinator_module
 from polylogue.daemon.write_coordinator import (
     _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR,
@@ -24,6 +31,7 @@ from polylogue.daemon.write_coordinator import (
     _MAX_DETACHED_WRITER_FAILURE_ACTORS,
     DaemonWriteCoordinator,
     DaemonWriteEvent,
+    DaemonWriterSettlementError,
     DaemonWriteThreadBridge,
     _actor_priority,
     _PriorityGate,
@@ -32,6 +40,12 @@ from polylogue.daemon.write_coordinator import (
 from polylogue.sources.live.cold_build import ColdBuildGeneration, active_index_generation_is_empty
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_custody_probe import archive_custody_available
+from tests.infra.sqlite_cursor_settlement import (
+    SettlementConnection,
+    arm_settlement,
+    native_settlement_connections,  # noqa: F401  # Pytest fixture discovery.
+)
 
 
 def test_actor_priority_classifies_bulk_ingest_below_everything_else() -> None:
@@ -51,12 +65,12 @@ async def test_cold_build_lifecycle_writable_opens_stay_under_one_coordinator(
 ) -> None:
     """The daemon's generation lifecycle uses the same archive-bound gate."""
     root = tmp_path / "archive"
-    initialize_active_archive_root(root)
+    await asyncio.to_thread(initialize_active_archive_root, root)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     coordinator = DaemonWriteCoordinator(archive_root=root)
     generation: ColdBuildGeneration | None = None
     try:
-        with arm_write_lease_enforcement(process_wide=True), install_archive_write_guard():
+        with arm_write_lease_enforcement(process_wide=True):
             assert (
                 await coordinator.run_sync(
                     "daemon.cold_build.probe",
@@ -70,7 +84,7 @@ async def test_cold_build_lifecycle_writable_opens_stay_under_one_coordinator(
                 ColdBuildGeneration.begin,
                 root,
                 reason="test",
-                sources=(WatchSource("fixture", root / "absent-source"),),
+                observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", root / "absent-source"),)),
             )
             assert (
                 await coordinator.run_sync(
@@ -152,7 +166,7 @@ async def test_real_sqlite_writer_collision_is_eliminated_without_sleep_timing(t
         if event.phase == "queued" and event.actor == "watcher.live_ingest":
             watcher_queued.set()
 
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=observe)
     coordinated_entered = threading.Event()
     release_coordinated = threading.Event()
     maintenance = asyncio.create_task(
@@ -177,7 +191,7 @@ async def test_real_sqlite_writer_collision_is_eliminated_without_sleep_timing(t
 
 
 @pytest.mark.asyncio
-async def test_coordinator_serializes_fifo_without_writer_overlap() -> None:
+async def test_coordinator_serializes_fifo_without_writer_overlap(tmp_path: Path) -> None:
     queued = {actor: asyncio.Event() for actor in ("watcher", "raw", "embedding")}
     events: list[DaemonWriteEvent] = []
 
@@ -186,7 +200,7 @@ async def test_coordinator_serializes_fifo_without_writer_overlap() -> None:
         if event.phase == "queued":
             queued[event.actor].set()
 
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=observe)
     release_watcher = asyncio.Event()
     watcher_entered = asyncio.Event()
     call_order: list[str] = []
@@ -226,7 +240,7 @@ async def test_coordinator_serializes_fifo_without_writer_overlap() -> None:
 
 
 @pytest.mark.asyncio
-async def test_maintenance_actor_jumps_ahead_of_queued_bulk_ingest_actors() -> None:
+async def test_maintenance_actor_jumps_ahead_of_queued_bulk_ingest_actors(tmp_path: Path) -> None:
     """polylogue-de2a: a continuously-refilling watcher backlog must not starve
     periodic maintenance. A queued ``maintenance.*``/other actor is admitted
     before an earlier-queued ``watcher.*`` actor, though never before an
@@ -241,7 +255,7 @@ async def test_maintenance_actor_jumps_ahead_of_queued_bulk_ingest_actors() -> N
         if event.phase == "queued" and event.actor in queued:
             queued[event.actor].set()
 
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=observe)
     release_owner = asyncio.Event()
     owner_entered = asyncio.Event()
 
@@ -281,7 +295,7 @@ async def test_maintenance_actor_jumps_ahead_of_queued_bulk_ingest_actors() -> N
 
 
 @pytest.mark.asyncio
-async def test_cancelled_priority_waiter_does_not_strand_the_grant() -> None:
+async def test_cancelled_priority_waiter_does_not_strand_the_grant(tmp_path: Path) -> None:
     """Cancelling a still-queued higher-priority waiter must not drop the
     gate: the next (lower-priority) waiter still gets admitted afterward."""
     queued_maintenance = asyncio.Event()
@@ -293,7 +307,7 @@ async def test_cancelled_priority_waiter_does_not_strand_the_grant() -> None:
         if event.phase == "queued" and event.actor == "watcher.catch_up.chunk":
             queued_watcher.set()
 
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=observe)
     release_owner = asyncio.Event()
     owner_entered = asyncio.Event()
 
@@ -322,14 +336,14 @@ async def test_cancelled_priority_waiter_does_not_strand_the_grant() -> None:
 
 
 @pytest.mark.asyncio
-async def test_waiting_cancellation_removes_actor_without_deadlock() -> None:
+async def test_waiting_cancellation_removes_actor_without_deadlock(tmp_path: Path) -> None:
     raw_queued = asyncio.Event()
 
     def observe(event: DaemonWriteEvent) -> None:
         if event.phase == "queued" and event.actor == "raw":
             raw_queued.set()
 
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=observe)
     release_watcher = asyncio.Event()
     watcher_entered = asyncio.Event()
 
@@ -352,7 +366,7 @@ async def test_waiting_cancellation_removes_actor_without_deadlock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sync_writer_cancellation_holds_gate_until_thread_finishes() -> None:
+async def test_sync_writer_cancellation_holds_gate_until_thread_finishes(tmp_path: Path) -> None:
     released = asyncio.Event()
     events: list[DaemonWriteEvent] = []
 
@@ -361,7 +375,7 @@ async def test_sync_writer_cancellation_holds_gate_until_thread_finishes() -> No
         if event.phase == "released" and event.actor == "raw":
             released.set()
 
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=observe)
     worker_started = threading.Event()
     allow_worker_finish = threading.Event()
 
@@ -421,7 +435,7 @@ async def test_transaction_receipt_distinguishes_commit_from_rollback_after_disc
         if event.actor == "transaction.commit" and event.phase == "released":
             commit_released.set()
 
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=observe)
     worker_started = threading.Event()
     allow_commit = threading.Event()
 
@@ -468,8 +482,8 @@ async def test_transaction_receipt_distinguishes_commit_from_rollback_after_disc
 
 
 @pytest.mark.asyncio
-async def test_child_task_cannot_inherit_reentrant_write_lease() -> None:
-    coordinator = DaemonWriteCoordinator()
+async def test_child_task_cannot_inherit_reentrant_write_lease(tmp_path: Path) -> None:
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
 
     async def parent_writer() -> str:
         child = asyncio.create_task(coordinator.run("child", _return_ready))
@@ -485,8 +499,8 @@ async def test_child_task_cannot_inherit_reentrant_write_lease() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancelled_queued_writer_never_runs() -> None:
-    coordinator = DaemonWriteCoordinator()
+async def test_cancelled_queued_writer_never_runs(tmp_path: Path) -> None:
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     entered = asyncio.Event()
     release = asyncio.Event()
     child_called = False
@@ -513,8 +527,8 @@ async def test_cancelled_queued_writer_never_runs() -> None:
 
 
 @pytest.mark.asyncio
-async def test_shutdown_is_bounded_without_releasing_active_sync_writer() -> None:
-    coordinator = DaemonWriteCoordinator()
+async def test_shutdown_is_bounded_without_releasing_active_sync_writer(tmp_path: Path) -> None:
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     worker_started = threading.Event()
     worker_release = threading.Event()
 
@@ -533,17 +547,19 @@ async def test_shutdown_is_bounded_without_releasing_active_sync_writer() -> Non
     assert await coordinator.shutdown(timeout=0.1)
 
 
-def test_stuck_sync_writer_cannot_pin_process_exit() -> None:
+def test_stuck_sync_writer_cannot_pin_process_exit(tmp_path: Path) -> None:
     script = textwrap.dedent(
         """
         import asyncio
+        import sys
+        from pathlib import Path
         import contextlib
         import threading
 
         from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 
         async def main() -> None:
-            coordinator = DaemonWriteCoordinator()
+            coordinator = DaemonWriteCoordinator(archive_root=Path(sys.argv[1]))
             started = threading.Event()
 
             def writer() -> None:
@@ -567,7 +583,7 @@ def test_stuck_sync_writer_cannot_pin_process_exit() -> None:
     # its own subprocess simultaneously), which made this timeout marginal
     # once a third subprocess-spawning test landed in this file.
     completed = subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, "-c", script, str(tmp_path)],
         cwd=Path(__file__).parents[3],
         capture_output=True,
         text=True,
@@ -584,25 +600,26 @@ def test_stuck_sync_writer_cannot_pin_process_exit() -> None:
         (
             "_run_startup_embedding_lifecycle",
             "_ensure_embedding_lifecycle_startup_sync",
-            "coordinator, Path('.')",
+            "coordinator, Path(sys.argv[1])",
         ),
     ],
 )
 def test_real_startup_writer_routes_cannot_pin_process_exit(
-    helper_name: str, writer_name: str, helper_args: str
+    tmp_path: Path, helper_name: str, writer_name: str, helper_args: str
 ) -> None:
     script = textwrap.dedent(
         f"""
         import asyncio
+        import sys
+        from pathlib import Path
         import contextlib
         import threading
-        from pathlib import Path
 
         from polylogue.daemon import cli
         from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 
         async def main() -> None:
-            coordinator = DaemonWriteCoordinator()
+            coordinator = DaemonWriteCoordinator(archive_root=Path(sys.argv[1]))
             started = threading.Event()
 
             def writer(*args) -> None:
@@ -628,7 +645,7 @@ def test_real_startup_writer_routes_cannot_pin_process_exit(
     # its own subprocess simultaneously), which made this timeout marginal
     # once a third subprocess-spawning test landed in this file.
     completed = subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, "-c", script, str(tmp_path)],
         cwd=Path(__file__).parents[3],
         capture_output=True,
         text=True,
@@ -640,8 +657,8 @@ def test_real_startup_writer_routes_cannot_pin_process_exit(
 
 
 @pytest.mark.asyncio
-async def test_operational_telemetry_reports_actor_queue_wait_and_hold() -> None:
-    coordinator = DaemonWriteCoordinator()
+async def test_operational_telemetry_reports_actor_queue_wait_and_hold(tmp_path: Path) -> None:
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -671,14 +688,14 @@ async def test_operational_telemetry_reports_actor_queue_wait_and_hold() -> None
 
 
 @pytest.mark.asyncio
-async def test_detached_writer_failure_increments_lifetime_counter() -> None:
+async def test_detached_writer_failure_increments_lifetime_counter(tmp_path: Path) -> None:
     """polylogue-es7b: a failed writer task's exception previously surfaced only via a log line.
 
     ``completed()`` (the task's done-callback) must also increment a durable
     daemon-lifetime counter so the failure is observable through the
     coordinator's telemetry snapshot/payload, not only in logs.
     """
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     assert coordinator.snapshot().detached_writer_failures == 0
 
     async def boom() -> None:
@@ -722,9 +739,9 @@ async def test_detached_writer_failure_increments_lifetime_counter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sync_writer_failure_propagates_and_releases_gate() -> None:
+async def test_sync_writer_failure_propagates_and_releases_gate(tmp_path: Path) -> None:
     """A live-loop worker exception must reach the caller, not become a hang."""
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
 
     def boom() -> None:
         raise RuntimeError("sync writer blew up")
@@ -737,9 +754,9 @@ async def test_sync_writer_failure_propagates_and_releases_gate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sync_writer_immediate_result_does_not_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_sync_writer_immediate_result_does_not_poll(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A completed thread result wakes the loop without a timed poll."""
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     started = threading.Event()
     release = threading.Event()
     poll_delays: list[float] = []
@@ -767,8 +784,8 @@ async def test_sync_writer_immediate_result_does_not_poll(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_detached_writer_failure_attribution_is_bounded_and_coalesces_overflow() -> None:
-    coordinator = DaemonWriteCoordinator()
+async def test_detached_writer_failure_attribution_is_bounded_and_coalesces_overflow(tmp_path: Path) -> None:
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
 
     async def boom() -> None:
         raise RuntimeError("writer blew up")
@@ -792,8 +809,8 @@ async def test_detached_writer_failure_attribution_is_bounded_and_coalesces_over
 
 
 @pytest.mark.asyncio
-async def test_detached_writer_failure_reserved_labels_cannot_collide_with_overflow() -> None:
-    coordinator = DaemonWriteCoordinator()
+async def test_detached_writer_failure_reserved_labels_cannot_collide_with_overflow(tmp_path: Path) -> None:
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     operation_calls = 0
 
     async def boom() -> None:
@@ -825,8 +842,8 @@ async def test_detached_writer_failure_reserved_labels_cannot_collide_with_overf
 
 
 @pytest.mark.asyncio
-async def test_daemon_write_telemetry_payload_isolated_from_nested_map_mutation() -> None:
-    coordinator = DaemonWriteCoordinator()
+async def test_daemon_write_telemetry_payload_isolated_from_nested_map_mutation(tmp_path: Path) -> None:
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
 
     async def boom() -> None:
         raise RuntimeError("writer blew up")
@@ -848,6 +865,7 @@ async def test_daemon_write_telemetry_payload_isolated_from_nested_map_mutation(
 
 @pytest.mark.asyncio
 async def test_daemon_write_telemetry_exposes_hold_budget_evidence(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The status envelope retains checkpoint/publication hold accounting.
@@ -859,7 +877,7 @@ async def test_daemon_write_telemetry_exposes_hold_budget_evidence(
     from polylogue.daemon import write_coordinator as wc
 
     monkeypatch.setattr(wc, "WRITE_HOLD_BUDGETS_S", {"slow.": 0.0})
-    coordinator = wc.DaemonWriteCoordinator()
+    coordinator = wc.DaemonWriteCoordinator(archive_root=tmp_path)
 
     async def operation() -> None:
         await asyncio.sleep(0.01)
@@ -873,7 +891,7 @@ async def test_daemon_write_telemetry_exposes_hold_budget_evidence(
     assert event["hold_over_budget"] is True
 
 
-def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed() -> None:
+def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed(tmp_path: Path) -> None:
     """polylogue-es7b: a worker thread finishing after its loop closed must not hang silently.
 
     ``_run_in_daemon_thread`` spawns a plain (uncancellable) ``threading.Thread``.
@@ -892,6 +910,7 @@ def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed()
         """
         import asyncio
         import sys
+        from pathlib import Path
         import threading
 
         from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
@@ -904,7 +923,7 @@ def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed()
         finish = threading.Event()
 
         async def main() -> None:
-            coordinator = DaemonWriteCoordinator()
+            coordinator = DaemonWriteCoordinator(archive_root=Path(sys.argv[1]))
             started = threading.Event()
 
             def writer() -> None:
@@ -931,7 +950,7 @@ def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed()
     # a cold subprocess dominates this test's wall time far more than the
     # writer/loop-close dance itself does.
     completed = subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, "-c", script, str(tmp_path)],
         cwd=Path(__file__).parents[3],
         capture_output=True,
         text=True,
@@ -946,7 +965,7 @@ def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed()
     assert "error_type=RuntimeError" in completed.stderr, completed.stderr
 
 
-def test_thread_bridge_serializes_sync_request_bodies_without_overlap() -> None:
+def test_thread_bridge_serializes_sync_request_bodies_without_overlap(tmp_path: Path) -> None:
     loop = asyncio.new_event_loop()
     loop_ready = threading.Event()
     second_queued = threading.Event()
@@ -958,8 +977,8 @@ def test_thread_bridge_serializes_sync_request_bodies_without_overlap() -> None:
 
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
-        coordinator_holder.append(DaemonWriteCoordinator(observer=observe))
-        loop_ready.set()
+        coordinator_holder.append(DaemonWriteCoordinator(archive_root=tmp_path, observer=observe))
+        loop.call_soon(loop_ready.set)
         loop.run_forever()
 
     loop_thread = threading.Thread(target=run_loop, daemon=True)
@@ -1003,57 +1022,62 @@ def test_thread_bridge_serializes_sync_request_bodies_without_overlap() -> None:
     loop_thread.join(timeout=1.0)
 
 
-def test_thread_bridge_timeout_releases_a_racing_acquisition() -> None:
+@pytest.mark.uses_real_clock("physical bridge acquisition outlives its client wait budget")
+def test_thread_bridge_hold_waits_for_actual_acquisition(tmp_path: Path) -> None:
     loop = asyncio.new_event_loop()
     loop_ready = threading.Event()
     acquired = threading.Event()
+    entered = threading.Event()
     unblock_observer = threading.Event()
     coordinator_holder: list[DaemonWriteCoordinator] = []
+    errors: list[BaseException] = []
 
     def observe(event: DaemonWriteEvent) -> None:
-        if event.phase == "acquired" and event.actor == "http.timeout-race":
+        if event.phase == "acquired" and event.actor == "http.slow-acquisition":
             acquired.set()
-            assert unblock_observer.wait(timeout=1.0)
+            assert unblock_observer.wait(timeout=5.0)
 
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
-        coordinator_holder.append(DaemonWriteCoordinator(observer=observe))
-        loop_ready.set()
+        coordinator_holder.append(DaemonWriteCoordinator(archive_root=tmp_path, observer=observe))
+        loop.call_soon(loop_ready.set)
         loop.run_forever()
 
     loop_thread = threading.Thread(target=run_loop, daemon=True)
     loop_thread.start()
-    assert loop_ready.wait(timeout=1.0)
+    assert loop_ready.wait(timeout=5.0)
     coordinator = coordinator_holder[0]
     bridge = DaemonWriteThreadBridge(coordinator, loop, timeout=0.05)
-    errors: list[BaseException] = []
 
-    def timed_request() -> None:
+    def request_body() -> None:
         try:
-            with bridge.hold("http.timeout-race"):
-                raise AssertionError("timed-out bridge must not enter the request body")
+            with bridge.hold("http.slow-acquisition"):
+                entered.set()
         except BaseException as exc:
             errors.append(exc)
 
-    request = threading.Thread(target=timed_request)
+    request = threading.Thread(target=request_body)
     request.start()
-    assert acquired.wait(timeout=1.0)
-    request.join(timeout=1.0)
-    assert not request.is_alive()
-    assert len(errors) == 1
-    assert isinstance(errors[0], TimeoutError)
-
-    unblock_observer.set()
-
-    async def successor() -> str:
-        return "entered"
-
-    future = asyncio.run_coroutine_threadsafe(coordinator.run("successor", successor), loop)
-    assert future.result(timeout=1.0) == "entered"
-    shutdown = asyncio.run_coroutine_threadsafe(coordinator.shutdown(timeout=1.0), loop)
-    assert shutdown.result(timeout=1.0)
-    loop.call_soon_threadsafe(loop.stop)
-    loop_thread.join(timeout=1.0)
+    try:
+        assert acquired.wait(timeout=5.0)
+        request.join(timeout=0.1)
+        assert request.is_alive()
+        assert not entered.is_set()
+        assert errors == []
+        unblock_observer.set()
+        request.join(timeout=5.0)
+        assert not request.is_alive()
+        assert entered.is_set()
+        assert errors == []
+        successor = asyncio.run_coroutine_threadsafe(coordinator.run("successor", _return_ready), loop)
+        assert successor.result(timeout=5.0) == "ready"
+    finally:
+        unblock_observer.set()
+        request.join(timeout=5.0)
+        shutdown = asyncio.run_coroutine_threadsafe(coordinator.shutdown(timeout=5.0), loop)
+        assert shutdown.result(timeout=5.0)
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=5.0)
 
 
 async def _unexpected_operation() -> None:
@@ -1064,7 +1088,7 @@ async def _return_ready() -> str:
     return "ready"
 
 
-def test_thread_bridge_run_sync_uses_the_bridge_default_timeout() -> None:
+def test_thread_bridge_run_sync_uses_the_bridge_default_timeout(tmp_path: Path) -> None:
     """polylogue-ogn1 (#2/#5): the bare ``run_sync`` waits at most the bridge's own timeout.
 
     A blocking function that outlives the bridge's constructor timeout must
@@ -1077,8 +1101,8 @@ def test_thread_bridge_run_sync_uses_the_bridge_default_timeout() -> None:
 
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
-        coordinator_holder.append(DaemonWriteCoordinator())
-        loop_ready.set()
+        coordinator_holder.append(DaemonWriteCoordinator(archive_root=tmp_path))
+        loop.call_soon(loop_ready.set)
         loop.run_forever()
 
     loop_thread = threading.Thread(target=run_loop, daemon=True)
@@ -1108,7 +1132,7 @@ def test_thread_bridge_run_sync_uses_the_bridge_default_timeout() -> None:
         loop_thread.join(timeout=1.0)
 
 
-def test_thread_bridge_run_sync_with_timeout_overrides_the_bridge_default() -> None:
+def test_thread_bridge_run_sync_with_timeout_overrides_the_bridge_default(tmp_path: Path) -> None:
     """polylogue-ogn1 (#2/#5): a per-call override lets a long operation finish.
 
     ``run_sync_with_timeout`` must wait up to its own ``timeout`` argument
@@ -1122,8 +1146,8 @@ def test_thread_bridge_run_sync_with_timeout_overrides_the_bridge_default() -> N
 
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
-        coordinator_holder.append(DaemonWriteCoordinator())
-        loop_ready.set()
+        coordinator_holder.append(DaemonWriteCoordinator(archive_root=tmp_path))
+        loop.call_soon(loop_ready.set)
         loop.run_forever()
 
     loop_thread = threading.Thread(target=run_loop, daemon=True)
@@ -1149,9 +1173,9 @@ def test_thread_bridge_run_sync_with_timeout_overrides_the_bridge_default() -> N
 
 
 @pytest.mark.asyncio
-async def test_queued_cancellation_never_invokes_admitted_completion_callback() -> None:
+async def test_queued_cancellation_never_invokes_admitted_completion_callback(tmp_path: Path) -> None:
     """A queued cancellation has one pre-admission outcome, never a continuation."""
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     entered = asyncio.Event()
     release = asyncio.Event()
     callback_tasks: list[asyncio.Task[object]] = []
@@ -1202,7 +1226,7 @@ class TestDeclaredHoldBudgets:
         # An undeclared actor still has a budget rather than an exemption.
         assert write_hold_budget_s("something.undeclared") == 60.0
 
-    def test_an_over_budget_hold_is_flagged_and_counted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_over_budget_hold_is_flagged_and_counted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Anti-vacuity: drop the ``hold_seconds > budget_s`` comparison and the
         released event reports ``hold_over_budget`` False while the counter
         stays at zero -- the state the daemon was in for an 18,623 s hold."""
@@ -1211,7 +1235,7 @@ class TestDeclaredHoldBudgets:
         monkeypatch.setattr(wc, "WRITE_HOLD_BUDGETS_S", {"slow.": 0.0})
 
         async def scenario() -> tuple[wc.DaemonWriteEvent, int]:
-            coordinator = wc.DaemonWriteCoordinator()
+            coordinator = wc.DaemonWriteCoordinator(archive_root=tmp_path)
 
             async def operation() -> None:
                 await asyncio.sleep(0.01)
@@ -1228,14 +1252,14 @@ class TestDeclaredHoldBudgets:
         assert event.hold_over_budget is True
         assert count == 1
 
-    def test_a_hold_inside_its_budget_is_not_flagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_hold_inside_its_budget_is_not_flagged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The budget must not fire on ordinary work, or it reports nothing."""
         from polylogue.daemon import write_coordinator as wc
 
         monkeypatch.setattr(wc, "WRITE_HOLD_BUDGETS_S", {"quick.": 300.0})
 
         async def scenario() -> tuple[wc.DaemonWriteEvent, int]:
-            coordinator = wc.DaemonWriteCoordinator()
+            coordinator = wc.DaemonWriteCoordinator(archive_root=tmp_path)
 
             async def operation() -> None:
                 return None
@@ -1251,14 +1275,16 @@ class TestDeclaredHoldBudgets:
         assert event.hold_over_budget is False
         assert count == 0
 
-    def test_over_budget_failed_admission_is_flagged_and_counted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_over_budget_failed_admission_is_flagged_and_counted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Anti-vacuity: hard-coding False hides a slow refusing admission hook."""
         from polylogue.daemon import write_coordinator as wc
 
         monkeypatch.setattr(wc, "WRITE_HOLD_BUDGETS_S", {"slow.": 0.0})
 
         async def scenario() -> tuple[wc.DaemonWriteEvent, int]:
-            coordinator = wc.DaemonWriteCoordinator()
+            coordinator = wc.DaemonWriteCoordinator(archive_root=tmp_path)
 
             def refuse_slowly() -> None:
                 time.sleep(0.01)
@@ -1274,7 +1300,9 @@ class TestDeclaredHoldBudgets:
         assert event.hold_over_budget is True
         assert count == 1
 
-    def test_the_admitted_work_can_end_itself_at_the_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_admitted_work_finishes_past_its_diagnostic_threshold(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The declared bound reaches the work that has to respect it.
 
         Anti-vacuity: drop ``enter_write_hold`` from ``_execute`` and the
@@ -1282,17 +1310,17 @@ class TestDeclaredHoldBudgets:
         only trace of an over-long hold is the release warning -- the state
         this closes.
         """
-        from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
+        from polylogue.core.write_hold import active_write_hold
         from polylogue.daemon import write_coordinator as wc
 
         monkeypatch.setattr(wc, "WRITE_HOLD_BUDGETS_S", {"slow.": 0.0})
         reached: list[str] = []
 
         async def scenario() -> tuple[BaseException | None, wc.DaemonWriteEvent]:
-            coordinator = wc.DaemonWriteCoordinator()
+            coordinator = wc.DaemonWriteCoordinator(archive_root=tmp_path)
 
             def work_item(name: str) -> None:
-                check_write_hold_budget(f"item:{name}")
+                assert active_write_hold() is not None
                 reached.append(name)
 
             async def operation() -> None:
@@ -1312,19 +1340,15 @@ class TestDeclaredHoldBudgets:
 
         error, event = asyncio.run(scenario())
 
-        assert isinstance(error, WriteHoldBudgetError)
-        assert error.actor == "slow.actor"
-        assert error.checkpoint == "item:first"
-        assert error.budget_s == 0.0
-        assert reached == []
+        assert error is None
+        assert reached == ["first", "second"]
         assert event.hold_over_budget is True
 
-    def test_a_checkpoint_off_a_hold_has_no_bound_to_enforce(self) -> None:
+    def test_an_unadmitted_context_has_no_hold_telemetry(self) -> None:
         """Un-gated callers (CLI ingest, focused tests) keep their old shape."""
-        from polylogue.core.write_hold import active_write_hold, check_write_hold_budget
+        from polylogue.core.write_hold import active_write_hold
 
         assert active_write_hold() is None
-        check_write_hold_budget("item:none")
 
 
 @pytest.mark.asyncio
@@ -1372,6 +1396,7 @@ async def test_priority_gate_never_grants_twice_when_a_waiter_cancels_during_han
 
 
 def test_gate_release_waits_for_a_delegated_body_that_outlived_its_caller(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A caller that stops waiting must not hand SQLite to a second writer.
@@ -1403,8 +1428,8 @@ def test_gate_release_waits_for_a_delegated_body_that_outlived_its_caller(
 
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
-        coordinator_holder.append(DaemonWriteCoordinator())
-        loop_ready.set()
+        coordinator_holder.append(DaemonWriteCoordinator(archive_root=tmp_path))
+        loop.call_soon(loop_ready.set)
         loop.run_forever()
 
     loop_thread = threading.Thread(target=run_loop, daemon=True)
@@ -1472,7 +1497,7 @@ def test_gate_release_waits_for_a_delegated_body_that_outlived_its_caller(
         plog.reset_events()
 
 
-def test_unbounded_bridge_wait_ends_when_its_owner_loop_stops() -> None:
+def test_unbounded_bridge_wait_ends_when_its_owner_loop_stops(tmp_path: Path) -> None:
     """The no-timeout bridge is bound on owner-loop liveness, not on a clock.
 
     polylogue-8r4zq AC5. ``run_sync_with_timeout(actor, None, fn)`` is the
@@ -1495,8 +1520,8 @@ def test_unbounded_bridge_wait_ends_when_its_owner_loop_stops() -> None:
 
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
-        coordinator_holder.append(DaemonWriteCoordinator())
-        loop_ready.set()
+        coordinator_holder.append(DaemonWriteCoordinator(archive_root=tmp_path))
+        loop.call_soon(loop_ready.set)
         loop.run_forever()
 
     loop_thread = threading.Thread(target=run_loop, daemon=True)
@@ -1549,12 +1574,12 @@ def test_unbounded_bridge_wait_ends_when_its_owner_loop_stops() -> None:
         loop_thread.join(timeout=5.0)
 
 
-def test_bridge_refuses_submission_to_an_already_stopped_owner_loop() -> None:
+def test_bridge_refuses_submission_to_an_already_stopped_owner_loop(tmp_path: Path) -> None:
     """A stopped loop yields a typed pre-admission result, not a raw runtime error."""
     from polylogue.daemon.write_coordinator import DaemonWriterOwnerLoopStopped
 
     loop = asyncio.new_event_loop()
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     loop.close()
     bridge = DaemonWriteThreadBridge(coordinator, loop, timeout=0.05)
     try:
@@ -1565,7 +1590,7 @@ def test_bridge_refuses_submission_to_an_already_stopped_owner_loop() -> None:
             loop.close()
 
 
-def test_bridge_refuses_submission_to_stopped_but_open_owner_loop() -> None:
+def test_bridge_refuses_submission_to_stopped_but_open_owner_loop(tmp_path: Path) -> None:
     """Anti-vacuity: is_closed alone submits to a loop that can never run it."""
     from polylogue.daemon.write_coordinator import DaemonWriterOwnerLoopStopped
 
@@ -1584,7 +1609,7 @@ def test_bridge_refuses_submission_to_stopped_but_open_owner_loop() -> None:
         assert stopped.wait(timeout=5.0)
         assert not loop.is_closed()
         assert not loop.is_running()
-        bridge = DaemonWriteThreadBridge(DaemonWriteCoordinator(), loop, timeout=0.05)
+        bridge = DaemonWriteThreadBridge(DaemonWriteCoordinator(archive_root=tmp_path), loop, timeout=0.05)
         with pytest.raises(DaemonWriterOwnerLoopStopped, match="did not start"):
             bridge.run_sync_with_timeout("embedding.publish", None, lambda: "unreachable")
     finally:
@@ -1593,7 +1618,7 @@ def test_bridge_refuses_submission_to_stopped_but_open_owner_loop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_caller_cancelled_between_admission_and_start_keeps_the_admitted_write() -> None:
+async def test_caller_cancelled_between_admission_and_start_keeps_the_admitted_write(tmp_path: Path) -> None:
     """Admitted-but-not-started is settlement's problem, not the caller's.
 
     polylogue-8r4zq AC3. ``on_admit`` fires inside the coordinator-owned
@@ -1606,7 +1631,7 @@ async def test_caller_cancelled_between_admission_and_start_keeps_the_admitted_w
     cancellation regardless of ``request.acquired`` and ``receipts`` stays
     empty while the successor enters early.
     """
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     receipts: list[str] = []
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -1650,7 +1675,7 @@ async def test_caller_cancelled_between_admission_and_start_keeps_the_admitted_w
 
 
 @pytest.mark.asyncio
-async def test_failed_admission_hook_publishes_terminal_release() -> None:
+async def test_failed_admission_hook_publishes_terminal_release(tmp_path: Path) -> None:
     """An admission refusal still settles the acquired gate in telemetry.
 
     Anti-vacuity: removing the admission-failure ``released`` event makes the
@@ -1658,7 +1683,7 @@ async def test_failed_admission_hook_publishes_terminal_release() -> None:
     observers unable to distinguish a stuck writer from a refused one.
     """
     events: list[DaemonWriteEvent] = []
-    coordinator = DaemonWriteCoordinator(observer=events.append)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=events.append)
 
     def refuse() -> None:
         raise RuntimeError("admission refused")
@@ -1679,9 +1704,9 @@ async def test_failed_admission_hook_publishes_terminal_release() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fresh_task_cannot_write_after_successful_shutdown() -> None:
+async def test_fresh_task_cannot_write_after_successful_shutdown(tmp_path: Path) -> None:
     """Anti-vacuity: adding a new task to the managed set would admit this write."""
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     assert await coordinator.shutdown(timeout=1.0)
     ran = False
 
@@ -1693,3 +1718,1056 @@ async def test_fresh_task_cannot_write_after_successful_shutdown() -> None:
     with pytest.raises(RuntimeError, match="shutting down"):
         await asyncio.create_task(coordinator.run("late.write", operation))
     assert ran is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("actual worker settlement and independent kernel exclusion")
+@pytest.mark.parametrize("caught", [False, True])
+async def test_terminal_worker_retains_all_sql_owners_until_successful_successor_admission(
+    tmp_path: Path, caught: bool
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, ArchiveStoreSettlementError
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    handles: list[SettlementConnection] = []
+    stores: list[ArchiveStore] = []
+    original_threads: list[threading.Thread] = []
+
+    def leave_unsettled() -> None:
+        original_threads.append(threading.current_thread())
+        stores.extend(ArchiveStore(root, initialize=False) for _ in range(2))
+        for position, store in enumerate(stores):
+            store._enter_mutation_lease()
+            store._conn.execute("BEGIN IMMEDIATE" if position == 0 else "BEGIN")
+            store._conn.execute("SELECT COUNT(*) FROM sessions")
+            handle = arm_settlement(store._conn)
+            handles.append(handle)
+        for store in stores:
+            try:
+                store.close()
+            except ArchiveStoreSettlementError:
+                if not caught:
+                    raise
+
+    successor_called = False
+
+    def successor() -> None:
+        nonlocal successor_called
+        successor_called = True
+        assert not archive_custody_available(root)
+        with ArchiveStore(root, initialize=False) as store:
+            store._conn.execute("CREATE TABLE successor_probe (value INTEGER)")
+            store.commit()
+
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.unsettled", leave_unsettled)
+        assert original_threads[0].is_alive()
+        assert not archive_custody_available(root)
+        assert coordinator.snapshot().unsettled_writer_workers == 1
+        assert coordinator.snapshot().sql_settlement_state == "required"
+        assert daemon_write_telemetry_payload()["unsettled_writer_workers"] == 1
+        assert not coordinator._idle.is_set()
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.refused_successor", successor)
+        assert not successor_called
+        assert len(handles) == 2
+        assert all(any(name == "close" for name, _thread in handle.calls) for handle in handles)
+        assert not archive_custody_available(root)
+        for handle in handles:
+            handle.allow_cleanup.set()
+        await coordinator.run_sync("test.successor", successor)
+        original_threads[0].join()
+        assert not original_threads[0].is_alive()
+        assert successor_called
+        assert archive_custody_available(root)
+        assert coordinator.snapshot().unsettled_writer_workers == 0
+        assert coordinator.snapshot().sql_settlement_state == "idle"
+        assert all(thread is handle.owner for handle in handles for _name, thread in handle.calls)
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+            if handle.continue_cleanup is not None:
+                handle.continue_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("commit_failed", [False, True])
+@pytest.mark.uses_real_clock("temporary User SQL remains excluded until its original worker closes it")
+async def test_terminal_worker_retains_failed_temporary_user_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    commit_failed: bool,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers import archive as archive_module
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    handles: list[SettlementConnection] = []
+    stores: list[archive_module.ArchiveStore] = []
+    real_open = cast(Callable[..., sqlite3.Connection], vars(archive_module)["open_connection"])
+
+    def controlled_open(path: Path, *args: object, **kwargs: object) -> sqlite3.Connection:
+        connection = real_open(path, *args, **kwargs)
+        if path.name == "user.db":
+            handle = arm_settlement(connection)
+            handles.append(handle)
+            return handle
+        return connection
+
+    def failed_commit(*args: object, **kwargs: object) -> None:
+        raise OSError("synthetic User commit failure")
+
+    monkeypatch.setattr(archive_module, "open_connection", controlled_open)
+    if commit_failed:
+        monkeypatch.setattr(ArchiveWriteGateway, "commit_write_sync", failed_commit)
+
+    def leave_unsettled() -> None:
+        store = archive_module.ArchiveStore(root, initialize=False)
+        stores.append(store)
+        try:
+            store.add_user_tags((), ())
+        except OSError:
+            pass
+
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.user_cleanup", leave_unsettled)
+        assert handles[0].in_transaction is commit_failed
+        assert [id(conn) for conn in stores[0]._user_write_connections] == [id(handle) for handle in handles]
+        assert not archive_custody_available(root)
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.user_cleanup_retry", lambda: None)
+        assert handles[0].in_transaction is commit_failed
+        handles[0].allow_cleanup.set()
+        await coordinator.run_sync("test.user_successor", lambda: None)
+        assert not stores[0]._user_write_connections
+        handles[0].owner.join()
+        assert not handles[0].owner.is_alive()
+        assert archive_custody_available(root)
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("cancelled cleanup waiter leaves its accepted original worker alive")
+async def test_terminal_worker_cleanup_survives_shutdown_waiter_cancellation(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    handles: list[SettlementConnection] = []
+
+    def leave_unsettled() -> None:
+        store = ArchiveStore(root, initialize=False)
+        store._enter_mutation_lease()
+        store._conn.execute("BEGIN IMMEDIATE")
+        handle = arm_settlement(store._conn)
+        handles.append(handle)
+        store.close()
+
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.unsettled", leave_unsettled)
+        handle = handles[0]
+        assert not await coordinator.shutdown(timeout=30.0)
+        assert coordinator.snapshot().sql_settlement_state == "required"
+        assert not coordinator._idle.is_set()
+        assert not archive_custody_available(root)
+        handle.cleanup_started.clear()
+        handle.allow_cleanup.set()
+        handle.continue_cleanup = threading.Event()
+        shutdown = asyncio.create_task(coordinator.shutdown(timeout=30.0))
+        await asyncio.to_thread(handle.cleanup_started.wait)
+        assert coordinator.snapshot().sql_settlement_state == "settling"
+        shutdown.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await shutdown
+        assert handle.owner.is_alive()
+        assert not archive_custody_available(root)
+        assert not coordinator._idle.is_set()
+        handle.continue_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+        handle.owner.join()
+        assert not handle.owner.is_alive()
+        assert archive_custody_available(root)
+        assert coordinator.snapshot().unsettled_writer_workers == 0
+        with pytest.raises(RuntimeError, match="shutting down"):
+            await coordinator.run_sync("test.after_shutdown", lambda: None)
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+            if handle.continue_cleanup is not None:
+                handle.continue_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("caller cancellation cannot discard terminal worker custody")
+async def test_cancelled_run_sync_caller_leaves_terminal_settlement_owned(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    ready = threading.Event()
+    release = threading.Event()
+    handles: list[SettlementConnection] = []
+    completions: asyncio.Queue[asyncio.Task[object]] = asyncio.Queue()
+
+    def operation() -> None:
+        store = ArchiveStore(root, initialize=False)
+        store._enter_mutation_lease()
+        store._conn.execute("BEGIN IMMEDIATE")
+        handle = arm_settlement(store._conn)
+        handles.append(handle)
+        ready.set()
+        release.wait()
+        store.close()
+
+    caller = asyncio.create_task(
+        coordinator.run_sync_with_completion("test.cancelled", operation, completions.put_nowait)
+    )
+    try:
+        await asyncio.to_thread(ready.wait)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert not archive_custody_available(root)
+        release.set()
+        completed = await completions.get()
+        assert isinstance(completed.exception(), DaemonWriterSettlementError)
+        assert coordinator.snapshot().unsettled_writer_workers == 1
+        assert not coordinator._idle.is_set()
+        handles[0].allow_cleanup.set()
+        await coordinator.run_sync("test.successor", lambda: None)
+        handles[0].owner.join()
+        assert archive_custody_available(root)
+    finally:
+        release.set()
+        for handle in handles:
+            handle.allow_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("real nested async worker retains its original SQLite thread")
+@pytest.mark.parametrize("nested", [False, True])
+async def test_terminal_settlement_owns_direct_and_nested_async_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nested: bool
+) -> None:
+    from polylogue.core.write_lease import adopt_write_lease, delegate_write_lease
+    from polylogue.storage.sqlite import async_sqlite
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    handles: list[SettlementConnection] = []
+    backends: list[async_sqlite.SQLiteBackend] = []
+    writer_threads: list[threading.Thread] = []
+    real_connect = async_sqlite._connect_write_thread
+
+    def controlled_connect(backend: async_sqlite.SQLiteBackend, grant: object) -> sqlite3.Connection:
+        handle = arm_settlement(real_connect(backend, grant))  # type: ignore[arg-type]
+        handle.allow_cleanup.set()
+        handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(async_sqlite, "_connect_write_thread", controlled_connect)
+
+    async def leave_unsettled() -> None:
+        writer_threads.append(threading.current_thread())
+        backend = async_sqlite.SQLiteBackend(db_path=root / "index.db")
+        backends.append(backend)
+        await backend.begin()
+        handle = handles[-1]
+        handle.allow_cleanup.clear()
+        try:
+            await backend.close()
+        except BaseExceptionGroup as refused:
+            assert len(refused.exceptions) == 2
+            assert all(isinstance(error, OSError) for error in refused.exceptions)
+            # Discarding an outcome cannot discard its physical owner.
+
+    def nested_operation() -> None:
+        delegation = delegate_write_lease()
+
+        async def adopted() -> None:
+            with adopt_write_lease(delegation):
+                await leave_unsettled()
+
+        asyncio.run(adopted())
+
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            if nested:
+                await coordinator.run_sync("test.nested_async", nested_operation)
+            else:
+                await coordinator.run("test.direct_async", leave_unsettled)
+        backend = backends[0]
+        connection = backend._txn_conn
+        assert connection is not None
+        assert connection._thread.is_alive()
+        assert not archive_custody_available(root)
+        assert coordinator.snapshot().unsettled_writer_workers == int(nested)
+        assert coordinator.snapshot().unsettled_async_backends == int(not nested)
+        assert coordinator.snapshot().sql_settlement_state == "required"
+        assert not coordinator._idle.is_set()
+        if hasattr(os, "fork"):
+            child_pid = None
+            read_fd, write_fd = os.pipe()
+            try:
+                with async_sqlite._BACKEND_CONNECTIONS_LOCK:
+                    child_pid = os.fork()
+                    if child_pid == 0:
+                        try:
+                            os.close(read_fd)
+                            assert not async_sqlite.retained_write_backends_on_current_thread()
+                            assert async_sqlite._FORK_ABANDONED_BACKEND_CONNECTIONS
+                            closing = backend.close()
+                            try:
+                                closing.send(None)
+                            except RuntimeError:
+                                pass
+                            else:
+                                os._exit(2)
+                            finally:
+                                closing.close()
+                            os.write(write_fd, b"refused")
+                            os._exit(0)
+                        except BaseException:
+                            os._exit(3)
+                os.close(write_fd)
+                write_fd = -1
+                ready, _, _ = select.select([read_fd], [], [], 60.0)
+                assert ready, "child blocked on inherited async writer registry"
+                assert os.read(read_fd, 7) == b"refused"
+                _, status = os.waitpid(child_pid, 0)
+                child_pid = None
+                assert os.waitstatus_to_exitcode(status) == 0
+                assert connection._thread.is_alive()
+                assert not archive_custody_available(root)
+            finally:
+                if child_pid is not None and child_pid > 0:
+                    os.kill(child_pid, signal.SIGKILL)
+                    os.waitpid(child_pid, 0)
+                os.close(read_fd)
+                if write_fd >= 0:
+                    os.close(write_fd)
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.failed_async_settlement", lambda: None)
+        assert connection._thread.is_alive()
+        assert not archive_custody_available(root)
+        handle = handles[-1]
+        handle.cleanup_started.clear()
+        handle.allow_cleanup.set()
+        handle.continue_cleanup = threading.Event()
+        successor = asyncio.create_task(coordinator.run_sync("test.cancelled_async_settlement", lambda: None))
+        await asyncio.to_thread(handle.cleanup_started.wait)
+        assert coordinator.snapshot().sql_settlement_state == "settling"
+        successor.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await successor
+        assert connection._thread.is_alive()
+        assert not archive_custody_available(root)
+        handle.continue_cleanup.set()
+        await coordinator.run_sync("test.async_successor", lambda: None)
+        connection._thread.join()
+        assert not connection._thread.is_alive()
+        assert backend._txn_conn is None
+        assert archive_custody_available(root)
+        assert coordinator.snapshot().unsettled_writer_workers == 0
+        assert coordinator.snapshot().unsettled_async_backends == 0
+        assert all(thread is handle.owner for handle in handles for _name, thread in handle.calls)
+        if nested:
+            writer_threads[0].join()
+            assert not writer_threads[0].is_alive()
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+            if handle.continue_cleanup is not None:
+                handle.continue_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("forked child must refuse before inherited terminal mutex and SQL")
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is unavailable")
+async def test_terminal_worker_fork_refuses_before_inherited_mutex_or_sql(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    handles: list[SettlementConnection] = []
+    stores: list[ArchiveStore] = []
+
+    def leave_unsettled() -> None:
+        store = ArchiveStore(root, initialize=False)
+        stores.append(store)
+        store._enter_mutation_lease()
+        store._conn.execute("BEGIN IMMEDIATE")
+        handle = arm_settlement(store._conn)
+        handles.append(handle)
+        store.close()
+
+    child_pid: int | None = None
+    read_fd, write_fd = os.pipe()
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.fork_parent", leave_unsettled)
+        with coordinator._terminal_guard:
+            child_pid = os.fork()
+            if child_pid == 0:
+                try:
+                    os.close(read_fd)
+                    operation = coordinator.run("test.fork_child", _return_ready)
+                    try:
+                        operation.send(None)
+                    except DaemonWriterSettlementError:
+                        pass
+                    else:
+                        os._exit(2)
+                    finally:
+                        operation.close()
+                    try:
+                        stores[0].close()
+                    except RuntimeError:
+                        pass
+                    else:
+                        os._exit(3)
+                    os.write(write_fd, b"refused")
+                    os._exit(0)
+                except BaseException:
+                    os._exit(4)
+        os.close(write_fd)
+        write_fd = -1
+        ready, _, _ = select.select([read_fd], [], [], 60.0)
+        assert ready, "child blocked on inherited terminal mutex"
+        assert os.read(read_fd, 7) == b"refused"
+        _, status = os.waitpid(child_pid, 0)
+        child_pid = None
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert not archive_custody_available(root)
+        assert handles[0].owner.is_alive()
+        handles[0].allow_cleanup.set()
+        await coordinator.run_sync("test.fork_successor", lambda: None)
+        handles[0].owner.join()
+        assert archive_custody_available(root)
+    finally:
+        if child_pid is not None and child_pid > 0:
+            os.kill(child_pid, signal.SIGKILL)
+            os.waitpid(child_pid, 0)
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+        for handle in handles:
+            handle.allow_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "factory_name",
+    [
+        "open_connection",
+        "open_daemon_connection",
+        "open_source_tier_write_connection",
+        "open_isolated_write_connection",
+        "initialize_archive_database",
+    ],
+)
+@pytest.mark.uses_real_clock("native configure and close failure retains actual original-thread SQL custody")
+async def test_native_factory_failure_keeps_actual_connection_until_terminal_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    factory_name: str,
+) -> None:
+    from polylogue.storage.sqlite import connection_profile
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    handles: list[SettlementConnection] = []
+    real_sqlite_connect = cast(Callable[..., sqlite3.Connection], sqlite3.connect)
+
+    from typing import Any
+
+    class FailedConfigurationHandle(SettlementConnection):
+        def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+            raise OSError("synthetic profile setup failure")
+
+    def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        connection = real_sqlite_connect(*args, **{**kwargs, "factory": FailedConfigurationHandle})
+        sqlite3.Connection.execute(
+            connection, "BEGIN" if factory_name == "open_readonly_connection" else "BEGIN IMMEDIATE"
+        )
+        handle = arm_settlement(connection)
+        handles.append(handle)
+        return handle
+
+    if factory_name == "initialize_archive_database":
+        monkeypatch.setattr(sqlite3, "connect", controlled_connect)
+    else:
+        monkeypatch.setattr(connection_profile, "connect_measured", controlled_connect)
+
+    def leave_unsettled() -> None:
+        try:
+            if factory_name == "initialize_archive_database":
+                bootstrap.initialize_archive_database(root / "fresh-index.db", ArchiveTier.INDEX, page_size=4096)
+                return
+            factory = getattr(connection_profile, factory_name)
+            if factory_name == "open_isolated_write_connection":
+                factory(root / "source.db", archive_root=root, purpose="test.native_configuration")
+            else:
+                factory(root / "source.db", archive_root=root)
+        except connection_profile.NativeConnectionSettlementError:
+            # Even callers discarding the exception cannot discard the actual
+            # connection or its original-thread physical custody.
+            pass
+
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.native_configuration", leave_unsettled)
+        assert handles[0].in_transaction
+        assert not archive_custody_available(root)
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.native_configuration_retry", lambda: None)
+        assert handles[0].in_transaction
+        handles[0].allow_cleanup.set()
+        await coordinator.run_sync("test.native_configuration_successor", lambda: None)
+        handles[0].owner.join()
+        assert not handles[0].owner.is_alive()
+        assert archive_custody_available(root)
+        assert {thread for _operation, thread in handles[0].calls} == {handles[0].owner}
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("begin_inside_context", [False, True])
+@pytest.mark.uses_real_clock("cached commit settlement and failed close retain actual kernel custody")
+async def test_cached_connection_settles_after_context_and_retains_failed_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    begin_inside_context: bool,
+) -> None:
+    from polylogue.storage.sqlite import connection as cached
+    from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    handles: list[SettlementConnection] = []
+    real_connect = cast(Callable[..., sqlite3.Connection], vars(cached)["connect_measured"])
+
+    def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        handle = real_connect(*args, **kwargs)
+        assert isinstance(handle, SettlementConnection)
+        handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(cached, "connect_measured", controlled_connect)
+
+    def committed_after_context() -> None:
+        with cached.connection_context(root / "index.db") as connection:
+            if begin_inside_context:
+                connection.execute("BEGIN IMMEDIATE")
+        if not begin_inside_context:
+            connection.execute("BEGIN IMMEDIATE")
+        # The cached context intentionally does not settle its caller's SQL.
+        connection.commit()
+        handles[-1].allow_cleanup.set()
+
+    def failed_close() -> None:
+        committed_after_context()
+        arm_settlement(handles[-1])
+        try:
+            cached._clear_connection_cache()
+        except NativeConnectionSettlementError:
+            pass
+        assert cached._connection_cache.conns[str(root / "index.db")].connection is handles[-1]
+
+    try:
+        await coordinator.run_sync("test.cached_commit", committed_after_context)
+        assert archive_custody_available(root)
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.cached_close", failed_close)
+        assert not handles[-1].in_transaction
+        assert not archive_custody_available(root)
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.cached_retry", lambda: None)
+        handles[-1].allow_cleanup.set()
+        await coordinator.run_sync("test.cached_successor", lambda: None)
+        handles[-1].owner.join()
+        assert archive_custody_available(root)
+        assert {thread for _operation, thread in handles[-1].calls} == {handles[-1].owner}
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "context_name",
+    ["open_verified_audit_connection", "open_verified_sqlite_write_connection", "open_verified_sqlite_read_connection"],
+)
+@pytest.mark.uses_real_clock("verified leaf remains pinned until actual native SQLite settlement")
+async def test_verified_leaf_is_retained_with_failed_native_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    context_name: str,
+) -> None:
+    from polylogue.storage.sqlite import audit_leaf, connection_profile
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    handles: list[SettlementConnection] = []
+    leaves: list[audit_leaf.VerifiedAuditLeaf] = []
+    real_connect = cast(Callable[..., sqlite3.Connection], sqlite3.connect)
+    real_enter = audit_leaf.VerifiedAuditLeaf.__enter__
+
+    def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        handle = arm_settlement(real_connect(*args, **kwargs))
+        handles.append(handle)
+        return handle
+
+    def remember_leaf(leaf: audit_leaf.VerifiedAuditLeaf) -> audit_leaf.VerifiedAuditLeaf:
+        result = real_enter(leaf)
+        leaves.append(result)
+        return result
+
+    monkeypatch.setattr(sqlite3, "connect", controlled_connect)
+    monkeypatch.setattr(audit_leaf.VerifiedAuditLeaf, "__enter__", remember_leaf)
+
+    def leave_unsettled() -> None:
+        try:
+            with getattr(audit_leaf, context_name)(root / "audit.db") as connection:
+                connection.execute("SELECT 1").fetchone()
+                raise RuntimeError("synthetic body failure")
+        except connection_profile.NativeConnectionSettlementError:
+            pass
+
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.verified_leaf", leave_unsettled)
+        assert leaves[-1]._leaf_fd is not None
+        os.fstat(leaves[-1]._leaf_fd)
+        assert not archive_custody_available(root)
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.verified_leaf_retry", lambda: None)
+        assert leaves[-1]._leaf_fd is not None
+        for handle in handles:
+            handle.allow_cleanup.set()
+        await coordinator.run_sync("test.verified_leaf_successor", lambda: None)
+        handles[-1].owner.join()
+        assert leaves[-1]._leaf_fd is None
+        assert leaves[-1]._directory_fd is None
+        assert archive_custody_available(root)
+        assert {thread for handle in handles for _operation, thread in handle.calls} == {handles[-1].owner}
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("cache cleanup attempts every real handle and retains only failed closes")
+async def test_cached_cleanup_attempts_later_handle_after_first_close_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite import connection as cached
+    from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    handles: list[SettlementConnection] = []
+    real_connect = cast(Callable[..., sqlite3.Connection], vars(cached)["connect_measured"])
+
+    def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        handle = real_connect(*args, **kwargs)
+        assert isinstance(handle, SettlementConnection)
+        handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(cached, "connect_measured", controlled_connect)
+
+    def leave_first_unsettled() -> None:
+        for path in (root / "index.db", root / "scratch-index.db"):
+            with cached.connection_context(path) as connection:
+                connection.execute("SELECT 1").fetchone()
+        assert len(handles) == 2
+        arm_settlement(handles[0])
+        try:
+            cached._clear_connection_cache()
+        except NativeConnectionSettlementError:
+            pass
+        assert list(cached._connection_cache.conns) == [str(root / "index.db")]
+        assert any(operation == "close" for operation, _thread in handles[1].calls)
+
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.cached_all_attempt", leave_first_unsettled)
+        assert len(handles) == 2
+        assert not archive_custody_available(root)
+        handles[0].allow_cleanup.set()
+        await coordinator.run_sync("test.cached_all_attempt_successor", lambda: None)
+        handles[0].owner.join()
+        assert archive_custody_available(root)
+        assert {thread for handle in handles for _operation, thread in handle.calls} == {handles[0].owner}
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("admitted async readers retain actual SQL and physical custody")
+async def test_admitted_reader_failed_close_remains_in_terminal_writer_census(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite import async_sqlite
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    handles: list[SettlementConnection] = []
+    configured = 0
+    actual_configure = async_sqlite.configure_read_connection
+
+    async def configure(connection: object, *, archive_root: Path) -> None:
+        nonlocal configured
+        await actual_configure(connection, archive_root=archive_root)  # type: ignore[arg-type]
+        configured += 1
+        if configured == 2:
+
+            def install() -> None:
+                handle = arm_settlement(connection._connection)  # type: ignore[attr-defined]
+                handles.append(handle)
+
+            await connection._execute(install)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(async_sqlite, "configure_read_connection", configure)
+
+    async def operation() -> None:
+        backend = async_sqlite.SQLiteBackend(root / "index.db")
+        try:
+            async with backend.read_connection() as connection:
+                await connection.execute("BEGIN")
+                await connection.execute("SELECT COUNT(*) FROM sessions")
+        except BaseExceptionGroup as refused:
+            assert len(refused.exceptions) == 2
+            assert all(isinstance(error, OSError) for error in refused.exceptions)
+
+    called = False
+
+    async def successor() -> None:
+        nonlocal called
+        called = True
+
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run("test.reader_close", operation)
+        assert len(handles) == 1
+        assert not archive_custody_available(root)
+        assert coordinator.snapshot().unsettled_async_backends == 1
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run("test.reader_refusal", successor)
+        assert not called
+        handles[0].allow_cleanup.set()
+        await coordinator.run("test.reader_successor", successor)
+        assert called
+        assert archive_custody_available(root)
+        assert coordinator.snapshot().unsettled_async_backends == 0
+        assert all(thread is handles[0].owner for _name, thread in handles[0].calls)
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("last grant returns physical custody on actual creator worker")
+async def test_last_worker_grant_failure_retains_terminal_worker_and_submission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from concurrent.futures import Future
+
+    from polylogue.storage.sqlite.write_lease import async_write_lease
+
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    real_close = os.close
+    entered, release = threading.Event(), threading.Event()
+    physical: Future[None] = Future()
+    threads: list[threading.Thread] = []
+    attempts: list[threading.Thread] = []
+
+    async with async_write_lease("test.last_worker_grant", archive_root=tmp_path) as lease:
+        custody = lease.custody
+        assert custody is not None
+        lock = custody._fd
+
+        def refuse_close(descriptor: int) -> None:
+            if descriptor == lock:
+                attempts.append(threading.current_thread())
+                raise OSError("synthetic worker descriptor close before effect")
+            real_close(descriptor)
+
+        def operation() -> None:
+            entered.set()
+            release.wait()
+
+        def submit(function: Callable[[], None]) -> Future[None]:
+            def run() -> None:
+                try:
+                    function()
+                except BaseException as error:
+                    physical.set_exception(error)
+                else:
+                    physical.set_result(None)
+
+            thread = threading.Thread(target=run, name="test-last-grant-creator")
+            threads.append(thread)
+            thread.start()
+            assert entered.wait(5)
+            # Actual owner retirement leaves the executing worker's grant as
+            # the last reference. Its complete() must not erase new cleanup.
+            lease.retire()
+            custody.close_owner()
+            monkeypatch.setattr(os, "close", refuse_close)
+            release.set()
+            return physical
+
+        dispatch = write_coordinator_module._WorkerDispatch(submit, lambda: ())
+        try:
+            with pytest.raises(DaemonWriterSettlementError):
+                await write_coordinator_module._run_writer_worker(coordinator, dispatch, operation, "test.last_grant")
+            assert not physical.done()
+            assert threads[0].is_alive()
+            assert custody._descriptor_cleanup_thread is threads[0]
+            assert coordinator._retained_workers()
+            assert not archive_custody_available(tmp_path)
+            assert attempts == [threads[0]]
+        finally:
+            monkeypatch.setattr(os, "close", real_close)
+            release.set()
+            for descriptor in tuple(custody._pending_descriptor_closes):
+                real_close(descriptor)
+            if coordinator._retained_workers():
+                await coordinator._settle_terminal_workers()
+            for thread in threads:
+                await asyncio.to_thread(thread.join)
+        assert physical.done()
+        physical.result()
+        assert not coordinator._retained_workers()
+        assert custody._fd == -1
+        assert attempts == [threads[0]]
+    assert await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("explicit coordinator retry wakes original async cleanup task")
+@pytest.mark.parametrize("cancelled_waiter", [False, True])
+async def test_coordinator_second_settlement_retries_original_last_grant_cleanup(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, cancelled_waiter: bool
+) -> None:
+    from typing import Any
+
+    from polylogue.storage.sqlite import async_sqlite
+    from polylogue.storage.sqlite.write_lease import current_write_lease
+
+    root = workspace_env["archive_root"]
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    backend = async_sqlite.SQLiteBackend(root / "index.db")
+    real_close = os.close
+    failed = asyncio.Event()
+    custodies = []
+    connections = []
+    original_failure = OSError("synthetic first worker close refusal")
+    descriptor_failure = OSError("synthetic later grant close before effect")
+    attempts = []
+
+    async def operation() -> None:
+        lease = current_write_lease()
+        assert lease is not None and lease.custody is not None
+        custodies.append(lease.custody)
+        conn = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+        connections.append(conn)
+        execute = conn._execute
+        first = True
+
+        async def refuse_first_close(function: Any, *args: Any, **kwargs: Any) -> Any:
+            nonlocal first
+            if first and getattr(function, "__name__", None) == "close_raw":
+                first = False
+                raise original_failure
+            return await execute(function, *args, **kwargs)  # type: ignore[no-untyped-call]
+
+        monkeypatch.setattr(conn, "_execute", refuse_first_close)
+        with pytest.raises(OSError) as caught:
+            await async_sqlite._close_backend_connection(conn)
+        assert caught.value is original_failure
+
+    with pytest.raises(DaemonWriterSettlementError):
+        await coordinator.run("test.async_last_grant", operation)
+    custody = custodies[0]
+    lock = custody._fd
+
+    def refuse_descriptor(descriptor: int) -> None:
+        if descriptor == lock:
+            attempts.append(threading.current_thread())
+            failed.set()
+            raise descriptor_failure
+        real_close(descriptor)
+
+    monkeypatch.setattr(os, "close", refuse_descriptor)
+    first = asyncio.create_task(coordinator._settle_terminal_workers())
+    second = None
+    try:
+        await asyncio.wait_for(failed.wait(), 5)
+        original = coordinator._terminal_async_attempt
+        assert original is not None and not original.done()
+        entry = async_sqlite._BACKEND_CONNECTIONS[id(connections[0])]
+        assert entry.cleanup_task is original
+        assert entry.cleanup_attempt is not None and not entry.cleanup_attempt.done()
+        if cancelled_waiter:
+            second = asyncio.create_task(coordinator._settle_terminal_workers())
+            await asyncio.sleep(0)
+            second.cancel()
+            await asyncio.sleep(0)
+            assert not original.done()
+            assert not entry.cleanup_attempt.done()
+        monkeypatch.setattr(os, "close", real_close)
+        real_close(lock)
+        if second is None:
+            second = asyncio.create_task(coordinator._settle_terminal_workers())
+        else:
+            backend.request_sql_settlement()
+        outcomes = await asyncio.gather(first, second, return_exceptions=True)
+        assert isinstance(outcomes[0], BaseException)
+        assert isinstance(outcomes[1], asyncio.CancelledError if cancelled_waiter else BaseException)
+        assert original.done()
+        assert attempts == [threading.current_thread()]
+        assert id(connections[0]) not in async_sqlite._BACKEND_CONNECTIONS
+        assert not coordinator._retained_async_backends()
+    finally:
+        monkeypatch.setattr(os, "close", real_close)
+        for descriptor in tuple(custody._pending_descriptor_closes):
+            real_close(descriptor)
+        backend.request_sql_settlement()
+        await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
+        assert await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("actual async SQLite cleanup retains custody through canceled waiters")
+@pytest.mark.parametrize("post_close_failure", [False, True])
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_async_terminal_failure_classification_tracks_actual_physical_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, post_close_failure: bool, cancelled: bool
+) -> None:
+    from polylogue.storage.sqlite import async_sqlite
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    backend = async_sqlite.SQLiteBackend(root / "index.db")
+    handles: list[SettlementConnection] = []
+    entered_cleanup = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    successor_called = False
+
+    async def leave_unsettled() -> None:
+        await backend.begin()
+        connection = backend._txn_conn
+        assert connection is not None
+
+        def arm_actual_admitted_connection() -> None:
+            native = connection._connection
+            assert native is not None
+            handles.append(arm_settlement(native))
+
+        execute_on_creator = cast(Callable[[Callable[[], None]], Awaitable[None]], connection._execute)
+        await execute_on_creator(arm_actual_admitted_connection)
+        with pytest.raises(BaseExceptionGroup) as original:
+            await backend.close()
+        assert len(original.value.exceptions) == 2
+        assert all(isinstance(error, OSError) for error in original.value.exceptions)
+
+    actual_close = backend.close
+
+    async def held_cleanup() -> None:
+        entered_cleanup.set()
+        await release_cleanup.wait()
+        await actual_close()
+        raise ValueError("synthetic failure after physical SQL settlement")
+
+    async def successor() -> None:
+        nonlocal successor_called
+        successor_called = True
+
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run("test.actual_async_initial_fault", leave_unsettled)
+        assert len(handles) == 1
+        assert handles[0].cleanup_started.is_set()
+        assert not archive_custody_available(root)
+        monkeypatch.setattr(backend, "close", held_cleanup)
+        if post_close_failure:
+            handles[0].allow_cleanup.set()
+        waiting = asyncio.create_task(coordinator.run("test.actual_async_cleanup", successor))
+        await asyncio.wait_for(entered_cleanup.wait(), timeout=5)
+        executions = tuple(coordinator._executions)
+        assert len(executions) == 1
+        assert coordinator.snapshot().unsettled_async_backends == 1
+        assert not successor_called
+        assert not archive_custody_available(root)
+        if cancelled:
+            waiting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiting
+            assert coordinator.snapshot().unsettled_async_backends == 1
+            assert not archive_custody_available(root)
+            assert not executions[0].done()
+        release_cleanup.set()
+        await asyncio.wait((executions[0],))
+        if post_close_failure:
+            with pytest.raises(ValueError):
+                executions[0].result()
+            assert coordinator.snapshot().unsettled_async_backends == 0
+            assert archive_custody_available(root)
+        else:
+            with pytest.raises(DaemonWriterSettlementError) as refused:
+                executions[0].result()
+            original_failure = refused.value.__cause__
+            assert isinstance(original_failure, BaseExceptionGroup)
+            assert len(original_failure.exceptions) == 2
+            assert all(isinstance(error, OSError) for error in original_failure.exceptions)
+            assert coordinator.snapshot().unsettled_async_backends == 1
+            assert not archive_custody_available(root)
+        if not cancelled:
+            with pytest.raises(ValueError if post_close_failure else DaemonWriterSettlementError):
+                await waiting
+        assert not successor_called
+    finally:
+        release_cleanup.set()
+        monkeypatch.setattr(backend, "close", actual_close)
+        for handle in handles:
+            handle.allow_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)

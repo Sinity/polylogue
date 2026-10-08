@@ -15,14 +15,16 @@ preflight" a claim about discipline rather than about the code.
 
 from __future__ import annotations
 
+import base64
 import errno
+import hashlib
 import http.client
 import json
 import os
 import socket
 import struct
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
@@ -42,6 +44,8 @@ from polylogue.operations.daemon_protocol import (
     AcceptedOperationReference,
     DaemonAuthority,
     DaemonOperationRequest,
+    OperationResultDocument,
+    OperationResultPage,
     daemon_operation_spec,
     validate_operation_result,
 )
@@ -255,12 +259,15 @@ class DaemonClient:
         # A write never gives up the way a read does: once the request is on
         # the socket, an offline retry would make the actuator outcome
         # ambiguous, so the transport reports indeterminacy instead of absence.
-        writes = spec.authority is not DaemonAuthority.READ
+        writes = spec.authority is not DaemonAuthority.READ and operation not in {
+            "operation.result",
+            "user.assertions.export.release",
+        }
         # Reads wait for completion unless the caller supplies a deadline.
         # Explicit and mutation deadlines leave room for the server response
         # without changing a client shared by other calls.
         deadline_ms = request.deadline_ms
-        if writes and deadline_ms is None:
+        if writes and deadline_ms is None and not (spec.accepted_reference or spec.durable_request):
             raise DaemonOperationProtocolError("write operation request has no execution deadline")
 
         def bound_body() -> dict[str, object]:
@@ -278,6 +285,7 @@ class DaemonClient:
                 if request.index_schema_version is None and operation not in {
                     "maintenance.backup",
                     "maintenance.restore_verified_backup",
+                    "user.assertions.export.release",
                     "user.settings.get",
                     "user.settings.list",
                     "insights.hermes_health",
@@ -461,6 +469,54 @@ class DaemonClient:
             archive_root=archive_root,
         )
 
+    def iter_operation_result(
+        self,
+        document: Mapping[str, object],
+        *,
+        archive_root: str,
+        expected_archive_identity: str | None = None,
+    ) -> Iterator[bytes]:
+        """Consume the exact complete request-owned document; exhaustion verifies delivery."""
+        identity = OperationResultDocument.model_validate(document).model_dump()
+        offset = 0
+        digest = hashlib.sha256()
+        while True:
+            envelope = self.operation(
+                "operation.result",
+                {**identity, "offset": offset},
+                archive_root=archive_root,
+                expected_archive_identity=expected_archive_identity,
+            )
+            if envelope is None or envelope.get("outcome") != "completed":
+                outcome = envelope.get("outcome") if envelope is not None else None
+                error = envelope.get("error") if envelope is not None else None
+                code = error.get("code") if isinstance(error, dict) else None
+                raise DaemonOperationProtocolError(
+                    f"operation result document is unavailable ({outcome}: {code})",
+                    outcome=outcome if isinstance(outcome, str) else None,
+                    error_code=code if isinstance(code, str) else None,
+                )
+            page = OperationResultPage.model_validate(envelope.get("result"))
+            if page.document.model_dump() != identity or page.offset != offset:
+                raise DaemonOperationProtocolError("operation result document identity or cursor changed")
+            try:
+                chunk = base64.b64decode(page.data_base64, validate=True)
+            except ValueError as exc:
+                raise DaemonOperationProtocolError("operation result document has invalid bytes") from exc
+            end = offset + len(chunk)
+            if end > identity["byte_length"] or (page.next_offset is not None and page.next_offset != end):
+                raise DaemonOperationProtocolError("operation result document has invalid framing")
+            if not chunk and page.next_offset is not None:
+                raise DaemonOperationProtocolError("operation result document did not progress")
+            digest.update(chunk)
+            if chunk:
+                yield chunk
+            offset = end
+            if page.next_offset is None:
+                if offset != identity["byte_length"] or digest.hexdigest() != identity["sha256"]:
+                    raise DaemonOperationProtocolError("operation result document is incomplete or corrupt")
+                return
+
     def await_operation(
         self,
         request_id: str,
@@ -516,13 +572,13 @@ class DaemonClient:
             raise
         if envelope is None or envelope.get("outcome") not in {"accepted", "running"}:
             return envelope
-        if spec.deadline_s is None:
+        if spec.deadline_s is None and not (spec.accepted_reference or spec.durable_request):
             raise DaemonOperationProtocolError("read operation returned accepted mutation work")
         return self._follow_accepted(
             operation,
             envelope,
             archive_root=archive_root,
-            deadline=started + spec.deadline_s,
+            deadline=None if spec.deadline_s is None else started + spec.deadline_s,
             progress_callback=progress_callback,
         )
 
@@ -550,13 +606,13 @@ class DaemonClient:
         if envelope.get("outcome") not in {"accepted", "running"}:
             return dict(envelope)
         budget = spec.deadline_s if wait_s is None else wait_s
-        if budget is None:
+        if budget is None and not (spec.accepted_reference or spec.durable_request):
             raise DaemonOperationProtocolError("read operation returned accepted mutation work")
         return self._follow_accepted(
             operation,
             envelope,
             archive_root=archive_root,
-            deadline=perf_counter() + budget,
+            deadline=None if budget is None else perf_counter() + budget,
             progress_callback=progress_callback,
         )
 
@@ -566,7 +622,7 @@ class DaemonClient:
         envelope: Mapping[str, Any],
         *,
         archive_root: str,
-        deadline: float,
+        deadline: float | None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None,
     ) -> dict[str, Any]:
         spec = daemon_operation_spec(operation)
@@ -584,9 +640,9 @@ class DaemonClient:
         # indeterminate for a write the daemon durably accepted, and the
         # recovery it forces on the operator is the read skipped here.
         consulted = False
-        while not consulted or perf_counter() < deadline:
+        while not consulted or deadline is None or perf_counter() < deadline:
             consulted = True
-            timeout_ms = max(1, min(30_000, int((deadline - perf_counter()) * 1000)))
+            timeout_ms = 30_000 if deadline is None else max(1, min(30_000, int((deadline - perf_counter()) * 1000)))
             try:
                 waited = self.await_operation(
                     target,

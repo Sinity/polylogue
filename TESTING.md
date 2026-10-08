@@ -372,9 +372,9 @@ create a ready-to-query archive without daemon scheduling; the import path uses
 the daemon and can wait for the same semantic verifier.
 
 ```bash
-# Source-only demo archive, no daemon required
-polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
-polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
+# Source-only demo archive in a separate scratch root, no daemon required
+polylogue demo seed --root ./polylogue-demo-archive --force --with-overlays --format json
+polylogue demo verify --root ./polylogue-demo-archive --require-overlays --format json
 polylogue demo script --shell bash
 
 # Daemon-backed demo path, waits for convergence before returning

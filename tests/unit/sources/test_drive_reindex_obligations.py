@@ -24,11 +24,12 @@ from typing import Any
 
 import pytest
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, ValidationMode
 from polylogue.pipeline.ids import message_owner_resolution
-from polylogue.schemas.drift_sentinel import UNSEEN_SHAPE, classify_schema_drift
+from polylogue.schemas.drift_sentinel import FIELD_CHANGED, UNSEEN_SHAPE
 from polylogue.schemas.runtime_registry import SchemaRegistry
-from polylogue.sources.dispatch import detect_provider, parse_payload, require_positive_conversational_evidence
+from polylogue.schemas.validator import RetainedValidationVerdict, validate_retained_document
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, detect_provider, parse_payload
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 
 _CURRENT_EXPORT_FIXTURE = Path(__file__).resolve().parents[2] / "data" / "gemini_chunked_prompt" / "current_export.json"
@@ -79,16 +80,16 @@ def test_same_timestamp_document_turns_keep_distinguishable_owners() -> None:
     assert not resolution.ambiguous_keys
 
 
-def _drifts_as_unseen(payload: dict[str, Any]) -> bool:
-    resolution = SchemaRegistry().resolve_payload(Provider.GEMINI.value, payload)
-    assert resolution is not None
-    return (
-        classify_schema_drift(
-            resolution_reason=resolution.reason,
-            is_valid=True,
-            drift_warnings=(),
-        )
-        is UNSEEN_SHAPE
+def _retained_drift_verdict(payload: dict[str, Any], tmp_path: Path) -> RetainedValidationVerdict:
+    source = tmp_path / "drive-export.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    return validate_retained_document(
+        Provider.GEMINI,
+        source,
+        mode=ValidationMode.ADVISORY,
+        raw_id="raw-drive",
+        revision_sha256="d" * 64,
+        evidence_id="raw-drive",
     )
 
 
@@ -116,10 +117,11 @@ _CURRENT_SHAPE_VARIANTS: list[tuple[str, dict[str, Any]]] = [
 ]
 
 # The currency lock above is worthless if the package answers "known" to
-# everything. Each of these must stay unseen_shape: the committed package
+# everything. Each of these must keep an unresolved schema: the committed package
 # recognizes the current export through its ``chunkedPrompt`` anchor, so
 # removing that anchor -- or presenting a different provider's document -- must
-# fall back to the package default.
+# fall back to the package default. Invalid records take field_changed
+# precedence over that unresolved shape on retained validation.
 _STILL_UNSEEN: list[tuple[str, dict[str, Any]]] = [
     ("unshipped shape", {"somethingGoogleHasNotShippedYet": {"nested": [1, 2, 3]}}),
     ("anchor omitted", {k: v for k, v in _export([{"role": "user", "text": "t"}]).items() if k != "chunkedPrompt"}),
@@ -130,16 +132,20 @@ _STILL_UNSEEN: list[tuple[str, dict[str, Any]]] = [
 
 
 @pytest.mark.parametrize("label,payload", _CURRENT_SHAPE_VARIANTS, ids=[label for label, _ in _CURRENT_SHAPE_VARIANTS])
-def test_current_chunked_prompt_shape_resolves_to_a_committed_candidate(label: str, payload: dict[str, Any]) -> None:
+def test_current_chunked_prompt_shape_resolves_to_a_committed_candidate(
+    label: str, payload: dict[str, Any], tmp_path: Path
+) -> None:
     """polylogue-tu1f: the committed package knows the current export shape."""
     resolution = SchemaRegistry().resolve_payload(Provider.GEMINI.value, payload)
 
     assert resolution is not None
     assert resolution.reason != "package_default"
-    assert not _drifts_as_unseen(payload)
+    verdict = _retained_drift_verdict(payload, tmp_path)
+    assert verdict.schema_resolution is not None and verdict.schema_resolution.reason != "package_default"
+    assert verdict.drift_observation is None or verdict.drift_observation.classification != UNSEEN_SHAPE
 
 
-def test_checked_in_current_export_is_a_production_parser_and_schema_canary() -> None:
+def test_checked_in_current_export_is_a_production_parser_and_schema_canary(tmp_path: Path) -> None:
     """The privacy-safe fixture must exercise both production decisions.
 
     Keeping detection/parse and schema resolution on one checked-in payload
@@ -158,14 +164,9 @@ def test_checked_in_current_export_is_a_production_parser_and_schema_canary() ->
     resolution = SchemaRegistry().resolve_payload(Provider.GEMINI.value, payload)
     assert resolution is not None
     assert resolution.reason != "package_default"
-    assert (
-        classify_schema_drift(
-            resolution_reason=resolution.reason,
-            is_valid=True,
-            drift_warnings=(),
-        )
-        is not UNSEEN_SHAPE
-    )
+    verdict = _retained_drift_verdict(payload, tmp_path)
+    assert verdict.schema_resolution is not None and verdict.schema_resolution.reason != "package_default"
+    assert verdict.drift_observation is None or verdict.drift_observation.classification != UNSEEN_SHAPE
 
 
 def test_committed_gemini_schema_declares_current_shape_without_fixture_values() -> None:
@@ -207,9 +208,14 @@ def test_committed_gemini_schema_declares_current_shape_without_fixture_values()
 
 
 @pytest.mark.parametrize("label,payload", _STILL_UNSEEN, ids=[label for label, _ in _STILL_UNSEEN])
-def test_a_shape_without_the_anchor_still_classifies_as_unseen(label: str, payload: dict[str, Any]) -> None:
+def test_a_shape_without_the_anchor_is_unresolved_on_retained_validation(
+    label: str, payload: dict[str, Any], tmp_path: Path
+) -> None:
     """The currency lock above must not have been bought by calling everything known."""
-    assert _drifts_as_unseen(payload)
+    verdict = _retained_drift_verdict(payload, tmp_path)
+    assert verdict.schema_resolution is not None and verdict.schema_resolution.reason == "package_default"
+    assert verdict.drift_observation is not None
+    assert verdict.drift_observation.classification in {UNSEEN_SHAPE, FIELD_CHANGED}
 
 
 def test_zero_message_drive_document_never_becomes_a_session() -> None:
@@ -221,7 +227,7 @@ def test_zero_message_drive_document_never_becomes_a_session() -> None:
         "synthetic-drive-session",
     )
 
-    kept = require_positive_conversational_evidence(
+    kept = admit_parsed_sessions_for_publication(
         [stub, real],
         provider=Provider.GEMINI,
         source_path="/drive-cache/gemini/synthetic.json",

@@ -22,6 +22,7 @@ import pytest
 from click.testing import CliRunner
 
 from tests.infra.daemon_operations import DaemonOperationStack, running_daemon_operations
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import SessionBuilder
 
 pytestmark = pytest.mark.uses_real_clock(
@@ -213,7 +214,8 @@ def _seed_evidence_archive(root: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     with ArchiveStore(root) as archive_db:
-        archive_db.write_raw_and_parsed(
+        write_fixture_index_session(
+            archive_db._conn,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="evidence-parity",
@@ -258,9 +260,7 @@ def _seed_evidence_archive(root: Path) -> None:
                     ),
                 ],
             ),
-            payload=b'{"raw": "claude payload"}',
-            source_path="/tmp/evidence-parity.jsonl",
-            acquired_at_ms=1735689600000,
+            archive_root=archive_db.index_db_path.parent,
         )
 
 
@@ -378,19 +378,7 @@ def test_find_then_read_transcript_survives_daemon_proxied_keyword_search(
     golden_parity_workspace: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression for polylogue-ajmu.
-
-    ``find QUERY then read --view transcript`` (default plain-text rendering,
-    the "summary"/"transcript" views' shared query-set renderer) used to crash
-    with ``KeyError: 'rank'`` once a daemon was reachable and the query was a
-    keyword FTS search rather than an exact session ref -- even with exactly
-    one matching session, no disambiguation involved. Root cause: the daemon's
-    ``_archive_search_hit_payload`` (``daemon/http.py``) put ``rank`` as a
-    top-level sibling of ``session``/``match``, while the shared text renderer
-    ``_hit_line`` (``cli/archive_query.py``) -- and every other search-hit
-    producer (direct CLI ``_hit_payload``, MCP ``archive_search_hit_payload``)
-    -- reads ``match["rank"]``.
-    """
+    """Daemon-ranked match references remain readable through query-set transcript rendering."""
     archive_root = golden_parity_workspace["archive_root"]
     from polylogue.cli import cli
 

@@ -110,6 +110,10 @@ CLASSIFICATION_VOCABULARY: dict[str, str] = {
         "inside the producer, guarded so it can only move a NULL or a declared "
         "placeholder to a real value -- never overwrite a confident one"
     ),
+    "private_witness_hydration": (
+        "exact original baseline images restored only into the creator-owned private Native witness "
+        "before capture, never an archive mutation or refinement"
+    ),
     "deliberate_redaction": "operator-invoked destruction of content, not correction of a producer's output",
     "two_phase_recovery": "crash recovery for a two-phase commit against checksum-validated prepared evidence",
     "finite_actuator": (
@@ -149,7 +153,349 @@ CLASSIFICATION_VOCABULARY: dict[str, str] = {
 #: Classifications whose presence in the declaration is itself a violation.
 FORBIDDEN_CLASSIFICATIONS: frozenset[str] = frozenset({"masking_backfill"})
 
+# This adjudication covers one reviewed baseline seed replacement, not a
+# general exemption for scratch connections or methods with private names.
+_PRIVATE_WITNESS_HYDRATION_SITES = frozenset(
+    {
+        "polylogue/storage/sqlite/reference_seal.py::PreparedIndexMutation._seed_source_controls::?::delete::1",
+    }
+)
+
 _SQL_EXECUTION_METHODS = frozenset({"execute", "executemany", "executescript"})
+
+
+@dataclass(frozen=True)
+class SQLExecution:
+    """The actual operand and connection of one evidenced execution call."""
+
+    argument: ast.expr
+    receiver: ast.expr
+
+
+_NATIVE_CURSOR = "polylogue.storage.io_phase_metrics.connection_cursor"
+_NATIVE_SEAL = "polylogue.storage.sqlite.reference_seal.PreparedIndexMutation"
+_NATIVE_SEAL_SQL = {
+    "_owned_cursor": (1, "sql", 0),
+    "_source_statement_attempt": (0, "sql", None),
+    "source_statement": (0, "sql", None),
+    "user_statement": (0, "sql", None),
+    "_selected_statement": (0, "sql", None),
+    "original_rows": (1, "sql", None),
+    "source_rows": (0, "sql", None),
+    "user_rows": (0, "sql", None),
+    "_selected_rows": (0, "sql", None),
+    "before_index_input": (2, "rowid_sql", None),
+}
+
+
+def sql_execution_calls(tree: ast.AST, *, relative: str = "") -> dict[ast.Call, SQLExecution]:
+    """Observe the finite Native SQL family without granting SQL authority.
+
+    Imported aliases, actual seal annotations and the canonical seal's own
+    methods establish helper ownership. An unrelated object with the same
+    method name is not evidence. Direct SQLite calls keep their existing law.
+    """
+    module_nodes = walk_module(tree)
+    calls = tuple(node for node in module_nodes if isinstance(node, ast.Call))
+    cursor_aliases = {
+        alias.asname or alias.name
+        for node in module_nodes
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+        if f"{node.module}.{alias.name}" == _NATIVE_CURSOR
+    }
+    result: dict[ast.Call, SQLExecution] = {}
+    for call in calls:
+        if isinstance(call.func, ast.Attribute) and call.func.attr in _SQL_EXECUTION_METHODS:
+            parameter = "sql_script" if call.func.attr == "executescript" else "sql"
+            argument = next((item.value for item in call.keywords if item.arg == parameter), None)
+            if argument is None and call.args:
+                argument = call.args[0]
+            if argument is not None:
+                result[call] = SQLExecution(argument, call.func.value)
+    # Ordinary SQLite calls need no imported-Native lexical ownership proof.
+    # Reuse the existing cached walk rather than traverse every lexical scope
+    # for modules that cannot invoke any member of this finite helper family.
+    if not any(
+        isinstance(call.func, ast.Name)
+        and call.func.id in cursor_aliases
+        or isinstance(call.func, ast.Attribute)
+        and call.func.attr in {*_NATIVE_SEAL_SQL, "connection_cursor"}
+        for call in calls
+    ):
+        return result
+
+    comprehensions = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+    def definition_inputs(node: ast.AST) -> Iterator[ast.AST]:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            yield from node.args.defaults
+            yield from (value for value in node.args.kw_defaults if value is not None)
+            arguments = (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+            if node.args.vararg:
+                arguments += (node.args.vararg,)
+            if node.args.kwarg:
+                arguments += (node.args.kwarg,)
+            yield from (formal.annotation for formal in arguments if formal.annotation is not None)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                yield from node.decorator_list
+                if node.returns:
+                    yield node.returns
+        elif isinstance(node, ast.ClassDef):
+            yield from node.decorator_list
+            yield from node.bases
+            yield from (keyword.value for keyword in node.keywords)
+
+    def body_children(node: ast.AST) -> Iterator[ast.AST]:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            yield from node.body
+        elif isinstance(node, ast.Lambda):
+            yield node.body
+        elif isinstance(node, comprehensions):
+            # The first iterable executes outside the comprehension scope.
+            yield node.generators[0].target
+            yield from node.generators[0].ifs
+            yield from node.generators[1:]
+            if isinstance(node, ast.DictComp):
+                yield node.key
+                yield node.value
+            else:
+                yield node.elt
+        else:
+            yield from ast.iter_child_nodes(node)
+
+    def outer_comprehension_bindings(root: ast.AST) -> Iterator[ast.NamedExpr]:
+        if isinstance(root, ast.NamedExpr) and isinstance(root.target, ast.Name):
+            yield root
+        for child in ast.iter_child_nodes(root):
+            if not isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
+                yield from outer_comprehension_bindings(child)
+
+    def nodes(root: ast.AST) -> Iterator[ast.AST]:
+        yield root
+        for child in body_children(root):
+            if isinstance(
+                child,
+                ast.FunctionDef
+                | ast.AsyncFunctionDef
+                | ast.ClassDef
+                | ast.Lambda
+                | ast.ListComp
+                | ast.SetComp
+                | ast.DictComp
+                | ast.GeneratorExp,
+            ):
+                # Definition-time operands belong here, bodies to their own scope.
+                yield child
+                for expression in definition_inputs(child):
+                    yield from nodes(expression)
+                if isinstance(child, comprehensions):
+                    yield from nodes(child.generators[0].iter)
+                    yield from outer_comprehension_bindings(child)
+            else:
+                yield from nodes(child)
+
+    def qualified(expression: ast.AST | None, imports: Mapping[str, str]) -> str | None:
+        if isinstance(expression, ast.Name):
+            return imports.get(expression.id)
+        if isinstance(expression, ast.Attribute):
+            parent = qualified(expression.value, imports)
+            return f"{parent}.{expression.attr}" if parent else None
+        return None
+
+    def seal_annotation(expression: ast.AST | None, imports: Mapping[str, str]) -> bool:
+        if isinstance(expression, ast.Constant) and isinstance(expression.value, str):
+            try:
+                expression = ast.parse(expression.value, mode="eval").body
+            except SyntaxError:
+                return False
+        if isinstance(expression, ast.BinOp) and isinstance(expression.op, ast.BitOr):
+            return (
+                seal_annotation(expression.left, imports)
+                and isinstance(expression.right, ast.Constant)
+                and expression.right.value is None
+            ) or (
+                seal_annotation(expression.right, imports)
+                and isinstance(expression.left, ast.Constant)
+                and expression.left.value is None
+            )
+        return qualified(expression, imports) == _NATIVE_SEAL
+
+    def operand(call: ast.Call, index: int, name: str) -> ast.expr | None:
+        return next((item.value for item in call.keywords if item.arg == name), None) or (
+            call.args[index] if len(call.args) > index else None
+        )
+
+    def visit(
+        root: ast.AST,
+        inherited: dict[str, str],
+        owners: set[str],
+        native_class: bool = False,
+        annotation_imports: Mapping[str, str] | None = None,
+    ) -> None:
+        imports = dict(inherited)
+        bindings = set(owners)
+        scoped = tuple(nodes(root))
+        # Evidence belongs to one lexical scope. Every binding must agree;
+        # constructor assignments cannot undo a loop/handler/pattern rebind.
+        stored: set[str] = set()
+        assignment_values: dict[str, list[ast.expr | None]] = {}
+        constructor_targets: set[ast.Name] = set()
+        import_values: dict[str, list[str]] = {}
+        for node in scoped:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        assignment_values.setdefault(target.id, []).append(node.value)
+                        constructor_targets.add(target)
+            elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and isinstance(node.target, ast.Name):
+                assignment_values.setdefault(node.target.id, []).append(node.value)
+                constructor_targets.add(node.target)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                for alias in node.names:
+                    import_values.setdefault(alias.asname or alias.name, []).append(f"{node.module}.{alias.name}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    import_values.setdefault(alias.asname or alias.name.split(".")[0], []).append(
+                        alias.name if alias.asname else alias.name.split(".")[0]
+                    )
+            elif (
+                isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+                and node is not root
+                or isinstance(node, ast.ExceptHandler)
+                and node.name
+                or isinstance(node, ast.MatchAs | ast.MatchStar)
+                and node.name
+            ):
+                bound_name = node.name
+                if bound_name is not None:
+                    stored.add(bound_name)
+            elif isinstance(node, ast.MatchMapping) and node.rest:
+                stored.add(node.rest)
+        for node in scoped:
+            if (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Store | ast.Del)
+                and node not in constructor_targets
+            ):
+                stored.add(node.id)
+        rebound = stored | assignment_values.keys() | import_values.keys()
+        for name in rebound:
+            imports.pop(name, None)
+            bindings.discard(name)
+        for name, values in import_values.items():
+            if name not in stored and name not in assignment_values and len(set(values)) == 1:
+                imports[name] = values[0]
+        if relative == "polylogue/storage/sqlite/reference_seal.py" and isinstance(root, ast.Module):
+            imports["PreparedIndexMutation"] = _NATIVE_SEAL
+        unknown_formals: set[str] = set()
+        if isinstance(root, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            positional = (*root.args.posonlyargs, *root.args.args)
+            arguments = (*positional, *root.args.kwonlyargs)
+            annotated = {
+                formal.arg
+                for formal in arguments
+                if seal_annotation(formal.annotation, inherited if annotation_imports is None else annotation_imports)
+            }
+            if (
+                native_class
+                and positional
+                and isinstance(root, ast.FunctionDef | ast.AsyncFunctionDef)
+                and not any(
+                    isinstance(decorator, ast.Name) and decorator.id in {"staticmethod", "classmethod"}
+                    for decorator in root.decorator_list
+                )
+            ):
+                annotated.add(positional[0].arg)
+            if root.args.vararg:
+                arguments += (root.args.vararg,)
+            if root.args.kwarg:
+                arguments += (root.args.kwarg,)
+            for formal in arguments:
+                imports.pop(formal.arg, None)
+                bindings.discard(formal.arg)
+                if formal.arg in annotated:
+                    if formal.arg not in rebound:
+                        bindings.add(formal.arg)
+                else:
+                    unknown_formals.add(formal.arg)
+        for name, assigned_operands in assignment_values.items():
+            if (
+                name not in stored
+                and name not in unknown_formals
+                and name not in import_values
+                and assigned_operands
+                and all(
+                    isinstance(value, ast.Call)
+                    and qualified(value.func, imports) in {_NATIVE_SEAL, _NATIVE_SEAL + ".source_only"}
+                    for value in assigned_operands
+                )
+            ):
+                bindings.add(name)
+        for node in scoped:
+            if not isinstance(node, ast.Call):
+                continue
+            argument: ast.expr | None = None
+            receiver: ast.expr | None = None
+            if isinstance(node.func, ast.Attribute) and node.func.attr in _SQL_EXECUTION_METHODS:
+                argument = operand(node, 0, "sql_script" if node.func.attr == "executescript" else "sql")
+                receiver = node.func.value
+            elif qualified(node.func, imports) == _NATIVE_CURSOR:
+                argument = operand(node, 1, "sql")
+                receiver = operand(node, 0, "connection")
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in bindings
+                and node.func.attr in _NATIVE_SEAL_SQL
+            ):
+                index, parameter, connection_index = _NATIVE_SEAL_SQL[node.func.attr]
+                argument = operand(node, index, parameter)
+                receiver = (
+                    operand(node, connection_index, "connection") if connection_index is not None else node.func.value
+                )
+            if argument is not None and receiver is not None:
+                result[node] = SQLExecution(argument, receiver)
+
+        def dispatch(child: ast.AST) -> None:
+            runtime_imports = inherited if isinstance(root, ast.ClassDef) else imports
+            runtime_owners = owners if isinstance(root, ast.ClassDef) else bindings
+            if isinstance(child, ast.ClassDef):
+                visit(
+                    child,
+                    runtime_imports,
+                    runtime_owners,
+                    relative == "polylogue/storage/sqlite/reference_seal.py"
+                    and isinstance(root, ast.Module)
+                    and child.name == "PreparedIndexMutation",
+                )
+            elif isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                visit(
+                    child,
+                    runtime_imports,
+                    runtime_owners,
+                    native_class and isinstance(root, ast.ClassDef),
+                    annotation_imports=imports,
+                )
+            elif isinstance(child, ast.Lambda | ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp):
+                visit(child, runtime_imports, runtime_owners, annotation_imports=imports)
+            else:
+                children(child)
+                return
+            for expression in definition_inputs(child):
+                dispatch(expression)
+            if isinstance(child, comprehensions):
+                dispatch(child.generators[0].iter)
+
+        def children(node: ast.AST) -> None:
+            for child in body_children(node):
+                dispatch(child)
+
+        children(root)
+
+    visit(tree, {}, set())
+    return result
+
 
 _CREATE_TABLE_RE = re.compile(
     r"CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`\"\[]?([A-Za-z_][A-Za-z0-9_]*)",
@@ -402,7 +748,9 @@ def _literal_string_sequence(expression: ast.AST, values: Mapping[str, tuple[str
 _BINDING_NODES = (ast.Assign, ast.AnnAssign, ast.For, ast.AsyncFor)
 
 
-def _string_values(tree: ast.Module) -> dict[str, tuple[str, ...]]:
+def _string_values(
+    tree: ast.Module, *, initial: Mapping[str, tuple[str, ...]] | None = None
+) -> dict[str, tuple[str, ...]]:
     """Resolve string-valued names to a fixpoint (3 passes suffice).
 
     Two namespaces share the mapping: a bare name resolves to the statement
@@ -410,7 +758,7 @@ def _string_values(tree: ast.Module) -> dict[str, tuple[str, ...]]:
     string sequence it is bound to, which is what lets a ``for table in (...)``
     target expand.
     """
-    values: dict[str, tuple[str, ...]] = {}
+    values: dict[str, tuple[str, ...]] = dict(initial or {})
     bindings = [node for node in walk_module(tree) if isinstance(node, _BINDING_NODES)]
     for _ in range(3):
         for node in bindings:
@@ -475,6 +823,28 @@ def _string_parameter_names(function: ast.AST | None) -> frozenset[str]:
         if argument.annotation is None or _is_string_annotation(argument.annotation):
             names.add(argument.arg)
     return frozenset(names)
+
+
+def _sql_fragments(
+    expression: ast.AST, values: Mapping[str, tuple[str, ...]], function: ast.AST | None
+) -> tuple[str, ...]:
+    """Keep caller operands distinct from another scope's literal bindings."""
+    if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+        arguments = function.args
+        parameters = {item.arg for item in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)}
+        if arguments.vararg is not None:
+            parameters.add(arguments.vararg.arg)
+        if arguments.kwarg is not None:
+            parameters.add(arguments.kwarg.arg)
+        # A local operand also shadows literals collected in other functions.
+        # Resolve this function's own bindings only after removing those names.
+        locals_ = {
+            node.id for node in ast.walk(function) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        }
+        shadowed = parameters | locals_
+        values = {name: fragments for name, fragments in values.items() if name.removeprefix("[]") not in shadowed}
+        values = _string_values(ast.Module(body=function.body, type_ignores=[]), initial=values)
+    return _fragments(expression, values)
 
 
 def _is_string_annotation(annotation: ast.AST) -> bool:
@@ -607,15 +977,11 @@ def _writes_archive_table(
     its own relations (a parser's spill database, a browser-capture registry)
     is not an archive writer, and its private tables are not archive state.
     """
+    executions = sql_execution_calls(tree)
     for node in walk_module(tree):
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in _SQL_EXECUTION_METHODS
-            and node.args
-        ):
+        if not isinstance(node, ast.Call) or (execution := executions.get(node)) is None:
             continue
-        for text in _fragments(node.args[0], values):
+        for text in _fragments(execution.argument, values):
             if any(match.group("table") in table_tiers for match in _REWRITE_RE.finditer(text)):
                 return True
     return False
@@ -854,25 +1220,21 @@ def _index_foreign_key_cleanup_helpers(
         ):
             continue
         parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        executions = sql_execution_calls(tree, relative=relative)
         candidates: dict[str, list[bool]] = {}
         for call in walk_module(tree):
-            if not (
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Attribute)
-                and call.func.attr in _SQL_EXECUTION_METHODS
-                and call.args
-            ):
+            if not isinstance(call, ast.Call) or (execution := executions.get(call)) is None:
                 continue
             if not any(
                 table == UNRESOLVED_TABLE
-                for text in _fragments(call.args[0], values)
+                for text in _fragments(execution.argument, values)
                 for table, _kind, _tier in _classify_statement(text, table_tiers={})
             ):
                 continue
             qualified, function = scopes.get(call, ("<module>", None))
             if function is None:
                 continue
-            identifiers = _dynamic_sql_identifiers(call.args[0])
+            identifiers = _dynamic_sql_identifiers(execution.argument)
             proven = False
             ancestor = parents.get(call)
             while ancestor is not None and ancestor is not function:
@@ -881,25 +1243,24 @@ def _index_foreign_key_cleanup_helpers(
                     and (origin := _metadata_loop_connection(ancestor, function)) is not None
                 ):
                     connection, row = origin
-                    if ast.dump(connection) == ast.dump(call.func.value) and identifiers:
+                    if ast.dump(connection) == ast.dump(execution.receiver) and identifiers:
                         proven = all(_metadata_identifier(identifier, ancestor, row=row) for identifier in identifiers)
                         if proven and row:
                             # The catalog route must inspect the FK metadata of
                             # this very table on this very connection too.
                             proven = any(
                                 isinstance(query, ast.Call)
-                                and isinstance(query.func, ast.Attribute)
-                                and query.func.attr == "execute"
-                                and query.args
-                                and ast.dump(query.func.value) == ast.dump(connection)
-                                and isinstance(query.args[0], ast.JoinedStr)
+                                and (metadata_execution := executions.get(query)) is not None
+                                and ast.dump(metadata_execution.receiver) == ast.dump(connection)
+                                and isinstance(metadata_execution.argument, ast.JoinedStr)
                                 and any(
-                                    "PRAGMA foreign_key_list(" in text for text in _fragments(query.args[0], values)
+                                    "PRAGMA foreign_key_list(" in text
+                                    for text in _fragments(metadata_execution.argument, values)
                                 )
                                 and any(
                                     isinstance(part, ast.FormattedValue)
                                     and _metadata_identifier(part.value, ancestor, row=True)
-                                    for part in query.args[0].values
+                                    for part in metadata_execution.argument.values
                                 )
                                 for query in ast.walk(ancestor)
                             )
@@ -968,19 +1329,19 @@ class DurableWriteCensus:
         if not _is_archive_storage_module(relative) and not _writes_archive_table(tree, values, table_tiers):
             return
         scopes = _scopes(tree)
+        executions = sql_execution_calls(tree, relative=relative)
         memory_connections = _memory_connection_names(tree, scopes)
         for node in walk_module(tree):
             if not isinstance(node, ast.Call):
                 continue
-            if not isinstance(node.func, ast.Attribute) or node.func.attr not in _SQL_EXECUTION_METHODS:
-                continue
-            if not node.args:
+            execution = executions.get(node)
+            if execution is None:
                 continue
             scope, function = scopes.get(node, ("<module>", None))
             qualified = scope if scope != "<module>" else "<module>"
-            argument = node.args[0]
-            statements = _fragments(argument, values)
-            receiver = node.func.value
+            argument = execution.argument
+            statements = _sql_fragments(argument, values, function)
+            receiver = execution.receiver
             for statement in statements:
                 for creation in _runtime_table_creations(
                     relative=relative,
@@ -998,12 +1359,20 @@ class DurableWriteCensus:
             self._runtime_persistent_tables = frozenset(
                 creation.table for creation in self._runtime_creations.values() if creation.disposition == "persistent"
             )
-        runtime_persistent_tables = self._runtime_persistent_tables
         table_tiers = self._table_tiers
         sites = self._sites
         helpers = self._helpers
         values = _string_values(tree)
+        # Private modules cannot acquire archive authority from another
+        # creator that happens to use the same relation name. Match the
+        # runtime-DDL observation boundary before classifying rewrites.
+        runtime_persistent_tables = (
+            self._runtime_persistent_tables
+            if _is_archive_storage_module(relative) or _writes_archive_table(tree, values, table_tiers)
+            else frozenset()
+        )
         scopes = _scopes(tree)
+        executions = sql_execution_calls(tree, relative=relative)
         self._paths[relative] = path
         self._called_names[relative] = frozenset(
             node.func.id if isinstance(node.func, ast.Name) else node.func.attr
@@ -1018,14 +1387,13 @@ class DurableWriteCensus:
             key=lambda call: (call.lineno, call.col_offset),
         )
         for node in calls:
-            if not isinstance(node.func, ast.Attribute) or node.func.attr not in _SQL_EXECUTION_METHODS:
-                continue
-            if not node.args:
+            execution = executions.get(node)
+            if execution is None:
                 continue
             scope, function = scopes.get(node, ("<module>", None))
             qualified = scope if scope != "<module>" else "<module>"
-            argument = node.args[0]
-            statements = _fragments(argument, values)
+            argument = execution.argument
+            statements = _sql_fragments(argument, values, function)
             if not statements:
                 if isinstance(argument, ast.Name) and argument.id in _string_parameter_names(function):
                     helper = HelperSite(
@@ -1199,6 +1567,77 @@ def load_declaration(path: Path) -> CensusDeclaration:
     )
 
 
+def _private_witness_hydration_valid(path: Path) -> bool:
+    """Recognize only the reviewed seed restoration, never arbitrary scratch DML."""
+    tree = parse_path(path)
+    owner = next(
+        (node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PreparedIndexMutation"), None
+    )
+    if owner is None:
+        return False
+    function = next(
+        (node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == "_seed_source_controls"),
+        None,
+    )
+    if function is None:
+        return False
+    body = function.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    if len(body) != 1 or not isinstance(body[0], ast.For):
+        return False
+    loop = body[0]
+
+    def same(node: ast.AST, source: str, *, expression: bool = False) -> bool:
+        expected = ast.parse(source, mode="eval").body if expression else ast.parse(source).body[0]
+        return ast.dump(node) == ast.dump(expected)
+
+    if (
+        not isinstance(loop.target, ast.Name)
+        or loop.target.id != "table"
+        or not same(loop.iter, "('raw_existence_journal_control', 'audit_continuity_control')", expression=True)
+        or loop.orelse
+        or len(loop.body) != 4
+    ):
+        return False
+    retained, missing, identity, hydration = loop.body
+    if not same(retained, "image = self.retain_tier_row('source', table, 1)"):
+        return False
+    if (
+        not isinstance(missing, ast.If)
+        or not same(missing.test, "image is None", expression=True)
+        or missing.orelse
+        or len(missing.body) != 1
+        or not isinstance(missing.body[0], ast.Raise)
+    ):
+        return False
+    if not same(identity, "image_id = self._retain_row_image(image)"):
+        return False
+    if (
+        not isinstance(hydration, ast.With)
+        or len(hydration.items) != 1
+        or hydration.items[0].optional_vars is not None
+        or not same(hydration.items[0].context_expr, "self._source_hydration()", expression=True)
+        or len(hydration.body) != 3
+    ):
+        return False
+    deletion, restoration, metadata = hydration.body
+    expected_delete = (
+        'with self._owned_cursor(self._scratch, f"DELETE FROM {quote_identifier(table)} WHERE rowid=1"):\n    pass'
+    )
+    expected_metadata = 'with self._owned_cursor(self._scratch, "INSERT INTO temp.polylogue_source_stage_rows(table_name,physical_rowid,input_image) VALUES (?,?,?)", (table, 1, image_id)):\n    pass'
+    return (
+        same(deletion, expected_delete)
+        and same(restoration, "self._source_image_insert(image)")
+        and same(metadata, expected_metadata)
+    )
+
+
 def collect_violations(
     *,
     repo_root: Path,
@@ -1351,6 +1790,17 @@ def collect_violations(
                     "file": site.file,
                     "line": site.line,
                     "detail": CLASSIFICATION_VOCABULARY[entry.classification],
+                }
+            )
+        if entry.classification == "private_witness_hydration" and (
+            key not in _PRIVATE_WITNESS_HYDRATION_SITES or not _private_witness_hydration_valid(repo_root / entry.file)
+        ):
+            violations.append(
+                {
+                    "rule": "private_witness_hydration_site_invalid",
+                    "key": key,
+                    "file": site.file,
+                    "detail": "classification requires the reviewed private scratch receiver, exact seeded tables/rowid, original retained image and hydration/restoration order",
                 }
             )
         if not entry.reason:

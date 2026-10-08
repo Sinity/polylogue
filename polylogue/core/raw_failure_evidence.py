@@ -8,10 +8,23 @@ source that may progress from a payload that has reached a terminal refusal.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
 from polylogue.core.enums import ArtifactSupportStatus
+
+
+class MissingProfileIdentityError(ValueError):
+    """Retained Hermes bytes have no acquisition-bound profile qualifier."""
+
+    outcome_code = "missing_profile_identity"
+
+
+class RetainedZipMembershipUnprovedError(ValueError):
+    """Retained ZIP bytes lack a proved acquired namespace and complete member set."""
+
+    outcome_code = "retained_zip_membership_unproved"
 
 
 class RawFailureEvidenceKind(StrEnum):
@@ -26,11 +39,15 @@ class RawFailureEvidenceKind(StrEnum):
     TERMINAL_UNKNOWN_EXPORT_NO_SESSION = "terminal_unknown_export_no_session"
     TERMINAL_UNSUPPORTED_SHAPE = "terminal_unsupported_shape"
     TERMINAL_MISSING_SOURCE_COORDINATES = "terminal_missing_source_coordinates"
+    TERMINAL_MISSING_PROFILE_IDENTITY = "terminal_missing_profile_identity"
+    TERMINAL_RETAINED_ZIP_MEMBERSHIP_UNPROVED = "terminal_retained_zip_membership_unproved"
 
     @property
     def support_status(self) -> ArtifactSupportStatus:
         if self in {
             RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER,
+            RawFailureEvidenceKind.TERMINAL_MISSING_PROFILE_IDENTITY,
+            RawFailureEvidenceKind.TERMINAL_RETAINED_ZIP_MEMBERSHIP_UNPROVED,
             RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES,
         }:
             return ArtifactSupportStatus.UNKNOWN
@@ -81,6 +98,17 @@ RAW_FAILURE_VALIDATION_FAILURE_KINDS = frozenset(
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE.value,
     }
 )
+
+
+class RetainedRawDecodeRefusalError(ValueError):
+    """Current durable decode evidence refuses this retained input permanently."""
+
+    def __init__(self, raw_id: str, kind: RawFailureEvidenceKind, diagnostic: str) -> None:
+        if kind.value not in RAW_FAILURE_VALIDATION_FAILURE_KINDS:
+            raise ValueError("retained decode refusal requires terminal decode evidence")
+        self.raw_id = raw_id
+        self.kind = kind
+        super().__init__(diagnostic)
 
 
 def raw_failure_classification_reason(
@@ -202,6 +230,8 @@ RAW_FAILURE_TERMINAL_EVIDENCE_KINDS = frozenset(
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION.value,
         RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
         RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES.value,
+        RawFailureEvidenceKind.TERMINAL_MISSING_PROFILE_IDENTITY.value,
+        RawFailureEvidenceKind.TERMINAL_RETAINED_ZIP_MEMBERSHIP_UNPROVED.value,
     }
 )
 RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS = tuple(
@@ -253,9 +283,54 @@ __all__ = [
     "RAW_FAILURE_TRUSTED_PROVENANCE",
     "RAW_FAILURE_VALIDATION_FAILURE_KINDS",
     "RawFailureEvidenceKind",
+    "RetainedRawDecodeRefusalError",
     "has_trusted_raw_failure_provenance",
     "terminal_carrier_overwrite_predicate",
     "raw_failure_classification_reason",
     "raw_failure_outcome_code",
     "validated_raw_failure_evidence_kind",
 ]
+
+
+def retained_raw_decode_refusal_from_row(
+    raw_id: str, row: Sequence[object] | None
+) -> RetainedRawDecodeRefusalError | None:
+    """Validate the canonical current parser/artifact receipt projection."""
+    if row is None:
+        return None
+    kind = validated_raw_failure_evidence_kind(
+        row[0],
+        row[2],
+        validation_failed=row[3] == "failed",
+        classification_reason=row[4],
+        outcome_code=raw_failure_outcome_code(row[4]),
+    )
+    return None if kind is None else RetainedRawDecodeRefusalError(raw_id, kind, str(row[1]))
+
+
+class RetainedRawDependencyRefusalError(ValueError):
+    """A subject still requires an input with current durable decode refusal."""
+
+    def __init__(
+        self, subject_raw_id: str, logical_source_keys: tuple[str, ...], dependency: RetainedRawDecodeRefusalError
+    ) -> None:
+        self.subject_raw_id = subject_raw_id
+        self.logical_source_keys = logical_source_keys
+        self.dependency = dependency
+        super().__init__(f"{subject_raw_id} requires refused retained input {dependency.raw_id}")
+
+
+class CohortMembershipRefusalError(Exception):
+    """One selector member cannot be resolved for one logical source key.
+
+    This outcome names the original member and logical key that cannot be
+    prepared. A callback owner records it while publishing healthy independent
+    keys. A strict owner physically closes preparation and raises it before
+    publishing (polylogue-163ku).
+    """
+
+    def __init__(self, logical_source_key: str, raw_id: str, reason: str) -> None:
+        super().__init__(f"membership {raw_id}:{logical_source_key} refused: {reason}")
+        self.logical_source_key = logical_source_key
+        self.raw_id = raw_id
+        self.reason = reason

@@ -2,14 +2,252 @@
 
 ## Area boundary
 
+Post-ingest hook-paste enrichment reads admitted Source hook evidence and
+publishes Index paste markers through `open_isolated_write_connection` with
+its configured archive root. The factory enforces that root’s writer lease
+without relying on the global SQLite opener interceptor.
+
 Sources acquire bytes and identify their material source. Detection chooses a
-provider parser by input shape; the pipeline normalizes provider records into
-parsed sessions before the storage writer lowers them
-(`polylogue/sources/dispatch.py:1-80`; `CompiledDetectorRegistry.detect` in `polylogue/sources/detection.py:88-105`;
-`ingest_record` in
-`polylogue/pipeline/services/ingest_worker.py:1137-1226`; `_run_parse_plan`
-in the same file at `1037-1089`;
-`_materialize_parsed_sessions` in the same file at `896-959`).
+provider parser by input shape. `RawObservationConvergenceOwner` coordinates
+retained preparation through `RawObservationDerivation`; JSONL and non-JSON
+inputs use `prepare_retained_jsonl_artifact` and
+`prepare_retained_non_json_artifact` in `sources/revision_backfill.py`.
+The storage writer lowers their prepared sessions through
+`write_parsed_session_to_archive`.
+
+Document arrays use the same tightness-ordered document predicates for every
+member, including streamed detection. An unrelated fragment cannot claim a
+later complete document. Lowering streams all accepted documents and refuses
+complete documents from a different origin; browser envelopes retain each
+member's own declared provider. Gemini checkpoint logs keep their ordered fold,
+and Hermes ATOF records keep their grouped reducer. Bundle specs do not retain
+the complete decoded cohort.
+
+Grok account exports without native conversation IDs use the shared
+`idless_session_identity` vocabulary: selected opening turn and declared
+conversation creation time. The parser selects the earliest dated admitted
+turn, breaking ties by synthetic message ID. Undated replies cannot replace
+that dated anchor. When every admitted turn is undated, the smallest synthetic
+message ID supplies deterministic, reorder-stable selection; the available
+wire evidence does not establish the original opening or guarantee stability
+under every append. Arrival of earlier dated evidence can also change the
+anchor. Native endpoint bundles use their declared `conversationId` directly.
+The empty entry without admitted content or creation time keeps the existing
+acquisition fallback. No source-path identity, registry or archive migration
+is inferred from missing chronological evidence.
+
+Retained Codex state material preparation records its complete Source statements
+under the original preparation parent before the writer accepts them.
+Interruption during preparation accepts no material rows; replay publishes the
+complete material set without duplicates. Row and text pages bound work while
+preserving all content.
+
+The resolved runtime source set declares `codex-state` at `~/.codex/`, matching
+the daemon watcher and cold-build baseline for its database members,
+`session_index.jsonl`, and `history.jsonl`. Its layout admits only those named
+members; sessions and memories remain separately declared roots.
+
+For a same-path Codex JSONL cohort of at least four full or unknown-kind
+revisions, `RawObservationDerivation` may use prefix checkpoints only after
+proving each retained blob is the exact byte prefix of the next, every revision
+ends on a complete JSONL record, and the stream has one leading `session_meta`
+followed by supported explicit-ID plain-text messages. It prepares the smallest
+revision, the next-smallest matching revision and the head as independent
+canonical artifacts; one head scan derives each interior revision's own typed
+validation verdict in the configured mode. Unsupported shapes or a failed
+proof use ordinary retained preparation. APPEND revisions are outside this
+optimization (`storage/derived/raw.py`;
+`sources/prepared_codex_checkpoints.py`).
+
+On its first Source binding, `RawObservationDerivation` keeps the complete
+selected unit and its census/publication boundary, then detaches only the
+eligible Codex and Claude Code JSONL session inputs. It copies those primary
+CAS bytes while the original Source witness is current, then closes that
+witness before parser work and retained-schema validation. Other selected
+providers remain on the ordinary fresh-bound preparation path. Claude Code
+also captures the resolved `tool-results/` files and the sibling FULL/APPEND
+record chains used by the sidecar ownership index. A captured resolver reads
+only those private staged files and has no filesystem fallback. A fresh
+Source witness must reproduce the full selected raw set and logical keys,
+plus the exact eligible parser operands and Claude sidecar-scope witness,
+before current enrichment and publication are prepared. If that bind becomes
+stale during enrichment, a new Source witness repeats the comparison and
+reuses detached parser artifacts only when the eligible raws and their parser
+operands still match exactly; changed inputs are reparsed. The neutral
+retained enrichment also resolves any remaining persisted-output tool-result
+envelopes from matching `PostToolUse` rows in `raw_hook_events`. Those rows are
+selected by Claude origin, parent-or-session native ID, and tool-use ID through
+the same `PreparedSessionSourceRead` fence, then applied before content hashing.
+Recovery records the hook event identity and whether its payload is complete;
+it does not replace a result when the hook payload adds no text.
+The session's enrichment binding includes its matching PostToolUse rows, so a
+later hook publication makes the existing raw output stale for the normal Raw
+materialization owner to replay, including after restart or in a fresh Index.
+
+Detached artifacts contain no enrichment state (`storage/derived/raw.py`;
+`sources/sidecar_evidence.py`).
+
+## Source observation and SQLite reads
+
+`source_snapshot.py` publishes a declared root's complete member inventory or
+an unavailable result. Frontier member paths use the same captured root identity
+and kind as the observer. A declared database arriving after member discovery
+refuses the parent byte inventory; a fresh declaration pass observes it as one
+logical export. Byte members and candidate copies read an anchored,
+no-follow descriptor matching the enumerated inode; captured append prefixes
+keep that descriptor's size, hash and identity together. A spool handoff binds
+the new active generation at its creation and observes that exact generation
+for carry-forward arrivals.
+
+`sqlite_export.py` owns canonical logical exports, SQLite shape reads and
+existing staged-import backups and live Antigravity/Hermes import previews.
+Each runs in a fresh reader process. The
+parent anchors source-directory metadata and forwards the existing no-follow
+walk parent for directory members. The reader uses that descriptor as its
+working directory, opens SQLite and sidecars by relative URI, and proves the actual
+main descriptor before SQL, binds WAL/SHM descriptors after the first schema
+read and rechecks every source descriptor before closing the transaction.
+Initially absent sidecars bind only when their opened descriptor matches the
+current anchored name. Unknown or unlinked regular descriptors are refused;
+no database guard descriptor is opened and closed in the caller's process.
+
+`source_staging.py` owns `SourceInputBinding`, which keeps staged provenance,
+declaration, logical-table scope and routing with the accepted main identity.
+A narrow fresh-process operation reads provenance before opening SQLite;
+the parent never reads an ordinary metadata descriptor that could have been
+substituted with a database held by another reader. Present unreadable,
+invalid or mismatched provenance refuses acquisition. Only absence permits
+the ordinary source route. The actual reader proves the same main descriptor
+before SQL and checks the bound metadata before the operation and at its end.
+Acquisition results carry the accepted source coordinate through attribution
+and profile identity; retained exports use that durable coordinate directly.
+
+The physical canonical coordinate identifies the accepted open input. The
+semantic coordinate keeps its captured declared parent and basename, so an
+alias named `state.db` retains its declaration even when its target has a
+different name. Hermes acquisition separately captures the resolved declared
+profile namespace and its shared qualifier before retention. New raw identities
+use the captured namespace/member under the v3 domain; retained replay reads
+`raw_profile_identity_receipts` and never resolves a current filesystem alias.
+An older raw without a receipt reports `terminal_missing_profile_identity`,
+distinct from missing physical byte coordinates. Captured source-manifest
+members retain physical, semantic and profile evidence together.
+
+ZIP member publication and reacquisition require the captured container/member
+receipt and its exact ordinal, split index and addressing mode. Backup,
+restoration, integrity, debt and conservation readers never infer that namespace
+from a source-path suffix or a Raw ID. Loose filenames containing colons remain
+literal paths; a recorded member without its receipt is an explicit refusal.
+
+Staging publishes provenance and database through separate replacements.
+The provenance includes the backup owner's actual destination identity, so
+readers refuse the intermediate mismatch and a failed second replacement.
+A retry publishes a newly proved pair. Explicit stable root aliases resolve
+once to the accepted actual root. A contained regular-file alias is excluded
+only when its target is independently observed at an admitted coordinate with
+the same physical identity. The anchored walk rechecks the alias and target;
+external, dangling, nonregular, unselected, and changing aliases refuse the
+observation. Internal directory aliases are not followed.
+Configured frontier declarations exclude database members declared out of scope
+by the acquisition registry. The anchored walk applies that same declaration
+to regular members arriving after discovery; these projections are neither
+hashed nor demanded from `raw_sessions`. Admitted database members retain their
+canonical logical-export declarations, and declared raw-only evidence remains
+an acquisition obligation.
+
+Configured frontier discovery shares ordinary intake's metadata-only path exclusions
+(`pre_acquisition_path_exclusion`), including Hermes request dumps. Declared raw-only
+and fact artifact rules remain acquisition obligations; content-dependent JSONL and
+SQLite decisions are not guessed by that rule. The anchored snapshot applies the
+same exclusion before hashing arrivals or recording alias-target coverage.
+
+
+Exports retain their canonical bytes and declared logical-table scope. Pipe
+frames stream to the existing sink, with each callback acknowledged before the
+reader advances. A failed callback or final binding check leaves an unfinished
+operation: the blob writer discards its private staging file, digest callers
+raise, and a staged backup is not published. Transport memory is bounded by
+chunks; the existing canonical emitter still allocates an individual row and
+its encoded cells. No whole-export transport buffer or input limit is added.
+
+Ordinary byte acquisition lends one isolated reader to the caller's existing
+bounded input page. Each sequential request transfers its original source and
+metadata directory capabilities over a private ancillary channel. The child
+opens and proves that request's no-follow source, streams bytes with the same
+per-chunk ACK, then closes its file and received directory descriptors before
+request completion. It retains no byte or identity cache between requests.
+The page returns its frozen input tuple only after final process completion,
+EOF and actual reap; any request fault or cancellation kills and reaps that
+exact child before pipes, sockets or scratch retire. Empty pages allocate no
+reader. Standalone capture and preflight use the same owner for one input;
+logical SQLite export and its native custody stay in their separate fresh
+process. A retained ZIP allocates its disposition spool only on its first
+actual refusal or unselected member, keeping their original ordinal and
+completion laws.
+
+The descriptor census uses `/proc/self/fd` where present and otherwise scans
+the finite OS descriptor bound. Every regular reader descriptor belongs to
+an explicitly bound source role or backup destination. A VFS that opens an
+additional regular lock file needs that file's identity bound before the read
+can complete. Native Darwin VFS/proxy-lock qualification has not been run;
+no unknown descriptor is exempted as a guessed platform lock file.
+
+Import explain and SQLite preflight detect and parse on the same proved
+connection and read transaction. Named domain operations return counts,
+session references and fidelity evidence only after the final binding proof;
+they do not transport another transcript representation. Native live reads
+preserve the source's collation, affinity, views and rowid semantics. Retained
+logical exports retain ordinary and readable VIRTUAL/STORED generated column
+values, evaluated in the same acquisition snapshot with exact SQLite storage
+classes. Hidden virtual-table implementation columns remain excluded. Their
+private untyped reconstruction stores those acquired values; original DDL is
+evidence and generated expressions are never replayed. Reconstruction streams
+from the accepted export descriptor. SQLite preflight aggregates every
+trajectory through the production positive-conversational evidence gate;
+empty/degraded evidence remains a caveat, and a prefix cannot hide a later
+admitted session. Hermes verification reads every event/state row without a
+consumer row-count refusal. Its preview validates each row through the parser's
+existing transforms and aggregates fidelity counters, spilling Python session
+keys into a private BINARY-collated grouping database. It does not instantiate
+the ledger's parsed-event list. The public parser still returns its declared
+session list; the preview transports only its declared references and counts.
+Retained Hermes state parsing keeps the caller's immutable logical-export
+connection open while a first pass spills session identity, parent choice,
+own-message count and leaf coordinates into private SQLite scratch. A second
+pass parses each session into caller-owned message and event sinks, applying
+resolved continuation offsets and branch points before yielding it. This
+retained iterator keeps neither a session list nor a message list; the public
+parser's declared list API materializes only at that public boundary. Closing
+an unfinished iterator closes and removes its ancestry scratch.
+Explicit low-level connection-return readers retain their existing semantics;
+this guarantee covers the actual acquisition and import-preview operations.
+
+Antigravity trajectory parsing consumes the already-proved logical SQLite
+transaction. Its retained iterator writes messages and events into caller-owned
+prepared sinks, and spills trajectory identities, summary rows, aliases,
+parent references, and exceptional parse outcomes into the same prepared
+database. Parent-reference event arrays remain replayable streamed values with
+the original payload keys and ordering; unsupported-step events keep their
+complete per-step payloads. Cancellation closes the active source and grouping
+cursors, while the preparation owner controls scratch cleanup and lifetime.
+
+Retained non-JSON preparation creates its output store before SQLite parsing.
+`retained_sqlite.py` supplies both providers with that owner's message and event
+sinks; Antigravity grouping, parent arrays, and accounting share its connection.
+Each settled session is normalized, enriched, hashed, lowered into the shard,
+and written into the artifact before the iterator advances. The public source
+iterator and explicit resident replay API return independent models, copying
+complete arrays and accounting before closing scratch. These public collecting
+contracts still require memory for one complete session; fresh retained
+preparation does not call them.
+When its general provider parser admits a JSON document carried under a
+non-JSON filename, retained preparation validates the original blob in the
+configured mode and attaches that verdict to the sealed artifact. Schema-
+eligible inputs cannot reach Source finalization without this byte-bound
+validation evidence. Hermes SQLite state exports use their deterministic JSON
+marker projection for schema validation, with the verdict bound to the source
+database revision. Antigravity trajectory databases are validated by their
+strict native SQLite parser and are explicitly schema-ineligible as JSON.
 
 ## Detection and parse route
 
@@ -55,6 +293,19 @@ than it deserves lets an earlier parser claim its records; a binding may also
 declare `mode_rank` to take a different precedence in one payload mode than
 its origin-wide tightness (`polylogue/sources/detection.py:36-42`).
 
+Complete-stream detector projections live in `sources/detection_projection.py`.
+Each detector declares its selected fields and first/all/any folds through its
+existing parser and registry. Unselected material is still consumed and syntax
+validated; duplicate mapping keys keep their final value. Artifact candidacy
+uses the taxonomy's separate declared projection and complete record fold.
+Retained validation owns drift classification and deterministic field signatures.
+Its prepared verdict reaches the existing ops sampler after replay; telemetry
+failure does not gate publication. The drift vocabulary and observation payload
+remain shared with status readers.
+Diagnostic schema samples cannot choose a provider, discard a late session, or
+prove support for uninspected records. Canonical parsing validates the original
+full records and retains their exact decode/partial disposition.
+
 ## Identity vocabulary
 
 `Provider` names the older provider-wire family at acquisition/parser/schema
@@ -92,22 +343,40 @@ provider (`docs/provider-origin-identity.md:15-30`;
 - All ordinary ingest, replay, and reindex paths share the parsed-session
   write choke point (`write_parsed_session_to_archive` in
   `polylogue/storage/sqlite/archive_tiers/write.py:2119`).
-- Batch ingest keeps source membership and precedence checks read-only:
-  `_core.py` opens one read-only `source.db` handle per batch, and
-  `revision_authority_refuses_write` reads `raw_session_memberships` through
-  it, while index publication and later blob-publication receipt consumption
-  each open their own archive-root-bound write connection
-  (`_process_ingest_batch_sync` in
-  `polylogue/pipeline/services/ingest_batch/_core.py:3528-3543`;
-  `revision_authority_refuses_write` in
-  `polylogue/storage/sqlite/archive_tiers/ingest_precedence.py:182-277`;
-  `_open_sync_connection` in
-  `polylogue/pipeline/services/ingest_batch/_core.py:215-245`). After index
-  commit, `_process_ingest_batch_sync` opens the source-tier transaction with
-  `archive_root=archive_root` and calls `consume_blob_publication_receipt`
-  for each pending attachment receipt
-  (`polylogue/pipeline/services/ingest_batch/_core.py:3656-3673`;
-  `polylogue/storage/blob_publication.py:553-564`).
+- Full live ingestion acquires durable Raw inputs before the supplied resident
+  Raw owner prepares them. First ingestion and retained replay share
+  `RawObservationConvergenceOwner` and the original prepared Source and Index
+  witnesses. Preparation reads the retained membership, precedence, blob and
+  parser evidence before short admitted publication; the matching writer
+  consumes the prepared receipt. Physical cleanup stays with that preparation
+  creator through publication and failure.
+- Native browser membership can select a unique later provider snapshot when
+  its declared provider update time is strictly newer and it preserves every
+  older snapshot's provider message and attachment identities. Each older raw
+  is then independently recorded as superseded by that winner; no order is
+  inferred among mutually incomparable older snapshots. Tied or missing
+  provider times and missing identity evidence remain unresolved.
+- Hook-event carriers are raw-only for session classification, but remain
+  eligible for physical append acquisition. The first capture binds a FULL
+  revision to the carrier path; later growth retains only the exact APPEND byte
+  slice on that chain. `hook_events` materializes the events from retained
+  bytes, so a carrier is never parsed as a conversation
+  (`sources/live/batch.py`; `sources/live/append_ingest.py`).
+
+## Retained validation policy
+
+The daemon converts runtime configuration into `ValidationMode` and supplies
+it to the resident Raw owner. Direct owner callers supply the same typed
+argument; its default is advisory. Changing an environment variable after
+constructing an owner does not change its policy. The derivation recipe
+includes the selected mode, and retained artifacts carry their own detached
+validation verdict. Declared raw-only artifacts bypass session decoding and
+schema validation; empty session inputs retain terminal decoder evidence. A
+current non-session parser census alone does not waive schema validation for
+an eligible structured document that yields no sessions. A missing artifact
+observation is treated as eligible; only that raw revision's exact provider
+path declaration or a recorded ineligible artifact observation can establish
+that no session validation verdict is required.
 
 ## Gotchas
 
@@ -146,3 +415,16 @@ unfinished tail so a later completed observation can advance normally.
 Grok native tool results declare `not_reported` when outcome evidence is absent
 and `unsupported_construct` when a supplied outcome has an unsupported shape.
 Both reasons remain typed unknown outcomes through storage and readback.
+
+## Native Drive acquisition coordinates
+
+Configured Drive captures use `drive:<configured-source>:/<resolved-folder>/<native-file-id>.json`, with escaped components. The final JSON suffix declares the capture format; fallback session identity removes only that synthetic suffix and preserves the exact native file ID. Cache files are keyed by resolved folder and a digest of native file ID. Drive names are presentation metadata in the listing witness and cannot select cached bytes or durable source identity. Two same-named files remain distinct, and a rename preserves their source and session coordinates.
+
+The acquisition owner exhausts every listing page into its private ID-keyed relation before downloading. Fresh metadata before and after a download must match the listed revision; a race leaves the pass pending rather than labelling the returned bytes with an unproved revision. Download, cache, blob, and publication failures retain typed per-file evidence and contribute to acquisition errors. Completed Raw publication binds the exact returned Raw ID, including byte-identical duplicates, to that observed revision. Prepared Source manifests still describe already acquired physical bytes; they are not remote predownload adapters.
+
+Cache readability follows streamed content rather than the synthetic cache suffix,
+so complete JSON and JSONL documents remain usable under native file identity.
+The postlisting resolves the configured folder again and compares every page;
+an alias that now resolves elsewhere leaves the pass pending. Escaped acquisition
+or cancellation releases the private relation after the existing execution owner
+has physically drained its worker.

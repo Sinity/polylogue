@@ -5,12 +5,8 @@ planner-statistics seeding, 8x/3.3x elsewhere) that nothing protected from
 silent regression. This module is the single entry point that turns four of
 those harnesses into a floor-checked measurement:
 
-* **census throughput** (raws/s) over the three
-  ``tests/infra/revision_backfill_benchmark`` shapes -- SMALL/LARGE payload
-  and the REVISION_CHAIN growing-file shape that polylogue-nh44 targeted.
-* **replay throughput** (sessions/min) via
-  ``backfill_historical_revision_evidence`` end to end (census + replay) on a
-  fresh corpus.
+* **replay throughput** (sessions/min) through the canonical retained replay
+  owner (preparatory Source phases and publication) on a fresh corpus.
 * **query latency** (p50/p95 ms) for ``search_summaries``/``list_summaries``,
   computed through the real production
   ``polylogue.operations.route_observation.compute_latency_percentiles``.
@@ -93,89 +89,12 @@ class FloorMetric:
 
 
 # ---------------------------------------------------------------------------
-# Measurement group 1: census throughput per revision-backfill shape
-# ---------------------------------------------------------------------------
-
-
-def measure_census_throughput(workdir: Path, *, quick: bool = False) -> list[FloorMetric]:
-    from polylogue.sources.revision_backfill import census_historical_revision_evidence
-    from tests.infra.revision_backfill_benchmark import (
-        LARGE_PAYLOAD_SHAPE,
-        REVISION_CHAIN_SHAPE,
-        SMALL_PAYLOAD_SHAPE,
-        build_independent_raw_corpus,
-        build_revision_chain_corpus,
-    )
-
-    metrics: list[FloorMetric] = []
-
-    small_root = workdir / "census-small"
-    build_independent_raw_corpus(
-        small_root,
-        raw_count=SMALL_PAYLOAD_SHAPE["raw_count"],
-        avg_payload_bytes=SMALL_PAYLOAD_SHAPE["avg_payload_bytes"],
-    )
-    start = time.perf_counter()
-    result = census_historical_revision_evidence(small_root)
-    elapsed = time.perf_counter() - start
-    metrics.append(
-        FloorMetric(
-            "census_small_raws_per_s",
-            result.scanned / elapsed if elapsed > 0 else 0.0,
-            "raws/s",
-            "higher_is_better",
-            {"raw_count": result.scanned, "elapsed_s": round(elapsed, 4), "shape": "SMALL_PAYLOAD_SHAPE"},
-        )
-    )
-
-    if not quick:
-        large_root = workdir / "census-large"
-        build_independent_raw_corpus(
-            large_root,
-            raw_count=LARGE_PAYLOAD_SHAPE["raw_count"],
-            avg_payload_bytes=LARGE_PAYLOAD_SHAPE["avg_payload_bytes"],
-        )
-        start = time.perf_counter()
-        result = census_historical_revision_evidence(large_root)
-        elapsed = time.perf_counter() - start
-        metrics.append(
-            FloorMetric(
-                "census_large_raws_per_s",
-                result.scanned / elapsed if elapsed > 0 else 0.0,
-                "raws/s",
-                "higher_is_better",
-                {"raw_count": result.scanned, "elapsed_s": round(elapsed, 4), "shape": "LARGE_PAYLOAD_SHAPE"},
-            )
-        )
-
-    chain_root = workdir / "census-chain"
-    build_revision_chain_corpus(
-        chain_root,
-        superseded_count=REVISION_CHAIN_SHAPE["superseded_count"],
-        final_payload_bytes=REVISION_CHAIN_SHAPE["final_payload_bytes"],
-    )
-    start = time.perf_counter()
-    result = census_historical_revision_evidence(chain_root)
-    elapsed = time.perf_counter() - start
-    metrics.append(
-        FloorMetric(
-            "census_chain_revisions_per_s",
-            result.scanned / elapsed if elapsed > 0 else 0.0,
-            "revisions/s",
-            "higher_is_better",
-            {"revisions_scanned": result.scanned, "elapsed_s": round(elapsed, 4), "shape": "REVISION_CHAIN_SHAPE"},
-        )
-    )
-    return metrics
-
-
-# ---------------------------------------------------------------------------
-# Measurement group 2: replay throughput (census + replay end to end)
+# Measurement group: retained replay throughput through the canonical owner
 # ---------------------------------------------------------------------------
 
 
 def measure_replay_throughput(workdir: Path, *, quick: bool = False) -> list[FloorMetric]:
-    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+    from tests.infra.retained_replay import replay_retained_components
     from tests.infra.revision_backfill_benchmark import SMALL_PAYLOAD_SHAPE, build_independent_raw_corpus
 
     raw_count = _REPLAY_RAW_COUNT_QUICK if quick else _REPLAY_RAW_COUNT
@@ -186,7 +105,7 @@ def measure_replay_throughput(workdir: Path, *, quick: bool = False) -> list[Flo
         avg_payload_bytes=SMALL_PAYLOAD_SHAPE["avg_payload_bytes"],
     )
     start = time.perf_counter()
-    result = backfill_historical_revision_evidence(root)
+    result = replay_retained_components(root)
     elapsed = time.perf_counter() - start
     sessions_per_min = (result.replayed_logical_sources / elapsed) * 60.0 if elapsed > 0 else 0.0
     return [
@@ -386,7 +305,6 @@ def run_perf_floor_set(workdir: Path | None = None, *, quick: bool = False) -> d
 
     try:
         metrics: list[FloorMetric] = []
-        metrics.extend(measure_census_throughput(base / "census", quick=quick))
         metrics.extend(measure_replay_throughput(base / "replay", quick=quick))
 
         tier = BenchmarkWorkloadTier.SMOKE if quick else BenchmarkWorkloadTier.REPRESENTATIVE

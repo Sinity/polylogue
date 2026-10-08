@@ -598,3 +598,42 @@ class TestSelectedDomainRead:
 
         blocks = Message.model_validate(list(session.messages)[0]).blocks
         assert any(block.get("tool_id") == "original-tool-id" and block.get("tool_name") == "Read" for block in blocks)
+
+
+@pytest.mark.parametrize("selected", [True, False])
+def test_temporal_text_selection_preserves_an_explicit_session_reference(tmp_path: Path, selected: bool) -> None:
+    sessions = _seed(tmp_path, count=2, messages=1)
+    result = _run(
+        tmp_path,
+        "read.temporal",
+        {"session_id": sessions[1] if selected else None, "params": {"contains": ["needle"]}},
+    )
+    body = cast(dict[str, Any], result["payload"])
+    events = body["temporal_window"]["events"]
+    refs = {ref for event in events for ref in event["evidence_refs"] if ref.startswith("session:")}
+    assert refs == {f"session:{sid}" for sid in (sessions[1:] if selected else sessions)}
+    assert {event["family"] for event in events} == {"archive-session", "archive-message"}
+
+
+def test_temporal_missing_selected_reference_does_not_widen_to_text_matches(tmp_path: Path) -> None:
+    _seed(tmp_path, count=2, messages=1)
+    result = _run(
+        tmp_path,
+        "read.temporal",
+        {"session_id": "codex-session:missing", "params": {"contains": ["needle"]}},
+    )
+    body = cast(dict[str, Any], result["payload"])
+    assert body["temporal_window"]["events"] == []
+
+
+@pytest.mark.parametrize("params", [{"query": ("needle",)}, {"similar_text": "needle"}])
+def test_temporal_selected_reference_retains_text_and_ranking_criteria(
+    tmp_path: Path, params: dict[str, object]
+) -> None:
+    sessions = _seed(tmp_path, count=2, messages=1)
+    result = _run(tmp_path, "read.temporal", {"session_id": sessions[1], "params": params})
+    body = cast(dict[str, Any], result["payload"])
+    events = body["temporal_window"]["events"]
+    assert {ref for event in events for ref in event["evidence_refs"] if ref.startswith("session:")} == {
+        f"session:{sessions[1]}"
+    }

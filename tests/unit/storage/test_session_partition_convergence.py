@@ -110,7 +110,7 @@ def _converge(index_db: Path, session_ids: Sequence[str]) -> None:
     refuses a session whose rollup is not settled rather than reconciling it
     inside a profile publication.
     """
-    with write_lease("test.converge"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.converge", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         for session_id in session_ids:
             binding = session_input_bindings(conn, (session_id,)).get(session_id, "")
             publish_session_usage_rollup(
@@ -161,7 +161,7 @@ def _status(index_db: Path) -> SessionInsightStatusSnapshot:
 
 def _mutate_role(index_db: Path, session_id: str) -> None:
     """Change one message's role, holding every identity and count fixed."""
-    with write_lease("test.mutate"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.mutate", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         before = conn.execute(
             "SELECT count(*), max(occurred_at_ms), max(position) FROM messages WHERE session_id = ?",
             (session_id,),
@@ -179,7 +179,7 @@ def _mutate_role(index_db: Path, session_id: str) -> None:
 
 
 def _tag(index_db: Path, session_id: str, tag: str) -> None:
-    with write_lease("test.tag"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.tag", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         conn.execute(
             "UPDATE session_profiles SET tags_json = ? WHERE session_id = ?",
             (f'["{tag}"]', session_id),
@@ -205,7 +205,7 @@ def test_a_half_replaced_partition_is_stale(archive_root: Path) -> None:
     session_id = _seed(index_db, "half", messages=[("user", "run the thing"), ("assistant", "ran it")])
     _converge_to_fixpoint(index_db)
 
-    with write_lease("test.delete"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.delete", archive_root=archive_root), closing(_write_connection(index_db)) as conn:
         removed = conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (session_id,)).rowcount
         conn.commit()
     assert removed == 1, "every replaced partition writes exactly one latency profile"
@@ -276,7 +276,7 @@ def test_an_orphaned_partition_is_reported_then_removed(archive_root: Path) -> N
     session_id = _seed(index_db, "orphan", messages=[("user", "here")])
     _converge_to_fixpoint(index_db)
 
-    with write_lease("test.orphan"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.orphan", archive_root=archive_root), closing(_write_connection(index_db)) as conn:
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.commit()
 
@@ -389,7 +389,7 @@ def test_deletion_removes_the_partition_rather_than_stranding_it(archive_root: P
     removed = _seed(index_db, "removed", messages=[("user", "go")])
     _converge_to_fixpoint(index_db)
 
-    with write_lease("test.delete-session"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.delete-session", archive_root=archive_root), closing(_write_connection(index_db)) as conn:
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (removed,))
         conn.commit()
     _converge(index_db, [removed])
@@ -473,7 +473,7 @@ def test_a_second_pass_over_unchanged_inputs_publishes_nothing(archive_root: Pat
 
 def _mutate_model_name(index_db: Path, session_id: str) -> None:
     """Change one message's model, holding every identity and count fixed."""
-    with write_lease("test.model"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.model", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         before = conn.execute(
             """
             SELECT message_id, occurred_at_ms, position
@@ -505,7 +505,7 @@ def _mutate_model_name(index_db: Path, session_id: str) -> None:
 
 def _mutate_output_tokens(index_db: Path, session_id: str) -> None:
     """Change one message's token measurement, holding identity and counts fixed."""
-    with write_lease("test.tokens"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.tokens", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         before = conn.execute(
             "SELECT count(*), max(occurred_at_ms), max(position), sum(word_count) FROM messages WHERE session_id = ?",
             (session_id,),
@@ -579,7 +579,7 @@ def test_rebuild_reconciles_model_usage_after_a_fixed_id_model_correction(archiv
     """
     index_db = _index_db(archive_root)
     session_id = _priced_session(index_db, "model-usage-reconciliation")
-    with write_lease("test.provider-usage"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.provider-usage", archive_root=archive_root), closing(_write_connection(index_db)) as conn:
         conn.execute(
             """
             INSERT INTO session_provider_usage_events (
@@ -601,7 +601,7 @@ def test_rebuild_reconciles_model_usage_after_a_fixed_id_model_correction(archiv
     _mutate_model_name(index_db, session_id)
     assert _pending(index_db) == [session_id]
 
-    with write_lease("test.rebuild"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.rebuild", archive_root=archive_root), closing(_write_connection(index_db)) as conn:
         rebuild_session_insights_sync(conn, session_ids=[session_id])
         usage_rows = conn.execute(
             """
@@ -663,7 +663,10 @@ def test_rebuild_rederives_usage_when_a_model_keeps_some_messages(archive_root: 
     session_id = builder.native_session_id()
     _converge_to_fixpoint(index_db)
 
-    with write_lease("test.partial-model-correction"), closing(_write_connection(index_db)) as conn:
+    with (
+        write_lease("test.partial-model-correction", archive_root=archive_root),
+        closing(_write_connection(index_db)) as conn,
+    ):
         changed = conn.execute(
             "UPDATE messages SET model_name = 'model-after' WHERE session_id = ? AND position = 2",
             (session_id,),
@@ -672,7 +675,10 @@ def test_rebuild_rederives_usage_when_a_model_keeps_some_messages(archive_root: 
     assert changed == 1
     assert _pending(index_db) == [session_id]
 
-    with write_lease("test.partial-model-rebuild"), closing(_write_connection(index_db)) as conn:
+    with (
+        write_lease("test.partial-model-rebuild", archive_root=archive_root),
+        closing(_write_connection(index_db)) as conn,
+    ):
         rebuild_session_insights_sync(conn, session_ids=[session_id])
         usage_rows = conn.execute(
             """
@@ -721,7 +727,10 @@ def test_provider_usage_correction_makes_the_partition_stale(archive_root: Path)
     """
     index_db = _index_db(archive_root)
     session_id = _priced_session(index_db, "provider-usage-correction")
-    with write_lease("test.provider-usage-seed"), closing(_write_connection(index_db)) as conn:
+    with (
+        write_lease("test.provider-usage-seed", archive_root=archive_root),
+        closing(_write_connection(index_db)) as conn,
+    ):
         conn.execute(
             """
             INSERT INTO session_provider_usage_events (
@@ -733,7 +742,10 @@ def test_provider_usage_correction_makes_the_partition_stale(archive_root: Path)
         conn.commit()
     _converge_to_fixpoint(index_db)
 
-    with write_lease("test.provider-usage-correction"), closing(_write_connection(index_db)) as conn:
+    with (
+        write_lease("test.provider-usage-correction", archive_root=archive_root),
+        closing(_write_connection(index_db)) as conn,
+    ):
         before = conn.execute(
             "SELECT primary_model_name FROM session_profiles WHERE session_id = ?", (session_id,)
         ).fetchone()
@@ -783,7 +795,7 @@ def test_a_publication_whose_inputs_moved_is_refused_rather_than_stamped(archive
 
     _mutate_role(index_db, session_id)
 
-    with write_lease("test.race"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.race", archive_root=archive_root), closing(_write_connection(index_db)) as conn:
         accepted = publish_session_profile(conn, session_id, input_binding=stale_frame)
 
     assert accepted is False, "a frame whose inputs moved may not be published"
@@ -802,7 +814,7 @@ def test_a_crash_between_the_rows_and_the_binding_leaves_the_key_pending(archive
     _converge_to_fixpoint(index_db)
     settled = _semantic_relations(index_db)
 
-    with write_lease("test.crash"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.crash", archive_root=archive_root), closing(_write_connection(index_db)) as conn:
         conn.execute("UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = ?", (session_id,))
         conn.commit()
 
@@ -830,6 +842,7 @@ def test_a_crash_before_publication_leaves_the_output_untouched(archive_root: Pa
         lambda: _write_connection(index_db),
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda frame: (session_id,),
+        archive_root=archive_root,
     )
     replacement = adapter.compute(object(), session_id)
 
@@ -949,7 +962,7 @@ def test_dropping_a_projection_column_stops_the_binding_from_seeing_its_defect(
     )
     with closing(_read_connection(index_db)) as conn:
         narrowed_after = session_input_bindings(conn, (session_id,))[session_id]
-    with write_lease("test.restore"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.restore", archive_root=archive_root), closing(_write_connection(index_db)) as conn:
         conn.execute("UPDATE messages SET role = 'user' WHERE session_id = ? AND position = 0", (session_id,))
         conn.commit()
     with closing(_read_connection(index_db)) as conn:
@@ -1132,7 +1145,7 @@ def test_deleting_every_scheduling_hint_reconstructs_the_same_pending_set(archiv
     before = _pending(index_db)
     assert before == [mutated], "the mutated partition is the pending one before the hints are dropped"
 
-    with write_lease("test.hints"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.hints", archive_root=archive_root), closing(_write_connection(index_db)) as conn:
         for relation in (
             "derived_refresh_guard",
             "delegation_refresh_scope",
@@ -1225,7 +1238,7 @@ def test_a_session_row_change_retires_binding(archive_root: Path) -> None:
     ids = _all_session_ids(index_db)
     assert _both_routes(index_db, ids)[1] == {session_id: "valid"}
 
-    with write_lease("test.title"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.title", archive_root=archive_root), closing(_write_connection(index_db)) as conn:
         conn.execute("UPDATE sessions SET title = 'renamed' WHERE session_id = ?", (session_id,))
         conn.commit()
 

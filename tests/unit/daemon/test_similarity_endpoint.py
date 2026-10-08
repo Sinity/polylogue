@@ -731,6 +731,7 @@ def test_similarity_first_publication_checks_seed_on_query_snapshot(
     """Checking existence before opening the vector snapshot gives false not_embedded."""
     from polylogue import Polylogue
     from polylogue.storage.index_generation import IndexGenerationStore
+    from tests.infra.archive_templates import run_off_event_loop
 
     _enable_embeddings(monkeypatch)
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
@@ -754,7 +755,9 @@ def test_similarity_first_publication_checks_seed_on_query_snapshot(
     published: list[Path] = []
 
     async def publish_before_query(archive: Polylogue, seed: str, *, limit: int = 10) -> dict[str, object]:
-        store.promote(successor)
+        # Promotion takes the synchronous writer lease, which refuses to block
+        # the query's running event loop; publish from a loop-free thread.
+        run_off_event_loop(lambda: store.promote(successor))
         published.append(resolve_active_index_path(root).resolve(strict=True))
         return await original_query(archive, seed, limit=limit)
 

@@ -38,14 +38,27 @@ def _proc_children_supported(proc_root: Path = Path("/proc")) -> bool:
     return probe.is_file()
 
 
+#: The fixture is presented as Claude Code's projects directory, so it uses
+#: that declared layout: sessions sit directly in a project directory (named,
+#: as Claude Code names them, after a working directory with ``-`` for ``/``).
+#: The rejected prefix is root-level files whose names sort before every
+#: project (``+`` sorts below ``-``), and the third session lives in a second
+#: project that sorts after the first.
+FIXTURE_PROJECT = "-a-cold-qualification"
+FIXTURE_NESTED_PROJECT = "-z-cold-qualification"
+FIXTURE_NESTED_SESSION = f"{FIXTURE_NESTED_PROJECT}/z-session-2.jsonl"
+
+
 def write_fixture(root: Path, *, rejected: int, malformed_last: bool = False) -> str:
     root.mkdir(parents=True)
+    project = root / FIXTURE_PROJECT
+    project.mkdir()
     for i in range(rejected):
-        path = root / f"a-rejected-{i:05d}.txt"
+        path = root / f"+rejected-{i:05d}.txt"
         data = b"synthetic rejected entry\n"
         path.write_bytes(data)
     for i, session_id in enumerate(SESSION_IDS):
-        path = (root / "nested" if i == 2 else root) / f"z-session-{i}.jsonl"
+        path = (root / FIXTURE_NESTED_PROJECT if i == 2 else project) / f"z-session-{i}.jsonl"
         path.parent.mkdir(exist_ok=True)
         if malformed_last and i == 2:
             data = b'{"sessionId": "invalid", "message": \n'
@@ -287,18 +300,6 @@ def _durable_parse_error(archive: Path, source_path: Path) -> str | None:
             return str(row[0]) if row is not None and row[0] else None
     except sqlite3.Error:
         return None
-
-
-def _unpublished_candidate_session_count(archive: Path) -> int | None:
-    """Observe cold-build work without mistaking its inactive tier for publication."""
-    counts: list[int] = []
-    for db in (archive / ".index-generations").glob("*/index.db"):
-        try:
-            with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.1) as conn:
-                counts.append(int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]))
-        except sqlite3.Error:
-            continue
-    return max(counts) if counts else None
 
 
 def _process_tree_rss(
@@ -863,33 +864,24 @@ def qualify(
                             receipt["outcome"] = "success"
                             break
                     if malformed_last and durable_raw_count_max >= 3:
+                        # A deterministic parser failure on unchanged bytes is a
+                        # settled refusal: the cold generation completes and
+                        # publishes the two sound sessions, and the malformed
+                        # third keeps a durable parse error instead of a session.
+                        if SESSION_IDS[2] in verified:
+                            raise AssertionError("the malformed session was published")
                         parse_error = _durable_parse_error(
-                            archive, projects / "nested" / "z-session-2.jsonl"
-                        ) or _durable_parse_error(archive, source / "nested" / "z-session-2.jsonl")
-                        candidate_sessions = _unpublished_candidate_session_count(archive)
-                        catchup = latest_status.get("catchup") if isinstance(latest_status, dict) else None
-                        failed_count = (
-                            catchup.get("cumulative_failed_file_attempts") if isinstance(catchup, dict) else None
-                        )
-                        if (
-                            parse_error is not None
-                            and candidate_sessions == 2
-                            and isinstance(failed_count, int)
-                            and failed_count > 0
-                        ):
-                            if verified:
-                                raise AssertionError(
-                                    f"incomplete cold generation published partial sessions: {sorted(verified)}"
-                                )
+                            archive, projects / FIXTURE_NESTED_SESSION
+                        ) or _durable_parse_error(archive, source / FIXTURE_NESTED_SESSION)
+                        if parse_error is not None and verified == set(SESSION_IDS[:2]):
                             expected_malformed_refusal = True
                             receipt["parse_refusal"] = {
-                                "source": "nested/z-session-2.jsonl",
+                                "source": FIXTURE_NESTED_SESSION,
                                 "error": parse_error[:500],
                             }
-                            receipt["candidate_sessions_unpublished"] = candidate_sessions
                             receipt["outcome"] = "incomplete_population"
                             raise AssertionError(
-                                "two sessions prepared in an inactive generation; malformed third has a durable parse error"
+                                "two sessions published; malformed third settled as a durable parse refusal"
                             )
                 time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
             else:

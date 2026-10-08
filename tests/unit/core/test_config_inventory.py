@@ -691,3 +691,13 @@ class TestForcePlainBooleanEnvParsing:
 
         with pytest.raises(ConfigError, match=re.escape("POLYLOGUE_FORCE_PLAIN='flase'")):
             load_polylogue_config()
+
+
+def test_retired_live_full_ingest_worker_setting_is_refused(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    from polylogue.config import ConfigError, load_polylogue_config
+
+    config_path = tmp_path / "polylogue.toml"
+    config_path.write_text("[pipeline.live]\nfull_ingest_workers = 4\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        load_polylogue_config(config_path=config_path, site_config_path=tmp_path / "absent.toml")

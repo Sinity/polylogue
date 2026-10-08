@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextvars
 import hashlib
 import json
 import os
@@ -10,22 +12,34 @@ import tempfile
 import threading
 import uuid
 from collections import deque
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import CancelledError, Future
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, closing
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic, time
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
-from polylogue.daemon.execution import (
+from polylogue.core.compute import (
     BoundedComputeAdapter,
     CancellationHandle,
     DaemonBackpressureError,
     DaemonOperationCancelled,
 )
-from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
+from polylogue.core.compute_cancel import compute_cancel
+from polylogue.core.digest import stdlib_chunks
+from polylogue.core.durable_fs import sync_directory
+from polylogue.core.raw_failure_evidence import (
+    CohortMembershipRefusalError,
+    RetainedRawDecodeRefusalError,
+    RetainedRawDependencyRefusalError,
+)
+from polylogue.core.stage_admission import stage_write_admission, stage_write_admission_bound
+from polylogue.core.write_lease import adopt_write_lease
+from polylogue.daemon.drive_catchup import DriveCatchupExecution
+from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge, StagedTask
 from polylogue.logging import WARNING, emit, propagate
 from polylogue.operations.audit import (
     MACHINE_PAGE_KINDS,
@@ -46,17 +60,19 @@ from polylogue.operations.daemon_reads import DaemonReadDependencies, read_is_ar
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.operations.operation_context import (
-    OperationContext,
     OperationControlRead,
     OperationControlResult,
     PinnedOperationRead,
     observe_control_authority,
     open_operation_control,
 )
+from polylogue.operations.operation_context_types import OperationContext
 
 if TYPE_CHECKING:
     from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance
+    from polylogue.operations.audit import CanonicalAuditLiteral
     from polylogue.operations.insight_acceptance import AcceptedInsightPart, SessionInsightPartReceipt
+    from polylogue.operations.raw_observation_owner import RetainedMaterializationResult
 
 _T = TypeVar("_T")
 
@@ -75,14 +91,25 @@ def _operation_int(value: object, *, field: str) -> int:
 _STAGED_OPERATIONS = frozenset(
     {
         "ingest",
+        "mutation.session.excision",
+        "maintenance.raw-authority-frontier",
+        "mutation.raw-authority-blocker.resolve",
+        "mutation.facade.record_work_event",
         "maintenance.insights.rebuild",
         "maintenance.embeddings.backfill",
         "maintenance.backup",
         "maintenance.restore_verified_backup",
         "mutation.session.delete.preview",
+        "mutation.identity-reset.preview",
         "mutation.session.mark",
     }
 )
+
+
+#: Request-body bytes of the staged exchange whose task is running. A staged
+#: operation's compute phases reserve them, as the scheduled route does for its
+#: one submission, so a queued staged exchange is not admitted as weightless.
+_STAGED_REQUEST_BYTES: contextvars.ContextVar[int] = contextvars.ContextVar("polylogue_staged_request_bytes", default=0)
 
 
 #: Name prefix of the ingest owner's re-drive task on its owner loop.
@@ -91,60 +118,6 @@ REDRIVE_TASK_PREFIX = "polylogue-ingest-redrive:"
 
 class BeforeAcceptanceCancelledError(RuntimeError):
     """Cancellation won the lock before durable prepare could begin."""
-
-
-class _StagedTask(Generic[_T]):
-    """A coroutine on the owner loop whose future settles only with its task.
-
-    ``run_coroutine_threadsafe`` marks its proxy future cancelled at once,
-    while the task behind it may still be awaiting a running compute phase and
-    its ``finally`` cleanup. Shutdown and the exchange's settled callback wait
-    on this future, so cancellation is forwarded to the task and the future
-    takes the task's terminal state only when the task has actually finished.
-    """
-
-    def __init__(
-        self,
-        loop: asyncio.AbstractEventLoop,
-        start: Callable[[], Coroutine[Any, Any, _T]],
-        *,
-        name: str | None = None,
-    ) -> None:
-        self.future: Future[_T] = Future()
-        self._loop = loop
-        self._task: asyncio.Task[_T] | None = None
-        self._cancelled = False
-        self._name = name
-        loop.call_soon_threadsafe(self._start, start)
-
-    def cancel(self) -> None:
-        """Request cancellation from any thread; the future settles with the task."""
-        self._loop.call_soon_threadsafe(self._cancel)
-
-    def _start(self, start: Callable[[], Coroutine[Any, Any, _T]]) -> None:
-        # ``_start`` and ``_cancel`` both run on the owner loop in submission
-        # order, so a cancellation either precedes the task or reaches it.
-        if self._cancelled:
-            return
-        self._task = self._loop.create_task(start(), name=self._name)
-        self._task.add_done_callback(self._settle)
-
-    def _cancel(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
-        elif not self._cancelled:
-            self._cancelled = True
-            self.future.cancel()
-
-    def _settle(self, task: asyncio.Task[_T]) -> None:
-        if self.future.done():
-            return
-        if task.cancelled():
-            self.future.cancel()
-        elif (exc := task.exception()) is not None:
-            self.future.set_exception(exc)
-        else:
-            self.future.set_result(task.result())
 
 
 @dataclass(slots=True)
@@ -167,6 +140,8 @@ class _Exchange:
     settled_at: float | None = None
     terminal_transfer_error: str | None = None
     terminal_envelope: dict[str, object] | None = None
+    result_document: dict[str, object] | None = None
+    result_summary: dict[str, object] | None = None
 
 
 class DaemonOperationRuntime:
@@ -176,6 +151,7 @@ class DaemonOperationRuntime:
         *,
         write_bridge: DaemonWriteThreadBridge,
         execution_kernel: BoundedComputeAdapter,
+        raw_observation_owner: RawObservationConvergenceOwner,
         read_dependencies: DaemonReadDependencies | None = None,
         read_dependencies_factory: Callable[[], DaemonReadDependencies] | None = None,
         owner_loop: asyncio.AbstractEventLoop | None = None,
@@ -184,6 +160,7 @@ class DaemonOperationRuntime:
         self.archive_root = archive_root.resolve()
         self._bridge = write_bridge
         self._kernel = execution_kernel
+        self.raw_observation_owner = raw_observation_owner
         self._read_dependencies = read_dependencies
         self._read_dependencies_factory = read_dependencies_factory
         self._owner_loop = owner_loop
@@ -194,6 +171,9 @@ class DaemonOperationRuntime:
         self._condition = threading.Condition(threading.RLock())
         self._exchanges: dict[str, _Exchange] = {}
         self._closing = False
+        from polylogue.operations.assertion_export import AssertionExportImages
+
+        self.assertion_exports = AssertionExportImages()
         self._terminal_scratch: tempfile.TemporaryDirectory[str] | None = None
         self._terminal_epoch = uuid.uuid4().hex
         # The ingest owner's re-drive of accepted generations a dead process
@@ -203,6 +183,30 @@ class DaemonOperationRuntime:
         self._redrive_cancelled: set[str] = set()
         # Set on the owner loop once every eligible run is claimed.
         self._redrive_claimed: threading.Event = threading.Event()
+
+    async def materialize_retained_raw_ids(
+        self,
+        raw_ids: tuple[str, ...],
+        *,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None],
+        on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None],
+        on_membership_refusal: Callable[[CohortMembershipRefusalError], None],
+        before_publication: Callable[[], None],
+    ) -> RetainedMaterializationResult:
+        owner = self.raw_observation_owner
+        if (
+            owner._archive_root.resolve() != self.archive_root
+            or owner._compute_adapter is not self._kernel
+            or owner._write_coordinator is not self._bridge.coordinator
+        ):
+            raise ValueError("operation materialization requires its original supplied resident owner")
+        return await owner.materialize_retained_raw_ids(
+            raw_ids,
+            on_terminal_refusal=on_terminal_refusal,
+            on_dependency_refusal=on_dependency_refusal,
+            on_membership_refusal=on_membership_refusal,
+            before_publication=before_publication,
+        )
 
     def start_accepted_ingest_redrive(self) -> None:
         """Re-drive accepted ingests left without a terminal checkpoint, once per owner start.
@@ -247,7 +251,7 @@ class DaemonOperationRuntime:
 
             # Named: the re-drive is this runtime's own declared child on the
             # owner loop, not an anonymous task.
-            self._redrive = _StagedTask(
+            self._redrive = StagedTask(
                 self._owner_loop, redrive, name=f"{REDRIVE_TASK_PREFIX}{self.archive_root}"
             ).future
             redrive_future = self._redrive
@@ -305,6 +309,7 @@ class DaemonOperationRuntime:
             if pending.done():
                 with self._condition:
                     self._exchanges.clear()
+                    self.assertion_exports.close()
                     if self._terminal_scratch is not None:
                         self._terminal_scratch.cleanup()
                         self._terminal_scratch = None
@@ -330,7 +335,9 @@ class DaemonOperationRuntime:
         # The kernel's pool outlives every bind, so its threads carry no
         # correlation context of their own (verified: a bare submit sees an
         # empty context where a propagate()d one does not).
-        submitted = self._kernel.submit(propagate(work), admission_class="control")
+        submitted = self._kernel.submit(
+            propagate(work), admission_class="control", estimated_bytes=_STAGED_REQUEST_BYTES.get()
+        )
         pending = asyncio.wrap_future(submitted.future)
         try:
             return await asyncio.shield(pending)
@@ -353,6 +360,58 @@ class DaemonOperationRuntime:
 
     async def write_phase(self, name: str, work: Callable[[], _T]) -> _T:
         result = await self._bridge.run_async(f"operation.{name}", work)
+        self._notify()
+        return result
+
+    def prepared_compute_adapter(self) -> BoundedComputeAdapter:
+        """Borrow this phase's actual creator reservation for retained preparation."""
+        self._kernel.require_current_creator()
+        if not stage_write_admission_bound():
+            raise RuntimeError("retained preparation requires its admitted publication phase")
+        return self._kernel
+
+    async def prepared_phase(
+        self, name: str, work: Callable[[], _T], *, estimated_bytes: int, exclusive_bytes: bool = False
+    ) -> _T:
+        """Retain preparation, short publication and cleanup on one admitted creator."""
+        coordinator = self._bridge.coordinator
+        cancelled = threading.Event()
+
+        def admit_write(actor: str, operation: Callable[[], _T]) -> _T:
+            with self._bridge.hold(actor) as delegation, adopt_write_lease(delegation):
+                return operation()
+
+        def run() -> _T:
+            self._kernel.require_current_creator()
+            with stage_write_admission(admit_write):
+                return work()
+
+        def submit_worker(worker: Callable[[], None]) -> Future[None]:
+            return self._kernel.submit(
+                propagate(worker),
+                admission_class="control",
+                estimated_bytes=estimated_bytes,
+                exclusive_bytes=exclusive_bytes,
+            ).future
+
+        token = compute_cancel.set(cancelled)
+        try:
+            pending = asyncio.create_task(
+                coordinator.run_prepared_sync(
+                    f"operation.{name}",
+                    run,
+                    submit_worker=submit_worker,
+                    # Original registered native/seal owners remain discoverable
+                    # until physical close; no carrier leaves this phase.
+                    settlement_owners=lambda: (),
+                ),
+                name=f"polylogue-operation-prepared:{name}",
+            )
+        finally:
+            compute_cancel.reset(token)
+        result = await DriveCatchupExecution(coordinator, compute_adapter=self._kernel).settle(
+            pending, label=name, cancel_requested=cancelled.set
+        )
         self._notify()
         return result
 
@@ -512,7 +571,7 @@ class DaemonOperationRuntime:
             hashlib.sha256(request_id.encode("utf-8", "surrogatepass")).hexdigest() + ".json"
         )
 
-    def _read_unbound_terminal(
+    def _read_retained_terminal(
         self, request_id: str, principal: MutationPrincipal, archive_identity: str
     ) -> dict[str, object] | None:
         path = self._terminal_path(request_id)
@@ -532,7 +591,7 @@ class DaemonOperationRuntime:
         return cast("dict[str, object]", packet)
 
     @staticmethod
-    def _unbound_terminal_envelope(exchange: _Exchange) -> dict[str, object]:
+    def _retained_terminal_envelope(exchange: _Exchange) -> dict[str, object]:
         assert exchange.future is not None and exchange.future.done()
         if exchange.terminal_envelope is not None:
             return exchange.terminal_envelope
@@ -557,7 +616,7 @@ class DaemonOperationRuntime:
         return exchange.terminal_envelope
 
     @staticmethod
-    def _unbound_control_state(terminal: dict[str, object]) -> dict[str, object]:
+    def _retained_control_state(terminal: dict[str, object]) -> dict[str, object]:
         result = terminal.get("result")
         state = dict(result) if isinstance(result, dict) else {"sequence": 0}
         state.setdefault("sequence", 0)
@@ -572,14 +631,23 @@ class DaemonOperationRuntime:
             raise ValueError("archive_identity_stale")
         return snapshot
 
-    def _owned_unbound_terminal_state(
+    @staticmethod
+    def _retains_terminal(exchange: _Exchange) -> bool:
+        # A bound mutation keeps its original authority. Its complete product
+        # also needs terminal custody; a binding is not a retention exemption.
+        return exchange.acceptance_started and (
+            exchange.binding is None
+            or exchange.result_document is not None
+            or exchange.request.operation == "mutation.session.excision"
+        )
+
+    def _owned_retained_terminal_state(
         self, request_id: str, principal: MutationPrincipal, archive_identity: str
     ) -> dict[str, object] | None:
         exchange = self._exchanges.get(request_id)
         if (
             exchange is None
-            or exchange.binding is not None
-            or not exchange.acceptance_started
+            or not self._retains_terminal(exchange)
             or exchange.future is None
             or not exchange.future.done()
         ):
@@ -589,21 +657,123 @@ class DaemonOperationRuntime:
         assert exchange.snapshot is not None
         if exchange.snapshot.identity.authority_identity_digest != archive_identity:
             raise ValueError("archive_identity_stale")
-        state = self._unbound_control_state(self._unbound_terminal_envelope(exchange))
+        state = self._retained_control_state(self._retained_terminal_envelope(exchange))
         if exchange.terminal_transfer_error is not None:
             state["terminal_custody_error"] = exchange.terminal_transfer_error
         return state
 
-    def _retain_unbound_terminal(self, exchange: _Exchange) -> None:
+    def result_document_identity(self, request: DaemonOperationRequest) -> dict[str, object]:
+        with self._condition:
+            exchange = self._exchanges[str(request.request_id)]
+            if exchange.request.fingerprint != request.fingerprint or exchange.result_document is None:
+                raise ValueError("operation_result_document_missing")
+            return dict(exchange.result_document)
+
+    def retain_result_document(
+        self,
+        request: DaemonOperationRequest,
+        context: OperationContext,
+        summary: Mapping[str, object],
+        literal: CanonicalAuditLiteral,
+    ) -> None:
+        """Transfer the complete settled product into this request's existing custody."""
+        with self._condition:
+            exchange = self._exchanges[str(request.request_id)]
+            if exchange.context.principal != context.principal or exchange.request.fingerprint != request.fingerprint:
+                raise ValueError("operation_result_custody_mismatch")
+            if not exchange.acceptance_started or exchange.snapshot is None:
+                raise ValueError("operation_result_not_accepted")
+            if self._terminal_scratch is None:
+                self._terminal_scratch = tempfile.TemporaryDirectory(
+                    prefix="polylogue-operation-results-", dir=os.environ.get("TMPDIR")
+                )
+            terminal_path = self._terminal_path(str(request.request_id))
+            assert terminal_path is not None
+            document_path = terminal_path.with_suffix(".product.json")
+            fd, temporary = tempfile.mkstemp(prefix=".product-", dir=self._terminal_scratch.name)
+        digest = hashlib.sha256()
+        length = 0
+        try:
+            with os.fdopen(fd, "wb") as output:
+                with closing(literal.verified_chunks()) as chunks:
+                    for chunk in chunks:
+                        from polylogue.core.compute_cancel import check_compute_cancelled
+
+                        check_compute_cancelled()
+                        output.write(chunk)
+                        digest.update(chunk)
+                        length += len(chunk)
+                if length != literal.byte_length or digest.hexdigest() != literal.sha256:
+                    raise ValueError("operation_result_document_corrupt")
+                output.flush()
+                os.fsync(output.fileno())
+            with self._condition:
+                if exchange.result_document is not None:
+                    raise ValueError("operation_result_custody_conflict")
+                os.replace(temporary, document_path)
+                sync_directory(document_path.parent)
+                exchange.result_summary = dict(summary)
+                exchange.result_document = {
+                    "request_id": str(request.request_id),
+                    "byte_length": length,
+                    "sha256": literal.sha256,
+                }
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    def _retain_terminal(self, exchange: _Exchange) -> None:
         assert exchange.snapshot is not None
         request_id = str(exchange.request.request_id)
+        envelope = self._retained_terminal_envelope(exchange)
+        if (
+            exchange.request.operation == "mutation.session.excision"
+            and envelope.get("outcome") == "completed"
+            and exchange.result_document is None
+        ):
+            raise ValueError("operation_result_document_missing")
+        if exchange.result_document is not None and envelope.get("outcome") == "completed":
+            result = envelope.get("result")
+            if not isinstance(result, dict) or result.get("result") != exchange.result_summary:
+                raise ValueError("operation_result_summary_mismatch")
+            if result.get("result_document") != exchange.result_document:
+                raise ValueError("operation_result_document_identity_mismatch")
+            product_path = self._terminal_path(request_id)
+            if product_path is None:
+                raise ValueError("operation_result_document_missing")
+            try:
+                with product_path.with_suffix(".product.json").open("rb") as stream:
+                    if os.fstat(stream.fileno()).st_size != exchange.result_document["byte_length"]:
+                        raise ValueError("operation_result_document_corrupt")
+                    # The successful sink already verified the installed bytes.
+                    # A retained failed transfer must re-prove those same bytes
+                    # before metadata recovery can advertise completed delivery.
+                    if exchange.terminal_transfer_error is not None:
+                        from polylogue.core.compute_cancel import check_compute_cancelled
+
+                        digest = hashlib.sha256()
+                        length = 0
+                        while True:
+                            check_compute_cancelled()
+                            chunk = stream.read(64 * 1024)
+                            if not chunk:
+                                break
+                            digest.update(chunk)
+                            length += len(chunk)
+                        if (
+                            length != exchange.result_document["byte_length"]
+                            or digest.hexdigest() != exchange.result_document["sha256"]
+                        ):
+                            raise ValueError("operation_result_document_corrupt")
+            except FileNotFoundError as exc:
+                raise ValueError("operation_result_document_missing") from exc
         packet = {
             "epoch": self._terminal_epoch,
             "request_id": request_id,
             "fingerprint": exchange.request.fingerprint,
             "principal": self._terminal_principal(exchange.context.principal),
             "archive_identity": exchange.snapshot.identity.authority_identity_digest,
-            "envelope": self._unbound_terminal_envelope(exchange),
+            "envelope": envelope,
+            "result_document": exchange.result_document,
         }
         if self._terminal_scratch is None:
             self._terminal_scratch = tempfile.TemporaryDirectory(
@@ -615,6 +785,7 @@ class DaemonOperationRuntime:
             with path.open(encoding="utf-8") as stream:
                 if json.load(stream) != packet:
                     raise ValueError("operation_result_custody_conflict")
+            sync_directory(path.parent)
             return
         fd, temporary = tempfile.mkstemp(prefix=".result-", dir=self._terminal_scratch.name)
         try:
@@ -623,11 +794,7 @@ class DaemonOperationRuntime:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
-            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            sync_directory(path.parent)
         finally:
             Path(temporary).unlink(missing_ok=True)
 
@@ -694,7 +861,14 @@ class DaemonOperationRuntime:
         *,
         started_at: float | None = None,
         client_disconnect: CancellationHandle | None = None,
+        request_body_bytes: int | None = None,
     ) -> dict[str, object]:
+        if request_body_bytes is None:
+            # Direct callers have no wire body. Count its canonical encoding
+            # incrementally instead of allocating another complete body.
+            request_body_bytes = sum(len(part.encode()) for part in stdlib_chunks(request.to_dict(), ensure_ascii=True))
+        if request_body_bytes < 0:
+            raise ValueError("request body byte count must be nonnegative")
         started = monotonic() if started_at is None else started_at
         spec = daemon_operation_spec(request.operation)
         if spec is None:
@@ -704,7 +878,12 @@ class DaemonOperationRuntime:
             if self._read_dependencies_factory is not None
             else self._read_dependencies
         )
-        dependencies = replace(dependencies or DaemonReadDependencies(), status_now_ms=int(time() * 1000))
+        dependencies = replace(
+            dependencies or DaemonReadDependencies(),
+            status_now_ms=int(time() * 1000),
+            assertion_exports=self.assertion_exports,
+            assertion_export_principal=principal,
+        )
         archive_scan = spec.authority is DaemonAuthority.READ and read_is_archive_scan(
             request.operation, request.payload
         )
@@ -851,7 +1030,7 @@ class DaemonOperationRuntime:
             if path is not None and path.exists():
                 identity = observe_control_authority(self.archive_root).identity.authority_identity_digest
                 try:
-                    retained = self._read_unbound_terminal(request_id, principal, identity)
+                    retained = self._read_retained_terminal(request_id, principal, identity)
                 except (PermissionError, ValueError) as exc:
                     return operation_envelope(
                         request, context, outcome="rejected", error={"code": str(exc), "retryable": False}
@@ -867,12 +1046,7 @@ class DaemonOperationRuntime:
                 return cast("dict[str, object]", retained["envelope"])
             exchange = self._exchanges.get(request_id)
             if exchange is not None:
-                if (
-                    exchange.binding is None
-                    and exchange.acceptance_started
-                    and exchange.future is not None
-                    and exchange.future.done()
-                ):
+                if self._retains_terminal(exchange) and exchange.future is not None and exchange.future.done():
                     identity = observe_control_authority(self.archive_root).identity.authority_identity_digest
                     assert exchange.snapshot is not None
                     if exchange.snapshot.identity.authority_identity_digest != identity:
@@ -898,7 +1072,7 @@ class DaemonOperationRuntime:
                         if held.terminal_transfer_error is None:
                             continue
                         try:
-                            self._retain_unbound_terminal(held)
+                            self._retain_terminal(held)
                         except Exception:
                             return operation_envelope(
                                 request,
@@ -915,7 +1089,8 @@ class DaemonOperationRuntime:
                     for key, item in self._exchanges.items()
                     if item.future is not None
                     and item.future.done()
-                    and not (item.binding is None and item.acceptance_started)
+                    and not self._retains_terminal(item)
+                    and item.terminal_transfer_error is None
                     and item.settled_at is not None
                     and monotonic() - item.settled_at > 300.0
                 ]
@@ -975,16 +1150,25 @@ class DaemonOperationRuntime:
                             execute_backup_operation,
                             execute_restore_verified_backup_operation,
                         )
+                        from polylogue.operations.daemon_excision import execute_session_excision_operation
                         from polylogue.operations.daemon_ingest import execute_ingest_operation
                         from polylogue.operations.daemon_insights import execute_insights_rebuild_operation
                         from polylogue.operations.daemon_mutations import (
-                            execute_session_delete_preview_operation,
+                            execute_raw_authority_blocker_resolve_operation,
+                            execute_raw_authority_frontier_operation,
+                            execute_selected_preview_operation,
                             execute_session_mark_operation,
                         )
+                        from polylogue.operations.facade_writers import facade_record_work_event
 
                         staged = {
                             "ingest": execute_ingest_operation,
-                            "mutation.session.delete.preview": execute_session_delete_preview_operation,
+                            "mutation.session.excision": execute_session_excision_operation,
+                            "mutation.facade.record_work_event": facade_record_work_event,
+                            "maintenance.raw-authority-frontier": execute_raw_authority_frontier_operation,
+                            "mutation.raw-authority-blocker.resolve": execute_raw_authority_blocker_resolve_operation,
+                            "mutation.session.delete.preview": execute_selected_preview_operation,
+                            "mutation.identity-reset.preview": execute_selected_preview_operation,
                             "mutation.session.mark": execute_session_mark_operation,
                             "maintenance.insights.rebuild": execute_insights_rebuild_operation,
                             "maintenance.embeddings.backfill": execute_embedding_backfill_operation,
@@ -992,18 +1176,28 @@ class DaemonOperationRuntime:
                             "maintenance.restore_verified_backup": execute_restore_verified_backup_operation,
                         }[request.operation]
 
-                        staged_task = _StagedTask(self._owner_loop, lambda: staged(request, context))
+                        staged_body_bytes = request_body_bytes
+
+                        async def run_staged() -> Any:
+                            _STAGED_REQUEST_BYTES.set(staged_body_bytes)
+                            return await staged(request, context)
+
+                        staged_task = StagedTask(self._owner_loop, run_staged)
                         exchange.future = staged_task.future
 
                         def cancel_staged_before_acceptance() -> None:
                             with self._condition:
-                                if not exchange.acceptance_started:
+                                if not exchange.acceptance_started or request.operation in {
+                                    "maintenance.raw-authority-frontier",
+                                    "mutation.raw-authority-blocker.resolve",
+                                }:
                                     staged_task.cancel()
 
                         exchange.cancellation.add_listener(cancel_staged_before_acceptance)
                     else:
                         scheduled = self._kernel.submit(
                             propagate(work),
+                            estimated_bytes=request_body_bytes,
                             admission_class=(
                                 "bulk-candidate"
                                 if archive_scan
@@ -1035,10 +1229,10 @@ class DaemonOperationRuntime:
                     with self._condition:
                         exchange.settled_at = monotonic()
                         retain_progress = request.operation == "maintenance.embeddings.backfill"
-                        retain_terminal = exchange.binding is None and exchange.acceptance_started
+                        retain_terminal = self._retains_terminal(exchange)
                         if retain_terminal:
                             try:
-                                self._retain_unbound_terminal(exchange)
+                                self._retain_terminal(exchange)
                             except Exception as exc:
                                 exchange.terminal_transfer_error = type(exc).__name__
                                 emit("operation.result.transfer_failed", level=WARNING, error_type=type(exc).__name__)
@@ -1126,7 +1320,11 @@ class DaemonOperationRuntime:
                         try:
                             with audit.settled_machine_read():
                                 record = audit.machine_request(exchange.binding)
-                                if record is None and envelope.get("outcome") == "indeterminate":
+                                if (
+                                    record is None
+                                    and envelope.get("outcome") == "indeterminate"
+                                    and request.operation != "mutation.session.excision"
+                                ):
                                     # The actual worker settled and continuity
                                     # proves there is no accepted domain work.
                                     envelope["outcome"] = "failed"
@@ -1160,6 +1358,63 @@ class DaemonOperationRuntime:
                     return self._pending_envelope(exchange, outcome="indeterminate")
                 self._condition.wait(timeout=remaining)
 
+    def _result_document_page(
+        self,
+        request: DaemonOperationRequest,
+        principal: MutationPrincipal,
+        archive_identity: str,
+        snapshot: OperationControlRead,
+    ) -> OperationControlResult:
+        target = str(request.payload["request_id"])
+        with self._condition:
+            owned = self._exchanges.get(target)
+            if owned is not None:
+                if self._owned_retained_terminal_state(target, principal, archive_identity) is None:
+                    raise ValueError("operation_result_document_not_settled")
+                if owned.future is None or not owned.future.done() or not owned.acceptance_started:
+                    raise ValueError("operation_result_document_not_settled")
+                held_document = owned.result_document
+                if not isinstance(held_document, dict):
+                    raise ValueError("operation_result_document_missing")
+                if any(request.payload[key] != held_document[key] for key in ("request_id", "byte_length", "sha256")):
+                    raise ValueError("operation_result_document_identity_mismatch")
+                self._retain_terminal(owned)
+                owned.terminal_transfer_error = None
+            packet = self._read_retained_terminal(target, principal, archive_identity)
+            if packet is None:
+                raise ValueError("operation_result_document_expired")
+            document = packet.get("result_document")
+            if not isinstance(document, dict):
+                raise ValueError("operation_result_document_missing")
+            if any(request.payload[key] != document[key] for key in ("request_id", "byte_length", "sha256")):
+                raise ValueError("operation_result_document_identity_mismatch")
+            offset = _operation_int(request.payload.get("offset", 0), field="result offset")
+            length = int(document["byte_length"])
+            if offset > length:
+                raise ValueError("operation_result_document_cursor_invalid")
+            path = self._terminal_path(target)
+            assert path is not None
+            try:
+                with path.with_suffix(".product.json").open("rb") as stream:
+                    if os.fstat(stream.fileno()).st_size != length:
+                        raise ValueError("operation_result_document_corrupt")
+                    stream.seek(offset)
+                    chunk = stream.read(min(64 * 1024, length - offset))
+            except FileNotFoundError as exc:
+                raise ValueError("operation_result_document_missing") from exc
+            if len(chunk) != min(64 * 1024, length - offset):
+                raise ValueError("operation_result_document_corrupt")
+            end = offset + len(chunk)
+            return OperationControlResult(
+                {
+                    "document": document,
+                    "offset": offset,
+                    "data_base64": base64.b64encode(chunk).decode("ascii"),
+                    "next_offset": end if end < length else None,
+                },
+                snapshot,
+            )
+
     def control(
         self,
         request: DaemonOperationRequest,
@@ -1168,6 +1423,13 @@ class DaemonOperationRuntime:
         *,
         execution_context: QueryExecutionContext | None = None,
     ) -> OperationControlResult:
+        if request.operation == "operation.result":
+            if execution_context is not None:
+                from polylogue.operations.operation_context import abort_checkpoint
+
+                abort_checkpoint(execution_context)()
+            document_snapshot = self._unbound_control_snapshot(archive_identity)
+            return self._result_document_page(request, principal, archive_identity, document_snapshot)
         target = str(request.payload["request_id"])
         deadline = monotonic() + min(30.0, _operation_int(request.payload.get("timeout_ms", 0), field="timeout") / 1000)
         if execution_context is not None and execution_context.deadline_monotonic is not None:
@@ -1197,13 +1459,13 @@ class DaemonOperationRuntime:
         with self._condition:
             if self._closing:
                 raise QueryCancelledError("operation runtime is stopping")
-            retained = self._read_unbound_terminal(target, principal, archive_identity)
+            retained = self._read_retained_terminal(target, principal, archive_identity)
             if retained is not None:
                 return OperationControlResult(
-                    self._unbound_control_state(cast("dict[str, object]", retained["envelope"])),
+                    self._retained_control_state(cast("dict[str, object]", retained["envelope"])),
                     self._unbound_control_snapshot(archive_identity),
                 )
-            owned_terminal = self._owned_unbound_terminal_state(target, principal, archive_identity)
+            owned_terminal = self._owned_retained_terminal_state(target, principal, archive_identity)
             if owned_terminal is not None:
                 return OperationControlResult(owned_terminal, self._unbound_control_snapshot(archive_identity))
         cancelled_before_acceptance = False
@@ -1309,10 +1571,10 @@ class DaemonOperationRuntime:
                 exchange = self._exchanges.get(target)
                 if exchange is not None and exchange.context.principal != principal:
                     raise PermissionError("operation reference belongs to another principal")
-                retained = self._read_unbound_terminal(target, principal, archive_identity)
+                retained = self._read_retained_terminal(target, principal, archive_identity)
                 if retained is not None:
                     return OperationControlResult(
-                        self._unbound_control_state(cast("dict[str, object]", retained["envelope"])),
+                        self._retained_control_state(cast("dict[str, object]", retained["envelope"])),
                         self._unbound_control_snapshot(archive_identity),
                     )
                 pending = False
@@ -1348,7 +1610,7 @@ class DaemonOperationRuntime:
                         }
                     else:
                         state = {"outcome": "running" if still_executing else "indeterminate", "sequence": 0}
-                owned_terminal = self._owned_unbound_terminal_state(target, principal, archive_identity)
+                owned_terminal = self._owned_retained_terminal_state(target, principal, archive_identity)
                 if owned_terminal is not None:
                     state = owned_terminal
                     pending = False
@@ -1403,3 +1665,16 @@ class DaemonOperationRuntime:
                 if remaining <= 0:
                     return OperationControlResult(state, snapshot)
                 self._condition.wait(timeout=remaining)
+
+    async def recover_interrupted_operations(self, *, resolver_actor_ref: str) -> None:
+        """Recover through this runtime's original creator and short writer admissions."""
+        from polylogue.operations.mutation_replay import recover_interrupted_operations
+
+        def recover() -> None:
+            recover_interrupted_operations(
+                self.archive_root,
+                resolver_actor_ref=resolver_actor_ref,
+                input_demand=self.prepared_compute_adapter().amend_current_input_demand,
+            )
+
+        await self.prepared_phase("recovery", recover, estimated_bytes=0, exclusive_bytes=True)

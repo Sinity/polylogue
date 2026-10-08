@@ -470,10 +470,14 @@ class TestPolylogueEdgeCases:
 
         nonexistent = tmp_path / "does_not_exist.json"
 
-        # Should handle gracefully with empty counts
-        result = await archive.parse_file(nonexistent)
-        assert result.counts["sessions"] == 0
-        assert result.counts["messages"] == 0
+        # The daemon refuses a missing path permanently; the facade surfaces
+        # that typed refusal instead of an empty, successful-looking result.
+        from polylogue.api.ingest import IngestNotCompletedError
+
+        with pytest.raises(IngestNotCompletedError) as refused:
+            await archive.parse_file(nonexistent)
+        assert refused.value.outcome == "failed"
+        assert refused.value.error_code == "FileNotFoundError"
 
 
 # MERGED FROM test_facade_helpers_coverage.py

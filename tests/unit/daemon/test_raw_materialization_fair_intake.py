@@ -6,12 +6,13 @@ import asyncio
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
 from polylogue.daemon import cli as daemon_cli
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.intake import AdmissionOutcome, AdmissionResult, FairIntakeDispatcher, IntakeClassSpec
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback
@@ -19,6 +20,7 @@ from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWri
 from polylogue.operations.intake_adapters import RawMaterializationDiscovery, RawMaterializationIntakeAdapter
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_off_event_loop
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -54,18 +56,24 @@ async def test_fair_intake_converges_multiblob_component_with_profiles(tmp_path:
     the profiles empty after the raw session rows appear.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        for index in range(2):
-            archive.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=_codex_session(
-                    f"large-component-{index}",
-                    (("user", f"question {index}"), ("assistant", f"answer {index}")),
-                ),
-                source_path="large-component.jsonl",
-                acquired_at_ms=index + 1,
-            )
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
+
+    def _off_loop_1() -> Any:
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            for index in range(2):
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=_codex_session(
+                        f"large-component-{index}",
+                        (("user", f"question {index}"), ("assistant", f"answer {index}")),
+                    ),
+                    source_path="large-component.jsonl",
+                    canonical_source_path="large-component.jsonl",
+                    acquired_at_ms=index + 1,
+                )
+        return None
+
+    run_off_event_loop(_off_loop_1)
 
     sizes = _blob_sizes(archive_root)
     assert len(sizes) == 2
@@ -73,13 +81,14 @@ async def test_fair_intake_converges_multiblob_component_with_profiles(tmp_path:
     assert sum(sizes) > largest_blob_bytes, "the fixture must carry the component/seed skew"
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     try:
         bridge = DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop())
         owner = RawObservationConvergenceOwner(
             archive_root,
             compute_adapter=compute,
             write_bridge=bridge,
+            write_coordinator=coordinator,
         )
         profiles = compose_session_profile_callback(
             archive_root,

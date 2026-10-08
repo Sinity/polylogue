@@ -1,0 +1,129 @@
+{
+  "conversation": {
+    "conversationId": "native-conversation",
+    "title": "Structured conversation",
+    "createTime": "2026-01-01T00:00:00Z",
+    "modifyTime": "2026-01-01T00:00:05Z"
+  },
+  "responses": {
+    "responses": [
+      {
+        "responseId": "human",
+        "sender": "human",
+        "message": "Inspect the document",
+        "createTime": "2026-01-01T00:00:01Z"
+      },
+      {
+        "responseId": "unrelated-observation",
+        "parentResponseId": "human",
+        "sender": "assistant",
+        "message": "An independent observation.",
+        "createTime": "2026-01-01T00:00:01.500Z"
+      },
+      {
+        "responseId": "reasoning",
+        "parentResponseId": "unrelated-observation",
+        "sender": "ASSISTANT",
+        "message": null,
+        "createTime": "2026-01-01T00:00:02Z",
+        "steps": [
+          {
+            "text": [
+              "Check the source",
+              "Compare results"
+            ],
+            "tags": [
+              "thinking_start"
+            ],
+            "toolUsageResults": [
+              {
+                "toolName": "reader",
+                "text": "Read complete",
+                "isError": false
+              }
+            ],
+            "toolUsageCards": [
+              {
+                "type": "citation",
+                "url": "https://example.org/document"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "responseId": "search",
+        "parentResponseId": "reasoning",
+        "sender": "assistant",
+        "message": "",
+        "createTime": "2026-01-01T00:00:03Z",
+        "query": "document",
+        "queryType": "web",
+        "webSearchResults": [
+          {
+            "url": "https://example.org/document",
+            "title": "Document"
+          }
+        ],
+        "toolResponses": [
+          {
+            "toolName": "reader",
+            "input": {
+              "path": "document.txt"
+            },
+            "output": {
+              "body": "complete"
+            },
+            "isError": true
+          }
+        ]
+      },
+      {
+        "responseId": "attachment",
+        "parentResponseId": "search",
+        "sender": "assistant",
+        "createTime": "2026-01-01T00:00:04Z",
+        "fileAttachmentsMetadata": [
+          {
+            "fileMetadataId": "file-1",
+            "fileName": "document.txt",
+            "fileMimeType": "text/plain",
+            "fileUri": "users/synthetic/file-1/content"
+          }
+        ],
+        "fileAttachmentAssetMetadata": [
+          {
+            "assetId": "file-1",
+            "sizeBytes": 12
+          }
+        ],
+        "generatedImageUrls": [
+          "https://example.org/image"
+        ],
+        "partial": true,
+        "streamErrors": [
+          {
+            "code": "synthetic_interruption"
+          }
+        ],
+        "message": "The document is attached."
+      },
+      {
+        "responseId": "followup",
+        "parentResponseId": "attachment",
+        "sender": "assistant",
+        "message": "The follow-up is complete.",
+        "createTime": "2026-01-01T00:00:05Z"
+      }
+    ]
+  },
+  "response_nodes": {
+    "responseNodes": [],
+    "inflightResponses": [
+      {
+        "responseId": "inflight",
+        "sender": "ASSISTANT"
+      }
+    ]
+  }
+}

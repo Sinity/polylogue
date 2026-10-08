@@ -32,6 +32,7 @@ from concurrent.futures import Future
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
+from io import Reader
 from pathlib import Path
 from typing import IO, BinaryIO
 
@@ -61,6 +62,21 @@ INDEX_LIVENESS_WATERMARK_FILENAME = ".polylogue-index-liveness-watermark.json"
 _RESERVED_ROOT_ENTRY_NAMES = frozenset({_NAMESPACE_MARKER_FILENAME, INDEX_LIVENESS_WATERMARK_FILENAME})
 
 Heartbeat = Callable[[], None]
+
+
+def _notify_heartbeat(heartbeat: Heartbeat | None) -> None:
+    if heartbeat is None:
+        return
+    from polylogue.core.compute import DaemonOperationCancelled
+
+    try:
+        heartbeat()
+    except DaemonOperationCancelled:
+        raise
+    except Exception:
+        # Progress telemetry may fail without refusing valid bytes. A typed
+        # stop request remains the caller's physical cancellation boundary.
+        pass
 
 
 def _write_all(fd: int, data: bytes) -> None:
@@ -209,11 +225,17 @@ class BlobStore:
         offline quarantine recovery route. The shared directory is retained
         because removing it can race another writer between mkdir and mkstemp.
         """
-        if staged_path.parent != self.staging_root:
-            raise ValueError(f"staged path is outside blob staging root: {staged_path}")
-        self._ensure_private_staging_root()
+        # Preparation and cleanup admit the same private directory. Raw
+        # preparation owns a child workspace, so a deduplicated blob may
+        # legitimately live below the shared staging root.
+        if ".." in staged_path.parts:
+            raise ValueError(f"staged path contains parent traversal: {staged_path}")
+        self._prepared_staging_directory(staged_path.parent)
+        suffixes = tuple(companion_suffixes)
+        if any("/" in suffix for suffix in suffixes):
+            raise ValueError("staging companion suffix must remain in the same directory")
         staged_path.unlink(missing_ok=True)
-        for suffix in companion_suffixes:
+        for suffix in suffixes:
             staged_path.with_name(f"{staged_path.name}{suffix}").unlink(missing_ok=True)
 
     def blob_path(self, hash_hex: str) -> Path:
@@ -230,14 +252,31 @@ class BlobStore:
     # Write
     # ------------------------------------------------------------------
 
+    def _prepared_staging_directory(self, staging_directory: Path | None) -> Path:
+        staging_root = self._ensure_private_staging_root()
+        if staging_directory is not None:
+            if ".." in staging_directory.parts:
+                raise ValueError("prepared blob directory contains parent traversal")
+            candidate = staging_directory.absolute()
+            candidate.relative_to(staging_root.absolute())
+            cursor = candidate
+            while cursor != staging_root.absolute():
+                info = cursor.lstat()
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                    raise ValueError("prepared blob directory must be owned private staging")
+                cursor = cursor.parent
+            staging_root = candidate
+        return staging_root
+
     def prepare_from_path(
         self,
         source: Path,
         *,
         heartbeat: Heartbeat | None = None,
+        staging_directory: Path | None = None,
     ) -> PreparedBlob:
         """Stream-hash *source* into a private temporary file."""
-        staging_root = self._ensure_private_staging_root()
+        staging_root = self._prepared_staging_directory(staging_directory)
         fd: int | None = None
         temporary_path: Path | None = None
         try:
@@ -254,8 +293,7 @@ class BlobStore:
                     _write_all(fd, chunk)
                     size += len(chunk)
                     if heartbeat is not None:
-                        with suppress(Exception):
-                            heartbeat()
+                        _notify_heartbeat(heartbeat)
             with timed_io_phase("source", "blob_file_fsync"):
                 os.fsync(fd)
             os.close(fd)
@@ -271,12 +309,13 @@ class BlobStore:
 
     def prepare_from_fileobj(
         self,
-        source: IO[bytes],
+        source: Reader[bytes],
         *,
         heartbeat: Heartbeat | None = None,
+        staging_directory: Path | None = None,
     ) -> PreparedBlob:
         """Stream-hash an open binary object into a private temporary file."""
-        staging_root = self._ensure_private_staging_root()
+        staging_root = self._prepared_staging_directory(staging_directory)
         fd: int | None = None
         temporary_path: Path | None = None
         try:
@@ -292,8 +331,7 @@ class BlobStore:
                 size += len(chunk)
                 _write_all(fd, chunk)
                 if heartbeat is not None:
-                    with suppress(Exception):
-                        heartbeat()
+                    _notify_heartbeat(heartbeat)
             with timed_io_phase("source", "blob_file_fsync"):
                 os.fsync(fd)
             os.close(fd)
@@ -312,6 +350,7 @@ class BlobStore:
         write: Callable[[IO[bytes]], None],
         *,
         heartbeat: Heartbeat | None = None,
+        staging_directory: Path | None = None,
     ) -> PreparedBlob:
         """Stage the bytes a producer writes, then hash them in place.
 
@@ -322,7 +361,7 @@ class BlobStore:
         large it is. The digest is taken from the staged file after the
         producer finishes, so a restarted write is hashed as finally written.
         """
-        staging_root = self._ensure_private_staging_root()
+        staging_root = self._prepared_staging_directory(staging_directory)
         temporary_path: Path | None = None
         try:
             fd, temporary_name = tempfile.mkstemp(dir=staging_root, prefix=".blob.")
@@ -339,8 +378,7 @@ class BlobStore:
                     hasher.update(chunk)
                     size += len(chunk)
                     if heartbeat is not None:
-                        with suppress(Exception):
-                            heartbeat()
+                        _notify_heartbeat(heartbeat)
             os.chmod(temporary_path, 0o600)
             return PreparedBlob(hasher.hexdigest(), size, temporary_path)
         except BaseException:
@@ -348,9 +386,9 @@ class BlobStore:
                 self.discard_staging_path(temporary_path)
             raise
 
-    def prepare_from_bytes(self, data: bytes) -> PreparedBlob:
+    def prepare_from_bytes(self, data: bytes, *, staging_directory: Path | None = None) -> PreparedBlob:
         """Stage in-memory bytes without exposing their final hash path."""
-        staging_root = self._ensure_private_staging_root()
+        staging_root = self._prepared_staging_directory(staging_directory)
         fd: int | None = None
         temporary_path: Path | None = None
         try:
@@ -422,22 +460,6 @@ class BlobStore:
         outcome, shard_directory, root_needs_fsync = self._place_prepared(prepared)
         self._persist_publication((shard_directory,), root_needs_fsync=root_needs_fsync)
         return outcome
-
-    def publish_prepared_renewing(self, prepared: PreparedBlob) -> tuple[str, int]:
-        """Publish like :meth:`publish_prepared`, renewing an existing copy's age.
-
-        For a publisher outside the archive reservation protocol (a parse
-        worker without a write lease). Deduplicating against an old,
-        unreferenced copy would hand back bytes blob GC may reclaim at once;
-        touching the copy's mtime puts it back inside GC's minimum-age window
-        until the writer reserves it (``ArchiveBlobPublisher.adopt_published``
-        proves it present then). The prepared file is consumed either way.
-        """
-        try:
-            os.utime(self.blob_path(prepared.hash_hex))
-        except FileNotFoundError:
-            return self.publish_prepared(prepared)
-        return self.publish_prepared(prepared)
 
     def publish_many(self, prepared: Iterable[PreparedBlob]) -> tuple[tuple[str, int], ...]:
         """Publish a prepared batch in input order, persisting each directory once.
@@ -872,8 +894,7 @@ class BlobStore:
                     break
 
             if heartbeat is not None:
-                with suppress(Exception):
-                    heartbeat()
+                _notify_heartbeat(heartbeat)
 
         return BlobVerifyAllResult(
             checked=checked,

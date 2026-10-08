@@ -37,6 +37,24 @@ from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw
 from tests.infra.daemon_operations import DaemonOperationStack, cli_daemon_archive
 
 
+@pytest.fixture
+def excision_envelopes(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any] | None]:
+    """Retain the actual terminal exchange as context for an effect assertion."""
+    from polylogue.daemon_client import DaemonClient
+
+    observed: list[dict[str, Any] | None] = []
+    original = DaemonClient.operation_to_completion
+
+    def capture(self: DaemonClient, operation: str, payload: dict[str, object], **kwargs: Any) -> dict[str, Any] | None:
+        envelope: dict[str, Any] | None = original(self, operation, payload, **kwargs)
+        if operation == "mutation.session.excision":
+            observed.append(envelope)
+        return envelope
+
+    monkeypatch.setattr(DaemonClient, "operation_to_completion", capture)
+    return observed
+
+
 def _refusal_text(result: object) -> str:
     """Return everything a CLI refusal exposed, however it was delivered.
 
@@ -88,6 +106,7 @@ def _seed_session(archive_root: Path, *, native_id: str) -> str:
             source_conn,
             origin="codex-session",
             source_path=f"/fake/{native_id}.jsonl",
+            canonical_source_path=f"/fake/{native_id}.jsonl",
             source_index=0,
             payload=f"payload-{native_id}".encode(),
             acquired_at_ms=1_000,
@@ -152,7 +171,9 @@ def _seed_lineage_pair(archive_root: Path) -> tuple[str, str]:
 
 class TestExciseStandalone:
     def test_missing_session_reports_not_found(self, tmp_path: Path) -> None:
-        with patch("polylogue.cli.commands.excise.archive_root", return_value=tmp_path / "archive"):
+        root = tmp_path / "archive"
+        initialize_active_archive_root(root)
+        with patch("polylogue.cli.commands.excise.archive_root", return_value=root):
             runner = CliRunner()
             result = runner.invoke(
                 cli,
@@ -258,7 +279,9 @@ class TestExciseStandalone:
             index_conn.close()
         assert count == 1
 
-    def test_yes_applies_excision(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_yes_applies_excision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, excision_envelopes: list[dict[str, Any] | None]
+    ) -> None:
         """(b) daemon route: the excision effect is the daemon's, so drive it there."""
         with _daemon_archive(tmp_path, monkeypatch, lambda root: _seed_session(root, native_id="apply-1")) as (
             stack,
@@ -269,7 +292,7 @@ class TestExciseStandalone:
                 cli,
                 ["ops", "excise", "--session", str(session_id), "--reason", "secret leak", "--yes", "--json"],
             )
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 0, (result.output, excision_envelopes)
         payload = json.loads(result.output)
         assert payload["status"] == "ok"
         assert payload["detail"]  # receipt assertion id
@@ -536,7 +559,7 @@ class TestExciseLineageSafety:
         assert remaining == 2  # neither parent nor child touched
 
     def test_with_cascade_flag_removes_parent_and_dependents(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, excision_envelopes: list[dict[str, Any] | None]
     ) -> None:
         """(b) daemon route: cascade removal is a write, so it runs under the daemon."""
         with _daemon_archive(tmp_path, monkeypatch, _seed_lineage_pair) as (stack, seeded):
@@ -556,7 +579,7 @@ class TestExciseLineageSafety:
                     "--json",
                 ],
             )
-        assert result.exit_code == 0
+        assert result.exit_code == 0, (result.output, excision_envelopes)
         payload = json.loads(result.output)
         assert payload["status"] == "ok"
         # affected_count is index_sessions summed across the whole cascade.

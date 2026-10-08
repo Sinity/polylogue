@@ -28,8 +28,9 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.index_writer import close_fixture_index_connection, write_fixture_index_session
 from tests.infra.live_ingest import ingest_session
 
 
@@ -221,6 +222,43 @@ async def test_older_full_replace_does_not_overwrite_newer_session_body(async_ba
         row = await (await conn.execute("SELECT text FROM blocks WHERE session_id = ?", (session_id,))).fetchone()
     assert row is not None
     assert row["text"] == "newer browser capture text"
+
+
+async def test_equal_freshness_full_replace_updates_model_name(async_backend: SQLiteBackend) -> None:
+    def _make(model_name: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="conv-equal-freshness-model",
+            title="Equal freshness",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-03T00:00:00Z",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="msg-1",
+                    role=Role.ASSISTANT,
+                    text="same body",
+                    model_name=model_name,
+                    timestamp="2024-01-03T00:00:00Z",
+                )
+            ],
+            attachments=[],
+        )
+
+    session_id = await ingest_session(_make("model-before"), async_backend)
+    first_hash = (await _session_row(async_backend, session_id))["content_hash"]
+    replaced_id = await ingest_session(_make("model-after"), async_backend)
+
+    assert replaced_id == session_id
+    assert (await _session_row(async_backend, session_id))["content_hash"] != first_hash
+    async with async_backend.connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT model_name FROM messages WHERE session_id = ? AND native_id = 'msg-1'",
+                (session_id,),
+            )
+        ).fetchone()
+    assert row is not None
+    assert row["model_name"] == "model-after"
 
 
 # ---------------------------------------------------------------------------
@@ -520,11 +558,11 @@ def test_agent_policy_interval_survives_a_merge_append(test_db: Path) -> None:
             conn.close()
 
     def append(session: ParsedSession) -> None:
-        conn = sqlite3.connect(str(test_db))
+        conn = connect_measured(test_db)
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA foreign_keys = ON")
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn,
                 session,
                 content_hash=session_content_hash(session),
@@ -532,7 +570,7 @@ def test_agent_policy_interval_survives_a_merge_append(test_db: Path) -> None:
             )
             conn.commit()
         finally:
-            conn.close()
+            close_fixture_index_connection(conn)
 
     write_session_sync(test_db, chunk("a", approval="on-request", sandbox="read-only", network="restricted"))
     first = policy_rows()
@@ -838,19 +876,19 @@ def test_merge_append_duplicate_message_coordinates_also_guarded(test_db: Path) 
         }
     )
 
-    conn = sqlite3.connect(str(test_db))
+    conn = connect_measured(test_db)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         with pytest.raises(ValueError) as exc_info:
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn,
                 appended_session,
                 content_hash=session_content_hash(appended_session),
                 merge_append=True,
             )
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
     assert not isinstance(exc_info.value, sqlite3.IntegrityError)
     message = str(exc_info.value)

@@ -42,6 +42,7 @@ from polylogue.core.json import JSONValue
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.server_support import _safe_call
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.mcp import (
     ALL_CAPABILITIES,
     MCPServerUnderTest,
@@ -209,7 +210,7 @@ def _seeded_runtime_services(archive_root: Path) -> Iterator[None]:
     from polylogue.mcp import server_support
     from polylogue.services import RuntimeServices
 
-    initialize_active_archive_root(archive_root)
+    run_off_event_loop(lambda: initialize_active_archive_root(archive_root))
     services = RuntimeServices(
         config=Config(
             archive_root=archive_root,

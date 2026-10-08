@@ -3,8 +3,11 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
 import socket
 import sqlite3
+import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
@@ -17,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
+from pydantic import ValidationError
 
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_API_SCHEMA,
@@ -34,6 +38,7 @@ from polylogue.browser_capture.receiver import (
     existing_capture_state,
     receiver_identity,
     receiver_status_payload,
+    summarize_capture_envelope,
     write_capture_envelope,
 )
 from polylogue.browser_capture.route_contracts import (
@@ -211,81 +216,252 @@ def test_write_capture_envelope_replaces_same_artifact(tmp_path: Path) -> None:
     assert json.loads(first.path.read_text(encoding="utf-8"))["session"]["provider_session_id"] == "conv-123"
 
 
-class TestSpoolGovernor:
-    """Spool quota bounds disk growth from distinct-session capture floods (kwsb.1)."""
+@pytest.mark.parametrize("reverse", [False, True])
+def test_same_instance_equal_clock_acquisition_order_preserves_newest_snapshot(tmp_path: Path, reverse: bool) -> None:
+    snapshots = []
+    for sequence, text in [(1, "Earlier synthetic revision"), (2, "Later synthetic revision")]:
+        payload = _payload()
+        cast(dict[str, object], payload["provenance"])["acquisition_sequence"] = sequence
+        session = cast(dict[str, object], payload["session"])
+        session["updated_at"] = "2026-04-24T00:00:00+00:00"
+        session["turns"] = [{"provider_turn_id": "u1", "role": "user", "text": text}]
+        snapshots.append(BrowserCaptureEnvelope.model_validate(payload))
+    first, second = reversed(snapshots) if reverse else snapshots
+    write_capture_envelope(first, spool_path=tmp_path)
+    result = write_capture_envelope(second, spool_path=tmp_path)
+    assert result.convergence.value == ("superseded" if reverse else "publish")
+    retained = json.loads(result.path.read_text(encoding="utf-8"))
+    assert retained["session"]["turns"][0]["text"] == "Later synthetic revision"
 
-    def test_replacing_an_existing_capture_bypasses_the_quota(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Re-capturing the SAME session never grows the spool, so it must
-        never be refused by the quota — only NEW distinct sessions can."""
-        import polylogue.browser_capture.receiver as receiver_mod
 
-        monkeypatch.setattr(receiver_mod, "SPOOL_MAX_FILES", 1)
-        envelope = BrowserCaptureEnvelope.model_validate(_payload())
-        write_capture_envelope(envelope, spool_path=tmp_path)
-
-        # At the file-count quota already; replacing the same session must
-        # still succeed since it does not create a new file.
-        result = write_capture_envelope(envelope, spool_path=tmp_path)
-        assert result.replaced is True
-
-    def test_new_session_over_file_count_quota_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        import polylogue.browser_capture.receiver as receiver_mod
-        from polylogue.browser_capture.receiver import SpoolQuotaExceededError
-
-        monkeypatch.setattr(receiver_mod, "SPOOL_MAX_FILES", 1)
-        write_capture_envelope(
-            BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-1")), spool_path=tmp_path
-        )
-
-        with pytest.raises(SpoolQuotaExceededError):
-            write_capture_envelope(
-                BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-2")), spool_path=tmp_path
+def test_acquisition_counters_do_not_compare_independent_instances_or_change_fingerprints(tmp_path: Path) -> None:
+    earlier = BrowserCaptureEnvelope.model_validate(_payload())
+    first = earlier.model_copy(update={"provenance": earlier.provenance.model_copy(update={"acquisition_sequence": 1})})
+    second = earlier.model_copy(
+        update={
+            "provenance": earlier.provenance.model_copy(
+                update={"acquisition_sequence": 999, "extension_instance_id": "independent-instance"}
             )
+        }
+    )
+    assert summarize_capture_envelope(first).dedup_content_hash == summarize_capture_envelope(second).dedup_content_hash
+    second = second.model_copy(
+        update={
+            "session": second.session.model_copy(
+                update={
+                    "turns": [second.session.turns[0].model_copy(update={"text": "Independent synthetic revision"})]
+                }
+            )
+        }
+    )
+    write_capture_envelope(first, spool_path=tmp_path)
+    result = write_capture_envelope(second, spool_path=tmp_path)
+    assert result.convergence.value == "superseded"
+    assert json.loads(result.path.read_text(encoding="utf-8"))["session"]["turns"][0]["text"] == "Draft"
 
-    def test_under_quota_new_session_succeeds(self, tmp_path: Path) -> None:
-        result = write_capture_envelope(
-            BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-fresh")), spool_path=tmp_path
-        )
-        assert result.replaced is False
 
-    def test_concurrent_new_session_writes_never_exceed_the_quota(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """TOCTOU regression: without serializing check-and-write, concurrent
-        threads can all pass ``_check_spool_quota`` before any one write
-        lands, overshooting the file-count limit."""
-        import polylogue.browser_capture.receiver as receiver_mod
+@pytest.mark.parametrize("sequence", [0, -1, True, 1.5, 2**53])
+def test_capture_observation_refuses_unrepresentable_or_noninteger_sequences(sequence: object) -> None:
+    payload = _payload()
+    cast(dict[str, object], payload["provenance"])["acquisition_sequence"] = sequence
+    with pytest.raises(ValidationError):
+        BrowserCaptureEnvelope.model_validate(payload)
 
-        quota = 5
-        thread_count = 20
-        monkeypatch.setattr(receiver_mod, "SPOOL_MAX_FILES", quota)
 
-        successes: list[bool] = []
-        lock = Lock()
+def test_capture_observation_requires_instance_and_keeps_missing_historical_proof() -> None:
+    payload = _payload()
+    provenance = cast(dict[str, object], payload["provenance"])
+    provenance.pop("extension_instance_id")
+    assert BrowserCaptureEnvelope.model_validate(payload).provenance.acquisition_sequence is None
+    provenance["acquisition_sequence"] = 1
+    with pytest.raises(ValidationError):
+        BrowserCaptureEnvelope.model_validate(payload)
 
-        def _attempt(index: int) -> None:
-            try:
-                write_capture_envelope(
-                    BrowserCaptureEnvelope.model_validate(_payload(session_id=f"conv-race-{index}")),
-                    spool_path=tmp_path,
-                )
-                ok = True
-            except receiver_mod.SpoolQuotaExceededError:
-                ok = False
-            with lock:
-                successes.append(ok)
 
-        threads = [Thread(target=_attempt, args=(i,)) for i in range(thread_count)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+def test_duplicate_acquisition_witness_does_not_replace_newer_provider_revision(tmp_path: Path) -> None:
+    baseline = BrowserCaptureEnvelope.model_validate(_payload())
+    current = baseline.model_copy(
+        update={
+            "provenance": baseline.provenance.model_copy(update={"acquisition_sequence": 1}),
+            "session": baseline.session.model_copy(update={"updated_at": "2026-01-02T00:00:00Z"}),
+        }
+    )
+    accepted = write_capture_envelope(current, spool_path=tmp_path)
+    original = accepted.path.read_bytes()
+    older = current.model_copy(
+        update={
+            "provenance": current.provenance.model_copy(update={"acquisition_sequence": 3}),
+            "session": current.session.model_copy(update={"updated_at": "2026-01-01T00:00:00Z"}),
+        }
+    )
+    duplicate = write_capture_envelope(older, spool_path=tmp_path)
+    assert duplicate.convergence.value == "superseded"
+    assert duplicate.path.read_bytes() == original
 
-        written = list(tmp_path.rglob("*.json"))
-        assert len(written) <= quota, f"spool grew to {len(written)} files, over quota {quota}"
-        assert sum(successes) == len(written)
+
+def test_duplicate_publication_durably_advances_witness_before_delayed_revision_after_restart(tmp_path: Path) -> None:
+    baseline = BrowserCaptureEnvelope.model_validate(_payload())
+    first = baseline.model_copy(
+        update={
+            "provenance": baseline.provenance.model_copy(update={"acquisition_sequence": 1}),
+            "session": baseline.session.model_copy(
+                update={"turns": [baseline.session.turns[0].model_copy(update={"text": "Synthetic alpha"})]}
+            ),
+        }
+    )
+    write_capture_envelope(first, spool_path=tmp_path)
+    latest = first.model_copy(update={"provenance": first.provenance.model_copy(update={"acquisition_sequence": 3})})
+    duplicate = write_capture_envelope(latest, spool_path=tmp_path)
+    assert duplicate.convergence.value == "duplicate" and duplicate.deduplicated
+    assert json.loads(duplicate.path.read_text(encoding="utf-8"))["provenance"]["acquisition_sequence"] == 3
+    delayed = first.model_copy(
+        update={
+            "provenance": first.provenance.model_copy(update={"acquisition_sequence": 2}),
+            "session": first.session.model_copy(
+                update={"turns": [first.session.turns[0].model_copy(update={"text": "Synthetic beta"})]}
+            ),
+        }
+    )
+    restarted = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path; "
+            "from polylogue.browser_capture.receiver import write_capture_envelope_bytes; "
+            "result = write_capture_envelope_bytes(sys.argv[1].encode(), spool_path=Path(sys.argv[2])); "
+            "print(result.convergence.value)",
+            delayed.model_dump_json(exclude_none=True),
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert restarted.stdout.strip() == "superseded"
+    assert json.loads(duplicate.path.read_text(encoding="utf-8"))["session"]["turns"][0]["text"] == "Synthetic alpha"
+    inode = duplicate.path.stat().st_ino
+    cached = write_capture_envelope(latest, spool_path=tmp_path)
+    assert cached.convergence.value == "duplicate"
+    assert cached.path.stat().st_ino == inode
+
+
+def test_native_envelope_spool_preserves_mapping_order_and_ordinary_parser_identity(tmp_path: Path) -> None:
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.sources.parsers.browser_capture import parse as parse_capture
+    from polylogue.sources.parsers.chatgpt import parse as parse_native
+
+    fixture = Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json"
+    native = json.loads(fixture.read_text(encoding="utf-8"))
+    assert list(native["mapping"]) != sorted(native["mapping"])
+    payload = _payload(session_id=native["conversation_id"])
+    cast(dict[str, object], payload["session"])["title"] = native["title"]
+    payload["raw_provider_payload"] = native
+    envelope = BrowserCaptureEnvelope.model_validate(payload)
+    canonical_order = {**native, "mapping": dict(sorted(native["mapping"].items()))}
+    reordered = envelope.model_copy(update={"raw_provider_payload": canonical_order})
+    assert (
+        summarize_capture_envelope(envelope).dedup_content_hash
+        == summarize_capture_envelope(reordered).dedup_content_hash
+    )
+    published = write_capture_envelope(envelope, spool_path=tmp_path)
+    retained = json.loads(published.path.read_text(encoding="utf-8"))
+    assert list(retained["raw_provider_payload"]["mapping"]) == list(native["mapping"])
+    expected = parse_native(native, native["conversation_id"])
+    actual = parse_capture(retained, native["conversation_id"])
+    assert [message.model_dump(mode="json") for message in actual.messages] == [
+        message.model_dump(mode="json") for message in expected.messages
+    ]
+    assert session_content_hash(actual) == session_content_hash(expected)
+
+
+def test_claude_native_spool_preserves_graph_order_and_missing_id_attachment_custody(tmp_path: Path) -> None:
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.sources.parsers.browser_capture import parse as parse_capture
+    from polylogue.sources.parsers.claude.ai_parser import parse_ai
+
+    fixture = Path(__file__).parents[2] / "fixtures" / "claude-ai" / "native-attachment-order.json"
+    native = json.loads(fixture.read_text(encoding="utf-8"))
+    assert all(not message.get("uuid") and not message.get("id") for message in native["chat_messages"])
+    payload = _payload(provider="claude-ai", session_id=native["uuid"])
+    expected = parse_ai(native, native["uuid"])
+    session = cast(dict[str, object], payload["session"])
+    session["title"] = native["name"]
+    session["turns"] = [
+        {
+            "provider_turn_id": message.provider_message_id or "",
+            "ordinal": ordinal,
+            "role": message.role.value,
+            "text": message.text,
+        }
+        for ordinal, message in enumerate(expected.messages)
+    ]
+    payload["raw_provider_payload"] = native
+    envelope = BrowserCaptureEnvelope.model_validate(payload)
+    published = write_capture_envelope(envelope, spool_path=tmp_path)
+    retained = json.loads(published.path.read_text(encoding="utf-8"))
+    assert retained["raw_provider_payload"] == native
+    expected = parse_ai(native, native["uuid"])
+    assert expected.messages and expected.attachments
+    assert [message.text for message in expected.messages] == [
+        "Earlier synthetic message",
+        "Later synthetic message",
+    ]
+    assert [message.text for message in expected.messages] != [message["text"] for message in native["chat_messages"]]
+    actual = parse_capture(retained, native["uuid"])
+    assert [message.model_dump(mode="json") for message in actual.messages] == [
+        message.model_dump(mode="json") for message in expected.messages
+    ]
+    assert [attachment.model_dump(mode="json") for attachment in actual.attachments] == [
+        attachment.model_dump(mode="json") for attachment in expected.attachments
+    ]
+    assert session_content_hash(actual) == session_content_hash(expected)
+
+
+def test_capture_admission_preserves_a_backlog_larger_than_twenty_thousand(tmp_path: Path) -> None:
+    # Populate valid durable envelopes without paying an fsync per fixture.
+    # Admission still runs the actual production stage/reservation/publish path.
+    first_path = None
+    first_bytes = None
+    for index in range(20_001):
+        envelope = BrowserCaptureEnvelope.model_validate(_payload(session_id=f"backlog-{index}"))
+        path = capture_artifact_path(summarize_capture_envelope(envelope), tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        raw = envelope.model_dump_json().encode("utf-8")
+        path.write_bytes(raw)
+        if index == 0:
+            first_path, first_bytes = path, raw
+    result = write_capture_envelope(
+        BrowserCaptureEnvelope.model_validate(_payload(session_id="after-backlog")), spool_path=tmp_path
+    )
+    assert result.path.is_file()
+    assert first_path is not None and first_path.read_bytes() == first_bytes
+    assert sum(1 for _ in tmp_path.rglob("*.json")) == 20_002
+
+
+def test_concurrent_distinct_captures_are_all_preserved(tmp_path: Path) -> None:
+    outcomes: list[object] = []
+    lock = Lock()
+
+    def write(index: int) -> None:
+        result: object
+        try:
+            result = write_capture_envelope(
+                BrowserCaptureEnvelope.model_validate(_payload(session_id=f"conv-race-{index}")),
+                spool_path=tmp_path,
+            )
+        except Exception as exc:
+            result = exc
+        with lock:
+            outcomes.append(result)
+
+    threads = [Thread(target=write, args=(index,)) for index in range(20)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(outcomes) == 20
+    assert not any(isinstance(result, Exception) for result in outcomes)
+    assert len(list(tmp_path.rglob("*.json"))) == 20
 
 
 def test_existing_capture_state_reports_written_artifact(tmp_path: Path) -> None:
@@ -625,31 +801,111 @@ def test_receiver_ack_hashes_exact_javascript_request_bytes(tmp_path: Path) -> N
     assert accepted.content_hash == hashlib.sha256(request_body).hexdigest()
 
 
-def test_receiver_returns_429_without_writing_when_spool_quota_exceeded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import polylogue.browser_capture.receiver as receiver_mod
-
-    monkeypatch.setattr(receiver_mod, "SPOOL_MAX_FILES", 1)
-    write_capture_envelope(
+def test_receiver_admits_distinct_captures_without_discarding_existing_evidence(tmp_path: Path) -> None:
+    prior = write_capture_envelope(
         BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-existing")), spool_path=tmp_path
     )
-    files_before = sorted(tmp_path.rglob("*.json"))
-
+    original = prior.path.read_bytes()
     with _running_receiver(tmp_path) as (host, port):
         response = _request(
             host,
             port,
             "POST",
             "/v1/browser-captures",
-            body=_payload(session_id="conv-new-over-quota"),
+            body=_payload(session_id="conv-new"),
             origin=_EXTENSION_ORIGIN,
         )
-        error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
+        accepted = BrowserCaptureAcceptedPayload.model_validate(json.loads(response.read()))
+    assert response.status == HTTPStatus.ACCEPTED
+    assert accepted.ok
+    assert prior.path.read_bytes() == original
+    assert len(list(tmp_path.rglob("*.json"))) == 2
 
-    assert response.status == HTTPStatus.TOO_MANY_REQUESTS
-    assert error.error == "spool_quota_exceeded"
-    assert sorted(tmp_path.rglob("*.json")) == files_before
+
+def test_physical_publication_exhaustion_refuses_without_retiring_resident_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prior = write_capture_envelope(
+        BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-existing")), spool_path=tmp_path
+    )
+    original = prior.path.read_bytes()
+
+    def exhausted_publication(_source: object, _target: object) -> None:
+        raise OSError(errno.ENOSPC, "synthetic filesystem capacity exhausted")
+
+    monkeypatch.setattr(os, "replace", exhausted_publication)
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "POST",
+            "/v1/browser-captures",
+            body=_payload(session_id="conv-new"),
+            origin=_EXTENSION_ORIGIN,
+        )
+        refused = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
+    assert response.status == HTTPStatus.INSUFFICIENT_STORAGE
+    assert refused.error == "spool_storage_exhausted"
+    assert prior.path.read_bytes() == original
+    assert len(list(tmp_path.rglob("*.json"))) == 1
+
+
+def test_duplicate_retry_completes_a_previously_failed_directory_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import stat
+
+    real_fsync = os.fsync
+    failed = False
+    directory_syncs = 0
+    target = capture_artifact_path(BrowserCaptureEnvelope.model_validate(_payload()), tmp_path)
+
+    def interrupted_sync(descriptor: int) -> None:
+        nonlocal failed, directory_syncs
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_syncs += 1
+            # Reach the actual post-rename barrier, after new-ancestor sync.
+            if not failed and target.is_file():
+                failed = True
+                raise OSError(errno.EIO, "synthetic publication sync interruption")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", interrupted_sync)
+    with _running_receiver(tmp_path) as (host, port):
+        first = _request(host, port, "POST", "/v1/browser-captures", body=_payload(), origin=_EXTENSION_ORIGIN)
+        assert first.status == HTTPStatus.INTERNAL_SERVER_ERROR
+        first.read()
+        path = target
+        inode = path.stat().st_ino
+        syncs_before_retry = directory_syncs
+        retried = _request(host, port, "POST", "/v1/browser-captures", body=_payload(), origin=_EXTENSION_ORIGIN)
+        accepted = BrowserCaptureAcceptedPayload.model_validate(json.loads(retried.read()))
+    assert retried.status == HTTPStatus.ACCEPTED
+    assert accepted.deduplicated is True
+    assert directory_syncs > syncs_before_retry
+    assert path.stat().st_ino == inode
+
+
+def test_orphan_inspection_requires_pairing_even_on_an_unauthenticated_receiver(tmp_path: Path) -> None:
+    root = tmp_path / "backfill-checkpoints"
+    root.mkdir()
+    raw = b'{"checkpoint":{"jobs":[]}}'
+    path = root / "retained.json"
+    path.write_bytes(raw)
+    digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "GET",
+            f"/v1/capture-jobs/orphans/{digest}/payload?client_protocol=1",
+            origin=_EXTENSION_ORIGIN,
+        )
+        refused = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
+    assert response.status == HTTPStatus.UNAUTHORIZED
+    assert refused.error == "orphan_inspection_auth_required"
+    assert path.read_bytes() == raw
 
 
 def test_receiver_does_not_double_prefix_prefixed_capture_id(tmp_path: Path) -> None:
@@ -1337,7 +1593,9 @@ def test_receiver_answers_an_unreservable_capture_with_retryable_pressure(
     assert not list(tmp_path.rglob("*.json"))
 
 
-def _post_capture_raw(host: str, port: int, *, content_length: str, body: bytes) -> tuple[int, dict[str, object]]:
+def _post_capture_raw(
+    host: str, port: int, *, content_length: str, body: bytes, end_body: bool = False
+) -> tuple[int, dict[str, object]]:
     """Send a capture request whose declared length the body need not match."""
     with socket.create_connection((host, port), timeout=10) as sock:
         sock.sendall(
@@ -1350,6 +1608,8 @@ def _post_capture_raw(host: str, port: int, *, content_length: str, body: bytes)
             ).encode("ascii")
             + body
         )
+        if end_body:
+            sock.shutdown(socket.SHUT_WR)
         response = HTTPResponse(sock)
         response.begin()
         return response.status, json.loads(response.read())
@@ -1385,25 +1645,19 @@ def test_receiver_refuses_a_content_length_that_is_not_ascii_digits(tmp_path: Pa
     assert body["error"] == "invalid_content_length"
 
 
-@pytest.mark.uses_real_clock("the receiver's socket idle deadline is wall-clock")
-def test_receiver_cancels_a_stalled_upload_and_releases_its_reservation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An upload that stops sending is answered 408 and its staged space released.
+def test_receiver_releases_the_reservation_after_producer_cancellation(tmp_path: Path) -> None:
+    """Closing the producer ends its physical read and releases partial staging.
 
-    Anti-vacuity: without the idle deadline the handler blocks in ``read``
-    holding the reserved staging file, so no response arrives and the
-    staging directory keeps the file.
+    Anti-vacuity: a partial stage surviving EOF would retain reserved space
+    after the producer has settled. A slow open producer is not cancellation.
     """
     import polylogue.browser_capture.capture_stream as capture_stream
-    import polylogue.browser_capture.server as capture_server
 
-    monkeypatch.setattr(capture_server, "CAPTURE_BODY_IDLE_TIMEOUT_S", 0.2)
     with _running_receiver(tmp_path) as (host, port):
-        status, body = _post_capture_raw(host, port, content_length="4096", body=b'{"polylogue')
+        status, body = _post_capture_raw(host, port, content_length="4096", body=b'{"polylogue', end_body=True)
 
-    assert status == HTTPStatus.REQUEST_TIMEOUT
-    assert body["error"] == "upload_stalled"
+    assert status == HTTPStatus.BAD_REQUEST
+    assert body["error"] == "incomplete_body"
     assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
 
 
@@ -1450,21 +1704,23 @@ def test_selected_message_candidate_persists_through_the_daemon_actuator(
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.write_lease import write_lease
     from tests.infra.daemon_operations import running_daemon_operations
+    from tests.infra.live_ingest import write_index_session
 
     archive_root = tmp_path / "archive"
     message_ref = "chatgpt-export:conv-123:n:turn-1"
     spool = tmp_path / "spool"
     write_capture_envelope(BrowserCaptureEnvelope.model_validate(_payload()), spool_path=spool)
-    with write_lease("test.capture-intelligence"), ArchiveStore(archive_root) as archive:
-        archive.write_raw_and_parsed(
+    # An outer write lease names its archive root; custody admits only an
+    # existing root directory.
+    archive_root.mkdir(parents=True, exist_ok=True)
+    with write_lease("test.capture-intelligence", archive_root=archive_root), ArchiveStore(archive_root) as archive:
+        write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CHATGPT,
                 provider_session_id="conv-123",
                 messages=[ParsedMessage(provider_message_id="turn-1", role=Role.USER, text="selected message")],
             ),
-            payload=b"synthetic capture evidence",
-            source_path=str(spool / "chatgpt" / "conv-123.json"),
-            acquired_at_ms=0,
         )
     with running_daemon_operations(archive_root) as stack:
         monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: stack.socket_path)
@@ -1691,6 +1947,7 @@ def test_http_receipt_preserves_resident_identity_through_backfill_retirement(tm
     assert receipt["outcome"] == outcome
     assert receipt["content_hash"] == hashlib.sha256(artifact.read_bytes()).hexdigest()
     assert result["submissions"] == 1
+    assert result["staged_files"] == 0
     assert result["item"]["envelope"] is None
     assert result["job"]["status"] == "complete"
     if outcome == "superseded":

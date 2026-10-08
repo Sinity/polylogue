@@ -70,8 +70,7 @@ from polylogue.storage.sqlite.connection_profile import (
     open_isolated_write_connection,
     open_readonly_connection,
 )
-from polylogue.storage.sqlite.managed_connection import sqlite_connection
-from polylogue.storage.sqlite.write_lease import require_write_lease
+from polylogue.storage.sqlite.write_lease import require_write_lease, write_lease
 
 
 def _emit_gc_refusal(
@@ -108,11 +107,29 @@ def _readonly(path: Path) -> sqlite3.Connection:
     return open_readonly_connection(path, timeout_class="background-read")
 
 
+def _gc_archive_root(path: Path) -> Path:
+    """The archive root owning a GC tier path, including a generation index."""
+    return path.parent.parent.parent if path.parent.parent.name == ".index-generations" else path.parent
+
+
 def _writer(path: Path, *, archive_root: Path | None = None) -> sqlite3.Connection:
     """Open one lease-bound GC write tier without sibling attachments."""
     if archive_root is None:
-        archive_root = path.parent.parent.parent if path.parent.parent.name == ".index-generations" else path.parent
+        archive_root = _gc_archive_root(path)
     return open_isolated_write_connection(path, purpose=f"blob GC({path})", archive_root=archive_root)
+
+
+@contextmanager
+def _gc_writer_scope(control_db_path: Path) -> Iterator[None]:
+    """Hold the archive writer lease for one mutating GC pass.
+
+    GC mutates the Source ledger and unlinks blobs, so it is an archive writer
+    like any other: the daemon reaches it inside its coordinator lease (the
+    nested acquisition re-enters that lease), and a direct caller acquires the
+    root's physical custody here, waiting for any other writer process.
+    """
+    with write_lease("maintenance.blob_gc", archive_root=_gc_archive_root(control_db_path)):
+        yield
 
 
 @dataclass
@@ -536,13 +553,6 @@ def _gc_member_table_available(conn: sqlite3.Connection) -> bool:
     return _table_exists(conn, "gc_generation_members")
 
 
-def _gc_namespace_identity_columns_available(conn: sqlite3.Connection) -> bool:
-    if not _table_exists(conn, "gc_generations"):
-        return False
-    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(gc_generations)")}
-    return {"blob_namespace_marker"}.issubset(columns)
-
-
 def _commit_gc_generation_intent(
     control_db_path: Path,
     *,
@@ -552,11 +562,11 @@ def _commit_gc_generation_intent(
     namespace_identity: _BlobNamespaceIdentity,
 ) -> None:
     """Commit a generation and all exact member intents before any unlink."""
-    with sqlite_connection(control_db_path) as conn:
+    with closing(_writer(control_db_path)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         if not _gc_member_table_available(conn):
             raise RuntimeError("blob GC durable member-intent schema is unavailable")
-        if not _gc_namespace_identity_columns_available(conn):
+        if not _table_exists(conn, "gc_generations"):
             raise RuntimeError("blob GC durable namespace-identity schema is unavailable")
         conn.execute(
             "INSERT INTO gc_generations "
@@ -609,7 +619,7 @@ def _commit_gc_member_outcome(
 
 def _finalize_gc_generation(control_db_path: Path, generation_id: str) -> bool:
     """Complete one generation only once every durable member is explained."""
-    with sqlite_connection(control_db_path) as conn:
+    with closing(_writer(control_db_path)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT completed_at_ms FROM gc_generations WHERE generation_id = ?", (generation_id,)
@@ -645,7 +655,7 @@ def _pending_gc_generation(control_db_path: Path) -> tuple[str | None, str | Non
     with closing(_readonly(control_db_path)) as conn:
         if not _gc_member_table_available(conn):
             return None, "blob GC durable member-intent schema is unavailable"
-        if not _gc_namespace_identity_columns_available(conn):
+        if not _table_exists(conn, "gc_generations"):
             return None, "blob GC durable namespace-identity schema is unavailable"
         rows = conn.execute(
             "SELECT generation_id FROM gc_generations WHERE completed_at_ms IS NULL ORDER BY started_at_ms, generation_id"
@@ -795,15 +805,7 @@ def _execute_gc_generation_members(
         ]
     deleted_now = 0
     reclaimed_bytes_now = 0
-    archive_root = (
-        control_db_path.parent
-        if control_db_path.name == "source.db"
-        else (
-            control_db_path.parent.parent.parent
-            if control_db_path.parent.parent.name == ".index-generations"
-            else control_db_path.parent
-        )
-    )
+    archive_root = _gc_archive_root(control_db_path)
     require_write_lease(f"blob GC({control_db_path})", archive_root=archive_root)
     source_conn = _writer(control_db_path, archive_root=archive_root)
     index_conn: sqlite3.Connection | None = None
@@ -1038,11 +1040,13 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
     """
     from polylogue.storage.blob_publication import exclude_archive_blob_publishers
 
-    with exclude_archive_blob_publishers(source_db_path):
+    # Writer custody precedes publisher exclusion: a publisher holds custody
+    # while it waits for its shared slot, so the reverse order would deadlock.
+    with _gc_writer_scope(source_db_path), exclude_archive_blob_publishers(source_db_path):
         if not _database_has_table(source_db_path, "gc_generation_members"):
             return 0, 0, ("blob GC durable member-intent schema is unavailable",)
         with closing(_readonly(source_db_path)) as schema_conn:
-            if not _gc_namespace_identity_columns_available(schema_conn):
+            if not _table_exists(schema_conn, "gc_generations"):
                 return 0, 0, ("blob GC durable namespace-identity schema is unavailable",)
         tier_blockers = _reference_tier_blockers({"source": source_db_path, "index": index_db_path})
         if tier_blockers:
@@ -1239,8 +1243,23 @@ def run_blob_gc_report(
 
     ``run_blob_gc`` remains the compatibility API returning only the affected
     count. This report form exposes the same pass as machine-readable counts
-    for CLI dry-runs and maintenance logs.
+    for CLI dry-runs and maintenance logs. A mutating pass holds the archive
+    writer lease for its whole plan, intent, unlink and finalization; a dry
+    run opens nothing writable.
     """
+    if dry_run:
+        return _run_blob_gc_pass(db_path, blob_dir, max_batch, dry_run=True)
+    with _gc_writer_scope(_gc_control_db_path(Path(db_path))):
+        return _run_blob_gc_pass(db_path, blob_dir, max_batch, dry_run=False)
+
+
+def _run_blob_gc_pass(
+    db_path: str | Path,
+    blob_dir: str | Path,
+    max_batch: int,
+    *,
+    dry_run: bool,
+) -> BlobGCResult:
     blob_path = Path(blob_dir)
     db_path_obj = Path(db_path)
     report = BlobGCResult(
@@ -1281,7 +1300,7 @@ def run_blob_gc_report(
         _emit_gc_refusal(report.blocked_reason, phase="preflight")
         return report
     with closing(_readonly(control_db_path)) as schema_conn:
-        if not _gc_namespace_identity_columns_available(schema_conn):
+        if not _table_exists(schema_conn, "gc_generations"):
             report.blocked_reason = "blob GC durable namespace-identity schema is unavailable"
             _emit_gc_refusal(report.blocked_reason, phase="preflight")
             return report
@@ -1540,7 +1559,7 @@ def _abandon_pending_gc_generation(
     """
 
     path = Path(control_db_path)
-    with sqlite_connection(path) as conn:
+    with closing(_writer(path)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT completed_at_ms FROM gc_generations WHERE generation_id = ?", (generation_id,)

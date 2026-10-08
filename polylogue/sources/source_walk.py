@@ -1,11 +1,16 @@
-"""Source path discovery and cursor-aware walk setup."""
+"""Source path discovery and cursor-aware walk setup.
+
+Every directory source is enumerated by its declared layout
+(:func:`polylogue.sources.source_layout.source_layout_for`) through the same
+ordered walk the daemon's discovery uses, so a one-shot or census route
+cannot reach material the watcher would never admit.
+"""
 
 from __future__ import annotations
 
 import os
 import stat
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,12 +21,9 @@ from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
 from .assembly import SidecarData, get_assembly_spec
-from .origin_specs import SourceClass, artifact_rule_for_path, recognize_source_class
-
-_SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
-_SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
-_HERMES_SQLITE_EXTENSIONS = frozenset({".db", ".sqlite", ".sqlite3"})
-_SKIP_DIRS = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
+from .origin_specs import SourceClass, recognize_source_class
+from .source_layout import SourceLayout, source_layout_for
+from .source_root_admission import SourceRootRefusedError, containing_archive_root, refuse_non_capture_source_root
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +63,8 @@ def census_source_root(root: Path, *, provider: Provider) -> SourceRootCensus:
         source_census = census_source(root)
         antigravity_counts = source_census.counts
         disposition_counts: dict[SourceClass, int] = {
-            "session": antigravity_counts[AntigravitySourceRole.CONVERSATION_PROTOBUF],
+            "session": antigravity_counts[AntigravitySourceRole.CONVERSATION_PROTOBUF]
+            + antigravity_counts[AntigravitySourceRole.EXPORT_DOCUMENT],
             "non_session": antigravity_counts[AntigravitySourceRole.BRAIN_DOCUMENT]
             + antigravity_counts[AntigravitySourceRole.METADATA_SIDECAR],
             "unsupported": antigravity_counts[AntigravitySourceRole.UNKNOWN],
@@ -77,22 +80,15 @@ def census_source_root(root: Path, *, provider: Provider) -> SourceRootCensus:
         )
     unexplained: list[Path] = []
 
-    def record_walk_error(error: OSError) -> None:
-        unexplained.append(Path(error.filename) if error.filename is not None else root)
-
     # The same file-or-directory resolution as ``_resolve_source_paths``: a
     # directly configured file is the one candidate. Under a directory the
-    # census takes every supported-name entry before the regular-file
-    # admission filter, so a refused link or FIFO stays in the denominator.
+    # census takes every file the declared layout places -- the admitted
+    # files and the links discovery refuses -- so a refused link stays in the
+    # denominator.
     walked = root.is_dir()
+    candidates: list[Path] = [root] if root.is_file() else []
     if walked:
-        candidates = [
-            path
-            for path in _iter_source_entries(root, onerror=record_walk_error)
-            if _is_supported_source_path(path, provider=provider)
-        ]
-    else:
-        candidates = [root] if root.is_file() else []
+        candidates = layout_source_candidates(provider.value, root)
     counts: dict[SourceClass, int] = {"session": 0, "non_session": 0, "unsupported": 0}
     candidate_bytes = 0
     for path in candidates:
@@ -124,114 +120,68 @@ def _empty_sidecar_data() -> SidecarData:
     return {}
 
 
-def _has_supported_extension(path: Path) -> bool:
-    name_lower = path.name.lower()
-    for ext in _SUPPORTED_DOUBLE_EXTENSIONS:
-        if name_lower.endswith(ext):
-            return True
-    return path.suffix.lower() in _SUPPORTED_EXTENSIONS
+def _outside_foreign_archive(path: Path, *, base: Path, destination: Path | None) -> bool:
+    """Whether ``path`` lies outside every nested archive root the walk must refuse.
 
-
-def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
-    if _has_supported_extension(path):
-        return True
-    if (
-        provider is Provider.ANTIGRAVITY
-        and path.suffix.lower() == ".pb"
-        and artifact_rule_for_path(provider, str(path)) is not None
-    ):
-        return True
-    if provider is Provider.ANTIGRAVITY and path.suffix.lower() in _HERMES_SQLITE_EXTENSIONS:
-        # The trajectory store has no stable basename.  Enumerate SQLite
-        # candidates, then let the schema recognizer distinguish it from
-        # unrelated databases.
-        return True
-    # Declared artifact paths can use formats that have no reliable suffix,
-    # such as Claude Code tool-result sidecars. Let the owning declaration
-    # admit those paths while keeping ordinary source discovery suffix-bound.
-    if artifact_rule_for_path(provider, str(path)) is not None:
-        return True
-    if (
-        provider is Provider.ANTIGRAVITY
-        and "brain" in {part.lower() for part in path.parts[:-1]}
-        and path.suffix.lower() == ".md"
-    ):
-        return True
-    # A broad Hermes root must enumerate every SQLite candidate so the
-    # OriginSpec recognizer can publish a typed unsupported/non-session
-    # observation.  Structural inspection belongs to admission, not the walk;
-    # otherwise unrelated databases disappear from the source denominator.
-    return provider is Provider.HERMES and path.suffix.lower() in _HERMES_SQLITE_EXTENSIONS
-
-
-def _walk_source_paths(base: Path, *, provider: Provider = Provider.UNKNOWN) -> list[Path]:
-    paths: list[Path] = []
-    for file_path in _iter_source_entries(base):
-        if not _is_supported_source_path(file_path, provider=provider):
-            continue
-        # Admission refuses symlinks, FIFOs, sockets, and other non-regular
-        # entries; the census counts them as unsupported.  lstat is
-        # deliberate: following a symlink here would make production admission
-        # disagree with the census denominator.  A candidate that cannot be
-        # inspected stays in the walk, so its per-file read records the
-        # failure on the cursor instead of the scan reporting it as absent.
-        try:
-            mode = os.stat(file_path, follow_symlinks=False).st_mode
-        except OSError:
-            paths.append(file_path)
-            continue
-        if stat.S_ISREG(mode):
-            paths.append(file_path)
-    return sorted(paths)
-
-
-def _iter_source_entries(base: Path, *, onerror: Callable[[OSError], None] | None = None) -> list[Path]:
-    """Enumerate source files under the canonical traversal policy.
-
-    Both admission and census use this helper so skipped directories and
-    follow-link behavior cannot drift between the two routes.
+    A layout may reach an archive root nested under the source (an export
+    drop holding a copied archive); its files are offered only when the
+    ownership law admits that root as this acquisition's own destination.
     """
-    entries: list[Path] = []
-    # Directory links are followed, so a linked export tree is acquired. A
-    # link to a directory already entered on this walk -- an ancestor, or a
-    # tree a sorted-earlier link already reached -- is recorded as a
-    # non-regular entry and not entered again; without that, a cycle never
-    # terminates. Real directories are always entered.
-    visited: set[tuple[int, int]] = set()
+
+    nested = containing_archive_root(path.parent)
+    if nested is None or nested == containing_archive_root(base):
+        return True
     try:
-        base_stat = os.stat(base)
-    except OSError:
+        refuse_non_capture_source_root(nested, destination=destination)
+    except SourceRootRefusedError:
+        return False
+    return True
+
+
+def layout_source_paths(
+    name: str, base: Path, *, destination: Path | None = None, layout: SourceLayout | None = None
+) -> list[Path]:
+    """Every regular file ``base``'s layout admits, in discovery order.
+
+    ``layout`` defaults to the one ``name`` declares.
+    """
+
+    from polylogue.sources.live.discovery import _source_path_steps
+    from polylogue.sources.live.watcher import WatchSource
+
+    source = WatchSource(name=name, root=base, layout=layout if layout is not None else source_layout_for(name))
+    return [
+        path
+        for path in _source_path_steps(source, (source,), after=None)
+        if path is not None and _outside_foreign_archive(path, base=base, destination=destination)
+    ]
+
+
+def layout_source_candidates(name: str, base: Path) -> list[Path]:
+    """Files the layout places, admitted or not (links, non-regular files), for a census denominator."""
+
+    from polylogue.sources.live.discovery import _source_path_steps
+    from polylogue.sources.live.watcher import WatchSource
+
+    source = WatchSource(name=name, root=base)
+    candidates: list[Path] = []
+
+    def record(path: Path, disposition: str, reason: str) -> None:
+        placed = disposition in {"accepted", "alias"} or reason == "non_regular_file"
+        if placed or (disposition == "fault" and source.accepts(path)):
+            candidates.append(path)
+
+    for _ in _source_path_steps(source, (source,), after=None, on_disposition=record):
         pass
-    else:
-        visited.add((base_stat.st_dev, base_stat.st_ino))
-    for root, dirs, files in os.walk(base, followlinks=True, onerror=onerror):
-        descend: list[str] = []
-        for directory in sorted(dirs):
-            if directory in _SKIP_DIRS:
-                continue
-            path = Path(root) / directory
-            try:
-                directory_stat = os.stat(path)
-            except OSError:
-                descend.append(directory)
-                continue
-            identity = (directory_stat.st_dev, directory_stat.st_ino)
-            if identity in visited and path.is_symlink():
-                entries.append(path)
-                continue
-            visited.add(identity)
-            descend.append(directory)
-        dirs[:] = descend
-        entries.extend(Path(root) / filename for filename in files)
-    return sorted(entries)
+    return sorted(path for path in candidates if _outside_foreign_archive(path, base=base, destination=None))
 
 
-def _resolve_source_paths(source: Source) -> list[Path]:
+def _resolve_source_paths(source: Source, *, destination: Path | None = None) -> list[Path]:
     if not source.path:
         return []
     base = source.path.expanduser()
     if base.is_dir():
-        return _walk_source_paths(base, provider=Provider.from_string(source.name))
+        return layout_source_paths(source.name, base, destination=destination)
     if base.is_file():
         return [base]
     return []
@@ -255,7 +205,7 @@ def _setup_source_walk(
     discover_sidecars: bool,
     blob_store: BlobStore | None = None,
 ) -> _SourceWalkSetup | None:
-    paths = _resolve_source_paths(source)
+    paths = _resolve_source_paths(source, destination=blob_store.root.parent if blob_store is not None else None)
     _cursor._initialize_cursor_state(cursor_state, paths)
     if not paths:
         return None
@@ -264,6 +214,7 @@ def _setup_source_walk(
         include_file_mtime=include_mtime,
         known_mtimes=known_mtimes,
         known_cursors=known_cursors,
+        source_name=source.name,
     )
     sidecar_data = _empty_sidecar_data()
     if discover_sidecars:
@@ -282,14 +233,9 @@ def _setup_source_walk(
 __all__ = [
     "SourceRootCensus",
     "_SourceWalkSetup",
-    "_SUPPORTED_DOUBLE_EXTENSIONS",
-    "_SUPPORTED_EXTENSIONS",
-    "_SKIP_DIRS",
-    "_has_supported_extension",
-    "_is_supported_source_path",
-    "_iter_source_entries",
     "_resolve_source_paths",
     "_setup_source_walk",
-    "_walk_source_paths",
     "census_source_root",
+    "layout_source_candidates",
+    "layout_source_paths",
 ]

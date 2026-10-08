@@ -79,7 +79,7 @@ def test_real_plan_replays_before_authorization_without_losing_its_hash(
         SessionBuilder(tmp_path / "index.db", "replay-context").provider("codex").add_message(text="Neutral fixture")
     )
     builder.save()
-    ids = (builder.native_session_id(),)
+    ids = (builder.native_session_id(),) if family == "delete" else (builder.native_session_id(), "missing-neutral")
     principal = MutationPrincipal(
         "synthetic-replay", frozenset({"archive.delete_session", "archive.tag_session", "archive.set_metadata"}), "cli"
     )
@@ -144,6 +144,13 @@ def test_real_plan_replays_before_authorization_without_losing_its_hash(
     assert recovered.plan.context == preview.plan.context
     assert recovered.plan.plan_hash == preview.plan.plan_hash
     validate_mutation_plan_integrity(recovered.plan)
+    if family != "delete":
+        from polylogue.operations.daemon_mutations import _part_args
+
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            _, resumed_args = _part_args(archive, recovered)
+            assert isinstance(resumed_args, BulkTagArgs | BulkMetadataSetArgs)
+            assert resumed_args.session_ids == ids
     authorization = executor.authorize_bound(operation, recovered, principal, confirmation_strength="bound_token")
     target_kind = "issue_authorization"
     with monkeypatch.context() as patch:
@@ -171,3 +178,42 @@ def test_machine_replay_refuses_unknown_context_fields() -> None:
 
     with pytest.raises(ValueError):
         replay_context("mutate-delete-session", {"session_ids": [], "credential": "not-a-plan-field"})
+
+
+@pytest.mark.parametrize("family", ["tag", "metadata"])
+def test_missing_request_identity_changes_bulk_plan_hash(tmp_path: Path, family: str) -> None:
+    bootstrap_archive_root(tmp_path)
+    builder = SessionBuilder(tmp_path / "index.db", "request-evidence").provider("codex")
+    builder.save()
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        sid = builder.native_session_id()
+        if family == "tag":
+            actuator = BulkTagActuator()
+            first = actuator.prepare(BulkTagArgs(archive, (sid, "missing-a"), ("neutral",)))
+            second = actuator.prepare(BulkTagArgs(archive, (sid, "missing-b"), ("neutral",)))
+        else:
+            metadata_actuator = BulkMetadataSetActuator()
+            first = metadata_actuator.prepare(BulkMetadataSetArgs(archive, (sid, "missing-a"), (("neutral", "value"),)))
+            second = metadata_actuator.prepare(
+                BulkMetadataSetArgs(archive, (sid, "missing-b"), (("neutral", "value"),))
+            )
+    assert first.target_refs == second.target_refs == (f"session:{sid}",)
+    assert first.plan_hash != second.plan_hash
+
+
+@pytest.mark.parametrize("invalid", ["count", "gap", "targets"])
+def test_bulk_machine_replay_refuses_inconsistent_request_evidence(invalid: str) -> None:
+    from polylogue.operations.machine_plan_context import replay_context
+
+    context: dict[str, object] = {
+        "session_ids": ["present"],
+        "requested_session_ids": ["present", "missing"],
+        "unresolved_session_ids": ["missing"],
+        "requested_session_count": 2,
+        "tags": ["neutral"],
+    }
+    context[
+        {"count": "requested_session_count", "gap": "unresolved_session_ids", "targets": "session_ids"}[invalid]
+    ] = 1 if invalid == "count" else ["other"]
+    with pytest.raises(ValueError):
+        replay_context("mutate-bulk-tag-sessions", context)

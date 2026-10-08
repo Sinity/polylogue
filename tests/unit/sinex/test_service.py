@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -16,7 +16,20 @@ from polylogue.sinex.service import (
     publication_status_payload,
 )
 from polylogue.sinex.transport import LocalReferenceTransport
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.unit.sinex._fixtures import MutableClock, publication_payload
+
+
+@pytest.fixture
+def source_writer_lease(workspace_env: dict[str, Path]) -> Iterator[Path]:
+    """Hold the archive write lease the daemon's publication stage runs under.
+
+    The service's ledger writes open the authorized Source-tier writer, which
+    refuses outside the archive's write lease exactly as in production.
+    """
+    root = workspace_env["archive_root"]
+    with write_lease("test-sinex-publication", archive_root=root):
+        yield root
 
 
 class LostReceiptTransport:
@@ -45,6 +58,7 @@ class UnsafeDetailTransport:
         )
 
 
+@pytest.mark.usefixtures("source_writer_lease")
 def test_lost_receipt_restart_reuses_request_id_without_duplicate_remote_record(
     workspace_env: dict[str, Path],
 ) -> None:
@@ -66,6 +80,7 @@ def test_lost_receipt_restart_reuses_request_id_without_duplicate_remote_record(
     assert transport.remote.call_count(obligation.request_id) == 1
 
 
+@pytest.mark.usefixtures("source_writer_lease")
 def test_retry_debt_rejection_and_mode_specific_gating(workspace_env: dict[str, Path]) -> None:
     db = workspace_env["archive_root"] / "source.db"
     clock = MutableClock(20_000)
@@ -114,6 +129,7 @@ def test_retry_debt_rejection_and_mode_specific_gating(workspace_env: dict[str, 
     assert mirror.lag(object_ids=["claude-code-session:mirror"]) == 1
 
 
+@pytest.mark.usefixtures("source_writer_lease")
 def test_corrupt_payload_is_retry_debt_and_does_not_abort_bounded_batch(
     workspace_env: dict[str, Path],
 ) -> None:
@@ -137,6 +153,7 @@ def test_corrupt_payload_is_retry_debt_and_does_not_abort_bounded_batch(
     assert summary.transport_failures == 0
 
 
+@pytest.mark.usefixtures("source_writer_lease")
 def test_status_redacts_receipt_details_and_off_mode_is_zero_work(
     workspace_env: dict[str, Path], tmp_path: Path
 ) -> None:
@@ -166,6 +183,7 @@ def test_status_redacts_receipt_details_and_off_mode_is_zero_work(
     assert not nonexistent.exists()
 
 
+@pytest.mark.usefixtures("source_writer_lease")
 def test_publication_status_reads_durable_ledger_without_transport(
     workspace_env: dict[str, Path],
 ) -> None:
@@ -183,6 +201,7 @@ def test_publication_status_reads_durable_ledger_without_transport(
     assert status.blocking == 0
 
 
+@pytest.mark.usefixtures("source_writer_lease")
 def test_drain_reports_lag_only_for_selected_durable_subjects(workspace_env: dict[str, Path]) -> None:
     db = workspace_env["archive_root"] / "source.db"
     service = PublicationService(db, PublicationMode.MIRROR, LocalReferenceTransport())
@@ -201,6 +220,7 @@ def test_drain_reports_lag_only_for_selected_durable_subjects(workspace_env: dic
     assert [pending.object_id for pending in service.pending()] == [other_payload.object_id]
 
 
+@pytest.mark.usefixtures("source_writer_lease")
 def test_status_payload_reads_durable_ledger_without_transport(workspace_env: dict[str, Path]) -> None:
     db = workspace_env["archive_root"] / "source.db"
     service = PublicationService(db, PublicationMode.MIRROR, LocalReferenceTransport())

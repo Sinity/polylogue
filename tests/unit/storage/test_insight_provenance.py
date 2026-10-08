@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.analysis.provenance import HasProvenance, is_stale
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.storage_records import SessionBuilder, db_setup, materialize_session_insights
 
 
@@ -181,7 +182,7 @@ async def test_public_insight_versions_require_recorded_profile_evidence(
     )
     builder.save()
     session_id = builder.native_session_id()
-    materialize_session_insights(db_path)
+    run_off_event_loop(lambda: materialize_session_insights(db_path))
     with closing(_open_archive(db_path)) as conn, conn:
         conn.execute("UPDATE session_profiles SET materializer_version = 3 WHERE session_id = ?", (session_id,))
     async with Polylogue(archive_root=db_path.parent, db_path=db_path) as poly:

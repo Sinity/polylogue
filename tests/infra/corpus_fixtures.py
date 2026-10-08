@@ -29,6 +29,17 @@ def seeded_archive() -> Iterator[SeededArchiveArtifact]:
 
 
 @pytest.fixture(scope="session")
+def c03_seeded_artifact() -> Iterator[SeededArchiveArtifact]:
+    """The default c03 artifact, resolved once per worker from the shared cache.
+
+    Read-only and clone consumers take it directly; a test that mutates or
+    collects a cache takes a validated copy through ``copy_seeded_archive``.
+    """
+    with seeded_archive_cache_lease():
+        yield build_seeded_archive()
+
+
+@pytest.fixture(scope="session")
 def corpus_fidelity_archive(seeded_archive: SeededArchiveArtifact) -> SeededArchiveArtifact:
     """Real production-route archive used by corpus acceptance gate tests."""
     return seeded_archive
@@ -61,13 +72,15 @@ def named_seeded_archive_rw(
     request: pytest.FixtureRequest,
     named_seeded_artifact: Callable[[str], SeededArchiveArtifact],
 ) -> Callable[[str], SeededArchiveClone]:
-    """Clone one registered immutable workload into this test's archive root.
+    """Clone one registered immutable workload into a fresh, empty archive root.
 
     For consumers that MUTATE the archive (ingest, insight rebuild, marks,
     maintenance). A non-mutating consumer should take
-    :func:`named_seeded_archive` instead and skip the clone entirely.
+    :func:`named_seeded_archive` instead and skip the clone entirely. The
+    workspace archive root is already a ready archive, so each clone gets its
+    own empty sibling root; consumers address it through ``clone.root``.
     """
-    archive_root = workspace_env["archive_root"]
+    clone_parent = workspace_env["archive_root"].parent / "seeded-rw"
     clones: list[SeededArchiveClone] = []
 
     def close_clones() -> None:
@@ -84,7 +97,7 @@ def named_seeded_archive_rw(
 
     def seed(name: str) -> SeededArchiveClone:
         artifact = named_seeded_artifact(name)
-        clone = clone_seeded_archive(artifact, archive_root)
+        clone = clone_seeded_archive(artifact, clone_parent / f"{len(clones)}-{name}")
         clones.append(clone)
         return clone
 

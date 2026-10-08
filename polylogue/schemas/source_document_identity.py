@@ -6,9 +6,9 @@ from pathlib import Path
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
+from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.sources.parsers.hermes_identity import (
     profile_key,
-    profile_root_for_artifact,
     qualified_session_id,
 )
 from polylogue.sources.parsers.hermes_spans import atif_session_provider_id, looks_like_atif_payload

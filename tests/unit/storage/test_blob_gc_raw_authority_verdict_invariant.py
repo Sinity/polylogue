@@ -43,6 +43,7 @@ from polylogue.storage.blob_gc import run_blob_gc_report
 from polylogue.storage.raw_authority_verdict_cache import get_or_compute_raw_authority_verdicts
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.write_lease import write_lease
 
 
 def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_source_key: str) -> str:
@@ -50,6 +51,7 @@ def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_so
         provider=Provider.CODEX,
         payload=payload,
         source_path="session.jsonl",
+        canonical_source_path="session.jsonl",
         acquired_at_ms=1,
         raw_id=raw_id,
     )
@@ -80,7 +82,10 @@ def _backdate_all_blobs(blob_root: Path, *, seconds: float = 3600) -> None:
 def test_blob_gc_protects_every_verdict_value_while_the_raw_row_survives(tmp_path: Path) -> None:
     """Seed one raw per ``RawAuthorityVerdict`` value, then prove GC deletes none of them."""
     initialize_active_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with (
+        write_lease("test.fixture.verdicts", archive_root=tmp_path),
+        ArchiveStore.open_existing(tmp_path, read_only=False) as archive,
+    ):
         # VERIFIED head + SUPERSEDED ancestor: a proven byte-contiguous chain.
         _bind_full(archive, raw_id="chain-old", payload=b"one\n", logical_source_key="codex:chain")
         _bind_full(archive, raw_id="chain-new", payload=b"one\ntwo\n", logical_source_key="codex:chain")
@@ -97,6 +102,7 @@ def test_blob_gc_protects_every_verdict_value_while_the_raw_row_survives(tmp_pat
             provider=Provider.CODEX,
             payload=b"not yet classified",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=1,
             raw_id="pending",
         )
@@ -154,7 +160,10 @@ def test_blob_gc_reclaims_only_after_the_verdict_owning_row_is_actually_gone(tmp
     concern) removes the row.
     """
     initialize_active_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with (
+        write_lease("test.fixture.verdicts", archive_root=tmp_path),
+        ArchiveStore.open_existing(tmp_path, read_only=False) as archive,
+    ):
         _bind_full(archive, raw_id="chain-old", payload=b"one\n", logical_source_key="codex:chain")
         _bind_full(archive, raw_id="chain-new", payload=b"one\ntwo\n", logical_source_key="codex:chain")
 

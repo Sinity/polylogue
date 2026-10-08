@@ -9,7 +9,6 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 
 from polylogue.core.enums import (
     IngestOutcome,
@@ -609,6 +608,8 @@ def upsert_ingest_cursor(
     conn: sqlite3.Connection,
     *,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     updated_at_ms: int,
     origin: Origin | str | None = None,
     stat_size: int | None = None,
@@ -639,6 +640,7 @@ def upsert_ingest_cursor(
         INSERT INTO ingest_cursor (
             source_path,
             canonical_source_path,
+            captured_profile_key,
             origin,
             stat_size,
             byte_offset,
@@ -657,9 +659,10 @@ def upsert_ingest_cursor(
             deferred_end_offset,
             updated_at_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (source_path) DO UPDATE SET
             canonical_source_path = excluded.canonical_source_path,
+            captured_profile_key = excluded.captured_profile_key,
             origin = excluded.origin,
             stat_size = excluded.stat_size,
             byte_offset = excluded.byte_offset,
@@ -680,7 +683,8 @@ def upsert_ingest_cursor(
         """,
         (
             source_path,
-            str(Path(source_path).resolve()),
+            canonical_source_path,
+            captured_profile_key,
             _origin_value(origin),
             stat_size,
             byte_offset,

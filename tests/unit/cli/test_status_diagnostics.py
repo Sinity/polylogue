@@ -282,7 +282,7 @@ class TestDiagnoseNoSources:
         """
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
         _create_index_db(data_home)
-        spool = data_home / "browser-capture"
+        spool = data_home / "browser-capture" / "chatgpt"
         spool.mkdir(parents=True)
         (spool / "capture.json").write_text("{}", encoding="utf-8")
         diag = diagnose_first_run(daemon_alive=False)

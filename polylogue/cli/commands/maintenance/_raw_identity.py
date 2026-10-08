@@ -32,24 +32,22 @@ def raw_authority_frontier_command(
     env: AppEnv,
     output_format: str,
 ) -> None:
-    """Record the raw-authority frontier census without applying plans.
-
-    The census publishes a durable blocker for every blocking plan, so it runs
-    as the daemon's ``maintenance.raw-authority-frontier`` operation; with no
-    daemon the command refuses rather than writing ``source.db`` itself.
-    """
+    """Measure current frontier coverage through the daemon preparation owner."""
     submitted = _submit(env, "maintenance.raw-authority-frontier", {})
-    census = submitted.get("result")
-    if not isinstance(census, dict):
-        raise click.ClickException("daemon recorded the frontier census but returned no census")
-    payload = census
+    payload = submitted.get("result")
+    if not isinstance(payload, dict):
+        raise click.ClickException("daemon returned no frontier coverage measurement")
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
     click.echo(
-        f"Frontier {payload['pass_id']}: accepted={payload['accepted_head_count']} plans={payload['plan_count']}"
+        f"Frontier {payload['mode']}: healthy={payload['healthy']} "
+        f"heads={payload['accepted_head_checks']} blocked={payload['blocking_head_checks']}"
     )
-    click.echo(f"States: {json.dumps(payload['state_counts'], sort_keys=True)}")
+    click.echo(
+        f"Cursors: checked={payload['cursor_checks']} ahead={payload['cursor_ahead_count']} "
+        f"gaps={payload['cursor_gap_count']}"
+    )
     click.echo("Blocking items are published as durable blockers; list them with raw-authority-blockers.")
 
 

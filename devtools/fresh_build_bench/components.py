@@ -4,10 +4,6 @@ The end-to-end run proves a total; these isolate one production stage each so
 an optimisation can be iterated in seconds. Every component calls the same
 function the daemon calls, on the corpus's own files:
 
-* ``parse`` -- ``live_parse_path_worker``, the off-writer preparation a parse
-  worker runs per file (detection, streaming parse, prepared-carrier spill,
-  session shard). ``--workers`` runs it on a thread pool the way the daemon's
-  prefetch stage does, which on the free-threaded build measures scaling.
 * ``blob`` -- ``BlobStore.write_from_path``, the acquisition copy + hash +
   fsync + publish each admitted file pays.
 
@@ -22,8 +18,6 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
-import shutil
-import tempfile
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
@@ -32,8 +26,6 @@ from pathlib import Path
 from typing import Any
 
 from devtools.fresh_build_bench.corpus import load_manifest, refuse_inside_checkout, verify_manifest
-from polylogue.core.enums import Provider
-from polylogue.sources.origin_specs import recognize_source_class
 
 _PROVIDER_BY_ORIGIN = {
     "claude-code": "claude-code",
@@ -49,8 +41,6 @@ def _corpus_files(
     manifest: dict[str, Any],
     origins: Iterable[str] | None,
     limit: int | None,
-    *,
-    sessions_only: bool,
 ) -> list[tuple[Path, str, int]]:
     verify_manifest(corpus, manifest)
     wanted = set(origins) if origins else None
@@ -59,21 +49,8 @@ def _corpus_files(
         if origin not in _PROVIDER_BY_ORIGIN or (wanted is not None and origin not in wanted):
             continue
         path = corpus / relative
-        # The production prefetch stage hands live_parse_path_worker only
-        # candidates recognize_source_class classifies as a session (the same
-        # predicate census_source_root uses); a retained sidecar
-        # (tool-results/*.txt, tool-outputs/**/*.txt) is a non_session
-        # candidate the walk discovers separately (source_walk.py's
-        # discover_sidecars), never parsed as its own transcript. Sending
-        # one here either errors the worker or measures work production
-        # never performs.
-        # The blob component keeps them: acquisition stores every retained
-        # sidecar's bytes, so dropping them would omit real blob work.
-        if sessions_only:
-            provider = Provider.from_string(origin)
-            recognition = recognize_source_class(provider, path)
-            if recognition is not None and recognition.source_class != "session":
-                continue
+        # Acquisition stores every retained sidecar's bytes, so the blob
+        # component keeps sidecars beside their transcripts.
         files.append((path, origin, size))
     files.sort(key=lambda item: str(item[0]))
     selected = files[:limit] if limit else files
@@ -163,63 +140,13 @@ def _timed_map(
     return rows, wall, dict(counts)
 
 
-def bench_parse(
-    corpus: Path, scratch: Path, *, workers: int, origins: list[str] | None, limit: int | None
-) -> dict[str, Any]:
-    from polylogue.sources.dispatch import is_stream_record_provider
-    from polylogue.sources.live.parse_prefetch import live_parse_path_worker
-
-    manifest = load_manifest(corpus)
-    files = _corpus_files(corpus, manifest, origins, limit, sessions_only=True)
-    shard_root = scratch / "parse-shards"
-    shard_root.mkdir(parents=True, exist_ok=True)
-
-    def work(item: tuple[Path, str, int]) -> Callable[[], dict[str, int]]:
-        path, origin, _size = item
-        provider = _PROVIDER_BY_ORIGIN[origin]
-        attempt = Path(tempfile.mkdtemp(prefix="attempt-", dir=shard_root))
-        try:
-            result = live_parse_path_worker(
-                provider,
-                str(path),
-                path.stem,
-                # The production predicate: a case-insensitive suffix check.
-                is_stream=is_stream_record_provider(str(path), provider),
-                shard_directory=str(shard_root),
-                attempt_directory=str(attempt),
-            )
-        except BaseException:
-            shutil.rmtree(attempt, ignore_errors=True)
-            raise
-
-        def count() -> dict[str, int]:
-            try:
-                if result.error is not None:
-                    return {"errors": 1}
-                sessions = messages = 0
-                for session in result.iter_sessions():
-                    sessions += 1
-                    messages += len(session.messages)
-                return {"sessions": sessions, "messages": messages}
-            finally:
-                shutil.rmtree(attempt, ignore_errors=True)
-
-        return count
-
-    rows, wall, counts = _timed_map(work, files, workers)
-    verify_manifest(corpus, manifest)
-    # Threads, not the daemon's process pool: this isolates one file's
-    # preparation cost; pool start-up and IPC belong to the end-to-end run.
-    return _summarise(rows, wall, {"component": "parse", "workers": workers, "executor": "threads", "counts": counts})
-
-
 def bench_blob(
     corpus: Path, scratch: Path, *, workers: int, origins: list[str] | None, limit: int | None
 ) -> dict[str, Any]:
     from polylogue.storage.blob_store import BlobStore
 
     manifest = load_manifest(corpus)
-    files = _corpus_files(corpus, manifest, origins, limit, sessions_only=False)
+    files = _corpus_files(corpus, manifest, origins, limit)
     store = BlobStore(scratch / "blob")
 
     def work(item: tuple[Path, str, int]) -> Callable[[], dict[str, int]]:
@@ -247,14 +174,14 @@ def refuse_scratch_inside_corpus(scratch: Path, corpus: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("component", choices=("parse", "blob"))
+    parser.add_argument("component", choices=("blob",))
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--scratch", type=Path, required=True, help="empty directory for component output")
     parser.add_argument("--workers", type=_at_least_one, default=1)
     parser.add_argument("--origin", action="append", default=None)
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args(argv)
-    # Blob and parse output are byte copies of (possibly private) corpus files.
+    # Blob output is a byte copy of (possibly private) corpus files.
     # A sealed corpus is private transcript content; one under the checkout
     # can be staged by accident.
     refuse_inside_checkout(args.corpus, "--corpus")
@@ -264,8 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         # A reused blob store deduplicates and skips the publication work.
         raise SystemExit(f"--scratch must be absent or empty: {args.scratch}")
     args.scratch.mkdir(parents=True, exist_ok=True)
-    bench = bench_parse if args.component == "parse" else bench_blob
-    result = bench(args.corpus, args.scratch, workers=args.workers, origins=args.origin, limit=args.limit)
+    result = bench_blob(args.corpus, args.scratch, workers=args.workers, origins=args.origin, limit=args.limit)
     print(json.dumps(result, indent=1))
     # A worker that failed shortened the measured work; the timing is not a
     # result for this corpus.

@@ -24,15 +24,13 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import Provider, TopologyEdgeStatus
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.write import (
-    ArchiveSessionEnvelope,
-    read_archive_session_envelope,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope, read_archive_session_envelope
 from polylogue.storage.sqlite.schema import _ensure_schema
 from tests.infra.identity import archive_message_id
+from tests.infra.index_writer import write_fixture_index_session
 
 
 @dataclass
@@ -178,6 +176,26 @@ class WritePathStateMachine(RuleBasedStateMachine):
         model = self._models[session_id]
         updated_at = self._fresh_timestamp()
         replacement = self._new_text("edited")
+        # The edited row is this session's last own message. A descendant
+        # whose branch point IS that row is guarded by the branch point's
+        # content witness: the edit invalidates it, and the writer materializes
+        # the descendant's pre-write transcript into its own rows under a
+        # spawned-fresh edge (aa23fea308; test_branch_point_witness). A
+        # descendant branching later still inherits, edit included.
+        edited_row = (session_id, len(model.own_texts) - 1)
+        materialized = {
+            candidate_id: self._logical_texts(candidate_id)
+            for candidate_id, candidate in self._models.items()
+            if candidate.parent_id is not None
+            and candidate.prefix_length > 0
+            and not candidate.lineage_broken
+            and self._row_owner(candidate.parent_id, candidate.prefix_length - 1) == edited_row
+        }
+        for candidate_id, transcript in materialized.items():
+            candidate = self._models[candidate_id]
+            candidate.own_texts = transcript
+            candidate.prefix_length = 0
+            candidate.linked_prefix_sharing = False
         if model.parent_id is None:
             model.own_texts[-1] = replacement
             full_texts = model.own_texts
@@ -356,11 +374,12 @@ class WritePathStateMachine(RuleBasedStateMachine):
                 for index, text in enumerate(texts)
             ],
         )
-        return write_parsed_session_to_archive(
+        return write_fixture_index_session(
             self._conn,
             parsed,
             content_hash=session_content_hash(parsed),
             merge_append=merge_append,
+            standalone_memory=True,
         )
 
     def _logical_texts(self, session_id: str) -> list[str]:
@@ -368,6 +387,13 @@ class WritePathStateMachine(RuleBasedStateMachine):
         if model.parent_id is None or model.lineage_broken:
             return list(model.own_texts)
         return [*self._logical_texts(model.parent_id)[: model.prefix_length], *model.own_texts]
+
+    def _row_owner(self, session_id: str, index: int) -> tuple[str, int]:
+        """The session storing logical message ``index`` of ``session_id``, and its own index."""
+        model = self._models[session_id]
+        if model.parent_id is None or model.lineage_broken or index >= model.prefix_length:
+            return session_id, index - (0 if model.parent_id is None or model.lineage_broken else model.prefix_length)
+        return self._row_owner(model.parent_id, index)
 
     def _topological_session_ids(self) -> list[str]:
         """Session ids ordered so every parent precedes its children."""
@@ -513,7 +539,7 @@ def test_repository_get_messages_composes_prefix_sharing_child() -> None:
         archive_root = Path(root_text)
         initialize_active_archive_root(archive_root)
         db_path = archive_root / "index.db"
-        conn = sqlite3.connect(str(db_path))
+        conn = connect_measured(str(db_path))
         try:
             parent = ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
@@ -534,8 +560,8 @@ def test_repository_get_messages_composes_prefix_sharing_child() -> None:
                     ParsedMessage(provider_message_id="child-2", role=Role.USER, text="child tail", position=2),
                 ],
             )
-            write_parsed_session_to_archive(conn, parent, content_hash=session_content_hash(parent))
-            child_id = write_parsed_session_to_archive(conn, child, content_hash=session_content_hash(child))
+            write_fixture_index_session(conn, parent, content_hash=session_content_hash(parent))
+            child_id = write_fixture_index_session(conn, child, content_hash=session_content_hash(child))
         finally:
             conn.close()
 
@@ -560,7 +586,7 @@ def test_grandchild_transcript_recomposes_after_intermediate_ancestor_message_de
         archive_root = Path(root_text)
         initialize_active_archive_root(archive_root)
         db_path = archive_root / "index.db"
-        conn = sqlite3.connect(str(db_path))
+        conn = connect_measured(str(db_path))
         try:
             parent = ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
@@ -597,11 +623,9 @@ def test_grandchild_transcript_recomposes_after_intermediate_ancestor_message_de
                     ParsedMessage(provider_message_id="gc-3", role=Role.ASSISTANT, text="grandchild tail", position=3),
                 ],
             )
-            write_parsed_session_to_archive(conn, parent, content_hash=session_content_hash(parent))
-            write_parsed_session_to_archive(conn, child, content_hash=session_content_hash(child))
-            grandchild_id = write_parsed_session_to_archive(
-                conn, grandchild, content_hash=session_content_hash(grandchild)
-            )
+            write_fixture_index_session(conn, parent, content_hash=session_content_hash(parent))
+            write_fixture_index_session(conn, child, content_hash=session_content_hash(child))
+            grandchild_id = write_fixture_index_session(conn, grandchild, content_hash=session_content_hash(grandchild))
 
             branch_row = conn.execute(
                 "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?",
@@ -644,7 +668,7 @@ def test_session_link_resolver_quarantines_cycle() -> None:
         archive_root = Path(root_text)
         initialize_active_archive_root(archive_root)
         db_path = archive_root / "index.db"
-        conn = sqlite3.connect(str(db_path))
+        conn = connect_measured(str(db_path))
         try:
             parent_v1 = ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
@@ -658,8 +682,8 @@ def test_session_link_resolver_quarantines_cycle() -> None:
                 branch_type=BranchType.FORK,
                 messages=[ParsedMessage(provider_message_id="child-0", role=Role.USER, text="child", position=0)],
             )
-            parent_id = write_parsed_session_to_archive(conn, parent_v1, content_hash=session_content_hash(parent_v1))
-            write_parsed_session_to_archive(conn, child, content_hash=session_content_hash(child))
+            parent_id = write_fixture_index_session(conn, parent_v1, content_hash=session_content_hash(parent_v1))
+            write_fixture_index_session(conn, child, content_hash=session_content_hash(child))
 
             # Re-ingest the parent now claiming the child as ITS parent --
             # closing a two-node cycle parent -> child -> parent. This must
@@ -673,7 +697,7 @@ def test_session_link_resolver_quarantines_cycle() -> None:
                     ParsedMessage(provider_message_id="parent-1", role=Role.ASSISTANT, text="revised", position=1),
                 ],
             )
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn, parent_v2, content_hash=session_content_hash(parent_v2), force_replace=True
             )
             conn.commit()
@@ -697,3 +721,35 @@ TestWritePathStateMachine.settings = settings(
     deadline=None,
     suppress_health_check=[HealthCheck.too_slow],
 )
+
+
+def test_edit_at_a_late_parents_branch_point_keeps_the_childs_replayed_text() -> None:
+    """The interleaving Hypothesis found once the witness re-stamp was removed (aa23fea308).
+
+    A late-arriving parent binds a replaying child at its second message, then
+    edits exactly that message. The child's branch-point witness no longer
+    matches, so the writer materializes the child's replayed prefix under a
+    spawned-fresh edge: the child keeps the text it replayed. A model that
+    expects the edited text to flow into the child goes red here.
+    """
+    machine = WritePathStateMachine()
+    try:
+        for step in (
+            "ingest_initial_parent",
+            "delete_parent_branch_point",
+            "ingest_child_replaying_parent_prefix",
+            "full_replace_with_sibling_variants",
+            "ingest_child_before_parent",
+            "merge_append",
+            "ingest_pending_parent",
+            "ingest_child_replaying_parent_prefix",
+            "ingest_child_replaying_parent_prefix",
+            "reingest_with_edit",
+        ):
+            getattr(machine, step)()
+        late_child = "claude-code-session:late-child-3"
+        assert machine._models[late_child].linked_prefix_sharing is False
+        assert machine._message_texts(late_child) == ["late-parent-text-3", "late-variant-text-4", "late-tail-text-5"]
+        assert machine._message_texts("claude-code-session:late-parent-2")[-1] == "edited-text-10"
+    finally:
+        machine.teardown()

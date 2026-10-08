@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast, get_args
 
 from polylogue.archive.revision_authority import raw_receipt_order_sql
 from polylogue.core.errors import SchemaSkew
@@ -15,7 +15,7 @@ from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawF
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.timestamps import to_epoch_ms
 from polylogue.logging import get_logger
-from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 
 logger = get_logger(__name__)
@@ -371,32 +371,17 @@ def _raw_revision_rows(
     *,
     allow_missing: bool = False,
 ) -> dict[str, sqlite3.Row]:
-    rows_by_id: dict[str, sqlite3.Row] = {}
-    pending = set(raw_ids)
-    while pending:
-        batch = tuple(sorted(pending)[:500])
-        pending.difference_update(batch)
+    def read_rows(batch: tuple[str, ...]) -> Sequence[sqlite3.Row]:
         placeholders = ", ".join("?" for _ in batch)
-        try:
-            rows = conn.execute(
+        with closing(
+            conn.execute(
                 f"SELECT {_RAW_REVISION_CHAIN_COLUMNS} FROM raw_sessions WHERE raw_id IN ({placeholders})",
                 batch,
-            ).fetchall()
-        except sqlite3.Error as exc:
-            raise _RawRevisionAuthorityUnavailableError(f"source raw revision authority is unreadable: {exc}") from exc
-        found = {str(row["raw_id"]): row for row in rows}
-        missing = set(batch).difference(found)
-        if missing and not allow_missing:
-            rendered = ", ".join(sorted(missing)[:3])
-            raise RawRetentionSafetyError(f"active index raw is missing from source tier: {rendered}")
-        rows_by_id.update(found)
-        for row in rows:
-            if str(row["revision_kind"]) != "append":
-                continue
-            predecessor = row["predecessor_raw_id"]
-            if predecessor is not None and str(predecessor) not in rows_by_id:
-                pending.add(str(predecessor))
-    return rows_by_id
+            )
+        ) as rows:
+            return rows.fetchall()
+
+    return _raw_revision_rows_from_inputs(read_rows, raw_ids, allow_missing=allow_missing)
 
 
 def _validate_active_revision_chain(
@@ -614,7 +599,14 @@ def _raw_retention_scope(
     conn: sqlite3.Connection,
     source_paths: tuple[str, ...],
 ) -> tuple[frozenset[str], frozenset[str]]:
-    """Return the raw and logical identities a path-bounded cleanup can touch."""
+    """Return the raw and logical identities a path-bounded cleanup can touch.
+
+    A membership-governed raw keeps its acquisition envelope's (pending)
+    logical key, while its index heads are keyed by the session identities
+    its census recorded. Both keys are in scope; otherwise the heads of a
+    censused raw are invisible and its session row reads as an unproven
+    byte chain.
+    """
 
     raw_ids: set[str] = set()
     logical_source_keys: set[str] = set()
@@ -622,8 +614,11 @@ def _raw_retention_scope(
         paths = source_paths[start : start + _RETENTION_SCOPE_BATCH_SIZE]
         placeholders = ", ".join("?" for _ in paths)
         rows = conn.execute(
-            f"SELECT raw_id, logical_source_key FROM raw_sessions WHERE source_path IN ({placeholders})",
-            paths,
+            f"SELECT raw_id, logical_source_key FROM raw_sessions WHERE source_path IN ({placeholders}) "
+            "UNION ALL SELECT membership.raw_id, membership.logical_source_key "
+            "FROM raw_session_memberships AS membership JOIN raw_sessions AS raw ON raw.raw_id = membership.raw_id "
+            f"WHERE raw.source_path IN ({placeholders})",
+            (*paths, *paths),
         ).fetchall()
         for raw_id, logical_source_key in rows:
             raw_ids.add(str(raw_id))
@@ -767,6 +762,178 @@ class BrokenAppendHeadSample:
     logical_source_key: str
     accepted_raw_id: str
     reason: str
+
+
+def broken_head_reason(broken_count: int) -> str:
+    """The operator reason for active raw seeds whose predecessor chain failed."""
+    if broken_count == 0:
+        return ""
+    return f"{broken_count} active index raw seed(s) have a broken predecessor chain or invalid source binding"
+
+
+def cursor_ahead_reason(ahead_count: int, ahead_comparison_count: int, gap_count: int, deferred_count: int) -> str:
+    """The operator reason for cursor rows ahead of, or incomparable with, accepted raw."""
+    reasons: list[str] = []
+    if ahead_count:
+        reasons.append(
+            f"{ahead_count} ingest cursor row(s) committed past accepted raw material "
+            f"across {ahead_comparison_count} cursor/head comparison(s)"
+        )
+    if gap_count:
+        reasons.append(f"{gap_count} cursor/head authority row(s) could not be compared")
+    if deferred_count:
+        reasons.append(f"{deferred_count} ingest cursor(s) deferred awaiting the quiet window")
+    return "; ".join(reasons)
+
+
+_FINDINGS_COUNTS = (
+    "head_checks",
+    "blocking_heads",
+    "broken_heads",
+    "cursor_checks",
+    "cursor_comparisons",
+    "cursor_ahead",
+    "cursor_ahead_comparisons",
+    "cursor_gaps",
+    "cursor_deferred",
+    "missing_session_raws",
+)
+_FINDINGS_SAMPLES = ("broken_head_samples", "cursor_ahead_samples", "cursor_gap_samples")
+_GAP_STATES = frozenset(get_args(CursorAuthorityGapState))
+
+
+def _require_sample(raw: object, fields: dict[str, tuple[type, ...]]) -> dict[str, object]:
+    if not isinstance(raw, dict) or set(raw) != set(fields):
+        raise ValueError("frontier inspection sample has an undeclared shape")
+    for name, types in fields.items():
+        value = raw[name]
+        if type(value) not in types or (type(value) is int and value < 0):
+            raise ValueError(f"frontier inspection sample field {name} has an undeclared value")
+    return raw
+
+
+def _broken_head_from_document(raw: object) -> BrokenAppendHeadSample:
+    sample = _require_sample(raw, {"logical_source_key": (str,), "accepted_raw_id": (str,), "reason": (str,)})
+    return BrokenAppendHeadSample(
+        logical_source_key=str(sample["logical_source_key"]),
+        accepted_raw_id=str(sample["accepted_raw_id"]),
+        reason=str(sample["reason"]),
+    )
+
+
+def _cursor_ahead_from_document(raw: object) -> CursorAheadSample:
+    sample = _require_sample(
+        raw,
+        {
+            "source_path": (str,),
+            "logical_source_key": (str,),
+            "cursor_byte_offset": (int,),
+            "accepted_frontier": (int,),
+            "affected_head_count": (int,),
+            "canonical_source_path": (str, type(None)),
+        },
+    )
+    return CursorAheadSample(
+        source_path=str(sample["source_path"]),
+        logical_source_key=str(sample["logical_source_key"]),
+        cursor_byte_offset=cast(int, sample["cursor_byte_offset"]),
+        accepted_frontier=cast(int, sample["accepted_frontier"]),
+        affected_head_count=cast(int, sample["affected_head_count"]),
+        canonical_source_path=cast(str | None, sample["canonical_source_path"]),
+    )
+
+
+def _cursor_gap_from_document(raw: object) -> CursorAuthorityGapSample:
+    sample = _require_sample(
+        raw,
+        {
+            "state": (str,),
+            "source_path": (str, type(None)),
+            "logical_source_key": (str, type(None)),
+            "cursor_byte_offset": (int, type(None)),
+            "reason": (str,),
+        },
+    )
+    if sample["state"] not in _GAP_STATES:
+        raise ValueError("frontier inspection gap sample names an undeclared state")
+    return CursorAuthorityGapSample(
+        state=cast(CursorAuthorityGapState, sample["state"]),
+        source_path=cast(str | None, sample["source_path"]),
+        logical_source_key=cast(str | None, sample["logical_source_key"]),
+        cursor_byte_offset=cast(int | None, sample["cursor_byte_offset"]),
+        reason=str(sample["reason"]),
+    )
+
+
+@dataclass(frozen=True)
+class FrontierInspectionFindings:
+    """Per-category results of one completed frontier inspection pass.
+
+    The inspection records this document in its Ops mark, so status renders
+    the certificate's categories instead of repeating the corpus inspection.
+    ``mode`` says what the pass covered: a ``delta`` pass starts from a
+    healthy certificate, so its violation counts and samples are complete
+    while its checked counts cover only the changed keys.
+    """
+
+    mode: str
+    head_checks: int
+    blocking_heads: int
+    broken_heads: int
+    broken_head_samples: tuple[BrokenAppendHeadSample, ...]
+    cursor_checks: int
+    cursor_comparisons: int
+    cursor_ahead: int
+    cursor_ahead_comparisons: int
+    cursor_ahead_samples: tuple[CursorAheadSample, ...]
+    cursor_gaps: int
+    cursor_gap_samples: tuple[CursorAuthorityGapSample, ...]
+    cursor_deferred: int
+    missing_session_raws: int
+
+    def to_document(self) -> str:
+        import json
+        from dataclasses import asdict
+
+        payload: dict[str, object] = {name: getattr(self, name) for name in _FINDINGS_COUNTS}
+        payload["mode"] = self.mode
+        for name in _FINDINGS_SAMPLES:
+            payload[name] = [asdict(sample) for sample in getattr(self, name)]
+        return json.dumps(payload, sort_keys=True)
+
+    @classmethod
+    def from_document(cls, document: str) -> FrontierInspectionFindings:
+        """Decode exactly the recorded shape; anything else is a ``ValueError``."""
+        import json
+
+        payload = json.loads(document)
+        if not isinstance(payload, dict) or set(payload) != {*_FINDINGS_COUNTS, "mode", *_FINDINGS_SAMPLES}:
+            raise ValueError("frontier inspection findings have an undeclared shape")
+        counts: dict[str, int] = {}
+        for name in _FINDINGS_COUNTS:
+            value = payload[name]
+            if type(value) is not int or value < 0:
+                raise ValueError(f"frontier inspection finding {name} is not a nonnegative count")
+            counts[name] = value
+        mode = payload["mode"]
+        if mode not in {"full", "delta"}:
+            raise ValueError("frontier inspection findings name an undeclared mode")
+        for name in _FINDINGS_SAMPLES:
+            if not isinstance(payload[name], list):
+                raise ValueError(f"frontier inspection {name} are not a list")
+        broken = tuple(_broken_head_from_document(raw) for raw in payload["broken_head_samples"])
+        ahead = tuple(_cursor_ahead_from_document(raw) for raw in payload["cursor_ahead_samples"])
+        gaps = tuple(_cursor_gap_from_document(raw) for raw in payload["cursor_gap_samples"])
+        for samples, count in ((broken, "broken_heads"), (ahead, "cursor_ahead"), (gaps, "cursor_gaps")):
+            if len(samples) > counts[count]:
+                raise ValueError(f"frontier inspection records more samples than {count}")
+        return cls(
+            mode=mode,
+            broken_head_samples=broken,
+            cursor_ahead_samples=ahead,
+            cursor_gap_samples=gaps,
+            **counts,
+        )
 
 
 @dataclass(frozen=True)
@@ -999,76 +1166,142 @@ def missing_source_raw_integrity_status(
     return "healthy", 0, samples, ""
 
 
+def _raw_frontier_integrity_from_coverage(
+    coverage: Mapping[str, object],
+    materialization: Mapping[str, object],
+    *,
+    sample_limit: int = 10,
+) -> RawFrontierIntegrityProjection:
+    """Reduce the completed certificate and missing-Source signal once."""
+    missing_status, missing_count, missing_samples, missing_reason = missing_source_raw_integrity_status(
+        materialization, sample_limit=sample_limit
+    )
+    current = bool(coverage.get("current"))
+    healthy = current and bool(coverage.get("healthy"))
+    blocked = current and coverage.get("state") == "blocked"
+    findings = coverage.get("findings")
+    if current and isinstance(findings, FrontierInspectionFindings):
+        return _raw_frontier_integrity_from_findings(
+            findings,
+            blocked=blocked,
+            missing=(missing_status, missing_count, missing_samples, missing_reason),
+            available=bool(coverage.get("available")),
+        )
+    reason = (
+        ""
+        if healthy
+        else str(
+            coverage.get("detail")
+            or ("accepted frontier inspection is blocked" if blocked else "accepted frontier inspection is not current")
+        )
+    )
+    status: RawFrontierIntegrityStatus = "healthy" if healthy else "unknown"
+    return RawFrontierIntegrityProjection(
+        available=bool(coverage.get("available")) and current,
+        overall_status="violated"
+        if blocked or missing_status == "violated"
+        else combine_raw_frontier_integrity_statuses(status, missing_status, status),
+        broken_head_status=status,
+        broken_head_count=0,
+        broken_head_checked_count=0,
+        broken_head_samples=(),
+        broken_head_reason=reason,
+        missing_source_raw_status=missing_status,
+        missing_source_raw_count=missing_count,
+        missing_source_raw_samples=missing_samples,
+        missing_source_raw_reason=missing_reason,
+        cursor_ahead_status=status,
+        cursor_ahead_count=0,
+        cursor_ahead_checked_count=0,
+        cursor_head_comparison_count=0,
+        cursor_ahead_comparison_count=0,
+        cursor_ahead_samples=(),
+        cursor_authority_gap_count=0,
+        cursor_authority_gap_samples=(),
+        cursor_authority_deferred_count=0,
+        cursor_ahead_reason=reason,
+    )
+
+
+def _raw_frontier_integrity_from_findings(
+    findings: FrontierInspectionFindings,
+    *,
+    blocked: bool,
+    missing: tuple[RawFrontierIntegrityStatus, int, tuple[Mapping[str, object], ...], str],
+    available: bool,
+) -> RawFrontierIntegrityProjection:
+    """Render each category of a current certificate from its recorded findings."""
+    missing_status, missing_count, missing_samples, missing_reason = missing
+    broken_status: RawFrontierIntegrityStatus = "violated" if findings.broken_heads else "healthy"
+    cursor_status: RawFrontierIntegrityStatus = (
+        "violated" if findings.cursor_ahead else "unknown" if findings.cursor_gaps else "healthy"
+    )
+    # A blocked certificate is a violation even when its cause (a blocking
+    # obligation, a lost session raw) has no category of its own here.
+    overall: RawFrontierIntegrityStatus = (
+        "violated" if blocked else combine_raw_frontier_integrity_statuses(broken_status, missing_status, cursor_status)
+    )
+    return RawFrontierIntegrityProjection(
+        available=available,
+        overall_status=overall,
+        broken_head_status=broken_status,
+        broken_head_count=findings.broken_heads,
+        broken_head_checked_count=findings.head_checks,
+        broken_head_samples=findings.broken_head_samples,
+        broken_head_reason=broken_head_reason(findings.broken_heads),
+        missing_source_raw_status=missing_status,
+        missing_source_raw_count=missing_count,
+        missing_source_raw_samples=missing_samples,
+        missing_source_raw_reason=missing_reason,
+        cursor_ahead_status=cursor_status,
+        cursor_ahead_count=findings.cursor_ahead,
+        cursor_ahead_checked_count=findings.cursor_checks,
+        cursor_head_comparison_count=findings.cursor_comparisons,
+        cursor_ahead_comparison_count=findings.cursor_ahead_comparisons,
+        cursor_ahead_samples=findings.cursor_ahead_samples,
+        cursor_authority_gap_count=findings.cursor_gaps,
+        cursor_authority_gap_samples=findings.cursor_gap_samples,
+        cursor_authority_deferred_count=findings.cursor_deferred,
+        cursor_ahead_reason=cursor_ahead_reason(
+            findings.cursor_ahead, findings.cursor_ahead_comparisons, findings.cursor_gaps, findings.cursor_deferred
+        ),
+    )
+
+
 def raw_frontier_integrity_projection(
     archive_root: Path,
     raw_materialization_readiness: Mapping[str, object],
     *,
     sample_limit: int = 10,
 ) -> RawFrontierIntegrityProjection:
-    """Build the canonical split-tier projection consumed by all surfaces."""
+    """Read completed coverage without repeating the original corpus inspection."""
+    from polylogue.core.errors import SchemaRefusalError
+    from polylogue.core.evidence import Measured, Unavailable
+    from polylogue.storage.frontier_inspection import read_frontier_coverage_for_archive
+    from polylogue.storage.tier_access import capture_sqlite_read
 
-    missing_status, missing_count, missing_samples, missing_reason = missing_source_raw_integrity_status(
-        raw_materialization_readiness,
-        sample_limit=sample_limit,
-    )
+    coverage: dict[str, object]
+    from polylogue.storage.archive_identity import ArchiveLocationError
+
     try:
-        index_db_path = resolve_active_index_path(archive_root)
-    except ArchiveLocationError as exc:
-        return unknown_raw_frontier_integrity_projection(
-            f"active index pointer unavailable: {exc}",
-            missing_source_raw_status=missing_status,
-            missing_source_raw_count=missing_count,
-            missing_source_raw_samples=missing_samples,
-            missing_source_raw_reason=missing_reason,
-        )
-    source_db_path = archive_root / "source.db"
-    ops_db_path = archive_root / "ops.db"
-    snapshot = _unavailable_frontier_integrity_snapshot(f"source tier is unavailable: {source_db_path}")
-
-    if source_db_path.is_file():
-        try:
-            from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-            conn = open_readonly_connection(source_db_path)
-        except (OSError, sqlite3.Error, SchemaSkew) as exc:
-            logger.warning("raw frontier integrity: source tier is unreadable: %s", exc)
-            snapshot = _unavailable_frontier_integrity_snapshot(f"source tier is unreadable: {exc}")
+        read = capture_sqlite_read(lambda: read_frontier_coverage_for_archive(archive_root))
+    except (OSError, ValueError, ArchiveLocationError, SchemaRefusalError) as failure:
+        # An incoherent active Index pointer or a refused tier (missing,
+        # unreadable or schema-skewed) leaves coverage unavailable with its
+        # typed detail; it never aborts the status read.
+        coverage = {"available": False, "current": False, "healthy": False, "detail": str(failure)}
+    else:
+        if isinstance(read, Measured):
+            coverage = read.value
         else:
-            try:
-                snapshot = raw_frontier_integrity_snapshot(
-                    conn,
-                    index_db_path=index_db_path,
-                    ops_db_path=ops_db_path,
-                    sample_limit=sample_limit,
-                )
-            finally:
-                conn.close()
-
-    statuses = (snapshot.broken_head_status, missing_status, snapshot.cursor_ahead_status)
-    overall_status = combine_raw_frontier_integrity_statuses(*statuses)
-    return RawFrontierIntegrityProjection(
-        available="unknown" not in statuses,
-        overall_status=overall_status,
-        broken_head_status=snapshot.broken_head_status,
-        broken_head_count=snapshot.broken_head_count,
-        broken_head_checked_count=snapshot.broken_head_checked_count,
-        broken_head_samples=snapshot.broken_head_samples,
-        broken_head_reason=snapshot.broken_head_reason,
-        missing_source_raw_status=missing_status,
-        missing_source_raw_count=missing_count,
-        missing_source_raw_samples=missing_samples,
-        missing_source_raw_reason=missing_reason,
-        cursor_ahead_status=snapshot.cursor_ahead_status,
-        cursor_ahead_count=snapshot.cursor_ahead_count,
-        cursor_ahead_checked_count=snapshot.cursor_ahead_checked_count,
-        cursor_head_comparison_count=snapshot.cursor_head_comparison_count,
-        cursor_ahead_comparison_count=snapshot.cursor_ahead_comparison_count,
-        cursor_ahead_samples=snapshot.cursor_ahead_samples,
-        cursor_authority_gap_count=snapshot.cursor_authority_gap_count,
-        cursor_authority_gap_samples=snapshot.cursor_authority_gap_samples,
-        cursor_authority_deferred_count=snapshot.cursor_authority_deferred_count,
-        cursor_ahead_reason=snapshot.cursor_ahead_reason,
-    )
+            detail = read.detail if isinstance(read, Unavailable) else None
+            coverage = {
+                "available": False,
+                "current": False,
+                "healthy": False,
+                "detail": detail or "sqlite_read_failed",
+            }
+    return _raw_frontier_integrity_from_coverage(coverage, raw_materialization_readiness, sample_limit=sample_limit)
 
 
 @dataclass(frozen=True)
@@ -1109,7 +1342,6 @@ def raw_frontier_blocked_selected_paths(archive_root: Path, selected_paths: Sequ
 
 
 def _raw_frontier_blocked_selected_paths(archive_root: Path, selected_paths: Sequence[Path]) -> RawFrontierBlockedPaths:
-    from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.sqlite.archive_tiers.revision_governance import expand_raw_membership_selection_sync
     from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 
@@ -1300,7 +1532,6 @@ def raw_frontier_blocked_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
     authority component, including its byte heads, predecessor chains and cursors.
     """
     from polylogue.core.evidence import Measured, Unavailable
-    from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.sqlite.archive_tiers.revision_governance import expand_raw_membership_selection_sync
     from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
     from polylogue.storage.tier_access import capture_sqlite_read
@@ -1347,7 +1578,14 @@ def raw_frontier_blocked_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
             status, count, _checked, _comparisons, _ahead, samples, gaps, gap_samples, _deferred, reason = cursor
             if status == "unknown" and not gaps:
                 return RawFrontierBlockedPaths(frozenset(), reason)
-            refused = frozenset(sample.source_path for sample in samples)
+            # A violated logical source is refused through every path that
+            # carries it (rotated/resumed files, ZIP members), not only the
+            # path its cursor sample named; otherwise a sibling raw publishes
+            # while its logical frontier is still violated.
+            ahead_keys = {sample.logical_source_key for sample in samples if sample.logical_source_key}
+            refused = frozenset(
+                {sample.source_path for sample in samples} | _source_paths_for_logical_keys(conn, ahead_keys)
+            )
             return RawFrontierBlockedPaths(
                 refused,
                 None,
@@ -1712,71 +1950,12 @@ def _check_broken_active_chains(
     *,
     sample_limit: int,
 ) -> tuple[RawFrontierIntegrityStatus, int, int, tuple[BrokenAppendHeadSample, ...], str]:
-    """Validate every distinct retention seed against one complete authority read."""
-
-    samples: list[BrokenAppendHeadSample] = []
-    broken_count = 0
-    heads_by_raw_id: dict[str, list[_IndexRawRevisionHead]] = {}
-    for head in heads:
-        heads_by_raw_id.setdefault(head.accepted_raw_id, []).append(head)
-    seed_raw_ids = set(session_raw_ids).union(heads_by_raw_id)
-    # Membership-governed snapshots carry a semantic head, not a byte
-    # predecessor chain. They remain active source authority and must be
-    # retained, but applying byte-chain validation to them turns a normal
-    # membership snapshot into a false broken-head violation. A raw selected
-    # by both regimes remains byte-validated.
-    byte_head_raw_ids = {head.accepted_raw_id for head in heads if head.accepted_frontier_kind == "byte"}
-    semantic_only_raw_ids = {
-        head.accepted_raw_id for head in heads if head.accepted_frontier_kind != "byte"
-    }.difference(byte_head_raw_ids)
-    try:
-        rows_by_id = _raw_revision_rows(conn, seed_raw_ids, allow_missing=True)
-    except _RawRevisionAuthorityUnavailableError as exc:
-        logger.warning("raw frontier integrity: %s", exc)
-        return "unknown", 0, 0, (), str(exc)
-
-    checked_count = 0
-    for seed_raw_id in sorted(seed_raw_ids):
-        seed_heads = heads_by_raw_id.get(seed_raw_id, [])
-        row = rows_by_id.get(seed_raw_id)
-        if row is None and not seed_heads:
-            # Directly missing sessions.raw_id rows are counted once by the
-            # canonical lost-source-evidence projection. There is no chain to
-            # traverse here; do not double-count the same absence.
-            continue
-        checked_count += 1
-        try:
-            if row is None:
-                raise RawRetentionSafetyError(f"active index raw is missing from source tier: {seed_raw_id}")
-            if seed_raw_id in semantic_only_raw_ids:
-                continue
-            for head in seed_heads:
-                if head.accepted_frontier_kind == "byte":
-                    _validate_byte_head(row, head)
-            _validate_active_revision_chain(rows_by_id, seed_raw_id)
-        except RawRetentionSafetyError as exc:
-            broken_count += 1
-            if len(samples) < sample_limit:
-                if seed_heads:
-                    logical_source_key = seed_heads[0].logical_source_key
-                elif row is not None:
-                    logical_source_key = str(row["logical_source_key"] or "session.raw_id")
-                else:
-                    logical_source_key = "session.raw_id"
-                samples.append(
-                    BrokenAppendHeadSample(
-                        logical_source_key=logical_source_key,
-                        accepted_raw_id=seed_raw_id,
-                        reason=str(exc),
-                    )
-                )
-    status: RawFrontierIntegrityStatus = "violated" if broken_count else "healthy"
-    reason = (
-        ""
-        if broken_count == 0
-        else f"{broken_count} active index raw seed(s) have a broken predecessor chain or invalid source binding"
+    return _check_broken_active_chain_inputs(
+        lambda raw_ids: _raw_revision_rows(conn, raw_ids, allow_missing=True),
+        session_raw_ids,
+        heads,
+        sample_limit=sample_limit,
     )
-    return status, broken_count, checked_count, tuple(samples), reason
 
 
 def _check_cursor_ahead_of_accepted(
@@ -1818,39 +1997,6 @@ def _check_cursor_ahead_of_accepted(
         logger.warning("raw frontier integrity: source raw path lookup failed: %s", exc)
         return "unknown", 0, 0, 0, 0, (), 0, (), 0, f"source raw path lookup failed: {exc}"
 
-    byte_heads_by_path: dict[str, list[_IndexRawRevisionHead]] = {}
-    all_head_paths: set[str] = set()
-    gaps: list[CursorAuthorityGapSample] = []
-    gap_count = 0
-    for head in heads:
-        source_path = source_path_by_raw_id.get(head.accepted_raw_id)
-        if source_path is None:
-            if head.accepted_frontier_kind == "byte":
-                gap_count += 1
-                if len(gaps) < sample_limit:
-                    gaps.append(
-                        CursorAuthorityGapSample(
-                            state="accepted_head_missing_source",
-                            source_path=None,
-                            logical_source_key=head.logical_source_key,
-                            cursor_byte_offset=None,
-                            reason=f"accepted byte head raw is absent from source tier: {head.accepted_raw_id}",
-                        )
-                    )
-            continue
-        # Compare the canonical path stored at acquisition. Re-resolving an
-        # obsolete spelling against today's filesystem names the wrong file
-        # once its symlink is removed or retargeted.
-        comparison_path = canonical_by_raw_id.get(head.accepted_raw_id, source_path)
-        all_head_paths.add(comparison_path)
-        if head.accepted_frontier_kind == "byte":
-            byte_heads_by_path.setdefault(comparison_path, []).append(head)
-
-    samples: list[CursorAheadSample] = []
-    ahead_count = 0
-    checked = 0
-    comparison_count = 0
-    ahead_comparison_count = 0
     try:
         retained_source_paths = _source_paths_for_paths(conn, set(cursor_map))
     except sqlite3.Error as exc:
@@ -1861,91 +2007,15 @@ def _check_cursor_ahead_of_accepted(
     except sqlite3.Error as exc:
         logger.warning("raw frontier integrity: terminal artifact authority lookup failed: %s", exc)
         return "unknown", 0, 0, 0, 0, (), 0, (), 0, f"terminal artifact authority is unreadable: {exc}"
-    deferred_count = 0
-    for path, cursor in cursor_map.items():
-        comparison_path = (cursor.canonical_source_path or path) if compare_canonical_paths else path
-        cursor_offset = cursor.byte_offset
-        if cursor.is_deferred and not any(
-            cursor_offset > head.accepted_frontier for head in byte_heads_by_path.get(comparison_path, ())
-        ):
-            # A deferred cursor whose committed offset stays within the
-            # accepted byte heads is a safe incomplete tail: the prefix is
-            # accepted, the captured range is recorded, and the quiet window
-            # resolves it. Counting it as a gap made every live host refuse
-            # its whole backlog while one file was hot. Its deferred range
-            # proves nothing about its prefix, though: a committed offset past
-            # an accepted head is the same violation as for any cursor, and
-            # falls through to that comparison.
-            deferred_count += 1
-            continue
-        comparable_heads = byte_heads_by_path.get(comparison_path)
-        if not comparable_heads:
-            # A path governed exclusively by membership authority has no
-            # comparable byte frontier and is intentionally out of scope.
-            if comparison_path in all_head_paths or path in terminal_artifact_paths:
-                continue
-            gap_count += 1
-            if len(gaps) < sample_limit:
-                gaps.append(
-                    CursorAuthorityGapSample(
-                        state=(
-                            "source_raws_without_accepted_head"
-                            if path in retained_source_paths
-                            else "cursor_path_absent_from_source"
-                        ),
-                        source_path=path,
-                        logical_source_key=None,
-                        cursor_byte_offset=cursor_offset,
-                        reason=(
-                            "source tier has raw evidence but index has no accepted byte head"
-                            if path in retained_source_paths
-                            else "ingest cursor path is absent from source tier"
-                        ),
-                    )
-                )
-            continue
-        checked += 1
-        comparison_count += len(comparable_heads)
-        ahead_heads = [head for head in comparable_heads if cursor_offset > head.accepted_frontier]
-        if not ahead_heads:
-            continue
-        ahead_count += 1
-        ahead_comparison_count += len(ahead_heads)
-        if len(samples) < sample_limit:
-            representative = min(ahead_heads, key=lambda head: (head.accepted_frontier, head.logical_source_key))
-            samples.append(
-                CursorAheadSample(
-                    source_path=path,
-                    logical_source_key=representative.logical_source_key,
-                    cursor_byte_offset=cursor_offset,
-                    accepted_frontier=representative.accepted_frontier,
-                    affected_head_count=len(ahead_heads),
-                    canonical_source_path=cursor.canonical_source_path,
-                )
-            )
-
-    status: RawFrontierIntegrityStatus = "violated" if ahead_count else "unknown" if gap_count else "healthy"
-    reasons: list[str] = []
-    if ahead_count:
-        reasons.append(
-            f"{ahead_count} ingest cursor row(s) committed past accepted raw material "
-            f"across {ahead_comparison_count} cursor/head comparison(s)"
-        )
-    if gap_count:
-        reasons.append(f"{gap_count} cursor/head authority row(s) could not be compared")
-    if deferred_count:
-        reasons.append(f"{deferred_count} ingest cursor(s) deferred awaiting the quiet window")
-    return (
-        status,
-        ahead_count,
-        checked,
-        comparison_count,
-        ahead_comparison_count,
-        tuple(samples),
-        gap_count,
-        tuple(gaps),
-        deferred_count,
-        "; ".join(reasons),
+    return _compare_cursor_frontier_inputs(
+        heads,
+        cursor_map=cursor_map,
+        source_path_by_raw_id=source_path_by_raw_id,
+        canonical_by_raw_id=canonical_by_raw_id,
+        retained_source_paths=retained_source_paths,
+        terminal_artifact_paths=terminal_artifact_paths,
+        compare_canonical_paths=compare_canonical_paths,
+        sample_limit=sample_limit,
     )
 
 
@@ -2075,133 +2145,11 @@ def _source_paths_for_paths(conn: sqlite3.Connection, source_paths: set[str]) ->
 
 
 def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -> set[str]:
-    """Return paths whose every current source coordinate is terminal evidence.
+    def read_rows(sql: str, parameters: tuple[object, ...], paths: tuple[str, ...]) -> Sequence[sqlite3.Row]:
+        with closing(conn.execute(sql, parameters)) as rows:
+            return rows.fetchall()
 
-    A full-route cursor can legitimately advance over a workflow/fact artifact
-    that has no session head. ``raw_artifacts.parse_as_session = 0`` is the
-    source-tier terminal authority for that case. Ordinary artifact upserts
-    retain the source coordinate's latest receipt while ``raw_sessions``
-    retains its historical acquisition evidence, so authority attaches to each
-    coordinate's newest raw observation rather than requiring a duplicate
-    receipt on every historical raw. A failure-kind carrier remains authority
-    only while that raw's current parse or validation state is failed; a later
-    successful reparse makes the retained carrier historical evidence. Every
-    ``(origin, source_index)`` member of a physical path must be terminal before
-    the cursor path is exempt.
-    """
-
-    result: set[str] = set()
-    raw_failure_kinds = tuple(sorted(RAW_FAILURE_EVIDENCE_KINDS))
-    terminal_raw_failure_kinds = tuple(sorted(_TERMINAL_RAW_FAILURE_EVIDENCE_KINDS))
-    raw_failure_placeholders = ", ".join("?" for _ in raw_failure_kinds)
-    terminal_raw_failure_placeholders = ", ".join("?" for _ in terminal_raw_failure_kinds)
-    # The path batch binds once for observation receipts and once for raw rows.
-    path_batch_size = max(1, (500 - len(raw_failure_kinds) - len(terminal_raw_failure_kinds)) // 2)
-    pending = set(source_paths)
-    while pending:
-        batch = tuple(sorted(pending)[:path_batch_size])
-        pending.difference_update(batch)
-        placeholders = ", ".join("?" for _ in batch)
-        rows = conn.execute(
-            f"""
-            WITH latest_raw_observation AS (
-                SELECT raw_id, acquired_at_ms, observation_rowid
-                FROM (
-                    SELECT
-                        ref_id AS raw_id,
-                        acquired_at_ms,
-                        rowid AS observation_rowid,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY ref_id
-                            ORDER BY rowid DESC
-                        ) AS observation_rank
-                    FROM blob_refs
-                    WHERE ref_type = 'raw_payload'
-                      AND source_path IN ({placeholders})
-                )
-                WHERE observation_rank = 1
-            ),
-            newest_per_coordinate AS (
-                SELECT raw_id, source_path, origin, source_index, parse_error,
-                       validation_status, validated_at_ms, parsed_at_ms
-                FROM (
-                    SELECT
-                        raw.raw_id,
-                        raw.source_path,
-                        raw.origin,
-                        raw.source_index,
-                        raw.parse_error,
-                        raw.validation_status,
-                        raw.validated_at_ms,
-                        raw.parsed_at_ms,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY raw.source_path, raw.origin, raw.source_index
-                            ORDER BY COALESCE(observation.observation_rowid, raw.rowid) DESC
-                        ) AS coordinate_rank
-                    FROM raw_sessions AS raw
-                    LEFT JOIN latest_raw_observation AS observation ON observation.raw_id = raw.raw_id
-                    WHERE raw.source_path IN ({placeholders})
-                )
-                WHERE coordinate_rank = 1
-            ),
-            terminal_artifacts AS (
-                SELECT artifact.raw_id
-                FROM raw_artifacts AS artifact
-                JOIN newest_per_coordinate AS evidence_raw ON evidence_raw.raw_id = artifact.raw_id
-                WHERE artifact.parse_as_session = 0
-                  AND (
-                      (
-                          artifact.artifact_kind NOT IN ({raw_failure_placeholders})
-                          AND (
-                              evidence_raw.parsed_at_ms IS NULL
-                              OR artifact.last_observed_at_ms >= evidence_raw.parsed_at_ms
-                          )
-                      )
-                      OR (
-                          artifact.artifact_kind IN ({terminal_raw_failure_placeholders})
-                          AND (
-                              evidence_raw.parse_error IS NOT NULL
-                              OR (
-                                  evidence_raw.validation_status = 'failed'
-                                  AND (
-                                      evidence_raw.parsed_at_ms IS NULL
-                                      OR evidence_raw.validated_at_ms IS NULL
-                                      -- A legacy tie has no proven winner;
-                                      -- retain it rather than deleting raw
-                                      -- authority based on an arbitrary side.
-                                      OR evidence_raw.validated_at_ms >= evidence_raw.parsed_at_ms
-                                  )
-                              )
-                          )
-                      )
-                  )
-            ),
-            terminal_evidence AS (
-                SELECT raw_id FROM terminal_artifacts
-                UNION
-                SELECT evidence_raw.raw_id
-                FROM newest_per_coordinate AS evidence_raw
-                JOIN raw_membership_census AS census ON census.raw_id = evidence_raw.raw_id
-                WHERE census.status = 'non_session'
-            )
-            SELECT DISTINCT terminal_raw.source_path
-            FROM terminal_evidence AS artifact
-            JOIN newest_per_coordinate AS terminal_raw ON terminal_raw.raw_id = artifact.raw_id
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM newest_per_coordinate AS coordinate
-                WHERE coordinate.source_path = terminal_raw.source_path
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM terminal_evidence AS current_artifact
-                      WHERE current_artifact.raw_id = coordinate.raw_id
-                  )
-            )
-            """,
-            (*batch, *batch, *raw_failure_kinds, *terminal_raw_failure_kinds),
-        ).fetchall()
-        result.update(str(row[0]) for row in rows)
-    return result
+    return _terminal_artifact_paths_from_inputs(read_rows, source_paths)
 
 
 def _terminal_artifact_raw_ids(
@@ -2596,3 +2544,405 @@ __all__ = [
     "superseded_raw_snapshot_candidates",
     "unknown_raw_frontier_integrity_projection",
 ]
+
+
+@dataclass(frozen=True)
+class _CursorFrontierComparison:
+    checked: bool
+    comparison_count: int
+    ahead_count: int
+    representative: _IndexRawRevisionHead | None
+    deferred: bool
+    gap: bool
+
+
+def _check_broken_active_chain_inputs(
+    read_rows: Callable[[set[str]], dict[str, sqlite3.Row]],
+    session_raw_ids: frozenset[str],
+    heads: tuple[_IndexRawRevisionHead, ...],
+    *,
+    sample_limit: int,
+) -> tuple[RawFrontierIntegrityStatus, int, int, tuple[BrokenAppendHeadSample, ...], str]:
+    """Validate every distinct retention seed against one complete authority read."""
+
+    samples: list[BrokenAppendHeadSample] = []
+    broken_count = 0
+    heads_by_raw_id: dict[str, list[_IndexRawRevisionHead]] = {}
+    for head in heads:
+        heads_by_raw_id.setdefault(head.accepted_raw_id, []).append(head)
+    seed_raw_ids = set(session_raw_ids).union(heads_by_raw_id)
+    # Membership-governed snapshots carry a semantic head, not a byte
+    # predecessor chain. They remain active source authority and must be
+    # retained, but applying byte-chain validation to them turns a normal
+    # membership snapshot into a false broken-head violation. A raw selected
+    # by both regimes remains byte-validated.
+    byte_head_raw_ids = {head.accepted_raw_id for head in heads if head.accepted_frontier_kind == "byte"}
+    semantic_only_raw_ids = {
+        head.accepted_raw_id for head in heads if head.accepted_frontier_kind != "byte"
+    }.difference(byte_head_raw_ids)
+    try:
+        rows_by_id = read_rows(seed_raw_ids)
+    except _RawRevisionAuthorityUnavailableError as exc:
+        logger.warning("raw frontier integrity: %s", exc)
+        return "unknown", 0, 0, (), str(exc)
+
+    checked_count = 0
+    for seed_raw_id in sorted(seed_raw_ids):
+        seed_heads = heads_by_raw_id.get(seed_raw_id, [])
+        row = rows_by_id.get(seed_raw_id)
+        if row is None and not seed_heads:
+            # Directly missing sessions.raw_id rows are counted once by the
+            # canonical lost-source-evidence projection. There is no chain to
+            # traverse here; do not double-count the same absence.
+            continue
+        checked_count += 1
+        try:
+            if row is None:
+                raise RawRetentionSafetyError(f"active index raw is missing from source tier: {seed_raw_id}")
+            if seed_raw_id in semantic_only_raw_ids:
+                continue
+            for head in seed_heads:
+                if head.accepted_frontier_kind == "byte":
+                    _validate_byte_head(row, head)
+            _validate_active_revision_chain(rows_by_id, seed_raw_id)
+        except RawRetentionSafetyError as exc:
+            broken_count += 1
+            if len(samples) < sample_limit:
+                if seed_heads:
+                    logical_source_key = seed_heads[0].logical_source_key
+                elif row is not None:
+                    logical_source_key = str(row["logical_source_key"] or "session.raw_id")
+                else:
+                    logical_source_key = "session.raw_id"
+                samples.append(
+                    BrokenAppendHeadSample(
+                        logical_source_key=logical_source_key,
+                        accepted_raw_id=seed_raw_id,
+                        reason=str(exc),
+                    )
+                )
+    status: RawFrontierIntegrityStatus = "violated" if broken_count else "healthy"
+    return status, broken_count, checked_count, tuple(samples), broken_head_reason(broken_count)
+
+
+def _classify_cursor_frontier_input(
+    cursor: _OpsCursorAuthority,
+    byte_heads: Iterable[_IndexRawRevisionHead],
+    *,
+    has_any_head: bool,
+    terminal_artifact: bool,
+) -> _CursorFrontierComparison:
+    """The canonical cursor decision over every comparable original head."""
+    count = 0
+    ahead = 0
+    representative = None
+    for head in byte_heads:
+        count += 1
+        if cursor.byte_offset > head.accepted_frontier:
+            ahead += 1
+            if representative is None or (head.accepted_frontier, head.logical_source_key) < (
+                representative.accepted_frontier,
+                representative.logical_source_key,
+            ):
+                representative = head
+    if cursor.is_deferred and not ahead:
+        return _CursorFrontierComparison(False, 0, 0, None, True, False)
+    if not count:
+        return _CursorFrontierComparison(False, 0, 0, None, False, not (has_any_head or terminal_artifact))
+    return _CursorFrontierComparison(True, count, ahead, representative, False, False)
+
+
+def cursor_gap_sample(path: str, cursor_offset: int, *, retained: bool) -> CursorAuthorityGapSample:
+    """The sample for a cursor whose path cannot be joined to an accepted byte head."""
+    return CursorAuthorityGapSample(
+        state="source_raws_without_accepted_head" if retained else "cursor_path_absent_from_source",
+        source_path=path,
+        logical_source_key=None,
+        cursor_byte_offset=cursor_offset,
+        reason=(
+            "source tier has raw evidence but index has no accepted byte head"
+            if retained
+            else "ingest cursor path is absent from source tier"
+        ),
+    )
+
+
+def cursor_ahead_sample(
+    path: str, cursor: _OpsCursorAuthority, comparison: _CursorFrontierComparison
+) -> CursorAheadSample:
+    """The sample for a cursor committed past its representative accepted byte head."""
+    representative = comparison.representative
+    if representative is None:
+        raise ValueError("a cursor ahead of accepted raw names no representative head")
+    return CursorAheadSample(
+        source_path=path,
+        logical_source_key=representative.logical_source_key,
+        cursor_byte_offset=cursor.byte_offset,
+        accepted_frontier=representative.accepted_frontier,
+        affected_head_count=comparison.ahead_count,
+        canonical_source_path=cursor.canonical_source_path,
+    )
+
+
+def _compare_cursor_frontier_inputs(
+    heads: tuple[_IndexRawRevisionHead, ...],
+    *,
+    cursor_map: dict[str, _OpsCursorAuthority],
+    source_path_by_raw_id: dict[str, str],
+    canonical_by_raw_id: dict[str, str],
+    retained_source_paths: set[str],
+    terminal_artifact_paths: set[str],
+    compare_canonical_paths: bool,
+    sample_limit: int,
+) -> tuple[
+    RawFrontierIntegrityStatus,
+    int,
+    int,
+    int,
+    int,
+    tuple[CursorAheadSample, ...],
+    int,
+    tuple[CursorAuthorityGapSample, ...],
+    int,
+    str,
+]:
+    """The canonical cursor comparison over explicitly retained inputs."""
+    byte_heads_by_path: dict[str, list[_IndexRawRevisionHead]] = {}
+    all_head_paths: set[str] = set()
+    gaps: list[CursorAuthorityGapSample] = []
+    gap_count = 0
+    for head in heads:
+        source_path = source_path_by_raw_id.get(head.accepted_raw_id)
+        if source_path is None:
+            if head.accepted_frontier_kind == "byte":
+                gap_count += 1
+                if len(gaps) < sample_limit:
+                    gaps.append(
+                        CursorAuthorityGapSample(
+                            state="accepted_head_missing_source",
+                            source_path=None,
+                            logical_source_key=head.logical_source_key,
+                            cursor_byte_offset=None,
+                            reason=f"accepted byte head raw is absent from source tier: {head.accepted_raw_id}",
+                        )
+                    )
+            continue
+        # Compare the canonical path stored at acquisition. Re-resolving an
+        # obsolete spelling against today's filesystem names the wrong file
+        # once its symlink is removed or retargeted.
+        comparison_path = canonical_by_raw_id.get(head.accepted_raw_id, source_path)
+        all_head_paths.add(comparison_path)
+        if head.accepted_frontier_kind == "byte":
+            byte_heads_by_path.setdefault(comparison_path, []).append(head)
+
+    samples: list[CursorAheadSample] = []
+    ahead_count = 0
+    checked = 0
+    comparison_count = 0
+    ahead_comparison_count = 0
+    deferred_count = 0
+    for path, cursor in cursor_map.items():
+        comparison_path = (cursor.canonical_source_path or path) if compare_canonical_paths else path
+        cursor_offset = cursor.byte_offset
+        comparison = _classify_cursor_frontier_input(
+            cursor,
+            byte_heads_by_path.get(comparison_path, ()),
+            has_any_head=comparison_path in all_head_paths,
+            terminal_artifact=path in terminal_artifact_paths,
+        )
+        if comparison.deferred:
+            deferred_count += 1
+            continue
+        if not comparison.checked:
+            if not comparison.gap:
+                continue
+            gap_count += 1
+            if len(gaps) < sample_limit:
+                gaps.append(cursor_gap_sample(path, cursor_offset, retained=path in retained_source_paths))
+            continue
+        checked += 1
+        comparison_count += comparison.comparison_count
+        if not comparison.ahead_count:
+            continue
+        ahead_count += 1
+        ahead_comparison_count += comparison.ahead_count
+        if len(samples) < sample_limit:
+            samples.append(cursor_ahead_sample(path, cursor, comparison))
+
+    status: RawFrontierIntegrityStatus = "violated" if ahead_count else "unknown" if gap_count else "healthy"
+    return (
+        status,
+        ahead_count,
+        checked,
+        comparison_count,
+        ahead_comparison_count,
+        tuple(samples),
+        gap_count,
+        tuple(gaps),
+        deferred_count,
+        cursor_ahead_reason(ahead_count, ahead_comparison_count, gap_count, deferred_count),
+    )
+
+
+def _raw_revision_rows_from_inputs(
+    read_rows: Callable[[tuple[str, ...]], Sequence[sqlite3.Row]],
+    raw_ids: set[str],
+    *,
+    allow_missing: bool = False,
+) -> dict[str, sqlite3.Row]:
+    rows_by_id: dict[str, sqlite3.Row] = {}
+    pending = set(raw_ids)
+    while pending:
+        batch = tuple(sorted(pending)[:500])
+        pending.difference_update(batch)
+        try:
+            rows = read_rows(batch)
+        except sqlite3.Error as exc:
+            raise _RawRevisionAuthorityUnavailableError(f"source raw revision authority is unreadable: {exc}") from exc
+        found = {str(row["raw_id"]): row for row in rows}
+        missing = set(batch).difference(found)
+        if missing and not allow_missing:
+            rendered = ", ".join(sorted(missing)[:3])
+            raise RawRetentionSafetyError(f"active index raw is missing from source tier: {rendered}")
+        rows_by_id.update(found)
+        for row in rows:
+            if str(row["revision_kind"]) != "append":
+                continue
+            predecessor = row["predecessor_raw_id"]
+            if predecessor is not None and str(predecessor) not in rows_by_id:
+                pending.add(str(predecessor))
+    return rows_by_id
+
+
+def _terminal_artifact_paths_from_inputs(
+    read_rows: Callable[[str, tuple[object, ...], tuple[str, ...]], Sequence[sqlite3.Row]],
+    source_paths: set[str],
+) -> set[str]:
+    """Return paths whose every current source coordinate is terminal evidence.
+
+    A full-route cursor can legitimately advance over a workflow/fact artifact
+    that has no session head. ``raw_artifacts.parse_as_session = 0`` is the
+    source-tier terminal authority for that case. Ordinary artifact upserts
+    retain the source coordinate's latest receipt while ``raw_sessions``
+    retains its historical acquisition evidence, so authority attaches to each
+    coordinate's newest raw observation rather than requiring a duplicate
+    receipt on every historical raw. A failure-kind carrier remains authority
+    only while that raw's current parse or validation state is failed; a later
+    successful reparse makes the retained carrier historical evidence. Every
+    ``(origin, source_index)`` member of a physical path must be terminal before
+    the cursor path is exempt.
+    """
+
+    result: set[str] = set()
+    raw_failure_kinds = tuple(sorted(RAW_FAILURE_EVIDENCE_KINDS))
+    terminal_raw_failure_kinds = tuple(sorted(_TERMINAL_RAW_FAILURE_EVIDENCE_KINDS))
+    raw_failure_placeholders = ", ".join("?" for _ in raw_failure_kinds)
+    terminal_raw_failure_placeholders = ", ".join("?" for _ in terminal_raw_failure_kinds)
+    # The path batch binds once for observation receipts and once for raw rows.
+    path_batch_size = max(1, (500 - len(raw_failure_kinds) - len(terminal_raw_failure_kinds)) // 2)
+    pending = set(source_paths)
+    while pending:
+        batch = tuple(sorted(pending)[:path_batch_size])
+        pending.difference_update(batch)
+        placeholders = ", ".join("?" for _ in batch)
+        rows = read_rows(
+            f"""
+            WITH latest_raw_observation AS (
+                SELECT raw_id, acquired_at_ms, observation_rowid
+                FROM (
+                    SELECT
+                        ref_id AS raw_id,
+                        acquired_at_ms,
+                        rowid AS observation_rowid,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY ref_id
+                            ORDER BY rowid DESC
+                        ) AS observation_rank
+                    FROM blob_refs
+                    WHERE ref_type = 'raw_payload'
+                      AND source_path IN ({placeholders})
+                )
+                WHERE observation_rank = 1
+            ),
+            newest_per_coordinate AS (
+                SELECT raw_id, source_path, origin, source_index, parse_error,
+                       validation_status, validated_at_ms, parsed_at_ms
+                FROM (
+                    SELECT
+                        raw.raw_id,
+                        raw.source_path,
+                        raw.origin,
+                        raw.source_index,
+                        raw.parse_error,
+                        raw.validation_status,
+                        raw.validated_at_ms,
+                        raw.parsed_at_ms,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY raw.source_path, raw.origin, raw.source_index
+                            ORDER BY COALESCE(observation.observation_rowid, raw.rowid) DESC
+                        ) AS coordinate_rank
+                    FROM raw_sessions AS raw
+                    LEFT JOIN latest_raw_observation AS observation ON observation.raw_id = raw.raw_id
+                    WHERE raw.source_path IN ({placeholders})
+                )
+                WHERE coordinate_rank = 1
+            ),
+            terminal_artifacts AS (
+                SELECT artifact.raw_id
+                FROM raw_artifacts AS artifact
+                JOIN newest_per_coordinate AS evidence_raw ON evidence_raw.raw_id = artifact.raw_id
+                WHERE artifact.parse_as_session = 0
+                  AND (
+                      (
+                          artifact.artifact_kind NOT IN ({raw_failure_placeholders})
+                          AND (
+                              evidence_raw.parsed_at_ms IS NULL
+                              OR artifact.last_observed_at_ms >= evidence_raw.parsed_at_ms
+                          )
+                      )
+                      OR (
+                          artifact.artifact_kind IN ({terminal_raw_failure_placeholders})
+                          AND (
+                              evidence_raw.parse_error IS NOT NULL
+                              OR (
+                                  evidence_raw.validation_status = 'failed'
+                                  AND (
+                                      evidence_raw.parsed_at_ms IS NULL
+                                      OR evidence_raw.validated_at_ms IS NULL
+                                      -- A legacy tie has no proven winner;
+                                      -- retain it rather than deleting raw
+                                      -- authority based on an arbitrary side.
+                                      OR evidence_raw.validated_at_ms >= evidence_raw.parsed_at_ms
+                                  )
+                              )
+                          )
+                      )
+                  )
+            ),
+            terminal_evidence AS (
+                SELECT raw_id FROM terminal_artifacts
+                UNION
+                SELECT evidence_raw.raw_id
+                FROM newest_per_coordinate AS evidence_raw
+                JOIN raw_membership_census AS census ON census.raw_id = evidence_raw.raw_id
+                WHERE census.status = 'non_session'
+            )
+            SELECT DISTINCT terminal_raw.source_path
+            FROM terminal_evidence AS artifact
+            JOIN newest_per_coordinate AS terminal_raw ON terminal_raw.raw_id = artifact.raw_id
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM newest_per_coordinate AS coordinate
+                WHERE coordinate.source_path = terminal_raw.source_path
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM terminal_evidence AS current_artifact
+                      WHERE current_artifact.raw_id = coordinate.raw_id
+                  )
+            )
+            """,
+            (*batch, *batch, *raw_failure_kinds, *terminal_raw_failure_kinds),
+            batch,
+        )
+        result.update(str(row[0]) for row in rows)
+    return result

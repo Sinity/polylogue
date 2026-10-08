@@ -28,14 +28,15 @@ from typing import Any
 import pytest
 
 import polylogue.sources.live.cursor as cursor_module
-import polylogue.sources.live.parse_prefetch as parse_prefetch
 from polylogue import Polylogue
 from polylogue.daemon.intake import AdmissionOutcome
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
-from polylogue.operations.operation_context import open_operation_read
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.live.parse_prefetch import LiveParseStage
+from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+from polylogue.sources.source_layout import export_drop_layout
+from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
+from tests.infra.raw_owner_routes import live_owner_set
 
 _SESSION_ID = "kill-recovery"
 _MAX_DEFERRED_PAGES = 20
@@ -50,11 +51,15 @@ _CHILD = textwrap.dedent(
     from pathlib import Path
 
     from polylogue import Polylogue
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.intake import AdmissionOutcome
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
     from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
-    from polylogue.operations.operation_context import open_operation_read
     from polylogue.sources.live import LiveWatcher, WatchSource
     from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
+    from polylogue.sources.source_layout import export_drop_layout
     from polylogue.storage.sqlite.archive_tiers import revision_governance
 
     archive_root = Path(sys.argv[1])
@@ -77,11 +82,24 @@ _CHILD = textwrap.dedent(
 
     async def main():
         archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+        # The daemon's intake owners; the process is killed, so none settles.
+        compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+        coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+        raw_owner = RawObservationConvergenceOwner(
+            archive_root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            write_coordinator=coordinator,
+        )
         watcher = LiveWatcher(
             archive,
-            (WatchSource(name="claude-code", root=source_root),),
+            (WatchSource(name="claude-code", root=source_root, layout=export_drop_layout((".jsonl",))),),
             cursor=CursorStore(archive_root / "index.db"),
-            read_snapshot=open_operation_read,
+            write_coordinator=coordinator,
+            sqlite_capture_stage=LiveSQLiteCaptureStage(compute_adapter=compute),
+            append_runner=raw_owner.ingest_append_plans,
+            convergence_runner=raw_owner.run_convergence_sync,
+            retained_runner=raw_owner.ingest_retained_raw_ids,
         )
         # A page that only defers pending preparation never reaches the
         # write; offer fresh pages until one does (the kill ends the loop).
@@ -141,39 +159,36 @@ async def _admit_pages(
     *,
     pages: int,
     stop_on_verdict: bool = False,
-    parse_stage: LiveParseStage | None = None,
 ) -> list[dict[str, Any]]:
-    """Offer ``pages`` fresh pages through the production intake route.
-
-    ``parse_stage`` replaces the watcher's own process-pool stage; the caller
-    owns its shutdown.
-    """
+    """Offer ``pages`` fresh pages through the production intake route."""
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
-    watcher = LiveWatcher(
-        archive,
-        (WatchSource(name="claude-code", root=source_root),),
-        cursor=CursorStore(archive_root / "index.db"),
-        parse_stage=parse_stage,
-        read_snapshot=open_operation_read,
-    )
-    try:
-        observed: list[dict[str, Any]] = []
-        for _ in range(pages):
-            adapter = FileIntakeAdapter(
-                DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=watcher._sources),
-                watcher._sources[0],
-            )
-            observed.append(dict(await adapter.admit_page(await adapter.discover(limit=8))))
-            if stop_on_verdict and {result.outcome for result in observed[-1].values()} != {AdmissionOutcome.DEFERRED}:
-                break
-        return observed
-    finally:
-        watcher.stop()
-        await archive.close()
+    async with live_owner_set(archive_root) as owners:
+        watcher = LiveWatcher(
+            archive,
+            (WatchSource(name="claude-code", root=source_root, layout=export_drop_layout((".jsonl",))),),
+            cursor=CursorStore(archive_root / "index.db"),
+            **owners.watcher_kwargs(),
+        )
+        try:
+            observed: list[dict[str, Any]] = []
+            for _ in range(pages):
+                adapter = FileIntakeAdapter(
+                    DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=watcher._sources),
+                    watcher._sources[0],
+                )
+                observed.append(dict(await adapter.admit_page(await adapter.discover(limit=8))))
+                if stop_on_verdict and {result.outcome for result in observed[-1].values()} != {
+                    AdmissionOutcome.DEFERRED
+                }:
+                    break
+            return observed
+        finally:
+            watcher.stop()
+            await archive.close()
 
 
 def _kill_child_during_write(archive_root: Path, source_root: Path, *, kill_at: int, log_dir: Path) -> None:
-    # Files, not pipes: the child's parse-stage worker processes inherit its
+    # Files, not pipes: any worker process the child starts inherits its
     # descriptors, so a pipe would stay open after the child dies.
     stdout_path = log_dir / "child.stdout"
     stderr_path = log_dir / "child.stderr"
@@ -281,38 +296,42 @@ async def test_sigkill_inside_an_append_index_write_recovers_exactly(
     _kill_child_during_write(archive_root, source_root, kill_at=1, log_dir=log_dir)
     assert _message_rows(archive_root) == (3, 3, 1)
 
-    # Make the restart's first page defer the tail's preparation. Preparation
-    # is never abandoned on a deadline, so the deferral comes from the event
-    # that still produces one: the preparation worker fails (a retryable
-    # worker loss). The deferral schedules a retry, and until that retry is
-    # due the tail is owed work, so no page may acknowledge it as DUPLICATE.
-    # Before the fix the second page did, and the appended messages were
-    # never materialized. A thread stage keeps the failing worker in this
-    # process, where the patch reaches it.
-    original_worker = parse_prefetch.live_parse_path_worker
+    # Make the restart's pages fail the tail's preparation. Preparation is
+    # never abandoned on a deadline, so the failure comes from the event that
+    # still produces one: the raw owner's preparation fails retryably (a
+    # worker loss). The restart re-observes the killed file through the full
+    # retained route, and every route prepares through the same derivation.
+    # Until a retry publishes, the tail is owed work, so no page may
+    # acknowledge it as DUPLICATE. Before the fix the second page did, and the
+    # appended messages were never materialized.
+    original_preparation = RawObservationDerivation.compute
 
-    def failing_worker(*args: object, **kwargs: object) -> object:
-        raise RuntimeError("synthetic preparation worker failure")
+    def failing_preparation(*args: object, **kwargs: object) -> RawObservationReplacement:
+        raise RetainedPreparationRetryableError("synthetic preparation worker failure")
 
-    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", failing_worker)
-    stage = LiveParseStage(max_workers=1, shard_directory=log_dir / "parse-shards")
-    try:
-        restart_pages = await _admit_pages(archive_root, source_root, pages=3, parse_stage=stage)
-    finally:
-        stage.shutdown()
-    assert all(result.outcome is AdmissionOutcome.DEFERRED for page in restart_pages for result in page.values()), (
-        restart_pages
-    )
+    monkeypatch.setattr(RawObservationDerivation, "compute", failing_preparation)
+    restart_pages = await _admit_pages(archive_root, source_root, pages=3)
+    assert all(
+        result.outcome in {AdmissionOutcome.DEFERRED, AdmissionOutcome.RETRYABLE}
+        for page in restart_pages
+        for result in page.values()
+    ), restart_pages
     assert _message_rows(archive_root) == (3, 3, 1)
 
-    # Restore the worker and make the scheduled retry due at once so the next
-    # pages reach it through the watcher's own stage.
-    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", original_worker)
+    # Restore the preparation and make the scheduled retry due at once so the
+    # next pages reach it through the owner's own route.
+    monkeypatch.setattr(RawObservationDerivation, "compute", original_preparation)
     monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
     CursorStore(archive_root / "index.db").defer_full_cursor_reconciliation(source_path)
 
     outcomes = await _admit(archive_root, source_root)
-    assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.ADMITTED}, outcomes
+    # The due retry publishes the retained tail inside this page; the page's
+    # own selection may then find nothing new and acknowledge it. Either way
+    # the acknowledgement follows materialization, never precedes it.
+    assert {result.outcome for result in outcomes.values()} <= {
+        AdmissionOutcome.ADMITTED,
+        AdmissionOutcome.DUPLICATE,
+    }, outcomes
     assert _message_rows(archive_root) == (6, 6, 1)
     assert _raw_parse_errors(archive_root, source_path) == []
 

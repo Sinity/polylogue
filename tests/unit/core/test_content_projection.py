@@ -14,6 +14,102 @@ from polylogue.archive.semantic.content_projection import (
 from tests.infra.builders import make_conv, make_msg
 
 
+@pytest.mark.parametrize(
+    "warm_order",
+    [
+        ("word_count", "is_thinking", "is_substantive", "is_noise"),
+        ("is_substantive", "is_noise", "is_thinking", "word_count"),
+        ("is_noise", "word_count", "is_substantive", "is_thinking"),
+    ],
+)
+def test_reasoning_projection_discards_warmed_content_caches_without_mutating_source(
+    warm_order: tuple[str, ...],
+) -> None:
+    source = make_msg(
+        id="projected-answer",
+        role=Role.ASSISTANT,
+        text="visible answer words\nsecret hidden",
+        blocks=[
+            {"type": "text", "text": "visible answer words"},
+            {"type": "thinking", "text": "secret hidden"},
+        ],
+    )
+    session = make_conv(messages=[source])
+    original_fields = source.model_dump()
+    original_identity = (source.id, source.identity_source, source.origin, source.material_origin)
+    for property_name in warm_order:
+        getattr(source, property_name)
+
+    projected = session.with_content_projection(ContentProjectionSpec(include_reasoning=False))
+    projected_message = next(iter(projected.messages))
+    cold_source = make_msg(
+        id="projected-answer",
+        role=Role.ASSISTANT,
+        text="visible answer words\nsecret hidden",
+        blocks=[
+            {"type": "text", "text": "visible answer words"},
+            {"type": "thinking", "text": "secret hidden"},
+        ],
+    )
+    cold_projected = project_message_content([cold_source], ContentProjectionSpec(include_reasoning=False))[0]
+
+    assert projected_message.text == "visible answer words"
+    assert projected_message.blocks == [{"type": "text", "text": "visible answer words"}]
+    assert (projected_message.word_count, projected_message.is_thinking, projected_message.is_substantive) == (
+        3,
+        False,
+        True,
+    )
+    assert (
+        projected_message.text,
+        projected_message.blocks,
+        projected_message.word_count,
+        projected_message.is_thinking,
+        projected_message.is_substantive,
+    ) == (
+        cold_projected.text,
+        cold_projected.blocks,
+        cold_projected.word_count,
+        cold_projected.is_thinking,
+        cold_projected.is_substantive,
+    )
+    assert [message.id for message in projected.substantive_only().messages] == [source.id]
+    assert (
+        projected_message.id,
+        projected_message.identity_source,
+        projected_message.origin,
+        projected_message.material_origin,
+    ) == original_identity
+    assert source.model_dump() == original_fields
+    assert (source.word_count, source.is_thinking, source.is_substantive) == (5, True, False)
+
+
+def test_tool_output_projection_recomputes_tool_and_substantive_properties() -> None:
+    source = make_msg(
+        id="tool-output-projection",
+        role=Role.ASSISTANT,
+        text="Visible answer text here\nsecret tool output",
+        blocks=[
+            {"type": "text", "text": "Visible answer text here"},
+            {"type": "tool_result", "tool_id": "tool-1", "text": "secret tool output"},
+        ],
+    )
+    original_fields = source.model_dump()
+    original_identity = (source.id, source.identity_source, source.origin, source.material_origin)
+    assert source.is_tool_use and source.is_noise and not source.is_substantive
+    assert source.word_count == 7
+
+    projected = project_message_content([source], ContentProjectionSpec(include_tool_outputs=False))[0]
+
+    assert projected.text == "Visible answer text here"
+    assert projected.blocks == [{"type": "text", "text": "Visible answer text here"}]
+    assert not projected.is_tool_use and not projected.is_noise and projected.is_substantive
+    assert projected.word_count == 4
+    assert (projected.id, projected.identity_source, projected.origin, projected.material_origin) == original_identity
+    assert source.model_dump() == original_fields
+    assert (source.is_tool_use, source.is_noise, source.is_substantive, source.word_count) == (True, True, False, 7)
+
+
 def test_projection_removes_only_file_read_payloads_when_requested() -> None:
     session = make_conv(
         messages=[

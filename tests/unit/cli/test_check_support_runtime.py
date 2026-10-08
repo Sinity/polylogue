@@ -144,7 +144,8 @@ def test_schema_verification_helpers_cover_runtime_paths() -> None:
         ),
         patch("builtins.print") as builtins_print,
     ):
-        assert check_workflow._run_schema_verification(options, config) is schema_report
+        env = cast(AppEnv, SimpleNamespace())
+        assert check_workflow._run_schema_verification(env, options, config) is schema_report
 
     request = run_verify.call_args.args[0]
     assert request.providers == ["claude-code"]
@@ -154,6 +155,8 @@ def test_schema_verification_helpers_cover_runtime_paths() -> None:
     assert request.quarantine_malformed is True
     assert request.progress_callback is session_progress_callback
     assert run_verify.call_args.kwargs["db_path"] == config.db_path
+    # Verdicts go to the daemon-backed writer, never a local Source writer.
+    assert callable(run_verify.call_args.kwargs["quarantine"])
     parse_samples.assert_called_once_with("25")
     builtins_print.assert_called_once()
 

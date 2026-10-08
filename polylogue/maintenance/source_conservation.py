@@ -25,7 +25,9 @@ current-producer failure and never deleted here.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -39,11 +41,12 @@ from polylogue.archive.revision_authority import (
     raw_receipt_order_sql,
 )
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.raw_coordinates import zip_member_coordinate
+from polylogue.core.raw_coordinates import read_captured_zip_coordinate_receipt
 from polylogue.core.sqlite_introspection import table_exists
-from polylogue.maintenance.source_manifest_continuity import SourceContinuityError, SourceFrontier
+from polylogue.maintenance.source_manifest_continuity import SourceFrontier
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule
 from polylogue.sources.value_bounds import VALUE_BOUND_REFUSED, VALUE_BOUND_REFUSED_HEAD
+from polylogue.storage.sqlite.connection_profile import readonly_temp_staging
 
 #: Identity prefixes that name provider fragments, never conversations:
 #: ``toolu_`` is a tool_use block id (tool-result fragment) and ``wf_`` is a
@@ -60,6 +63,8 @@ ARTIFACT_IDENTITY_SUFFIXES: tuple[tuple[str, str], ...] = (
 
 _TERM_SOURCE_MISSING = "source_missing"
 _TERM_SOURCE_LOST = "source_lost"
+_TERM_MISSING_BLOB = "missing_blob"
+_TERM_SOURCE_UNAVAILABLE = "source_unavailable"
 _TERM_MATERIALIZED = "materialized"
 _TERM_REVISION_SUPERSEDED = "revision_superseded"
 _TERM_BYTE_DUPLICATE = "byte_duplicate_superseded"
@@ -103,6 +108,8 @@ _RULES: dict[str, str] = {
     _TERM_SOURCE_LOST: (
         "acquired source file no longer exists on disk and no raw payload blob is retained; the bytes are gone"
     ),
+    _TERM_MISSING_BLOB: "acquired raw payload has no retained CAS body; an original source is not archive retention",
+    _TERM_SOURCE_UNAVAILABLE: "source file or member inventory is unreadable; retention is unmeasured and retryable",
     _TERM_MATERIALIZED: "index session carries this raw_id, or the agent work event's session is indexed",
     _TERM_REVISION_SUPERSEDED: "another revision of the same logical source is materialized",
     _TERM_BYTE_DUPLICATE: "content-bound byte-duplicate supersession receipt names a materialized twin",
@@ -163,6 +170,8 @@ _RULES: dict[str, str] = {
 _BLOCKING: frozenset[str] = frozenset(
     {
         _TERM_SOURCE_LOST,
+        _TERM_MISSING_BLOB,
+        _TERM_SOURCE_UNAVAILABLE,
         _TERM_UNCLASSIFIED_SHAPE,
         _TERM_QUARANTINED_COHORT,
         _TERM_UNEXPLAINED,
@@ -372,65 +381,77 @@ def fragment_identity_shape(native_id: str) -> str | None:
     return None
 
 
-_ARCHIVE_MEMBER_SEPARATOR = "!"
-
-# Keyed by (container, mtime_ns, size) so a rewritten archive is never answered
-# from a stale namelist.
-_MEMBER_NAMELIST_CACHE: dict[tuple[str, int, int, int, int], frozenset[str] | None] = {}
+def _inventory_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mtime_ns, info.st_size
 
 
-def _member_names(container: Path) -> frozenset[str] | None:
-    """Return the archive's member names, or ``None`` when it is not a readable zip."""
+def _member_inventory(
+    container: Path,
+    inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]],
+) -> frozenset[str] | bool | None:
+    """Measure a container through one descriptor; cache only unchanged evidence."""
     try:
-        stat = container.stat()
+        descriptor = os.open(container, os.O_RDONLY | os.O_NONBLOCK)
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+        return False
     except OSError:
         return None
-    key = (str(container), stat.st_dev, stat.st_ino, stat.st_ctime_ns, stat.st_mtime_ns)
-    if key not in _MEMBER_NAMELIST_CACHE:
+    with os.fdopen(descriptor, "rb") as stream:
         try:
-            with zipfile.ZipFile(container) as archive:
-                _MEMBER_NAMELIST_CACHE[key] = frozenset(archive.namelist())
-        except (OSError, zipfile.BadZipFile):
-            _MEMBER_NAMELIST_CACHE[key] = None
-    return _MEMBER_NAMELIST_CACHE[key]
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return False
+            before = _inventory_identity(info)
+            cached = inventories.get(container)
+            if cached is not None and cached[0] == before:
+                names = cached[1]
+            else:
+                try:
+                    with zipfile.ZipFile(stream) as archive:
+                        names = frozenset(info.filename for info in archive.infolist() if not info.is_dir())
+                except zipfile.BadZipFile:
+                    names = False
+            if before != _inventory_identity(os.fstat(stream.fileno())):
+                return None
+            if before != _inventory_identity(container.stat()):
+                return None
+            inventories[container] = before, names
+            return names
+        except OSError:
+            # An admitted container that disappears during the measurement
+            # leaves a retryable observation, not a proof of permanent loss.
+            return None
 
 
-def _source_exists(archive_root: Path, source_path: str) -> bool:
-    """Does the acquired source still exist on disk?
+def _source_presence(
+    archive_root: Path,
+    source_path: str,
+    inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]],
+    *,
+    captured_coordinate: str | None = None,
+) -> bool | None:
+    """Present, proven absent, or unavailable source evidence for this audit.
 
-    A raw acquired from inside an export bundle records an ``archive!member``
-    coordinate (``sources/source_snapshot.py`` builds it) or, from the ZIP
-    readers, an ``archive:member`` coordinate.  Probing that string
-    as a filesystem path can never succeed, so the coordinate is resolved to its
-    container and the member is required to be present in it -- container
-    existence alone would conserve a member the archive no longer holds.  A container that is not a readable zip cannot be
-    inspected here; its existence is the strongest evidence this check owns.
+    A non-ZIP container proves no members remain. A permission or I/O fault
+    cannot prove loss. Inventories are scoped to one audit and bound to the
+    opened container's identity, never reused after a replacement or rewrite.
     """
-
-    def _resolve(candidate: str) -> Path:
-        path = Path(candidate)
-        return path if path.is_absolute() else archive_root / path
-
-    direct = _resolve(source_path)
-    if direct.exists():
-        return True
-    container_text, separator, member = source_path.partition(_ARCHIVE_MEMBER_SEPARATOR)
-    if separator and member:
-        container = _resolve(container_text)
-        if not container.is_file():
-            return False
-        names = _member_names(container)
-        return True if names is None else member in names
-    # ZIP acquisition records ``<container>:<member>`` (``decoder_zip`` and the
-    # import route), not the snapshot's ``!`` form. The shared parser tries each
-    # colon and accepts only a prefix that is a real ZIP, so a loose file whose
-    # name contains a colon is never mistaken for a member.
-    coordinate = zip_member_coordinate(str(direct))
-    if coordinate is None:
-        return False
-    container, member = coordinate
-    names = _member_names(container)
-    return True if names is None else member in names
+    if captured_coordinate is not None:
+        coordinate = read_captured_zip_coordinate_receipt(captured_coordinate)
+        names = _member_inventory(Path(coordinate.canonical_container), inventories)
+        return coordinate.member_name in names if isinstance(names, frozenset) else names
+    direct = Path(source_path)
+    if not direct.is_absolute():
+        direct = archive_root / direct
+    try:
+        info = direct.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError:
+        return None
+    else:
+        return stat.S_ISREG(info.st_mode)
+    return False
 
 
 def typed_raw_cte(conn: sqlite3.Connection, *, name: str) -> str:
@@ -620,28 +641,42 @@ def audit_source_conservation(
 
     typed_rows = conn.execute(
         f"{heads_cte} SELECT raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, "
-        f"blob_hash, {term_case} AS term FROM heads"
-    ).fetchall()
+        f"blob_hash, {term_case} AS term, "
+        "(SELECT captured_coordinate FROM raw_container_coordinates AS coordinate "
+        "WHERE coordinate.raw_id = heads.raw_id) AS captured_coordinate FROM heads"
+    )
 
     counts: dict[str, int] = {}
     samples: dict[str, list[str]] = {}
     breakdowns: dict[str, dict[str, int]] = {}
-    missing_paths: dict[str, bool] = {}
-    for raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, blob_hash, term in typed_rows:
-        # A work event is authored by the archive itself; its retained raw is
-        # the source, so there is no acquired file to probe.
+    inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]] = {}
+    for (
+        raw_id,
+        origin,
+        source_path,
+        artifact_kind,
+        bytes_retained,
+        blocker_reason,
+        blob_hash,
+        term,
+        coordinate,
+    ) in typed_rows:
+        # Archive retention is independent of whether reacquisition is possible.
+        # Probe CAS metadata only; body fidelity belongs to retained-byte validation.
+        retained = bool(bytes_retained)
+        if blob_hash is not None:
+            digest = bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash)
+            retained = retained and blob_store.exists(digest)
+        present: bool | None = True
+        # A work event's retained raw is its source; it has no acquired file.
         if probe_filesystem and not is_work_event_raw_id(str(raw_id)):
-            present = missing_paths.get(source_path)
-            if present is None:
-                present = _source_exists(archive_root, str(source_path))
-                missing_paths[source_path] = present
-            if not present:
-                retained = bool(bytes_retained)
-                # blob_hash comes from the census query itself: no per-row read.
-                if blob_hash is not None:
-                    digest = bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash)
-                    retained = retained and blob_store.exists(digest)
-                term = _TERM_SOURCE_MISSING if retained else _TERM_SOURCE_LOST
+            present = _source_presence(archive_root, str(source_path), inventories, captured_coordinate=coordinate)
+        if not retained:
+            term = _TERM_SOURCE_LOST if present is False else _TERM_MISSING_BLOB
+        elif present is None:
+            term = _TERM_SOURCE_UNAVAILABLE
+        elif not present:
+            term = _TERM_SOURCE_MISSING
         counts[term] = counts.get(term, 0) + 1
         bucket = samples.setdefault(term, [])
         if len(bucket) < sample_limit:
@@ -691,17 +726,28 @@ def audit_source_conservation(
 
     # Reverse direction.
     session_total = int(conn.execute("SELECT COUNT(*) FROM idx_tier.sessions").fetchone()[0])
-    without_raw = conn.execute(
-        "SELECT session_id FROM idx_tier.sessions WHERE raw_id IS NULL ORDER BY session_id"
-    ).fetchall()
-    orphans = conn.execute(
-        """
+    without_raw_count = int(conn.execute("SELECT COUNT(*) FROM idx_tier.sessions WHERE raw_id IS NULL").fetchone()[0])
+    without_raw = _sample(
+        conn.execute(
+            "SELECT session_id FROM idx_tier.sessions WHERE raw_id IS NULL ORDER BY session_id LIMIT ?",
+            (sample_limit,),
+        ),
+        sample_limit,
+    )
+    orphan_query = """
         SELECT s.session_id FROM idx_tier.sessions s
         WHERE s.raw_id IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = s.raw_id)
         ORDER BY s.session_id
-        """
-    ).fetchall()
+    """
+    session_orphan_count = int(
+        conn.execute(
+            """SELECT COUNT(*) FROM idx_tier.sessions s
+               WHERE s.raw_id IS NOT NULL
+                 AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = s.raw_id)"""
+        ).fetchone()[0]
+    )
+    session_orphans = _sample(conn.execute(f"{orphan_query} LIMIT ?", (sample_limit,)), sample_limit)
 
     has_artifacts = table_exists(conn, "raw_artifacts")
     parse_as_session_expr = (
@@ -715,9 +761,11 @@ def audit_source_conservation(
         else "NULL"
     )
     rules_by_origin = _non_session_rules_by_origin()
-    phantom_lineage: list[str] = []
+    phantom_lineage_count = 0
+    phantom_lineage_samples: list[str] = []
     phantom_lineage_breakdown: dict[str, int] = {}
-    phantom_identity: list[str] = []
+    phantom_identity_count = 0
+    phantom_identity_samples: list[str] = []
     phantom_identity_breakdown: dict[str, int] = {}
     for session_id, native_id, source_path, parse_as_session, artifact_kind, acquisition_origin in conn.execute(
         f"""
@@ -746,12 +794,16 @@ def audit_source_conservation(
             if rule is not None:
                 lineage_class = f"rule:{rule.kind}"
         if lineage_class is not None:
-            phantom_lineage.append(str(session_id))
+            phantom_lineage_count += 1
+            if len(phantom_lineage_samples) < sample_limit:
+                phantom_lineage_samples.append(str(session_id))
             phantom_lineage_breakdown[lineage_class] = phantom_lineage_breakdown.get(lineage_class, 0) + 1
             continue
         shape = fragment_identity_shape(str(native_id))
         if shape is not None:
-            phantom_identity.append(str(session_id))
+            phantom_identity_count += 1
+            if len(phantom_identity_samples) < sample_limit:
+                phantom_identity_samples.append(str(session_id))
             phantom_identity_breakdown[shape] = phantom_identity_breakdown.get(shape, 0) + 1
 
     message_orphans = conn.execute(
@@ -899,93 +951,59 @@ def audit_source_conservation(
     frontier_counts: dict[str, int] = {}
     frontier_samples: dict[str, list[str]] = {}
     if frontier is not None:
-        # Bind each observed member to raw acquisition by canonical path and
-        # digest.  The frontier remains authoritative even if its mutable path
-        # has since been replaced or removed.
-        raw_rows = conn.execute("SELECT raw_id, source_path, blob_hash FROM raw_sessions ORDER BY raw_id").fetchall()
-        # Index the acquired rows by their canonical source path ONCE. The
-        # member loop below used to rescan every raw for every member, which
-        # is O(members x raws): 100k configured files against 100k archived
-        # raws is ~10^10 Python-level comparisons before any answer exists.
-        # Ownership is decided by (path, digest), so the path is the key.
-        raw_rows_by_path: dict[str, list[tuple[str, str]]] = {}
-        for raw_id, source_path, blob_hash in raw_rows:
-            raw_digest = bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash or "")
-            raw_rows_by_path.setdefault(str(source_path), []).append((str(raw_id), raw_digest.lower()))
-        declarations = {declaration.source_id: declaration for declaration in frontier.declarations}
-        raw_bound: set[str] = set()
-        # Every canonical path the configured frontier names. A raw sitting at
-        # one of these paths is an acquisition OF a configured source; only its
-        # revision may be historical. Frontier-orphan means "outside the
-        # configured frontier", so such a raw is not one.
-        configured_paths: set[str] = set()
-        for member in frontier.members:
-            declaration = declarations[member.source_id]
-            root = Path(declaration.root)
-            if declaration.role.value == "archive-member":
-                _archive_name, separator, archive_member = member.coordinate.partition("!")
-                if not separator or not archive_member:
-                    raise SourceContinuityError(
-                        f"archive frontier member has no member coordinate: {member.source_id}:{member.coordinate}"
-                    )
-                # ``observe_source_members`` records archive coordinates as
-                # ``archive-name!member`` while acquisition records the
-                # absolute ``archive-path!member`` address.  Joining only on
-                # the archive root loses member ownership (and makes equal
-                # byte siblings indistinguishable); do not prefix the archive
-                # name a second time.
-                expected_paths = {f"{root}:{archive_member}"}
-            else:
-                expected_paths = {str(root / member.coordinate) if root.is_dir() else str(root)}
-            configured_paths |= expected_paths
-            # A declared mutable-SQLite member is observed at its LOGICAL
-            # granularity: ``observe_source_members`` sets its
-            # ``content_sha256`` to ``sqlite_member_revision(path)``, the
-            # digest of the canonical logical export, and acquisition retains
-            # exactly those export bytes, so ``raw_sessions.blob_hash`` is the
-            # same value. Comparing the digest is therefore the logical
-            # revision comparison for a mutable member as much as for an
-            # ordinary one. The former path-only disjunct made
-            # ``digest_matches`` unconditionally true for every archived raw at
-            # a mutable member's path, so conservation reported success for a
-            # database whose CURRENT logical revision had never been archived.
-            digest = member.content_sha256.lower()
-            owners = []
-            for path in sorted(expected_paths):
-                for raw_id, raw_digest in raw_rows_by_path.get(path, ()):
-                    if raw_digest == digest:
-                        owners.append((raw_id, path))
-                        raw_bound.add(raw_id)
-            label = f"{member.source_id}:{member.coordinate}"
-            if not owners:
-                frontier_counts[_TERM_FRONTIER_UNACQUIRED] = frontier_counts.get(_TERM_FRONTIER_UNACQUIRED, 0) + 1
-                if len(frontier_samples.setdefault(_TERM_FRONTIER_UNACQUIRED, [])) < sample_limit:
-                    frontier_samples[_TERM_FRONTIER_UNACQUIRED].append(label)
-            elif len(owners) > 1:
-                frontier_counts[_TERM_FRONTIER_DUPLICATE] = frontier_counts.get(_TERM_FRONTIER_DUPLICATE, 0) + 1
-                if len(frontier_samples.setdefault(_TERM_FRONTIER_DUPLICATE, [])) < sample_limit:
-                    frontier_samples[_TERM_FRONTIER_DUPLICATE].append(label)
+        # Spill the source denominator into the connection's file-backed TEMP
+        # schema, then let SQLite join it to raw acquisition by path and digest.
+        # Neither side is collected in Python; the raw DB remains opened read-only.
+        with readonly_temp_staging(conn, temp_store="FILE"):
+            frontier.copy_members_to(conn)
+        owner_rows = conn.execute(
+            """SELECT m.source_id, m.coordinate, COUNT(r.raw_id) AS owner_count
+               FROM temp._polylogue_source_frontier_member m
+               LEFT JOIN raw_sessions r
+                 ON r.source_path = m.source_path
+                AND lower(hex(r.blob_hash)) = lower(m.content_sha256)
+               GROUP BY m.ordinal, m.source_id, m.coordinate
+               ORDER BY m.ordinal"""
+        )
+        while page := owner_rows.fetchmany(512):
+            for source_id, coordinate, owner_count in page:
+                if owner_count == 0:
+                    name = _TERM_FRONTIER_UNACQUIRED
+                elif owner_count > 1:
+                    name = _TERM_FRONTIER_DUPLICATE
+                else:
+                    continue
+                frontier_counts[name] = frontier_counts.get(name, 0) + 1
+                sample_bucket = frontier_samples.setdefault(name, [])
+                if len(sample_bucket) < sample_limit:
+                    sample_bucket.append(f"{source_id}:{coordinate}")
         for blocker in frontier.blockers:
             frontier_counts[_TERM_FRONTIER_UNAVAILABLE] = frontier_counts.get(_TERM_FRONTIER_UNAVAILABLE, 0) + 1
-            if len(frontier_samples.setdefault(_TERM_FRONTIER_UNAVAILABLE, [])) < sample_limit:
-                frontier_samples[_TERM_FRONTIER_UNAVAILABLE].append(blocker)
-        # A raw whose source coordinate is not represented by any configured
-        # member is an unowned acquisition, even when aggregate row counts
-        # happen to match the frontier denominator.
-        #
-        # A raw at a configured path whose digest is not the member's CURRENT
-        # one is an ordinary historical revision of a configured source -- the
-        # source changed after it was acquired. Its identity is inside the
-        # frontier, so it is not a frontier orphan; the forward classifier
-        # already types it (``revision_superseded`` and friends). Counting it
-        # here made every archive with ordinary revision history fail
-        # ``verify-archive`` on a blocking term.
-        for raw_id, source_path, _blob_hash in raw_rows:
-            if str(raw_id) in raw_bound or str(source_path) in configured_paths:
-                continue
-            frontier_counts[_TERM_FRONTIER_ORPHAN] = frontier_counts.get(_TERM_FRONTIER_ORPHAN, 0) + 1
-            if len(frontier_samples.setdefault(_TERM_FRONTIER_ORPHAN, [])) < sample_limit:
-                frontier_samples[_TERM_FRONTIER_ORPHAN].append(str(raw_id))
+            sample_bucket = frontier_samples.setdefault(_TERM_FRONTIER_UNAVAILABLE, [])
+            if len(sample_bucket) < sample_limit:
+                sample_bucket.append(blocker)
+        # Historical revisions at a configured path are already typed by the
+        # forward classifier. Only raws outside every configured coordinate
+        # are frontier orphans.
+        frontier_orphan_count = int(
+            conn.execute(
+                """SELECT COUNT(*) FROM raw_sessions r
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM temp._polylogue_source_frontier_path p
+                       WHERE p.source_path = r.source_path
+                   )"""
+            ).fetchone()[0]
+        )
+        orphan_rows = conn.execute(
+            """SELECT r.raw_id FROM raw_sessions r
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM temp._polylogue_source_frontier_path p
+                   WHERE p.source_path = r.source_path
+               ) ORDER BY r.raw_id LIMIT ?""",
+            (sample_limit,),
+        )
+        frontier_counts[_TERM_FRONTIER_ORPHAN] = frontier_orphan_count
+        frontier_samples[_TERM_FRONTIER_ORPHAN] = [str(row[0]) for row in orphan_rows]
         # Membership content is an independent semantic witness.  A row that
         # keeps its identity but changes its normalized content must not pass
         # merely because the raw was acquired and a session row exists.
@@ -1049,6 +1067,8 @@ def audit_source_conservation(
     forward_order = (
         _TERM_SOURCE_MISSING,
         _TERM_SOURCE_LOST,
+        _TERM_MISSING_BLOB,
+        _TERM_SOURCE_UNAVAILABLE,
         _TERM_MATERIALIZED,
         _TERM_REVISION_SUPERSEDED,
         _TERM_BYTE_DUPLICATE,
@@ -1072,18 +1092,18 @@ def audit_source_conservation(
     terms.append(_term(_TERM_SIDECAR_RETAINED, sidecar_total))
     terms.extend(
         (
-            _term(_TERM_SESSION_WITHOUT_RAW, len(without_raw), _sample(without_raw, sample_limit)),
-            _term(_TERM_SESSION_ORPHAN, len(orphans), _sample(orphans, sample_limit)),
+            _term(_TERM_SESSION_WITHOUT_RAW, without_raw_count, without_raw),
+            _term(_TERM_SESSION_ORPHAN, session_orphan_count, session_orphans),
             _term(
                 _TERM_PHANTOM_LINEAGE,
-                len(phantom_lineage),
-                tuple(phantom_lineage[:sample_limit]),
+                phantom_lineage_count,
+                tuple(phantom_lineage_samples),
                 phantom_lineage_breakdown,
             ),
             _term(
                 _TERM_PHANTOM_IDENTITY,
-                len(phantom_identity),
-                tuple(phantom_identity[:sample_limit]),
+                phantom_identity_count,
+                tuple(phantom_identity_samples),
                 phantom_identity_breakdown,
             ),
             _term(_TERM_MESSAGE_ORPHAN, message_orphan_count, _sample(message_orphans, sample_limit)),

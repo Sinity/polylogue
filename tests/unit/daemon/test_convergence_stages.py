@@ -22,6 +22,8 @@ from polylogue.storage.derived.session import storage as session_storage
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import IDENTITY_INVALIDATION_DEBT_STAGE
+from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.compute_owner import owned_compute_adapter
 
 
 class _SessionIdOnly:
@@ -56,7 +58,11 @@ def test_lineage_prefix_recompose_stage_is_registered(tmp_path: Path) -> None:
     Anti-vacuity: drop the registration and the membership assertion goes red;
     register a stage without the session pair and the callable assertions do.
     """
-    stages_by_name = {stage.name: stage for stage in make_default_convergence_stages(tmp_path / "index.db")}
+    with owned_compute_adapter() as compute:
+        stages_by_name = {
+            stage.name: stage
+            for stage in make_default_convergence_stages(tmp_path / "index.db", compute_adapter=compute)
+        }
 
     stage = stages_by_name[IDENTITY_INVALIDATION_DEBT_STAGE]
     assert callable(stage.check_sessions)
@@ -65,7 +71,11 @@ def test_lineage_prefix_recompose_stage_is_registered(tmp_path: Path) -> None:
 
 
 def test_default_convergence_stages_leave_derived_domains_to_typed_owners(tmp_path: Path) -> None:
-    stages_by_name = {stage.name: stage for stage in make_default_convergence_stages(tmp_path / "index.db")}
+    with owned_compute_adapter() as compute:
+        stages_by_name = {
+            stage.name: stage
+            for stage in make_default_convergence_stages(tmp_path / "index.db", compute_adapter=compute)
+        }
 
     assert "raw_parse_recovery" not in stages_by_name
     assert "fts" not in stages_by_name
@@ -85,6 +95,7 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
                 provider=Provider.CODEX,
                 payload=f"payload-{index}".encode(),
                 source_path="session.jsonl",
+                canonical_source_path="session.jsonl",
                 acquired_at_ms=1,
                 raw_id=raw_id,
             )
@@ -96,6 +107,7 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
             provider=Provider.CODEX,
             payload=b"append-payload",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=1,
             raw_id="append-only",
         )
@@ -122,7 +134,8 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
     # A zero pass budget stops after one bounded batch, which is what the two
     # executions below observe.
     monkeypatch.setattr(stages, "_DAEMON_RAW_AUTHORITY_CACHE_PASS_SECONDS", 0.0)
-    with plog.capture() as records:
+    # The daemon executes cache-warming stages under its writer lease.
+    with write_lease("test.raw-authority-cache", archive_root=tmp_path), plog.capture() as records:
         assert stage.check(path) is True
         assert stage.execute_many((path,)) is False
         assert stage.check(path) is True
@@ -170,6 +183,7 @@ def test_raw_authority_verdict_cache_execution_keeps_warming_batches_within_its_
                 provider=Provider.CODEX,
                 payload=f"payload-{index}".encode(),
                 source_path="session.jsonl",
+                canonical_source_path="session.jsonl",
                 acquired_at_ms=1,
                 raw_id=raw_id,
             )
@@ -181,7 +195,8 @@ def test_raw_authority_verdict_cache_execution_keeps_warming_batches_within_its_
     stage = make_raw_authority_verdict_cache_stage(tmp_path / "index.db")
     assert stage.execute_many is not None
     path = tmp_path / "source.jsonl"
-    assert stage.execute_many((path,)) is True
+    with write_lease("test.raw-authority-cache", archive_root=tmp_path):
+        assert stage.execute_many((path,)) is True
     assert stage.check(path) is False
 
 
@@ -208,7 +223,8 @@ def test_sinex_stage_uses_configured_source_tier_not_active_index_parent(
     monkeypatch.setattr("polylogue.sinex.service.PublicationService", CapturePublicationService)
     monkeypatch.setattr("polylogue.sinex.transport.resolve_configured_transport", lambda: object())
 
-    make_default_convergence_stages(tmp_path / "external-generation" / "index.db")
+    with owned_compute_adapter() as compute:
+        make_default_convergence_stages(tmp_path / "external-generation" / "index.db", compute_adapter=compute)
 
     assert captured["source_db_path"] == configured_root / "source.db"
 
@@ -442,3 +458,32 @@ def test_workflow_publication_keeps_configured_root_after_index_promotion(
             "SELECT status FROM daemon_stage_events WHERE event_id = 'claude_workflow:current'"
         ).fetchone() == ("clean",)
     assert not (generation / "ops.db").exists()
+
+
+@pytest.mark.parametrize(("binding", "outcome"), [(True, "ok"), (False, "degraded"), (None, "empty")])
+def test_fts_stage_production_event_preserves_boolean_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding: bool | None,
+    outcome: str,
+) -> None:
+    monkeypatch.setattr("polylogue.operations.fts_derivation.publish_fts_readiness_binding", lambda _root: binding)
+    stage = stages.make_fts_readiness_binding_stage(tmp_path / "index.db")
+    previous_level = plog.set_level("info")
+    try:
+        with plog.capture() as records:
+            result = stage.execute(tmp_path / "neutral-source")
+        terminal = [
+            record
+            for record in records
+            if record["event"] == f"daemon.stage.execute.{outcome}" and record.get("outcome") == outcome
+        ]
+        assert len(terminal) == 1
+        assert terminal[0]["bound"] is (binding is True)
+        assert result is (True if binding is None else binding)
+        assert not any(
+            record["event"] == "log.field_rejected" and record.get("source_event") == "daemon.stage.execute"
+            for record in records
+        )
+    finally:
+        plog.set_level(previous_level)

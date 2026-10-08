@@ -27,7 +27,7 @@ from typing import Any, SupportsFloat, cast
 
 import pytest
 
-from polylogue.daemon.execution import MAX_BACKGROUND_STARVATION_S, DaemonBackpressureError
+from polylogue.core.compute import MAX_BACKGROUND_STARVATION_S, DaemonBackpressureError
 from polylogue.daemon.socket_path import daemon_socket_path
 from polylogue.daemon.write_coordinator import DaemonWriteEvent
 from polylogue.daemon_client import DaemonClient

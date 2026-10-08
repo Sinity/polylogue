@@ -11,6 +11,11 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
 from polylogue.core.errors import ArchiveTierUnavailableError, SchemaRefusalError
+from polylogue.core.raw_failure_evidence import (
+    CohortMembershipRefusalError,
+    RetainedRawDecodeRefusalError,
+    RetainedRawDependencyRefusalError,
+)
 from polylogue.operations.audit import AuditRepository, MachineRequestRecoveredError
 from polylogue.operations.daemon_protocol import (
     AcceptedOperationReference,
@@ -23,7 +28,6 @@ from polylogue.operations.daemon_protocol import (
 )
 from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.operations.operation_context import (
-    OperationContext,
     OperationControlRead,
     OperationControlResult,
     PinnedOperationRead,
@@ -31,17 +35,24 @@ from polylogue.operations.operation_context import (
     observe_embedding_mutation_authority,
     open_operation_read,
 )
+from polylogue.operations.operation_context_types import OperationContext
 from polylogue.storage.embeddings.generations import EmbeddingGenerationBusyError
 from polylogue.version import POLYLOGUE_VERSION
 
 _T = TypeVar("_T")
 
 if TYPE_CHECKING:
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.operations.assertion_export import AssertionExportImages
+    from polylogue.operations.audit import CanonicalAuditLiteral
     from polylogue.operations.insight_acceptance import AcceptedInsightPart, SessionInsightPartReceipt
+    from polylogue.operations.raw_observation_owner import RetainedMaterializationResult
 
 
 class OperationRuntime(Protocol):
     """Resident authority injected into the product executor by its owner."""
+
+    assertion_exports: AssertionExportImages
 
     def publication_guard(self) -> AbstractContextManager[object]: ...
 
@@ -51,9 +62,37 @@ class OperationRuntime(Protocol):
         self, request: DaemonOperationRequest, *, snapshot: PinnedOperationRead | OperationControlRead
     ) -> None: ...
 
+    async def materialize_retained_raw_ids(
+        self,
+        raw_ids: tuple[str, ...],
+        *,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None],
+        on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None],
+        on_membership_refusal: Callable[[CohortMembershipRefusalError], None],
+        before_publication: Callable[[], None],
+    ) -> RetainedMaterializationResult: ...
+
     async def compute_phase(self, work: Callable[[], _T]) -> _T: ...
 
     async def write_phase(self, name: str, work: Callable[[], _T]) -> _T: ...
+
+    async def recover_interrupted_operations(self, *, resolver_actor_ref: str) -> None: ...
+
+    def prepared_compute_adapter(self) -> BoundedComputeAdapter: ...
+
+    async def prepared_phase(
+        self, name: str, work: Callable[[], _T], *, estimated_bytes: int, exclusive_bytes: bool = False
+    ) -> _T: ...
+
+    def result_document_identity(self, request: DaemonOperationRequest) -> dict[str, object]: ...
+
+    def retain_result_document(
+        self,
+        request: DaemonOperationRequest,
+        context: OperationContext,
+        summary: Mapping[str, object],
+        literal: CanonicalAuditLiteral,
+    ) -> None: ...
 
     def require_session_maintenance(self) -> None: ...
 
@@ -240,6 +279,37 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
         request = validate_execution_request(request, context)
         spec = daemon_operation_spec(request.operation)
         assert spec is not None
+        if request.operation == "user.assertions.export.release":
+            # Release owns only private scratch and must work after User disappears.
+            from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+
+            read_control = context.read_control or QueryExecutionContext(
+                call_id=str(request.request_id),
+                query_ref=request.fingerprint,
+                deadline_monotonic=None if request.deadline_ms is None else started + request.deadline_ms / 1000,
+                owner_ref=context.principal.actor_ref,
+            )
+            snapshot = _observe_explicit_index_condition(
+                request,
+                OperationControlRead(
+                    ArchiveIdentity.resolve_location(ArchiveLocation.resolve(context.archive_root)), {}, ()
+                ),
+                archive_root=context.archive_root,
+                read_control=read_control,
+            )
+            _validate_identity(request, context, snapshot)
+            if context.runtime is None:
+                raise ValueError("assertion export requires its resident selection owner")
+            result: dict[str, object] = {
+                "released": context.runtime.assertion_exports.release(
+                    str(request.payload["selection_ref"]), context.principal
+                )
+            }
+            read_control.mark_cleanup_complete()
+            validate_operation_result(request.operation, result)
+            return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
+        if request.operation == "mutation.session.excision":
+            raise PermissionError("staged_execution_required")
         if request.operation == "insights.hermes_health":
             from polylogue.operations.hermes_health import execute_hermes_health
             from polylogue.operations.operation_context import abort_checkpoint
@@ -310,6 +380,32 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                 if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(context.archive_root)) != identity:
                     raise ValueError("archive changed while reading user settings")
                 return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
+        if request.operation == "session.identity-reset.targets":
+            from polylogue.operations.daemon_mutations import identity_reset_targets
+            from polylogue.operations.operation_context import abort_checkpoint
+
+            assert context.runtime is not None
+            read_control = context.read_control or QueryExecutionContext(
+                call_id=str(request.request_id),
+                query_ref=request.fingerprint,
+                deadline_monotonic=None if request.deadline_ms is None else started + request.deadline_ms / 1000,
+                owner_ref=context.principal.actor_ref,
+            )
+            checkpoint = abort_checkpoint(read_control)
+            checkpoint()
+            with open_operation_read(
+                context.archive_root,
+                publication_guard=context.runtime.publication_guard,
+                execution_context=read_control,
+            ) as snapshot:
+                _validate_identity(request, context, snapshot)
+                audit = context.runtime.audit_for_request(request, context)
+                with audit.settled_machine_read():
+                    result = identity_reset_targets(request, context, audit, snapshot)
+                checkpoint()
+                validate_operation_result(request.operation, result)
+                return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
+
         if request.operation.startswith("operation."):
             assert context.runtime is not None
             control_snapshot = observe_control_authority(context.archive_root)
@@ -425,7 +521,17 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                         read_view=snapshot.read_view,
                     )
                 validate_operation_result(request.operation, result)
-                return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
+                # A reset batch can settle a committed prefix while cancellation
+                # leaves its suffix untouched. Its terminal envelope must carry
+                # the same durable outcome as the batch, never default success.
+                outcome = (
+                    str(result["outcome"])
+                    if request.operation == "mutation.identity-reset" and isinstance(result, dict)
+                    else "completed"
+                )
+                return operation_envelope(
+                    request, context, snapshot=snapshot, started_at=started, result=result, outcome=outcome
+                )
 
         if spec.authority is DaemonAuthority.READ:
             return execute(mutating=False)

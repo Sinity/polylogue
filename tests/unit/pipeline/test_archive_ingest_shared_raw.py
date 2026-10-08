@@ -19,9 +19,7 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
-from polylogue.sources.parsers.base import ParsedSession
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 
 
 class _RejectUnboundedRead:
@@ -230,7 +228,7 @@ async def test_archive_ingest_ordinary_session_records_current_parser_receipt(
         ).fetchone()
 
     assert receipt == (
-        RAW_AUTHORITY_PARSER_FINGERPRINT,
+        raw_authority_parser_fingerprint(),
         "complete",
         '["claude-code-session:journal-session"]',
     )
@@ -240,7 +238,12 @@ async def test_archive_ingest_ordinary_session_records_current_parser_receipt(
 async def test_archive_ingest_malformed_workflow_journal_remains_typed_evidence(
     tmp_path: Path, one_shot_workspace_env: dict[str, Path]
 ) -> None:
-    """A journal with no decodable session evidence remains a typed artifact."""
+    """A journal whose complete record does not decode is typed corrupt evidence.
+
+    A ``fact`` path rule is decided by decoded records, so a complete JSONL
+    record that does not decode is terminal corrupt input, the raw retained,
+    exactly as the ZIP member route below records it.
+    """
     archive_root = one_shot_workspace_env["archive_root"]
     journal = _write_session_shaped_workflow_journal(tmp_path / "sessions", malformed=True)
     expected_mtime_ms = 1_735_689_600_123
@@ -256,10 +259,9 @@ async def test_archive_ingest_malformed_workflow_journal_remains_typed_evidence(
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
         assert conn.execute("SELECT file_mtime_ms FROM raw_sessions").fetchone() == (expected_mtime_ms,)
-        assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
-            "workflow_journal",
-            0,
-        )
+        assert conn.execute("SELECT artifact_kind, parse_as_session, support_status FROM raw_artifacts").fetchall() == [
+            ("terminal_corrupt_input", 0, "decode_failed")
+        ]
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -309,8 +311,7 @@ async def test_archive_ingest_malformed_zip_workflow_journal_remains_typed_evide
         # The ZIP route decodes the member strictly to scan it for delayed
         # session evidence, and a complete JSONL record that does not decode
         # is terminal corrupt input for every provider, the raw retained
-        # (#5823, ez5b9 F039). The loose-file test above still reads the
-        # lenient retained decode that polylogue-3p8p7 makes strict.
+        # (#5823, ez5b9 F039), as on the loose-file route above.
         assert conn.execute("SELECT artifact_kind, parse_as_session, support_status FROM raw_artifacts").fetchall() == [
             ("terminal_corrupt_input", 0, "decode_failed")
         ]
@@ -323,7 +324,7 @@ async def test_archive_ingest_large_zip_artifact_streams_to_blob_reference(
     tmp_path: Path, one_shot_workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A large ZIP journal artifact must not be read into an admission payload."""
-    from polylogue.sources.decoder_zip import _ZIP_READ_CHUNK_SIZE, MAX_UNCOMPRESSED_SIZE, open_bounded_zip_entry
+    from polylogue.sources.decoder_zip import _ZIP_READ_CHUNK_SIZE, open_zip_entry
 
     archive_root = one_shot_workspace_env["archive_root"]
     payload = b'{"contentKey":"artifact","agentId":"workflow-agent","body":"' + b"x" * _ZIP_READ_CHUNK_SIZE + b'"}\n'
@@ -332,17 +333,15 @@ async def test_archive_ingest_large_zip_artifact_streams_to_blob_reference(
         "subagents/workflows/wf-archive/journal.jsonl",
         payload,
     )
-    original_open = open_bounded_zip_entry
+    original_open = open_zip_entry
 
     def reject_unbounded_read(
         zf: zipfile.ZipFile,
         info: zipfile.ZipInfo,
-        *,
-        max_bytes: int = MAX_UNCOMPRESSED_SIZE,
     ) -> _RejectUnboundedRead:
-        return _RejectUnboundedRead(original_open(zf, info, max_bytes=max_bytes))
+        return _RejectUnboundedRead(original_open(zf, info))
 
-    monkeypatch.setattr("polylogue.sources.decoder_zip.open_bounded_zip_entry", reject_unbounded_read)
+    monkeypatch.setattr("polylogue.sources.decoder_zip.open_zip_entry", reject_unbounded_read)
 
     result = await ingest_one_shot_archive(
         archive_root, [Source(name="claude-code", path=journal_zip)], parse_workers=1
@@ -673,22 +672,6 @@ async def test_batched_grouped_ingest_commits_census_before_next_raw(
     _first_parent, first_child = _write_carryover_chain(first_root)
     _second_parent, second_child = _write_carryover_chain(second_root, session_prefix="second-")
 
-    original_census = ArchiveStore.replace_raw_membership_census
-    census_calls = 0
-
-    def require_source_transaction(
-        archive: ArchiveStore,
-        raw_id: str,
-        sessions: list[ParsedSession] | None,
-        **kwargs: Any,
-    ) -> None:
-        nonlocal census_calls
-        census_calls += 1
-        assert kwargs.get("manage_transaction", True) is True
-        original_census(archive, raw_id, sessions, **kwargs)
-
-    monkeypatch.setattr(ArchiveStore, "replace_raw_membership_census", require_source_transaction)
-
     result = await ingest_one_shot_archive(
         archive_root,
         [Source(name="claude-code", path=first_child), Source(name="claude-code", path=second_child)],
@@ -701,8 +684,16 @@ async def test_batched_grouped_ingest_commits_census_before_next_raw(
     # call, and without that guard the next file's publisher blocks on the
     # census transaction's source.db write lock.
     assert result.parse_failures == 0
-    # One membership census per raw, over every session that raw carries.
-    assert census_calls == 2
+    # One complete membership census per raw, over every session that raw
+    # carries. The canonical route may publish it as a preparatory census or
+    # inside its replay's own Source transaction; either way it is durable,
+    # complete and never inside the caller's index batch.
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+        census = conn.execute("SELECT raw_id, status FROM raw_authority_parser_census ORDER BY raw_id").fetchall()
+        raws = {row[0] for row in conn.execute("SELECT raw_id FROM raw_sessions")}
+    assert {raw_id for raw_id, _status in census} == raws
+    assert len(census) == 2
+    assert {status for _raw_id, status in census} == {"complete"}
     assert result.counts["sessions"] == 4
     assert len(_raw_rows_for_path(archive_root / "source.db", str(first_child))) == 1
     assert len(_raw_rows_for_path(archive_root / "source.db", str(second_child))) == 1
@@ -734,7 +725,7 @@ async def test_archive_ingest_refuses_filename_stem_identity_without_authored_co
 ) -> None:
     """Canonical one-shot intake must not mint fragment-identity husks.
 
-    ``require_positive_conversational_evidence`` is the archive's admission law
+    ``admit_parsed_sessions_for_publication`` is the archive's admission law
     for "parsed, but no conversation is present". Every other production write
     path applies it -- the daemon decode worker, live batch convergence, the
     incremental append route, and offline replay. ``ingest_one_shot_archive``

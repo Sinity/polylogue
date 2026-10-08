@@ -27,6 +27,7 @@ from polylogue.daemon.status_snapshot import (
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live import discovery as discovery_module
+from polylogue.sources.source_layout import export_drop_layout
 
 
 def test_halted_owner_can_abandon_its_parked_discovery_progress() -> None:
@@ -59,7 +60,7 @@ async def test_status_shows_first_discovery_while_sibling_sort_is_held(
     source_root.mkdir()
     accepted = source_root / "session.json"
     accepted.write_text("{}")
-    source = WatchSource(name="synthetic", root=source_root, suffixes=(".json",))
+    source = WatchSource(name="synthetic", root=source_root, layout=export_drop_layout((".json",)))
     watcher = SimpleNamespace(intake_revision=lambda _source: 0)
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
@@ -187,7 +188,7 @@ async def test_cancelled_discovery_keeps_worker_progress_until_walk_finishes(
     source_root.mkdir()
     accepted = source_root / "session.json"
     accepted.write_text("{}")
-    source = WatchSource(name="synthetic", root=source_root, suffixes=(".json",))
+    source = WatchSource(name="synthetic", root=source_root, layout=export_drop_layout((".json",)))
     watcher = SimpleNamespace(intake_revision=lambda _source: 0)
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
@@ -242,7 +243,7 @@ async def test_cancelled_discovery_keeps_worker_progress_until_walk_finishes(
 def test_cold_build_preparation_is_visible_before_the_first_intake_page(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Dropping the progress callback from ``ColdBuildGeneration.begin`` makes this red.
+    """Dropping the progress callback from the cold build observation or ``begin`` makes this red.
 
     The real baseline walk and revision hashing report through the daemon's
     preparation state; status observed mid-preparation carries the phase and
@@ -263,10 +264,18 @@ def test_cold_build_preparation_is_visible_before_the_first_intake_page(
     archive.mkdir()
     source_root = tmp_path / "source"
     source_root.mkdir()
-    payloads = [b'{"one": 1}\n', b'{"second": "session"}\n']
+    # Intake excludes material it would not parse as a session before hashing it.
+    payloads = [
+        (
+            f'{{"type":"session_meta","payload":{{"id":"progress-{index}","timestamp":"2026-06-02T00:00:00Z"}}}}\n'
+            '{"type":"response_item","payload":{"type":"message","id":"message-0",'
+            '"role":"user","content":[{"type":"input_text","text":"Synthetic"}]}}\n'
+        ).encode()
+        for index in range(2)
+    ]
     for index, payload in enumerate(payloads):
         (source_root / f"session-{index}.jsonl").write_bytes(payload)
-    source = WatchSource(name="codex", root=source_root, suffixes=(".jsonl",))
+    source = WatchSource(name="codex", root=source_root, layout=export_drop_layout((".jsonl",)))
     observed: dict[str, dict[str, Any]] = {}
 
     def observing_progress(phase: str, **counts: int) -> None:
@@ -280,7 +289,12 @@ def test_cold_build_preparation_is_visible_before_the_first_intake_page(
     sink = add_sink(make_stream_sink(stream, fmt="json"))
     begin_cold_build_preparation()
     try:
-        ColdBuildGeneration.begin(archive, reason="test", sources=(source,), progress=observing_progress)
+        ColdBuildGeneration.begin(
+            archive,
+            reason="test",
+            observed=ColdBuildGeneration.observe_source_baseline((source,), progress=observing_progress),
+            progress=observing_progress,
+        )
         during = cast(dict[str, Any], get_status_snapshot_payload()["catchup"])
     finally:
         end_cold_build_preparation()
@@ -392,7 +406,7 @@ def test_cancelled_cold_build_preparation_is_not_reported_as_an_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancelled_caller_keeps_preparation_until_admitted_writer_stops() -> None:
+async def test_cancelled_caller_keeps_preparation_until_admitted_writer_stops(tmp_path: Path) -> None:
     """Ending preparation in the caller's cancellation path makes this red.
 
     The write coordinator shields an admitted execution from caller
@@ -402,18 +416,24 @@ async def test_cancelled_caller_keeps_preparation_until_admitted_writer_stops() 
     from polylogue.daemon.discovery_progress import run_cold_build_preparation
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     started = threading.Event()
     release = threading.Event()
 
-    def preparing(*, progress: Any) -> str:
+    def observing(*, progress: Any, cancelled: Any) -> str:
         progress("baseline_hash", revisions=1, hashed_bytes=3)
+        return "observed"
+
+    def preparing(*, observed: str, progress: Any) -> str:
+        assert observed == "observed"
         started.set()
         assert release.wait(5), "writer was not released"
         progress("generation_create")
         return "generation"
 
-    caller = asyncio.create_task(run_cold_build_preparation(coordinator, "daemon.cold_build.begin", preparing))
+    caller = asyncio.create_task(
+        run_cold_build_preparation(coordinator, "daemon.cold_build.begin", observing, preparing)
+    )
     try:
         assert await asyncio.to_thread(started.wait, 5)
         caller.cancel()
@@ -433,11 +453,45 @@ async def test_cancelled_caller_keeps_preparation_until_admitted_writer_stops() 
 
 
 @pytest.mark.asyncio
-async def test_unadmitted_cancelled_preparation_ends_at_the_caller() -> None:
+async def test_cold_build_source_observation_runs_before_and_outside_the_writer_call(tmp_path: Path) -> None:
+    """Observing the sources inside the writer call makes this red.
+
+    Pre-acquisition classification and hashing only read source files; the
+    writer call receives their finished observation and binds it.
+    """
     from polylogue.daemon.discovery_progress import run_cold_build_preparation
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    order: list[tuple[str, str]] = []
+
+    def observing(*, progress: Any, cancelled: Any) -> str:
+        order.append(("observe", threading.current_thread().name))
+        progress("baseline_walk", inspected=1)
+        assert not cancelled()
+        return "observed"
+
+    def preparing(*, observed: str, progress: Any) -> str:
+        order.append(("begin", threading.current_thread().name))
+        return f"bound:{observed}"
+
+    try:
+        result = await run_cold_build_preparation(coordinator, "daemon.cold_build.begin", observing, preparing)
+    finally:
+        assert await coordinator.shutdown(timeout=5)
+        reset_discovery_progress()
+    assert result == "bound:observed"
+    assert [step for step, _thread in order] == ["observe", "begin"]
+    assert order[0][1] == "cold-source-observation"
+    assert order[1][1] != order[0][1]
+
+
+@pytest.mark.asyncio
+async def test_unadmitted_cancelled_preparation_ends_at_the_caller(tmp_path: Path) -> None:
+    from polylogue.daemon.discovery_progress import run_cold_build_preparation
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     holder_started = asyncio.Event()
     holder_release = asyncio.Event()
 
@@ -449,7 +503,12 @@ async def test_unadmitted_cancelled_preparation_ends_at_the_caller() -> None:
     try:
         await holder_started.wait()
         caller = asyncio.create_task(
-            run_cold_build_preparation(coordinator, "daemon.cold_build.begin", lambda *, progress: None)
+            run_cold_build_preparation(
+                coordinator,
+                "daemon.cold_build.begin",
+                lambda *, progress, cancelled: None,
+                lambda *, observed, progress: None,
+            )
         )
         await asyncio.sleep(0.01)
         assert active_discovery_payload() is not None

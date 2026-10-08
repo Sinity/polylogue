@@ -32,12 +32,14 @@ direction, so "stop enforcing the lease on ops.db" cannot pass this module.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.status import _archive_live_ingest_attempt_summary_info
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -47,11 +49,13 @@ from polylogue.storage.sqlite.write_lease import (
     require_write_lease,
     write_lease,
 )
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 
 def _bootstrapped_root(tmp_path: Path) -> Path:
     root = tmp_path / "archive"
-    initialize_active_archive_root(root)
+    run_off_event_loop(lambda: initialize_active_archive_root(root))
     return root
 
 
@@ -88,7 +92,7 @@ def test_ops_tier_writes_still_require_the_write_lease(tmp_path: Path) -> None:
     probe = root / "corpus" / "session.jsonl"
 
     with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
-        store.set(probe, 128, record_count=1, source_name="claude-code")
+        store.set(probe, 128, record_count=1, source_name="claude-code", authority=fixture_cursor_authority(probe))
 
 
 @pytest.mark.asyncio
@@ -110,9 +114,15 @@ async def test_batch_event_is_published_through_the_daemon_writer(tmp_path: Path
     emitted: list[str] = []
 
     async def sync_runner(actor: str, function: Any, /, *args: Any, **kwargs: Any) -> Any:
+        # Like the daemon writer, run the leased function on a worker thread:
+        # a synchronous lease may not block the event loop.
         admitted_actors.append(actor)
-        with write_lease(actor, archive_root=root):
-            return function(*args, **kwargs)
+
+        def leased() -> Any:
+            with write_lease(actor, archive_root=root):
+                return function(*args, **kwargs)
+
+        return await asyncio.to_thread(leased)
 
     def emitter(kind: str, payload: dict[str, object]) -> None:
         # Stands in for ``daemon.cli._emit_live_batch_event``, whose ops-tier
@@ -142,7 +152,9 @@ async def test_batch_event_is_published_through_the_daemon_writer(tmp_path: Path
     assert "watcher.live_ingest.ops.batch_event" in admitted_actors
 
 
-def test_convergence_debt_drain_runs_under_its_stage_admission(tmp_path: Path) -> None:
+def test_convergence_debt_drain_runs_under_its_stage_admission(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """The maintenance drain works with the boundary armed.
 
     The drain's own writes are admitted one section at a time, exactly as the
@@ -165,7 +177,7 @@ def test_convergence_debt_drain_runs_under_its_stage_admission(tmp_path: Path) -
             return work()
 
     with arm_write_lease_enforcement(), stage_write_admission(admission):
-        assert _drain_convergence_debt_once(root / "index.db") == 0
+        assert _drain_convergence_debt_once(root / "index.db", compute_adapter=bounded_compute_adapter) == 0
 
     assert "maintenance.convergence_debt.initialize" in admitted
 

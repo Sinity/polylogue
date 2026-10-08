@@ -12,14 +12,20 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from polylogue.core.enums import Origin
-from polylogue.sources.codex_state_projection import latest_retained_state_exports
+import pytest
+
+from polylogue.core.enums import Provider
+from polylogue.storage.sqlite.agent_thread_state import read_provenance, read_thread_titles
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
     upsert_raw_artifact,
     write_source_raw_session,
 )
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.retained_replay import replay_retained_components
+from tests.infra.thread_state import codex_state_export
 
 
 def _observe(conn: sqlite3.Connection, *, origin: str, source_path: str, payload: bytes, acquired_at_ms: int) -> str:
@@ -27,28 +33,70 @@ def _observe(conn: sqlite3.Connection, *, origin: str, source_path: str, payload
         conn,
         origin=origin,
         source_path=source_path,
+        canonical_source_path=source_path,
         source_index=0,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
     )
 
 
-def test_retained_state_export_follows_receipt_order_across_a_clock_rollback(tmp_path: Path) -> None:
-    """Anti-vacuity: order receipts by ``acquired_at_ms`` first and B (300)
-    outranks A's returned receipt (250)."""
-    source_db = tmp_path / "source.db"
-    state_path = str(tmp_path / "install" / "state_5.sqlite")
-    initialize_runtime_source_fixture(source_db)
-    with closing(sqlite3.connect(source_db)) as conn:
-        origin = Origin.CODEX_SESSION.value
-        raw_a = _observe(conn, origin=origin, source_path=state_path, payload=b"state A", acquired_at_ms=200)
-        _observe(conn, origin=origin, source_path=state_path, payload=b"state B", acquired_at_ms=300)
-        assert _observe(conn, origin=origin, source_path=state_path, payload=b"state A", acquired_at_ms=250) == raw_a
-        conn.commit()
-
-        exports = latest_retained_state_exports(conn)
-
-    assert [(export.raw_id, export.observed_at_ms) for export in exports] == [(raw_a, 250)]
+@pytest.mark.parametrize("scope_order", [("left", "right"), ("right", "left")])
+def test_retained_state_scopes_follow_receipt_order_across_a_clock_rollback(
+    tmp_path: Path,
+    scope_order: tuple[str, str],
+) -> None:
+    """Canonical replay keeps two scopes and lets A's returned receipt outrank B."""
+    bootstrap_archive_root(tmp_path)
+    left = tmp_path / "left" / "state_5.sqlite"
+    right = tmp_path / "right" / "state_5.sqlite"
+    a = codex_state_export([("left-thread", "State A")])
+    b = codex_state_export([("left-thread", "State B")])
+    c = codex_state_export([("right-thread", "State C")])
+    raw_a = ""
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for scope in scope_order:
+            if scope == "left":
+                raw_a = archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=a,
+                    source_path=str(left),
+                    canonical_source_path=str(left),
+                    acquired_at_ms=200,
+                )
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=b,
+                    source_path=str(left),
+                    canonical_source_path=str(left),
+                    acquired_at_ms=300,
+                )
+                assert (
+                    archive.write_raw_payload(
+                        provider=Provider.CODEX,
+                        payload=a,
+                        source_path=str(left),
+                        canonical_source_path=str(left),
+                        acquired_at_ms=250,
+                    )
+                    == raw_a
+                )
+            else:
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=c,
+                    source_path=str(right),
+                    canonical_source_path=str(right),
+                    acquired_at_ms=100,
+                )
+        archive.commit()
+    replay_retained_components(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        index = archive.index_connection
+        assert index is not None
+        assert read_thread_titles(index, source_scope=str(left.parent)) == {"left-thread": "State A"}
+        assert read_thread_titles(index, source_scope=str(right.parent)) == {"right-thread": "State C"}
+        provenance = read_provenance(index, source_scope=str(left.parent))
+        assert provenance is not None and (provenance.raw_id, provenance.observed_at_ms) == (raw_a, 250)
 
 
 def test_artifact_carrier_follows_receipt_order_across_a_clock_rollback(tmp_path: Path) -> None:

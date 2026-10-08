@@ -557,47 +557,6 @@ class PolylogueConfig:
         return int(str(self._data.get("ingest_commit_batch_messages", 8000)))
 
     @property
-    def live_full_ingest_workers(self) -> int:
-        return max(1, int(str(self._data.get("live_full_ingest_workers", 1))))
-
-    @property
-    def live_watcher_parse_stage_workers(self) -> int | None:
-        """Worker cap for the watcher-owned pre-parse thread pool.
-
-        ``None``/absent or <=0 falls back to the adaptive available-CPU-minus-one
-        default. See ``polylogue.sources.live.parse_prefetch``.
-        """
-        value = self._data.get("live_watcher_parse_stage_workers")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
-    def live_watcher_parse_stage_max_inflight_bytes(self) -> int | None:
-        """Whale-memory budget (bytes) for in-flight watcher prefetch payloads.
-
-        ``None``/absent or <=0 falls back to the adaptive 1/32-physical-RAM
-        default. See ``polylogue.sources.live.parse_prefetch``.
-        """
-        value = self._data.get("live_watcher_parse_stage_max_inflight_bytes")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
-    def live_watcher_parse_stage_stall_report_seconds(self) -> float | None:
-        """Seconds without forward progress before a watcher preparation reports a stall.
-
-        Not a deadline: the watcher warm keeps waiting for its preparations.
-        ``None``/absent or <=0 falls back to the 60s default. See
-        ``polylogue.sources.live.parse_prefetch``.
-        """
-        value = self._data.get("live_watcher_parse_stage_stall_report_seconds")
-        if value is None:
-            return None
-        return float(str(value))
-
-    @property
     def memory_budget_bytes(self) -> int | None:
         """Optional positive process memory budget used by SQLite profiles."""
         return _parse_memory_budget_bytes(self._data.get("memory_budget_bytes"), source="memory_budget_bytes")
@@ -1136,27 +1095,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         description="Message threshold for grouped index commits; <=0 restores per-session commits.",
     ),
     ConfigInventoryEntry(
-        "ingest_parse_workers",
-        toml_path="pipeline.ingest.parse_workers",
-        env_var="POLYLOGUE_INGEST_PARSE_WORKERS",
-        owner_class="resource-policy",
-        reload_behavior="startup-bound",
-        description=(
-            "Worker count for CPU-bound source parsing. Read by "
-            "resolve_parse_worker_count from the environment only; the default "
-            "adapts to the interpreter (min(16, cpus-2) free-threaded, "
-            "min(8, cpus-1) under the GIL). Set it to override that."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "live_full_ingest_workers",
-        toml_path="pipeline.live.full_ingest_workers",
-        env_var="POLYLOGUE_LIVE_FULL_INGEST_WORKERS",
-        owner_class="resource-policy",
-        reload_behavior="startup-bound",
-        description="Maximum concurrent workers for live full-artifact ingestion.",
-    ),
-    ConfigInventoryEntry(
         "memory_budget_bytes",
         toml_path="resource.memory_budget_bytes",
         env_var="POLYLOGUE_MEMORY_BUDGET_BYTES",
@@ -1209,43 +1147,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
             "Explicit opt-in (polylogue-800m) for the MCP server's "
             "maintenance dispatcher. Off by default; independent of "
             "write/judge."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "live_watcher_parse_stage_workers",
-        toml_path="watcher.parse_stage_workers",
-        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WORKERS",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Worker cap for the watcher-owned pre-parse thread pool "
-            "(polylogue-wf8a); default available-CPU-minus-one. <=0 falls back to the "
-            "adaptive default."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "live_watcher_parse_stage_max_inflight_bytes",
-        toml_path="watcher.parse_stage_max_inflight_bytes",
-        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_MAX_INFLIGHT_BYTES",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Whale-memory budget (bytes) for watcher prefetch payloads "
-            "admitted while parses are in flight; default 1/32 physical RAM "
-            "clamped [64 MiB, 512 MiB]. <=0 falls back to the adaptive "
-            "default."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "live_watcher_parse_stage_stall_report_seconds",
-        toml_path="watcher.parse_stage_stall_report_seconds",
-        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_STALL_REPORT_SECONDS",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Seconds without forward progress before a watcher preparation "
-            "reports live.parse_prefetch.preparation_stalled. Not a deadline: "
-            "the warm keeps waiting. <=0 falls back to the 60s default."
         ),
     ),
     ConfigInventoryEntry(
@@ -1303,18 +1204,14 @@ _INT_CONFIG_KEYS = frozenset(
         "notification_email_port",
         "notification_email_max_per_hour",
         "ingest_commit_batch_messages",
-        "live_full_ingest_workers",
         "memory_budget_bytes",
         "judgment_automation_interval_s",
         "judgment_automation_batch_limit",
-        "live_watcher_parse_stage_workers",
-        "live_watcher_parse_stage_max_inflight_bytes",
     }
 )
 _FLOAT_CONFIG_KEYS = frozenset(
     {
         "embedding_max_cost_usd",
-        "live_watcher_parse_stage_stall_report_seconds",
     }
 )
 _BOOL_CONFIG_KEYS = frozenset(
@@ -1521,12 +1418,8 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "browser_capture_allow_no_auth": False,
         "backup_verify_tmpdir": None,
         "ingest_commit_batch_messages": 8000,
-        "live_full_ingest_workers": 1,
         "memory_budget_bytes": None,
         "subscription_plans": (),
-        "live_watcher_parse_stage_workers": None,
-        "live_watcher_parse_stage_max_inflight_bytes": None,
-        "live_watcher_parse_stage_stall_report_seconds": None,
         "mcp_write_enabled": False,
         "mcp_judge_enabled": False,
         "mcp_maintenance_enabled": False,
@@ -1853,11 +1746,14 @@ class ResolvedSourcePaths:
 
     claude_code: Path
     claude_code_todos: Path
+    claude_code_history: Path
     codex: Path
+    codex_state: Path
     codex_memories: Path
     gemini_cli: Path
     hermes: Path
     antigravity: Path
+    antigravity_cli: Path
     browser_capture: Path
     inbox: Path
     hooks_pending: Path
@@ -1995,11 +1891,14 @@ def resolve_runtime_config(
     source_paths = ResolvedSourcePaths(
         claude_code=bootstrap.home / ".claude" / "projects",
         claude_code_todos=bootstrap.home / ".claude" / "todos",
+        claude_code_history=bootstrap.home / ".claude" / "history.jsonl",
         codex=bootstrap.home / ".codex" / "sessions",
+        codex_state=bootstrap.home / ".codex",
         codex_memories=bootstrap.home / ".codex" / "memories",
         gemini_cli=bootstrap.home / ".gemini" / "tmp",
         hermes=hermes_home(bootstrap.environment, home=bootstrap.home),
         antigravity=bootstrap.home / ".gemini" / "antigravity",
+        antigravity_cli=bootstrap.home / ".gemini" / "antigravity-cli",
         browser_capture=browser_spool,
         inbox=paths.inbox_root,
         hooks_pending=hook_sidecar / "pending",
@@ -2007,11 +1906,14 @@ def resolve_runtime_config(
     local_candidates = (
         ("claude-code", source_paths.claude_code),
         ("claude-code-todos", source_paths.claude_code_todos),
+        ("claude-code-history", source_paths.claude_code_history),
         ("codex", source_paths.codex),
+        ("codex-state", source_paths.codex_state),
         ("codex-memories", source_paths.codex_memories),
         ("gemini-cli", source_paths.gemini_cli),
         ("hermes", source_paths.hermes),
         ("antigravity", source_paths.antigravity),
+        ("antigravity-cli", source_paths.antigravity_cli),
         ("browser-capture", source_paths.browser_capture),
         ("inbox", source_paths.inbox),
         ("hooks", source_paths.hooks_pending),

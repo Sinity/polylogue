@@ -338,6 +338,11 @@ def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
         processors.append(
             structlog.dev.ConsoleRenderer(
                 colors=sys.stderr.isatty() and not force_plain,
+                # No frame locals: rendering them calls len()/iter() on
+                # arbitrary objects (a closed disk-backed native-id set
+                # raises), so the log call itself replaced the failure it
+                # was reporting, and it copied archive content into stderr.
+                exception_formatter=structlog.dev.RichTracebackFormatter(show_locals=False),
             )
         )
 
@@ -402,8 +407,9 @@ _REASON_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}\Z")
 # ``await`` boundaries and across ``asyncio.to_thread`` (which copies the
 # context), and across ``polylogue.daemon.write_coordinator._run_in_daemon_thread``
 # (which copies it explicitly before crossing the writer-lease thread hop).
-# Raw ``threading.Thread`` targets and ``Executor.submit`` callables do NOT
-# inherit it; wrap those with :func:`propagate`.
+# New thread inheritance depends on ``sys.flags.thread_inherit_context``;
+# an executor's reused thread does not inherit each later submitter. Bind
+# correlation for each call, rather than relying on the worker's first context.
 _context: contextvars.ContextVar[Mapping[str, object]] = contextvars.ContextVar("polylogue_log_context")
 
 
@@ -441,8 +447,10 @@ _R = TypeVar("_R")
 def propagate(function: Callable[_P, _R]) -> Callable[_P, _R]:
     """Wrap ``function`` so it runs with the *current* correlation context.
 
-    Needed for raw ``threading.Thread(target=...)`` and
-    ``ThreadPoolExecutor.submit(...)``, neither of which copies contextvars.
+    This explicitly copies the entire submitting context. Thread defaults
+    depend on ``thread_inherit_context``; reused executor workers need a
+    per-call binding. Use ``carry_context`` when only correlation is intended;
+    propagating a context does not confer writer authority.
 
     Generic in both directions so wrapping is type-transparent: a caller that
     awaits a typed future must not have to cast it back. An ``object``-erasing

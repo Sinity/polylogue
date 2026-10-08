@@ -17,6 +17,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
 
@@ -68,16 +69,20 @@ async def test_mcp_import_without_daemon_refuses_before_user_commit(tmp_path: Pa
     from polylogue.mcp.server import build_server
 
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root) as archive:
-        session_id = write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="annotation-writer-boundary",
-                title="Writer boundary fixture",
-                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
-            ),
-        )
+
+    def seed() -> str:
+        with ArchiveStore(archive_root) as archive:
+            return write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="annotation-writer-boundary",
+                    title="Writer boundary fixture",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                ),
+            )
+
+    session_id = run_off_event_loop(seed)
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
     write_fn = server._tool_manager._tools["write"].fn
     with installed_runtime_services(archive_root):

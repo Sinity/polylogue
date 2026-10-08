@@ -18,6 +18,10 @@ from pathlib import Path
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _seed_session(conn: sqlite3.Connection, native_id: str = "c1") -> str:
@@ -194,8 +198,6 @@ def test_session_rewrite_purges_fts_when_only_the_delete_trigger_is_missing(tmp_
     no-oped. Shrinking two blocks to one frees a rowid whose docsize row only
     the guard removes.
     """
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
-    from polylogue.storage.sqlite.schema import SCHEMA_DDL
 
     def parsed_session(*texts: str) -> ParsedSession:
         return ParsedSession(
@@ -212,17 +214,19 @@ def test_session_rewrite_purges_fts_when_only_the_delete_trigger_is_missing(tmp_
             ],
         )
 
-    conn = sqlite3.connect(str(tmp_path / "fts_replace_missing_triggers.db"))
+    # The fixture writer bootstraps this archive around the Index; it must
+    # carry the tier's real identity and the production measured creator.
+    conn = connect_measured(tmp_path / "fts_replace_missing_triggers.db")
     try:
-        conn.executescript(SCHEMA_DDL)
-        write_parsed_session_to_archive(conn, parsed_session("replace orphan needle", "second stale block"))
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        write_fixture_index_session(conn, parsed_session("replace orphan needle", "second stale block"))
         conn.commit()
         old_block_rowids = {row[0] for row in conn.execute("SELECT rowid FROM blocks").fetchall()}
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 2
 
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("DROP TRIGGER messages_fts_ad")
-        write_parsed_session_to_archive(conn, parsed_session("fresh replacement needle"))
+        write_fixture_index_session(conn, parsed_session("fresh replacement needle"))
         conn.commit()
 
         new_block_rowids = {row[0] for row in conn.execute("SELECT rowid FROM blocks").fetchall()}
@@ -245,8 +249,6 @@ def test_session_rewrite_purges_fts_when_only_the_delete_trigger_is_missing(tmp_
 def test_parsed_session_rewrite_purges_fts_when_bulk_triggers_suspended(tmp_path: Path) -> None:
     """Full session rewrite must not orphan old FTS rowids in dropped-trigger bulk mode."""
     from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync, restore_fts_triggers_sync
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
-    from polylogue.storage.sqlite.schema import SCHEMA_DDL
 
     def parsed_session(*texts: str) -> ParsedSession:
         return ParsedSession(
@@ -263,10 +265,12 @@ def test_parsed_session_rewrite_purges_fts_when_bulk_triggers_suspended(tmp_path
             ],
         )
 
-    conn = sqlite3.connect(str(tmp_path / "fts_bulk_rewrite.db"))
+    # The fixture writer bootstraps this archive around the Index; it must
+    # carry the tier's real identity and the production measured creator.
+    conn = connect_measured(tmp_path / "fts_bulk_rewrite.db")
     try:
-        conn.executescript(SCHEMA_DDL)
-        write_parsed_session_to_archive(conn, parsed_session("old orphan needle", "old removed block"))
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        write_fixture_index_session(conn, parsed_session("old orphan needle", "old removed block"))
         old_block_rowids = {row[0] for row in conn.execute("SELECT rowid FROM blocks").fetchall()}
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 2
 
@@ -274,7 +278,7 @@ def test_parsed_session_rewrite_purges_fts_when_bulk_triggers_suspended(tmp_path
         conn.execute("DROP TRIGGER messages_fts_ad")
         conn.execute("DROP TRIGGER messages_fts_ai")
         conn.execute("DROP TRIGGER messages_fts_au")
-        write_parsed_session_to_archive(conn, parsed_session("new orphan needle"))
+        write_fixture_index_session(conn, parsed_session("new orphan needle"))
         restore_fts_triggers_sync(conn)
         repair_message_fts_index_sync(conn, ["codex-session:bulk-rewrite-orphan"])
         conn.commit()

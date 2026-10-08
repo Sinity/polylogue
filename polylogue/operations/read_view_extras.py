@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 from collections.abc import Mapping
@@ -10,6 +9,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
+from polylogue.core.async_bridge import complete_without_suspension
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -73,7 +73,7 @@ def execute_neighbor_read(payload: Mapping[str, object], *, archive: ArchiveStor
         limit=_int_field(payload, "limit", 10),
         window_hours=_int_field(payload, "window_hours", 24),
     )
-    candidates = asyncio.run(discover_neighbor_candidates(_NeighborSnapshot(archive), request))
+    candidates = complete_without_suspension(discover_neighbor_candidates(_NeighborSnapshot(archive), request))
     return {
         "view": "neighbors",
         "payload": {

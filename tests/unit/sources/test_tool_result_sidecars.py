@@ -14,9 +14,9 @@ from pathlib import Path
 
 from polylogue.config import Source
 from polylogue.core.enums import BlockType, Provider
+from polylogue.sources import value_bounds
 from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 from polylogue.sources.live.tool_result_sidecars import (
-    _MAX_SIDECAR_FILE_BYTES,
     SidecarDebt,
     SidecarMatch,
     join_tool_result_sidecars,
@@ -27,10 +27,35 @@ from polylogue.sources.live.tool_result_sidecars import (
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers.claude.code_parser import apply_tool_result_sidecars, parse_code
 from polylogue.sources.revision_backfill import _parse_one
-from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope, SiblingTranscript
+from polylogue.sources.sidecar_evidence import (
+    CapturedSidecarResolver,
+    RetainedSidecarFile,
+    RetainedSidecarScope,
+    SiblingTranscript,
+)
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
 _TRUNCATED_NEEDLE = "zz_sentinel_needle_only_in_full_output"
+
+
+def test_captured_sidecar_resolver_has_no_ambient_path_fallback(tmp_path: Path) -> None:
+    """Detached parsing sees only the explicitly captured scope for a path."""
+    source_path = tmp_path / "project" / "session.jsonl"
+    staged = tmp_path / "captured-output.txt"
+    staged.write_text("captured", encoding="utf-8")
+    scope = RetainedSidecarScope(
+        scope_key=str(tmp_path / "project" / "session" / "tool-results"),
+        files=(RetainedSidecarFile("output.txt", 8, None, lambda: staged.read_text()),),
+        available=True,
+        witness=(("file", "raw-captured", "a" * 64),),
+    )
+    resolver = CapturedSidecarResolver({source_path.as_posix(): scope})
+
+    assert resolver.claude_code_scope(source_path) is scope
+    unresolved = resolver.claude_code_scope(tmp_path / "project" / "other.jsonl")
+    assert unresolved.available is False
+    assert unresolved.files == ()
+    assert unresolved.scope_key == ""
 
 
 def _dir_scope(tool_results_dir: Path) -> RetainedSidecarScope:
@@ -99,12 +124,12 @@ def test_join_tool_result_sidecars_classifies_truncated_full_mirror_and_debt(tmp
 
     truncated_match = matched_by_id["toolu_AAA"]
     assert truncated_match.was_truncated is True
-    assert _TRUNCATED_NEEDLE in truncated_match.full_text
-    assert truncated_match.byte_size == len(truncated_match.full_text.encode("utf-8"))
+    assert _TRUNCATED_NEEDLE in truncated_match.read_text()
+    assert truncated_match.byte_size == len(truncated_match.read_text().encode("utf-8"))
 
     full_mirror_match = matched_by_id["toolu_BBB"]
     assert full_mirror_match.was_truncated is False
-    assert full_mirror_match.full_text == "The file /x.py has been updated successfully."
+    assert full_mirror_match.read_text() == "The file /x.py has been updated successfully."
 
     # The hook-*.txt capture is a distinct, already-tracked mechanism (raw hook
     # stdout, not tool_result content) -- never surfaced as debt.
@@ -186,6 +211,45 @@ def test_apply_tool_result_sidecars_is_a_noop_without_matches_or_debt() -> None:
     assert result is parsed
 
 
+def test_sidecar_changed_after_join_becomes_typed_debt_without_replacing_inline_text() -> None:
+    payload = [_record("m-race", "toolu_RACE", "preview")]
+    reads = 0
+
+    def read_once_then_disappear() -> str:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return "complete output"
+        raise FileNotFoundError("sidecar disappeared after the join")
+
+    scope = RetainedSidecarScope(
+        scope_key="changed-after-join",
+        files=(
+            RetainedSidecarFile(
+                filename="toolu_RACE.txt",
+                byte_size=len("complete output"),
+                file_mtime_ms=1_719_878_400_000,
+                read_text=read_once_then_disappear,
+            ),
+        ),
+        available=True,
+    )
+    joined = join_tool_result_sidecars(payload, scope)
+    assert len(joined.matched) == 1
+
+    parsed = apply_tool_result_sidecars(parse_code(payload, "fallback-race"), joined)
+    [block] = [
+        block
+        for message in parsed.messages
+        for block in message.blocks
+        if block.type is BlockType.TOOL_RESULT and block.tool_id == "toolu_RACE"
+    ]
+    assert block.text == "preview"
+    [event] = [event for event in parsed.session_events if event.event_type == "claude_tool_result_sidecar"]
+    assert event.payload["acquisition_status"] == "debt"
+    assert event.payload["reason"] == "read_error:FileNotFoundError"
+
+
 def test_sidecar_dataclasses_are_frozen() -> None:
     match = SidecarMatch(
         tool_use_id="toolu_X",
@@ -193,7 +257,7 @@ def test_sidecar_dataclasses_are_frozen() -> None:
         byte_size=1,
         content_hash="0" * 64,
         was_truncated=True,
-        full_text="x",
+        read_text=lambda: "x",
     )
     debt = SidecarDebt(filename="orphan.txt", byte_size=1, reason="no_owning_tool_result_block")
     assert match.tool_use_id == "toolu_X"
@@ -366,7 +430,7 @@ def test_tool_results_sidecar_never_becomes_a_session_on_either_chokepoint(tmp_p
     assert rule is not None
     assert (rule.kind, rule.parse_policy) == ("tool_result_sidecar", "raw-only")
 
-    replayed = _parse_one(Provider.CLAUDE_CODE, body, str(sidecar))
+    replayed = _parse_one(Provider.CLAUDE_CODE, body, str(sidecar), sidecar_resolver=None)
     assert replayed == []
 
     acquired = list(iter_source_sessions_with_raw(Source(name="claude-code", path=sidecar), capture_raw=False))
@@ -399,7 +463,7 @@ def test_sidecar_event_time_stays_unknown_when_the_file_carries_no_mtime_evidenc
                 byte_size=15,
                 content_hash="0" * 64,
                 was_truncated=False,
-                full_text="small full text",
+                read_text=lambda: "small full text",
             ),
         ),
         debt=(SidecarDebt(filename="orphan123.txt", byte_size=7, reason="no_owning_tool_result_block"),),
@@ -412,15 +476,16 @@ def test_sidecar_event_time_stays_unknown_when_the_file_carries_no_mtime_evidenc
     assert [event.timestamp for event in sidecar_events] == [None, None]
 
 
-def test_session_scoped_join_reads_neither_sibling_owned_nor_oversize_sidecars(tmp_path: Path) -> None:
-    """polylogue-9k62p: filter first, read bounded.
+def test_session_scoped_join_reads_neither_sibling_owned_nor_unstorable_sidecars(tmp_path: Path) -> None:
+    """polylogue-9k62p: filter first; refuse only what SQLite cannot store.
 
     The parent's pass must not read a sidecar a sibling owns (it discarded the
     text afterwards anyway) and must not read one whose retained size exceeds
-    the join's ceiling -- the oversize file becomes named ``size_exceeded``
-    debt instead of an allocation. ``read_text`` raises here, so any read of
-    either file fails the test. Anti-vacuity: dropping the ownership skip, or
-    the size gate, makes the corresponding read fire and the test red.
+    SQLite's physical value limit, which no block text can hold -- that file
+    becomes typed ``value_bound_refused`` debt instead of an allocation.
+    ``read_text`` raises here, so any read of either file fails the test.
+    Anti-vacuity: dropping the ownership skip, or the physical-limit gate,
+    makes the corresponding read fire and the test red.
     """
     project_dir = tmp_path / "project"
     session_dir = project_dir / "sess-bounded"
@@ -444,7 +509,7 @@ def test_session_scoped_join_reads_neither_sibling_owned_nor_oversize_sidecars(t
             ),
             RetainedSidecarFile(
                 filename="toolu_PARENT_BIG.txt",
-                byte_size=_MAX_SIDECAR_FILE_BYTES + 1,
+                byte_size=value_bounds.MAX_STORABLE_VALUE_BYTES + 1,
                 file_mtime_ms=None,
                 read_text=_forbidden_read,
             ),
@@ -458,4 +523,104 @@ def test_session_scoped_join_reads_neither_sibling_owned_nor_oversize_sidecars(t
     result = join_tool_result_sidecars_session_scoped(parent_payload, scope, parent_path)
 
     assert result.matched == ()
-    assert {(debt.filename, debt.reason) for debt in result.debt} == {("toolu_PARENT_BIG.txt", "size_exceeded")}
+    assert {(debt.filename, debt.reason) for debt in result.debt} == {("toolu_PARENT_BIG.txt", "value_bound_refused")}
+
+
+#: One synthetic sidecar's size: above the former 64 MiB per-file refusal, and
+#: four of them exceed the former 256 MiB per-transcript refusal.
+_LARGE_SIDECAR_BYTES = 65 * 1024 * 1024
+_LARGE_SIDECAR_COUNT = 4
+
+
+def test_large_sidecars_join_completely_with_memory_bounded_by_one_file() -> None:
+    """Sidecars of any size and number are joined, one file in memory at a time.
+
+    Four 65 MiB sidecars used to become ``size_exceeded`` debt (64 MiB per
+    file, 256 MiB per transcript) and never reach the index. Each is now
+    matched with the hash of its full text, and the join's traced peak stays
+    near one file's size although the files together are four times that.
+
+    Anti-vacuity: restore either cap and the matches become debt; keep each
+    file's text on its match (the former ``full_text``) and the traced peak
+    grows with the total instead of staying under two files' worth.
+    """
+    import tracemalloc
+
+    from polylogue.core.hashing import hash_text
+
+    ids = [f"toolu_LARGE{index}" for index in range(_LARGE_SIDECAR_COUNT)]
+
+    def generated(index: int) -> str:
+        return chr(ord("a") + index) * _LARGE_SIDECAR_BYTES
+
+    def reader(index: int):  # type: ignore[no-untyped-def]
+        return lambda: generated(index)
+
+    scope = RetainedSidecarScope(
+        scope_key="large-sidecars",
+        files=tuple(
+            RetainedSidecarFile(
+                filename=f"{tool_use_id}.txt",
+                byte_size=_LARGE_SIDECAR_BYTES,
+                file_mtime_ms=None,
+                read_text=reader(index),
+            )
+            for index, tool_use_id in enumerate(ids)
+        ),
+        available=True,
+    )
+    payload = [_record(f"m-{tool_use_id}", tool_use_id, "inline preview") for tool_use_id in ids]
+
+    tracemalloc.start()
+    try:
+        result = join_tool_result_sidecars(payload, scope)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert result.debt == ()
+    assert [match.tool_use_id for match in result.matched] == ids
+    assert all(match.was_truncated for match in result.matched)
+    total = _LARGE_SIDECAR_BYTES * _LARGE_SIDECAR_COUNT
+    assert peak < 2 * _LARGE_SIDECAR_BYTES + 16 * 1024 * 1024 < total, peak
+    for match in result.matched:
+        text = match.read_text()
+        assert len(text) == _LARGE_SIDECAR_BYTES
+        assert match.content_hash == hash_text(text)
+        del text
+
+
+def test_large_sidecar_replaces_its_truncated_block_in_full() -> None:
+    """The applied session carries the whole large sidecar, and its event says so.
+
+    Anti-vacuity: refuse a file above 64 MiB again and the block keeps its
+    inline preview while the event reports debt.
+    """
+    tool_use_id = "toolu_LARGE_APPLY"
+    text = "z" * _LARGE_SIDECAR_BYTES
+    scope = RetainedSidecarScope(
+        scope_key="large-sidecar-apply",
+        files=(
+            RetainedSidecarFile(
+                filename=f"{tool_use_id}.txt",
+                byte_size=_LARGE_SIDECAR_BYTES,
+                file_mtime_ms=None,
+                read_text=lambda: text,
+            ),
+        ),
+        available=True,
+    )
+    payload = [_record("m-large", tool_use_id, "inline preview")]
+
+    session = parse_code(payload, "fallback-large", tool_result_sidecars=join_tool_result_sidecars(payload, scope))
+
+    [block] = [
+        block
+        for message in session.messages
+        for block in message.blocks
+        if block.type is BlockType.TOOL_RESULT and block.tool_id == tool_use_id
+    ]
+    assert block.text is not None and len(block.text) == _LARGE_SIDECAR_BYTES
+    [event] = [event for event in session.session_events if event.event_type == "claude_tool_result_sidecar"]
+    assert event.payload["acquisition_status"] == "matched"
+    assert event.payload["content_replaced"] is True

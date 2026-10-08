@@ -229,9 +229,7 @@ def _source_subset_request(
     workdir: Path,
     source_paths: list[Path],
     source_name: str = "inbox",
-    raw_batch_size: int | None = None,
     ingest_workers: int | None = None,
-    measure_ingest_result_size: bool = False,
 ) -> PipelineProbeRequest:
     return PipelineProbeRequest(
         stage="parse",
@@ -239,9 +237,7 @@ def _source_subset_request(
         workdir=str(workdir),
         source_paths=tuple(str(path) for path in source_paths),
         source_name=source_name,
-        raw_batch_size=raw_batch_size,
         ingest_workers=ingest_workers,
-        measure_ingest_result_size=measure_ingest_result_size,
         corpus_request=CorpusRequest(
             count=1,
             messages_min=3,
@@ -283,20 +279,24 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
         for index, (provider, origin, native_id, seed) in enumerate(raw_specs):
             blob_hash_hex, blob_size = blob_store.write_from_bytes(_seed_archive_source_payload(provider, seed))
             blob_hash = bytes.fromhex(blob_hash_hex)
-            source_path = f"/tmp/{native_id}-{index}"
+            # The retained decoder follows the declared file shape: a Codex
+            # rollout is JSONL, a ChatGPT export one JSON document.
+            suffix = ".jsonl" if provider == "codex" else ".json"
+            source_path = f"/tmp/{native_id}-{index}{suffix}"
             acquired_at_ms = (index + 1) * 1000
             conn.execute(
                 """
                 INSERT INTO raw_sessions (
-                    raw_id, origin, native_id, source_path, source_index,
+                    raw_id, origin, native_id, source_path, canonical_source_path, source_index,
                     blob_hash, blob_size, acquired_at_ms,
                     parsed_at_ms, validated_at_ms, validation_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'passed')
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'passed')
                 """,
                 (
                     blob_hash_hex,
                     origin,
                     native_id,
+                    source_path,
                     source_path,
                     index,
                     blob_hash,
@@ -326,8 +326,7 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path: Path) -> None:
     stages = _require_json_object(metrics["stages"])
     ingest = _require_json_object(stages["ingest"])
     details = _require_json_object(ingest["details"])
-    acquisition_details = _require_json_object(details["acquisition"])
-    ingest_details = _require_json_object(details["batch_observations"])
+    sub_timings = _require_json_object(ingest["sub_timings_ms"])
 
     assert _json_path(summary, "probe", "provider") == "chatgpt"
     assert _json_path(summary, "probe", "corpus_source") == "default"
@@ -337,17 +336,13 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path: Path) -> None:
     assert metrics["peak_rss_self_mb"] is not None
     assert metrics["peak_rss_children_mb"] is not None
     assert "index" not in stages
-    assert isinstance(acquisition_details, dict)
-    assert _require_int(ingest_details["batch_count"]) == 1
-    assert ingest_details["max_current_rss_mb"] is not None
-    batches = _require_json_array(ingest_details["batches"])
-    assert len(batches) == 1
-    first_batch = _require_json_object(batches[0])
-    assert first_batch["max_current_rss_mb"] is not None
-    assert _require_number(first_batch["result_wait_elapsed_ms"]) >= 0
-    assert _require_number(first_batch["write_elapsed_ms"]) >= 0
-    assert _require_number(first_batch["commit_elapsed_ms"]) >= 0
-    assert _require_number(first_batch["raw_state_update_elapsed_ms"]) >= 0
+    # The canonical one-shot route reports its own stage timings and outcome
+    # flags; the probe records them rather than a batch-route transport model.
+    assert sub_timings
+    assert all(_require_number(value) >= 0 for value in sub_timings.values())
+    assert details == {"excised_skips": 0, "time_budget_exceeded": False}
+    assert _require_int(ingest["items"]) == _require_int(_json_path(summary, "result", "processed_ids")) >= 1
+    assert _require_int(_json_path(summary, "db_stats", "sessions_count")) >= 1
     raw_count = _require_int(_json_path(summary, "db_stats", "raw_sessions_count"))
     assert raw_count >= 1
     assert len(_require_json_array(summary["raw_fanout"])) == raw_count
@@ -495,51 +490,15 @@ async def test_run_probe_applies_ingest_tuning_overrides(tmp_path: Path) -> None
     request = _source_subset_request(
         workdir=tmp_path / "source-subset-overrides",
         source_paths=files,
-        raw_batch_size=1,
         ingest_workers=1,
     )
 
     summary = await run_probe(request)
-    ingest_details = _require_json_object(
-        _json_path(summary, "run_payload", "metrics", "stages", "ingest", "details", "batch_observations")
-    )
 
-    assert _json_path(summary, "probe", "raw_batch_size") == 1
     assert _json_path(summary, "probe", "ingest_workers") == 1
-    assert _require_int(ingest_details["batch_count"]) == 2
-    assert all(_require_json_object(batch)["workers"] == 1 for batch in _require_json_array(ingest_details["batches"]))
-
-
-async def test_run_probe_can_measure_ingest_result_sizes(tmp_path: Path) -> None:
-    source_input_root = tmp_path / "inputs"
-    files, _ = _write_probe_sources(
-        request=CorpusRequest(
-            providers=("chatgpt",),
-            source="default",
-            count=1,
-            messages_min=3,
-            messages_max=4,
-            seed=31,
-            style="default",
-        ),
-        source_root=source_input_root,
-    )
-    request = _source_subset_request(
-        workdir=tmp_path / "source-subset-size-probe",
-        source_paths=files,
-        measure_ingest_result_size=True,
-    )
-
-    summary = await run_probe(request)
-    batch = _require_json_object(
-        _json_path(summary, "run_payload", "metrics", "stages", "ingest", "details", "batch_observations")
-    )
-
-    assert _json_path(summary, "probe", "measure_ingest_result_size") is True
-    assert batch["max_result_mb"] is not None
-    first_batch = _require_json_object(_require_json_array(batch["batches"])[0])
-    assert _require_number(first_batch["result_mb"]) > 0
-    assert _require_number(first_batch["max_result_mb"]) > 0
+    # One parse worker still converges every offered file.
+    assert _require_int(_json_path(summary, "result", "processed_ids")) == len(files) == 2
+    assert _json_path(summary, "result", "parse_failures") == 0
 
 
 async def test_run_probe_rejects_source_subset_without_source_paths(tmp_path: Path) -> None:
@@ -760,12 +719,12 @@ async def test_run_probe_can_sample_archive_file_set_subset(tmp_path: Path) -> N
         conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index,
+                raw_id, origin, native_id, source_path, canonical_source_path, source_index,
                 blob_hash, blob_size, acquired_at_ms, parsed_at_ms,
                 validated_at_ms, validation_status
             ) VALUES (
                 'archive-raw-session-id', 'chatgpt-export', 'chatgpt-archive-1',
-                '/tmp/chatgpt-archive.json', 0, ?, ?, 1, 2, 3, 'passed'
+                '/tmp/chatgpt-archive.json', '/tmp/chatgpt-archive.json', 0, ?, ?, 1, 2, 3, 'passed'
             )
             """,
             (bytes.fromhex(blob_hash), blob_size),

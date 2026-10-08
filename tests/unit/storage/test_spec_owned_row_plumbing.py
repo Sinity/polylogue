@@ -166,7 +166,8 @@ def test_declared_projection_names_every_record_field_for_the_core_tables() -> N
     """
     for spec, model, derived in (
         (SESSIONS_SPEC, SessionRecord, set()),
-        (MESSAGES_SPEC, MessageRecord, {"blocks"}),
+        # Blocks and attachments are joined from their own tables, not columns.
+        (MESSAGES_SPEC, MessageRecord, {"blocks", "attachments"}),
         (BLOCKS_SPEC, BlockRecord, set()),
     ):
         declared = {column.record_name for column in spec.record_columns}

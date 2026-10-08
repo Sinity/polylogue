@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import time
 from itertools import permutations
 from typing import Literal
@@ -117,7 +118,7 @@ def test_refuses_divergent_maxima_even_when_existing_head_already_matches_the_fa
     safe in practice: re-accepting that raw_id through membership governance
     still overwrites the head's own ``accepted_frontier_kind``/generation
     metadata (verified against a real write-back regression,
-    ``test_live_multi_session_divergence_reopens_raw_authority``), so the
+    ``test_live_multi_session_divergence_keeps_accepted_head_as_debt``), so the
     guard refuses ANY existing head, not just a differing one.
     """
     result = classify_membership_revisions(
@@ -1014,6 +1015,137 @@ def test_browser_native_snapshot_accepts_later_provider_revision_when_messages_r
     assert result.ambiguous_raw_ids == ()
 
 
+def test_unique_later_native_snapshot_supersedes_unordered_history_as_a_set() -> None:
+    """A proven latest native snapshot settles each older member independently.
+
+    The first two captures have the same provider update time, stable message
+    identity, and different content, so neither orders the other. The later
+    snapshot has a strictly newer provider timestamp and preserves every
+    provider message identity from both. Its authority settles each older
+    observation directly; it does not invent an ordering between those older
+    observations or claim they form an append-only prefix chain.
+    """
+
+    def revision(raw_id: str, texts: tuple[str, ...], updated_at: str) -> MembershipRevision:
+        base = _revision(raw_id, *texts)
+        return MembershipRevision(
+            base.raw_id,
+            base.projection,
+            provider_updated_at=updated_at,
+            observed_at_ms=len(texts),
+            browser_snapshot_fidelity="native",
+            provider_message_ids=frozenset(f"message-{index}" for index in range(len(texts))),
+        )
+
+    old_a = revision("raw-old-a", ("original", "first correction"), "2026-10-01T00:00:00Z")
+    old_b = revision("raw-old-b", ("original", "different correction"), "2026-10-01T00:00:00Z")
+    # Same provider content as old_a, but a separate acquisition. It remains
+    # independently superseded because its identity set is covered by winner.
+    old_a_copy = dataclasses.replace(old_a, raw_id="raw-old-a-copy", observed_at_ms=4)
+    winner = revision(
+        "raw-new",
+        ("original", "final correction", "later reply"),
+        "2026-10-02T00:00:00Z",
+    )
+
+    for ordering in permutations((old_a, old_b, old_a_copy, winner)):
+        result = classify_membership_revisions(list(ordering), existing_accepted_raw_id="raw-old-a")
+
+        assert result.accepted_raw_ids == ("raw-new",)
+        assert result.superseded_raw_ids == ("raw-old-a", "raw-old-a-copy", "raw-old-b")
+        assert result.equivalent_raw_ids == ()
+        assert result.ambiguous_raw_ids == ()
+
+
+@pytest.mark.parametrize(
+    ("latest_timestamp", "latest_ids"),
+    [
+        ("2026-10-02T00:00:00Z", frozenset({"message-0"})),
+        ("2026-10-01T00:00:00Z", frozenset({"message-0", "message-1", "message-2"})),
+        (None, frozenset({"message-0", "message-1", "message-2"})),
+        ("malformed", frozenset({"message-0", "message-1", "message-2"})),
+    ],
+    ids=("loses-provider-identity", "provider-time-ties", "missing-provider-time", "malformed-provider-time"),
+)
+def test_native_winner_requires_strict_time_and_every_provider_identity(
+    latest_timestamp: str | None,
+    latest_ids: frozenset[str],
+) -> None:
+    old_a = _revision("raw-old-a", "original", "first correction")
+    old_b = _revision("raw-old-b", "original", "different correction")
+    latest = _revision("raw-latest", "original", "final correction", "later reply")
+    revisions = [
+        MembershipRevision(
+            item.raw_id,
+            item.projection,
+            provider_updated_at=timestamp,
+            observed_at_ms=observed_at,
+            browser_snapshot_fidelity="native",
+            provider_message_ids=ids,
+        )
+        for item, timestamp, observed_at, ids in (
+            (old_a, "2026-10-01T00:00:00Z", 1, frozenset({"message-0", "message-1"})),
+            (old_b, "2026-10-01T00:00:00Z", 2, frozenset({"message-0", "message-1"})),
+            (latest, latest_timestamp, 3, latest_ids),
+        )
+    ]
+
+    result = classify_membership_revisions(revisions, existing_accepted_raw_id="raw-old-a")
+
+    assert "raw-latest" not in result.accepted_raw_ids
+    assert result.superseded_raw_ids == ()
+
+
+@pytest.mark.parametrize("older_timestamp", [None, "malformed"])
+def test_native_winner_requires_each_older_timestamp(older_timestamp: str | None) -> None:
+    older = _browser_revision("old", "older", older_timestamp, "native")
+    winner = _browser_revision("winner", "newer", "2026-10-02T00:00:00Z", "native")
+    result = classify_membership_revisions([older, winner], existing_accepted_raw_id="old")
+    assert result.superseded_raw_ids == ()
+    assert "winner" not in result.accepted_raw_ids
+
+
+def test_native_winner_cannot_lose_a_provider_attachment_identity() -> None:
+    older = dataclasses.replace(
+        _browser_revision("old", "older", "2026-10-01T00:00:00Z", "native"),
+        provider_attachment_ids=frozenset({"attachment-old"}),
+    )
+    winner = dataclasses.replace(
+        _browser_revision("winner", "newer", "2026-10-02T00:00:00Z", "native"),
+        provider_attachment_ids=frozenset({"attachment-new"}),
+    )
+    result = classify_membership_revisions([older, winner], existing_accepted_raw_id="old")
+    assert result.superseded_raw_ids == ()
+    assert "winner" not in result.accepted_raw_ids
+
+
+def test_native_membership_winner_requires_one_unique_latest_snapshot() -> None:
+    older = _revision("raw-old", "opening", "older response")
+    later_a = _revision("raw-later-a", "opening", "first current response", "shared later turn")
+    later_b = _revision("raw-later-b", "opening", "second current response", "shared later turn")
+    revisions = [
+        MembershipRevision(
+            item.raw_id,
+            item.projection,
+            provider_updated_at=timestamp,
+            observed_at_ms=observed_at,
+            browser_snapshot_fidelity="native",
+            provider_message_ids=ids,
+        )
+        for item, timestamp, observed_at, ids in (
+            (older, "2026-10-01T00:00:00Z", 1, frozenset({"message-0", "message-1"})),
+            (later_a, "2026-10-02T00:00:00Z", 2, frozenset({"message-0", "message-1", "message-2"})),
+            (later_b, "2026-10-02T00:00:00Z", 3, frozenset({"message-0", "message-1", "message-2"})),
+        )
+    ]
+
+    result = classify_membership_revisions(revisions, existing_accepted_raw_id="raw-old")
+
+    assert "raw-later-a" not in result.accepted_raw_ids
+    assert "raw-later-b" not in result.accepted_raw_ids
+    assert result.superseded_raw_ids == ()
+
+
 def test_stale_native_snapshot_cannot_replace_newer_dom_at_equal_frontier() -> None:
     """Changed native content needs a newer provider time to outrank DOM."""
     dom = _browser_revision("raw-dom", "newer DOM", "2026-01-02T00:00:00Z", "dom")
@@ -1579,3 +1711,30 @@ def test_message_axis_relation_matches_reference_over_shared_identities() -> Non
         seen.add(expected)
         assert _message_axis_relation(a, b, mutable_identities=mutable) == expected
     assert seen == {"equal", "a_contains_b", "b_contains_a", "conflict"}
+
+
+def _captured(revision: MembershipRevision, capture_order: tuple[int, int]) -> MembershipRevision:
+    return dataclasses.replace(revision, capture_order=capture_order)
+
+
+def test_latest_declared_capture_wins_a_direct_conflict_over_evidence_volume() -> None:
+    """A replacement of a session's file is its current state, however short.
+
+    The grown revision carries more evidence; the replacement was captured
+    later. Anti-vacuity: drop the capture-order rule and the maximal-evidence
+    fallback accepts ``raw-grown`` instead.
+    """
+    grown = _captured(_revision("raw-grown", "one", "two", "three"), (2, 0))
+    replacement = _captured(_revision("raw-replacement", "uno"), (3, 0))
+    first = _captured(_revision("raw-first", "one"), (1, 0))
+    for ordering in permutations([first, grown, replacement]):
+        classified = classify_membership_revisions(list(ordering))
+        assert classified.accepted_raw_ids == ("raw-replacement",)
+        assert {"raw-first", "raw-grown"} <= set(classified.ambiguous_raw_ids) | set(classified.equivalent_raw_ids)
+
+
+def test_tied_or_undeclared_capture_order_keeps_the_existing_fallback() -> None:
+    tied = [_captured(_revision("raw-a", "one"), (5, 1)), _captured(_revision("raw-b", "uno", "left"), (5, 1))]
+    assert classify_membership_revisions(tied).accepted_raw_ids == ("raw-b",)
+    undeclared = [_revision("raw-a", "one", "two"), _captured(_revision("raw-b", "uno"), (9, 0))]
+    assert classify_membership_revisions(undeclared).accepted_raw_ids == ("raw-a",)

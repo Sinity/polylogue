@@ -30,6 +30,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import DEBUG, WARNING, emit, get_logger
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.sources.tool_result_reasons import unknown_reason
@@ -37,6 +38,7 @@ from polylogue.sources.tool_result_reasons import unknown_reason
 from .base import (
     AdmissionLedger,
     AdmissionUnit,
+    ParseAccounting,
     ParsedContentBlock,
     ParsedMessage,
     ParsedSession,
@@ -633,6 +635,40 @@ def _newer_timestamp_pair(
     return current
 
 
+def finalize_codex_session(
+    session: ParsedSession,
+    *,
+    messages: Sequence[ParsedMessage],
+    session_events: Sequence[ParsedSessionEvent],
+    updated_at: str | None,
+    unit_accounting: ParseAccounting,
+    mark_active_leaf: bool,
+    active_leaf_message_provider_id: str | None = None,
+) -> ParsedSession:
+    """Apply the canonical final session fields to an ordinary or prefix parse.
+
+    Checkpointed prefixes use a read-only message view whose final row already
+    carries its own active-leaf bit. Ordinary parsing asks this helper to mark
+    the final occurrence in its sink, preserving the existing behavior.
+    """
+    if mark_active_leaf:
+        if isinstance(messages, list):
+            messages[:] = mark_last_occurrence_as_active_leaf(cast(list[ParsedMessage], messages))
+        elif messages and isinstance(messages, MutableSequence):
+            messages[-1] = messages[-1].model_copy(update={"is_active_leaf": True})
+    if active_leaf_message_provider_id is None and messages:
+        active_leaf_message_provider_id = messages[-1].provider_message_id if messages[-1].provider_message_id else None
+    return session.model_copy(
+        update={
+            "messages": messages,
+            "session_events": session_events,
+            "updated_at": updated_at,
+            "active_leaf_message_provider_id": active_leaf_message_provider_id,
+            "unit_accounting": unit_accounting,
+        }
+    )
+
+
 def _has_continuation_evidence(
     *,
     first_timestamp: _TimestampPair | None,
@@ -893,6 +929,45 @@ def _is_message(record: dict[str, object]) -> bool:
 #: lets stream classification agree with the parser (polylogue-1wom1) instead
 #: of refusing a rollout whose only messages arrive in this shape.
 _EVENT_MESSAGE_PAYLOAD_TYPES: frozenset[str] = frozenset({"user_message", "agent_message"})
+
+#: Top-level records of the 2025 direct-message stream generation that carry,
+#: unwrapped, exactly the payload a later ``response_item`` envelope wraps.
+#: They are materialized through the same response-item route, so a tool call
+#: and its output pair, and a reasoning summary lowers, identically in both
+#: generations.
+_CODEX_LEGACY_RESPONSE_RECORD_TYPES: frozenset[str] = frozenset({"function_call", "function_call_output", "reasoning"})
+
+#: ``retained_context`` payload types. ``verified_answer`` is the user's
+#: accepted answer set for a ``request_user_input`` call: question/answer
+#: pairs keyed by that call's ``call_id``. It is materialized as a
+#: ``verified_answer`` session event anchored to the call.
+_CODEX_RETAINED_CONTEXT_PAYLOAD_TYPES: frozenset[str] = frozenset({"verified_answer"})
+
+#: ``realtime_item`` payload types. Both are lifecycle markers of a realtime
+#: session: they carry no conversation content, only the realtime session id,
+#: the marker id and (on close) an outcome token. They are materialized as
+#: session events under their own wire names, so the timeline keeps when a
+#: realtime session ran and how it ended.
+_CODEX_REALTIME_PAYLOAD_TYPES: frozenset[str] = frozenset({"realtime_session_started", "realtime_session_closed"})
+
+
+def _legacy_response_record(record: dict[str, object]) -> dict[str, object] | None:
+    """Return a 2025 top-level response record as its own response-item payload."""
+    if _record_type(record) in _CODEX_LEGACY_RESPONSE_RECORD_TYPES and "payload" not in record:
+        return record
+    return None
+
+
+def is_legacy_response_record(item: object) -> bool:
+    """Whether ``item`` is an unwrapped 2025 response record the parser materializes.
+
+    Such a record carries no generic envelope marker, so artifact candidacy
+    counts it as Codex record evidence through this predicate. It reads only
+    ``type`` and the presence of ``payload``, both of which candidacy
+    projection retains.
+    """
+    record = _dict_record(item)
+    return record is not None and _legacy_response_record(record) is not None
 
 
 def _message_record(record: dict[str, object]) -> dict[str, object] | None:
@@ -2812,6 +2887,11 @@ def _structural_byte_count(value: object) -> int | None:
     return None
 
 
+#: Newer unified-exec builds put one ``Command: <rendered command>`` line in
+#: front of the envelope. It is stripped only when the very next line starts
+#: the envelope, so a command rendered over several lines leaves the result
+#: unknown rather than letting a line inside the command pose as the envelope.
+_CODEX_COMMAND_LINE_PREFIX_RE = re.compile(r"\ACommand: [^\n]*\n(?=(?:Chunk ID: [0-9a-f]+\n)?Wall time: )")
 _CODEX_CHUNK_ID_PREFIX_RE = re.compile(r"\AChunk ID: [0-9a-f]+\n")
 _CODEX_EXEC_ENVELOPE_OUTCOME_RE = re.compile(
     r"\AWall time: [0-9.]+ seconds\n"
@@ -2839,7 +2919,8 @@ def _codex_exec_envelope_outcome(output: object) -> tuple[bool | None, int | Non
     """
     if not isinstance(output, str):
         return None, None
-    text = _CODEX_CHUNK_ID_PREFIX_RE.sub("", output, count=1)
+    text = _CODEX_COMMAND_LINE_PREFIX_RE.sub("", output, count=1)
+    text = _CODEX_CHUNK_ID_PREFIX_RE.sub("", text, count=1)
     match = _CODEX_EXEC_ENVELOPE_OUTCOME_RE.match(text)
     if match is None:
         return None, None
@@ -2850,14 +2931,36 @@ def _codex_exec_envelope_outcome(output: object) -> tuple[bool | None, int | Non
     return exit_code != 0, exit_code
 
 
+_CODEX_FREEFORM_OUTCOME_RE = re.compile(
+    r"\AExit code: (?P<exit_code>-?\d+)\nWall time: [0-9.]+ seconds\n(?:Output:\n|Total output lines: \d+\n)"
+)
+
+
+def _codex_freeform_outcome(output: object) -> tuple[bool | None, int | None]:
+    """Read the exit code Codex stamps on a freeform tool result.
+
+    ``apply_patch`` and ``shell_command`` results begin with a header the CLI
+    writes, never the model: ``Exit code: <N>\\nWall time: <float>
+    seconds\\n`` followed by ``Output:`` or ``Total output lines: <N>``. The
+    match is anchored at the start of the field and requires the whole header,
+    so the same words inside captured output never count.
+    """
+    if not isinstance(output, str):
+        return None, None
+    match = _CODEX_FREEFORM_OUTCOME_RE.match(output)
+    if match is None:
+        return None, None
+    exit_code = int(match.group("exit_code"))
+    return exit_code != 0, exit_code
+
+
 def _codex_tool_result_outcome(raw: object) -> tuple[bool | None, int | None, str | None]:
     """Resolve (is_error, exit_code, unknown reason) for a Codex tool-result payload.
 
     Tries the JSON-structural outcome first (``exit_code``/``is_error``
-    fields nested in a decoded JSON object), then falls back to the
-    unified-exec text envelope (see ``_codex_exec_envelope_outcome``) when the
-    raw payload is a string that JSON-decoding did not resolve to a mapping
-    carrying either field.
+    fields nested in a decoded JSON object). When that resolves nothing, a
+    string payload falls back to the CLI-written headers that state an exit
+    code: the unified-exec envelope, then the freeform ``Exit code:`` header.
 
     A payload that announces itself as a JSON structure and does not decode is
     a declared outcome carrier the source did not retain intact; a decoded
@@ -2868,6 +2971,8 @@ def _codex_tool_result_outcome(raw: object) -> tuple[bool | None, int | None, st
     is_error, exit_code = _structural_outcome(decoded)
     if is_error is None and exit_code is None and isinstance(raw, str):
         is_error, exit_code = _codex_exec_envelope_outcome(raw)
+        if is_error is None and exit_code is None:
+            is_error, exit_code = _codex_freeform_outcome(raw)
     return (
         is_error,
         exit_code,
@@ -3195,7 +3300,11 @@ def _code_mode_child_results(output: object, *, child_count: int) -> tuple[_Code
 
 def _response_inner_record(item: object) -> dict[str, object] | None:
     record = _dict_record(item)
-    if record is None or _record_type(record) not in {"response_item", "event_msg"}:
+    if record is None:
+        return None
+    if (legacy := _legacy_response_record(record)) is not None:
+        return legacy
+    if _record_type(record) not in {"response_item", "event_msg"}:
         return None
     inner = _payload_record(record)
     return inner if inner is not None and not _is_message(inner) else None
@@ -3272,7 +3381,7 @@ class _CodexLookaheadObserver:
             envelope = _CodexExecEnvelope(
                 transport_tool_name=tool_name,
                 transport_tool_id=tool_id,
-                transport_provider_message_id=str(payload.get("id") or raw_tool_id or ""),
+                transport_provider_message_id=_codex_tool_record_message_id(payload, side="call"),
                 children=children,
             )
             occurrence = index_store.occurrence("call", tool_id) if tool_id else None
@@ -3712,6 +3821,28 @@ def _codex_material_origin(role: Role, message_type: MessageType, text: str | No
     return material_origin
 
 
+def _codex_tool_record_message_id(payload: Mapping[str, object], *, side: str) -> str:
+    """Return the native message identity of one Codex tool call or output record.
+
+    A tool record's own ``id`` is its native message id when the producer
+    wrote one. Rollouts normally carry only ``call_id``, and that value names
+    the *call*, which both the request record and its output record repeat:
+    using it bare would give two distinct messages one provider id. The
+    declared record side (``call`` or ``output``) qualifies it, so each record
+    keeps a distinct identity derived from source fields, never from position.
+    The MCP pair uses the same scheme (``::mcp-call`` / ``::mcp-output``).
+    """
+    native_id = payload.get("id")
+    if native_id:
+        return str(native_id)
+    call_id = payload.get("call_id")
+    if call_id:
+        return f"{call_id}::{side}"
+    # polylogue-slshy: no positional fallback; an empty id lets the
+    # content-anchor identity run instead.
+    return ""
+
+
 def _codex_tool_message(
     record: dict[str, object],
     *,
@@ -3746,8 +3877,7 @@ def _codex_tool_message(
         if exec_envelope is not None:
             blocks.extend(_code_mode_child_use_blocks(exec_envelope))
         return ParsedMessage(
-            # polylogue-slshy: see the sibling comment above; no positional fallback.
-            provider_message_id=str(payload.get("id") or tool_id or ""),
+            provider_message_id=_codex_tool_record_message_id(payload, side="call"),
             role=Role.ASSISTANT,
             text=tool_name,
             timestamp=timestamp,
@@ -3784,8 +3914,7 @@ def _codex_tool_message(
         if exec_envelope is not None:
             blocks.extend(_code_mode_child_result_blocks(exec_envelope))
         return ParsedMessage(
-            # polylogue-slshy: no positional fallback (see above).
-            provider_message_id=str(payload.get("id") or tool_id or ""),
+            provider_message_id=_codex_tool_record_message_id(payload, side="output"),
             role=Role.TOOL,
             text=output_text,
             timestamp=timestamp,
@@ -4160,21 +4289,6 @@ def looks_like(payload: Sequence[object]) -> bool:
     return False
 
 
-def is_supported_session_stream(payload: Sequence[object]) -> bool:
-    """Return whether every record forms a materializable Codex session stream.
-
-    This is stricter than :func:`looks_like`, which only needs one record to
-    identify the parser. Artifact classification uses this full-stream
-    contract for parser admission.
-    """
-    return _session_stream_supported(payload, for_schema=False)
-
-
-def is_schema_session_stream(payload: Sequence[object]) -> bool:
-    """Include known wire records whose normalized semantics remain unknown."""
-    return _session_stream_supported(payload, for_schema=True)
-
-
 def _is_bare_token_usage_record(item: object) -> bool:
     """An older top-level ``token_usage_record``: named counters beside ``type``.
 
@@ -4192,29 +4306,24 @@ def _is_bare_token_usage_record(item: object) -> bool:
     )
 
 
-def _session_stream_supported(payload: Sequence[object], *, for_schema: bool) -> bool:
+def is_supported_session_stream(payload: Sequence[object]) -> bool:
+    """Return whether every record forms a materializable Codex session stream.
+
+    This is stricter than :func:`looks_like`, which only needs one record to
+    identify the parser. Artifact classification uses this full-stream
+    contract for parser admission.
+    """
     has_session_header = False
     has_message = False
     has_envelope_record = False
     has_direct_record = False
-    supported_envelope_types = {
-        "session_meta",
-        "response_item",
-        "event_msg",
-        "compacted",
-        "turn_context",
-        "world_state",
-        "inter_agent_communication_metadata",
-        "token_usage_record",
-    }
-    schema_direct_types = {"reasoning", "function_call", "function_call_output"} if for_schema else set()
 
     for index, item in enumerate(payload, start=1):
-        schema_direct = isinstance(item, dict) and item.get("type") in schema_direct_types
-        bare_usage = _is_bare_token_usage_record(item)
-        if not schema_direct and not bare_usage and not _is_plausibly_codex_record(item):
-            return False
         record = _dict_record(item)
+        legacy_response = record is not None and _legacy_response_record(record) is not None
+        bare_usage = _is_bare_token_usage_record(item)
+        if not legacy_response and not bare_usage and not _is_plausibly_codex_record(item):
+            return False
         if record is None or _validate_record(record, index=index, context="session stream") is None:
             return False
         record_type = _record_type(record)
@@ -4222,12 +4331,10 @@ def _session_stream_supported(payload: Sequence[object], *, for_schema: bool) ->
             # Counters beside ``type`` carry no generation of their own, so
             # the record joins either stream shape without marking it.
             continue
-        if schema_direct:
-            if _is_envelope(record):
-                return False
+        if legacy_response:
             has_direct_record = True
             continue
-        if record_type in supported_envelope_types:
+        if record_type in _CODEX_SUPPORTED_OUTER_RECORD_TYPES:
             # ``session_meta`` is the shared header for both the envelope
             # stream and the legacy direct-message stream. It must not make a
             # valid header-plus-direct stream look like mixed generations.
@@ -4274,8 +4381,82 @@ _CODEX_SUPPORTED_OUTER_RECORD_TYPES = frozenset(
         "world_state",
         "inter_agent_communication_metadata",
         "token_usage_record",
+        "retained_context",
+        "realtime_item",
     }
 )
+
+
+def is_supported_outer_record(item: object) -> bool:
+    """Whether the parser materializes this outer record rather than dropping it.
+
+    Artifact classification applies the same predicate to every record of a
+    stream, so a rollout holding a record the parser cannot materialize is
+    refused as an unsupported shape instead of parsing with that record
+    silently missing. It reads only ``record_type``, ``type``, ``role``,
+    ``id`` and ``timestamp``, all of which candidacy projection retains.
+    """
+    record = _dict_record(item)
+    if record is None:
+        return False
+    return (
+        _is_state(record)
+        or _record_type(record) in _CODEX_SUPPORTED_OUTER_RECORD_TYPES
+        or _legacy_response_record(record) is not None
+        or _is_direct_message(record)
+        or (_record_id(record) is not None and _record_timestamp(record) is not None and not _record_type(record))
+    )
+
+
+def _codex_declared_payload_type(record: dict[str, object]) -> tuple[str, bool] | None:
+    """For an envelope with a declared payload vocabulary, its payload type and membership."""
+    record_type = _record_type(record)
+    if record_type == "retained_context":
+        vocabulary = _CODEX_RETAINED_CONTEXT_PAYLOAD_TYPES
+    elif record_type == "realtime_item":
+        vocabulary = _CODEX_REALTIME_PAYLOAD_TYPES
+    else:
+        return None
+    payload = _payload_record(record)
+    payload_type = _record_type(payload) if payload is not None else None
+    return (payload_type or "missing", payload_type in vocabulary)
+
+
+def _codex_retained_or_realtime_event(record: dict[str, object], *, index: int) -> ParsedSessionEvent | None:
+    """Lower a ``retained_context`` or ``realtime_item`` record with a declared payload type."""
+    declared = _codex_declared_payload_type(record)
+    payload = _payload_record(record)
+    if declared is None or not declared[1] or payload is None:
+        return None
+    event_type = declared[0]
+    event_payload: dict[str, object] = {"source_index": index}
+    if event_type == "verified_answer":
+        for key in ("call_id", "turn_id"):
+            if value := _string_value(payload.get(key)):
+                event_payload[key] = value
+        acceptance_order = _optional_int_field(payload, "acceptance_order")
+        if acceptance_order is not None:
+            event_payload["acceptance_order"] = acceptance_order
+        questions = payload.get("questions")
+        if isinstance(questions, list):
+            # Each entry is retained whole: the question and the user's
+            # answer are the content this record exists to carry.
+            event_payload["questions"] = [
+                {str(key): value for key, value in entry.items()} if isinstance(entry, dict) else entry
+                for entry in questions
+            ]
+        anchor = _string_value(payload.get("call_id"))
+    else:
+        for key in ("id", "realtime_session_id", "outcome"):
+            if value := _string_value(payload.get(key)):
+                event_payload[key] = value
+        anchor = None
+    return ParsedSessionEvent(
+        event_type=event_type,
+        timestamp=_iso_or_none(_record_timestamp(record) or _record_timestamp(payload)),
+        payload=event_payload,
+        source_message_provider_id=anchor,
+    )
 
 
 def _account_codex_outer_record(
@@ -4287,13 +4468,12 @@ def _account_codex_outer_record(
     """Settle one source record as the materializing pass consumes it."""
     ledger.expect(AdmissionUnit.OUTER_RECORD, 1)
     record_type = _record_type(record) if record is not None else None
-    supported = record is not None and (
-        _is_state(record)
-        or record_type in _CODEX_SUPPORTED_OUTER_RECORD_TYPES
-        or _is_direct_message(record)
-        or _session_meta_record(record) is not None
-    )
-    if supported:
+    payload_type = _codex_declared_payload_type(record) if record is not None else None
+    if payload_type is not None and not payload_type[1]:
+        # The outer type is declared but this payload type is not, so the
+        # record reaches the session only as a typed unknown-record event.
+        ledger.unknown(AdmissionUnit.OUTER_RECORD, index, f"{record_type}:{payload_type[0]}")
+    elif is_supported_outer_record(record):
         ledger.materialized(AdmissionUnit.OUTER_RECORD, index, record_type or "direct")
     else:
         ledger.unknown(AdmissionUnit.OUTER_RECORD, index, record_type or "unsupported")
@@ -4663,8 +4843,9 @@ def _parse_records(
             )
             continue
 
-        if _record_type(record) in {"response_item", "event_msg"}:
-            inner = _payload_record(record)
+        legacy_response = _legacy_response_record(record)
+        if legacy_response is not None or _record_type(record) in {"response_item", "event_msg"}:
+            inner = legacy_response if legacy_response is not None else _payload_record(record)
             if inner is not None and not _is_message(inner):
                 event_payload = _compact_response_payload(
                     inner,
@@ -4675,12 +4856,24 @@ def _parse_records(
                 event_type = _codex_response_item_event_type(_record_type(inner), _record_type(record))
                 if event_type == _CODEX_UNCLASSIFIED_RESPONSE_ITEM_TYPE:
                     event_payload["wire_type"] = _record_type(inner) or _record_type(record)
+                timestamp_fallback = _record_timestamp(record)
+                tool_message = _codex_tool_message(
+                    inner,
+                    index=idx,
+                    position=message_position,
+                    timestamp_fallback=timestamp_fallback,
+                    exec_envelope=code_mode_envelopes.get(idx),
+                )
+                # The event names the message parsed from the same record, so
+                # a call and its output never share one event owner.
                 response_event = ParsedSessionEvent(
                     event_type=event_type,
                     timestamp=_iso_or_none(_record_timestamp(inner) or _record_timestamp(record)),
                     payload=event_payload,
-                    source_message_provider_id=_string_value(
-                        inner.get("client_id") or inner.get("id") or inner.get("call_id")
+                    source_message_provider_id=(
+                        tool_message.provider_message_id or None
+                        if tool_message is not None
+                        else _string_value(inner.get("client_id") or inner.get("id") or inner.get("call_id"))
                     ),
                 )
                 session_events.append(response_event)
@@ -4705,14 +4898,6 @@ def _parse_records(
                     last_agent_message = inner.get("last_agent_message")
                     if isinstance(last_agent_message, str) and last_agent_message:
                         conservation.add_task_completion(last_agent_message, len(session_events) - 1)
-                timestamp_fallback = _record_timestamp(record)
-                tool_message = _codex_tool_message(
-                    inner,
-                    index=idx,
-                    position=message_position,
-                    timestamp_fallback=timestamp_fallback,
-                    exec_envelope=code_mode_envelopes.get(idx),
-                )
                 if tool_message is not None:
                     append_message(tool_message)
                     message_position += 1
@@ -4793,6 +4978,15 @@ def _parse_records(
                 )
             )
             continue
+
+        if _record_type(record) in {"retained_context", "realtime_item"}:
+            retained_event = _codex_retained_or_realtime_event(record, index=idx)
+            if retained_event is not None:
+                session_events.append(retained_event)
+                continue
+            # A payload type outside the declared vocabulary falls through to
+            # the typed unknown-record event below; the admission ledger
+            # already recorded it as an unrecognized type.
 
         # World-state snapshots (full or delta) report ambient runtime
         # context -- most notably the live subagent roster
@@ -5092,13 +5286,6 @@ def _parse_records(
         commit_val = session_git.get("commit_hash")
         if isinstance(commit_val, str) and commit_val.strip():
             git_commit_hash_typed = commit_val.strip()
-    active_leaf_message_provider_id = (
-        messages[-1].provider_message_id if messages and messages[-1].provider_message_id else None
-    )
-    if message_sink is None:
-        messages = mark_last_occurrence_as_active_leaf(cast(list[ParsedMessage], messages))
-    elif messages:
-        messages[-1] = messages[-1].model_copy(update={"is_active_leaf": True})
     unit_accounting = admission.close()
 
     session = ParsedSession(
@@ -5108,7 +5295,7 @@ def _parse_records(
         created_at=session_timestamp,
         updated_at=updated_at_pair[1] if updated_at_pair is not None else None,
         messages=cast(list[ParsedMessage], messages) if message_sink is None else [],
-        active_leaf_message_provider_id=active_leaf_message_provider_id,
+        active_leaf_message_provider_id=None,
         session_events=cast(list[ParsedSessionEvent], session_events) if event_sink is None else [],
         parent_session_provider_id=parent_id,
         branch_type=branch_type,
@@ -5124,7 +5311,16 @@ def _parse_records(
         updates["messages"] = messages
     if event_sink is not None:
         updates["session_events"] = session_events
-    return session.model_copy(update=updates) if updates else session
+    if updates:
+        session = session.model_copy(update=updates)
+    return finalize_codex_session(
+        session,
+        messages=messages,
+        session_events=session_events,
+        updated_at=updated_at_pair[1] if updated_at_pair is not None else None,
+        unit_accounting=unit_accounting,
+        mark_active_leaf=True,
+    )
 
 
 @parser_admission("codex", scan=codex_unknown_wire_type)
@@ -5140,3 +5336,17 @@ def parse_stream(
     event_sink: MutableSequence[ParsedSessionEvent] | None = None,
 ) -> ParsedSession:
     return _parse_records(records, fallback_id, message_sink=message_sink, event_sink=event_sink)
+
+
+def detection_projection() -> DetectorProjection:
+    """Preserve typed record admission without retaining payload or block bodies."""
+    scalar = DetectorProjection()
+    content = DetectorProjection(item=scalar, array_fold="all", array_predicate=lambda item: isinstance(item, dict))
+    return DetectorProjection(
+        fields={
+            **dict.fromkeys(("type", "record_type", "role", "id", "instructions", "payload", "timestamp"), scalar),
+            "content": content,
+            "git": DetectorProjection(fields=dict.fromkeys(("commit_hash", "branch", "repository_url"), scalar)),
+            "message": None,
+        }
+    )

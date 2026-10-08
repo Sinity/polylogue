@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from polylogue.core.errors import DatabaseError
 from polylogue.pipeline.services.parsing_models import (
@@ -17,15 +18,30 @@ from polylogue.pipeline.services.parsing_workflow import ingest_sources, parse_f
 if TYPE_CHECKING:
     from polylogue.config import Config, Source
     from polylogue.core.protocols import ProgressCallback
+    from polylogue.core.raw_failure_evidence import CohortMembershipRefusalError, RetainedRawDecodeRefusalError
     from polylogue.pipeline.services.ingest_execution import IngestExecution
+    from polylogue.sources.revision_backfill import RetainedReplayOutcome
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+
+class IngestRetainedRunner(Protocol):
+    """The retained owner's publication, settling each typed refusal through a callback."""
+
+    def __call__(
+        self,
+        raw_ids: Sequence[str],
+        *,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
+        on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None = None,
+    ) -> Awaitable[RetainedReplayOutcome]: ...
 
 
 class ParsingService:
     """Service for parsing sessions from sources asynchronously."""
 
-    DEFAULT_RAW_BATCH_SIZE = 50
+    #: Raw records per parse page; a paging granularity, not an admission limit.
+    RAW_BATCH_SIZE = 50
     DEFAULT_RAW_BATCH_BLOB_LIMIT_BYTES = 128 * 1024 * 1024
 
     def __init__(
@@ -34,22 +50,14 @@ class ParsingService:
         archive_root: Path,
         config: Config,
         *,
-        raw_batch_size: int = DEFAULT_RAW_BATCH_SIZE,
-        ingest_workers: int | None = None,
-        measure_ingest_result_size: bool = False,
         execution: IngestExecution | None = None,
+        retained_runner: IngestRetainedRunner | None = None,
     ) -> None:
-        if raw_batch_size <= 0:
-            raise ValueError("raw_batch_size must be a positive integer")
-        if ingest_workers is not None and ingest_workers <= 0:
-            raise ValueError("ingest_workers must be a positive integer")
         self.repository = repository
         self.archive_root = archive_root
         self.config = config
-        self._raw_batch_size = raw_batch_size
-        self._ingest_workers = ingest_workers
-        self._measure_ingest_result_size = measure_ingest_result_size
         self.execution = execution
+        self.retained_runner = retained_runner
 
     def _require_backend(self) -> SQLiteBackend:
         """Return the repository backend or fail explicitly."""
@@ -82,7 +90,6 @@ class ParsingService:
         progress_callback: ProgressCallback | None = None,
         parse_records: bool = True,
         skip_acquire: bool = False,
-        force_write: bool = False,
         max_pass_seconds: float | None = None,
     ) -> IngestResult:
         return await ingest_sources(
@@ -93,25 +100,12 @@ class ParsingService:
             progress_callback=progress_callback,
             parse_records=parse_records,
             skip_acquire=skip_acquire,
-            force_write=force_write,
             max_pass_seconds=max_pass_seconds,
         )
 
     @property
-    def raw_batch_size(self) -> int:
-        return self._raw_batch_size
-
-    @property
     def raw_batch_blob_limit_bytes(self) -> int:
         return self.DEFAULT_RAW_BATCH_BLOB_LIMIT_BYTES
-
-    @property
-    def ingest_workers(self) -> int | None:
-        return self._ingest_workers
-
-    @property
-    def measure_ingest_result_size(self) -> bool:
-        return self._measure_ingest_result_size
 
     async def parse_from_raw(
         self,
@@ -119,7 +113,6 @@ class ParsingService:
         raw_ids: list[str] | None = None,
         provider: str | None = None,
         progress_callback: ProgressCallback | None = None,
-        force_write: bool = False,
         max_pass_seconds: float | None = None,
     ) -> ParseResult:
         return await parse_from_raw(
@@ -127,7 +120,6 @@ class ParsingService:
             raw_ids=raw_ids,
             provider=provider,
             progress_callback=progress_callback,
-            force_write=force_write,
             max_pass_seconds=max_pass_seconds,
         )
 

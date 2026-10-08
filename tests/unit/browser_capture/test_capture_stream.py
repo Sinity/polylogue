@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import errno
@@ -15,6 +16,44 @@ import pytest
 
 from polylogue.browser_capture import capture_decode, capture_stream
 from polylogue.core.json import dumps_bytes
+
+
+def test_retained_capture_staging_borrows_inode_and_preserves_original_custody(tmp_path: Path) -> None:
+    raw = b"retained canonical capture"
+    artifact = tmp_path / "retained.native"
+    artifact.write_bytes(raw)
+    with artifact.open("rb") as retained:
+        staged = capture_stream.stage_retained_capture(
+            retained, artifact, size_bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(), spool_root=tmp_path
+        )
+    try:
+        assert staged.path.stat().st_ino == artifact.stat().st_ino
+        assert staged.path.read_bytes() == raw
+        # The stage owns a physical lock after the borrowing context closes.
+        assert capture_stream.reap_stale_staging(tmp_path) == 0
+    finally:
+        staged.discard()
+    assert artifact.read_bytes() == raw
+    assert not staged.path.exists()
+
+
+@pytest.mark.parametrize("mismatch", ["digest", "size"])
+def test_retained_capture_staging_refuses_changed_descriptor_without_retiring_original(
+    tmp_path: Path, mismatch: str
+) -> None:
+    raw = b"retained canonical capture"
+    artifact = tmp_path / "retained.native"
+    artifact.write_bytes(raw)
+    with artifact.open("rb") as retained, pytest.raises(capture_stream.CaptureEnvelopeError):
+        capture_stream.stage_retained_capture(
+            retained,
+            artifact,
+            size_bytes=len(raw) + (mismatch == "size"),
+            sha256="0" * 64 if mismatch == "digest" else hashlib.sha256(raw).hexdigest(),
+            spool_root=tmp_path,
+        )
+    assert artifact.read_bytes() == raw
+    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
 
 
 def test_numbers_parse_as_the_stdlib_decoder_reads_them() -> None:
@@ -35,11 +74,21 @@ def test_raw_payload_shape_keeps_only_the_scalars_detection_reads() -> None:
     Anti-vacuity: retaining every root scalar keeps the ``padding`` string in
     the shape beside its digest.
     """
-    payload = {"padding": "x" * 4096, "polylogue_bridge_projection": "compact", "mapping": {"a": 1}, "items": [1]}
+    payload = {"padding": "x" * 4096, "mapping": {"a": 1}, "items": [1]}
     events = capture_decode._json_events(io.BytesIO(json.dumps(payload).encode()))
     event, value = next(events)
     fold = capture_stream._read_raw_payload(events, event, value)
-    assert fold.shape == {"padding": None, "polylogue_bridge_projection": "compact", "mapping": {}, "items": []}
+    assert fold.shape == {"padding": None, "mapping": {}, "items": []}
+
+
+def test_streamed_shape_retains_only_exact_retired_projection_provenance() -> None:
+    """Stream admission must see the same format refusal as ordinary parsing."""
+    for marker, expected in [("chatgpt-native-compact-v1", "chatgpt-native-compact-v1"), ("opaque", None)]:
+        payload = {"polylogue_bridge_projection": marker, "mapping": {}}
+        events = capture_decode._json_events(io.BytesIO(json.dumps(payload).encode()))
+        event, value = next(events)
+        fold = capture_stream._read_raw_payload(events, event, value)
+        assert fold.shape == {"polylogue_bridge_projection": expected, "mapping": {}}
 
 
 def test_a_string_digest_is_its_whole_encoding_hashed_piecewise(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,6 +164,7 @@ def _capture_with_carriers(carriers: dict[str, bytes]) -> dict[str, object]:
             "attachments": [
                 {
                     "provider_attachment_id": attachment_id,
+                    "message_provider_id": "u1",
                     "name": f"{attachment_id}.bin",
                     "inline_base64": "data:application/octet-stream;base64,"
                     + base64.b64encode(carriers[attachment_id]).decode(),
@@ -125,75 +175,124 @@ def _capture_with_carriers(carriers: dict[str, bytes]) -> dict[str, object]:
     }
 
 
-def test_ingest_worker_decodes_a_capture_as_a_stream_and_spills_its_carriers(
+@pytest.mark.asyncio
+async def test_retained_capture_decodes_as_a_stream_and_publishes_its_carriers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The worker never reads a capture whole, and its carriers land in the blob store.
+    """The retained owner streams the raw envelope and publishes every carrier.
 
-    Anti-vacuity: the ordinary decode calls ``read_bytes`` on the raw blob
-    (refused here), and a parse that kept the carriers inline yields
-    ``inline_bytes`` instead of a blob reference. Identity parity: each
-    attachment's identity payload equals the one a whole-document parse
-    derives, so the streamed route cannot mint different attachment ids.
-    Deduplicating against an aged copy renews its age: plain publication
-    leaves it GC-eligible until the writer reserves it.
+    Anti-vacuity: ordinary whole-document decoding is refused for the retained
+    raw blob, each attachment's storage identity matches the provider parser,
+    its acquired bytes match its content hash, and a stale duplicate is kept
+    alive by its durable reference through the ordinary GC route.
     """
     from polylogue.core.enums import Provider
-    from polylogue.pipeline.ids import _attachment_hash_payload
-    from polylogue.pipeline.services.ingest_worker import ingest_record
     from polylogue.sources.parsers import browser_capture as browser_capture_parser
-    from polylogue.storage.blob_store import BlobStore, reset_blob_store
-    from polylogue.storage.runtime import RawSessionRecord
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers import write as archive_write
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
 
     carriers = {"att-turn": bytes(range(256)) * 9, "att-session": b"session attachment bytes"}
     raw = json.dumps(_capture_with_carriers(carriers)).encode()
-    blob_root = tmp_path / "blobs"
-    store = BlobStore(blob_root)
-    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: blob_root)
-    reset_blob_store()
-    raw_id, blob_size = store.write_from_bytes(raw)
-    raw_blob = store.blob_path(raw_id)
+    archive_root = tmp_path / "archive"
+    store = BlobStore(archive_root / "blob")
     aged_hash, _ = store.write_from_bytes(carriers["att-session"])
     os.utime(store.blob_path(aged_hash), (0, 0))
+
+    async def acquire() -> str:
+        def write_raw() -> str:
+            from tests.infra.archive_templates import bootstrap_archive_root
+
+            bootstrap_archive_root(archive_root)
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                raw_id = archive.write_raw_payload(
+                    provider=Provider.CHATGPT,
+                    payload=raw,
+                    source_path="spool/chatgpt/conv-spill-0123456789ab.json",
+                    canonical_source_path="spool/chatgpt/conv-spill-0123456789ab.json",
+                    acquired_at_ms=1,
+                )
+                archive.commit()
+                return raw_id
+
+        return await run_archive_fixture_write(archive_root, write_raw)
+
+    raw_id = await acquire()
+    raw_blob = store.blob_path(hashlib.sha256(raw).hexdigest())
     original_read_bytes = Path.read_bytes
 
     def refuse_whole_read(self: Path) -> bytes:
         if self == raw_blob:
-            raise AssertionError("the capture was read whole")
+            raise AssertionError("the retained capture blob was read whole")
         return original_read_bytes(self)
 
     monkeypatch.setattr(Path, "read_bytes", refuse_whole_read)
-    record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name="browser-capture",
-        source_path=str(tmp_path / "spool" / "chatgpt" / "conv-spill-0123456789ab.json"),
-        payload_provider=Provider.CHATGPT,
-        source_index=None,
-        blob_size=blob_size,
-        acquired_at="2026-01-01T00:00:00+00:00",
-        file_mtime=None,
-    )
-    try:
-        result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_root))
-    finally:
-        reset_blob_store()
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        receipts = (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
+    session_ids = {session_id for receipt in receipts for session_id in receipt.written_session_ids}
+    assert len(session_ids) == 1
+    (session_id,) = tuple(session_ids)
 
-    assert result.error is None, result.error
-    (payload,) = result.sessions
-    attachments = {a.provider_attachment_id: a for a in payload.parsed_session.attachments}
-    assert set(attachments) == set(carriers)
     expected = {
-        a.provider_attachment_id: a for a in browser_capture_parser.parse(json.loads(raw), "fallback").attachments
+        attachment.provider_attachment_id: attachment
+        for attachment in browser_capture_parser.parse(json.loads(raw), "fallback").attachments
     }
-    for attachment_id, content in carriers.items():
-        attachment = attachments[attachment_id]
-        assert attachment.inline_bytes is None
-        assert attachment.precomputed_blob == (hashlib.sha256(content).hexdigest(), len(content))
-        assert original_read_bytes(store.blob_path(attachment.precomputed_blob[0])) == content
-        assert _attachment_hash_payload(attachment) == _attachment_hash_payload(expected[attachment_id])
-        assert attachment.size_bytes == expected[attachment_id].size_bytes
-        assert attachment.upload_origin == expected[attachment_id].upload_origin
-    assert store.blob_path(aged_hash).stat().st_mtime > 0
+    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+        index = archive.index_connection
+        assert index is not None
+        rows = index.execute(
+            """
+            SELECT ids.native_id, refs.upload_origin, attachments.attachment_id,
+                   attachments.blob_hash, attachments.byte_count, attachments.acquisition_status,
+                   attachments.display_name, attachments.media_type
+            FROM attachment_native_ids AS ids
+            JOIN attachment_refs AS refs USING (ref_id)
+            JOIN attachments USING (attachment_id)
+            WHERE refs.session_id = ? AND ids.id_kind = 'attachment'
+            """,
+            (session_id,),
+        ).fetchall()
+        assert {str(row[0]) for row in rows} == set(carriers)
+        for row in rows:
+            attachment_id = str(row[0])
+            attachment = expected[attachment_id]
+            content = carriers[attachment_id]
+            assert attachment.inline_bytes == content
+            assert str(row[2]) == archive_write._attachment_id(session_id, attachment)
+            assert row[3] == bytes.fromhex(hashlib.sha256(content).hexdigest())
+            assert row[4] == len(content)
+            assert row[5] == "acquired"
+            assert row[1] == attachment.upload_origin
+            assert row[6] == attachment.name
+            assert row[7] == attachment.mime_type
+            with store.open(hashlib.sha256(content).hexdigest()) as blob:
+                assert blob.read() == content
+        source = archive.source_connection
+        assert source is not None
+        aged_digest = bytes.fromhex(aged_hash)
+        assert (
+            source.execute(
+                "SELECT COUNT(*) FROM blob_refs WHERE blob_hash = ? AND ref_id = ? AND ref_type = 'attachment'",
+                (aged_digest, raw_id),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            source.execute(
+                "SELECT COUNT(*) FROM blob_publication_reservations WHERE blob_hash = ?",
+                (aged_digest,),
+            ).fetchone()[0]
+            == 0
+        )
+
+    from polylogue.storage.blob_gc import run_blob_gc_report
+
+    gc = await asyncio.to_thread(run_blob_gc_report, archive_root / "source.db", archive_root / "blob", max_batch=10)
+    assert gc.skipped_referenced >= 1
+    assert gc.deleted_count == 0
+    assert store.exists(aged_hash)
 
 
 def test_the_admission_summary_retains_no_turn() -> None:
@@ -209,6 +308,21 @@ def test_the_admission_summary_retains_no_turn() -> None:
     assert summary.turn_count == 2
     assert summary.head.session.turns == []
     assert summary.turn_identities == ()
+
+
+def test_retired_compact_provenance_is_refused_by_stream_admission() -> None:
+    """Dropping the root marker would wrongly grant native admission."""
+    capture = _capture_with_carriers({"att-turn": b"carrier"})
+    capture["raw_provider_payload"] = {
+        "polylogue_bridge_projection": "chatgpt-native-compact-v1",
+        "mapping": {},
+    }
+    retained = json.dumps(capture).encode()
+    handle = io.BytesIO(retained)
+    with pytest.raises(capture_stream.CaptureEnvelopeError) as refused:
+        capture_stream.summarize_capture_stream(handle)
+    assert refused.value.reason == "invalid_payload"
+    assert handle.getvalue() == retained
 
 
 def test_a_session_without_turns_is_still_refused() -> None:

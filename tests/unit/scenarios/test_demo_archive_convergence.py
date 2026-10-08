@@ -17,6 +17,7 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, AssertionStatus, list_assertions_for_target
+from tests.infra.archive_templates import run_off_event_loop
 
 EXPECTED_DEMO_SESSIONS = (
     (
@@ -34,10 +35,10 @@ EXPECTED_DEMO_SESSIONS = (
         "chatgpt-export",
         "dc13ca54-0bba-4298-a38f-09068c2ef2c5",
         "Debugging flaky async pipeline tests",
-        # The generated provider endpoints are reversed; archive timestamps
-        # retain their ordered closed interval (min create/update, max).
-        1738673720231,
+        # The generator keeps one coherent export shape around the route's
+        # container (4398f43450), which moved this conversation's endpoints.
         1746826781690,
+        1748146387455,
         3,
     ),
     (
@@ -67,8 +68,8 @@ EXPECTED_DEMO_SESSIONS = (
 EXPECTED_DEMO_SOURCE_RELATIVE_PATHS = (
     "gemini/demo-00.json",
     "chatgpt/demo-00.json",
-    "claude-code/demo-00.jsonl",
-    "codex/demo-00.jsonl",
+    "claude-code/-synthetic-project/demo-00.jsonl",
+    "codex/2026/01/01/rollout-demo-00.jsonl",
 )
 
 
@@ -170,7 +171,7 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
     assert stored_values
     assert all(fragment not in value for value in stored_values for fragment in forbidden_fragments)
 
-    overlay = seed_demo_user_overlays(archive_root)
+    overlay = run_off_event_loop(lambda: seed_demo_user_overlays(archive_root))
     assert set(overlay.session_ids) == {row[0] for row in EXPECTED_DEMO_SESSIONS}
     assert overlay.tag == "pytest-triage"
     assert overlay.note_id == "demo-note:pytest-triage"
@@ -202,7 +203,7 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
     assert all("/tmp/" not in str(value) for row in _user_overlay_rows(archive_root) for value in row if value)
 
     overlay_rows_before = _user_overlay_rows(archive_root)
-    overlay_again = seed_demo_user_overlays(archive_root)
+    overlay_again = run_off_event_loop(lambda: seed_demo_user_overlays(archive_root))
     assert overlay_again == overlay
     assert _user_overlay_rows(archive_root) == overlay_rows_before
 

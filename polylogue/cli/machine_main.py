@@ -124,6 +124,15 @@ def run_machine_entry(
             # with an empty message.
             click.echo("Aborted.", err=True)
             raise SystemExit(1) from exc
+        except OperationUnavailableError as exc:
+            from polylogue.cli.render.outcome import FAILED_READ_EXIT_CODE
+
+            # The kernel's daemon-absent refusal is a RuntimeError, so the
+            # generic branch below rendered it as ``unexpected error:
+            # OperationUnavailableError``; plain output names the remedy and
+            # exits like the machine envelope does.
+            click.ClickException(str(exc)).show()
+            raise SystemExit(FAILED_READ_EXIT_CODE) from exc
         except PolylogueError as exc:
             click.ClickException(str(exc)).show()
             raise SystemExit(1) from exc

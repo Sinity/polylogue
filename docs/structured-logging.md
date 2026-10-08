@@ -61,18 +61,14 @@ one unit of work followable across the daemon's concurrency:
   lease for free.
 - **New `threading.Thread`** — inheritance depends on the interpreter's
   `thread_inherit_context` setting. Explicitly wrap a new target when its
-  correlation must survive both GIL-enabled and free-threaded builds.
-- **Pooled threads** — a reused worker does not acquire the submitter's current
-  context automatically. `propagate(fn)` copies the full context, including
-  any writer authority, so it belongs only at an intentional full-context
-  handoff. `carry_context(fn)` carries only the correlation fields, replaces
-  whatever stale context a reused worker holds, and pickles, so parse-pool
-  submits use it for both thread and process executors.
-- **Process-pool workers** — `process_pool_executor` initializes each worker
-  with `configure_events()` from the inherited environment and the parent's
-  run context, and drains the worker's queue through a multiprocessing
-  finalizer (workers exit through `os._exit`, which skips `atexit`). A worker's
-  events therefore reach the same `POLYLOGUE_LOG_FILE` or stderr as the parent.
+  correlation must survive worker dispatch on the supported free-threaded runtime.
+- **Shared compute workers** — the compute adapter captures the submitter's
+  context once for the pure unit and its creator-thread cleanup. Nested pure
+  work retains that context and its parent's reservation. `propagate(fn)`
+  carries full context, including writer authority, only at intentional
+  handoffs. `carry_context(fn)` carries correlation fields without granting
+  writer authority. Thread reuse does not create a new logging configuration
+  or event sink.
 
 `span` also issues `trace_id` / `span_id` / `parent_span_id`, so nested work
 forms a tree within one `run_id`.

@@ -1,12 +1,13 @@
 """Phase-level evidence collection for watcher append/cohort investigations.
 
-The live incident was in ``_ingest_append_plans_archive`` while
-``classify_raw_revision_cohort_for_live_watch`` reread historical full
-snapshots.  This
-helper distinguishes the durable metadata replay-plan hot path from that
-conservative classifier fallback.  It deliberately does not serialize parsed
-object graphs: the observer records kernel-visible process/cgroup/I/O state and
-deterministic route, payload, and batch counts instead.
+The live incident was in ``ingest_append_plans`` while a cohort classifier
+reread historical full snapshots.  The append route now decides an append's
+authority from durable metadata alone (``raw_append_revision_parent``); this
+helper counts that decision, the replay plan, and every blob read, attributing
+a read made during the authority decision to historical full snapshots.  It
+deliberately does not serialize parsed object graphs: the observer records
+kernel-visible process/cgroup/I/O state and deterministic route, payload, and
+batch counts instead.
 """
 
 from __future__ import annotations
@@ -218,58 +219,54 @@ def _format_bytes(value: int | None) -> str:
 
 @contextmanager
 def append_cohort_memory_counter() -> Iterator[AppendCohortMemoryCounter]:
-    """Instrument append ingestion, replay metadata, and classifier fallback."""
+    """Instrument append ingestion, its authority decision, and replay metadata."""
     from polylogue.sources.live import append_ingest
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     counter = AppendCohortMemoryCounter()
-    real_append_ingest = append_ingest._ingest_append_plans_archive
-    real_classify = ArchiveStore.classify_raw_revision_cohort_for_live_watch
+    real_append_ingest = append_ingest.ingest_append_plans
+    real_parent = ArchiveStore.raw_append_revision_parent
     real_replay_plan = ArchiveStore.raw_revision_replay_plan
     real_read_all = ArchiveBlobPublisher.read_all
-    in_cohort_classification = False
+    in_authority_decision = False
 
-    def counted_append_ingest(owner: Any, plans: list[Any], archive_root: Path) -> Any:
+    def counted_append_ingest(owner: Any, plans: list[Any], **kwargs: Any) -> Any:
         counter.batch_count += 1
         counter.plan_count += len(plans)
         counter.record("watcher_append_payload", sum(len(plan.payload) for plan in plans))
         counter.snapshot("watcher_append:before")
-        result = real_append_ingest(owner, plans, archive_root)
+        result = real_append_ingest(owner, plans, **kwargs)
         counter.snapshot("watcher_append:after")
         return result
 
-    def counted_classify(archive: ArchiveStore, logical_source_key: str) -> Any:
-        nonlocal in_cohort_classification
-        counter.record("classify_raw_revision_cohort")
-        counter.snapshot("classify_raw_revision_cohort:before")
-        in_cohort_classification = True
+    def counted_parent(
+        archive: ArchiveStore, logical_source_key: str, start_offset: int, predecessor_revision: str | None
+    ) -> Any:
+        nonlocal in_authority_decision
+        counter.record("raw_append_revision_parent")
+        in_authority_decision = True
         try:
-            result = real_classify(archive, logical_source_key)
+            return real_parent(archive, logical_source_key, start_offset, predecessor_revision)
         finally:
-            in_cohort_classification = False
-        counter.record("accepted_raw_ids", len(result.accepted_raw_ids))
-        counter.snapshot("classify_raw_revision_cohort:after")
-        return result
+            in_authority_decision = False
 
     def counted_replay_plan(archive: ArchiveStore, logical_source_key: str) -> Any:
         counter.record("raw_revision_replay_plan")
-        counter.snapshot("raw_revision_replay_plan:before")
         result = real_replay_plan(archive, logical_source_key)
         counter.record("accepted_raw_ids", len(result.accepted_raw_ids))
-        counter.snapshot("raw_revision_replay_plan:after")
         return result
 
     def counted_read_all(publisher: ArchiveBlobPublisher, hash_hex: str) -> bytes:
         payload = real_read_all(publisher, hash_hex)
         counter.record(
-            "historical_full_blob.read_all" if in_cohort_classification else "replay_raw_blob.read_all", len(payload)
+            "historical_full_blob.read_all" if in_authority_decision else "replay_raw_blob.read_all", len(payload)
         )
         return payload
 
     with (
-        patch.object(append_ingest, "_ingest_append_plans_archive", counted_append_ingest),
-        patch.object(ArchiveStore, "classify_raw_revision_cohort_for_live_watch", counted_classify),
+        patch.object(append_ingest, "ingest_append_plans", counted_append_ingest),
+        patch.object(ArchiveStore, "raw_append_revision_parent", counted_parent),
         patch.object(ArchiveStore, "raw_revision_replay_plan", counted_replay_plan),
         patch.object(ArchiveBlobPublisher, "read_all", counted_read_all),
     ):

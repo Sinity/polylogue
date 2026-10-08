@@ -30,9 +30,9 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.write import (
     count_dangling_prefix_branch_points,
     read_archive_session_envelope,
-    write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _msg(provider_message_id: str, role: Role, text: str, position: int) -> ParsedMessage:
@@ -98,9 +98,9 @@ def _archive_with_three_generations(archive_root: Path) -> str:
     initialize_active_archive_root(archive_root)
     grandparent, parent, child = _three_generation_sessions()
     with open_connection(archive_root / "index.db") as conn:
-        write_parsed_session_to_archive(conn, parent)
-        child_id = write_parsed_session_to_archive(conn, child)
-        write_parsed_session_to_archive(conn, grandparent)
+        write_fixture_index_session(conn, parent)
+        child_id = write_fixture_index_session(conn, child)
+        write_fixture_index_session(conn, grandparent)
         conn.commit()
     return child_id
 

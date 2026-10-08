@@ -27,6 +27,7 @@ from polylogue.storage.sqlite.connection_profile import (
     WRITE_CONNECTION_PROFILE,
     write_connection_pragma_statements,
 )
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 _SYNCHRONOUS_LEVELS = {"OFF": 0, "NORMAL": 1, "FULL": 2, "EXTRA": 3}
 
@@ -35,7 +36,9 @@ _SYNCHRONOUS_LEVELS = {"OFF": 0, "NORMAL": 1, "FULL": 2, "EXTRA": 3}
 def cold_build(tmp_path: Path) -> Iterator[ColdBuildGeneration]:
     assert active_index_generation_is_empty(tmp_path) is True
     generation = ColdBuildGeneration.begin(
-        tmp_path, reason="durability policy", sources=(WatchSource("fixture", tmp_path / "absent-source"),)
+        tmp_path,
+        reason="durability policy",
+        observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", tmp_path / "absent-source"),)),
     )
     register_cold_build_generation(generation)
     try:
@@ -55,7 +58,9 @@ def _expected_synchronous() -> int:
 
 def _ops_write(archive_root: Path, name: str) -> None:
     """One ordinary one-shot ``ops.db`` write through the production route."""
-    CursorStore(archive_root / "index.db").set(archive_root / name, 1)
+    CursorStore(archive_root / "index.db").set(
+        archive_root / name, 1, authority=fixture_cursor_authority(archive_root / name)
+    )
 
 
 def _ops_wal(archive_root: Path) -> Path:

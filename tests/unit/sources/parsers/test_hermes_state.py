@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import closing
+import tempfile
+from contextlib import AbstractContextManager, closing
 from pathlib import Path
+from types import GeneratorType
 
 import pytest
 
@@ -23,9 +25,11 @@ from polylogue.core.enums import BlockType, TitleSource
 from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage
 from polylogue.sources.parsers.hermes_state import parse_state_db, parse_state_db_payload
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import search_archive_blocks, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import search_archive_blocks
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.logical_source_probe import open_reconstruction_handles, record_logical_source_connections
 
 
@@ -85,6 +89,170 @@ def _tool_result_blocks(path: Path, *, tool_contents: list[str]) -> list[ParsedC
     return [
         block for message in sessions[0].messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
     ]
+
+
+def test_state_db_iterator_uses_caller_sinks_and_cleans_scratch_on_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from itertools import zip_longest
+
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+
+    path = tmp_path / "state.db"
+    _write_state_db(path, tool_contents=[json.dumps({"output": "ok", "exit_code": 0})])
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    store = SqliteMessageStore(tmp_path / "prepared.sqlite3")
+    try:
+        with closing(sqlite3.connect(path)) as conn:
+            iterator = hermes_state.iter_state_db_sessions(
+                conn,
+                path,
+                message_sink_factory=store.new_sink,
+                event_sink_factory=store.new_event_sink,
+            )
+            streamed = next(iterator)
+            assert isinstance(streamed.messages, SqliteMessageSink)
+            assert len(streamed.messages) == 2
+            assert streamed.session_events
+            scratch = list(tmp_path.glob("polylogue-hermes-stream-*"))
+            assert len(scratch) == 1
+
+            # The caller owns the source connection and the retained sink;
+            # closing a cancelled producer only retires its private grouping DB.
+            assert isinstance(iterator, GeneratorType)
+            iterator.close()
+            assert not scratch[0].exists()
+            assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 1
+
+        materialized = parse_state_db(path)
+        assert session_content_hash(streamed) == session_content_hash(materialized[0])
+        sentinel = object()
+        for field_name in type(streamed).model_fields:
+            if field_name in {"messages", "session_events"}:
+                continue
+            # Includes excluded hash metadata such as provenance,
+            # accounting, enrichment and parser identity carriers.
+            assert getattr(streamed, field_name) == getattr(materialized[0], field_name)
+        # Compare the disk sink and public list incrementally. This covers full
+        # message/event fields while keeping parity bounded for large sessions.
+        assert isinstance(streamed.messages, SqliteMessageSink)
+        for actual_item, expected_item in zip_longest(streamed.messages, materialized[0].messages, fillvalue=sentinel):
+            assert actual_item is not sentinel and expected_item is not sentinel
+            assert actual_item == expected_item
+        for actual_item, expected_item in zip_longest(
+            streamed.session_events, materialized[0].session_events, fillvalue=sentinel
+        ):
+            assert actual_item is not sentinel and expected_item is not sentinel
+            assert actual_item == expected_item
+    finally:
+        store.close()
+
+
+def test_state_db_iterator_cleans_scratch_when_cancelled_before_first_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state.db"
+    _write_state_db(path, tool_contents=[])
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    def cancel() -> None:
+        raise RuntimeError("cancel Hermes parse")
+
+    with closing(sqlite3.connect(path)) as conn:
+        iterator = hermes_state.iter_state_db_sessions(
+            conn,
+            path,
+            message_sink_factory=list,
+            event_sink_factory=list,
+            check_cancelled=cancel,
+        )
+        with pytest.raises(RuntimeError, match="cancel Hermes parse"):
+            next(iterator)
+        assert not list(tmp_path.glob("polylogue-hermes-stream-*"))
+        assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    ("parents", "positions"),
+    [
+        ({"a": "b", "b": None}, {"a": 1, "b": 0}),
+        ({"a": "b", "b": "c", "c": None}, {"a": 2, "b": 1, "c": 0}),
+        ({"a": "b", "b": "a"}, {"a": 0, "b": 1}),
+    ],
+    ids=["later-parent", "later-multilevel-parents", "actual-cycle"],
+)
+def test_compression_parent_order_and_bound_preview_agree(
+    tmp_path: Path, parents: dict[str, str | None], positions: dict[str, int]
+) -> None:
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+    from polylogue.sources.sqlite_inspection import inspect_sqlite_source
+
+    path = tmp_path / "state.db"
+    _write_state_db(path, tool_contents=[])
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("ALTER TABLE sessions ADD COLUMN end_reason TEXT")
+        conn.execute("DELETE FROM messages")
+        conn.execute("DELETE FROM sessions")
+        for order, (session_id, parent) in enumerate(parents.items()):
+            conn.execute(
+                "INSERT INTO sessions (id, source, model_config, parent_session_id, started_at, end_reason) "
+                "VALUES (?, 'hermes', '{}', ?, ?, 'compression')",
+                (session_id, parent, order),
+            )
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)",
+                (session_id, f"message-{session_id}", order),
+            )
+    sessions = parse_state_db(path)
+    qualifier = profile_key(tmp_path)
+    by_id = {session.provider_session_id: session for session in sessions}
+    for native_id, position in positions.items():
+        session = by_id[qualified_session_id(native_id, qualifier)]
+        assert session.messages[0].position == position
+        if position:
+            assert session.parent_session_provider_id is not None
+            parent_session = by_id[session.parent_session_provider_id]
+            assert session.branch_point_provider_message_id == parent_session.messages[-1].provider_message_id
+    inspection = inspect_sqlite_source(path)
+    assert inspection.produced["sessions"] == len(sessions)
+    assert inspection.produced["messages"] == sum(len(session.messages) for session in sessions)
+    assert inspection.produced["blocks"] == sum(
+        len(message.blocks) for session in sessions for message in session.messages
+    )
+    assert inspection.produced["session_refs"] == [
+        f"session:{session.source_name.value}:{session.provider_session_id}" for session in sessions
+    ]
+    assert inspection.fidelity == hermes_state._logical_export_fidelity(sessions)
+
+
+def test_bound_state_preview_preserves_python_identity_grouping_and_native_collation(tmp_path: Path) -> None:
+    from polylogue.sources.sqlite_inspection import inspect_sqlite_source
+
+    path = tmp_path / "state.db"
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.executescript(
+            "CREATE TABLE schema_version (version INTEGER);"
+            "INSERT INTO schema_version VALUES (16);"
+            "CREATE TABLE sessions (id, started_at REAL, model_config TEXT, source TEXT, parent_session_id TEXT);"
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT COLLATE NOCASE, "
+            "role TEXT, content TEXT, timestamp REAL, active INTEGER, observed INTEGER, compacted INTEGER, tool_calls TEXT);"
+        )
+        conn.executemany(
+            "INSERT INTO sessions VALUES (?, ?, '{}', 'hermes', NULL)", [(1, 0), ("1", 1), ("a", 2), ("A", 3)]
+        )
+        conn.executemany(
+            "INSERT INTO messages VALUES (?, ?, 'user', ?, ?, 1, 0, 0, NULL)",
+            [(1, "1", "numeric identity", 0), (2, "a", "lowercase", 1), (3, "A", "uppercase", 2)],
+        )
+    sessions = parse_state_db(path)
+    inspection = inspect_sqlite_source(path)
+    assert len(sessions) == 4
+    assert inspection.produced["messages"] == sum(len(session.messages) for session in sessions) == 6
+    assert inspection.produced["session_refs"] == [
+        f"session:{session.source_name.value}:{session.provider_session_id}" for session in sessions
+    ]
+    assert inspection.fidelity == hermes_state._logical_export_fidelity(sessions)
 
 
 def test_exit_code_zero_is_not_an_error(tmp_path: Path) -> None:
@@ -405,9 +573,10 @@ def test_codex_message_items_prose_is_findable_by_search(tmp_path: Path) -> None
 
     db = tmp_path / "index.db"
     initialize_archive_database(db, ArchiveTier.INDEX)
-    conn = sqlite3.connect(db)
+    conn = connect_measured(db)
+    conn.row_factory = sqlite3.Row
     try:
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.commit()
         matched = search_archive_blocks(conn, "wrapper untouched")
         block_texts = [
@@ -545,13 +714,13 @@ def test_the_per_session_message_read_is_answered_by_the_reconstruction_index(tm
     to re-scan and re-sort every reconstructed message for every session.
 
     Anti-vacuity: drop the ``read_indexes=`` argument at
-    ``hermes_state._connect_readonly`` (or delete the ``CREATE INDEX`` loop in
+    ``hermes_state._readonly_context`` (or delete the ``CREATE INDEX`` loop in
     ``materialize_export``) and the plan returns to the ``SCAN messages`` plus
     ``USE TEMP B-TREE FOR ORDER BY`` this asserts against.
     """
     _live, export = _state_db_export(tmp_path)
 
-    with closing(hermes_state._connect_readonly(export)) as conn:
+    with hermes_state._readonly_context(export) as conn:
         plan = [
             str(row[3])
             for row in conn.execute(
@@ -575,15 +744,15 @@ def test_the_read_index_changes_no_parsed_output(tmp_path: Path, monkeypatch: py
     the sibling test asserts the index is really there.
     """
     live, export = _state_db_export(tmp_path)
-    real_open = sqlite_export.open_logical_source
+    real_open = sqlite_export.logical_source_context
 
-    def _open_without_hint(path: Path, **kwargs: object) -> sqlite3.Connection:
+    def _open_without_hint(path: Path, **kwargs: object) -> AbstractContextManager[sqlite3.Connection]:
         kwargs.pop("read_indexes", None)
         return real_open(path, **kwargs)  # type: ignore[arg-type]
 
     hinted = [session.model_dump_json() for session in parse_state_db(export)]
     from_live = [session.model_dump_json() for session in parse_state_db(live)]
-    monkeypatch.setattr(hermes_state, "open_logical_source", _open_without_hint)
+    monkeypatch.setattr(hermes_state, "logical_source_context", _open_without_hint)
     unhinted = [session.model_dump_json() for session in parse_state_db(export)]
 
     assert hinted, "sanity: the fixture really parses"
@@ -597,11 +766,11 @@ def test_parse_state_db_closes_its_private_reader_on_success(tmp_path: Path, mon
     """A leaked connection is invisible to any assertion about rows.
 
     ``sqlite3``'s own context manager commits or rolls back and never closes,
-    so ``with _connect_readonly(...)`` returned with the connection open and
-    the already-unlinked reconstruction still backed by that handle.
+    so ``with _readonly_context(...)`` returned with the connection open and
+    the already-private reconstruction still backed by that handle.
 
-    Anti-vacuity: revert ``closing(_connect_readonly(...))`` in
-    ``parse_state_db`` to a bare ``with _connect_readonly(...)`` and
+    Anti-vacuity: omit context exit in
+    ``parse_state_db`` and
     ``probe.closed`` is ``False`` while every parsed session stays correct.
     """
     _live, export = _state_db_export(tmp_path)
@@ -638,11 +807,11 @@ def test_parse_state_db_closes_its_private_reader_when_it_refuses(
 def test_parse_state_db_leaves_no_handle_on_the_unlinked_reconstruction(tmp_path: Path) -> None:
     """The production route, with nothing patched, strands no inode.
 
-    ``open_logical_source`` unlinks the reconstruction while it is open, so an
+    ``logical_source_context`` owns the reconstruction through native close, so an
     unclosed connection holds a deleted file's inode -- and the only place
     that is visible is this process's own descriptor table.
 
-    Anti-vacuity: revert ``closing(_connect_readonly(...))`` in
+    Anti-vacuity: omit context exit in
     ``parse_state_db`` to a bare ``with`` and the descriptor count rises by
     one per parse and never falls.
     """

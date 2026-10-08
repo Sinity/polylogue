@@ -14,6 +14,8 @@ from polylogue import Polylogue
 from polylogue.core.enums import BlockType, Provider, Role
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_archive_fixture_prepare
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
 
 
@@ -79,13 +81,104 @@ def _seed(root: Path, *, reset: bool = False) -> str:
                 ParsedSessionEvent(event_type="collab_agent_spawn_end", payload={"status": "completed"}),
             ],
         )
-        archive.write_raw_and_parsed(
-            parsed,
-            payload=b'{"synthetic":true}',
-            source_path="/private/example.jsonl",
-            acquired_at_ms=1767265200000,
-        )
+        write_fixture_index_session(archive._conn, parsed, archive_root=archive.index_db_path.parent)
     return "codex-session:orchestration-example"
+
+
+async def _seed_acquired(root: Path) -> tuple[str, str]:
+    """Retain native Codex bytes and converge them through the resident owner."""
+    from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    records: list[dict[str, object]] = [
+        {"type": "session_meta", "payload": {"id": "orchestration-example"}},
+        {"type": "turn_context", "timestamp": "2026-01-01T09:59:00Z", "payload": {"model": "configured-model"}},
+        {
+            "type": "response_item",
+            "timestamp": "2026-01-01T10:00:00Z",
+            "payload": {
+                "type": "message",
+                "id": "m1",
+                "role": "assistant",
+                "model": "recorded-model",
+                "content": [{"type": "output_text", "text": "delegating work"}],
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": "2026-01-01T10:00:00Z",
+            "payload": {
+                "type": "function_call",
+                "call_id": "launch-1",
+                "name": "Agent",
+                "arguments": json.dumps({"model": "requested-model", "prompt": "private instructions"}),
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": "2026-01-01T10:00:00Z",
+            "payload": {
+                "type": "function_call",
+                "call_id": "bead-1",
+                "name": "exec_command",
+                "arguments": json.dumps({"cmd": "bd show example-a12.3"}),
+            },
+        },
+    ]
+    for index, count in enumerate((100, 100, 120), start=1):
+        records.append(
+            {
+                "type": "event_msg",
+                "timestamp": f"2026-01-01T10:0{index}:00Z",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {"input_tokens": count, "output_tokens": 10},
+                        "last_token_usage": {"input_tokens": 5},
+                    },
+                    "rate_limits": {"primary": {"used_percent": 25, "window_minutes": 300}},
+                },
+            }
+        )
+    records.extend(
+        [
+            {"type": "event_msg", "payload": {"type": "collab_agent_spawn_end", "status": "completed"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "m2",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Agent named requested-model finished example-fake.1"}],
+                },
+            },
+        ]
+    )
+    source_path = root.parent / "orchestration.jsonl"
+    captured = ("\n".join(json.dumps(record) for record in records) + "\n").encode()
+    source_path.write_bytes(captured)
+
+    def acquire() -> str:
+        bootstrap_archive_root(root)
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                capture_mode=Provider.CODEX,
+                payload=source_path.read_bytes(),
+                source_path=str(source_path),
+                canonical_source_path=str(source_path),
+                acquired_at_ms=1_767_000_000_000,
+                file_mtime_ms=1_767_000_000_000,
+            )
+            archive.commit()
+            return raw_id
+
+    raw_id = await run_archive_fixture_write(root, acquire)
+    async with prepared_live_convergence_owner(root) as owner:
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
+    session_id = "codex-session:orchestration-example"
+    assert session_id in {identity for receipt in receipts for identity in receipt.changed_session_ids}
+    return session_id, raw_id
 
 
 @pytest.mark.asyncio
@@ -94,7 +187,7 @@ async def test_api_and_mcp_preserve_counter_and_native_evidence(tmp_path: Path) 
     from polylogue.mcp.server import build_server
 
     root = tmp_path / "archive"
-    session_id = _seed(root)
+    session_id, raw_id = await _seed_acquired(root)
     owner = Polylogue(archive_root=root)
     evidence = await owner.get_session_orchestration(session_id)
     assert evidence is not None
@@ -103,9 +196,11 @@ async def test_api_and_mcp_preserve_counter_and_native_evidence(tmp_path: Path) 
     assert len(payload["usage"]["observations"]) == 3
     assert payload["usage"]["quota_consumed_tokens"] is None
     assert payload["rate_limits"][0]["windows"]["primary"]["used_percent"] == 25
+    # Event rows carry stable event identity; acquisition belongs to the
+    # independently verified session watermark below, never a guessed Raw.
     assert payload["rate_limits"][0]["raw_id"] is None
     assert payload["rate_limits"][0]["event_id"]
-    assert payload["rate_limits"][0]["source_index"] == 1
+    assert payload["rate_limits"][0]["source_index"] == 6
     assert {row["bead_id"] for row in payload["bead_mentions"]} == {"example-a12.3"}
     request = next(row for row in payload["launches"] if row["basis"] == "tool_request")
     assert request["requested_model"] == "requested-model"
@@ -113,7 +208,7 @@ async def test_api_and_mcp_preserve_counter_and_native_evidence(tmp_path: Path) 
     assert request["child_session_id"] is None
     assert request["block_id"]
     assert {row["basis"] for row in payload["model_segments"]} == {"recorded_message_model", "configured_turn_model"}
-    assert payload["coverage"]["ingestion_watermark"]["raw_id"]
+    assert payload["coverage"]["ingestion_watermark"]["raw_id"] == raw_id
     assert payload["coverage"]["observed_at"]
     assert payload["coverage"]["complete"] is False
     assert "native_spawn_child_identity_not_retained" in payload["gaps"]
@@ -218,7 +313,7 @@ def test_cli_orchestration_view_renders_the_payload_api_and_mcp_return(
 @pytest.mark.asyncio
 async def test_reset_does_not_claim_a_session_total(tmp_path: Path) -> None:
     root = tmp_path / "archive"
-    session_id = _seed(root, reset=True)
+    session_id = await run_archive_fixture_prepare(lambda: _seed(root, reset=True))
     evidence = await Polylogue(archive_root=root).get_session_orchestration(session_id)
     assert evidence is not None
     assert evidence.usage["tokens"] is None
@@ -229,17 +324,20 @@ async def test_reset_does_not_claim_a_session_total(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_absent_measurements_are_null_not_zero(tmp_path: Path) -> None:
     root = tmp_path / "archive"
-    with ArchiveStore(root) as archive:
-        archive.write_raw_and_parsed(
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="empty-evidence",
-                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
-            ),
-            payload=b"{}",
-            source_path="/example.jsonl",
-            acquired_at_ms=1767265200000,
-        )
+
+    def prepare_archive_1() -> None:
+        with ArchiveStore(root) as archive:
+            write_fixture_index_session(
+                archive._conn,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="empty-evidence",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
+                ),
+                archive_root=archive.index_db_path.parent,
+            )
+
+    await run_archive_fixture_prepare(prepare_archive_1)
     evidence = await Polylogue(archive_root=root).get_session_orchestration("codex-session:empty-evidence")
     assert evidence is not None
     assert evidence.usage["tokens"] is None
@@ -286,7 +384,7 @@ def test_parser_retains_quota_windows_and_native_spawn_identity_through_storage(
         "native-evidence",
     )
     with ArchiveStore(root) as archive:
-        archive.write_raw_and_parsed(parsed, payload=b"{}", source_path="/example.jsonl", acquired_at_ms=1767265200000)
+        write_fixture_index_session(archive._conn, parsed, archive_root=archive.index_db_path.parent)
     with SyncPolylogue(archive_root=root) as owner:
         evidence = owner.get_session_orchestration("codex-session:native-evidence")
     assert evidence is not None
@@ -562,7 +660,7 @@ async def test_orchestration_streams_own_records_without_hydrating_the_session(
 
     monkeypatch.setattr(orchestration_reads, "_PAGE_SIZE", 2)
     root = tmp_path / "archive"
-    session_id = _seed(root)
+    session_id = await run_archive_fixture_prepare(lambda: _seed(root))
     owner = Polylogue(archive_root=root)
 
     async def refuse_full_session(*_args: object, **_kwargs: object) -> object:

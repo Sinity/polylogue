@@ -22,24 +22,6 @@
       "tolerance_pct": 70.0,
       "unit": "ms"
     },
-    "census_chain_revisions_per_s": {
-      "baseline": 1844.2279717443803,
-      "direction": "higher_is_better",
-      "tolerance_pct": 50.0,
-      "unit": "revisions/s"
-    },
-    "census_large_raws_per_s": {
-      "baseline": 68.12016096009881,
-      "direction": "higher_is_better",
-      "tolerance_pct": 50.0,
-      "unit": "raws/s"
-    },
-    "census_small_raws_per_s": {
-      "baseline": 1692.1938766054334,
-      "direction": "higher_is_better",
-      "tolerance_pct": 50.0,
-      "unit": "raws/s"
-    },
     "query_list_summaries_p50_ms": {
       "baseline": 20.0,
       "direction": "lower_is_better",

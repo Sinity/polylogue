@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Polylogue Browser Capture",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Capture supported web LLM sessions into the local Polylogue inbox.",
   "permissions": [
     "activeTab",
@@ -38,6 +38,7 @@
         "https://chatgpt.com/*"
       ],
       "js": [
+        "src/content/asset_stream.js",
         "src/content/chatgpt_bridge.js"
       ],
       "run_at": "document_start",
@@ -48,6 +49,7 @@
         "https://chatgpt.com/*"
       ],
       "js": [
+        "src/content/asset_stream.js",
         "src/common.js",
         "src/operator_status.js",
         "src/content/message_layer.js",
@@ -61,6 +63,7 @@
         "https://claude.ai/*"
       ],
       "js": [
+        "src/content/asset_stream.js",
         "src/content/claude_bridge.js"
       ],
       "run_at": "document_start",
@@ -75,6 +78,7 @@
         "src/operator_status.js",
         "src/content/message_layer.js",
         "src/content/ambient_surface.js",
+        "src/content/asset_stream.js",
         "src/content/claude.js"
       ],
       "run_at": "document_idle"
@@ -84,6 +88,7 @@
         "https://grok.com/*"
       ],
       "js": [
+        "src/content/asset_stream.js",
         "src/content/grok_bridge.js"
       ],
       "run_at": "document_start",
@@ -94,6 +99,7 @@
         "https://grok.com/*"
       ],
       "js": [
+        "src/content/asset_stream.js",
         "src/common.js",
         "src/content/grok.js"
       ],

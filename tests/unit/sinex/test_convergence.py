@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -12,6 +12,7 @@ from polylogue.daemon.convergence_stages import make_sinex_publication_stage
 from polylogue.sinex.models import PublicationMode, ReceiptState
 from polylogue.sinex.service import PublicationService
 from polylogue.sinex.transport import LocalReferenceTransport
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.unit.sinex._fixtures import publication_payload
 
 
@@ -46,6 +47,14 @@ def _projection_stage_with_sessions(
         check_sessions=lambda session_ids: set(session_ids),
         execute_sessions=execute_sessions,
     )
+
+
+@pytest.fixture
+def source_writer_lease(workspace_env: dict[str, Path]) -> Iterator[Path]:
+    """Hold the archive write lease the daemon converger runs publication under."""
+    root = workspace_env["archive_root"]
+    with write_lease("test-sinex-convergence", archive_root=root):
+        yield root
 
 
 def test_primary_barrier_blocks_only_affected_path_and_mirror_does_not() -> None:
@@ -93,6 +102,7 @@ def test_stage_status_masks_probe_failure() -> None:
     }
 
 
+@pytest.mark.usefixtures("source_writer_lease")
 def test_real_sinex_stage_blocks_affected_file_and_session_scopes(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,

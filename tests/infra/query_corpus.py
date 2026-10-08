@@ -481,8 +481,13 @@ async def seed_user_tier(archive_root: Path, corpus: QueryCorpus) -> None:
 def build_query_corpus_sync(archive_root: Path) -> QueryCorpus:
     """Build the corpus and its user-tier overlay in one synchronous call."""
 
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from tests.infra.daemon_operations import running_daemon_operations
+
     corpus = build_query_corpus(archive_root)
-    asyncio.run(seed_user_tier(archive_root, corpus))
+    # User-tier writes are daemon-owned; the overlay goes through a real writer.
+    with running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root)):
+        asyncio.run(seed_user_tier(archive_root, corpus))
     return corpus
 
 

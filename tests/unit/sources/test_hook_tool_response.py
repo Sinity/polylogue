@@ -11,10 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from polylogue.core.enums import BlockType, MaterialOrigin, Origin, Provider, Role
-from polylogue.logging import capture
 from polylogue.sources.live.hook_tool_response import (
     BASH_STDOUT_CAP_CHARS,
     HOOK_TOOL_RESPONSE_EVENT_TYPE,
@@ -22,13 +19,14 @@ from polylogue.sources.live.hook_tool_response import (
     apply_hook_tool_responses,
     hook_response_text,
     recover_persisted_tool_results,
-    resolve_hook_tool_responses,
     unresolved_persisted_truncations,
 )
 from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.retained_jsonl import prepared_source_fixture
 
 _RECOVERED_NEEDLE = "zz_sentinel_needle_only_in_the_hook_payload"
 _UNREACHABLE_SIDECAR = "/gone/projects/-p/sess-recover/tool-results/toolu_AAA.txt"
@@ -218,7 +216,7 @@ def test_absent_hook_evidence_is_recorded_not_guessed() -> None:
     assert event.payload["pointer"] == _UNREACHABLE_SIDECAR
 
 
-def test_hook_responses_resolve_from_the_durable_source_tier(tmp_path: Path) -> None:
+def test_prepared_source_reader_selects_hook_responses_by_exact_identity(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
     _write_post_tool_use(
@@ -228,37 +226,35 @@ def test_hook_responses_resolve_from_the_durable_source_tier(tmp_path: Path) -> 
         tool_response={"stdout": f"hook stdout {_RECOVERED_NEEDLE}", "stderr": "", "persistedOutputSize": 900},
     )
 
-    resolved = resolve_hook_tool_responses(
+    _write_post_tool_use(
         archive_root,
-        origin=Origin.CLAUDE_CODE_SESSION.value,
-        session_native_ids=("sess-parent",),
-        tool_use_ids=("toolu_AAA",),
+        session_native_id="other-session",
+        tool_use_id="toolu_AAA",
+        tool_response={"result": "wrong session must not win"},
+        event_id="wrong-session",
     )
+    _write_post_tool_use(
+        archive_root,
+        session_native_id="sess-parent",
+        tool_use_id="toolu_OTHER",
+        tool_response={"result": "wrong tool must not win"},
+        event_id="wrong-tool",
+    )
+
+    def read() -> dict[str, HookToolResponse]:
+        with prepared_source_fixture(archive_root) as reader:
+            return reader.hook_tool_responses(
+                origin=Origin.CLAUDE_CODE_SESSION.value,
+                session_native_ids=("sess-parent",),
+                tool_use_ids=("toolu_AAA",),
+            )  # type: ignore[return-value]
+
+    resolved = run_off_event_loop(read)
 
     assert _RECOVERED_NEEDLE in resolved["toolu_AAA"].text
     assert resolved["toolu_AAA"].full_size == 900
     assert resolved["toolu_AAA"].complete is False
-    assert (
-        resolve_hook_tool_responses(
-            archive_root,
-            origin=Origin.CLAUDE_CODE_SESSION.value,
-            session_native_ids=("sess-parent",),
-            tool_use_ids=("toolu_OTHER",),
-        )
-        == {}
-    )
-
-
-def test_missing_source_tier_degrades_to_no_evidence(tmp_path: Path) -> None:
-    assert (
-        resolve_hook_tool_responses(
-            tmp_path / "no-archive-here",
-            origin=Origin.CLAUDE_CODE_SESSION.value,
-            session_native_ids=("sess-parent",),
-            tool_use_ids=("toolu_AAA",),
-        )
-        == {}
-    )
+    assert set(resolved) == {"toolu_AAA"}
 
 
 def test_subagent_session_recovers_from_its_parents_hook_journal(tmp_path: Path) -> None:
@@ -282,7 +278,8 @@ def test_subagent_session_recovers_from_its_parents_hook_journal(tmp_path: Path)
         native_id="sess-parent:agent-abc123",
     )
 
-    recovered = recover_persisted_tool_results(session, archive_root=archive_root)
+    responses = read_hook_tool_responses_for_test(archive_root)
+    recovered = recover_persisted_tool_results(session, responses=responses)
 
     (block,) = [block for message in recovered.messages for block in message.blocks]
     assert _RECOVERED_NEEDLE in (block.text or "")
@@ -291,39 +288,19 @@ def test_subagent_session_recovers_from_its_parents_hook_journal(tmp_path: Path)
     assert event.payload["recovery_complete"] is True
 
 
-def test_a_session_with_no_truncation_is_returned_untouched(tmp_path: Path) -> None:
-    """No unresolved pointer means no source-tier read at all.
+def read_hook_tool_responses_for_test(archive_root: Path) -> dict[str, HookToolResponse]:
+    def read() -> dict[str, HookToolResponse]:
+        with prepared_source_fixture(archive_root) as reader:
+            return reader.hook_tool_responses(
+                origin=Origin.CLAUDE_CODE_SESSION.value,
+                session_native_ids=("sess-parent",),
+                tool_use_ids=("toolu_AAA",),
+            )  # type: ignore[return-value]
 
-    Anti-vacuity: an archive root that does not exist would still be opened
-    (and would still return ``{}``) if the guard were removed -- the identity
-    assertion is what proves the read was skipped.
-    """
+    return run_off_event_loop(read)
+
+
+def test_a_session_with_no_truncation_is_returned_untouched() -> None:
+    """A full tool result stays unchanged when there is no overflow pointer."""
     session = _session(_tool_result("toolu_DONE", "the sidecar join already put the whole output here"))
-    assert recover_persisted_tool_results(session, archive_root=tmp_path / "absent") is session
-
-
-def test_failed_hook_recovery_is_reported_not_swallowed_at_debug(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path: Path
-) -> None:
-    """A failed tool-result recovery changes the durable content hash.
-
-    ``_with_hook_recovered_tool_results`` returns the un-recovered session on
-    failure and ``session_content_hash`` is taken from whatever it returns, so
-    a swallowed failure stores a different hash than the recovered path would
-    with nothing to say why (polylogue-3r36h). Restoring the debug-level
-    swallow turns this red.
-    """
-    import polylogue.pipeline.services.ingest_worker as ingest_worker
-    import polylogue.sources.live.hook_tool_response as hook_tool_response
-
-    def refuse(*_args: object, **_kwargs: object) -> object:
-        raise RuntimeError("hook spool unreadable")
-
-    monkeypatch.setattr(hook_tool_response, "recover_persisted_tool_results", refuse)
-    convo = _session(_tool_result("tool-1", _truncated_inline("/tmp/whatever")))
-
-    with capture() as events:
-        recovered = ingest_worker._with_hook_recovered_tool_results(convo, archive_root=tmp_path)
-
-    assert recovered is convo
-    assert any(event["event"] == "pipeline.hook_tool_response.recovery_failed" for event in events)
+    assert recover_persisted_tool_results(session, responses={}) is session

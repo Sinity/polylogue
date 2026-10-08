@@ -25,7 +25,9 @@ from pathlib import Path
 import pytest
 
 __all__ = [
+    "SYNTHETIC_SOURCE_TRAIN_TABLE",
     "checkpoint_durable_tier",
+    "ship_synthetic_source_train",
     "rebind_archive_format_fingerprints",
     "refresh_archive_format_marker",
     "seed_durable_tier",
@@ -35,23 +37,26 @@ __all__ = [
 
 
 def initialize_runtime_source_fixture(path: Path) -> None:
-    """Build a synthetic Source through baseline DDL and installed numbered proof."""
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
+    """Build an empty unit schema through the installed numbered probe authority.
 
-    current = 0
-    if path.exists():
-        with closing(sqlite3.connect(path)) as probe:
-            current = int(probe.execute("PRAGMA user_version").fetchone()[0])
-    if current == 0:
-        initialize_archive_database(path, ArchiveTier.SOURCE, expected_version=1)
-    elif current != 1:
-        initialize_archive_database(path, ArchiveTier.SOURCE)
-        return
+    This fixture is not an archive migration. Tests for populated historical
+    archives use the actual owned train and authenticated package instead.
+    """
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        initialize_archive_database,
+        initialize_runtime_tier_probe,
+    )
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(path)) as source:
-        migrate_archive_tier(source, ArchiveTier.SOURCE, backup_manifest=None, target_version=2)
-        migrate_archive_tier(source, ArchiveTier.SOURCE, backup_manifest=None, allow_pristine_source_baseline=True)
+        current = int(source.execute("PRAGMA user_version").fetchone()[0])
+        if current == 0:
+            initialize_runtime_tier_probe(source, ArchiveTier.SOURCE, probe_path=path)
+        elif current != ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]:
+            raise ValueError("historical Source fixture requires its owned migration train")
+    initialize_archive_database(path, ArchiveTier.SOURCE)
 
 
 def bootstrap_baseline_archive(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,6 +81,98 @@ def bootstrap_baseline_archive(root: Path, monkeypatch: pytest.MonkeyPatch) -> N
     # Restoring the runtime target models a different installed runtime;
     # production's process-local unchanged-code certificate cannot span it.
     invalidate_active_archive_bootstrap(root)
+
+
+SYNTHETIC_SOURCE_TRAIN_TABLE = "synthetic_train_items"
+
+
+def ship_synthetic_source_train(
+    package_root: Path, monkeypatch: pytest.MonkeyPatch, *, requires_backup: bool = False
+) -> None:
+    """Install one Source train (slot 002) and raise the runtime Source target to it.
+
+    The archive ships no numbered durable migration, so tests of released-train
+    history (backup, restore, clone) install this neutral step. The next owned
+    bootstrap advances a v1 Source tier through it and releases
+    ``source-002.json``; with ``requires_backup`` the step omits the additive
+    claim, so bootstrap takes its verified pre-migration backup first. The
+    runtime maps are patched in place, so every module that imported them
+    observes the same raised target.
+    """
+    import json
+    import re
+
+    from polylogue.storage.sqlite import durable_change_train, migration_runner
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.migration_runner import (
+        DurableChangeRider,
+        DurableRuntimeConsumer,
+        declare_durable_change_train,
+        durable_change_train_to_payload,
+        durable_migration_claim_for_sql,
+    )
+
+    tier = ArchiveTier.SOURCE
+    table = SYNTHETIC_SOURCE_TRAIN_TABLE
+    create = f"CREATE TABLE {table} (id INTEGER PRIMARY KEY) STRICT;\n"
+    sql = create if requires_backup else f"-- migration-safety: additive-no-backup\n{create}"
+    # An imported package is cached in sys.modules, so each test gets its own name.
+    package = "fixture_source_train_" + re.sub(r"\W", "_", str(package_root.resolve()))[-80:]
+    tier_package = package_root / package / tier.value
+    tier_package.mkdir(parents=True)
+    (package_root / package / "__init__.py").write_text("", encoding="utf-8")
+    (tier_package / "__init__.py").write_text("", encoding="utf-8")
+    name = f"002_{table}.sql"
+    (tier_package / name).write_text(sql, encoding="utf-8")
+    claim = durable_migration_claim_for_sql(tier, name, sql, owner_ref="owner:synthetic-source-train")
+    rider = DurableChangeRider(
+        rider_id="rider:synthetic-source-train",
+        owner_ref="owner:synthetic-source-train-rider",
+        schema_objects=(f"table:{table}",),
+        runtime_consumers=(
+            DurableRuntimeConsumer(
+                "bootstrap",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_database",
+                "proof:bootstrap",
+                ("write",),
+            ),
+            DurableRuntimeConsumer(
+                "daemon-health",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+                "proof:daemon-health",
+                ("read",),
+            ),
+        ),
+        behavior_proof_refs=("proof:bootstrap", "proof:daemon-health"),
+    )
+    declared = declare_durable_change_train(
+        train_id="train:source:synthetic-v2",
+        tier=tier,
+        current_version=1,
+        target_version=2,
+        slot=2,
+        owner_ref="owner:synthetic-source-train",
+        migration=claim,
+        riders=(rider,),
+        backup_plan_ref="plan:synthetic-verified-backup" if requires_backup else None,
+        declared_at_ms=1,
+    )
+    (tier_package / "002.train.json").write_text(json.dumps(durable_change_train_to_payload(declared)), "utf-8")
+    monkeypatch.syspath_prepend(str(package_root))
+    canonical_package = migration_runner._migration_package
+
+    def package_for(observed: ArchiveTier) -> str:
+        return f"{package}.{tier.value}" if observed is tier else canonical_package(observed)
+
+    monkeypatch.setattr(migration_runner, "_migration_package", package_for)
+    monkeypatch.setattr(durable_change_train, "_migration_package", package_for)
+    monkeypatch.setitem(ARCHIVE_VERSION_BY_TIER, tier, 2)
+    monkeypatch.setitem(
+        ARCHIVE_DDL_BY_TIER,
+        tier,
+        f"{ARCHIVE_DDL_BY_TIER[tier]}\nCREATE TABLE {table} (id INTEGER PRIMARY KEY) STRICT;\n",
+    )
 
 
 def checkpoint_durable_tier(path: Path) -> None:

@@ -19,7 +19,7 @@ import pytest
 from polylogue.daemon.uds import MachineOperationHandler
 from polylogue.daemon_client import DaemonClient, DaemonOperationRejectedError
 from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
-from polylogue.operations.mutation_transaction import MAX_MUTATION_PLAN_TARGETS, MutationPlan, MutationReceipt
+from polylogue.operations.mutation_transaction import MUTATION_PLAN_PAGE_SIZE, MutationPlan, MutationReceipt
 from tests.infra.daemon_operations import running_daemon_operations
 from tests.infra.storage_records import SessionBuilder
 
@@ -939,7 +939,7 @@ def test_crash_recovery_replays_a_delete_on_exactly_the_recorded_id_not_a_prefix
                 request_id="prefix-execute",
             )
             assert lost is not None and lost["outcome"] == "indeterminate"
-            assert not first.session_exists(target)
+            assert not first.session_exists(target), lost
             assert first.session_exists(sibling)
 
     # Startup recovery replays the unknown run with the real actuator.
@@ -998,7 +998,7 @@ def test_delete_preview_count_equals_the_applied_count_and_spares_prefix_sibling
         )
         assert executed is not None
         assert prepared_count == len(selected)
-        assert executed["result"]["affected_count"] == prepared_count
+        assert executed["result"]["affected_count"] == prepared_count, (executed, preview)
         assert not any(stack.session_exists(session_id) for session_id in selected)
         assert all(stack.session_exists(session_id) for session_id in spared)
 
@@ -1302,7 +1302,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
 
     def seed(root: Path) -> None:
         nonlocal session_ids
-        session_ids = _seed_sessions(root, count=MAX_MUTATION_PLAN_TARGETS + 1)
+        session_ids = _seed_sessions(root, count=MUTATION_PLAN_PAGE_SIZE + 1)
 
     entered_apply = threading.Event()
     release_apply = threading.Event()
@@ -1479,7 +1479,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
         final = stack.client.await_operation(execute_request_id, archive_root=str(stack.archive_root), timeout_ms=2_000)
         assert final is not None
         state = final["result"]
-        assert state["outcome"] == "cancelled"
+        assert state["outcome"] == "cancelled", state
         assert state["completed_chunks"] == 1
         assert state["not_attempted"] == [1]
         assert state["stop_reason"] == "cancelled"
@@ -1708,6 +1708,7 @@ def test_expired_await_reads_the_actual_accepted_receipt_and_preserves_refusals(
         )
         assert accepted is not None and accepted["outcome"] == "completed", accepted
         reference = accepted["accepted_reference"]
+        assert isinstance(reference, dict)
         principal = _all_capabilities_principal()
         request = DaemonOperationRequest(
             "operation.await",
@@ -1736,15 +1737,17 @@ def test_expired_await_reads_the_actual_accepted_receipt_and_preserves_refusals(
                 started_at=monotonic() - 1,
             )
             assert refused["outcome"] == "rejected", refused
-            assert isinstance(refused["error"], dict)
-            assert refused["error"]["code"] == "operation_reference_unknown", refused
+            refused_error = refused["error"]
+            assert isinstance(refused_error, dict)
+            assert refused_error["code"] == "operation_reference_unknown", refused
         stale = stack.runtime.call(
             replace(request, expected_archive_identity="synthetic-other-archive"),
             principal,
             started_at=monotonic() - 1,
         )
-        assert isinstance(stale["error"], dict)
-        assert stale["outcome"] == "rejected" and stale["error"]["code"] == "archive_identity_stale", stale
+        stale_error = stale["error"]
+        assert isinstance(stale_error, dict)
+        assert stale["outcome"] == "rejected" and stale_error["code"] == "archive_identity_stale", stale
         cancelled = QueryExecutionContext(
             call_id="disconnected-expired-poll", query_ref=request.fingerprint, deadline_monotonic=monotonic() - 1
         )
@@ -1758,8 +1761,9 @@ def test_expired_await_reads_the_actual_accepted_receipt_and_preserves_refusals(
                 started_at=monotonic() - 1,
             )
             assert expired["outcome"] == "timed-out", expired
-            assert isinstance(expired["error"], dict)
-            assert expired["error"]["code"] == "QueryTimeoutError", expired
+            expired_error = expired["error"]
+            assert isinstance(expired_error, dict)
+            assert expired_error["code"] == "QueryTimeoutError", expired
         assert stack.session_exists(ids[0])
 
 
@@ -1833,6 +1837,11 @@ def test_cancelled_queued_operation_reports_cancelled_not_failed(
             assert exchange.future is not None
             assert not exchange.future.done(), "the operation must still be queued or this test is vacuous"
             assert not exchange.acceptance_started
+            request_bytes = len(json.dumps(request.to_dict(), separators=(",", ":"), allow_nan=False).encode())
+            assert stack.execution_kernel.snapshot().used_bytes == request_bytes, (
+                stack.execution_kernel.snapshot(),
+                request_bytes,
+            )
             if operation == "query.aggregate":
                 assert exchange.deadline is None
                 assert exchange.context.read_control is not None
@@ -1844,6 +1853,7 @@ def test_cancelled_queued_operation_reports_cancelled_not_failed(
             exchange.cancellation.cancel()
             caller.join(timeout=5)
             assert not caller.is_alive()
+            assert stack.execution_kernel.snapshot().used_bytes == 0
         finally:
             release.set()
             for blocker in blockers:
@@ -1898,6 +1908,9 @@ def test_expired_staged_ingest_releases_its_queued_compute_reservation(
         # The test exercises deadline propagation before ingest's later
         # session-maintenance phase, which is not part of this queue seam.
         monkeypatch.setattr(stack.runtime, "require_session_maintenance", lambda: None)
+        # Startup recovery already completed one control-class phase on this
+        # kernel (777ab745c9); only this request's dispatch is measured.
+        startup_control_completions = stack.execution_kernel.snapshot().by_class("control").completed
         blockers = [stack.execution_kernel.submit(block_worker) for _ in range(2)]
         assert all(entered.acquire(timeout=2) for _ in blockers)
 
@@ -1924,7 +1937,7 @@ def test_expired_staged_ingest_releases_its_queued_compute_reservation(
             # completed dispatch.
             control = stack.execution_kernel.snapshot().by_class("control")
             assert control.used_units == control.queued_units == 0
-            assert control.completed == 0
+            assert control.completed == startup_control_completions
         finally:
             release.set()
             for blocker in blockers:
@@ -2192,10 +2205,10 @@ def test_restore_machine_operation_preserves_retryable_io_fault_and_pending_evid
             error = sqlite3.OperationalError("synthetic reader contention")
             error.sqlite_errorcode = sqlite3.SQLITE_BUSY
             raise MigrationError("migration evidence unavailable") from error
-        permission_error = PermissionError("synthetic evidence access fault")
+        access_error = PermissionError("synthetic evidence access fault")
         if fault_kind == "wrapped_permission":
-            raise MigrationError("migration evidence unavailable") from permission_error
-        raise permission_error
+            raise MigrationError("migration evidence unavailable") from access_error
+        raise access_error
 
     destination = tmp_path / "pending-restoration"
     with running_daemon_operations(tmp_path / "archive") as stack:
@@ -2288,7 +2301,7 @@ def test_accepted_restore_outlives_implicit_deadline_and_control_returns_termina
                 def refuse_terminal_transfer(exchange: Any) -> None:
                     raise OSError("synthetic result publication refusal")
 
-                monkeypatch.setattr(stack.runtime, "_retain_unbound_terminal", refuse_terminal_transfer)
+                monkeypatch.setattr(stack.runtime, "_retain_terminal", refuse_terminal_transfer)
             release.set()
             terminal = stack.client.await_operation(request_id, archive_root=str(stack.archive_root))
             while terminal is not None and terminal["result"]["outcome"] in {"accepted", "running", "indeterminate"}:
@@ -2421,7 +2434,7 @@ def test_slow_aggregate_waits_for_valid_work_unless_the_caller_declares_a_deadli
     from polylogue.operations import daemon_execution
     from polylogue.operations.daemon_protocol import DaemonOperationRequest
     from polylogue.operations.mutation_transaction import MutationPrincipal
-    from polylogue.operations.operation_context import OperationContext
+    from polylogue.operations.operation_context_types import OperationContext
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     clock = {"now": monotonic()}
@@ -2473,6 +2486,165 @@ def test_slow_aggregate_waits_for_valid_work_unless_the_caller_declares_a_deadli
             assert envelope["result"] is None
 
 
+def test_socket_aggregate_uses_bulk_compute_admission(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    from functools import partial
+
+    from tests.infra.archive_templates import run_archive_fixture_prepare
+
+    def seed(root: Path) -> None:
+        asyncio.run(run_archive_fixture_prepare(partial(_seed_sessions, root, count=2)))
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        actual_submit = stack.execution_kernel.submit
+        admitted: list[str] = []
+        reserved_bytes: list[int] = []
+        received_bytes: list[int] = []
+        actual_call = stack.runtime.call
+
+        def record_call(*args: Any, **kwargs: Any) -> Any:
+            received_bytes.append(kwargs["request_body_bytes"])
+            return actual_call(*args, **kwargs)
+
+        def record_submit(function: Any, **kwargs: Any) -> Any:
+            admitted.append(kwargs["admission_class"])
+            reserved_bytes.append(kwargs["estimated_bytes"])
+            return actual_submit(function, **kwargs)
+
+        monkeypatch.setattr(stack.execution_kernel, "submit", record_submit)
+        monkeypatch.setattr(stack.runtime, "call", record_call)
+        envelope = stack.client.operation("query.aggregate", {"mode": "count"})
+        assert envelope is not None
+        assert envelope["outcome"] == "completed"
+        assert envelope["result"]["count"] == 2
+        assert admitted == ["bulk-candidate"]
+        assert reserved_bytes == received_bytes
+        assert reserved_bytes[0] > 0
+
+
+@pytest.mark.parametrize("shutdown_delivery", [False, True])
+def test_socket_controls_remain_available_during_waiting_work_and_slow_delivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shutdown_delivery: bool
+) -> None:
+    """Use real sockets, queued work and an unread large response, without reserving fake slots."""
+    import asyncio
+
+    from polylogue.operations import daemon_reads
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.storage.sqlite.connection import _clear_connection_cache
+    from tests.infra.archive_templates import run_archive_fixture_prepare
+
+    session_id = ""
+    entered = threading.Event()
+    release = threading.Event()
+    delivery_finished = threading.Event()
+    actual_aggregate = daemon_reads._aggregate_payload
+    actual_setup = MachineOperationHandler.setup
+    actual_send = MachineOperationHandler._send
+
+    def seed(root: Path) -> None:
+        nonlocal session_id
+
+        def prepare() -> str:
+            builder = SessionBuilder(root / "index.db", "slow-delivery").provider("codex")
+            builder.add_message(text="Synthetic bounded delivery prose. " * 32768).save()
+            identity = builder.native_session_id()
+            _clear_connection_cache()
+            return identity
+
+        session_id = asyncio.run(run_archive_fixture_prepare(prepare))
+
+    def held_aggregate(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        assert release.wait(30)
+        return actual_aggregate(*args, **kwargs)
+
+    def setup(handler: MachineOperationHandler) -> None:
+        handler.request.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
+        actual_setup(handler)
+
+    def send(handler: MachineOperationHandler, status: int, payload: dict[str, object]) -> None:
+        try:
+            actual_send(handler, status, payload)
+        finally:
+            if payload.get("operation") == "session.read":
+                delivery_finished.set()
+
+    monkeypatch.setattr(MachineOperationHandler, "setup", setup)
+    monkeypatch.setattr(MachineOperationHandler, "_send", send)
+    monkeypatch.setattr(daemon_reads, "_aggregate_payload", held_aggregate)
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed, compute_workers=1) as stack:
+        peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        peer.settimeout(10)
+        peer.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        responses: queue.Queue[dict[str, object]] = queue.Queue()
+        failures: queue.Queue[BaseException] = queue.Queue()
+
+        def query(request_id: str) -> None:
+            try:
+                client = DaemonClient(stack.socket_path, timeout_s=30)
+                result = client.operation("query.aggregate", {"mode": "count"}, request_id=request_id)
+                assert result is not None
+                responses.put(result)
+            except BaseException as failure:
+                failures.put(failure)
+
+        callers: list[threading.Thread] = []
+        try:
+            peer.connect(str(stack.socket_path))
+            request = DaemonOperationRequest("session.read", {"ref": session_id}, request_id="slow-socket-delivery")
+            body = json.dumps(request.to_dict(), separators=(",", ":")).encode()
+            peer.sendall(
+                b"POST /api/operation HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\n\r\n".encode()
+                + body
+            )
+            headers = bytearray()
+            while not headers.endswith(b"\r\n\r\n"):
+                chunk = peer.recv(1)
+                assert chunk, "delivery ended before response headers"
+                headers.extend(chunk)
+            assert bytes(headers).startswith(b"HTTP/1.1 200 ")
+            length_line = next(line for line in bytes(headers).split(b"\r\n") if line.startswith(b"Content-Length:"))
+            assert int(length_line.split(b":", 1)[1]) > 512 * 1024
+            assert not delivery_finished.is_set()
+
+            for request_id in ("socket-running-work", "socket-queued-work"):
+                caller = threading.Thread(target=query, args=(request_id,), daemon=True)
+                callers.append(caller)
+                caller.start()
+                if request_id == "socket-running-work":
+                    assert entered.wait(10)
+            with stack.runtime._condition:
+                assert stack.runtime._condition.wait_for(
+                    lambda: "socket-queued-work" in stack.runtime._exchanges, timeout=10
+                )
+            status = stack.client.operation("operation.status", {"request_id": "socket-running-work"})
+            assert status is not None and status["outcome"] == "completed"
+            assert status["result"]["outcome"] in {"accepted", "running"}
+            cancelled = stack.client.operation("operation.cancel", {"request_id": "socket-queued-work"})
+            assert cancelled is not None and cancelled["outcome"] == "completed"
+            assert cancelled["result"]["outcome"] == "cancelled"
+            assert not delivery_finished.is_set()
+            assert not release.is_set()
+        finally:
+            release.set()
+            if shutdown_delivery:
+                for caller in callers:
+                    caller.join(30)
+                    assert not caller.is_alive()
+                stack.server.shutdown()
+                stack.server.server_close()
+                assert delivery_finished.is_set()
+                assert not stack.server._handler_sockets
+            peer.close()
+            for caller in callers:
+                caller.join(30)
+                assert not caller.is_alive()
+        assert failures.empty(), list(failures.queue)
+        assert responses.qsize() == 2
+
+
 @pytest.mark.parametrize("lane", ["semantic", "hybrid"])
 @pytest.mark.parametrize("vector_fault", ["missing", "unreadable", "runtime_unavailable"])
 def test_keyless_text_read_skips_vector_snapshot_admission(
@@ -2519,6 +2691,51 @@ def test_keyless_text_read_skips_vector_snapshot_admission(
         assert result["failed_lanes"] == [], envelope
     admit.assert_not_called()
     acquire.assert_not_called()
+
+
+def test_socket_shutdown_physically_settles_an_admitted_incomplete_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered_read = threading.Event()
+    post_threads: set[int] = set()
+    actual_post = MachineOperationHandler.do_POST
+    actual_readinto = socket.SocketIO.readinto
+
+    def post(handler: MachineOperationHandler) -> None:
+        identity = threading.get_ident()
+        post_threads.add(identity)
+        try:
+            actual_post(handler)
+        finally:
+            post_threads.remove(identity)
+
+    def readinto(stream: socket.SocketIO, buffer: Any) -> int | None:
+        if threading.get_ident() in post_threads:
+            entered_read.set()
+        return actual_readinto(stream, buffer)
+
+    monkeypatch.setattr(MachineOperationHandler, "do_POST", post)
+    monkeypatch.setattr(socket.SocketIO, "readinto", readinto)
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            peer.connect(str(stack.socket_path))
+            peer.sendall(
+                b"POST /api/operation HTTP/1.1\r\nHost: local\r\n"
+                b"Content-Type: application/json\r\nContent-Length: 200\r\n\r\n{"
+            )
+            assert entered_read.wait(10)
+            with stack.runtime._condition:
+                assert not stack.runtime._exchanges
+            assert stack.server._handler_sockets
+            stack.server.shutdown()
+            stack.server.server_close()
+            assert not stack.server._handler_sockets
+            assert not post_threads
+            with stack.runtime._condition:
+                assert not stack.runtime._exchanges
+        finally:
+            peer.close()
 
 
 def test_annotation_import_commits_summary_and_pages_all_amplified_errors(
@@ -2611,3 +2828,55 @@ def test_annotation_import_commits_summary_and_pages_all_amplified_errors(
                     assert page["next_offset"] == (offset + 1 if offset < 199_999 else None)
 
         asyncio.run(read_pages())
+
+
+@pytest.mark.parametrize("criterion", ["similar_text", "similar_session_id"])
+@pytest.mark.parametrize("selected", [True, False])
+def test_temporal_selected_reference_skips_unavailable_vector_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, criterion: str, selected: bool
+) -> None:
+    from unittest.mock import MagicMock
+
+    from polylogue.operations.daemon_reads import DaemonReadDependencies, VectorReadBinding
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+
+    admit = MagicMock(side_effect=FileNotFoundError("synthetic unavailable embeddings tier"))
+    acquire = MagicMock(side_effect=AssertionError("this read must not acquire vectors"))
+    monkeypatch.setattr("polylogue.storage.search_providers.sqlite_vec_runtime.open_vector_read_snapshot", admit)
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", acquire)
+    ids: list[str] = []
+
+    def seed(root: Path) -> None:
+        for number in range(2):
+            builder = SessionBuilder(root / "index.db", f"temporal-vector-{number}").provider("codex")
+            builder.add_message(text="synthetic temporal evidence").save()
+            ids.append(builder.native_session_id())
+
+    with running_daemon_operations(
+        tmp_path / "archive",
+        seed_archive=seed,
+        read_dependencies=DaemonReadDependencies(
+            vector_binding=VectorReadBinding("synthetic-unused", "voyage-3-lite", 1024)
+        ),
+    ) as stack:
+        envelope = stack.client.operation(
+            "read.temporal",
+            {
+                "session_id": ids[1] if selected else None,
+                "params": {criterion: "synthetic query" if criterion == "similar_text" else ids[0]},
+            },
+            archive_root=str(stack.archive_root),
+        )
+    assert envelope is not None
+    acquire.assert_not_called()
+    if selected:
+        assert envelope["outcome"] == "completed", envelope
+        assert envelope["readiness"]["degraded_components"] == [], envelope
+        events = envelope["result"]["payload"]["temporal_window"]["events"]
+        assert {ref for event in events for ref in event["evidence_refs"] if ref.startswith("session:")} == {
+            f"session:{ids[1]}"
+        }
+        admit.assert_not_called()
+    else:
+        admit.assert_called_once()
+        assert "semantic_snapshot" in envelope["readiness"]["degraded_components"], envelope

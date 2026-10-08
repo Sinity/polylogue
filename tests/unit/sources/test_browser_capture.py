@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import cast
 
+import pydantic
 import pytest
 
 from polylogue.api import Polylogue
@@ -24,7 +25,6 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
 )
 from polylogue.sources.parsers.browser_capture import (
-    COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
     TEMPORARY_CHAT_INGEST_FLAG,
@@ -520,50 +520,21 @@ def _compact_capture_payload(*, mapping: dict[str, object] | None = None) -> dic
     return payload
 
 
-def test_browser_capture_compact_chatgpt_projection_uses_envelope_turns() -> None:
-    payload = _compact_capture_payload()
+def test_compact_bridge_projection_is_refused_as_retired_capture_evidence() -> None:
+    """The synthetic compact projection is not provider-native evidence.
 
-    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")[0]
+    It replaced the predecessor laws that lowered and censused compact
+    projections from envelope turns; the envelope boundary now refuses the
+    projection before any parser or census sees it.
 
-    assert [message.provider_message_id for message in parsed.messages] == ["u1", "a1"]
-    assert [message.text for message in parsed.messages] == ["Draft the plan", "Here is the plan"]
-    assert COMPACT_BROWSER_CAPTURE_INGEST_FLAG in parsed.ingest_flags
-    assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in parsed.ingest_flags
-    assert DOM_FALLBACK_INGEST_FLAG not in parsed.ingest_flags
-
-
-def test_compact_capture_census_lowers_envelope_turns() -> None:
-    """The census must lower exactly the message ids the parser materializes.
-
-    `lower_chatgpt_documents` tested `raw_provider_payload["mapping"]` alone, so
-    a compact bridge projection was censused against a mapping
-    `browser_capture.parse` deliberately ignores: every one of its synthesized
-    node ids was reported as a conservation drop while the turns the archive
-    actually holds went uncounted.
-
-    Anti-vacuity: restore the bare
-    `isinstance(native.get("mapping"), dict)` test in
-    `polylogue/sources/dispatch.py` and the lowered document keys become
-    `{"untrusted-native-shape"}` instead of the parsed `{"u1", "a1"}`.
+    Anti-vacuity: drop the ``chatgpt-native-compact-v1`` check in
+    ``BrowserCaptureEnvelope.coerce_raw_provider_payload`` and both payloads
+    validate.
     """
-    from polylogue.sources.dispatch import lower_chatgpt_documents
-
-    payload = _compact_capture_payload()
-    [document] = lower_chatgpt_documents(payload, "fallback")
-    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")[0]
-
-    assert set(document.mapping) == {message.provider_message_id for message in parsed.messages}
-    assert "untrusted-native-shape" not in document.mapping
-
-
-def test_compact_capture_census_survives_empty_mapping() -> None:
-    """An empty compact mapping is not a zero-content-unit session."""
-    from polylogue.sources.dispatch import lower_chatgpt_documents
-
-    payload = _compact_capture_payload(mapping={})
-    [document] = lower_chatgpt_documents(payload, "fallback")
-
-    assert set(document.mapping) == {"u1", "a1"}
+    mappings: tuple[dict[str, object] | None, ...] = (None, {})
+    for mapping in mappings:
+        with pytest.raises(pydantic.ValidationError, match="capture_retired_projection"):
+            BrowserCaptureEnvelope.model_validate(_compact_capture_payload(mapping=mapping))
 
 
 def test_native_capture_census_still_uses_the_mapping() -> None:
@@ -1604,9 +1575,8 @@ def _chatgpt_code_interpreter_pair_payload(*, compact: bool) -> dict[str, object
     return payload
 
 
-@pytest.mark.parametrize("compact", [False, True])
-def test_browser_capture_tool_turn_blocks_land_as_typed_tool_use_and_tool_result(compact: bool) -> None:
-    payload = _chatgpt_code_interpreter_pair_payload(compact=compact)
+def test_browser_capture_tool_turn_blocks_land_as_typed_tool_use_and_tool_result() -> None:
+    payload = _chatgpt_code_interpreter_pair_payload(compact=False)
 
     parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
 
@@ -1640,11 +1610,7 @@ def test_browser_capture_tool_turn_blocks_land_as_typed_tool_use_and_tool_result
     assert result_message.parent_message_provider_id == "call-1"
     assert by_id["a1"].parent_message_provider_id == "result-1"
 
-    if compact:
-        assert COMPACT_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
-        assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in session.ingest_flags
-    else:
-        assert DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
+    assert DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
 
 
 @pytest.mark.asyncio
@@ -1659,7 +1625,7 @@ async def test_browser_capture_tool_turn_blocks_land_in_archive_with_consistent_
     blocks table must show one tool_use row and one tool_result row sharing a
     tool_id, matching the 1:1 pairing produced above.
     """
-    payload = _chatgpt_code_interpreter_pair_payload(compact=True)
+    payload = _chatgpt_code_interpreter_pair_payload(compact=False)
     envelope = BrowserCaptureEnvelope.model_validate(payload)
     artifact = write_capture_envelope(envelope, spool_path=tmp_path / "browser-capture").path
     config = get_config()

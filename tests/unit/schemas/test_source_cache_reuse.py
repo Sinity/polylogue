@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -140,14 +139,8 @@ def old_metadata_refresh(
     return descriptor
 
 
-@pytest.fixture
-def local_workers(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Policy-change tests need the real collector to see each run's selected parameters.
-    monkeypatch.setattr(source, "ProcessPoolExecutor", ThreadPoolExecutor)
-
-
 def test_identity_upgrade_replaces_legacy_codex_path_fallback_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Old path-keyed Codex rows double-count duplicate legacy exports.
 
@@ -182,7 +175,7 @@ def test_identity_upgrade_replaces_legacy_codex_path_fallback_cache(
     assert upgraded.evidence_by_element == fresh.evidence_by_element
 
 
-def test_modern_codex_identity_reuses_warm_cache(tmp_path: Path, local_workers: None) -> None:
+def test_modern_codex_identity_reuses_warm_cache(tmp_path: Path) -> None:
     """Native Codex cache rows remain reusable across the identity upgrade."""
     root = tmp_path / "inputs"
     root.mkdir()
@@ -195,7 +188,7 @@ def test_modern_codex_identity_reuses_warm_cache(tmp_path: Path, local_workers: 
 
 
 def test_headerless_claude_code_recollects_legacy_path_fallback_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Anti-vacuity: a legacy path fallback must not supply current revision-keyed Claude Code evidence."""
     root = tmp_path / "inputs"
@@ -274,7 +267,7 @@ def reject_source_recollection(*_args: object, **_kwargs: object) -> source._Col
 
 @pytest.mark.parametrize("legacy", [False, True])
 def test_codex_metadata_refresh_orders_reserialized_legacy_exports_and_reuses_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None, legacy: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy: bool
 ) -> None:
     """Timestamp-free old rows must not use byte hashes to choose a stale export.
 
@@ -332,7 +325,7 @@ def test_codex_metadata_refresh_orders_reserialized_legacy_exports_and_reuses_it
 
 
 def test_codex_metadata_refresh_caches_a_computed_null_timestamp(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A completed refresh with no timestamp is evidence, not a cache miss forever."""
     root = tmp_path / "inputs"
@@ -364,7 +357,7 @@ def test_codex_metadata_refresh_caches_a_computed_null_timestamp(
 
 
 def test_codex_metadata_refresh_only_recollects_missing_maximum_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Known ordering metadata remains reusable while a competing legacy row is refreshed."""
     root = tmp_path / "inputs"
@@ -398,9 +391,7 @@ def test_codex_metadata_refresh_only_recollects_missing_maximum_metadata(
     assert refreshed_paths == [root / "older.jsonl"]
 
 
-def test_codex_metadata_refresh_refuses_a_changed_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
-) -> None:
+def test_codex_metadata_refresh_refuses_a_changed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Refresh metadata may not be attached to bytes that changed after collection."""
     root = tmp_path / "inputs"
     root.mkdir()
@@ -439,7 +430,7 @@ def test_codex_metadata_refresh_refuses_a_changed_source(
 
 
 def test_identity_only_upgrade_reuses_collapsed_native_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An identity-only upgrade does not require cardinality recovery."""
     root = tmp_path / "inputs"
@@ -485,7 +476,7 @@ def test_failed_codex_metadata_refresh_does_not_cache_completed_state(
 
 
 def test_statistics_miss_preserves_codex_timestamp_discovered_after_old_preliminary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A statistics retry may update ordering metadata without failing descriptor validation."""
     root = tmp_path / "inputs"
@@ -508,7 +499,7 @@ def test_statistics_miss_preserves_codex_timestamp_discovered_after_old_prelimin
 
 
 def test_legacy_codex_zip_cache_is_recollected_on_identity_upgrade(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An old ZIP has unresolved member identity, so its cache contribution is never upgraded in place."""
     root = tmp_path / "inputs"
@@ -528,9 +519,7 @@ def test_legacy_codex_zip_cache_is_recollected_on_identity_upgrade(
     assert upgraded.evidence_by_element == fresh.evidence_by_element
 
 
-def test_zip_members_with_one_chatgpt_identity_keep_current_and_historical_revisions(
-    tmp_path: Path, local_workers: None
-) -> None:
+def test_zip_members_with_one_chatgpt_identity_keep_current_and_historical_revisions(tmp_path: Path) -> None:
     """ZIP members with one native id must not merge before revision selection.
 
     Anti-vacuity: a spool keyed only by native id combines both member records,
@@ -553,7 +542,7 @@ def test_zip_members_with_one_chatgpt_identity_keep_current_and_historical_revis
     assert "older_only" in historical_properties
 
 
-def test_identical_zip_members_are_deduplicated_by_native_revision(tmp_path: Path, local_workers: None) -> None:
+def test_identical_zip_members_are_deduplicated_by_native_revision(tmp_path: Path) -> None:
     """A member partition preserves distinct entries without defeating revision deduplication."""
     archive = tmp_path / "captures.zip"
     payload = json.dumps(chatgpt_conversation("shared", 1))
@@ -565,7 +554,7 @@ def test_identical_zip_members_are_deduplicated_by_native_revision(tmp_path: Pat
     assert result.included_native_source_revision_count == 1
 
 
-def test_zip_and_loose_chatgpt_member_have_equal_evidence(tmp_path: Path, local_workers: None) -> None:
+def test_zip_and_loose_chatgpt_member_have_equal_evidence(tmp_path: Path) -> None:
     """Member partitioning changes spool ownership, not the resulting source evidence."""
     payload = json.dumps(chatgpt_conversation("shared", 1))
     loose = tmp_path / "loose.json"
@@ -578,9 +567,7 @@ def test_zip_and_loose_chatgpt_member_have_equal_evidence(tmp_path: Path, local_
     assert zip_result.evidence_by_element == loose_result.evidence_by_element
 
 
-def test_zip_and_loose_chatgpt_revisions_have_equal_current_and_historical_evidence(
-    tmp_path: Path, local_workers: None
-) -> None:
+def test_zip_and_loose_chatgpt_revisions_have_equal_current_and_historical_evidence(tmp_path: Path) -> None:
     """A ZIP member partition preserves the same revision selection as loose source files."""
     older = json.dumps(chatgpt_conversation("shared", 1, marker="older_only"))
     newer = json.dumps(chatgpt_conversation("shared", 2, marker="newer_only"))
@@ -598,7 +585,7 @@ def test_zip_and_loose_chatgpt_revisions_have_equal_current_and_historical_evide
 
 
 def test_singleton_zip_cache_row_reuses_across_member_partition_revision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """One reduced record cannot have merged two ZIP members."""
     archive = tmp_path / "captures.zip"
@@ -613,7 +600,7 @@ def test_singleton_zip_cache_row_reuses_across_member_partition_revision(
 
 
 def test_multi_record_legacy_zip_cache_row_is_recollected_for_member_partitioning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A multi-record legacy ZIP row may merge members and must be replaced."""
     archive = tmp_path / "captures.zip"
@@ -661,7 +648,7 @@ def test_multi_record_legacy_zip_cache_row_is_recollected_for_member_partitionin
 
 
 def test_flatfile_equal_count_cache_row_reuses_across_zip_member_revision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The ZIP revision does not invalidate an equal-count loose-file contribution."""
     loose = tmp_path / "loose.json"
@@ -674,9 +661,7 @@ def test_flatfile_equal_count_cache_row_reuses_across_zip_member_revision(
     assert upgraded.cache_phase_hits == {"structure": 1, "statistics": 1}
 
 
-def test_old_zip_count_poison_becomes_a_flatfile_cache_miss(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
-) -> None:
+def test_old_zip_count_poison_becomes_a_flatfile_cache_miss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A merged old ZIP contribution must not make a matching loose member fail cache validation."""
     payload = json.dumps(chatgpt_conversation("shared", 1))
     archive = tmp_path / "captures.zip"
@@ -728,7 +713,6 @@ def test_old_zip_count_poison_becomes_a_flatfile_cache_miss(
 def test_implementation_provenance_does_not_invalidate_semantically_unchanged_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    local_workers: None,
 ) -> None:
     """Tying the cache key to reporting/import changes repeats both source passes."""
     root = tmp_path / "inputs"
@@ -757,7 +741,6 @@ def test_implementation_provenance_does_not_invalidate_semantically_unchanged_ev
 def test_semantic_revision_invalidates_only_the_dependent_phase(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    local_workers: None,
     recipe: SourceEvidenceRecipe,
     hits: dict[str, int],
     misses: dict[str, int],
@@ -776,7 +759,7 @@ def test_semantic_revision_invalidates_only_the_dependent_phase(
 
 
 def test_structure_recipe_upgrade_replaces_old_shape_hashes_while_reusing_statistics(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A warm statistics row must receive fresh canonical structure evidence."""
     root = tmp_path / "inputs"
@@ -825,7 +808,6 @@ def test_structure_recipe_upgrade_replaces_old_shape_hashes_while_reusing_statis
 def test_key_limit_upgrade_recovers_collapsed_fields_and_reuses_other_structure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    local_workers: None,
 ) -> None:
     """A wildcard summary cannot supply the erased field names or separate field counters."""
     root = tmp_path / "inputs"
@@ -847,7 +829,6 @@ def test_key_limit_upgrade_recovers_collapsed_fields_and_reuses_other_structure(
 
 def test_new_dynamic_path_only_reprocesses_sources_containing_that_path(
     tmp_path: Path,
-    local_workers: None,
 ) -> None:
     """A global normalization-map key must not invalidate unrelated source contributions."""
     root = tmp_path / "inputs"
@@ -866,7 +847,6 @@ def test_new_dynamic_path_only_reprocesses_sources_containing_that_path(
 @pytest.mark.parametrize("name", ["a.b", "a[*]", "*"])
 def test_literal_path_punctuation_invalidates_affected_statistics(
     tmp_path: Path,
-    local_workers: None,
     name: str,
 ) -> None:
     """Parsing a field name as a path incorrectly reuses its pre-normalization counters."""

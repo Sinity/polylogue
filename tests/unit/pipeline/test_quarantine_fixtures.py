@@ -1,445 +1,179 @@
-"""Synthetic regression fixtures for known quarantine shapes.
-
-The live archive has recurring quarantine cases that the operator brief
-documents but that were not previously captured as automated tests.
-Two patterns dominate:
-
-1. **Zero-length source file** — the export file exists but has 0 bytes.
-   Typical for interrupted Codex session writes. The decoder surfaces
-   ``Input is a zero-length, empty document``. The raw id for a real
-   zero-length blob is the SHA-256 of the empty string
-   (``e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855``).
-
-2. **Malformed JSONL mid-stream** — the JSONL export is mostly well-formed
-   but a single record has invalid JSON (missing comma, unbalanced brace,
-   etc.). In STRICT validation mode this surfaces as
-   ``Malformed JSONL lines: N (first bad line X: <detail>)``.
-
-These tests pin the quarantine contract: ``ingest_record`` must produce
-``error``/``parse_error`` in both cases, and when the result is
-persisted via ``mark_raw_parsed`` the raw session lands in a
-quarantined state (``parsed_at is None AND parse_error is not None``).
-
-If the quarantine policy ever shifts — say a future decoder starts
-tolerating empty blobs silently, or JSONL validation relaxes out of
-STRICT by default — these tests fail loudly so the regression is
-visible at PR time, not after a live archive run silently drops data.
-"""
+"""Quarantine behavior owned by the retained validation service."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import datetime, timezone
+import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from polylogue.core.enums import ValidationMode, ValidationStatus
-from polylogue.pipeline.services.ingest_worker import ingest_record
-from polylogue.pipeline.services.validation_flow import validate_raw_ids
-from polylogue.storage.blob_store import get_blob_store
-from polylogue.storage.raw.artifacts import RawIngestArtifactState
-from polylogue.storage.raw.models import RawSessionState
+from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
+from polylogue.pipeline.services.validation import ValidationService
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.live_ingest import prepared_live_convergence_owner
+from tests.infra.retained_jsonl import prepared_source_fixture, retained_raw_fixture
 from tests.infra.storage_records import admit_raw_record
 
-pytestmark = pytest.mark.uses_real_clock("Quarantine-fixture acquired_at is opaque metadata for the test corpus.")
 
-EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-
-
-def _make_raw_record(content: bytes, provider: str, path: str) -> RawSessionRecord:
-    """Store ``content`` in the blob store and wrap a RawSessionRecord."""
-    raw_id, size = get_blob_store().write_from_bytes(content)
-    now = datetime.now(timezone.utc).isoformat()
-    return RawSessionRecord(
-        raw_id=raw_id,
-        source_name="quarantine-fixture",
-        source_path=path,
-        source_index=None,
-        blob_size=size,
-        acquired_at=now,
-        file_mtime=now,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Synthetic fixtures — the shape, not the bytes, of real quarantine cases.
-# ---------------------------------------------------------------------------
-
-
-def zero_length_bytes() -> bytes:
-    """Zero-length export body. SHA-256 matches EMPTY_SHA256."""
-    return b""
-
-
-def claude_code_malformed_jsonl_bytes() -> bytes:
-    """Valid claude-code JSONL with one record that has a missing comma.
-
-    Structure: two well-formed records surrounding one bad record. The
-    bad record drops the comma between ``parentUuid`` and ``type``,
-    yielding ``unexpected character`` at the point the decoder expects
-    either a comma or the object's closing brace.
-    """
-    good_a = (
-        b'{"parentUuid":null,"type":"user",'
-        b'"message":{"role":"user","content":"hello"},'
-        b'"uuid":"m1","timestamp":"2025-01-01T00:00:00Z"}'
-    )
-    bad = (
-        b'{"parentUuid":null '  # <- missing comma here
-        b'"type":"user",'
-        b'"message":{"role":"user","content":"bad"},'
-        b'"uuid":"m2","timestamp":"2025-01-01T00:00:01Z"}'
-    )
-    good_b = (
-        b'{"parentUuid":"m1","type":"assistant",'
-        b'"message":{"role":"assistant","content":[{"type":"text","text":"hi"}]},'
-        b'"uuid":"m3","timestamp":"2025-01-01T00:00:02Z"}'
-    )
-    return good_a + b"\n" + bad + b"\n" + good_b + b"\n"
-
-
-def delayed_claude_code_session_jsonl_bytes() -> bytes:
-    """Thirty-two workflow rows precede the recoverable Claude session."""
-    prefix = b"".join(
-        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n' for index in range(32)
-    )
-    return prefix + claude_code_malformed_jsonl_bytes()
-
-
-def codex_malformed_jsonl_bytes() -> bytes:
-    """Valid codex JSONL with one record that is not valid JSON.
-
-    Codex sessions are JSONL with a ``session_meta`` envelope followed
-    by ``message`` records. A missing closing brace in a ``message``
-    record is a realistic corruption shape.
-    """
-    meta = b'{"type":"session_meta","payload":{"id":"session-x","timestamp":"2025-01-01T00:00:00Z"}}'
-    good = (
-        b'{"type":"message","id":"msg-1","role":"user",'
-        b'"timestamp":"2025-01-01T00:00:01Z",'
-        b'"content":[{"type":"input_text","text":"ping"}]}'
-    )
-    bad = (
-        b'{"type":"message","id":"msg-2","role":"assistant",'
-        b'"timestamp":"2025-01-01T00:00:02Z"'  # <- missing closing brace + comma
-        b'"content":[{"type":"output_text","text":"pong"}]'
-    )
-    return meta + b"\n" + good + b"\n" + bad + b"\n"
-
-
-# ---------------------------------------------------------------------------
-# Zero-length quarantine
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "provider,source_path",
-    [
-        ("codex", "/exports/codex-session.jsonl"),
-        ("claude-code", "/exports/claude-code-session.jsonl"),
-        ("chatgpt", "/exports/chatgpt.json"),
-        ("gemini", "/exports/gemini.json"),
-    ],
-)
-def test_zero_length_blob_quarantines_across_providers(tmp_path: Path, provider: str, source_path: str) -> None:
-    """Every provider produces a decoder-level quarantine on zero-length input.
-
-    The error originates in ``build_raw_payload_envelope`` and surfaces
-    identically regardless of provider — it's a pre-parser failure that
-    all provider paths share. Contract: ``error`` and ``parse_error``
-    set, ``validation_status == FAILED``, no sessions produced.
-    """
-    record = _make_raw_record(zero_length_bytes(), provider, source_path)
-    assert record.raw_id == EMPTY_SHA256
-
-    result = ingest_record(record, str(tmp_path / "archive"), "strict")
-
-    assert result.error is not None
-    assert result.parse_error is not None
-    assert "zero-length" in result.error
-    assert result.parse_error == result.error
-    assert result.validation_status == ValidationStatus.FAILED.value
-    assert result.sessions == []
-
-
-def test_zero_length_blob_quarantine_survives_non_strict_mode(tmp_path: Path) -> None:
-    """Zero-length input fails even with validation OFF — it's a decoder error.
-
-    The STRICT/OFF distinction governs schema validation, not blob
-    decoding. An empty document has no bytes to parse, so the error
-    fires before any validation step runs.
-    """
-    record = _make_raw_record(zero_length_bytes(), "codex", "/exports/codex.jsonl")
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-
-    assert result.error is not None
-    assert "zero-length" in result.error
-    assert result.parse_error is not None
-
-
-# ---------------------------------------------------------------------------
-# Malformed JSONL quarantine
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "provider,fixture",
-    [
-        ("claude-code", claude_code_malformed_jsonl_bytes),
-        ("codex", codex_malformed_jsonl_bytes),
-    ],
-)
-def test_malformed_jsonl_mid_stream_quarantines_in_strict_mode(
-    tmp_path: Path,
-    provider: str,
-    fixture: Callable[[], bytes],
+@pytest.mark.asyncio
+async def test_validation_api_persists_malformed_jsonl_quarantine_without_payload_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Stream-record providers quarantine a single malformed JSONL record.
-
-    Under STRICT validation, even a single bad line triggers the
-    ``Malformed JSONL lines: N (first bad line X: ...)`` quarantine.
-    The envelope records ``malformed_jsonl_lines`` during sampling and
-    surfaces it as a parse error rather than silently dropping data.
-    """
-    record = _make_raw_record(fixture(), provider, f"/exports/{provider}.jsonl")
-    result = ingest_record(record, str(tmp_path / "archive"), "strict")
-
-    assert result.error is not None, "malformed JSONL must surface an error in STRICT mode"
-    assert result.error.startswith("Malformed JSONL lines:")
-    assert result.parse_error == result.error
-    assert result.validation_status == ValidationStatus.FAILED.value
-    assert result.sessions == []
-
-
-def test_malformed_jsonl_tolerated_in_validation_off_mode(tmp_path: Path) -> None:
-    """With validation disabled, well-formed records around a bad line still parse.
-
-    STRICT is the only mode that promotes malformed-line detection to a
-    fatal parse error. With validation OFF the bad line is silently
-    skipped and the surrounding records produce one session. This
-    test pins that asymmetry so a future "always strict" change would
-    fail here rather than silently break the OFF contract.
-    """
-    record = _make_raw_record(
-        claude_code_malformed_jsonl_bytes(),
-        "claude-code",
-        "/exports/claude-code.jsonl",
+    """Malformed content is quarantined by the live validation API without leaking it."""
+    private_text = "SYNTHETIC_PRIVATE_PAYLOAD_41A9"
+    payload = (
+        '{"type":"session_meta","payload":{"id":"synthetic"}}\n'
+        '{"type":"message","role":"user","content":"' + private_text + '"}\n'
+        '{"type":"message" "role":"assistant"}\n'
+    ).encode()
+    blob_root = tmp_path / "blob"
+    raw_id, blob_size = BlobStore(blob_root).write_from_bytes(payload)
+    acquired_at = "2026-01-01T00:00:00+00:00"
+    record = RawSessionRecord(
+        raw_id=raw_id,
+        source_name="codex",
+        source_path="synthetic/session.jsonl",
+        canonical_source_path="synthetic/session.jsonl",
+        payload_provider=Provider.CODEX,
+        source_index=None,
+        blob_size=blob_size,
+        acquired_at=acquired_at,
+        file_mtime=acquired_at,
     )
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-
-    assert result.error is None
-    assert result.sessions, "valid surrounding records should still parse"
-
-
-def test_validation_off_fast_path_repairs_session_shaped_workflow_journal(tmp_path: Path) -> None:
-    """Decoded session evidence must outrank a workflow-journal path.
-
-    This drives the validation-off worker route with a journal path containing
-    one recoverable Claude Code session record and one malformed line. It must
-    enter the stream parser, which repairs the usable record, rather than
-    reporting a successful sidecar admission from the path alone.
-    """
-    payload = delayed_claude_code_session_jsonl_bytes()
-    record = _make_raw_record(
-        payload,
-        "claude-code",
-        "/tmp/.claude/projects/project/subagents/workflows/wf-run-1/journal.jsonl",
-    ).model_copy(update={"source_name": "claude-code"})
-
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-
-    assert result.error is None
-    assert len(result.sessions) == 1
-    assert result.sessions[0].parsed_session.messages[0].text == "hello"
-
-
-def test_validation_advisory_stream_repairs_session_shaped_workflow_journal(tmp_path: Path) -> None:
-    """The normal worker stream plan must classify decoded journal records first."""
-    record = _make_raw_record(
-        delayed_claude_code_session_jsonl_bytes(),
-        "claude-code",
-        "/tmp/.claude/projects/project/subagents/workflows/wf-run-1/journal.jsonl",
-    ).model_copy(update={"source_name": "claude-code"})
-
-    result = ingest_record(record, str(tmp_path / "archive"), "advisory")
-
-    assert result.error is None
-    assert len(result.sessions) == 1
-    assert result.sessions[0].parsed_session.messages[0].text == "hello"
-
-
-# ---------------------------------------------------------------------------
-# Persistence lifecycle — ingest_record → mark_raw_parsed → quarantined
-# ---------------------------------------------------------------------------
-
-
-async def test_quarantine_state_round_trip_through_mark_raw_parsed(tmp_path: Path) -> None:
-    """Persisting an ingest error leaves the raw row in a quarantined state.
-
-    Quarantine = ``parsed_at is None AND parse_error is not None`` (see
-    ``RawIngestArtifactState.quarantined``). Verifies the full lifecycle:
-    ``ingest_record`` surfaces the error, ``mark_raw_parsed`` persists it,
-    ``RawSessionState`` round-trips, and the derived artifact state
-    classifies the row as quarantined.
-    """
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-    record = _make_raw_record(zero_length_bytes(), "codex", "/exports/codex.jsonl")
-
-    result = ingest_record(record, str(tmp_path / "archive"), "strict")
-    assert result.error is not None
-
-    backend = SQLiteBackend(db_path=tmp_path / "archive.db")
+    backend = SQLiteBackend(db_path=tmp_path / "validation.db")
+    service = ValidationService(backend)
+    monkeypatch.setattr(service, "_schema_validation_mode", lambda: ValidationMode.STRICT)
+    monkeypatch.setattr("polylogue.pipeline.services.validation_flow.blob_store_root", lambda: blob_root)
     try:
         await admit_raw_record(backend, record)
-        await backend.mark_raw_parsed(record.raw_id, error=result.error)
+        result = await service.validate_raw_ids(raw_ids=[raw_id])
+        stored = await backend.get_raw_session(raw_id)
 
-        stored = await backend.get_raw_session(record.raw_id)
+        assert len(result.records) == 1
+        validation = result.records[0]
+        assert validation.validation_status is ValidationStatus.FAILED
+        assert validation.parse_error is not None
+        assert "Malformed JSONL lines" in validation.parse_error
+        assert private_text not in validation.parse_error
         assert stored is not None
-        assert stored.parse_error is not None
+        assert stored.validation_status is ValidationStatus.FAILED
         assert stored.parsed_at is None
-
-        state = RawIngestArtifactState.from_state(
-            RawSessionState(
-                raw_id=stored.raw_id,
-                parsed_at=stored.parsed_at,
-                parse_error=stored.parse_error,
-            )
-        )
-        assert state.quarantined is True
-        assert state.parsed is False
+        assert stored.parse_error == validation.parse_error
     finally:
         await backend.close()
 
 
-async def test_validation_flow_persists_decode_quarantine_state(tmp_path: Path) -> None:
-    """Validation persistence records both decode-failure shapes as quarantines."""
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+@pytest.mark.parametrize("mode", ["off", "advisory", "strict"])
+@pytest.mark.parametrize(
+    ("provider", "suffix"),
+    [
+        (Provider.CODEX, "jsonl"),
+        (Provider.CLAUDE_CODE, "jsonl"),
+        (Provider.CHATGPT, "json"),
+        (Provider.GEMINI, "json"),
+    ],
+)
+def test_zero_length_retained_raw_is_terminal_for_every_provider_and_validation_mode(
+    tmp_path: Path, mode: str, provider: Provider, suffix: str
+) -> None:
+    """Empty acquired bytes are terminal decoder evidence, regardless of schema mode or provider."""
+    from polylogue.core.raw_failure_evidence import RAW_FAILURE_VALIDATION_FAILURE_KINDS
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    cases = [
-        (
-            # Unlike `ingest_record` (build_raw_payload_envelope,
-            # test_zero_length_blob_quarantines_across_providers below),
-            # `validate_raw_ids` decodes through `pipeline/services/
-            # validation_runtime.py`, which surfaces the active JSON
-            # backend's own decode-error text verbatim after a fixed
-            # "Unable to decode payload: " prefix -- msgspec says "Input
-            # data was truncated" for a zero-length document; stdlib json
-            # phrases it differently again. Only the facade's own prefix is
-            # backend-invariant; see polylogue/core/json.py.
-            _make_raw_record(zero_length_bytes(), "codex", "/exports/empty-codex.jsonl"),
-            "Unable to decode payload:",
-        ),
-        (
-            _make_raw_record(codex_malformed_jsonl_bytes(), "codex", "/exports/malformed-codex.jsonl"),
-            "Malformed JSONL lines:",
-        ),
-    ]
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    blob_hash, _size = BlobStore(root / "blob").write_from_bytes(b"")
+    with retained_raw_fixture(
+        root=root,
+        provider=provider,
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "exports" / f"empty.{suffix}"),
+    ) as (_source_read, raw_id):
+        pass
 
-    backend = SQLiteBackend(db_path=tmp_path / "archive.db")
-    try:
-        for record, _expected_error in cases:
-            await admit_raw_record(backend, record)
-
-        result = await validate_raw_ids(
-            repository=backend,
-            raw_ids=[record.raw_id for record, _expected_error in cases],
-            persist=True,
-            validation_mode=ValidationMode.STRICT,
-            raw_batch_size=10,
-        )
-
-        assert len(result.records) == 2
-        assert result.parseable_raw_ids == []
-        assert set(result.invalid_raw_ids) == {record.raw_id for record, _expected_error in cases}
-
-        for record, expected_error in cases:
-            validation_record = next(item for item in result.records if item.raw_id == record.raw_id)
-            assert validation_record.validation_status == ValidationStatus.FAILED
-            assert validation_record.parse_error is not None
-            assert expected_error in validation_record.parse_error
-
-            stored = await backend.get_raw_session(record.raw_id)
-            assert stored is not None
-            assert stored.validation_status == ValidationStatus.FAILED
-            assert stored.validation_error is not None
-            assert expected_error in stored.validation_error
-            assert stored.parse_error is not None
-            assert expected_error in stored.parse_error
-            assert stored.parsed_at is None
-
-            state = RawIngestArtifactState.from_state(
-                RawSessionState(
-                    raw_id=stored.raw_id,
-                    parsed_at=stored.parsed_at,
-                    parse_error=stored.parse_error,
-                    validation_status=stored.validation_status,
+    async def replay() -> tuple[object, list[str]]:
+        refused: list[str] = []
+        async with prepared_live_convergence_owner(root, validation_mode=ValidationMode.from_string(mode)) as owner:
+            receipts = (
+                await owner.replay_retained_raw_ids(
+                    (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
                 )
-            )
-            assert state.quarantined is True
-            assert state.needs_parse_backlog() is False
-    finally:
-        await backend.close()
+            ).require_complete()
+            return receipts, refused
+
+    receipts, refused = asyncio.run(replay())
+
+    assert receipts == (), (provider, mode, receipts)
+    assert refused == [raw_id], (provider, mode, refused)
+    with prepared_source_fixture(root) as source_read:
+        assert source_read.raw_parser_census_is_current(raw_id)
+        refusal = source_read.raw_terminal_decode_refusal(raw_id)
+        assert refusal is not None
+        assert refusal.kind.value in RAW_FAILURE_VALIDATION_FAILURE_KINDS
+        assert str(refusal).strip()
+    with sqlite3.connect(root / "source.db") as source:
+        state = source.execute(
+            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+        artifact_kinds = {
+            str(row[0]) for row in source.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id=?", (raw_id,))
+        }
+    assert state is not None
+    assert state[0] is None
+    assert state[1] == str(refusal)
+    assert artifact_kinds & RAW_FAILURE_VALIDATION_FAILURE_KINDS
+    with sqlite3.connect(root / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
-# ---------------------------------------------------------------------------
-# Quarantine privacy — error diagnostics must not leak payload content
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("mode", ["off", "advisory", "strict"])
+def test_complete_malformed_jsonl_is_terminal_without_publishing_a_session_in_every_mode(
+    tmp_path: Path, mode: str
+) -> None:
+    """Schema mode changes validation only; it never makes complete malformed JSONL publishable."""
+    from polylogue.core.raw_failure_evidence import RAW_FAILURE_VALIDATION_FAILURE_KINDS
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-
-def test_quarantine_error_does_not_leak_payload_text(tmp_path: Path) -> None:
-    """parse_error must contain only structural context, never private payload text.
-
-    The error message surfaces to operators and may be logged or displayed.
-    It must describe the *structural* problem (line number, column, type of
-    failure) without echoing the actual message content from the session.
-    """
-    private_content = "PRIVATE_SESSION_SECRET_XYZZY_DO_NOT_LOG"
-    good_a = (
-        f'{{"parentUuid":null,"type":"user",'
-        f'"message":{{"role":"user","content":"{private_content}"}},'
-        f'"uuid":"m1","timestamp":"2025-01-01T00:00:00Z"}}'
-    ).encode()
-    bad = (
-        b'{"parentUuid":null '  # missing comma — structural malformation
-        b'"type":"user",'
-        b'"message":{"role":"user","content":"also-private"},'
-        b'"uuid":"m2","timestamp":"2025-01-01T00:00:01Z"}'
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    payload = (
+        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"safe"},'
+        b'"uuid":"m1","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"parentUuid":null "type":"user","message":{"role":"user","content":"PRIVATE_BAD_LINE"},'
+        b'"uuid":"m2","timestamp":"2025-01-01T00:00:01Z"}\n'
     )
-    good_b = (
-        b'{"parentUuid":"m1","type":"assistant",'
-        b'"message":{"role":"assistant","content":[{"type":"text","text":"hi"}]},'
-        b'"uuid":"m3","timestamp":"2025-01-01T00:00:02Z"}'
-    )
-    content = good_a + b"\n" + bad + b"\n" + good_b + b"\n"
+    blob_hash, _size = BlobStore(root / "blob").write_from_bytes(payload)
+    with retained_raw_fixture(
+        root=root,
+        provider=Provider.CLAUDE_CODE,
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "projects" / "proj" / "malformed.jsonl"),
+    ) as (_source_read, raw_id):
+        pass
 
-    record = _make_raw_record(content, "claude-code", "/exports/claude-code.jsonl")
-    result = ingest_record(record, str(tmp_path / "archive"), "strict")
+    async def replay() -> tuple[object, list[str]]:
+        refused: list[str] = []
+        async with prepared_live_convergence_owner(root, validation_mode=ValidationMode.from_string(mode)) as owner:
+            receipts = (
+                await owner.replay_retained_raw_ids(
+                    (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
+                )
+            ).require_complete()
+            return receipts, refused
 
-    assert result.error is not None, "malformed JSONL must produce an error"
-    assert result.parse_error is not None
+    receipts, refused = asyncio.run(replay())
 
-    assert private_content not in result.error, f"Private payload content leaked into error: {result.error!r}"
-    assert private_content not in result.parse_error, (
-        f"Private payload content leaked into parse_error: {result.parse_error!r}"
-    )
-    assert "also-private" not in result.error
-    assert "also-private" not in result.parse_error
-
-    # The error must contain structural context, not be a bare/empty string
-    assert "Malformed JSONL" in result.error or "line" in result.error, (
-        f"Error lacks structural context: {result.error!r}"
-    )
-
-
-def test_zero_length_quarantine_error_contains_only_structural_description(tmp_path: Path) -> None:
-    """The zero-length error must be a fixed structural description with no payload content."""
-    record = _make_raw_record(b"", "codex", "/exports/session.jsonl")
-    result = ingest_record(record, str(tmp_path / "archive"), "strict")
-
-    assert result.error is not None
-    assert "zero-length" in result.error or "empty" in result.error
-    # No dynamic content — the error must be identical for all providers
-    assert result.error == result.parse_error
+    assert receipts == ()
+    assert refused == [raw_id]
+    with prepared_source_fixture(root) as source_read:
+        assert source_read.raw_parser_census_is_current(raw_id)
+        refusal = source_read.raw_terminal_decode_refusal(raw_id)
+        assert refusal is not None
+        assert refusal.kind.value in RAW_FAILURE_VALIDATION_FAILURE_KINDS
+        assert "PRIVATE_BAD_LINE" not in str(refusal)
+        assert "line" in str(refusal).lower() or "malformed" in str(refusal).lower()
+    with sqlite3.connect(root / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)

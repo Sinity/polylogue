@@ -13,6 +13,7 @@ from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.archive_scenarios import native_session_id_for
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.storage_records import make_message, make_session, save_current_archive_records
 
 pytestmark = pytest.mark.uses_real_clock(
@@ -29,6 +30,7 @@ class TestAsyncEnsureIndex:
         from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_async
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            run_off_event_loop(lambda: bootstrap_archive_root(Path(tmpdir)))
             backend = SQLiteBackend(db_path=Path(tmpdir) / "index.db")
             await backend.queries.list_sessions(SessionRecordQuery())
             async with backend.connection() as conn:
@@ -42,6 +44,7 @@ class TestAsyncEnsureIndex:
         from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_async
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            run_off_event_loop(lambda: bootstrap_archive_root(Path(tmpdir)))
             backend = SQLiteBackend(db_path=Path(tmpdir) / "index.db")
             await backend.queries.list_sessions(SessionRecordQuery())
             async with backend.connection() as conn:
@@ -173,6 +176,7 @@ class TestAsyncUpdateIndex:
         from polylogue.pipeline.services.indexing import update_index_for_sessions
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            run_off_event_loop(lambda: bootstrap_archive_root(Path(tmpdir)))
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             await backend.queries.list_sessions(SessionRecordQuery())
             await update_index_for_sessions([], backend)
@@ -187,6 +191,7 @@ class TestAsyncIndexStatus:
         from polylogue.pipeline.services.indexing import index_status
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            run_off_event_loop(lambda: bootstrap_archive_root(Path(tmpdir)))
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             await backend.queries.list_sessions(SessionRecordQuery())
             status = await index_status(backend)

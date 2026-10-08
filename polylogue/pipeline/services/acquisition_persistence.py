@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
+from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.protocols import RawPersistenceStore
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.acquisition_records import pending_pre_parse_raw_admission_request
@@ -23,7 +26,8 @@ async def persist_raw_record(
     prepared_observation: ArtifactObservationRecord | None = None,
     preparation_error: Exception | None = None,
     failures: list[CursorFailurePayload] | None = None,
-) -> None:
+    on_failure: Callable[[Exception], None] | None = None,
+) -> str | None:
     """Persist one raw record and update acquisition counters.
 
     A record that could not be stored is appended to ``failures`` so the
@@ -48,6 +52,9 @@ async def persist_raw_record(
             result.raw_ids.append(admission.result.raw_id)
         else:
             result.skipped += 1
+        return admission.result.raw_id
+    except DaemonOperationCancelled:
+        raise
     except Exception as exc:
         logger.error(
             "Failed to store raw session",
@@ -57,10 +64,13 @@ async def persist_raw_record(
             exc_info=True,
         )
         result.errors += 1
+        if on_failure is not None:
+            on_failure(exc)
         if failures is not None and not isinstance(exc, ExcisionPolicyError):
             # Durably excised content is a permanent refusal: withholding the
             # cursor would retry forbidden bytes on every pass.
             failures.append(CursorFailurePayload(path=record.source_path, error=f"{type(exc).__name__}: {exc}"))
+    return None
 
 
 __all__ = ["persist_raw_record"]

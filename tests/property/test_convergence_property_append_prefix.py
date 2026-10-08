@@ -7,6 +7,7 @@ from hypothesis import Phase, given, settings
 from hypothesis import strategies as st
 
 from tests.infra.convergence_harness import (
+    ConvergenceArchive,
     build_converged_archive,
     converge_convergence_archive,
     ingest_composed_sources,
@@ -22,6 +23,23 @@ from tests.infra.convergence_laws import (
     read_semantic_projection,
     semantic_oracle,
 )
+
+# The full-corpus side of the law depends only on the rotation, and the law
+# only reads it; each distinct rotation is built and verified once per process
+# instead of once per example. The prefix-then-delta side is rebuilt fresh in
+# every example.
+_FULL_BY_SHIFT: dict[int, ConvergenceArchive] = {}
+
+
+def _converged_full_archive(tmp_path_factory: pytest.TempPathFactory, shift: int) -> ConvergenceArchive:
+    if shift not in _FULL_BY_SHIFT:
+        composed = generated_convergence_workload().sources
+        _FULL_BY_SHIFT[shift] = build_converged_archive(
+            tmp_path_factory.mktemp(f"append-prefix-full-{shift}") / "full",
+            composed,
+            session_order=rotated_session_order(composed, shift),
+        )
+    return _FULL_BY_SHIFT[shift]
 
 
 @settings(
@@ -40,7 +58,7 @@ def test_convergence_property_append_prefix_matches_full(
     workload = generated_convergence_workload()
     composed = workload.sources
     order = rotated_session_order(composed, shift)
-    full = build_converged_archive(tmp_path / "full", composed, session_order=order, append_only=True)
+    full = _converged_full_archive(tmp_path_factory, shift)
 
     prefix_root = tmp_path / "prefix"
     initialize_active_archive(prefix_root)
@@ -49,7 +67,6 @@ def test_convergence_property_append_prefix_matches_full(
         composed,
         session_indexes=order[:split],
         converge_after_each=False,
-        append_only=True,
     )
     converge_convergence_archive(prefix)
     combined = ingest_composed_sources(
@@ -57,7 +74,6 @@ def test_convergence_property_append_prefix_matches_full(
         composed,
         session_indexes=order[split:],
         converge_after_each=False,
-        append_only=True,
     )
     converge_convergence_archive(combined)
     execute_convergence_plan(

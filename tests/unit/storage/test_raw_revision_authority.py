@@ -6,7 +6,7 @@ from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, BinaryIO, cast
+from typing import BinaryIO
 
 import pytest
 
@@ -22,7 +22,6 @@ from polylogue.archive.revision_authority import (
     classify_historical_full_revisions,
 )
 from polylogue.core.enums import Origin, Provider
-from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch_support import _AppendPlan
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -35,6 +34,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session,
     write_source_raw_session_blob_ref,
 )
+from tests.infra.prepared_replay import ingest_append_plans_on_owner
 
 
 def _payload_opener(payload: bytes) -> Callable[[], BinaryIO]:
@@ -314,6 +314,7 @@ def test_source_writer_persists_typed_revision_envelope() -> None:
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/capture/session.jsonl",
+        canonical_source_path="/capture/session.jsonl",
         source_index=-1,
         payload=b"append bytes",
         acquired_at_ms=10,
@@ -347,6 +348,7 @@ def test_unenveloped_raw_write_is_quarantined() -> None:
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/capture/legacy.jsonl",
+        canonical_source_path="/capture/legacy.jsonl",
         source_index=0,
         payload=b"legacy",
         acquired_at_ms=10,
@@ -367,6 +369,7 @@ def test_raw_id_conflict_rejects_before_adding_blob_reference(write_mode: str) -
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="/capture/session.jsonl",
+            canonical_source_path="/capture/session.jsonl",
             source_index=0,
             payload=payload,
             acquired_at_ms=1,
@@ -378,6 +381,7 @@ def test_raw_id_conflict_rejects_before_adding_blob_reference(write_mode: str) -
                 conn,
                 origin=Origin.CODEX_SESSION,
                 source_path="/capture/session.jsonl",
+                canonical_source_path="/capture/session.jsonl",
                 source_index=0,
                 payload=b"different-payload",
                 acquired_at_ms=2,
@@ -390,6 +394,7 @@ def test_raw_id_conflict_rejects_before_adding_blob_reference(write_mode: str) -
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="/capture/session.jsonl",
+            canonical_source_path="/capture/session.jsonl",
             source_index=0,
             blob_hash=blob_hash,
             blob_size=len(payload),
@@ -402,6 +407,7 @@ def test_raw_id_conflict_rejects_before_adding_blob_reference(write_mode: str) -
                 conn,
                 origin=Origin.CODEX_SESSION,
                 source_path="/capture/session.jsonl",
+                canonical_source_path="/capture/session.jsonl",
                 source_index=0,
                 blob_hash=deterministic_blob_hash(b"different-payload"),
                 blob_size=len(b"different-payload"),
@@ -430,6 +436,7 @@ def test_post_parse_duplicate_backfills_only_unknown_file_mtime(write_mode: str)
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="/capture/session.jsonl",
+            canonical_source_path="/capture/session.jsonl",
             source_index=0,
             payload=payload,
             acquired_at_ms=1,
@@ -441,6 +448,7 @@ def test_post_parse_duplicate_backfills_only_unknown_file_mtime(write_mode: str)
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="/capture/session.jsonl",
+            canonical_source_path="/capture/session.jsonl",
             source_index=0,
             payload=payload,
             acquired_at_ms=1,
@@ -452,6 +460,7 @@ def test_post_parse_duplicate_backfills_only_unknown_file_mtime(write_mode: str)
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="/capture/session.jsonl",
+            canonical_source_path="/capture/session.jsonl",
             source_index=0,
             payload=payload,
             acquired_at_ms=1,
@@ -465,6 +474,7 @@ def test_post_parse_duplicate_backfills_only_unknown_file_mtime(write_mode: str)
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="/capture/session.jsonl",
+            canonical_source_path="/capture/session.jsonl",
             source_index=0,
             blob_hash=digest,
             blob_size=len(payload),
@@ -476,6 +486,7 @@ def test_post_parse_duplicate_backfills_only_unknown_file_mtime(write_mode: str)
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="/capture/session.jsonl",
+            canonical_source_path="/capture/session.jsonl",
             source_index=0,
             blob_hash=digest,
             blob_size=len(payload),
@@ -487,6 +498,7 @@ def test_post_parse_duplicate_backfills_only_unknown_file_mtime(write_mode: str)
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="/capture/session.jsonl",
+            canonical_source_path="/capture/session.jsonl",
             source_index=0,
             blob_hash=digest,
             blob_size=len(payload),
@@ -507,6 +519,7 @@ def test_raw_revision_material_preserves_capture_mode(tmp_path: Path) -> None:
             provider=Provider.DRIVE,
             payload=payload,
             source_path="/captures/live-drive.json",
+            canonical_source_path="/captures/live-drive.json",
             acquired_at_ms=1,
         )
         provider, observed_payload, _source_path, _kind = archive.raw_revision_material(raw_id)
@@ -522,6 +535,7 @@ def test_revision_binding_is_idempotent_only_for_the_exact_envelope() -> None:
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/capture/session.jsonl",
+        canonical_source_path="/capture/session.jsonl",
         source_index=0,
         payload=b"raw",
         acquired_at_ms=10,
@@ -553,6 +567,7 @@ def test_provisional_revision_rebind_accepts_only_classifier_refinement() -> Non
         conn,
         origin=Origin.CODEX_SESSION,
         source_path="/capture/session.jsonl",
+        canonical_source_path="/capture/session.jsonl",
         source_index=0,
         payload=b"raw",
         acquired_at_ms=10,
@@ -632,6 +647,7 @@ def test_reacquiring_same_raw_cannot_reset_its_authoritative_envelope(
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path=str(tmp_path / "session.jsonl"),
+                canonical_source_path=str(tmp_path / "session.jsonl"),
                 acquired_at_ms=acquired_at_ms,
             )
         return archive.write_raw_blob_ref(
@@ -639,6 +655,7 @@ def test_reacquiring_same_raw_cannot_reset_its_authoritative_envelope(
             blob_hash_hex=sha256(payload).hexdigest(),
             blob_size=len(payload),
             source_path=str(tmp_path / "session.jsonl"),
+            canonical_source_path=str(tmp_path / "session.jsonl"),
             acquired_at_ms=acquired_at_ms,
         )
 
@@ -671,11 +688,18 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
             provider=Provider.CODEX,
             payload=full_payload,
             source_path=str(tmp_path / "session.jsonl"),
+            canonical_source_path=str(tmp_path / "session.jsonl"),
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline_raw_id,
-            RawRevisionEnvelope("codex-session:session-1", RawRevisionKind.FULL, "full-revision", 1),
+            RawRevisionEnvelope(
+                "codex-session:session-1",
+                RawRevisionKind.FULL,
+                "full-revision",
+                1,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
         )
 
     append_payload = (
@@ -688,6 +712,8 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
     stat = path.stat()
     plan = _AppendPlan(
         path=path,
+        canonical_source_path=str(path),
+        captured_profile_key=None,
         source_name="codex",
         start_offset=len(full_payload),
         last_complete_newline=stat.st_size,
@@ -696,9 +722,13 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
         payload=append_payload,
-        payload_hash="append-hash",
+        payload_hash=sha256(append_payload).hexdigest(),
         cursor_fingerprint="full-revision",
         bytes_read=len(append_payload),
+        # The planner binds a Codex append to its resolved session identity,
+        # carried as a sidecar for both logical and acquisition identity.
+        native_id_hint="session-1",
+        acquisition_native_id_hint="session-1",
     )
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     owner = SimpleNamespace(
@@ -706,7 +736,7 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         _polylogue=SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path)),
     )
 
-    result = ingest_append_plans(cast(Any, owner), [plan])
+    result = ingest_append_plans_on_owner(tmp_path, owner, [plan])
 
     assert result.succeeded == [plan]
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -721,7 +751,8 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         baseline_raw_id,
         len(full_payload),
         stat.st_size,
-        1,
+        # An append child is one acquisition generation past its parent.
+        2,
         "byte_proven",
     )
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -741,10 +772,10 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         )
 
 
-def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> None:
+def test_live_append_refuses_declared_non_session_artifact(tmp_path: Path) -> None:
     """Regression for polylogue-xwkh: close the third chokepoint.
 
-    Live daemon ingest (``ingest_worker.py``) and rebuild replay
+    Retained archive ingestion and rebuild replay
     (``revision_backfill.py``'s ``_parse_one``/``_parse_stream``) classify an
     OriginSpec-declared "fact" artifact -- a workflow journal, in this case --
     via ``classify_artifact``/``artifact_rule_for_path``. The live
@@ -758,6 +789,11 @@ def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> Non
     growing file into append tracking (e.g. an ops.db cursor reset that
     resynthesizes a cursor from a durable 'full' baseline in source.db -- see
     ``batch.py``'s ``_resynthesize_cursor_from_source``).
+
+    Append acquisition now binds every delta to its declared session identity
+    and the planner resolves one only from archived session evidence, which a
+    fact journal never has. The identity-less plan is refused before any raw
+    is admitted, so the journal is classified on the full route instead.
     """
     initialize_active_archive_root(tmp_path)
     full_payload = b'{"contentKey":"call-1","agentId":"agent-a"}\n'
@@ -768,6 +804,7 @@ def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> Non
             provider=Provider.CLAUDE_CODE,
             payload=full_payload,
             source_path=str(path),
+            canonical_source_path=str(path),
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -780,6 +817,8 @@ def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> Non
     stat = path.stat()
     plan = _AppendPlan(
         path=path,
+        canonical_source_path=str(path),
+        captured_profile_key=None,
         source_name="claude-code",
         start_offset=len(full_payload),
         last_complete_newline=stat.st_size,
@@ -788,7 +827,7 @@ def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> Non
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
         payload=append_payload,
-        payload_hash="append-hash",
+        payload_hash=sha256(append_payload).hexdigest(),
         cursor_fingerprint="full-revision",
         bytes_read=len(append_payload),
     )
@@ -798,23 +837,16 @@ def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> Non
         _polylogue=SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path)),
     )
 
-    result = ingest_append_plans(cast(Any, owner), [plan])
+    result = ingest_append_plans_on_owner(tmp_path, owner, [plan])
 
-    assert result.succeeded == [plan]
-    assert result.failed == []
+    assert result.succeeded == []
+    assert result.deferred == []
+    assert result.failed == [plan]
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw = conn.execute(
-            "SELECT raw_id, logical_source_key, revision_kind, revision_authority FROM raw_sessions "
-            "WHERE source_path = ? ORDER BY acquired_at_ms DESC LIMIT 1",
-            (str(path),),
-        ).fetchone()
-        assert raw is not None
-        artifact = conn.execute(
-            "SELECT artifact_kind, parse_as_session, raw_id FROM raw_artifacts WHERE raw_id = ?",
-            (raw[0],),
-        ).fetchone()
-    assert raw[1:] == (None, "unknown", "quarantined")
-    assert artifact == ("workflow_journal", 0, raw[0])
+        raws = conn.execute("SELECT raw_id FROM raw_sessions WHERE source_path = ?", (str(path),)).fetchall()
+    assert raws == [(baseline_raw_id,)]
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
 def test_live_append_retains_cursor_identity_until_baseline_arrives(
@@ -831,6 +863,8 @@ def test_live_append_retains_cursor_identity_until_baseline_arrives(
     stat = path.stat()
     plan = _AppendPlan(
         path=path,
+        canonical_source_path=str(path),
+        captured_profile_key=None,
         source_name="codex",
         start_offset=100,
         last_complete_newline=stat.st_size,
@@ -839,9 +873,13 @@ def test_live_append_retains_cursor_identity_until_baseline_arrives(
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
         payload=append_payload,
-        payload_hash="append-hash",
+        payload_hash=sha256(append_payload).hexdigest(),
         cursor_fingerprint="late-full-revision",
         bytes_read=len(append_payload),
+        # The planner binds a Codex append to its resolved session identity,
+        # carried as a sidecar for both logical and acquisition identity.
+        native_id_hint="session-1",
+        acquisition_native_id_hint="session-1",
     )
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     owner = SimpleNamespace(
@@ -850,20 +888,14 @@ def test_live_append_retains_cursor_identity_until_baseline_arrives(
     )
     events: list[str] = []
     original_bind = ArchiveStore.bind_raw_revision
-    original_index = ArchiveStore.write_parsed_for_retained_raw
 
     def recording_bind(self: ArchiveStore, raw_id: str, revision: RawRevisionEnvelope) -> None:
         events.append("bind")
         original_bind(self, raw_id, revision)
 
-    def recording_index(self: ArchiveStore, *args: Any, **kwargs: Any) -> tuple[str, str]:
-        events.append("index")
-        return original_index(self, *args, **kwargs)
-
     monkeypatch.setattr(ArchiveStore, "bind_raw_revision", recording_bind)
-    monkeypatch.setattr(ArchiveStore, "write_parsed_for_retained_raw", recording_index)
 
-    result = ingest_append_plans(cast(Any, owner), [plan])
+    result = ingest_append_plans_on_owner(tmp_path, owner, [plan])
 
     assert result.succeeded == []
     assert result.deferred == [plan]
@@ -875,7 +907,7 @@ def test_live_append_retains_cursor_identity_until_baseline_arrives(
                FROM raw_sessions WHERE revision_kind = 'append'"""
         ).fetchone()
     assert observed == (
-        append_source_revision("late-full-revision", "append-hash"),
+        append_source_revision("late-full-revision", sha256(append_payload).hexdigest()),
         "late-full-revision",
         None,
         None,
@@ -889,6 +921,7 @@ def test_live_append_retains_cursor_identity_until_baseline_arrives(
             provider=Provider.CODEX,
             payload=b"x" * 100,
             source_path=str(path),
+            canonical_source_path=str(path),
             acquired_at_ms=2,
         )
         archive.bind_raw_revision(
@@ -914,6 +947,7 @@ def test_append_parent_requires_exact_cursor_revision(tmp_path: Path) -> None:
             provider=Provider.CODEX,
             payload=b"baseline",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(

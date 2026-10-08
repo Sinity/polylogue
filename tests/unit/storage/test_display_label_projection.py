@@ -8,8 +8,9 @@ from pathlib import Path
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _edit_message(index: int, path: Path) -> ParsedMessage:
@@ -68,11 +69,11 @@ def _session(
 
 
 def _write_sessions(db_path: Path, sessions: list[ParsedSession]) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     try:
         for session in sessions:
-            write_parsed_session_to_archive(conn, session)
+            write_fixture_index_session(conn, session)
         conn.commit()
     finally:
         conn.close()

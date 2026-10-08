@@ -248,6 +248,9 @@ def create_browser_app(
 
 
 def main() -> None:
+    from polylogue.runtime import require_free_threaded_runtime
+
+    require_free_threaded_runtime(consumer="polylogue browser host")
     parser = argparse.ArgumentParser(description="Isolated Polylogue browser host")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8767)

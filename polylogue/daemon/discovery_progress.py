@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from polylogue.logging import ERROR, INFO, emit
 
@@ -248,18 +249,75 @@ def settle_cold_build_preparation(done: asyncio.Task[object]) -> None:
         end_cold_build_preparation(failed=True)
 
 
-async def run_cold_build_preparation(
-    coordinator: DaemonWriteCoordinator, actor: str, function: Callable[..., _T], /, *args: Any, **kwargs: Any
-) -> _T:
-    """Run ``function`` as the cold build's preparation writer call.
+async def run_source_observation(observe: Callable[[threading.Event], _T]) -> _T:
+    """Run a read-only source scan on its own thread, off the archive writer.
 
-    ``function`` receives ``progress=``. The coordinator shields an admitted
-    execution from caller cancellation, so a shutdown that cancels this caller
-    does not stop the hashing thread; preparation then ends from the
-    execution's completion, not here. Only a request cancelled before
-    admission, which never ran, ends as cancelled at the caller.
+    ``observe`` receives a cancellation event that is set once this caller
+    stops waiting. The thread is a daemon thread, so loop shutdown never
+    joins a scan that is still reading a large source.
+    """
+    loop = asyncio.get_running_loop()
+    completed: asyncio.Future[_T] = loop.create_future()
+    cancel = threading.Event()
+
+    def deliver(result: _T | None = None, error: BaseException | None = None) -> None:
+        if completed.done():
+            return
+        if error is not None:
+            completed.set_exception(error)
+        else:
+            completed.set_result(cast(_T, result))
+
+    def run() -> None:
+        try:
+            result = observe(cancel)
+        except BaseException as exc:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(deliver, None, exc)
+        else:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(deliver, result)
+
+    threading.Thread(target=run, name="cold-source-observation", daemon=True).start()
+    try:
+        return await completed
+    finally:
+        cancel.set()
+
+
+async def run_cold_build_preparation(
+    coordinator: DaemonWriteCoordinator,
+    actor: str,
+    observe: Callable[..., Any],
+    function: Callable[..., _T],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> _T:
+    """Observe the cold build's sources off the writer, then bind them in it.
+
+    ``observe`` receives ``progress=`` and ``cancelled=`` and runs on its own
+    thread: the source walk, classification and hashing only read source
+    files, so they never hold the archive writer. ``function`` then receives
+    ``observed=`` (the observation) and ``progress=`` as the writer call.
+
+    The coordinator shields an admitted execution from caller cancellation,
+    so a shutdown that cancels this caller does not stop that writer call;
+    preparation then ends from the execution's completion, not here. A
+    request cancelled before admission, which never ran, ends as cancelled
+    at the caller, as does a cancelled observation.
     """
     begin_cold_build_preparation()
+    try:
+        observed = await run_source_observation(
+            lambda cancel: observe(progress=advance_cold_build_preparation, cancelled=cancel.is_set)
+        )
+    except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+        end_cold_build_preparation(cancelled=True)
+        raise
+    except BaseException:
+        end_cold_build_preparation(failed=True)
+        raise
     admitted: list[bool] = []
     try:
         result = await coordinator.run_sync_with_completion(
@@ -268,6 +326,7 @@ async def run_cold_build_preparation(
             settle_cold_build_preparation,
             lambda: admitted.append(True),
             *args,
+            observed=observed,
             progress=advance_cold_build_preparation,
             **kwargs,
         )

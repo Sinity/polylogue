@@ -932,27 +932,36 @@ class ProductionCorpusRuntime:
         source_name = "browser-capture" if artifact.attachments else artifact.source_name
 
         async def run() -> AcquireResult:
+            from polylogue.daemon.drive_catchup import DriveCatchupExecution
+            from tests.infra.live_ingest import prepared_live_convergence_owner
+
             backend = SQLiteBackend(db_path=self.archive_root / "index.db")
             try:
-                result = await AcquisitionService(backend).acquire_sources([Source(name=source_name, path=path)])
-                self.last_results.append(result)
-                wire_hash = hashlib.sha256(wire_payload).digest()
-                wire_key = (source_name, wire_hash)
-                source_revision = (source_name, path, wire_hash)
-                # Prefer the exact acquisition coordinate on a skipped
-                # reacquisition. Equal bytes at another path can have their
-                # own raw identity; wire evidence remains valid for a newly
-                # observed duplicate whose admission reports only a skip.
-                known_ids = self._raw_ids_by_source_revision.get(source_revision) or self._raw_ids_by_wire.get(
-                    wire_key, ()
-                )
-                if result.errors or (not result.raw_ids and not (result.skipped > 0 and known_ids)):
-                    raise CorpusAcquisitionRejectedError(artifact.artifact_id, result)
-                self._raw_ids[artifact.artifact_id] = tuple(result.raw_ids) or known_ids
-                self._raw_ids_by_wire[wire_key] = self._raw_ids[artifact.artifact_id]
-                self._raw_ids_by_source_revision[source_revision] = self._raw_ids[artifact.artifact_id]
-                self._source_paths[artifact.artifact_id] = path
-                return result
+                # Acquisition publishes raw rows and blobs through the daemon's
+                # admitted writer, exactly as configured-source catch-up does.
+                async with prepared_live_convergence_owner(self.archive_root) as owner:
+                    execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+                    result = await AcquisitionService(backend, execution=execution).acquire_sources(
+                        [Source(name=source_name, path=path)]
+                    )
+                    self.last_results.append(result)
+                    wire_hash = hashlib.sha256(wire_payload).digest()
+                    wire_key = (source_name, wire_hash)
+                    source_revision = (source_name, path, wire_hash)
+                    # Prefer the exact acquisition coordinate on a skipped
+                    # reacquisition. Equal bytes at another path can have their
+                    # own raw identity; wire evidence remains valid for a newly
+                    # observed duplicate whose admission reports only a skip.
+                    known_ids = self._raw_ids_by_source_revision.get(source_revision) or self._raw_ids_by_wire.get(
+                        wire_key, ()
+                    )
+                    if result.errors or (not result.raw_ids and not (result.skipped > 0 and known_ids)):
+                        raise CorpusAcquisitionRejectedError(artifact.artifact_id, result)
+                    self._raw_ids[artifact.artifact_id] = tuple(result.raw_ids) or known_ids
+                    self._raw_ids_by_wire[wire_key] = self._raw_ids[artifact.artifact_id]
+                    self._raw_ids_by_source_revision[source_revision] = self._raw_ids[artifact.artifact_id]
+                    self._source_paths[artifact.artifact_id] = path
+                    return result
             finally:
                 await backend.close()
 
@@ -1008,7 +1017,9 @@ class ProductionCorpusRuntime:
         raw_ids = tuple(dict.fromkeys(raw_id for ids in self._raw_ids.values() for raw_id in ids))
         paths = tuple(dict.fromkeys(self._source_paths.values()))
 
-        async def parse() -> ParseResult:
+        async def parse_and_converge() -> tuple[ParseResult, dict[Path, FileState] | None]:
+            from tests.infra.live_ingest import prepared_live_convergence_owner
+
             backend = SQLiteBackend(db_path=self.archive_root / "index.db")
             try:
                 config = Config(
@@ -1017,22 +1028,38 @@ class ProductionCorpusRuntime:
                     sources=[],
                     db_path=self.archive_root / "index.db",
                 )
-                service = ParsingService(
-                    repository=SessionRepository(backend=backend),
-                    archive_root=self.archive_root,
-                    config=config,
-                    ingest_workers=1,
-                )
-                return await service.parse_from_raw(raw_ids=list(raw_ids), force_write=True)
+                # Publication goes through the canonical retained Raw owner;
+                # file stages then run on that owner's admitted preparation
+                # worker with its stage write admission, as the daemon runs them.
+                async with prepared_live_convergence_owner(self.archive_root) as owner:
+                    service = ParsingService(
+                        repository=SessionRepository(backend=backend),
+                        archive_root=self.archive_root,
+                        config=config,
+                        retained_runner=owner.ingest_retained_raw_ids,
+                    )
+                    parsed = await service.parse_from_raw(raw_ids=list(raw_ids))
+                    if parsed.parse_failures:
+                        return parsed, None
+                    converger = DaemonConverger(
+                        make_default_convergence_stages(
+                            self.archive_root / "index.db", compute_adapter=owner._compute_adapter
+                        )
+                    )
+                    converged: dict[Path, FileState] = {}
+                    for path in paths:
+                        converged[path] = await owner.run_convergence_sync(
+                            "test.corpus-convergence", converger.converge_file, path
+                        )
+                    return parsed, converged
             finally:
                 await backend.close()
 
-        parse_result = asyncio.run(parse())
-        if parse_result.parse_failures:
+        parse_result, file_states = asyncio.run(parse_and_converge())
+        if file_states is None:
             self.last_results.append(parse_result)
             raise CorpusConvergenceRejectedError(parse_result)
-        converger = DaemonConverger(make_default_convergence_stages(self.archive_root / "index.db"))
-        states = {path: converger.converge_file(path) for path in paths}
+        states = file_states
         result: CorpusConvergenceResult = {"parse": parse_result, "convergence": states}
         self.last_results.append(result)
         if any(state.error_count or not state.converged for state in states.values()):
@@ -1048,7 +1075,7 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
     if provider not in {Provider.CODEX, Provider.CHATGPT, Provider.CLAUDE_AI}:
         raise CorpusProgramError("Attach requires a provider with native capture payload support")
     from polylogue.browser_capture.models import BrowserCaptureBlock
-    from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+    from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
     from polylogue.sources.parsers.base_support import derive_attachment_provenance
 
     try:
@@ -1059,7 +1086,7 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CorpusProgramError("Attach refused: transcript is not JSON or JSONL") from exc
     sessions = parse_payload(provider, payload, artifact.artifact_id, source_path=artifact.source_path)
-    sessions = require_positive_conversational_evidence(
+    sessions = admit_parsed_sessions_for_publication(
         sessions,
         provider=provider,
         source_path=artifact.source_path,
