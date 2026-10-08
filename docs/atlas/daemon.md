@@ -365,6 +365,8 @@ can leave no debt rows, so an empty debt ledger does not suppress this check.
 Existing frontier debt retains its due retry and backoff ownership; the
 coverage fallback never runs another census in that debt pass. A blocked
 fallback records deferred frontier debt through the stage writer bridge, so
-later attempts use the canonical debt retry schedule and backoff. Completed
+later attempts use the canonical debt retry schedule and backoff. An inspection
+exception records failed debt and propagates its original error; cancellation
+creates no failure debt. Completed
 current healthy coverage avoids another census; cancellation and
 inspection refusals retain their ordinary typed outcomes.

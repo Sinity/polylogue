@@ -1173,6 +1173,7 @@ def _drain_convergence_debt_and_frontier(db: Path, *, compute_adapter: BoundedCo
     its existing stage writer bridge. Completed current coverage skips the
     census; a changed source/cursor watermark or an absent mark requires it.
     """
+    from polylogue.core.compute import DaemonOperationCancelled
     from polylogue.operations.raw_frontier_inspection import make_raw_frontier_inspection_stage
     from polylogue.sources.live.cursor import CursorStore
 
@@ -1185,7 +1186,23 @@ def _drain_convergence_debt_and_frontier(db: Path, *, compute_adapter: BoundedCo
         return retried
     stage = make_raw_frontier_inspection_stage(db, compute_adapter=compute_adapter)
     if stage.check(db):
-        healthy = stage.execute(db)
+        try:
+            healthy = stage.execute(db)
+        except DaemonOperationCancelled:
+            raise
+        except Exception as exc:
+            check_compute_cancelled()
+            admit_stage_write(
+                "maintenance.convergence_debt.frontier",
+                partial(
+                    cursor.record_convergence_debt,
+                    stage=stage.name,
+                    subject_type="source_path",
+                    subject_id=str(db),
+                    error=str(exc),
+                ),
+            )
+            raise
         if not healthy:
             check_compute_cancelled()
             admit_stage_write(

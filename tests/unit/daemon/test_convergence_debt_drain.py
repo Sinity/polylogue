@@ -344,3 +344,45 @@ def test_blocked_frontier_fallback_retains_registered_telemetry_outcome(
     assert cursor.list_convergence_debt(stage=stage.name, retry_due_only=True) == []
     daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
     assert len(stage.executions) == 2
+
+
+@pytest.mark.parametrize("failure_kind", ["stale_seal", "io", "cancelled"])
+def test_frontier_fallback_exception_records_failed_debt_except_cancellation(
+    archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
+    failure_kind: str,
+) -> None:
+    """An exception from the actual inspection factory keeps canonical backoff."""
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.operations import raw_frontier_inspection
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    failures: dict[str, Exception] = {
+        "stale_seal": ReferenceSealStaleError("neutral cursor authority changed"),
+        "io": OSError("neutral observation unavailable"),
+        "cancelled": DaemonOperationCancelled("neutral cancellation"),
+    }
+    failure = failures[failure_kind]
+    executions = 0
+
+    def fail_inspection(*_args: object, **_kwargs: object) -> object:
+        nonlocal executions
+        executions += 1
+        raise failure
+
+    monkeypatch.setattr(raw_frontier_inspection, "frontier_coverage_for_archive", lambda _root: {})
+    monkeypatch.setattr(raw_frontier_inspection, "inspect_prepared_raw_authority_frontier", fail_inspection)
+    with pytest.raises(type(failure)) as raised:
+        daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert raised.value is failure
+    cursor = CursorStore(archive / "index.db", initialize=False)
+    debt = cursor.list_convergence_debt(stage="raw_frontier_inspection")
+    if failure_kind == "cancelled":
+        assert debt == []
+    else:
+        assert len(debt) == 1
+        assert debt[0].status == "failed"
+        assert cursor.list_convergence_debt(stage="raw_frontier_inspection", retry_due_only=True) == []
+        daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+        assert executions == 1
