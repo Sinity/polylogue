@@ -13,8 +13,10 @@ from typing import TypeAlias, cast
 
 import aiosqlite
 
+from polylogue.core.errors import SearchIndexUnavailableError
 from polylogue.core.sqlite_introspection import table_exists as _table_exists_sync
 from polylogue.core.sqlite_introspection import table_exists_async as _table_exists_async
+from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transient_sqlite_lock
 from polylogue.storage.fts.sql import (
     BLOCKS_FTS_TRIGGER_DDL,
     FTS_IDENTITY_REBUILD_SQL,
@@ -629,15 +631,34 @@ MESSAGE_SEARCH_REPAIR_HINT = (
 )
 
 
+def search_index_read_refusal(exc: sqlite3.Error) -> SearchIndexUnavailableError | None:
+    """Classify a failed canonical search read without hiding unrelated SQL errors."""
+    if is_corrupt_sqlite_database(exc):
+        return SearchIndexUnavailableError(
+            "Search index unavailable: the archive database is unreadable (corrupt or I/O error).",
+            reason="archive_unreadable",
+        )
+    if is_transient_sqlite_lock(exc):
+        return SearchIndexUnavailableError(
+            "Search index unavailable: the archive database is busy; retry shortly.",
+            reason="archive_busy",
+        )
+    if "no such table: messages_fts" in str(exc).lower():
+        return SearchIndexUnavailableError(
+            "Search index unavailable: message FTS table is missing or degraded.",
+            reason="fts_missing",
+        )
+    return None
+
+
 def check_fts_readiness(readiness: Mapping[str, object], repair_hint: str = MESSAGE_SEARCH_REPAIR_HINT) -> None:
-    """Raise DatabaseError unless the FTS index is exactly ready."""
-    from polylogue.core.errors import DatabaseError
+    """Raise a typed search-index refusal unless FTS is exactly ready."""
 
     if not bool(readiness["exists"]):
-        raise DatabaseError(f"Search index not built. {repair_hint}")
+        raise SearchIndexUnavailableError(f"Search index not built. {repair_hint}", reason="fts_missing")
     if bool(readiness["ready"]):
         return
-    raise DatabaseError(f"Search index is incomplete. {repair_hint}")
+    raise SearchIndexUnavailableError(f"Search index is incomplete. {repair_hint}", reason="fts_incomplete")
 
 
 def _trigger_invariant_sync(

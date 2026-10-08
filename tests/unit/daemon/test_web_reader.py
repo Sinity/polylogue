@@ -2029,6 +2029,7 @@ class TestReaderDegradedStates:
         assert route_state["component"] == "message_fts"
         assert "Search index" in str(route_state["reason"])
         assert reasons[0]["code"] == "search_index_degraded"
+        assert payload["outcome"]["state"] == "degraded"
 
 
 class TestReaderQueryCompletions:

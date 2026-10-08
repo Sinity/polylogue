@@ -51,6 +51,14 @@ class DatabaseError(PolylogueError):
     http_status_code: int = HTTPStatus.SERVICE_UNAVAILABLE
 
 
+class SearchIndexUnavailableError(DatabaseError):
+    """Canonical search-index read refusal, classified before rendering."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        self.reason = reason
+        super().__init__(message)
+
+
 class VectorReadUnavailableError(DatabaseError):
     """Retained vector evidence could not answer a read, with its typed reason."""
 
@@ -268,6 +276,7 @@ __all__ = [
     "SchemaSkew",
     "SchemaSkewError",
     "SessionNotFoundError",
+    "SearchIndexUnavailableError",
     "UnsupportedInsightFilterError",
     "VectorReadUnavailableError",
     "VectorRuntimeUnavailableError",

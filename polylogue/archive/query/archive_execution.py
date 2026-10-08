@@ -13,6 +13,7 @@ does not push down.
 from __future__ import annotations
 
 import builtins
+import sqlite3
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import replace
@@ -953,18 +954,26 @@ def archive_search_hits(
                 execution,
             )
 
-    if archive is not None:
-        return read(archive)
-    with archive_read_context(
-        archive_root,
-        operation="archive.query.search-hits",
-        arguments={"plan": plan, "default_limit": default_limit},
-        page_size=plan.limit,
-        offset=plan.offset,
-        projection="search-hits",
-        workload_class="scan" if _ranked_window(plan) or plan.limit is None or plan.limit > 1000 else "interactive",
-    ) as controlled_archive:
-        return read(controlled_archive)
+    from polylogue.storage.fts.fts_lifecycle import search_index_read_refusal
+
+    try:
+        if archive is not None:
+            return read(archive)
+        with archive_read_context(
+            archive_root,
+            operation="archive.query.search-hits",
+            arguments={"plan": plan, "default_limit": default_limit},
+            page_size=plan.limit,
+            offset=plan.offset,
+            projection="search-hits",
+            workload_class="scan" if _ranked_window(plan) or plan.limit is None or plan.limit > 1000 else "interactive",
+        ) as controlled_archive:
+            return read(controlled_archive)
+    except sqlite3.Error as exc:
+        refusal = search_index_read_refusal(exc)
+        if refusal is None:
+            raise
+        raise refusal from exc
 
 
 def _pair_hits(

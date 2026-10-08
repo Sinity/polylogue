@@ -171,10 +171,6 @@
     },
     {
       "file": "polylogue/daemon/http.py",
-      "digest": "0b7f1787d1f214f365a0ce0cd39794a746b4c924"
-    },
-    {
-      "file": "polylogue/daemon/http.py",
       "digest": "0ef5f84b9aed52b5631c5ac1f21802a5bcd48a16"
     },
     {

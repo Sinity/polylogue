@@ -260,3 +260,5 @@ reach that owner without a first-page storage lowering. Ranked metadata comes
 from the canonical envelope and its actual lane execution; the HTTP readiness
 chip projects its terminal outcome. An unavailable search index remains an
 explicit degraded HTTP envelope, including when no hits can be returned.
+
+Canonical ranked search classifies missing or incomplete message FTS, SQLite contention, and unreadable storage as `SearchIndexUnavailableError` before surface rendering. Unrelated SQL failures propagate. HTTP consumes that typed refusal as an explicit degraded search envelope with unknown total, never an executed empty result.
