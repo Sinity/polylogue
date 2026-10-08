@@ -1722,7 +1722,7 @@ class LiveBatchProcessor:
                         self._cursor.apply_convergence_debt_batch,
                         (
                             ConvergenceDebtBatchEntry(
-                                settlements=tuple(
+                                clears=tuple(
                                     ConvergenceDebtSettlement("source_path", str(path), "live_ingest_source_read")
                                     for path in read_settled
                                 )
