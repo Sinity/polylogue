@@ -2644,3 +2644,53 @@ def test_production_progress_events_reach_benchmark_high_water(
     finally:
         plog.set_level(previous_level)
         tail.close()
+
+
+def test_shutdown_write_stamp_checks_writer_locations_without_walking_payloads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from devtools.fresh_build_bench.run import _archive_write_stamp
+    from polylogue.storage.archive_identity import TIER_FILENAMES
+
+    expected: set[str] = set()
+    for _, filename in TIER_FILENAMES:
+        for suffix in ("", "-wal", "-journal"):
+            name = filename + suffix
+            (tmp_path / name).write_bytes(b"database")
+            expected.add(name)
+    for dirname, filename in (
+        (".index-generations/candidate", "index.db"),
+        (".embeddings-generations/candidate", "embeddings.db"),
+    ):
+        directory = tmp_path / dirname
+        directory.mkdir(parents=True)
+        for suffix in ("", "-wal", "-journal"):
+            name = f"{dirname}/{filename}{suffix}"
+            (tmp_path / name).write_bytes(b"generation")
+            expected.add(name)
+    blob = tmp_path / "blob" / "nested"
+    blob.mkdir(parents=True)
+    (blob / "unrelated.db").write_bytes(b"payload")
+    (tmp_path / "index.db-shm").write_bytes(b"reader marks")
+    visited: list[Path] = []
+    real_iterdir = Path.iterdir
+
+    def direct_generation_members(path: Path):
+        assert path in {tmp_path / ".index-generations", tmp_path / ".embeddings-generations"}
+        visited.append(path)
+        return real_iterdir(path)
+
+    def refuse_recursive_walk(*_args: object, **_kwargs: object):
+        pytest.fail("shutdown observer traversed the archive payload tree")
+
+    monkeypatch.setattr(Path, "iterdir", direct_generation_members)
+    monkeypatch.setattr(Path, "rglob", refuse_recursive_walk)
+    before = _archive_write_stamp(tmp_path)
+    assert {name for name, _, _ in before} == expected
+    assert len(visited) == 2
+    (tmp_path / ".index-generations/candidate/index.db-wal").write_bytes(b"checkpoint progress")
+    assert _archive_write_stamp(tmp_path) != before
+    stable = _archive_write_stamp(tmp_path)
+    (blob / "unrelated.db").write_bytes(b"changed payload")
+    (tmp_path / "index.db-shm").write_bytes(b"changed reader marks")
+    assert _archive_write_stamp(tmp_path) == stable

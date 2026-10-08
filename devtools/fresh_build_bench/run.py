@@ -814,14 +814,29 @@ def _prepare_paths(config: RunConfig) -> dict[str, Path]:
 
 
 def _archive_write_stamp(archive: Path) -> tuple[tuple[str, int, int], ...]:
-    """Size and mtime of every archive database and WAL file, for shutdown progress.
+    """Size and mtime of owned databases and write sidecars, for shutdown progress.
 
     ``-shm`` files are left out: readers update their read marks there.
+    Inspect only tier anchors and direct generation members: walking blobs or
+    capture payloads every shutdown poll would perturb the measured workload.
     """
-    stamp: list[tuple[str, int, int]] = []
-    for path in sorted(archive.rglob("*")):
-        if not path.name.endswith((".db", ".db-wal")):
+    from polylogue.storage.archive_identity import GENERATIONS_DIRNAME, TIER_FILENAMES
+
+    databases = [archive / filename for _, filename in TIER_FILENAMES]
+    # Both lifecycle owners place their database immediately below each
+    # generation directory, including inactive and retiring generations.
+    for dirname, filename in (
+        (GENERATIONS_DIRNAME, "index.db"),
+        (".embeddings-generations", "embeddings.db"),
+    ):
+        try:
+            members = tuple((archive / dirname).iterdir())
+        except OSError:
             continue
+        databases.extend(member / filename for member in members)
+
+    stamp: list[tuple[str, int, int]] = []
+    for path in sorted(Path(str(database) + suffix) for database in databases for suffix in ("", "-wal", "-journal")):
         try:
             stat = path.stat()
         except OSError:
