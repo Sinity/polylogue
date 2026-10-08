@@ -13,7 +13,7 @@ import pytest
 
 import polylogue.sources.prepared_jsonl as prepared_jsonl
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, ValidationMode
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.sources import revision_backfill
 from polylogue.sources.dispatch import PayloadRecord, parse_generic_messages_stream
@@ -159,6 +159,57 @@ def test_retained_generic_message_object_alias_rejects_invalid_suffix_before_pub
         assert artifact.error is not None
         assert artifact.sessions_path is None
         assert artifact.shard_path is None
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_non_json_validation_failure_discards_sealed_artifact_and_preserves_cause(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cancel: bool
+) -> None:
+    """Validation refusal and cancellation both settle the sealed non-JSON artifact."""
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+    from tests.infra.retained_jsonl import retained_raw_fixture
+
+    archive = tmp_path / "archive"
+    bootstrap_archive_root(archive)
+    payload = json.dumps({"conversations": [_chatgpt_session("cleanup", "user", "assistant")]}).encode()
+    blob_hash, _size = BlobStore(archive / "blob").write_from_bytes(payload)
+    preparation = tmp_path / "prepared"
+    preparation.mkdir()
+    import polylogue.schemas as schemas
+
+    validation_failure: BaseException = (
+        DaemonOperationCancelled("validation cancellation sentinel")
+        if cancel
+        else RuntimeError("validation cleanup sentinel")
+    )
+
+    def fail_validation(*_args: object, **_kwargs: object) -> object:
+        raise validation_failure
+
+    monkeypatch.setattr(schemas, "validate_retained_document", fail_validation)
+    with retained_raw_fixture(
+        root=archive,
+        provider=Provider.CHATGPT,
+        blob_hash=blob_hash,
+        source_path="neutral-original.capture",
+    ) as (reader, raw_id):
+        expected_error = DaemonOperationCancelled if cancel else RetainedPreparationRetryableError
+        with pytest.raises(expected_error) as raised:
+            revision_backfill.prepare_retained_non_json_artifact(
+                reader,
+                raw_id,
+                directory=preparation,
+                validation_mode=ValidationMode.ADVISORY,
+            )
+
+    primary = raised.value if cancel else raised.value.__cause__
+    if cancel:
+        assert primary is validation_failure
+    else:
+        assert isinstance(primary, RuntimeError)
+    assert str(primary) == str(validation_failure)
+    assert list(preparation.iterdir()) == []
 
 
 def test_unknown_retained_stream_replay_scans_past_oversized_first_record_without_eager_payload(

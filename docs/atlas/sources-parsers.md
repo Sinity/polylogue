@@ -196,6 +196,14 @@ iterator and explicit resident replay API return independent models, copying
 complete arrays and accounting before closing scratch. These public collecting
 contracts still require memory for one complete session; fresh retained
 preparation does not call them.
+When its general provider parser admits a JSON document carried under a
+non-JSON filename, retained preparation validates the original blob in the
+configured mode and attaches that verdict to the sealed artifact. Schema-
+eligible inputs cannot reach Source finalization without this byte-bound
+validation evidence. Hermes SQLite state exports use their deterministic JSON
+marker projection for schema validation, with the verdict bound to the source
+database revision. Antigravity trajectory databases are validated by their
+strict native SQLite parser and are explicitly schema-ineligible as JSON.
 
 ## Detection and parse route
 

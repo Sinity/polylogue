@@ -31,6 +31,7 @@ import ijson
 
 from polylogue import logging as _polylogue_logging
 from polylogue.archive.artifact_taxonomy import (
+    ArtifactClassification,
     ArtifactKind,
     ArtifactStreamClassification,
     classify_artifact_stream,
@@ -925,31 +926,18 @@ def prepare_retained_jsonl_artifact(
                 "retained JSON refusal and artifact cleanup failed", [blob_refusal, cleanup]
             ) from None
         raise blob_refusal
-    if (
-        artifact.error is None
-        and artifact.resolved_provider is not None
-        and not path_declaration_refuses_session(provider, source_path)
-    ):
-        from polylogue.schemas import validate_retained_document
-
-        validation_jsonl = is_jsonl_source_path(source_path)
-        validation_prefix = (
-            artifact.parsed_prefix_size if validation_jsonl and validation_mode is not ValidationMode.OFF else None
-        )
-        with _retained_validation_input(blob_path, validation_prefix, directory) as validation_path:
-            verdict = validate_retained_document(
-                artifact.resolved_provider,
-                validation_path,
-                mode=validation_mode,
-                raw_id=raw_id,
-                revision_sha256=blob_hash,
-                evidence_id=raw_id,
-                source_path=source_path,
-                jsonl=validation_jsonl,
-                captured_zip_coordinate=captured_zip_coordinate,
-            )
-        artifact = dataclasses.replace(artifact, validation_verdict=verdict)
-    return artifact
+    return _attach_retained_validation_verdict(
+        artifact,
+        provider=provider,
+        blob_hash=blob_hash,
+        blob_path=blob_path,
+        source_path=source_path,
+        raw_id=raw_id,
+        directory=directory,
+        validation_mode=validation_mode,
+        captured_zip_coordinate=captured_zip_coordinate,
+        jsonl=is_jsonl_source_path(source_path),
+    )
 
 
 @contextmanager
@@ -979,6 +967,54 @@ def _retained_validation_input(
         yield path
     finally:
         path.unlink(missing_ok=True)
+
+
+def _attach_retained_validation_verdict(
+    artifact: PreparedJsonl,
+    *,
+    provider: Provider,
+    blob_hash: str,
+    blob_path: Path,
+    source_path: str,
+    raw_id: str,
+    directory: Path,
+    validation_mode: ValidationMode,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
+    jsonl: bool,
+) -> PreparedJsonl:
+    """Bind schema evidence to the exact retained bytes the parser consumed."""
+    if (
+        artifact.error is None
+        and artifact.resolved_provider is not None
+        and not path_declaration_refuses_session(provider, source_path)
+        and not (jsonl and artifact.parsed_prefix_size == 0)
+    ):
+        from polylogue.schemas import validate_retained_document
+
+        validation_prefix = artifact.parsed_prefix_size if jsonl and validation_mode is not ValidationMode.OFF else None
+        try:
+            with _retained_validation_input(blob_path, validation_prefix, directory) as validation_path:
+                verdict = validate_retained_document(
+                    artifact.resolved_provider,
+                    validation_path,
+                    mode=validation_mode,
+                    raw_id=raw_id,
+                    revision_sha256=blob_hash,
+                    evidence_id=raw_id,
+                    source_path=source_path,
+                    jsonl=jsonl,
+                    captured_zip_coordinate=captured_zip_coordinate,
+                )
+            return dataclasses.replace(artifact, validation_verdict=verdict)
+        except BaseException as primary:
+            try:
+                artifact.discard()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup(
+                    "retained validation and artifact cleanup failed", [primary, cleanup]
+                ) from None
+            raise
+    return artifact
 
 
 def _is_declared_provider_session_stream(provider: Provider, source_path: str) -> bool:
@@ -1127,6 +1163,58 @@ def prepare_retained_non_json_artifact(
                     )
                 shard_path = builder.seal().path
             parsed = True
+            # Hermes' SQLite export is parsed through a deterministic JSON
+            # marker document. Validate that same marker projection (the
+            # schema-eligible parser input), while binding its verdict to the
+            # content-addressed SQLite revision that produced it.
+            from polylogue.archive.raw_payload.decode import build_raw_payload_envelope
+
+            envelope = None
+            if provider is Provider.HERMES:
+                envelope = build_raw_payload_envelope(
+                    sqlite_path,
+                    source_path=source_path,
+                    fallback_provider=provider,
+                    sqlite_immutable=True,
+                )
+                classification = envelope.artifact
+            else:
+                # Antigravity's SQLite parser validates its native table and
+                # step shapes directly; there is no JSON document to resolve
+                # against the retained schema registry.
+                classification = ArtifactClassification(
+                    provider=provider,
+                    kind=ArtifactKind.SESSION_DOCUMENT,
+                    parse_as_session=True,
+                    schema_eligible=False,
+                    default_priority=120,
+                    reason="Antigravity trajectory SQLite parser",
+                )
+            if classification is not None:
+                record_prepared_classification(
+                    store.conn,
+                    ArtifactStreamClassification(classification, False, 1),
+                )
+            verdict = None
+            if envelope is not None and classification is not None and classification.schema_eligible:
+                marker_path = Path(directory) / f"validation-marker-{uuid.uuid4().hex}.json"
+                try:
+                    marker_path.write_text(json.dumps(envelope.payload, ensure_ascii=False), encoding="utf-8")
+                    from polylogue.schemas import validate_retained_document
+
+                    verdict = validate_retained_document(
+                        envelope.provider,
+                        marker_path,
+                        mode=validation_mode,
+                        raw_id=raw_id,
+                        revision_sha256=blob_hash,
+                        evidence_id=raw_id,
+                        source_path=source_path,
+                        jsonl=False,
+                        captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
+                    )
+                finally:
+                    marker_path.unlink(missing_ok=True)
             _prepare_attachment_publications(store, publisher, Path(directory))
             _prepare_sidecar_publications(store, publisher, Path(directory))
             store.close()
@@ -1141,6 +1229,8 @@ def prepare_retained_non_json_artifact(
                 publication_publisher=publisher,
                 captured_profile_key=evidence_reader.raw_profile_identity(raw_id),
             )
+            if verdict is not None:
+                artifact = dataclasses.replace(artifact, validation_verdict=verdict)
             sealed = True
             return artifact
         # A declared raw-only evidence path is terminal by its declaration:
@@ -1190,6 +1280,18 @@ def prepare_retained_non_json_artifact(
             resolved_provider=resolved_provider,
             publication_publisher=publisher,
             captured_profile_key=evidence_reader.raw_profile_identity(raw_id),
+        )
+        artifact = _attach_retained_validation_verdict(
+            artifact,
+            provider=provider,
+            blob_hash=blob_hash,
+            blob_path=sqlite_path,
+            source_path=source_path,
+            raw_id=raw_id,
+            directory=Path(directory),
+            validation_mode=validation_mode,
+            captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
+            jsonl=False,
         )
         sealed = True
         return artifact

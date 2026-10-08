@@ -65,6 +65,16 @@ def test_retained_sqlite_preparation_streams_complete_parser_metadata(
         prepare=original_prepare,
     ) as (artifact, _reader):
         assert artifact.error is None
+        classification = artifact.stream_classification()
+        assert classification is not None
+        assert classification.classification.parse_as_session
+        if provider is Provider.HERMES:
+            assert classification.classification.schema_eligible
+            assert artifact.validation_verdict is not None
+            assert artifact.validation_verdict.revision_sha256 == blob_hash
+        else:
+            assert not classification.classification.schema_eligible
+            assert artifact.validation_verdict is None
         expected = collect_sqlite_sessions(
             provider,
             BlobStore(archive / "blob").blob_path(blob_hash),

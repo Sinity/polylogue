@@ -1240,6 +1240,11 @@ async def test_materialize_uses_original_non_json_carrier_and_writer_counts(
         descriptor = reader.raw_revision_descriptor(raw_id)
         assert Path(descriptor[2]).suffix == ".capture"
         artifact = original(reader, raw_id, directory=directory, validation_mode=validation_mode)
+        verdict = artifact.validation_verdict
+        assert verdict is not None
+        assert verdict.raw_id == raw_id
+        assert verdict.revision_sha256 == descriptor[1]
+        assert verdict.mode is validation_mode
         reached.append(raw_id)
         return artifact
 
@@ -1255,3 +1260,7 @@ async def test_materialize_uses_original_non_json_carrier_and_writer_counts(
     assert result.changed_counts["sessions"] == 1
     assert result.changed_counts["messages"] == 2
     assert _session_titles(archive_root) == ["Retained Redrive"]
+    with sqlite3.connect(archive_root / "source.db") as source_db:
+        assert source_db.execute("SELECT validation_status, validation_mode FROM raw_sessions").fetchall() == [
+            ("passed", "advisory")
+        ]
