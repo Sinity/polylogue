@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -584,7 +585,7 @@ def test_configured_frontier_refuses_sqlite_arrival_then_retries_logically(
     monkeypatch.setattr("polylogue.sources.hooks.hook_spool_sources", lambda: ())
     original = source_walk.layout_source_candidates
 
-    def discover_then_create(name: str, root: Path, **kwargs: object):
+    def discover_then_create(name: str, root: Path, **kwargs: object) -> Iterator[Path]:
         yield from original(name, root, **kwargs)
         if name == "codex-state" and not database.exists():
             with sqlite3.connect(database) as connection:
