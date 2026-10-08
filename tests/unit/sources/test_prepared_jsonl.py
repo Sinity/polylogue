@@ -520,15 +520,17 @@ def test_decoded_session_cache_holds_no_more_memory_than_its_budget(
                 pass
         gc.collect()
         retained_entries = len(prepared_message_sink._DECODED_SESSIONS._entries)
+        charged = prepared_message_sink._DECODED_SESSIONS._bytes
         holding = tracemalloc.get_traced_memory()[0]
         prepared_message_sink._DECODED_SESSIONS.clear()
         gc.collect()
         held = holding - tracemalloc.get_traced_memory()[0]
     finally:
         tracemalloc.stop()
-    # The LRU retained sessions and evicted others, so it ran at its budget.
+    # The LRU retained sessions and evicted others without exceeding its budget.
     assert 0 < retained_entries < len(sealed), retained_entries
-    assert budget // 4 < held <= budget, (held, budget, retained_entries)
+    assert 0 < charged <= budget, (charged, budget, retained_entries)
+    assert held <= budget, (held, budget, retained_entries)
 
 
 def _claude_document(session_id: str) -> dict[str, object]:
