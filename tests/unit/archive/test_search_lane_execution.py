@@ -541,6 +541,85 @@ def test_ranked_numeric_sort_uses_composed_lineage_messages(lane_archive: LaneAr
     assert ordered == ([child_id, small_child_id] if not reverse else [small_child_id, child_id]), ordered
 
 
+def test_ranked_word_sort_streams_chunk_boundaries_and_honors_cancellation(
+    lane_archive: LaneArchive, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ranked production route counts chunk-spanning words and cancels mid-block."""
+    from polylogue.archive.hydration import archive_envelope_to_session
+    from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext
+    from polylogue.archive.query.sorting import sort_sessions
+    from polylogue.storage.sqlite.archive_tiers.archive import SORT_METRIC_TEXT_CHUNK
+
+    root, _config, ids = lane_archive
+    long_word = "x" * (SORT_METRIC_TEXT_CHUNK + 7)
+    whale = (
+        SessionBuilder(root / "index.db", "chunk-boundary")
+        .provider("codex")
+        .updated_at("2020-01-01T00:00:00+00:00")
+        .add_message("large-block", text=f"needle {long_word} y")
+    )
+    whale_id = whale.native_session_id()
+    whale.save()
+    plan = SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid", sort="words")
+
+    with open_operation_read(root) as pinned:
+        actual_metrics = pinned.archive.read_session_sort_metrics(whale_id, sort="words")
+        assert actual_metrics[1:3] == (3, 3)
+        all_sessions = [
+            archive_envelope_to_session(pinned.archive.read_session(session_id))
+            for session_id in (*ids.values(), whale_id)
+        ]
+        expected = [str(session.id) for session in sort_sessions(plan, all_sessions)]
+        result = archive_search_hits(
+            plan,
+            archive_root=root,
+            config=None,
+            archive=pinned.archive,
+            vector_failure=LaneFailure("vector", "unavailable", "test", "synthetic lexical-only case"),
+        )
+    assert [hit.session_id for hit, _summary in result.hits] == expected
+
+    context = QueryExecutionContext(call_id="sort-metric-cancel", query_ref="synthetic-large-block")
+    checkpoints_inside_target_metrics = 0
+    with pytest.raises(QueryCancelledError):
+        with open_operation_read(root, execution_context=context) as pinned:
+            archive = pinned.archive
+            original_check = archive.check_operation_read
+            original_metrics = archive.read_session_sort_metrics
+            metric_session_active = False
+
+            def monitored_check() -> None:
+                nonlocal checkpoints_inside_target_metrics
+                original_check()
+                if metric_session_active:
+                    checkpoints_inside_target_metrics += 1
+                    if checkpoints_inside_target_metrics == 2:
+                        context.cancel()
+
+            def monitored_metrics(
+                session_id: str, *, sort: Literal["messages", "words", "longest", "tokens"]
+            ) -> tuple[int, int, int, bool, int]:
+                nonlocal metric_session_active
+                if session_id != whale_id:
+                    return original_metrics(session_id, sort=sort)
+                metric_session_active = True
+                try:
+                    return original_metrics(session_id, sort=sort)
+                finally:
+                    metric_session_active = False
+
+            monkeypatch.setattr(archive, "check_operation_read", monitored_check)
+            monkeypatch.setattr(archive, "read_session_sort_metrics", monitored_metrics)
+            archive_search_hits(
+                plan,
+                archive_root=root,
+                config=None,
+                archive=archive,
+                vector_failure=LaneFailure("vector", "unavailable", "test", "synthetic lexical-only case"),
+            )
+    assert checkpoints_inside_target_metrics >= 2
+
+
 def test_degraded_hybrid_daemon_cursor_keeps_request_lane(lane_archive: LaneArchive) -> None:
     """F877: the pinned daemon path must also consume its own degraded cursor."""
     root, _config, _ids = lane_archive

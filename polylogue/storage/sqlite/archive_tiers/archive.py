@@ -706,6 +706,7 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
 #: Rows ``iter_summaries``/``iter_search_summaries`` fetch per batch from their
 #: single cursor. A memory bound only: ``limit=None`` streams the whole scope.
 SUMMARY_FETCH_BATCH = 500
+SORT_METRIC_TEXT_CHUNK = 8192
 
 #: Rows ``iter_session_cost_insights`` fetches and prices per batch from its
 #: single cursor. A memory bound only: the whole matched scope is streamed.
@@ -3185,6 +3186,7 @@ class ArchiveStore:
                 current_message: tuple[int, int] | None = None
                 message_words = 0
                 while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+                    self.check_operation_read()
                     for row in rows:
                         message_key = (int(row["message_position"]), int(row["message_variant"]))
                         if message_key != current_message:
@@ -3203,12 +3205,17 @@ class ArchiveStore:
                             block_text = row["block_text"]
                             if block_text:
                                 in_word = False
-                                for character in str(block_text):
-                                    if character.isspace():
-                                        in_word = False
-                                    elif not in_word:
-                                        message_words += 1
-                                        in_word = True
+                                text = str(block_text)
+                                for offset in range(0, len(text), SORT_METRIC_TEXT_CHUNK):
+                                    self.check_operation_read()
+                                    chunk_end = min(offset + SORT_METRIC_TEXT_CHUNK, len(text))
+                                    for index in range(offset, chunk_end):
+                                        character = text[index]
+                                        if character.isspace():
+                                            in_word = False
+                                        elif not in_word:
+                                            message_words += 1
+                                            in_word = True
                 if current_message is not None:
                     words += message_words
                     longest = max(longest, message_words)
