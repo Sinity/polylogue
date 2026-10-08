@@ -1553,6 +1553,47 @@ def test_sqlite_admission_cancellation_propagates_without_a_failure_cursor(
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
 
 
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+def test_antigravity_cohort_cancellation_keeps_sources_out_of_failure_cursors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleanup_failure: bool
+) -> None:
+    """The cohort catch must not turn owner cancellation into missing exports."""
+    from polylogue.core.compute import DaemonOperationCancelled
+
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "antigravity"
+    path = root / "conversations" / "synthetic-cascade.pb"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"synthetic protobuf input")
+    cursor = CursorStore(tmp_path / "index.db")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="antigravity", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    cancellation = DaemonOperationCancelled("synthetic owner cancellation")
+    cleanup = RuntimeError("synthetic capture cleanup")
+    failure = (
+        BaseExceptionGroup("synthetic cancellation and cleanup failure", [cancellation, cleanup])
+        if cleanup_failure
+        else cancellation
+    )
+
+    def cancel(*_args: Any, **_kwargs: Any) -> Any:
+        raise failure
+
+    monkeypatch.setattr("polylogue.sources.source_parsing.iter_antigravity_language_server_sessions", cancel)
+    with pytest.raises(BaseExceptionGroup if cleanup_failure else DaemonOperationCancelled) as caught:
+        run_ingest_files(processor, [path], emit_event=False)
+    assert caught.value is failure
+    if isinstance(caught.value, BaseExceptionGroup):
+        assert caught.value.exceptions == (cancellation, cleanup)
+    assert cursor.get_record(path) is None
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cleanup_failure", [False, True])
 async def test_dispatcher_propagates_source_cancellation_with_its_cleanup_failures(

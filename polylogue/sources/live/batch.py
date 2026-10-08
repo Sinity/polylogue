@@ -3489,6 +3489,7 @@ class LiveBatchProcessor:
                     if raw_data is not None:
                         antigravity_pairs[Path(raw_data.source_path)] = (raw_data, session)
             except Exception as exc:
+                raise_if_operation_cancelled(exc)
                 raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
                 logger.exception("antigravity: language-server cohort conversion failed")
             for path in antigravity_pb_paths:
