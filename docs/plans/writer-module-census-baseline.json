@@ -329,6 +329,11 @@
     ]
   },
   {
+    "file": "polylogue/sources/source_snapshot.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/sources/sqlite_export.py",
     "tiers": []
   },
