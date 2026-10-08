@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,8 +40,9 @@ def test_repo_identity_normalization_filters_noise(tmp_path: Path, monkeypatch: 
     sinnix_repo = _make_repo(tmp_path, "sinnix")
     polylogue_repo = _make_repo(tmp_path, "polylogue")
 
-    assert normalize_repo_name(f"{sinnix_repo}#switch") == "sinnix"
-    assert normalize_repo_name(f"{polylogue_repo}/README.md`\\n\\nPass") == "polylogue"
+    assert normalize_repo_name(str(sinnix_repo)) == "sinnix"
+    assert normalize_repo_name(f"{sinnix_repo}#switch") is None
+    assert normalize_repo_name(str(polylogue_repo / "README.md")) == "polylogue"
     assert normalize_repo_name("https://github.com/Sinity/sinex.git") == "sinex"
     assert normalize_repo_names(["sinex"]) == ("sinex",)
     assert normalize_repo_name("\\S+") is None
@@ -53,13 +55,13 @@ def test_repo_identity_normalization_filters_noise(tmp_path: Path, monkeypatch: 
             "\\S+",
             "README.md",
         ],
-        repo_paths=[f"{sinnix_repo}#switch"],
+        repo_paths=[str(sinnix_repo)],
     ) == ("polylogue", "sinex", "sinnix")
-    assert normalize_repo_path(f"{sinnix_repo}#nixosConfigurations.sinnix-prime") == str(sinnix_repo)
+    assert normalize_repo_path(f"{sinnix_repo}#nixosConfigurations.sinnix-prime") is None
     assert normalize_repo_paths(
         [
-            f"{polylogue_repo}/README.md`\\n\\nPass",
-            f"{sinnix_repo}#switch",
+            str(polylogue_repo / "README.md"),
+            str(sinnix_repo),
             str(tmp_path / "README.md"),
         ]
     ) == (str(polylogue_repo), str(sinnix_repo))
@@ -192,8 +194,8 @@ def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_
             "session_id": "conv-normalize-profile",
             "origin": "claude-code-session",
             "repo_paths": [
-                f"{polylogue_repo}/README.md`\\n\\nPass",
-                f"{sinnix_repo}#switch",
+                str(polylogue_repo / "README.md"),
+                str(sinnix_repo),
                 str(tmp_path / "README.md"),
             ],
             "repo_names": ["polylogue", "sinnix"],
@@ -241,7 +243,7 @@ def test_build_session_profile_normalizes_repo_roots_from_workdirs_and_tool_path
                         {
                             "type": "tool_use",
                             "tool_name": "Read",
-                            "tool_input": {"file_path": f"{sinnix_repo}#nixosConfigurations.sinnix-prime"},
+                            "tool_input": {"file_path": str(sinnix_repo / "README.md")},
                         }
                     ],
                 ),
@@ -522,3 +524,118 @@ def test_session_profile_preserves_repo_names() -> None:
 
     assert profile.repo_names == ("polylogue",)
     assert profile.to_dict()["repo_names"] == ["polylogue"]
+
+
+@pytest.mark.parametrize(
+    "component", ["project copy", "project#copy", "project(copy)", "project;copy", "project copy "]
+)
+def test_structured_cwd_never_resolves_to_a_delimiter_prefix_neighbor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, component: str
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.write import _discovered_repo_root_path
+
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    neighbor = tmp_path / "project"
+    root = tmp_path / component
+    for repo in (neighbor, root):
+        subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    cwd = root / "src"
+    cwd.mkdir()
+    literal = str(cwd)
+    attribution = extract_attribution_from_actions([], working_directories=[literal])
+    assert attribution.cwd_paths == (literal,)
+    assert attribution.repo_paths == (str(root),)
+    assert attribution.repo_names == (component,)
+    action = Action(
+        action_id="neutral-cwd-action",
+        message_id="neutral-message",
+        timestamp=datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc),
+        sequence_index=0,
+        kind=ToolCategory.FILE_READ,
+        tool_name="Read",
+        tool_id=None,
+        origin=Origin.CLAUDE_CODE_SESSION,
+        affected_paths=(),
+        cwd_path=literal,
+        branch_names=(),
+        command=None,
+        query=None,
+        url=None,
+        output_text=None,
+        search_text="",
+        raw={},
+    )
+    action_attribution = extract_attribution_from_actions([action])
+    assert action_attribution.cwd_paths == (literal,)
+    assert action_attribution.repo_paths == (str(root),)
+    assert normalize_repo_path(literal) == str(root)
+    assert normalize_repo_name(literal) == component
+    assert normalize_repo_path(str(root)) == str(root)
+    # file:// keeps URL grammar: a raw # starts its fragment, whereas
+    # the structured local path above treats # as a literal filename byte.
+    uri_root = neighbor if "#" in component else root
+    assert normalize_repo_path(f"file://localhost{literal}") == str(uri_root)
+    assert _discovered_repo_root_path(literal) == str(root)
+
+
+def test_repo_discovery_refreshes_absence_and_enclosing_root_without_cache_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.write import _discovered_repo_root_path
+
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    outer = tmp_path / "outer"
+    inner = outer / "inner"
+    cwd = inner / "src"
+    cwd.mkdir(parents=True)
+    literal = str(cwd)
+    assert normalize_repo_path(literal) is None
+    assert normalize_repo_name(literal) is None
+    subprocess.run(["git", "init", "--quiet", str(outer)], check=True)
+    assert normalize_repo_path(literal) == str(outer)
+    assert normalize_repo_name(literal) == "outer"
+    assert _discovered_repo_root_path(literal) == str(outer)
+    subprocess.run(["git", "init", "--quiet", str(inner)], check=True)
+    assert normalize_repo_path(literal) == str(inner)
+    assert normalize_repo_name(literal) == "inner"
+    assert _discovered_repo_root_path(literal) == str(inner)
+    assert extract_attribution_from_actions([], working_directories=[literal]).repo_paths == (str(inner),)
+    # Removing the nested marker must expose the outer repository again.
+    (inner / ".git").rename(inner / "retired-git")
+    assert normalize_repo_path(literal) == str(outer)
+    assert normalize_repo_name(literal) == "outer"
+
+
+def test_literal_worktree_path_preserves_linked_git_marker_and_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Neutral",
+            "-c",
+            "user.email=neutral@example.invalid",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "neutral",
+        ],
+        check=True,
+    )
+    linked = tmp_path / "project linked"
+    subprocess.run(["git", "-C", str(root), "worktree", "add", "--quiet", "--detach", str(linked)], check=True)
+    cwd = linked / "src"
+    cwd.mkdir()
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    assert (linked / ".git").is_file()
+    assert normalize_repo_path(str(cwd)) == str(linked)
+    assert normalize_repo_name(str(cwd)) == "project linked"
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(linked))
+    assert normalize_repo_path(str(cwd)) is None
+    assert normalize_repo_path(str(linked)) == str(linked)
