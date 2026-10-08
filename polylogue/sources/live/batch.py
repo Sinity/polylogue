@@ -37,6 +37,7 @@ from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandi
 from polylogue.archive.zip_admission import open_zip_entry
 from polylogue.config import Source
 from polylogue.core.compute import DaemonBackpressureError, DaemonOperationCancelled
+from polylogue.core.compute_cancel import raise_if_operation_cancelled
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.degraded import is_fully_degraded
 from polylogue.core.enums import Origin, Provider
@@ -1035,6 +1036,7 @@ class LiveBatchProcessor:
                         )
                     raise
                 except Exception as exc:
+                    raise_if_operation_cancelled(exc)
                     await self._finish_escaped_attempt(attempt, exc)
                     raise_if_storage_fault(exc)
                     raise
@@ -1534,8 +1536,7 @@ class LiveBatchProcessor:
                     )
                     break
                 except Exception as exc:
-                    if isinstance(exc, DaemonOperationCancelled):
-                        raise
+                    raise_if_operation_cancelled(exc)
                     if isinstance(exc, UnleasedWriteError):
                         # A missing writer is a configuration refusal, not a
                         # property of these files: never count them failed.
@@ -1707,6 +1708,27 @@ class LiveBatchProcessor:
                 detection_fallbacks_by_path.update(full_result.detection_fallbacks)
                 settled_exclusions.update(full_result.settled_exclusions)
                 partial_admissions.update(full_result.partial_admissions)
+                # Acquisition or a definitive current refusal discharges the
+                # read obligation; neither proves unrelated derivation debt.
+                read_settled = set(full_result.succeeded) | {
+                    path
+                    for path, reason in full_result.excluded.items()
+                    if reason
+                    not in {REFUSED_UNATTEMPTED, REFUSED_UNATTEMPTED_TIME_BUDGET, "dropped without a recorded outcome"}
+                }
+                if read_settled:
+                    await self._run_ops_write(
+                        "source_read_settlement",
+                        self._cursor.apply_convergence_debt_batch,
+                        (
+                            ConvergenceDebtBatchEntry(
+                                settlements=tuple(
+                                    ConvergenceDebtSettlement("source_path", str(path), "live_ingest_source_read")
+                                    for path in read_settled
+                                )
+                            ),
+                        ),
+                    )
                 emit(
                     "live.ingest.source_group",
                     source_name=source_name,
@@ -1797,7 +1819,9 @@ class LiveBatchProcessor:
 
         deferred_debt_writes = tuple(
             ConvergenceDebtWrite(
-                stage="live_ingest_deferred",
+                stage=(
+                    "live_ingest_source_read" if deferred_path in source_read_deferred_paths else "live_ingest_deferred"
+                ),
                 subject_type="source_path",
                 subject_id=str(deferred_path),
                 error=(
@@ -3519,8 +3543,7 @@ class LiveBatchProcessor:
                 blob_publication_receipt_id: str | None = None
                 prepared = pre_writer_admissions[path]
                 if isinstance(prepared, Exception):
-                    if isinstance(prepared, DaemonOperationCancelled):
-                        raise prepared
+                    raise_if_operation_cancelled(prepared)
                     raise_if_storage_fault(prepared, kinds=_snapshot_fault_kinds(prepared))
                     if retryable_read_fault(prepared):
                         source_read_deferred_paths.append(path)

@@ -120,6 +120,9 @@ coordinate for a cursor; its deferred path remains discoverable and owed by
 the file adapter. Unsupported bytes and typed permanent refusals retain their
 ordinary exclusion contracts (`polylogue/sources/live/batch_support.py`,
 `polylogue/sources/live/batch.py`, `polylogue/sources/live/cursor.py`).
+Read deferral owns `live_ingest_source_read` debt; retained acquisition or a
+definitive current refusal settles that stage. Cancellation propagates through
+the batch, file adapter and dispatcher with any grouped cleanup failures intact.
 
 A current retained decode refusal remains a failed derivation outcome. Its exact raw coordinate, parser census, support status and trusted failure carrier are validated by the canonical raw adapter. A later deliberate pass reports that same typed refusal from metadata without parsing the bytes again. Fair intake excludes the exact terminal item and discovery leaves it out of retry backlog; infrastructure failures and unavailable exact-key outcomes remain retryable (`polylogue/storage/derived/raw.py`, `polylogue/daemon/derivation.py`, `polylogue/operations/intake_adapters.py`).
 

@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import zipfile
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, Iterable
 from contextlib import closing
 from dataclasses import replace
@@ -1357,15 +1358,28 @@ def test_repeated_sqlite_read_faults_defer_without_quarantining_unchanged_input(
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
 
+    with sqlite3.connect(cursor._ops_db_path) as conn:
+        assert conn.execute(
+            "SELECT target_id, status FROM convergence_debt WHERE stage = 'live_ingest_source_read'"
+        ).fetchall() == [(str(state), "deferred")]
+
     recovered = run_ingest_files(processor, [state], emit_event=False)
     assert recovered.failed_file_count == 0
     assert recovered.deferred_file_count == 0
-    assert recovered.succeeded_paths == (state,)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT source_path FROM raw_sessions").fetchall() == [(str(state),)]
     run_ingest_files(processor, [state], emit_event=False)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT source_path FROM raw_sessions").fetchall() == [(str(state),)]
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert read_thread_titles(conn) == {"codex-thread": "Recover retained state"}
     record = cursor.get_record(state)
     assert record is not None and record.failure_count == 0 and record.excluded is False
+    assert record.next_retry_at is None
+    with sqlite3.connect(cursor._ops_db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM convergence_debt WHERE stage = 'live_ingest_source_read'"
+        ).fetchone() == (0,)
 
 
 def test_pre_acquisition_reports_a_retryable_read_as_its_typed_fault(tmp_path: Path) -> None:
@@ -1495,13 +1509,18 @@ async def test_dispatcher_keeps_unreadable_source_owed_without_cursor_authority(
             record = cursor.get_record(state)
             assert record is not None and record.failure_count == 0 and record.excluded is False
             assert record.next_retry_at is None
+            with sqlite3.connect(cursor._ops_db_path) as conn:
+                assert conn.execute(
+                    "SELECT COUNT(*) FROM convergence_debt WHERE stage = 'live_ingest_source_read'"
+                ).fetchone() == (0,)
         finally:
             watcher.stop()
 
 
 @pytest.mark.parametrize("state_name", ["state_5.sqlite", "candidate.sqlite"])
+@pytest.mark.parametrize("cleanup_failure", [False, True])
 def test_sqlite_admission_cancellation_propagates_without_a_failure_cursor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state_name: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state_name: str, cleanup_failure: bool
 ) -> None:
     """Both pre-writer admission routes preserve the owner's cancellation."""
     from polylogue.core.compute import DaemonOperationCancelled
@@ -1519,14 +1538,69 @@ def test_sqlite_admission_cancellation_propagates_without_a_failure_cursor(
     )
 
     def cancel(*_args: Any, **_kwargs: Any) -> Any:
+        if cleanup_failure:
+            raise BaseExceptionGroup(
+                "synthetic cancellation and cleanup failure",
+                [DaemonOperationCancelled("synthetic owner cancellation"), RuntimeError("synthetic capture cleanup")],
+            )
         raise DaemonOperationCancelled("synthetic owner cancellation")
 
     monkeypatch.setattr("polylogue.sources.sqlite_inspection.classify_sqlite_source", cancel)
-    with pytest.raises(DaemonOperationCancelled):
+    with pytest.raises(BaseExceptionGroup if cleanup_failure else DaemonOperationCancelled):
         run_ingest_files(processor, [path], emit_event=False)
     assert cursor.get_record(path) is None
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+async def test_dispatcher_propagates_source_cancellation_with_its_cleanup_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleanup_failure: bool
+) -> None:
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
+    from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
+    from tests.infra.raw_owner_routes import live_owner_set
+
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "codex"
+    state = root / "state_5.sqlite"
+    _write_codex_thread_state_db(state)
+    source = WatchSource(name="codex-state", root=root)
+    cursor = CursorStore(tmp_path / "index.db")
+    cancellation = DaemonOperationCancelled("synthetic owner cancellation")
+    cleanup = RuntimeError("synthetic capture cleanup")
+    failure = (
+        BaseExceptionGroup("synthetic cancellation and cleanup failure", [cancellation, cleanup])
+        if cleanup_failure
+        else cancellation
+    )
+
+    def cancel(*_args: Any, **_kwargs: Any) -> Any:
+        raise failure
+
+    monkeypatch.setattr("polylogue.sources.sqlite_inspection.classify_sqlite_source", cancel)
+    async with live_owner_set(tmp_path) as owners:
+        watcher = LiveWatcher(
+            cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+            (source,),
+            cursor=cursor,
+            **owners.watcher_kwargs(),
+        )
+        adapter = FileIntakeAdapter(DaemonIntakeContext(tmp_path, watcher, (source,)), source)
+        dispatcher = FairIntakeDispatcher((IntakeClassSpec(name=source.name, adapter=adapter),))
+        try:
+            with pytest.raises(BaseExceptionGroup if cleanup_failure else DaemonOperationCancelled) as caught:
+                await dispatcher.run_once()
+            assert caught.value is failure
+            if isinstance(caught.value, BaseExceptionGroup):
+                assert caught.value.exceptions == (cancellation, cleanup)
+            assert cursor.get_record(state) is None
+            with sqlite3.connect(tmp_path / "source.db") as conn:
+                assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+        finally:
+            watcher.stop()
 
 
 def test_jsonl_pre_acquisition_classifies_record_by_record_in_bounded_memory(

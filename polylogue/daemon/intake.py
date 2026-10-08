@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, cast, runtime_checkable
 
+from polylogue.core.compute_cancel import raise_if_operation_cancelled
 from polylogue.core.raw_failure_evidence import PartialAdmission
 from polylogue.daemon.observation import Observation, ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
@@ -484,6 +485,7 @@ class FairIntakeDispatcher:
         try:
             page: list[IntakeItem] = list(await spec.adapter.discover(limit=limit))
         except Exception as exc:
+            raise_if_operation_cancelled(exc)
             emit(
                 "daemon.intake.discovery_failed",
                 level=WARNING,
@@ -722,6 +724,7 @@ class FairIntakeDispatcher:
         try:
             return await spec.adapter.admit(item)
         except Exception as exc:
+            raise_if_operation_cancelled(exc)
             return AdmissionResult(
                 AdmissionOutcome.RETRYABLE,
                 reason=f"{type(exc).__name__}: {exc}",
@@ -749,6 +752,7 @@ class FairIntakeDispatcher:
                 await admit_page(tuple(items)),
             )
         except Exception as exc:
+            raise_if_operation_cancelled(exc)
             # The adapter handled none of it, so say so once per page: an
             # escaped error otherwise appears only in per-item reasons.
             emit(

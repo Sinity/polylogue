@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextvars
 import threading
+from builtins import BaseExceptionGroup
 
 #: Set by the compute owner in the context it submits a pass under; the
 #: event is set when that owner is cancelled.
@@ -35,4 +36,14 @@ def check_compute_cancelled() -> None:
         raise DaemonOperationCancelled("compute operation cancelled")
 
 
-__all__ = ["check_compute_cancelled", "compute_cancel", "compute_cancel_requested"]
+def raise_if_operation_cancelled(exc: BaseException) -> None:
+    """Preserve owner cancellation, including a group with cleanup failures."""
+    from polylogue.core.compute import DaemonOperationCancelled
+
+    if isinstance(exc, DaemonOperationCancelled) or (
+        isinstance(exc, BaseExceptionGroup) and exc.subgroup(DaemonOperationCancelled) is not None
+    ):
+        raise exc
+
+
+__all__ = ["check_compute_cancelled", "compute_cancel", "compute_cancel_requested", "raise_if_operation_cancelled"]

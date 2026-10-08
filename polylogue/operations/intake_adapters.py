@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
+from polylogue.core.compute_cancel import raise_if_operation_cancelled
 from polylogue.core.durable_fs import DurableFilesystemError
 from polylogue.core.storage_faults import ArchiveStorageFaultError
 from polylogue.daemon.intake import (
@@ -918,6 +919,7 @@ class FileIntakeAdapter(IntakeAdapter):
                 outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.RETRYABLE, reason=str(exc))
             return outcomes
         except (OSError, ValueError, RuntimeError) as exc:
+            raise_if_operation_cancelled(exc)
             # A cursor-authority refusal lands here too: it is retryable for
             # every item in the page, and nothing in the archive changed. Say
             # so once per page: a class that reports only ``retried`` counts
