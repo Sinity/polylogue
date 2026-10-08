@@ -438,7 +438,7 @@ def _sqlite_archive_open_violations(tree: ast.Module, *, relative: str) -> list[
                 else ""
                 for item in ast.walk(argument)
             ]
-            text = "/".join(fragments)
+            text = "/".join(fragment for fragment in fragments if fragment)
         return bool(
             re.search(r"(?:[?&])mode=ro(?:&|$)", text)
             or re.search(r"(?:[?&])immutable=1(?:&|$)", text)

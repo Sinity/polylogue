@@ -509,6 +509,31 @@ def test_cli_rejects_an_inherited_lease_without_actual_thread_authority(
     assert archive_custody_available(root)
 
 
+@pytest.mark.asyncio
+async def test_configured_coordinator_does_not_admit_a_foreign_archive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import sqlite3
+
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+    root = _archive_root(monkeypatch, tmp_path)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+
+    def attempt_foreign_open() -> None:
+        with pytest.raises(ArchiveWriterOwnershipError):
+            sqlite3.connect(foreign / "source.db")
+
+    try:
+        with cli_archive_writer_ownership():
+            await coordinator.run_sync("test.cli.foreign_archive", attempt_foreign_open)
+        assert not (foreign / "source.db").exists()
+    finally:
+        assert await coordinator.shutdown(timeout=1.0)
+
+
 def test_offline_residency_classifies_only_writable_tier_paths(tmp_path: Path) -> None:
     from polylogue.maintenance.offline_guard import guarded_archive_tier_path
 
