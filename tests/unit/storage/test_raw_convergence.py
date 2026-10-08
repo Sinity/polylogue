@@ -22,7 +22,7 @@ import pytest
 
 from polylogue.archive.revision_authority import append_source_revision
 from polylogue.core.compute import BoundedComputeAdapter
-from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
+from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode
 from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.stage_admission import admit_stage_write
@@ -127,11 +127,12 @@ def _derive(
     *,
     limit: int = 128,
     discovery: RawMaterializationDiscovery | None = None,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
 ) -> DerivationReport:
     """One fair-intake pass: the daemon's discovery page, each raw through ``converge_raw_id``."""
 
     async def run() -> DerivationReport:
-        async with prepared_live_convergence_owner(root) as owner:
+        async with prepared_live_convergence_owner(root, validation_mode=validation_mode) as owner:
             return await converge_pending_raws_async(owner, root, limit=limit, discovery=discovery)
 
     return asyncio.run(run())
@@ -147,13 +148,20 @@ def _converge_raw(root: Path, compute: BoundedComputeAdapter, raw_id: str) -> De
     )
 
 
-def _inspect(root: Path, raw_id: str) -> str:
+def _inspect(
+    root: Path,
+    raw_id: str,
+    *,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
+) -> str:
     return run_on_convergence_owner(
         root,
         "test.raw.inspect",
-        lambda compute: RawObservationDerivation(root, compute_adapter=compute).inspect(
-            raw_observation_frame(root), (raw_id,)
-        )[raw_id],
+        lambda compute: RawObservationDerivation(
+            root,
+            compute_adapter=compute,
+            validation_mode=validation_mode,
+        ).inspect(raw_observation_frame(root), (raw_id,))[raw_id],
     )
 
 
@@ -533,7 +541,7 @@ def test_canonical_reset_index_replays_only_when_parse_is_newer_than_validation_
     validation_offset: int,
     expected_materialized: int,
 ) -> None:
-    """A newer/equal validation failure cannot authorize raw replay on reset."""
+    """A newer/equal strict validation failure cannot authorize raw replay on reset."""
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(
         tmp_path,
@@ -542,11 +550,12 @@ def test_canonical_reset_index_replays_only_when_parse_is_newer_than_validation_
         provider=Provider.CODEX,
         payload=_codex_conversation_bytes("validation-history"),
     )
-    assert _derive(tmp_path).failed == 0
+    assert _derive(tmp_path, validation_mode=ValidationMode.STRICT).failed == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        parsed_at_ms = int(
-            conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
-        )
+        parsed_at_ms, validation_mode = conn.execute(
+            "SELECT parsed_at_ms, validation_mode FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+        assert validation_mode == ValidationMode.STRICT.value
         conn.execute(
             "UPDATE raw_sessions SET validation_status = 'failed', validation_error = ?, validated_at_ms = ? "
             "WHERE raw_id = ?",
@@ -559,8 +568,8 @@ def test_canonical_reset_index_replays_only_when_parse_is_newer_than_validation_
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
 
     expected_state = "missing" if expected_materialized else "valid"
-    assert _inspect(tmp_path, raw_id) == expected_state
-    report = _derive(tmp_path)
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.STRICT) == expected_state
+    report = _derive(tmp_path, validation_mode=ValidationMode.STRICT)
     assert report.failed == 0, [(o.outcome.value, o.error) for o in report.outcomes]
     with sqlite3.connect(active_index) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
