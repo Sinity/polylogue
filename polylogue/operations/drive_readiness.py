@@ -344,6 +344,7 @@ def inspect_current_drive_readiness(
     raw_owner_available: bool = True,
 ) -> DriveCatchupReport:
     """Inspect the pinned current generation without opening an independent frame."""
+    from polylogue.core.errors import ArchiveTierUnavailableError, SchemaRefusalError
     from polylogue.operations.operation_context import open_operation_read
 
     def read() -> DriveCatchupReport:
@@ -357,7 +358,12 @@ def inspect_current_drive_readiness(
                 raw_owner_available=raw_owner_available,
             )
 
-    measured = capture_sqlite_read(read)
+    try:
+        measured = capture_sqlite_read(read)
+    except (ArchiveTierUnavailableError, SchemaRefusalError):
+        return DriveCatchupReport(
+            DriveCatchupState.UNKNOWN, changed_count, gaps=("drive_archive_authority_unavailable",)
+        )
     return (
         measured.value
         if isinstance(measured, Measured)

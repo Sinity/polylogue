@@ -458,23 +458,30 @@ def test_pinned_workload_counts_partial_batch_raw_files_and_sessions(tmp_path: P
 def test_executing_status_requires_configured_drive_witness_even_with_embeddings_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.config import Config, Source
+    from polylogue.config import Config, PolylogueConfig, resolve_runtime_config
     from polylogue.operations.daemon_reads import DaemonReadDependencies, execute_read_operation
     from polylogue.operations.drive_readiness import drive_readiness_observation, reset_drive_readiness_observation
     from polylogue.sources.drive.witness import DriveListingWitness
 
     bootstrap_ready_archive_root(tmp_path)
-    config = Config(
-        archive_root=tmp_path, render_root=tmp_path / "render", sources=[Source("aistudio", folder="folder")]
-    )
-    from types import SimpleNamespace
-
-    from polylogue.config import PolylogueConfig
-
+    for variable, directory in (
+        ("HOME", "home"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_DATA_HOME", "data"),
+    ):
+        monkeypatch.setenv(variable, str(tmp_path / directory))
+    for relative in ("config/polylogue/polylogue-credentials.json", "state/polylogue/token.json"):
+        credential = tmp_path / relative
+        credential.parent.mkdir(parents=True, exist_ok=True)
+        credential.write_text("{}")
     settings = PolylogueConfig(_data={"archive_root": str(tmp_path), "embedding_enabled": False})
-    monkeypatch.setattr(
-        "polylogue.config.resolve_runtime_config", lambda **kwargs: SimpleNamespace(sources=config.sources)
-    )
+    effective = resolve_runtime_config(cli_overrides=settings.raw)
+    drive_sources = [source for source in effective.sources if source.is_drive]
+    assert len(drive_sources) == 1
+    assert drive_sources[0].name == "aistudio"
+    assert drive_sources[0].path is not None and not drive_sources[0].path.exists()
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=list(effective.sources))
     reset_drive_readiness_observation(tmp_path)
 
     def status() -> dict[str, Any]:
@@ -500,7 +507,8 @@ def test_executing_status_requires_configured_drive_witness_even_with_embeddings
         def iter_json_files(self, folder: str) -> tuple[()]:
             return ()
 
-    witness = DriveListingWitness("aistudio", "folder")
+    assert drive_sources[0].folder is not None
+    witness = DriveListingWitness("aistudio", drive_sources[0].folder)
     witness.enumerate(EmptyFolder(), "resolved-folder")  # type: ignore[arg-type]
     witness.reobserve(EmptyFolder())  # type: ignore[arg-type]
     drive_readiness_observation(tmp_path).witnesses["aistudio"] = witness
