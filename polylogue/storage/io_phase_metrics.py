@@ -64,7 +64,8 @@ def _inside_writer_lease() -> bool:
         # archive of its own to assert, it only wants to know whether a
         # lease is held. Passing None here would otherwise read as an
         # omission on an archive-bound lease and misreport every sample as
-        # unowned (see write_guard.py's identical rationale).
+        # unowned; the lease API treats a missing archive root as an omitted
+        # identity on an archive-bound lease.
         return require_write_lease("I/O phase ownership sample", archive_root=lease.archive_root) is not None
     except UnleasedWriteError:
         return False

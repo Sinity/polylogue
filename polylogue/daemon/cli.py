@@ -2084,7 +2084,7 @@ async def run_daemon_services(
     those routes can run, and the daemon must prevent a rebuild from starting
     until its writer coordinator has drained.
     """
-    from polylogue.core.write_lease import arm_write_lease_enforcement, install_archive_write_guard
+    from polylogue.core.write_lease import arm_write_lease_enforcement
     from polylogue.daemon.events import EVENT_SUBSCRIBERS
     from polylogue.maintenance.raw_authority import archive_writer_rebuild_exclusion
     from polylogue.paths import archive_root
@@ -2096,11 +2096,6 @@ async def run_daemon_services(
     with (
         archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion,
         arm_write_lease_enforcement(process_wide=True),
-        # Arming alone only covers the declared write-mode factories. The guard
-        # makes the boundary total at ``sqlite3.connect`` itself, so a writer
-        # that reaches an archive tier without a factory is refused rather than
-        # contending through the busy timeout (polylogue-8qm4k).
-        install_archive_write_guard(),
         arm_recurring_checkpoint_owner(),
         # This process serves every SSE subscriber, so it alone knows every
         # live cursor and is the only one that prunes the event ledger.

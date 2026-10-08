@@ -86,8 +86,6 @@ ARCHIVE_WRITE_CUSTODY_LOCK_NAME = ".archive-write-custody.lock"
 __all__ = [
     "ARCHIVE_WRITE_CUSTODY_LOCK_NAME",
     "UnleasedWriteError",
-    "declared_unguarded_write",
-    "install_archive_write_guard",
     "WriteLease",
     "WriteLeaseDelegation",
     "WriteLeaseThreadGrant",
@@ -1691,14 +1689,3 @@ async def _settle_task(
         return task.result(), cancellation, None
     except BaseException as exc:
         return None, cancellation, exc
-
-
-# The connection-level half of this boundary. ``write_guard`` intercepts
-# ``sqlite3.connect`` so a writable archive-tier open that never touched a
-# declared factory is refused too; it is re-exported here because the lease and
-# the guard are one authority and callers should not have to know which module
-# holds which half.
-from polylogue.storage.sqlite.write_guard import (  # noqa: E402
-    declared_unguarded_write,
-    install_archive_write_guard,
-)
