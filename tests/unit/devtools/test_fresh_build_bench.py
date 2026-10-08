@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -2675,12 +2676,12 @@ def test_shutdown_write_stamp_checks_writer_locations_without_walking_payloads(
     visited: list[Path] = []
     real_iterdir = Path.iterdir
 
-    def direct_generation_members(path: Path):
+    def direct_generation_members(path: Path) -> Iterator[Path]:
         assert path in {tmp_path / ".index-generations", tmp_path / ".embeddings-generations"}
         visited.append(path)
         return real_iterdir(path)
 
-    def refuse_recursive_walk(*_args: object, **_kwargs: object):
+    def refuse_recursive_walk(*_args: object, **_kwargs: object) -> None:
         pytest.fail("shutdown observer traversed the archive payload tree")
 
     monkeypatch.setattr(Path, "iterdir", direct_generation_members)
