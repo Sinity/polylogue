@@ -1992,6 +1992,26 @@ def path_declaration_refuses_session(provider: Provider, source_path: str | Path
     return rule is not None and rule.parse_policy == "raw-only"
 
 
+def pre_acquisition_path_exclusion(provider: Provider, source_path: str | Path) -> str | None:
+    """Return the ordinary intake's definitive metadata-only exclusion.
+
+    Artifact rules retain their declared raw or fact evidence. JSONL, SQLite,
+    and ZIP acquisition require their own classifiers, so this rule abstains.
+    """
+    from polylogue.archive.artifact_taxonomy import strong_path_classification
+    from polylogue.sources.dispatch import is_jsonl_source_path
+
+    path = Path(source_path)
+    if path.suffix.lower() in {".db", ".sqlite", ".sqlite3", ".zip"}:
+        return None
+    if artifact_rule_for_path(provider, str(path)) is not None or is_jsonl_source_path(str(path)):
+        return None
+    strong = strong_path_classification(path, provider=provider)
+    if strong is not None and not strong.parse_as_session:
+        return "path rule classifies this as non-session evidence"
+    return None
+
+
 def database_capability_for_provider(provider: Provider) -> DatabaseSourceCapability | None:
     """Return the declared SQLite acquisition contract for a provider wire."""
 
@@ -4209,6 +4229,7 @@ __all__ = [
     "artifact_rule_for_path",
     "artifact_observation_contracts",
     "path_declaration_refuses_session",
+    "pre_acquisition_path_exclusion",
     "recognize_source_class",
     "schema_observed_leaf_values",
     "undeclared_schema_values",

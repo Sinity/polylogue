@@ -1565,3 +1565,44 @@ def test_conservation_refuses_inventory_replaced_while_descriptor_is_open(
     assert _count(check, "source_unavailable") == 1
     assert _count(check, "source_lost") == 0
     assert _count(check, "materialized") == 0
+
+
+def test_completed_intake_does_not_owe_declared_out_of_scope_database_projection(tmp_path: Path) -> None:
+    """Mutation: physical layout discovery demands a database ordinary intake correctly excludes."""
+    from polylogue.sources.live.production_baseline import capture_production_source_baseline
+    from polylogue.sources.live.watcher import WatchSource
+    from polylogue.sources.source_layout import source_layout_for
+
+    _seed(tmp_path)
+    state = tmp_path / "codex-state"
+    state.mkdir()
+    projection = state / "thread_history_1.sqlite"
+    with sqlite3.connect(projection) as connection:
+        connection.execute("CREATE TABLE projection(value TEXT)")
+        connection.execute("INSERT INTO projection VALUES ('already represented by source sessions')")
+    hermes = tmp_path / "hermes"
+    (hermes / "sessions").mkdir(parents=True)
+    request_dump = hermes / "sessions" / "request_dump_neutral.json"
+    request_dump.write_bytes(b'{"neutral":"excluded request metadata"}')
+    baseline = capture_production_source_baseline(
+        (
+            WatchSource("codex-state", state, layout=source_layout_for("codex-state")),
+            WatchSource("hermes", hermes, layout=source_layout_for("hermes")),
+        ),
+        operation_id="excluded-projection",
+    )
+    assert baseline.accepted == ()
+    assert any(row.path == str(projection) and row.disposition == "excluded" for row in baseline.decisions)
+    with build_source_frontier(
+        [
+            SourceDeclaration("acquired", SourceRole.DIRECTORY, tmp_path / "sources", True),
+            SourceDeclaration("state", SourceRole.DIRECTORY, state, True, "codex-state"),
+            SourceDeclaration("hermes", SourceRole.DIRECTORY, hermes, True, "hermes"),
+        ]
+    ) as frontier:
+        assert frontier.complete
+        assert frontier.root_states["state"].value == "valid-empty"
+        check = _run_with_frontier(tmp_path, frontier)
+    assert check.status is OutcomeStatus.OK, check.evidence
+    assert _count(check, "frontier_unacquired") == 0
+    assert projection.is_file()

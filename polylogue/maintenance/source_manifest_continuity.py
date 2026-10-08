@@ -511,7 +511,7 @@ def configured_source_frontier(archive_root: Path) -> SourceFrontier:
     from polylogue.config import resolve_runtime_config
     from polylogue.paths import archive_root as configured_archive_root
     from polylogue.sources.hooks import hook_spool_sources
-    from polylogue.sources.origin_specs import database_capability_for_provider
+    from polylogue.sources.origin_specs import database_capability_for_provider, pre_acquisition_path_exclusion
     from polylogue.sources.source_layout import source_layout_for
     from polylogue.sources.source_walk import layout_source_candidates
 
@@ -572,22 +572,32 @@ def configured_source_frontier(archive_root: Path) -> SourceFrontier:
         if not is_directory and layout_name is not None and name not in dict(canonical_paths):
             layout_name = None
         sqlite_paths: list[Path] = []
+        database_paths: list[Path] = []
+        path_exclusions: list[Path] = []
         if layout_name is not None and is_directory:
             layout = source_layout_for(layout_name)
             provider = layout.provider
             capability = database_capability_for_provider(provider) if provider is not None else None
-            accepted_members = (
-                {item.filename for item in capability.members if item.disposition != "out-of-scope"}
-                if capability is not None
-                else set()
-            )
-            if accepted_members:
+            declared_members = {item.filename for item in capability.members} if capability is not None else set()
+            if provider is not None:
+                for member in layout_source_candidates(layout_name, path):
+                    if not member.is_file():
+                        continue
+                    if member.name in declared_members:
+                        database_paths.append(member)
+                    elif pre_acquisition_path_exclusion(provider, member) is not None:
+                        path_exclusions.append(member)
+            if declared_members:
                 sqlite_paths = [
                     member
-                    for member in layout_source_candidates(layout_name, path)
-                    if member.name in accepted_members and member.is_file()
+                    for member in database_paths
+                    if capability is not None
+                    and (rule := capability.member(member.name)) is not None
+                    and rule.disposition != "out-of-scope"
                 ]
-        excluded = tuple(sorted(member.relative_to(path).as_posix() for member in sqlite_paths))
+        # Admitted databases have separate logical declarations; declared
+        # out-of-scope projections are not acquisition obligations at all.
+        excluded = tuple(sorted(member.relative_to(path).as_posix() for member in (*database_paths, *path_exclusions)))
         rows.append(
             SourceDeclaration(
                 f"configured:{name}",

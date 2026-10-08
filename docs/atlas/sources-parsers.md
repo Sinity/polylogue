@@ -120,6 +120,19 @@ only when its target is independently observed at an admitted coordinate with
 the same physical identity. The anchored walk rechecks the alias and target;
 external, dangling, nonregular, unselected, and changing aliases refuse the
 observation. Internal directory aliases are not followed.
+Configured frontier declarations exclude database members declared out of scope
+by the acquisition registry. The anchored walk applies that same declaration
+to regular members arriving after discovery; these projections are neither
+hashed nor demanded from `raw_sessions`. Admitted database members retain their
+canonical logical-export declarations, and declared raw-only evidence remains
+an acquisition obligation.
+
+Configured frontier discovery shares ordinary intake's metadata-only path exclusions
+(`pre_acquisition_path_exclusion`), including Hermes request dumps. Declared raw-only
+and fact artifact rules remain acquisition obligations; content-dependent JSONL and
+SQLite decisions are not guessed by that rule. The anchored snapshot applies the
+same exclusion before hashing arrivals or recording alias-target coverage.
+
 
 Exports retain their canonical bytes and declared logical-table scope. Pipe
 frames stream to the existing sink, with each callback acknowledged before the

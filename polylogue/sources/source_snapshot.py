@@ -39,6 +39,7 @@ from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
 from polylogue.sources.file_alias import contained_file_alias_coordinate
+from polylogue.sources.origin_specs import pre_acquisition_path_exclusion
 from polylogue.sources.source_staging import bind_source_input
 from polylogue.sources.sqlite_export import BinaryWriteSink, _logical_export_digest_bound, _write_logical_export_bound
 from polylogue.sources.sqlite_snapshot import member_export_scope
@@ -518,10 +519,18 @@ def _walk_files(
         if not stat.S_ISDIR(root_info.st_mode):
             raise SourceSnapshotError(f"source root is not a directory: {root}")
         layout = None
+        excluded_database_names: frozenset[str] = frozenset()
         if layout_name is not None:
             from polylogue.sources.source_layout import source_layout_for
 
             layout = source_layout_for(layout_name)
+            from polylogue.sources.origin_specs import database_capability_for_provider
+
+            capability = database_capability_for_provider(layout.provider) if layout.provider is not None else None
+            if capability is not None:
+                excluded_database_names = frozenset(
+                    member.filename for member in capability.members if member.disposition == "out-of-scope"
+                )
         with (
             tempfile.TemporaryDirectory(prefix="polylogue-alias-coverage-") as directory,
             closing(sqlite3.connect(Path(directory) / "coverage.db")) as coverage,
@@ -537,7 +546,7 @@ def _walk_files(
                 "link_text TEXT, target TEXT, target_device INTEGER, target_inode INTEGER) WITHOUT ROWID"
             )
             yield from _walk_bound_directory_files(
-                root, anchor, root_info, physical_root, layout, exclude_coordinates, coverage
+                root, anchor, root_info, physical_root, layout, exclude_coordinates, excluded_database_names, coverage
             )
     except (OSError, sqlite3.Error) as exc:
         raise SourceSnapshotError(f"source root inventory failed: {root}") from exc
@@ -550,6 +559,7 @@ def _walk_bound_directory_files(
     physical_root: Path,
     layout: SourceLayout | None,
     exclude_coordinates: tuple[str, ...],
+    excluded_database_names: frozenset[str],
     coverage: sqlite3.Connection,
 ) -> Iterator[tuple[str, Path, os.stat_result, int | None, Path]]:
     directories: list[tuple[Path, os.stat_result, tuple[str, ...]]] = [(root, root_info, ())]
@@ -579,6 +589,17 @@ def _walk_bound_directory_files(
                     if "/".join(child_parts) in exclude_coordinates:
                         continue
                     if layout is not None and layout.artifact_kind(child_parts) is None:
+                        continue
+                    if entry.name in excluded_database_names:
+                        # The acquisition registry owns this exclusion. An
+                        # arriving projection must not become a byte obligation
+                        # or independently cover a selected alias target.
+                        continue
+                    if (
+                        layout is not None
+                        and layout.provider is not None
+                        and pre_acquisition_path_exclusion(layout.provider, path) is not None
+                    ):
                         continue
                     coordinate = path.relative_to(root).as_posix()
                     coverage.execute("INSERT INTO targets VALUES (?,?,?)", (coordinate, info.st_dev, info.st_ino))

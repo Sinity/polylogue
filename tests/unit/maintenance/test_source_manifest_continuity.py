@@ -227,6 +227,10 @@ def test_codex_state_member_is_in_cold_baseline_and_configured_frontier(
         connection.execute("CREATE TABLE threads(id TEXT)")
         connection.execute("CREATE TABLE thread_spawn_edges(parent TEXT, child TEXT)")
         connection.execute("INSERT INTO threads VALUES ('synthetic-thread')")
+    projection = codex / "thread_history_1.sqlite"
+    with sqlite3.connect(projection) as connection:
+        connection.execute("CREATE TABLE projection(value TEXT)")
+        connection.execute("INSERT INTO projection VALUES ('duplicate rollout evidence')")
     session = codex / "sessions" / "2026" / "01" / "02" / "rollout-2026-01-02T00-00-00-1.jsonl"
     session.parent.mkdir(parents=True)
     session.write_text(
@@ -254,6 +258,7 @@ def test_codex_state_member_is_in_cold_baseline_and_configured_frontier(
     frontier = continuity.configured_source_frontier(archive)
     declaration = next(row for row in frontier.declarations if row.source_id == "configured:codex-state")
     assert declaration.root == codex
+    assert "thread_history_1.sqlite" in declaration.exclude_coordinates
     assert "configured:codex" in {row.source_id for row in frontier.declarations}
     assert "configured:codex-memories" in {row.source_id for row in frontier.declarations}
     owned = [(row.source_id, row.coordinate) for row in frontier.members]
@@ -262,6 +267,9 @@ def test_codex_state_member_is_in_cold_baseline_and_configured_frontier(
     assert owned.count(("configured:codex", "2026/01/02/rollout-2026-01-02T00-00-00-1.jsonl")) == 1
     assert owned.count(("configured:codex-memories", "MEMORY.md")) == 1
     assert all("auth.json" not in coordinate for _, coordinate in owned)
+    assert all("thread_history_1.sqlite" not in coordinate for _, coordinate in owned)
+    assert projection.is_file()
+    assert any(row.path == str(projection) and row.disposition == "excluded" for row in baseline.decisions)
 
 
 def test_configured_frontier_keeps_a_disappeared_source_in_its_denominator(
@@ -649,3 +657,82 @@ def test_frontier_addresses_replaced_root_from_the_captured_kind(
             assert connection.execute("SELECT source_path FROM _polylogue_source_frontier_path").fetchall() == [
                 (str(expected_path),)
             ]
+
+
+def test_arriving_declared_out_of_scope_projection_is_not_hashed_or_owed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: an excluded projection arriving after binding becomes a physical-page obligation."""
+    import sqlite3
+    from contextlib import contextmanager
+
+    from polylogue.sources import source_snapshot
+
+    root = tmp_path / "codex-state"
+    root.mkdir()
+    history = root / "history.jsonl"
+    history.write_bytes(b'{"prompt":"owed raw-only evidence"}\n')
+    projection = root / "thread_history_1.sqlite"
+    original_open = source_snapshot._open_source_root
+    original_snapshot = source_snapshot._snapshot_regular_file
+
+    @contextmanager
+    def arrive(binding: source_snapshot.SourceCutBinding) -> Iterator[tuple[int, os.stat_result, Path]]:
+        with original_open(binding) as captured:
+            if not projection.exists():
+                with sqlite3.connect(projection) as connection:
+                    connection.execute("CREATE TABLE projection(value TEXT)")
+            yield captured
+
+    def refuse_projection_hash(
+        path: Path, expected: os.stat_result, *, anchor: int, coordinate: str
+    ) -> tuple[str, int, str]:
+        assert path != projection, "out-of-scope source pages must not be read"
+        return original_snapshot(path, expected, anchor=anchor, coordinate=coordinate)
+
+    monkeypatch.setattr(source_snapshot, "_open_source_root", arrive)
+    monkeypatch.setattr(source_snapshot, "_snapshot_regular_file", refuse_projection_hash)
+    frontier = build_source_frontier([SourceDeclaration("state", SourceRole.DIRECTORY, root, True, "codex-state")])
+    assert frontier.complete
+    assert [(member.coordinate, member.size) for member in frontier.members] == [
+        ("history.jsonl", history.stat().st_size)
+    ]
+    assert projection.is_file()
+
+
+def test_arriving_metadata_excluded_request_dump_is_not_hashed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutation: metadata exclusion is applied only to the initial discovery."""
+    from contextlib import contextmanager
+
+    from polylogue.core.enums import Provider
+    from polylogue.sources import source_snapshot
+    from polylogue.sources.origin_specs import pre_acquisition_path_exclusion
+
+    root = tmp_path / "hermes"
+    (root / "sessions").mkdir(parents=True)
+    session = root / "sessions" / "session_neutral.json"
+    session.write_bytes(b'{"neutral":"session input"}')
+    excluded = root / "sessions" / "request_dump_neutral.json"
+    original_open = source_snapshot._open_source_root
+    original_snapshot = source_snapshot._snapshot_regular_file
+
+    @contextmanager
+    def arrive(binding: source_snapshot.SourceCutBinding) -> Iterator[tuple[int, os.stat_result, Path]]:
+        with original_open(binding) as captured:
+            excluded.write_bytes(b'{"neutral":"excluded metadata"}')
+            yield captured
+
+    def refuse_excluded_hash(
+        path: Path, expected: os.stat_result, *, anchor: int, coordinate: str
+    ) -> tuple[str, int, str]:
+        assert path != excluded
+        return original_snapshot(path, expected, anchor=anchor, coordinate=coordinate)
+
+    assert pre_acquisition_path_exclusion(Provider.CODEX, "history.jsonl") is None
+    assert pre_acquisition_path_exclusion(Provider.CODEX, "state_5.sqlite") is None
+    monkeypatch.setattr(source_snapshot, "_open_source_root", arrive)
+    monkeypatch.setattr(source_snapshot, "_snapshot_regular_file", refuse_excluded_hash)
+    with build_source_frontier([SourceDeclaration("hermes", SourceRole.DIRECTORY, root, True, "hermes")]) as frontier:
+        assert frontier.complete
+        assert [member.coordinate for member in frontier.members] == ["sessions/session_neutral.json"]
+    assert excluded.is_file()
