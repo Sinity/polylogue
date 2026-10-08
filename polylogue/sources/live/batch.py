@@ -3815,6 +3815,14 @@ class LiveBatchProcessor:
                         continue
                     except OSError as exc:
                         raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
+                        emit(
+                            "live.source_capture.failed",
+                            level=WARNING,
+                            outcome="degraded",
+                            path=str(path),
+                            error_type=type(exc).__name__,
+                            error_detail=str(exc),
+                        )
                         failed.append(path)
                         continue
                     source_payload_read_bytes += blob_size

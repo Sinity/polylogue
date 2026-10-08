@@ -366,8 +366,12 @@ def _raise_worker_error(payload: bytes) -> None:
 def _source_worker_process(pass_fds: tuple[int, ...]) -> Iterator[tuple[subprocess.Popen[bytes], str]]:
     """Own the existing isolated process, pipes and scratch through actual reap."""
     with tempfile.TemporaryDirectory(prefix=".polylogue-sqlite-reader.") as scratch:
+        # Console entry points may inject their installed dependency paths
+        # only into sys.path. The same interpreter alone does not carry that
+        # import closure into a fresh process (and PYTHONPATH is not authority).
+        command = f"import sys; sys.path[:] = {sys.path!r}; {_WORKER_COMMAND}"
         process = subprocess.Popen(
-            [sys.executable, "-c", _WORKER_COMMAND],
+            [sys.executable, "-c", command],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
