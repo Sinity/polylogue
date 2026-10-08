@@ -161,7 +161,7 @@ def _inspect(
             root,
             compute_adapter=compute,
             validation_mode=validation_mode,
-        ).inspect(raw_observation_frame(root), (raw_id,))[raw_id],
+        ).inspect(raw_observation_frame(root, validation_mode=validation_mode), (raw_id,))[raw_id],
     )
 
 
@@ -546,9 +546,16 @@ def test_canonical_reset_index_replays_only_when_parse_is_newer_than_validation_
     raw_id = _admit(
         tmp_path,
         (),
-        path="validation-history.jsonl",
-        provider=Provider.CODEX,
-        payload=_codex_conversation_bytes("validation-history"),
+        path=".claude/projects/-synthetic-reset/session.jsonl",
+        provider=Provider.CLAUDE_CODE,
+        payload=(
+            b'{"parentUuid":null,"type":"user","sessionId":"strict-replay",'
+            b'"message":{"role":"user","content":"kept"},"uuid":"user-1",'
+            b'"timestamp":"2025-01-01T00:00:00Z"}\n'
+            b'{"parentUuid":"user-1","type":"assistant","sessionId":"strict-replay",'
+            b'"message":{"role":"assistant","content":[{"type":"text","text":"reply"}]},'
+            b'"uuid":"assistant-1","timestamp":"2025-01-01T00:00:01Z"}\n'
+        ),
     )
     assert _derive(tmp_path, validation_mode=ValidationMode.STRICT).failed == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -556,6 +563,13 @@ def test_canonical_reset_index_replays_only_when_parse_is_newer_than_validation_
             "SELECT parsed_at_ms, validation_mode FROM raw_sessions WHERE raw_id = ?", (raw_id,)
         ).fetchone()
         assert validation_mode == ValidationMode.STRICT.value
+        assert (
+            conn.execute(
+                "SELECT 1 FROM raw_artifacts WHERE raw_id = ? AND parse_as_session = 1 AND schema_eligible = 1",
+                (raw_id,),
+            ).fetchone()
+            is not None
+        )
         conn.execute(
             "UPDATE raw_sessions SET validation_status = 'failed', validation_error = ?, validated_at_ms = ? "
             "WHERE raw_id = ?",
@@ -568,7 +582,8 @@ def test_canonical_reset_index_replays_only_when_parse_is_newer_than_validation_
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
 
     expected_state = "missing" if expected_materialized else "valid"
-    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.STRICT) == expected_state
+    actual_state = _inspect(tmp_path, raw_id, validation_mode=ValidationMode.STRICT)
+    assert actual_state == expected_state, (validation_offset, actual_state, expected_state)
     report = _derive(tmp_path, validation_mode=ValidationMode.STRICT)
     assert report.failed == 0, [(o.outcome.value, o.error) for o in report.outcomes]
     with sqlite3.connect(active_index) as conn:
