@@ -1360,7 +1360,7 @@ def test_repeated_sqlite_read_faults_defer_without_quarantining_unchanged_input(
     recovered = run_ingest_files(processor, [state], emit_event=False)
     assert recovered.failed_file_count == 0
     assert recovered.deferred_file_count == 0
-    assert recovered.succeeded_file_count == 1
+    assert recovered.succeeded_paths == (str(state),)
     run_ingest_files(processor, [state], emit_event=False)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT source_path FROM raw_sessions").fetchall() == [(str(state),)]
@@ -1484,14 +1484,17 @@ async def test_dispatcher_keeps_unreadable_source_owed_without_cursor_authority(
         finally:
             state.chmod(0o600)
         try:
-            admitted = 0
+            handled = 0
             for _ in range(6):
                 result = await dispatcher.run_once()
-                admitted += result.admitted
+                handled += result.classes[0].admitted + result.classes[0].excluded
                 now[0] += 10.0
-            assert admitted == 1
+            assert handled == 1
             with sqlite3.connect(tmp_path / "source.db") as conn:
                 assert conn.execute("SELECT source_path FROM raw_sessions").fetchall() == [(str(state),)]
+            record = cursor.get_record(state)
+            assert record is not None and record.failure_count == 0 and record.excluded is False
+            assert record.next_retry_at is None
         finally:
             watcher.stop()
 
