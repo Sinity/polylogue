@@ -383,6 +383,7 @@ def validate_raw_replay_application_receipt(
         MembershipDecision.APPLIED,
         MembershipDecision.SUPERSEDED_EQUIVALENT,
         MembershipDecision.SUPERSEDED_PREFIX,
+        MembershipDecision.SUPERSEDED_BY_WINNER,
     }
     if any(row.get("decision") not in terminal_membership_decisions for row in membership_rows):
         problems.append("membership receipt contains a non-terminal decision")

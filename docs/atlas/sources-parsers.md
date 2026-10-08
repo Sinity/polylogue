@@ -294,6 +294,12 @@ provider (`docs/provider-origin-identity.md:15-30`;
   parser evidence before short admitted publication; the matching writer
   consumes the prepared receipt. Physical cleanup stays with that preparation
   creator through publication and failure.
+- Native browser membership can select a unique later provider snapshot when
+  its declared provider update time is strictly newer and it preserves every
+  older snapshot's provider message and attachment identities. Each older raw
+  is then independently recorded as superseded by that winner; no order is
+  inferred among mutually incomparable older snapshots. Tied or missing
+  provider times and missing identity evidence remain unresolved.
 - Hook-event carriers are raw-only for session classification, but remain
   eligible for physical append acquisition. The first capture binds a FULL
   revision to the carrier path; later growth retains only the exact APPEND byte

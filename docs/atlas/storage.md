@@ -206,6 +206,16 @@ file ID exists).
 prepared manifest members and accepted source items carry their captured-input
 identity. A raw without a receipt reports the explicit profile gap instead of
 discovering a qualifier from current source paths.
+
+Browser-native membership may mark an older raw `superseded_by_winner` only
+when one later provider-timestamped snapshot independently dominates it by
+preserving its provider message and attachment identities. This terminal
+Source decision does not claim an ordering among older snapshots; Index replay
+records each as `superseded` by the selected winner. Provider-time ties,
+missing identity evidence, or competing candidates do not receive this
+decision (`archive/session_revision_membership.py` and
+`storage/sqlite/archive_tiers/revision_governance.py`).
+
 New ingest acceptance stages physical inputs pagewise through
 `prepare_source_manifest` and carries a sealed reference into the audit plan.
 After materialization, the ingest writer settles an accepted item only when its

@@ -1225,6 +1225,71 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
         assert tuple(head) == (folded, 20)
 
 
+def test_native_winner_persists_independent_supersession_without_prefix_claim(tmp_path: Path) -> None:
+    """A unique native winner gives every dominated raw a durable terminal receipt."""
+    bootstrap_archive_root(tmp_path)
+    sessions = {
+        "old-a": _parsed_session(("m0", "opening"), ("m1", "older answer A")),
+        "old-b": _parsed_session(("m0", "opening"), ("m1", "older answer B")),
+        "winner": _parsed_session(("m0", "opening"), ("m1", "current answer"), ("m2", "later reply")),
+    }
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = {label: _write_quarantined_member(archive, label, session) for label, session in sessions.items()}
+        revisions = [
+            MembershipRevision(
+                raw_ids[label],
+                session_revision_projection(sessions[label]),
+                provider_updated_at=timestamp,
+                browser_snapshot_fidelity="native",
+                provider_message_ids=provider_ids,
+            )
+            for label, timestamp, provider_ids in (
+                ("old-a", "2026-10-01T00:00:00Z", frozenset({"m0", "m1"})),
+                ("old-b", "2026-10-01T00:00:00Z", frozenset({"m0", "m1"})),
+                ("winner", "2026-10-02T00:00:00Z", frozenset({"m0", "m1", "m2"})),
+            )
+        ]
+        classification = classify_membership_revisions(revisions, existing_accepted_raw_id=raw_ids["old-a"])
+        assert classification.accepted_raw_ids == (raw_ids["winner"],)
+        assert set(classification.superseded_raw_ids) == {raw_ids["old-a"], raw_ids["old-b"]}
+        sessions_by_raw_id = {raw_ids[label]: session for label, session in sessions.items()}
+        projections = {raw_id: session_revision_projection(session) for raw_id, session in sessions_by_raw_id.items()}
+        _publish_membership(
+            archive,
+            "codex-session:session",
+            classification,
+            sessions_by_raw_id,
+            projections,
+            acquired_at_ms=10,
+        )
+
+        source = archive._ensure_source_conn()
+        membership = source.execute(
+            "SELECT raw_id, decision, revision_authority FROM raw_session_memberships ORDER BY raw_id"
+        ).fetchall()
+        assert {str(row[0]): (str(row[1]), str(row[2])) for row in membership} == {
+            raw_ids["old-a"]: ("superseded_by_winner", "byte_proven"),
+            raw_ids["old-b"]: ("superseded_by_winner", "byte_proven"),
+            raw_ids["winner"]: ("applied", "byte_proven"),
+        }
+        applications = archive._conn.execute(
+            "SELECT raw_id, decision, accepted_raw_id FROM raw_revision_applications ORDER BY raw_id"
+        ).fetchall()
+        assert {str(row[0]): (str(row[1]), str(row[2])) for row in applications} == {
+            raw_ids["old-a"]: ("superseded", raw_ids["winner"]),
+            raw_ids["old-b"]: ("superseded", raw_ids["winner"]),
+            raw_ids["winner"]: ("selected_baseline", raw_ids["winner"]),
+        }
+        head = archive._conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key='codex-session:session'"
+        ).fetchone()
+        assert head is not None and tuple(head) == (raw_ids["winner"],)
+        message_count = archive._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id='codex-session:session'"
+        ).fetchone()
+        assert message_count is not None and int(message_count[0]) == 3
+
+
 def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: Path) -> None:
     """polylogue-52l2: a raw discovered for a logical identity that already
     has quarantined/ambiguous siblings must not be accepted as an

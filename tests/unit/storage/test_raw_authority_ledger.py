@@ -269,7 +269,8 @@ def test_historical_application_does_not_override_exact_current_generation(tmp_p
     assert any("no application accepted authority matches" in problem for problem in problems_without_current)
 
 
-def test_terminal_membership_cannot_replace_missing_head_application(tmp_path: Path) -> None:
+@pytest.mark.parametrize("membership_decision", ["applied", "superseded_by_winner"])
+def test_terminal_membership_cannot_replace_missing_head_application(tmp_path: Path, membership_decision: str) -> None:
     bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="missing-application", source_path="missing.jsonl", acquired_at_ms=1)
     assert _derived_success(_derive_raw_observations(tmp_path))
@@ -288,7 +289,7 @@ def test_terminal_membership_cannot_replace_missing_head_application(tmp_path: P
             "raw_id": raw_id,
             "logical_source_key": application_key,
             "source_revision": application_revision,
-            "decision": "applied",
+            "decision": membership_decision,
         }
     ]
     plan = replace(
@@ -303,6 +304,7 @@ def test_terminal_membership_cannot_replace_missing_head_application(tmp_path: P
     valid, problems = raw_authority_mod.validate_raw_replay_application_receipt(plan, receipt)
 
     assert not valid
+    assert not any("non-terminal decision" in problem for problem in problems)
     assert any("no application accepted authority matches" in problem for problem in problems)
 
 

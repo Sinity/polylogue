@@ -31,6 +31,7 @@ class MembershipDecision(PolylogueStrEnum):
     APPLIED = "applied"
     SUPERSEDED_EQUIVALENT = "superseded_equivalent"
     SUPERSEDED_PREFIX = "superseded_prefix"
+    SUPERSEDED_BY_WINNER = "superseded_by_winner"
     AMBIGUOUS = "ambiguous"
     DEFERRED = "deferred"
 
@@ -82,6 +83,9 @@ class MembershipClassification:
     #: attached to the session, retained as raw provenance only (never
     #: deleted, never silently discarded).
     ambiguous_raw_ids: tuple[str, ...]
+    #: Raws individually dominated by the accepted browser revision, without
+    #: asserting an order among those older observations.
+    superseded_raw_ids: tuple[str, ...] = ()
 
 
 def _identities(contents: Set[tuple[bytes, bytes]]) -> frozenset[bytes]:
@@ -659,6 +663,26 @@ def classify_membership_revisions(
             tuple(sorted(equivalents)),
             (),
         )
+    independent_winner = _unique_later_native_snapshot(representatives)
+    if independent_winner is not None:
+        equivalent_ids: list[str] = []
+        superseded_ids: list[str] = []
+        winner_ambiguous_ids: list[str] = []
+        for revision in revisions:
+            if revision.raw_id == independent_winner.raw_id:
+                continue
+            if _relation(revision.projection, independent_winner.projection) == "equal":
+                equivalent_ids.append(revision.raw_id)
+            elif _browser_snapshot_dominates(revision, independent_winner):
+                superseded_ids.append(revision.raw_id)
+            else:
+                winner_ambiguous_ids.append(revision.raw_id)
+        return MembershipClassification(
+            (independent_winner.raw_id,),
+            tuple(sorted(equivalent_ids)),
+            tuple(sorted(winner_ambiguous_ids)),
+            tuple(sorted(superseded_ids)),
+        )
     dom_authority = _dom_authority_when_native_is_unordered(representatives)
     if dom_authority is not None:
         accepted, ambiguous = dom_authority
@@ -830,6 +854,33 @@ def _provider_ordered_browser_snapshots(
         if not _browser_snapshot_dominates(older, newer):
             return None
     return ordered
+
+
+def _unique_later_native_snapshot(revisions: list[MembershipRevision]) -> MembershipRevision | None:
+    """Select one native snapshot that independently dominates every sibling.
+
+    Older snapshots need not form a total order among themselves. A unique
+    provider timestamp may settle each one directly when the newer native
+    snapshot preserves its provider message and attachment identities. This
+    uses the same timestamp and identity evidence as
+    ``_browser_snapshot_dominates``; it does not fall back to acquisition or
+    filesystem order.
+    """
+    if not revisions or any(item.browser_snapshot_fidelity != "native" for item in revisions):
+        return None
+    timestamped = [(parse_timestamp(item.provider_updated_at), item) for item in revisions]
+    if any(timestamp is None for timestamp, _item in timestamped):
+        return None
+    latest_timestamp = max(timestamp.timestamp() for timestamp, _item in timestamped if timestamp is not None)
+    latest = [
+        item for timestamp, item in timestamped if timestamp is not None and timestamp.timestamp() == latest_timestamp
+    ]
+    if len(latest) != 1:
+        return None
+    winner = latest[0]
+    if all(item is winner or _browser_snapshot_dominates(item, winner) for item in revisions):
+        return winner
+    return None
 
 
 def _direct_export_precedence(

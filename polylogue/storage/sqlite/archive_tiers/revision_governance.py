@@ -3311,7 +3311,11 @@ def _application_decision_for(decision: MembershipDecision) -> ApplicationDecisi
     """
     if decision is MembershipDecision.AMBIGUOUS:
         return ApplicationDecision.AMBIGUOUS
-    if decision in (MembershipDecision.SUPERSEDED_EQUIVALENT, MembershipDecision.SUPERSEDED_PREFIX):
+    if decision in (
+        MembershipDecision.SUPERSEDED_EQUIVALENT,
+        MembershipDecision.SUPERSEDED_PREFIX,
+        MembershipDecision.SUPERSEDED_BY_WINNER,
+    ):
         return ApplicationDecision.SUPERSEDED
     return ApplicationDecision.SELECTED_BASELINE
 
@@ -3332,6 +3336,7 @@ def membership_decisions_for_classification(
             else MembershipDecision.AMBIGUOUS,
         )
     )
+    decisions.update(dict.fromkeys(classification.superseded_raw_ids, MembershipDecision.SUPERSEDED_BY_WINNER))
     for raw_id in classification.accepted_raw_ids[:-1]:
         decisions[raw_id] = MembershipDecision.SUPERSEDED_PREFIX
     if classification.accepted_raw_ids:
@@ -5650,6 +5655,7 @@ _MEMBERSHIP_TERMINAL_DECISIONS = frozenset(
         MembershipDecision.APPLIED,
         MembershipDecision.SUPERSEDED_PREFIX,
         MembershipDecision.SUPERSEDED_EQUIVALENT,
+        MembershipDecision.SUPERSEDED_BY_WINNER,
     }
 )
 
@@ -5841,6 +5847,7 @@ def membership_decisions_for_head_plan(
             *classification.accepted_raw_ids,
             *classification.equivalent_raw_ids,
             *classification.ambiguous_raw_ids,
+            *classification.superseded_raw_ids,
         ):
             decisions[raw_id] = MembershipDecision.SUPERSEDED_EQUIVALENT
     elif suppressed:
@@ -5874,7 +5881,11 @@ def prepare_membership_head_plan(
     before_input: BeforeIndexInput | None = None,
 ) -> MembershipHeadPlan:
     """Load original Index inputs, then use the one canonical head reduction."""
-    if not classification.accepted_raw_ids and not classification.ambiguous_raw_ids:
+    if (
+        not classification.accepted_raw_ids
+        and not classification.ambiguous_raw_ids
+        and not classification.superseded_raw_ids
+    ):
         return MembershipHeadPlan(None, None, None)
     if before_input is not None:
         before_input(
@@ -5966,7 +5977,9 @@ def prepare_membership_head_plan_from_inputs(
             )
         return MembershipHeadPlan(None, None, None)
     accepted_raw_id = classification.accepted_raw_ids[-1]
-    classified_raw_ids = frozenset((*classification.accepted_raw_ids, *classification.equivalent_raw_ids))
+    classified_raw_ids = frozenset(
+        (*classification.accepted_raw_ids, *classification.equivalent_raw_ids, *classification.superseded_raw_ids)
+    )
     existing_raw_id = str(existing_head[0])
     session_id = str(existing_head[3])
     chain_head_authority = (
@@ -6002,7 +6015,12 @@ def prepare_membership_head_plan_from_inputs(
     deferred_raw_ids = tuple(
         raw_id
         for raw_id in dict.fromkeys(
-            (*classification.accepted_raw_ids, *classification.equivalent_raw_ids, *classification.ambiguous_raw_ids)
+            (
+                *classification.accepted_raw_ids,
+                *classification.equivalent_raw_ids,
+                *classification.ambiguous_raw_ids,
+                *classification.superseded_raw_ids,
+            )
         )
         if raw_id not in {existing_raw_id, persisted_raw}
     )
@@ -6020,7 +6038,8 @@ def prepare_membership_head_plan_from_inputs(
                 f"authority={chain_head_authority!r}) "
                 f"cohort(accepted={classification.accepted_raw_ids!r}, "
                 f"equivalent={classification.equivalent_raw_ids!r}, "
-                f"ambiguous={classification.ambiguous_raw_ids!r}) persisted_session_raw={persisted_raw!r}"
+                f"ambiguous={classification.ambiguous_raw_ids!r}, "
+                f"superseded={classification.superseded_raw_ids!r}) persisted_session_raw={persisted_raw!r}"
             ),
             deferred_raw_ids=deferred_raw_ids,
         )
@@ -6122,6 +6141,7 @@ def apply_prepared_membership_index(
             *classification.accepted_raw_ids,
             *classification.equivalent_raw_ids,
             *classification.ambiguous_raw_ids,
+            *classification.superseded_raw_ids,
         )
         for generation, raw_id in enumerate(cohort_raw_ids):
             projection = projections_by_raw_id[raw_id]
@@ -6195,6 +6215,7 @@ def apply_prepared_membership_index(
             *classification.accepted_raw_ids,
             *classification.equivalent_raw_ids,
             *classification.ambiguous_raw_ids,
+            *classification.superseded_raw_ids,
         )
         for generation, raw_id in enumerate(cohort_raw_ids):
             projection = projections_by_raw_id[raw_id]
