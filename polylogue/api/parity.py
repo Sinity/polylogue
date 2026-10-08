@@ -388,6 +388,7 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
             "aggregate_sessions",
             "archive_count_sessions",
             "count_sessions",
+            "list_session_summaries_with_count",
             "facets",
             "get_stats_by",
             "query_completions",

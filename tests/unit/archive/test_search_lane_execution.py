@@ -32,6 +32,7 @@ from polylogue.mcp.archive_support import archive_search_payload
 from polylogue.mcp.payloads import session_search_result_payload
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.operations.operation_context import open_operation_read
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.storage.sqlite.connection_profile import ReadFrameCancelledError, ReadFrameExpiredError
 from polylogue.surfaces.payloads import decode_search_cursor
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -454,7 +455,7 @@ async def test_session_list_page_and_total_share_one_snapshot(
     root, _config, ids = lane_archive
     real_list = archive_api._archive_list_summaries_for_spec
 
-    def list_then_delete(archive: object, spec: object, **kwargs: object) -> list[object]:
+    def list_then_delete(archive: object, spec: object, **kwargs: object) -> list[ArchiveSessionSummary]:
         summaries = real_list(archive, spec, **kwargs)  # type: ignore[arg-type]
         with closing(sqlite3.connect(root / "index.db")) as writer:
             writer.execute("DELETE FROM sessions WHERE session_id = ?", (ids["dialogue"],))

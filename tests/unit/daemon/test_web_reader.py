@@ -3774,7 +3774,9 @@ class TestQueryNoResultsDiagnosticPath:
         assert missing_status == 200
         assert missing["items"] == []
         assert missing["total"] == 0
-        assert missing["route_state"]["state"] == "no_results"
+        route_state = missing["route_state"]
+        assert isinstance(route_state, dict)
+        assert route_state["state"] == "no_results"
         assert ambiguous_status == 400
         assert ambiguous["error"] == "QuerySpecError"
 
