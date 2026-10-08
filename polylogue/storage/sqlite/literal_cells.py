@@ -182,3 +182,77 @@ def stream_literal_cell(
         if row is None or not isinstance(row[0], bytes) or len(row[0]) != count:
             raise ValueError("SQLite literal locator changed within its retained snapshot")
         yield row[0]
+
+
+class SQLiteLiteralWriteError(RuntimeError):
+    """A streamed literal cannot be published in its declared SQLite cell."""
+
+    def __init__(self, message: str, *, physical_limit: bool = False) -> None:
+        super().__init__(message)
+        self.physical_limit = physical_limit
+
+
+def write_literal_text(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    rowid: int,
+    *,
+    byte_length: int,
+    chunks: Callable[[], Generator[bytes, None, None]],
+) -> None:
+    """Write TEXT incrementally under the actual creator's native transaction."""
+    from polylogue.core.compute_cancel import check_compute_cancelled
+    from polylogue.storage.sqlite.connection_profile import (
+        NativeConnectionSettlementError,
+        native_sql_owner_for_connection,
+    )
+
+    owner = native_sql_owner_for_connection(connection)
+    if owner is None or not connection.in_transaction:
+        raise SQLiteLiteralWriteError("literal write requires its existing native transaction owner")
+    owner.require_connection()
+    if byte_length > connection.getlimit(sqlite3.SQLITE_LIMIT_LENGTH):
+        raise SQLiteLiteralWriteError("literal exceeds SQLite's physical value limit", physical_limit=True)
+    from polylogue.storage.io_phase_metrics import connection_cursor
+
+    try:
+        with connection_cursor(
+            connection,
+            f"UPDATE {quote_identifier(table)} SET {quote_identifier(column)}=CAST(zeroblob(?) AS TEXT) WHERE rowid=?",
+            (byte_length, rowid),
+        ) as cursor:
+            if cursor.rowcount != 1:
+                raise SQLiteLiteralWriteError("literal write lost its original row")
+    except sqlite3.DataError as error:
+        raise SQLiteLiteralWriteError("literal exceeds SQLite's physical record limit", physical_limit=True) from error
+    blob = connection.blobopen(table, column, rowid)
+    owner.retain_incremental_blob(blob)
+    primary: BaseException | None = None
+    try:
+        length = 0
+        with owned_literal_stream(chunks()) as stream:
+            for chunk in stream:
+                for offset in range(0, len(chunk), LITERAL_CHUNK_BYTES):
+                    check_compute_cancelled()
+                    part = chunk[offset : offset + LITERAL_CHUNK_BYTES]
+                    length += len(part)
+                    if length > byte_length:
+                        raise SQLiteLiteralWriteError("literal exceeds declared length")
+                    blob.write(part)
+        if length != byte_length:
+            raise SQLiteLiteralWriteError("literal did not fill declared length")
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            owner.close_incremental_blob(blob)
+        except BaseException as cleanup:
+            owner.close_required = True
+            failure = (
+                cleanup
+                if primary is None
+                else BaseExceptionGroup("Literal write and native Blob close failed", [primary, cleanup])
+            )
+            raise NativeConnectionSettlementError(owner, failure) from cleanup

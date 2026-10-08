@@ -302,6 +302,20 @@ locator and transfer bounded literal chunks; SQLite may still allocate one
 complete cell or sort full keys internally. No admitted durable archive uses
 that shape, and this is not a general native SQLite memory bound.
 
+Incremental TEXT publication uses `literal_cells.write_literal_text` under the
+original native transaction owner. Audit keeps its destination allowlist and
+verified canonical chunks; capture jobs retain CAPTURE intent and event JSON,
+and exact native preparation metadata and asset outcomes, in their existing
+TEXT columns. Both consumers enforce SQLite physical limits and retain failed
+Blob settlement with its creator. Capture reads detach
+the pinned cells to request-owned lazy JSON scratch before the native snapshot
+closes. The registry FULL transaction owns durability; transient cell/read/response
+scratch is flushed for its reader without artifact fsync. Retained native
+prefix and final artifacts keep publication fsync. Collection cardinality does
+not require a decoded Python tree; the
+largest individual string token and SQLite cell allocation remain physical
+memory contributors.
+
 ## Identity and generated columns
 
 - `sessions.session_id` is stored-generated as `origin || ':' || native_id` (`SESSIONS_SPEC` in `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:809-815`).

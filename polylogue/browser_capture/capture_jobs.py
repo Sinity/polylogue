@@ -17,9 +17,9 @@ import secrets
 import sqlite3
 import tempfile
 import threading
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO, cast
@@ -34,6 +34,7 @@ from polylogue.browser_capture.capture_job_events import (
 )
 from polylogue.browser_capture.capture_stream import (
     CaptureSummary,
+    SpoolStorageExhaustedError,
     StagedCapture,
     stage_capture_chunks,
     stage_retained_capture,
@@ -41,8 +42,15 @@ from polylogue.browser_capture.capture_stream import (
 )
 from polylogue.browser_capture.receiver import backfill_checkpoint_root
 from polylogue.core.digest import CAPTURE, CanonicalizationError, KeyCollisionError, canonical_bytes
-from polylogue.core.digest import digest as profile_digest
 from polylogue.paths import browser_capture_spool_root
+
+# All registry readers retain the intent cell separately under their snapshot.
+_JOB_COLUMNS = (
+    "rowid AS job_rowid, job_id, provider, scope_key, scope_kind, invocation_json, "
+    "intent_key, revision, checkpoint_artifact_ref, checkpoint_size, checkpoint_sequence, "
+    "checkpoint_digest, receipt_json, retry_json, lease_json, created_at, updated_at, "
+    "retention_json, retention_declared"
+)
 
 _RETRY_STATES = frozenset({"ready", "retry_wait", "held", "completed", "abandoned"})
 
@@ -70,12 +78,19 @@ def canonical_json(value: object) -> str:
 
 
 def canonical_digest(value: object) -> str:
-    try:
-        return profile_digest(value, CAPTURE)
-    except KeyCollisionError as exc:
-        raise CaptureJobError(400, "non_canonical_key_collision") from exc
-    except (CanonicalizationError, TypeError, UnicodeEncodeError) as exc:
-        raise CaptureJobError(400, "non_canonical_json") from exc
+    hasher = hashlib.sha256()
+    for part in capture_canonical_chunks(value):
+        hasher.update(part)
+    return CAPTURE.digest_prefix + hasher.hexdigest()
+
+
+def _native_json_digest(value: object) -> str:
+    from polylogue.browser_capture.native_preparation import json_chunks
+
+    hasher = hashlib.sha256()
+    for piece in json_chunks(value, sort_keys=True):
+        hasher.update(piece)
+    return hasher.hexdigest()
 
 
 def _canonical_checkpoint_parts(events: Iterable[tuple[str, object]]) -> Iterator[bytes]:
@@ -168,6 +183,57 @@ def _canonical_checkpoint_digest(stream: BinaryIO) -> tuple[str, str | None]:
     return "sha256:" + hasher.hexdigest(), conversation_ref
 
 
+def capture_canonical_chunks(value: object) -> Generator[bytes, None, None]:
+    """CAPTURE bytes from lazy collections; scalar encoding keeps its profile."""
+    import unicodedata
+
+    from polylogue.schemas.observation_spill import SpilledObject
+
+    if isinstance(value, Mapping):
+        yield b"{"
+        items: Iterator[tuple[str, object]]
+        if isinstance(value, SpilledObject):
+            items = value.normalized_sorted_items(lambda key: unicodedata.normalize("NFC", key))
+        else:
+            normalized: dict[str, object] = {}
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise CaptureJobError(400, "non_canonical_json")
+                name = unicodedata.normalize("NFC", key)
+                if name in normalized:
+                    raise CaptureJobError(400, "non_canonical_key_collision")
+                normalized[name] = item
+            items = ((name, normalized[name]) for name in sorted(normalized))
+        try:
+            for index, (key, item) in enumerate(items):
+                if index:
+                    yield b","
+                yield canonical_bytes(key, CAPTURE)
+                yield b":"
+                yield from capture_canonical_chunks(item)
+        except ValueError as error:
+            if str(error) == "normalized_json_key_collision":
+                raise CaptureJobError(400, "non_canonical_key_collision") from error
+            raise
+        finally:
+            close = getattr(items, "close", None)
+            if close is not None:
+                close()
+        yield b"}"
+    elif isinstance(value, (list, tuple)):
+        yield b"["
+        for index, item in enumerate(value):
+            if index:
+                yield b","
+            yield from capture_canonical_chunks(item)
+        yield b"]"
+    else:
+        try:
+            yield canonical_bytes(value, CAPTURE)
+        except (CanonicalizationError, TypeError, UnicodeEncodeError) as error:
+            raise CaptureJobError(400, "non_canonical_json") from error
+
+
 def capture_job_database_path(spool_path: Path | None = None) -> Path:
     return capture_job_store_root(spool_path) / "registry.sqlite3"
 
@@ -216,6 +282,20 @@ class CaptureJobRegistry:
     spool_path: Path | None
     receiver_id: str
 
+    _result_owner: ExitStack | None = field(default=None, init=False, repr=False)
+
+    @contextmanager
+    def result_scope(self) -> Iterator[None]:
+        """Keep lazy capture values alive through their exact response consumer."""
+        if self._result_owner is not None:
+            raise RuntimeError("capture result scope already owned")
+        with ExitStack() as owner:
+            self._result_owner = owner
+            try:
+                yield
+            finally:
+                self._result_owner = None
+
     protocol_min: int = 2
     protocol_max: int = 2
 
@@ -231,7 +311,9 @@ class CaptureJobRegistry:
     def _connect(self) -> sqlite3.Connection:
         path = capture_job_database_path(self.spool_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(path, isolation_level=None)
+        from polylogue.storage.io_phase_metrics import connect_measured
+
+        connection = connect_measured(path, isolation_level=None)
         try:
             connection.row_factory = sqlite3.Row
             identity = _database_identity(path)
@@ -440,12 +522,15 @@ class CaptureJobRegistry:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
+        from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
         connection = self._connect()
+        owner = NativeSQLCustodyOwner(connection)
         try:
             with connection:
                 yield connection
         finally:
-            connection.close()
+            owner.close()
 
     def _validate_scope(self, provider: object, scope: object, protocol: object) -> tuple[str, dict[str, object]]:
         if not isinstance(provider, str) or not provider or provider != provider.lower():
@@ -494,8 +579,17 @@ class CaptureJobRegistry:
             raise CaptureJobError(409, "intent_digest_mismatch")
         return intent
 
-    def _summary(self, row: sqlite3.Row) -> dict[str, object]:
-        intent = json.loads(row["intent_json"])
+    def _summary(self, connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, object]:
+        intent = cast(
+            dict[str, object],
+            self._json_cell(
+                connection,
+                row["job_rowid"],
+                "intent_json",
+                self._require_result_owner(),
+                table="capture_jobs",
+            ),
+        )
         lease = json.loads(row["lease_json"]) if row["lease_json"] else None
         retry = json.loads(row["retry_json"])
         retention = json.loads(row["retention_json"])
@@ -704,7 +798,7 @@ class CaptureJobRegistry:
         self, connection: sqlite3.Connection, job_id: str, provider: object, scope: object, protocol: object
     ) -> sqlite3.Row:
         normalized_provider, normalized_scope = self._validate_scope(provider, scope, protocol)
-        row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
+        row = connection.execute("SELECT " + _JOB_COLUMNS + " FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
         matches = row is not None and hmac.compare_digest(row["provider"], normalized_provider)
         if matches and row is not None and row["scope_kind"] == normalized_scope["kind"]:
             if row["scope_kind"] == "account":
@@ -773,8 +867,8 @@ class CaptureJobRegistry:
         validated_provider, validated_scope = self._validate_scope(provider, scope, protocol)
         return validated_provider, "account", str(validated_scope["key"]), None
 
-    def _creation_response(self, row: sqlite3.Row, created: bool) -> dict[str, object]:
-        result: dict[str, object] = {"created": created, "job": self._summary(row)}
+    def _creation_response(self, connection: sqlite3.Connection, row: sqlite3.Row, created: bool) -> dict[str, object]:
+        result: dict[str, object] = {"created": created, "job": self._summary(connection, row)}
         if row["scope_kind"] == "invocation":
             invocation = json.loads(row["invocation_json"])
             result["scope"] = {"kind": "invocation", "resume_capability": invocation["resume_capability"]}
@@ -792,17 +886,24 @@ class CaptureJobRegistry:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             found = connection.execute(
-                "SELECT * FROM capture_jobs WHERE provider=? AND scope_key=? AND intent_key=?",
+                "SELECT " + _JOB_COLUMNS + " FROM capture_jobs WHERE provider=? AND scope_key=? AND intent_key=?",
                 (provider, scope_key, intent["intent_key"]),
             ).fetchone()
             if found is not None:
-                if json.loads(found["intent_json"])["digest"] != intent["digest"]:
-                    raise CaptureJobError(409, "intent_key_conflict")
+                with ExitStack() as intent_owner:
+                    stored_intent = cast(
+                        dict[str, object],
+                        self._json_cell(
+                            connection, found["job_rowid"], "intent_json", intent_owner, table="capture_jobs"
+                        ),
+                    )
+                    if stored_intent["digest"] != intent["digest"]:
+                        raise CaptureJobError(409, "intent_key_conflict")
                 if found["scope_kind"] != scope_kind or (
                     invocation is not None and json.loads(found["invocation_json"])["binding"] != invocation["binding"]
                 ):
                     raise CaptureJobError(409, "invocation_binding_conflict")
-                return 200, self._creation_response(found, False)
+                return 200, self._creation_response(connection, found, False)
             job_id = str(uuid4())
             connection.execute(
                 # Named columns, not positional: a receiver database created by an
@@ -817,16 +918,24 @@ class CaptureJobRegistry:
                     provider,
                     scope_key,
                     scope_kind,
-                    json.dumps(invocation, separators=(",", ":")) if invocation is not None else None,
+                    json.dumps(
+                        {**invocation, "binding": dict(cast(dict[str, object], invocation["binding"]).items())},
+                        separators=(",", ":"),
+                    )
+                    if invocation is not None
+                    else None,
                     intent["intent_key"],
-                    canonical_json(intent),
+                    "",
                     canonical_json({"state": "ready", "attempt": 0}),
                     now,
                     now,
                     canonical_json({"state": "active", "hold_reason": None, "timeline_authoritative": True}),
                 ),
             )
-            row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
+            row = connection.execute(
+                "SELECT " + _JOB_COLUMNS + " FROM capture_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            self._write_json_cell(connection, row["job_rowid"], "intent_json", intent, table="capture_jobs")
             self._append_event(
                 connection,
                 job_id,
@@ -837,7 +946,7 @@ class CaptureJobRegistry:
                 {"provider": provider, "intent_key": intent["intent_key"]},
                 advance_revision=False,
             )
-            return 201, self._creation_response(row, True)
+            return 201, self._creation_response(connection, row, True)
 
     def discover(self, body: dict[str, object]) -> dict[str, object]:
         provider, scope = self._validate_scope(body.get("provider"), body.get("scope"), body.get("client_protocol"))
@@ -871,10 +980,14 @@ class CaptureJobRegistry:
                 predicate += " AND (created_at, job_id) < (?, ?)"
                 parameters.extend([cursor["created_at"], cursor["job_id"]])
             rows = connection.execute(
-                "SELECT * FROM capture_jobs WHERE " + predicate + " ORDER BY created_at DESC, job_id DESC LIMIT 26",
+                "SELECT "
+                + _JOB_COLUMNS
+                + " FROM capture_jobs WHERE "
+                + predicate
+                + " ORDER BY created_at DESC, job_id DESC LIMIT 26",
                 parameters,
             ).fetchall()
-            jobs = [self._summary(row) for row in rows[:25]]
+            jobs = [self._summary(connection, row) for row in rows[:25]]
             after = {"created_at": rows[24]["created_at"], "job_id": rows[24]["job_id"]} if len(rows) > 25 else None
             return {"jobs": jobs, "total": total, "cursor": after, "has_more": after is not None}
 
@@ -954,18 +1067,96 @@ class CaptureJobRegistry:
                     (job_id,),
                 ).fetchall()
             ]
-            events, _cursor = read_capture_job_events(connection, job_id, 500)
+            events, _cursor = read_capture_job_events(connection, job_id, 500, decode=self._event_dict)
             lifecycle = read_capture_job_retention(connection, job_id)
             return {
-                "job": self._summary(row),
+                "job": self._summary(connection, row),
                 "lifecycle": lifecycle,
                 "receipts": [*receipts, *updates],
                 "events": events,
                 "timelines": project_capture_job_timelines(events),
             }
 
-    @staticmethod
+    def _stage_json_chunks(self, chunks: Iterator[bytes], *, durable: bool) -> StagedCapture:
+        try:
+            return stage_capture_chunks(chunks, spool_root=self._spool_root(), durable=durable)
+        except SpoolStorageExhaustedError as error:
+            raise CaptureJobError(507, "spool_storage_exhausted") from error
+
+    def _require_result_owner(self) -> ExitStack:
+        if self._result_owner is None:
+            raise RuntimeError("capture read requires its result scope")
+        return self._result_owner
+
+    def _json_cell(
+        self,
+        connection: sqlite3.Connection,
+        rowid: int,
+        column: str,
+        owner: ExitStack,
+        *,
+        table: str = "capture_job_events",
+    ) -> object:
+        """Detach one exact pinned capture cell to request-owned lazy JSON scratch."""
+        from polylogue.core.compute_cancel import check_compute_cancelled
+        from polylogue.schemas.observation_spill import StreamedJSONDocument
+        from polylogue.storage.sqlite.connection_profile import native_sql_owner_for_connection
+        from polylogue.storage.sqlite.literal_cells import stream_literal_blob
+
+        if (table, column) not in {
+            ("capture_jobs", "intent_json"),
+            ("capture_job_events", "refs_json"),
+            ("capture_job_events", "payload_json"),
+            ("capture_job_native_acquisitions", "header_json"),
+            ("capture_job_native_assets", "outcome_json"),
+            ("capture_job_native_members", "metadata_json"),
+        }:
+            raise RuntimeError("undeclared capture JSON cell")
+        native = native_sql_owner_for_connection(connection)
+        if native is None:
+            raise RuntimeError("capture literal read lost original native owner")
+
+        def chunks() -> Generator[bytes, None, None]:
+            with native.readonly_blob(table, column, rowid) as blob:
+                yield from stream_literal_blob(blob, len(blob), check_compute_cancelled)
+
+        staged = self._stage_json_chunks(chunks(), durable=False)
+        owner.callback(staged.discard)
+        return owner.enter_context(StreamedJSONDocument(staged.path))
+
+    def _write_json_cell(
+        self,
+        connection: sqlite3.Connection,
+        rowid: int,
+        column: str,
+        value: object,
+        *,
+        table: str = "capture_job_events",
+        native_json: bool = False,
+    ) -> None:
+        from polylogue.browser_capture.native_preparation import json_chunks
+        from polylogue.storage.sqlite.literal_cells import SQLiteLiteralWriteError, write_literal_text
+
+        parts = json_chunks(value, sort_keys=True) if native_json else capture_canonical_chunks(value)
+        staged = self._stage_json_chunks(parts, durable=False)
+        try:
+
+            def chunks() -> Generator[bytes, None, None]:
+                with staged.path.open("rb") as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        yield chunk
+
+            write_literal_text(connection, table, column, rowid, byte_length=staged.size_bytes, chunks=chunks)
+        except SQLiteLiteralWriteError as error:
+            raise CaptureJobError(
+                413 if error.physical_limit else 500,
+                "capture_literal_physical_limit" if error.physical_limit else "capture_literal_publication_failed",
+            ) from error
+        finally:
+            staged.discard()
+
     def _append_event(
+        self,
         connection: sqlite3.Connection,
         job_id: str,
         kind: object,
@@ -1003,14 +1194,19 @@ class CaptureJobRegistry:
         if not isinstance(payload, dict):
             raise CaptureJobError(400, "invalid_capture_job_event")
         existing = connection.execute(
-            "SELECT * FROM capture_job_events WHERE job_id=? AND request_id=?", (job_id, request_id)
+            "SELECT rowid AS event_rowid, event_id, job_id, event_revision, job_revision, kind, request_id, occurred_at FROM capture_job_events WHERE job_id=? AND request_id=?",
+            (job_id, request_id),
         ).fetchone()
-        digest = canonical_digest({"kind": kind, "refs": refs, "payload": payload})
+        hasher = hashlib.sha256()
+        for part in capture_canonical_chunks({"kind": kind, "refs": refs, "payload": payload}):
+            hasher.update(part)
+        digest = "sha256:" + hasher.hexdigest()
         if existing is not None:
-            stored = json.loads(existing["payload_json"])
-            if not isinstance(stored, dict) or stored.get("digest") != digest:
-                raise CaptureJobError(409, "event_request_conflict")
-            return CaptureJobRegistry._event_dict(existing)
+            with ExitStack() as check_owner:
+                stored = self._json_cell(connection, existing["event_rowid"], "payload_json", check_owner)
+                if not isinstance(stored, dict) or stored.get("digest") != digest:
+                    raise CaptureJobError(409, "event_request_conflict")
+            return self._event_dict(connection, existing)
         row = connection.execute("SELECT revision FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
         if row is None:
             raise CaptureJobError(404, "capture_job_not_found")
@@ -1023,7 +1219,7 @@ class CaptureJobRegistry:
         now = _stamp()
         event_id = str(uuid4())
         stored_payload = {"digest": digest, "value": payload}
-        connection.execute(
+        cursor = connection.execute(
             "INSERT INTO capture_job_events "
             "(event_id, job_id, event_revision, job_revision, kind, refs_json, payload_json, request_id, occurred_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1033,12 +1229,16 @@ class CaptureJobRegistry:
                 event_revision,
                 job_revision,
                 kind,
-                canonical_json(refs),
-                canonical_json(stored_payload),
+                "",
+                "",
                 request_id,
                 now,
             ),
         )
+        event_rowid = cast(int, cursor.lastrowid)
+        cursor.close()
+        self._write_json_cell(connection, event_rowid, "refs_json", refs)
+        self._write_json_cell(connection, event_rowid, "payload_json", stored_payload)
         if advance_revision:
             updated = connection.execute(
                 "UPDATE capture_jobs SET revision=?, updated_at=? WHERE job_id=? AND revision=?",
@@ -1058,16 +1258,20 @@ class CaptureJobRegistry:
             "occurred_at": now,
         }
 
-    @staticmethod
-    def _event_dict(row: sqlite3.Row) -> dict[str, object]:
-        payload = json.loads(row["payload_json"])
+    def _event_dict(self, connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, object]:
+        if self._result_owner is None:
+            raise RuntimeError("capture event consumer requires result_scope")
+        payload = self._json_cell(connection, row["event_rowid"], "payload_json", self._result_owner)
+        refs = self._json_cell(connection, row["event_rowid"], "refs_json", self._result_owner)
+        if not isinstance(payload, dict):
+            raise CaptureJobError(500, "invalid_stored_event_payload")
         return {
             "event_id": row["event_id"],
             "job_id": row["job_id"],
             "event_revision": row["event_revision"],
             "job_revision": row["job_revision"],
             "kind": row["kind"],
-            "refs": json.loads(row["refs_json"]),
+            "refs": refs,
             "payload": payload.get("value", payload),
             "request_id": row["request_id"],
             "occurred_at": row["occurred_at"],
@@ -1091,8 +1295,10 @@ class CaptureJobRegistry:
                 "SELECT 1 FROM capture_job_events WHERE job_id=? AND request_id=?", (job_id, request_id)
             ).fetchone()
             event = self._append_event(connection, job_id, kind, request_id, expected_revision, refs, payload)
-            next_row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
-            return {"event": event, "job": self._summary(next_row), "duplicate": existing is not None}
+            next_row = connection.execute(
+                "SELECT " + _JOB_COLUMNS + " FROM capture_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            return {"event": event, "job": self._summary(connection, next_row), "duplicate": existing is not None}
 
     def events(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         limit = body.get("limit", 100)
@@ -1108,7 +1314,9 @@ class CaptureJobRegistry:
             self._require_scoped(
                 connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
             )
-            events, next_cursor = read_capture_job_events(connection, job_id, limit, before_revision)
+            events, next_cursor = read_capture_job_events(
+                connection, job_id, limit, before_revision, decode=self._event_dict
+            )
             return {
                 "events": events,
                 "timelines": project_capture_job_timelines(events),
@@ -1153,7 +1361,10 @@ class CaptureJobRegistry:
             if lease and lease["request_id"] == request_id and lease["session_id"] == session_id:
                 expires_at = datetime.fromisoformat(str(lease["expires_at"]).replace("Z", "+00:00"))
                 if expires_at > _now():
-                    return {"job": self._summary(row), "lease": {**lease, "proof": self._proof(job_id, lease)}}
+                    return {
+                        "job": self._summary(connection, row),
+                        "lease": {**lease, "proof": self._proof(job_id, lease)},
+                    }
             if body.get("expected_revision") != row["revision"] or body.get("expected_lease_generation") != generation:
                 raise CaptureJobError(
                     409, "cas_mismatch", {"revision": row["revision"], "lease_generation": generation}
@@ -1173,11 +1384,16 @@ class CaptureJobRegistry:
                 "UPDATE capture_jobs SET revision=?, lease_json=?, updated_at=? WHERE job_id=?",
                 (revision, canonical_json(next_lease), _stamp(now), job_id),
             )
-            next_row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
-            return {"job": self._summary(next_row), "lease": {**next_lease, "proof": self._proof(job_id, next_lease)}}
+            next_row = connection.execute(
+                "SELECT " + _JOB_COLUMNS + " FROM capture_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            return {
+                "job": self._summary(connection, next_row),
+                "lease": {**next_lease, "proof": self._proof(job_id, next_lease)},
+            }
 
-    @staticmethod
     def _retention_after_retry(
+        self,
         connection: sqlite3.Connection,
         job_id: str,
         current: dict[str, object],
@@ -1207,22 +1423,26 @@ class CaptureJobRegistry:
         return {
             "state": "eligible",
             "hold_reason": None,
-            "timeline_authoritative": CaptureJobRegistry._holds_conversation_timeline(connection, job_id),
+            "timeline_authoritative": self._holds_conversation_timeline(connection, job_id),
         }
 
-    @staticmethod
-    def _holds_conversation_timeline(connection: sqlite3.Connection, job_id: str) -> bool:
-        """Whether this job still holds conversation-bearing timeline evidence."""
-        return any(
-            isinstance(ref, str) and bool(ref)
-            for (refs_json,) in connection.execute("SELECT refs_json FROM capture_job_events WHERE job_id=?", (job_id,))
-            for refs in (json.loads(refs_json),)
-            for ref in (refs.get("conversation_ref"),)
-            if isinstance(refs, dict)
-        )
+    def _holds_conversation_timeline(self, connection: sqlite3.Connection, job_id: str) -> bool:
+        """Inspect only the lazy scalar timeline ref under one pinned snapshot."""
+        cursor = connection.execute("SELECT rowid FROM capture_job_events WHERE job_id=?", (job_id,))
+        try:
+            for (rowid,) in cursor:
+                with ExitStack() as owner:
+                    refs = self._json_cell(connection, rowid, "refs_json", owner)
+                    ref = refs.get("conversation_ref") if isinstance(refs, dict) else None
+                    if isinstance(ref, str) and ref:
+                        return True
+            return False
+        finally:
+            cursor.close()
 
-    @staticmethod
-    def _retention_after_checkpoint(connection: sqlite3.Connection, job_id: str, current: dict[str, object]) -> None:
+    def _retention_after_checkpoint(
+        self, connection: sqlite3.Connection, job_id: str, current: dict[str, object]
+    ) -> None:
         """Re-read authoritativeness once the checkpoint's timeline event exists.
 
         The production extension calls ``update()`` and then ``checkpoint()``
@@ -1241,7 +1461,7 @@ class CaptureJobRegistry:
         """
         if current.get("timeline_authoritative") is True:
             return
-        if not CaptureJobRegistry._holds_conversation_timeline(connection, job_id):
+        if not self._holds_conversation_timeline(connection, job_id):
             return
         connection.execute(
             "UPDATE capture_jobs SET retention_json=? WHERE job_id=?",
@@ -1289,7 +1509,11 @@ class CaptureJobRegistry:
             if existing:
                 if not hmac.compare_digest(existing["request_digest"], request_digest):
                     raise CaptureJobError(409, "request_id_conflict")
-                return {"job": self._summary(row), "receipt": json.loads(existing["receipt_json"]), "duplicate": True}
+                return {
+                    "job": self._summary(connection, row),
+                    "receipt": json.loads(existing["receipt_json"]),
+                    "duplicate": True,
+                }
             if body.get("expected_revision") != row["revision"]:
                 raise CaptureJobError(409, "cas_mismatch", {"revision": row["revision"]})
             current_retry = json.loads(row["retry_json"])
@@ -1323,7 +1547,7 @@ class CaptureJobRegistry:
                     "INSERT INTO capture_job_update_receipts VALUES (?, ?, ?, ?)",
                     (job_id, request_id, request_digest, canonical_json(receipt)),
                 )
-                return {"job": self._summary(row), "receipt": receipt, "duplicate": True}
+                return {"job": self._summary(connection, row), "receipt": receipt, "duplicate": True}
             revision = row["revision"] + 1
             receipt = {
                 "receipt_id": str(uuid4()),
@@ -1352,8 +1576,10 @@ class CaptureJobRegistry:
                 "INSERT INTO capture_job_update_receipts VALUES (?, ?, ?, ?)",
                 (job_id, request_id, request_digest, canonical_json(receipt)),
             )
-            next_row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
-            return {"job": self._summary(next_row), "receipt": receipt, "duplicate": False}
+            next_row = connection.execute(
+                "SELECT " + _JOB_COLUMNS + " FROM capture_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            return {"job": self._summary(connection, next_row), "receipt": receipt, "duplicate": False}
 
     def gc(self, *, now: datetime | None = None, limit: int = 100) -> dict[str, object]:
         """Delete only explicitly eligible, acknowledged, non-authoritative jobs."""
@@ -1363,7 +1589,7 @@ class CaptureJobRegistry:
         deleted: list[str] = []
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute("SELECT * FROM capture_jobs ORDER BY updated_at")
+            rows = connection.execute("SELECT " + _JOB_COLUMNS + " FROM capture_jobs ORDER BY updated_at")
             for row in rows:
                 if len(deleted) >= limit:
                     break
@@ -1479,7 +1705,7 @@ class CaptureJobRegistry:
         )
         self._require_live_lease(job_id, job, body)
         row = connection.execute(
-            "SELECT * FROM capture_job_native_acquisitions WHERE job_id=? AND acquisition_id=?",
+            "SELECT rowid AS acquisition_rowid, job_id, acquisition_id, binding_json, member_names_json, state, plan_digest, final_receipt_json FROM capture_job_native_acquisitions WHERE job_id=? AND acquisition_id=?",
             (job_id, body.get("acquisition_id")),
         ).fetchone()
         if row is None:
@@ -1504,7 +1730,7 @@ class CaptureJobRegistry:
                 connection.execute("BEGIN IMMEDIATE")
                 _, acquisition = self._native_row(connection, job_id, body)
                 member = connection.execute(
-                    "SELECT * FROM capture_job_native_members WHERE job_id=? AND acquisition_id=? AND member_name=?",
+                    "SELECT rowid AS member_rowid, job_id, acquisition_id, member_name, sha256, size_bytes FROM capture_job_native_members WHERE job_id=? AND acquisition_id=? AND member_name=?",
                     (job_id, acquisition["acquisition_id"], member_name),
                 ).fetchone()
                 if member is None:
@@ -1546,7 +1772,7 @@ class CaptureJobRegistry:
             {"kind": "invocation", "creation_token": acquisition_id, "binding": binding},
             body.get("client_protocol"),
         )
-        binding_json = json.dumps(binding, separators=(",", ":"), sort_keys=True)
+        binding_json = json.dumps({key: binding[key] for key in binding}, separators=(",", ":"), sort_keys=True)
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             job = self._require_scoped(
@@ -1565,14 +1791,14 @@ class CaptureJobRegistry:
             if job["scope_kind"] == "invocation" and json.loads(job["invocation_json"])["binding"] != binding:
                 raise CaptureJobError(409, "invocation_binding_conflict")
             existing = connection.execute(
-                "SELECT * FROM capture_job_native_acquisitions WHERE job_id=? AND acquisition_id=?",
+                "SELECT rowid AS acquisition_rowid, job_id, acquisition_id, binding_json, member_names_json, state, plan_digest, final_receipt_json FROM capture_job_native_acquisitions WHERE job_id=? AND acquisition_id=?",
                 (job_id, acquisition_id),
             ).fetchone()
             if existing is not None:
                 if existing["binding_json"] != binding_json or existing["member_names_json"] != members_json:
                     raise CaptureJobError(409, "native_acquisition_conflict")
                 return {
-                    "job": self._summary(job),
+                    "job": self._summary(connection, job),
                     "acquisition_id": acquisition_id,
                     "state": existing["state"],
                     "duplicate": True,
@@ -1584,7 +1810,7 @@ class CaptureJobRegistry:
                 (job_id, acquisition_id, binding_json, members_json),
             )
             return {
-                "job": self._summary(job),
+                "job": self._summary(connection, job),
                 "acquisition_id": acquisition_id,
                 "state": "acquiring",
                 "duplicate": False,
@@ -1596,7 +1822,7 @@ class CaptureJobRegistry:
             raise CaptureJobError(400, "invalid_native_member")
         if body.get("sha256") != staged.sha256 or body.get("size_bytes") != staged.size_bytes:
             raise CaptureJobError(400, "native_member_integrity_mismatch")
-        metadata_json = json.dumps(metadata, separators=(",", ":"), sort_keys=True)
+        metadata_digest = _native_json_digest(metadata)
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             job, acquisition = self._native_row(connection, job_id, body)
@@ -1605,19 +1831,26 @@ class CaptureJobRegistry:
             if member not in json.loads(acquisition["member_names_json"]):
                 raise CaptureJobError(400, "invalid_native_member")
             existing = connection.execute(
-                "SELECT * FROM capture_job_native_members WHERE job_id=? AND acquisition_id=? AND member_name=?",
+                "SELECT rowid AS member_rowid, job_id, acquisition_id, member_name, sha256, size_bytes FROM capture_job_native_members WHERE job_id=? AND acquisition_id=? AND member_name=?",
                 (job_id, acquisition["acquisition_id"], member),
             ).fetchone()
             if existing is not None:
-                if (existing["sha256"], existing["size_bytes"], existing["metadata_json"]) != (
-                    staged.sha256,
-                    staged.size_bytes,
-                    metadata_json,
-                ):
-                    raise CaptureJobError(409, "native_member_conflict")
+                with ExitStack() as metadata_owner:
+                    stored = self._json_cell(
+                        connection,
+                        existing["member_rowid"],
+                        "metadata_json",
+                        metadata_owner,
+                        table="capture_job_native_members",
+                    )
+                    if (existing["sha256"], existing["size_bytes"]) != (
+                        staged.sha256,
+                        staged.size_bytes,
+                    ) or _native_json_digest(stored) != metadata_digest:
+                        raise CaptureJobError(409, "native_member_conflict")
                 self._publish_native_artifact(staged)
                 return {
-                    "job": self._summary(job),
+                    "job": self._summary(connection, job),
                     "acquisition_id": acquisition["acquisition_id"],
                     "member_name": member,
                     "sha256": staged.sha256,
@@ -1629,12 +1862,22 @@ class CaptureJobRegistry:
             if body.get("expected_revision") != job["revision"]:
                 raise CaptureJobError(409, "cas_mismatch", {"revision": job["revision"]})
             self._publish_native_artifact(staged)
-            connection.execute(
+            cursor = connection.execute(
                 "INSERT INTO capture_job_native_members VALUES (?, ?, ?, ?, ?, ?)",
-                (job_id, acquisition["acquisition_id"], member, staged.sha256, staged.size_bytes, metadata_json),
+                (job_id, acquisition["acquisition_id"], member, staged.sha256, staged.size_bytes, ""),
+            )
+            member_rowid = cast(int, cursor.lastrowid)
+            cursor.close()
+            self._write_json_cell(
+                connection,
+                member_rowid,
+                "metadata_json",
+                metadata,
+                table="capture_job_native_members",
+                native_json=True,
             )
             return {
-                "job": self._summary(job),
+                "job": self._summary(connection, job),
                 "acquisition_id": acquisition["acquisition_id"],
                 "member_name": member,
                 "sha256": staged.sha256,
@@ -1651,7 +1894,7 @@ class CaptureJobRegistry:
             )
             self._require_live_lease(job_id, job, body)
             acquisition = connection.execute(
-                "SELECT * FROM capture_job_native_acquisitions WHERE job_id=? AND acquisition_id=?",
+                "SELECT rowid AS acquisition_rowid, job_id, acquisition_id, binding_json, member_names_json, state, plan_digest, final_receipt_json FROM capture_job_native_acquisitions WHERE job_id=? AND acquisition_id=?",
                 (job_id, body.get("acquisition_id")),
             ).fetchone()
             if acquisition is None:
@@ -1707,22 +1950,31 @@ class CaptureJobRegistry:
                 metadata = body.get("provider_meta", {})
                 if not isinstance(metadata, dict):
                     raise CaptureJobError(400, "invalid_native_metadata")
-                header_json = json.dumps(
-                    {"provenance": provenance.model_dump(mode="json"), "provider_meta": metadata},
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
+                header = {"provenance": provenance.model_dump(mode="json"), "provider_meta": metadata}
+
                 if prepared is not None:
-                    if json.loads(acquisition["header_json"])["request"] != json.loads(header_json):
-                        raise CaptureJobError(409, "native_preparation_conflict")
-                    return {
-                        "job": self._summary(job),
-                        "acquisition_id": acquisition["acquisition_id"],
-                        "state": acquisition["state"],
-                        "plan_digest": acquisition["plan_digest"],
-                        "summary": json.loads(acquisition["header_json"])["summary"],
-                        "duplicate": True,
-                    }
+                    with ExitStack() as header_owner:
+                        stored_header = cast(
+                            dict[str, object],
+                            self._json_cell(
+                                connection,
+                                acquisition["acquisition_rowid"],
+                                "header_json",
+                                header_owner,
+                                table="capture_job_native_acquisitions",
+                            ),
+                        )
+                        if _native_json_digest(stored_header["request"]) != _native_json_digest(header):
+                            raise CaptureJobError(409, "native_preparation_conflict")
+                        summary = cast(dict[str, object], stored_header["summary"])
+                        return {
+                            "job": self._summary(connection, job),
+                            "acquisition_id": acquisition["acquisition_id"],
+                            "state": acquisition["state"],
+                            "plan_digest": acquisition["plan_digest"],
+                            "summary": {key: summary[key] for key in summary},
+                            "duplicate": True,
+                        }
             scratch_root = capture_job_store_root(self._spool_root()) / "preparation"
             scratch_root.mkdir(parents=True, exist_ok=True)
             directory = tempfile.TemporaryDirectory(prefix="native-", dir=scratch_root)
@@ -1767,12 +2019,9 @@ class CaptureJobRegistry:
                                         or message.delivery_status
                                         not in {"finished_successfully", "finished", "complete", "completed"}
                                     )
-                        sealed_header = json.dumps(
-                            {"request": json.loads(header_json), "summary": info}, sort_keys=True, separators=(",", ":")
-                        )
-                        staged = stage_capture_chunks(
-                            envelope_prefix(parsed, spill, members, provenance, metadata, progress),
-                            spool_root=self._spool_root(),
+                        sealed_header = {"request": header, "summary": info}
+                        staged = self._stage_json_chunks(
+                            envelope_prefix(parsed, spill, members, provenance, metadata, progress), durable=True
                         )
                     plan_hash = hashlib.sha256()
                     for ordinal, descriptor in store.conn.execute(
@@ -1788,10 +2037,23 @@ class CaptureJobRegistry:
                         if json.loads(job["retry_json"])["state"] in {"held", "abandoned"}:
                             raise CaptureJobError(409, "capture_authority_paused")
                         if acquisition["state"] != "acquiring":
-                            if (acquisition["header_json"], acquisition["plan_digest"]) != (sealed_header, plan_digest):
-                                raise CaptureJobError(409, "native_preparation_conflict")
+                            with ExitStack() as header_owner:
+                                stored_header = cast(
+                                    dict[str, object],
+                                    self._json_cell(
+                                        connection,
+                                        acquisition["acquisition_rowid"],
+                                        "header_json",
+                                        header_owner,
+                                        table="capture_job_native_acquisitions",
+                                    ),
+                                )
+                                if acquisition["plan_digest"] != plan_digest or _native_json_digest(
+                                    stored_header
+                                ) != _native_json_digest(sealed_header):
+                                    raise CaptureJobError(409, "native_preparation_conflict")
                             return {
-                                "job": self._summary(job),
+                                "job": self._summary(connection, job),
                                 "acquisition_id": acquisition["acquisition_id"],
                                 "state": acquisition["state"],
                                 "plan_digest": plan_digest,
@@ -1817,11 +2079,19 @@ class CaptureJobRegistry:
                                 ),
                             )
                         connection.execute(
-                            "UPDATE capture_job_native_acquisitions SET state='prepared', header_json=?, plan_digest=? WHERE job_id=? AND acquisition_id=?",
-                            (sealed_header, plan_digest, job_id, acquisition["acquisition_id"]),
+                            "UPDATE capture_job_native_acquisitions SET state='prepared', plan_digest=? WHERE job_id=? AND acquisition_id=?",
+                            (plan_digest, job_id, acquisition["acquisition_id"]),
+                        )
+                        self._write_json_cell(
+                            connection,
+                            acquisition["acquisition_rowid"],
+                            "header_json",
+                            sealed_header,
+                            table="capture_job_native_acquisitions",
+                            native_json=True,
                         )
                         return {
-                            "job": self._summary(job),
+                            "job": self._summary(connection, job),
                             "acquisition_id": acquisition["acquisition_id"],
                             "state": "prepared",
                             "plan_digest": plan_digest,
@@ -1847,11 +2117,12 @@ class CaptureJobRegistry:
         if type(after) is not int or after < -1:
             raise CaptureJobError(400, "invalid_native_plan_cursor")
         with self._connection() as connection:
+            connection.execute("BEGIN")
             _job, acquisition = self._native_row(connection, job_id, body)
             if acquisition["plan_digest"] is None:
                 raise CaptureJobError(409, "native_preparation_pending")
             rows = connection.execute(
-                "SELECT p.ordinal, p.descriptor_json, p.descriptor_digest, a.outcome_json FROM capture_job_native_plan p LEFT JOIN capture_job_native_assets a USING(job_id, acquisition_id, ordinal) WHERE p.job_id=? AND p.acquisition_id=? AND p.ordinal>? ORDER BY p.ordinal LIMIT 65",
+                "SELECT p.ordinal, p.descriptor_json, p.descriptor_digest, a.rowid AS asset_rowid FROM capture_job_native_plan p LEFT JOIN capture_job_native_assets a USING(job_id, acquisition_id, ordinal) WHERE p.job_id=? AND p.acquisition_id=? AND p.ordinal>? ORDER BY p.ordinal LIMIT 65",
                 (job_id, acquisition["acquisition_id"], after),
             ).fetchall()
             more = len(rows) > 64
@@ -1864,7 +2135,15 @@ class CaptureJobRegistry:
                         "ordinal": row["ordinal"],
                         "descriptor": json.loads(row["descriptor_json"]),
                         "descriptor_digest": row["descriptor_digest"],
-                        "receipt": json.loads(row["outcome_json"]) if row["outcome_json"] else None,
+                        "receipt": self._json_cell(
+                            connection,
+                            row["asset_rowid"],
+                            "outcome_json",
+                            self._require_result_owner(),
+                            table="capture_job_native_assets",
+                        )
+                        if row["asset_rowid"] is not None
+                        else None,
                     }
                     for row in rows
                 ],
@@ -1882,7 +2161,7 @@ class CaptureJobRegistry:
             raise CaptureJobError(400, "invalid_native_asset_receipt")
         if staged is not None and (body.get("sha256"), body.get("size_bytes")) != (staged.sha256, staged.size_bytes):
             raise CaptureJobError(400, "native_asset_integrity_mismatch")
-        encoded = json.dumps(outcome, sort_keys=True, separators=(",", ":"))
+        outcome_digest = _native_json_digest(outcome)
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             job, acquisition = self._native_row(connection, job_id, body)
@@ -1904,13 +2183,23 @@ class CaptureJobRegistry:
                 ) or metadata.get("native_inline_sha256") is None:
                     raise CaptureJobError(409, "native_inline_receipt_conflict")
             existing = connection.execute(
-                "SELECT * FROM capture_job_native_assets WHERE job_id=? AND acquisition_id=? AND ordinal=?",
+                "SELECT rowid AS asset_rowid, job_id, acquisition_id, ordinal, sha256, size_bytes FROM capture_job_native_assets WHERE job_id=? AND acquisition_id=? AND ordinal=?",
                 (job_id, acquisition["acquisition_id"], ordinal),
             ).fetchone()
             sha, size = (staged.sha256, staged.size_bytes) if staged is not None else (None, None)
             if existing is not None:
-                if (existing["outcome_json"], existing["sha256"], existing["size_bytes"]) != (encoded, sha, size):
-                    raise CaptureJobError(409, "native_asset_receipt_conflict")
+                with ExitStack() as outcome_owner:
+                    stored = self._json_cell(
+                        connection,
+                        existing["asset_rowid"],
+                        "outcome_json",
+                        outcome_owner,
+                        table="capture_job_native_assets",
+                    )
+                    if (existing["sha256"], existing["size_bytes"]) != (sha, size) or _native_json_digest(
+                        stored
+                    ) != outcome_digest:
+                        raise CaptureJobError(409, "native_asset_receipt_conflict")
                 if staged is not None:
                     self._publish_native_artifact(staged)
                 return {"ordinal": ordinal, "plan_digest": acquisition["plan_digest"], "duplicate": True}
@@ -1918,9 +2207,14 @@ class CaptureJobRegistry:
                 raise CaptureJobError(409, "native_acquisition_sealed")
             if staged is not None:
                 self._publish_native_artifact(staged)
-            connection.execute(
+            cursor = connection.execute(
                 "INSERT INTO capture_job_native_assets VALUES (?, ?, ?, ?, ?, ?)",
-                (job_id, acquisition["acquisition_id"], ordinal, encoded, sha, size),
+                (job_id, acquisition["acquisition_id"], ordinal, "", sha, size),
+            )
+            asset_rowid = cast(int, cursor.lastrowid)
+            cursor.close()
+            self._write_json_cell(
+                connection, asset_rowid, "outcome_json", outcome, table="capture_job_native_assets", native_json=True
             )
             return {"ordinal": ordinal, "plan_digest": acquisition["plan_digest"], "duplicate": False}
 
@@ -1971,7 +2265,7 @@ class CaptureJobRegistry:
 
     def native_finalize(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         """Seal only the exact prepared plan's terminal, occurrence-bound assets."""
-        from polylogue.browser_capture.native_preparation import json_bytes, raw_chunks
+        from polylogue.browser_capture.native_preparation import json_chunks, raw_chunks
 
         with self.artifact_progress(job_id, body, native=True) as progress:
             with self._connection() as connection:
@@ -2003,40 +2297,59 @@ class CaptureJobRegistry:
                 first = True
                 while True:
                     progress()
-                    with self._connection() as connection:
-                        rows = connection.execute(
-                            "SELECT p.ordinal, p.descriptor_json, a.outcome_json, a.sha256, a.size_bytes FROM capture_job_native_plan p JOIN capture_job_native_assets a USING(job_id, acquisition_id, ordinal) WHERE p.job_id=? AND p.acquisition_id=? AND p.ordinal>? ORDER BY p.ordinal LIMIT 64",
-                            (job_id, acquisition["acquisition_id"], after),
-                        ).fetchall()
-                    if not rows:
-                        break
-                    for row in rows:
-                        progress()
-                        after = row["ordinal"]
-                        descriptor = json.loads(row["descriptor_json"])
-                        descriptor.pop("original_record_ordinal", None)
-                        descriptor.pop("original_record_key", None)
-                        descriptor["provider_meta"]["asset_acquisition"] = json.loads(row["outcome_json"])
-                        if not first:
-                            yield b","
-                        first = False
-                        if row["sha256"] is None:
-                            yield json_bytes(descriptor)
-                        else:
-                            descriptor["size_bytes"] = row["size_bytes"]
-                            descriptor["provider_meta"]["content_sha256"] = row["sha256"]
-                            yield json_bytes(descriptor)[:-1] + b',"content_base64":"'
-                            with self.native_artifact(job_id, body, ordinal=after, progress=progress) as (
-                                asset,
-                                _asset_row,
-                            ):
-                                while block := asset.read(65535):
-                                    progress()
-                                    yield base64.b64encode(block)
-                            yield b'"}'
+                    with ExitStack() as page_owner:
+                        with self._connection() as connection:
+                            connection.execute("BEGIN")
+                            rows = connection.execute(
+                                "SELECT p.ordinal, p.descriptor_json, a.rowid AS asset_rowid, a.sha256, a.size_bytes FROM capture_job_native_plan p JOIN capture_job_native_assets a USING(job_id, acquisition_id, ordinal) WHERE p.job_id=? AND p.acquisition_id=? AND p.ordinal>? ORDER BY p.ordinal LIMIT 64",
+                                (job_id, acquisition["acquisition_id"], after),
+                            ).fetchall()
+                            outcomes = [
+                                self._json_cell(
+                                    connection,
+                                    row["asset_rowid"],
+                                    "outcome_json",
+                                    page_owner,
+                                    table="capture_job_native_assets",
+                                )
+                                for row in rows
+                            ]
+                        if not rows:
+                            break
+                        for row, outcome in zip(rows, outcomes, strict=True):
+                            progress()
+                            after = row["ordinal"]
+                            descriptor = json.loads(row["descriptor_json"])
+                            descriptor.pop("original_record_ordinal", None)
+                            descriptor.pop("original_record_key", None)
+                            descriptor["provider_meta"]["asset_acquisition"] = outcome
+                            if not first:
+                                yield b","
+                            first = False
+                            if row["sha256"] is None:
+                                yield from json_chunks(descriptor)
+                            else:
+                                descriptor["size_bytes"] = row["size_bytes"]
+                                descriptor["provider_meta"]["content_sha256"] = row["sha256"]
+                                parts = iter(json_chunks(descriptor))
+                                pending = next(parts)
+                                for piece in parts:
+                                    yield pending
+                                    pending = piece
+                                if pending != b"}":
+                                    raise RuntimeError("native attachment serializer lost object boundary")
+                                yield b',"content_base64":"'
+                                with self.native_artifact(job_id, body, ordinal=after, progress=progress) as (
+                                    asset,
+                                    _asset_row,
+                                ):
+                                    while block := asset.read(65535):
+                                        progress()
+                                        yield base64.b64encode(block)
+                                yield b'"}'
                 yield b"]}}"
 
-            staged = stage_capture_chunks(chunks(), spool_root=self._spool_root())
+            staged = self._stage_json_chunks(chunks(), durable=True)
             try:
                 progress()
                 with self._connection() as connection:
@@ -2147,7 +2460,7 @@ class CaptureJobRegistry:
                 ):
                     raise CaptureJobError(409, "request_id_conflict")
                 return {
-                    "job": self._summary(row),
+                    "job": self._summary(connection, row),
                     "receipt": json.loads(receipt_row["receipt_json"]),
                     "duplicate": True,
                 }
@@ -2170,7 +2483,7 @@ class CaptureJobRegistry:
                     "INSERT INTO capture_job_receipts VALUES (?, ?, ?, ?, ?)",
                     (job_id, request_id, checkpoint["sequence"], checkpoint["digest"], canonical_json(receipt)),
                 )
-                return {"job": self._summary(row), "receipt": receipt, "duplicate": True}
+                return {"job": self._summary(connection, row), "receipt": receipt, "duplicate": True}
             revision, now = row["revision"] + 1, _stamp()
             receipt = {
                 "receipt_id": str(uuid4()),
@@ -2215,8 +2528,10 @@ class CaptureJobRegistry:
                 advance_revision=False,
             )
             self._retention_after_checkpoint(connection, job_id, json.loads(row["retention_json"]))
-            next_row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
-            return {"job": self._summary(next_row), "receipt": receipt, "duplicate": False}
+            next_row = connection.execute(
+                "SELECT " + _JOB_COLUMNS + " FROM capture_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            return {"job": self._summary(connection, next_row), "receipt": receipt, "duplicate": False}
 
 
 def registry_for_receiver(spool_path: Path | None, receiver_id: str) -> CaptureJobRegistry:

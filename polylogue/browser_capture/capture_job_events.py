@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import defaultdict
+from collections.abc import Callable
 
 
 def read_capture_job_retention(connection: sqlite3.Connection, job_id: str) -> dict[str, object] | None:
@@ -20,6 +21,8 @@ def read_capture_job_events(
     job_id: str,
     limit: int,
     before_revision: int | None = None,
+    *,
+    decode: Callable[[sqlite3.Connection, sqlite3.Row], dict[str, object]],
 ) -> tuple[list[dict[str, object]], int | None]:
     """Read the newest bounded page, receiver-ordered, plus a cursor into older events.
 
@@ -30,7 +33,7 @@ def read_capture_job_events(
     oldest revision on the page, to be passed back as *before_revision*.
     """
     rows = connection.execute(
-        "SELECT event_id, job_id, event_revision, job_revision, kind, refs_json, payload_json, request_id, occurred_at "
+        "SELECT rowid AS event_rowid, event_id, job_id, event_revision, job_revision, kind, request_id, occurred_at "
         "FROM capture_job_events WHERE job_id=? AND (? IS NULL OR event_revision < ?) "
         "ORDER BY event_revision DESC LIMIT ?",
         (job_id, before_revision, before_revision, limit + 1),
@@ -38,22 +41,7 @@ def read_capture_job_events(
     has_more = len(rows) > limit
     page = list(reversed(rows[:limit]))
     next_cursor = int(page[0]["event_revision"]) if has_more and page else None
-    events: list[dict[str, object]] = []
-    for row in page:
-        payload = json.loads(row["payload_json"])
-        events.append(
-            {
-                "event_id": row["event_id"],
-                "job_id": row["job_id"],
-                "event_revision": row["event_revision"],
-                "job_revision": row["job_revision"],
-                "kind": row["kind"],
-                "refs": json.loads(row["refs_json"]),
-                "payload": payload.get("value", payload),
-                "request_id": row["request_id"],
-                "occurred_at": row["occurred_at"],
-            }
-        )
+    events = [decode(connection, row) for row in page]
     return events, next_cursor
 
 

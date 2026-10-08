@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
 import socket
 import sqlite3
 from collections.abc import Callable, Iterator
@@ -962,21 +963,22 @@ def test_fresh_registry_preserves_preexisting_source_capture_and_checkpoint(tmp_
 def test_timeline_retention_ignores_empty_and_non_string_refs(tmp_path: Path) -> None:
     """Anti-vacuity: SQL IS NOT NULL counted refs the projection cannot timeline."""
     registry = CaptureJobRegistry(tmp_path, "receiver")
-    _, created = registry.create(
-        {
-            "provider": "chatgpt",
-            "scope": ACCOUNT_SCOPE,
-            "client_protocol": 2,
-            "intent": {
-                "schema_version": 1,
-                "version": 1,
-                "intent_key": INTENT_KEY,
-                "payload": {},
-                "digest": canonical_digest({}),
-            },
-        }
-    )
-    job_id = cast(dict[str, Any], created["job"])["job_id"]
+    with registry.result_scope():
+        _, created = registry.create(
+            {
+                "provider": "chatgpt",
+                "scope": ACCOUNT_SCOPE,
+                "client_protocol": 2,
+                "intent": {
+                    "schema_version": 1,
+                    "version": 1,
+                    "intent_key": INTENT_KEY,
+                    "payload": {},
+                    "digest": canonical_digest({}),
+                },
+            }
+        )
+        job_id = cast(dict[str, Any], created["job"])["job_id"]
     with registry._connection() as connection:
         for index, ref in enumerate(("", None, 17)):
             connection.execute(
@@ -985,7 +987,7 @@ def test_timeline_retention_ignores_empty_and_non_string_refs(tmp_path: Path) ->
                 "VALUES (?, ?, ?, 0, 'first-seen', ?, '{}', ?, '2026-01-01T00:00:00Z')",
                 (f"bad-ref-{index}", job_id, index + 1, canonical_json({"conversation_ref": ref}), f"bad-{index}"),
             )
-        assert CaptureJobRegistry._holds_conversation_timeline(connection, job_id) is False
+        assert registry._holds_conversation_timeline(connection, job_id) is False
 
 
 def test_registry_uses_full_synchronous_mode(tmp_path: Path) -> None:
@@ -1002,22 +1004,23 @@ def test_get_uses_one_snapshot_for_job_and_receipts(tmp_path: Path, monkeypatch:
     """Anti-vacuity: removing BEGIN lets the injected committed receipt leak into the response."""
     registry = CaptureJobRegistry(tmp_path, "receiver")
     payload = {"cutoff": "2026-01-01T00:00:00Z"}
-    _, created = registry.create(
-        {
-            "provider": "chatgpt",
-            "scope": ACCOUNT_SCOPE,
-            "client_protocol": 2,
-            "intent": {
-                "schema_version": 1,
-                "version": 1,
-                "intent_key": INTENT_KEY,
-                "payload": payload,
-                "digest": canonical_digest(payload),
-            },
-        }
-    )
-    created_job = cast(dict[str, object], created["job"])
-    job_id = cast(str, created_job["job_id"])
+    with registry.result_scope():
+        _, created = registry.create(
+            {
+                "provider": "chatgpt",
+                "scope": ACCOUNT_SCOPE,
+                "client_protocol": 2,
+                "intent": {
+                    "schema_version": 1,
+                    "version": 1,
+                    "intent_key": INTENT_KEY,
+                    "payload": payload,
+                    "digest": canonical_digest(payload),
+                },
+            }
+        )
+        created_job = cast(dict[str, object], created["job"])
+        job_id = cast(str, created_job["job_id"])
     original_connect = registry._connect
     injected = False
 
@@ -1045,8 +1048,9 @@ def test_get_uses_one_snapshot_for_job_and_receipts(tmp_path: Path, monkeypatch:
         return connection
 
     monkeypatch.setattr(CaptureJobRegistry, "_connect", connect_with_interleaved_commit)
-    result = registry.get(job_id, {"provider": "chatgpt", "scope": ACCOUNT_SCOPE, "client_protocol": 2})
-    assert result["receipts"] == []
+    with registry.result_scope():
+        result = registry.get(job_id, {"provider": "chatgpt", "scope": ACCOUNT_SCOPE, "client_protocol": 2})
+        assert result["receipts"] == []
 
 
 def test_registry_storage_failure_is_a_structured_receiver_error(tmp_path: Path, monkeypatch: Any) -> None:
@@ -2029,10 +2033,12 @@ def test_discovery_pages_all_equal_clock_jobs_through_actual_http_and_restart(tm
                 break
             # Reading from another owner instance uses the identical immutable cursor.
             restarted = CaptureJobRegistry(tmp_path, "synthetic-receiver-key")
-            page = restarted.discover(
-                {"provider": "chatgpt", "scope": ACCOUNT_SCOPE, "client_protocol": 2, "cursor": cursor}
-            )
-            assert {job["job_id"] for job in cast(list[dict[str, Any]], page["jobs"])}.issubset(expected)
+            with restarted.result_scope():
+                page = restarted.discover(
+                    {"provider": "chatgpt", "scope": ACCOUNT_SCOPE, "client_protocol": 2, "cursor": cursor}
+                )
+                page_job_ids = {job["job_id"] for job in cast(list[dict[str, Any]], page["jobs"])}
+            assert page_job_ids.issubset(expected)
         assert page_sizes == [25, 25, 11]
         assert len(observed) == len(set(observed)) == 61
         assert set(observed) == expected
@@ -2092,38 +2098,41 @@ def test_native_upload_preserves_paused_producer_and_fences_changed_authority(
     scope = {"kind": "account", "key": SCOPE}
     intent_payload = {"provider_session_id": "native-pause"}
     scoped: dict[str, object] = {"provider": "chatgpt", "scope": scope, "client_protocol": 2}
-    _status, created = registry.create(
-        {
-            **scoped,
-            "intent": {
-                "schema_version": 1,
-                "version": 1,
-                "intent_key": INTENT_KEY,
-                "payload": intent_payload,
-                "digest": canonical_digest(intent_payload),
+    with registry.result_scope():
+        _status, created = registry.create(
+            {
+                **scoped,
+                "intent": {
+                    "schema_version": 1,
+                    "version": 1,
+                    "intent_key": INTENT_KEY,
+                    "payload": intent_payload,
+                    "digest": canonical_digest(intent_payload),
+                },
+            }
+        )
+        job = cast(dict[str, Any], created["job"])
+        job_id = job["job_id"]
+        adopted = registry.adopt(
+            job_id,
+            {
+                **scoped,
+                "request_id": "initial-owner",
+                "session_id": "profile-a",
+                "expected_revision": job["revision"],
+                "expected_lease_generation": 0,
+                "lease_ttl_seconds": 1,
             },
-        }
-    )
-    job = cast(dict[str, Any], created["job"])
-    job_id = job["job_id"]
-    adopted = registry.adopt(
-        job_id,
-        {
-            **scoped,
-            "request_id": "initial-owner",
-            "session_id": "profile-a",
-            "expected_revision": job["revision"],
-            "expected_lease_generation": 0,
-            "lease_ttl_seconds": 1,
-        },
-    )
-    lease = cast(dict[str, Any], adopted["lease"])
+        )
+        lease = cast(dict[str, Any], adopted["lease"])
+        adopted_job = cast(dict[str, Any], adopted["job"])
+        adopted_revision = adopted_job["revision"]
     descriptor: dict[str, object] = {
         **scoped,
         "lease_id": lease["lease_id"],
         "generation": lease["generation"],
         "proof": lease["proof"],
-        "expected_revision": cast(dict[str, Any], adopted["job"])["revision"],
+        "expected_revision": adopted_revision,
         "acquisition_id": str(uuid4()),
         "binding": {
             "preparation_instance_id": "owned-test-instance",
@@ -2136,7 +2145,8 @@ def test_native_upload_preserves_paused_producer_and_fences_changed_authority(
             "document_id": "owned-test-document",
         },
     }
-    registry.native_begin(job_id, {**descriptor, "member_names": ["conversation"]})
+    with registry.result_scope():
+        registry.native_begin(job_id, {**descriptor, "member_names": ["conversation"]})
     raw = b'{"id":"native-pause","mapping":{}}'
     descriptor.update(
         member_name="conversation", metadata={}, sha256=hashlib.sha256(raw).hexdigest(), size_bytes=len(raw)
@@ -2156,21 +2166,24 @@ def test_native_upload_preserves_paused_producer_and_fences_changed_authority(
             assert first_chunk.wait(10), "the real staging reader must consume the prefix before the pause"
             assert len(list((tmp_path / STAGING_DIRNAME).iterdir())) == 1
             if authority_change == "pause":
-                registry.update(
-                    job_id, {**descriptor, "request_id": "pause-owner", "retry": {"state": "held", "attempt": 0}}
-                )
+                with registry.result_scope():
+                    registry.update(
+                        job_id,
+                        {**descriptor, "request_id": "pause-owner", "retry": {"state": "held", "attempt": 0}},
+                    )
             frozen_clock.advance(600)
             if authority_change == "takeover":
-                registry.adopt(
-                    job_id,
-                    {
-                        **scoped,
-                        "request_id": "replacement-owner",
-                        "session_id": "profile-b",
-                        "expected_revision": descriptor["expected_revision"],
-                        "expected_lease_generation": lease["generation"],
-                    },
-                )
+                with registry.result_scope():
+                    registry.adopt(
+                        job_id,
+                        {
+                            **scoped,
+                            "request_id": "replacement-owner",
+                            "session_id": "profile-b",
+                            "expected_revision": descriptor["expected_revision"],
+                            "expected_lease_generation": lease["generation"],
+                        },
+                    )
             if authority_change == "producer_cancel":
                 producer.shutdown(socket.SHUT_WR)
             else:
@@ -2791,3 +2804,341 @@ def test_terminal_job_gc_retires_only_cancelled_unpublished_native_acquisition(
             assert connection.execute(
                 "SELECT COUNT(*) FROM capture_job_native_acquisitions WHERE job_id=?", (job_id,)
             ).fetchone()[0] == (0 if cancelled else 1)
+
+
+def test_large_event_collections_survive_real_registry_cas_reads_and_retention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lazy decode alone is insufficient: stored cells and all reads stay lossless."""
+    from polylogue.schemas.observation_spill import SpilledObject
+
+    original_append = CaptureJobRegistry._append_event
+    observed_lazy = []
+
+    def append(
+        registry: CaptureJobRegistry,
+        connection: sqlite3.Connection,
+        job_id: str,
+        kind: object,
+        request_id: str,
+        expected_revision: int,
+        refs: dict[str, object],
+        payload: dict[str, object],
+        *,
+        advance_revision: bool = True,
+    ) -> dict[str, object]:
+        if request_id == "large-native-event":
+            assert isinstance(refs, SpilledObject) and isinstance(payload, SpilledObject)
+            observed_lazy.append(True)
+        return original_append(
+            registry,
+            connection,
+            job_id,
+            kind,
+            request_id,
+            expected_revision,
+            refs,
+            payload,
+            advance_revision=advance_revision,
+        )
+
+    monkeypatch.setattr(CaptureJobRegistry, "_append_event", append)
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        refs = {"conversation_ref": "neutral-conversation", "all_refs": [f"ref-{i}" for i in range(6000)]}
+        payload = {"records": [{"index": i, "values": [i, i + 1], "text": "neutral" * 100} for i in range(6000)]}
+        body: dict[str, object] = {
+            "provider": "chatgpt",
+            "scope": ACCOUNT_SCOPE,
+            **_native_descriptor(adopted, "unused"),
+            "request_id": "large-native-event",
+            "kind": "capture-attempted",
+            "refs": refs,
+            "payload": payload,
+        }
+        path = f"/v1/capture-jobs/{job['job_id']}"
+        status, first = request(host, port, "POST", path + "/events", body)
+        assert status == 200 and first["event"]["refs"] == refs and first["event"]["payload"] == payload
+        status, duplicate = request(host, port, "POST", path + "/events", body)
+        assert status == 200 and duplicate["duplicate"] is True and duplicate["event"] == first["event"]
+        status, conflict = request(host, port, "POST", path + "/events", {**body, "payload": {"records": []}})
+        assert status == 409 and conflict["error"]["code"] == "event_request_conflict"
+        status, events = request(
+            host, port, "GET", path + f"/events?provider=chatgpt&scope={SCOPE_QUERY}&client_protocol=2", {}
+        )
+        assert status == 200 and events["events"][-1] == first["event"]
+        status, whole = request(
+            host, port, "GET", path + f"?provider=chatgpt&scope={SCOPE_QUERY}&client_protocol=2", {}
+        )
+        assert status == 200 and whole["timelines"]["neutral-conversation"] == [first["event"]]
+        adopted["job"] = whole["job"]
+        status, terminal = request(
+            host,
+            port,
+            "POST",
+            path + "/update",
+            {
+                **_native_descriptor(adopted, "unused"),
+                "request_id": "retain-large-timeline",
+                "retry": {"state": "completed", "attempt": 1, "reason": None, "next_eligible_at": None},
+            },
+        )
+        assert status == 200 and terminal["job"]["retention"]["timeline_authoritative"] is True
+        with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+            row = connection.execute(
+                "SELECT typeof(refs_json), typeof(payload_json) FROM capture_job_events WHERE request_id=?",
+                ("large-native-event",),
+            ).fetchone()
+        assert row == ("text", "text")
+        assert len(observed_lazy) == 3
+    assert not list((tmp_path / ".staging").iterdir())
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"z": [None, True, {"e\u0301": "e\u0301"}], "a": 3},
+        {"keys": {"\U0001f600": 2, "\u00e9": 1}, "values": [-3, 0, 42]},
+    ],
+)
+def test_lazy_capture_canonical_bytes_equal_existing_profile(tmp_path: Path, value: dict[str, object]) -> None:
+    from polylogue.browser_capture.capture_jobs import capture_canonical_chunks
+    from polylogue.schemas.observation_spill import StreamedJSONDocument
+
+    source = tmp_path / "neutral.json"
+    source.write_text(json.dumps(value))
+    with StreamedJSONDocument(source) as document:
+        assert b"".join(capture_canonical_chunks(document)) == canonical_json(value).encode()
+
+
+@pytest.mark.parametrize(
+    "raw,code",
+    [
+        ('{"e\u0301":1,"\u00e9":2}', "non_canonical_key_collision"),
+        ('{"number":9007199254740992}', "non_canonical_json"),
+    ],
+)
+def test_lazy_capture_canonical_refuses_same_profile_invalid_values(tmp_path: Path, raw: str, code: str) -> None:
+    from polylogue.browser_capture.capture_jobs import capture_canonical_chunks
+    from polylogue.schemas.observation_spill import StreamedJSONDocument
+
+    source = tmp_path / "neutral.json"
+    source.write_text(raw)
+    with StreamedJSONDocument(source) as document:
+        with pytest.raises(CaptureJobError) as refusal:
+            list(capture_canonical_chunks(document))
+    assert refusal.value.code == code
+
+
+def test_large_native_metadata_and_asset_outcomes_survive_prepare_plan_and_finalize(tmp_path: Path) -> None:
+    """C dict shortcuts, eager header cells, or eager outcome cells lose this wire."""
+    raw = (Path(__file__).parents[2] / "fixtures/chatgpt/native-duplicate-attachment-occurrences-v1.json").read_bytes()
+    metadata = {
+        "capture_fidelity": "native_full",
+        "all_facts": {f"fact-{index}": {"value": index, "text": "neutral" * 50} for index in range(6000)},
+    }
+    outcome = {
+        "status": "unavailable",
+        "all_attempts": [{"ordinal": index, "reason": "neutral" * 50} for index in range(6000)],
+    }
+    with receiver(tmp_path) as (host, port):
+        path, descriptor, provenance = _retain_native_occurrences(host, port, raw)
+        preparation = {**descriptor, "provenance": provenance, "provider_meta": metadata}
+        status, prepared = request(host, port, "POST", path + "/prepare", preparation)
+        assert status == 200, prepared
+        status, duplicate = request(host, port, "POST", path + "/prepare", preparation)
+        assert status == 200 and duplicate["duplicate"] is True
+        status, conflict = request(
+            host, port, "POST", path + "/prepare", {**preparation, "provider_meta": {"all_facts": {}}}
+        )
+        assert status == 409 and conflict["error"]["code"] == "native_preparation_conflict"
+        status, plan = request(host, port, "POST", path + "/plan", descriptor)
+        assert status == 200 and len(plan["assets"]) == 2
+        for asset in plan["assets"]:
+            receipt = {
+                **descriptor,
+                "ordinal": asset["ordinal"],
+                "plan_digest": prepared["plan_digest"],
+                "descriptor_digest": asset["descriptor_digest"],
+                "outcome": outcome,
+            }
+            status, first = request(host, port, "POST", path + "/asset", receipt)
+            assert status == 200 and first["duplicate"] is False
+            status, duplicate = request(host, port, "POST", path + "/asset", receipt)
+            assert status == 200 and duplicate["duplicate"] is True
+            status, conflict = request(
+                host, port, "POST", path + "/asset", {**receipt, "outcome": {"status": "unavailable"}}
+            )
+            assert status == 409 and conflict["error"]["code"] == "native_asset_receipt_conflict"
+        status, plan = request(host, port, "POST", path + "/plan", descriptor)
+        assert status == 200 and all(asset["receipt"] == outcome for asset in plan["assets"])
+        status, final = request(
+            host, port, "POST", path + "/finalize", {**descriptor, "plan_digest": prepared["plan_digest"]}
+        )
+        assert status == 200, final
+        artifact = capture_job_store_root(tmp_path) / "artifacts" / f"{final['sha256']}.native"
+        envelope = json.loads(artifact.read_bytes())
+        assert envelope["provider_meta"] == metadata
+        attachments = [
+            *envelope["session"].get("attachments", []),
+            *(attachment for turn in envelope["session"]["turns"] for attachment in turn.get("attachments", [])),
+        ]
+        assert len(attachments) == 2 and all(
+            attachment["provider_meta"]["asset_acquisition"] == outcome for attachment in attachments
+        )
+    assert not list((tmp_path / ".staging").iterdir())
+
+
+@pytest.mark.parametrize("physical_failure", ["spool", "sqlite"])
+def test_event_physical_publication_refusal_keeps_event_and_cas_unpublished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, physical_failure: str
+) -> None:
+    from polylogue.browser_capture.capture_stream import SpoolStorageExhaustedError
+
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        body = {
+            **_native_descriptor(adopted, "unused"),
+            "request_id": "physically-refused-event",
+            "kind": "capture-attempted",
+            "refs": {"conversation_ref": "neutral"},
+            "payload": {"text": "neutral" * 5000},
+        }
+        with monkeypatch.context() as failure:
+            if physical_failure == "spool":
+
+                def exhausted(chunks: Iterator[bytes], *, spool_root: Path, durable: bool) -> object:
+                    raise SpoolStorageExhaustedError(1, 0)
+
+                failure.setattr(capture_jobs_module, "stage_capture_chunks", exhausted)
+            else:
+                original_connect = CaptureJobRegistry._connect
+
+                def physical_cell_limit(registry: CaptureJobRegistry) -> sqlite3.Connection:
+                    connection = original_connect(registry)
+                    connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 4096)
+                    return connection
+
+                failure.setattr(CaptureJobRegistry, "_connect", physical_cell_limit)
+            status, refused = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/events", body)
+            assert status == (507 if physical_failure == "spool" else 413)
+            assert refused["error"]["code"] == (
+                "spool_storage_exhausted" if physical_failure == "spool" else "capture_literal_physical_limit"
+            )
+        status, current = request(
+            host,
+            port,
+            "GET",
+            f"/v1/capture-jobs/{job['job_id']}?provider=chatgpt&scope={SCOPE_QUERY}&client_protocol=2",
+            {},
+        )
+        assert status == 200 and current["job"]["revision"] == adopted["job"]["revision"]
+        assert all(event["request_id"] != body["request_id"] for event in current["events"])
+    assert not list((tmp_path / ".staging").iterdir())
+
+
+def test_large_intent_payload_survives_create_discover_events_update_and_get(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.schemas.observation_spill import SpilledObject
+
+    payload = {"all_sources": {f"source-{index}": {"ordinal": index, "note": "neutral" * 50} for index in range(6000)}}
+    digest = "sha256:" + hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+    intent = {"schema_version": 1, "version": 1, "intent_key": INTENT_KEY, "payload": payload, "digest": digest}
+    original_summary = CaptureJobRegistry._summary
+    observed_lazy: list[bool] = []
+
+    def summary(registry: CaptureJobRegistry, connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, object]:
+        result = original_summary(registry, connection, row)
+        assert isinstance(result["intent"], SpilledObject)
+        observed_lazy.append(True)
+        return result
+
+    monkeypatch.setattr(CaptureJobRegistry, "_summary", summary)
+    with receiver(tmp_path) as (host, port):
+        create_body: dict[str, object] = {
+            "provider": "chatgpt",
+            "scope": ACCOUNT_SCOPE,
+            "request_id": "large-intent-create",
+            "intent": intent,
+        }
+        status, created = request(host, port, "POST", "/v1/capture-jobs", create_body)
+        assert status == 201 and created["job"]["intent"] == intent
+        job = created["job"]
+        status, duplicate = request(host, port, "POST", "/v1/capture-jobs", create_body)
+        assert status == 200 and duplicate["job"]["intent"] == intent
+        status, discovered = request(
+            host, port, "POST", "/v1/capture-jobs/discover", {"provider": "chatgpt", "scope": ACCOUNT_SCOPE}
+        )
+        assert status == 200 and discovered["jobs"][0]["intent"] == intent
+        adopted = adopt(host, port, job)
+        assert adopted["job"]["intent"] == intent
+        path = f"/v1/capture-jobs/{job['job_id']}"
+        descriptor = _native_descriptor(adopted, "unused")
+        status, event = request(
+            host,
+            port,
+            "POST",
+            path + "/events",
+            {
+                **descriptor,
+                "request_id": "large-intent-event",
+                "kind": "capture-attempted",
+                "refs": {"conversation_ref": "neutral"},
+                "payload": {"fact": "retained"},
+            },
+        )
+        assert status == 200 and event["job"]["intent"] == intent
+        status, updated = request(
+            host,
+            port,
+            "POST",
+            path + "/update",
+            {
+                **descriptor,
+                "expected_revision": event["job"]["revision"],
+                "request_id": "large-intent-update",
+                "retry": {"state": "held", "attempt": 1, "reason": "neutral", "next_eligible_at": None},
+            },
+        )
+        assert status == 200 and updated["job"]["intent"] == intent
+        status, current = request(
+            host, port, "GET", path + f"?provider=chatgpt&scope={SCOPE_QUERY}&client_protocol=2", {}
+        )
+        assert status == 200 and current["job"]["intent"] == intent
+        assert len(observed_lazy) == 7
+    assert not list((tmp_path / ".staging").iterdir())
+
+
+@pytest.mark.parametrize("durable", [True, False])
+def test_staged_artifact_durability_is_distinct_from_transient_json_cells(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, durable: bool
+) -> None:
+    from polylogue.browser_capture import capture_stream
+
+    observed: list[int] = []
+
+    def unavailable_sync(descriptor: int) -> None:
+        observed.append(descriptor)
+        raise OSError(errno.EIO, "neutral durability failure")
+
+    monkeypatch.setattr(os, "fsync", unavailable_sync)
+    if durable:
+        with pytest.raises(OSError) as refusal:
+            capture_stream.stage_capture_chunks(iter([b'{"neutral":"retained"}']), spool_root=tmp_path, durable=True)
+        assert refusal.value.errno == errno.EIO and len(observed) == 1
+        with pytest.raises(OSError) as closed:
+            os.fstat(observed[0])
+        assert closed.value.errno == errno.EBADF
+    else:
+        staged = capture_stream.stage_capture_chunks(
+            iter([b'{"neutral":"retained"}']), spool_root=tmp_path, durable=False
+        )
+        try:
+            assert staged.path.read_bytes() == b'{"neutral":"retained"}'
+            assert observed == []
+        finally:
+            staged.discard()
+    assert not list((tmp_path / ".staging").iterdir())

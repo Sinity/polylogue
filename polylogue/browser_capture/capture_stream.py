@@ -247,17 +247,20 @@ def stage_capture_body(read: Callable[[int], bytes], length: int, *, spool_root:
             remaining -= len(chunk)
             yield chunk
 
-    return stage_capture_chunks(chunks(), spool_root=spool_root, reserved_length=length)
+    return stage_capture_chunks(chunks(), spool_root=spool_root, durable=True, reserved_length=length)
 
 
 def stage_capture_chunks(
-    chunks: Iterator[bytes], *, spool_root: Path, reserved_length: int | None = None
+    chunks: Iterator[bytes], *, spool_root: Path, durable: bool = True, reserved_length: int | None = None
 ) -> StagedCapture:
     """Seal generated artifact bytes through the same locked staging owner.
 
     A received File reserves its known length before reading. A generated
     prefix/final artifact has no declared length: actual filesystem exhaustion
     remains a typed refusal, and no arbitrary body limit is substituted.
+    Publication bytes are fsynced before their artifact owner adopts them.
+    Transient JSON cells and responses are flushed for their immediate reader;
+    their durable authority is the committed registry, not this scratch file.
     The caller's chunk/token allocation remains its own memory contract.
     """
     staging = spool_root / STAGING_DIRNAME
@@ -274,7 +277,8 @@ def stage_capture_chunks(
                 handle.write(chunk)
                 digest.update(chunk)
             handle.flush()
-            os.fsync(handle.fileno())
+            if durable:
+                os.fsync(handle.fileno())
     except BaseException as exc:
         path.unlink(missing_ok=True)
         os.close(fd)

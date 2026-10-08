@@ -73,6 +73,39 @@ class SpilledObject(dict[str, JSONValue]):
         ):
             yield bytes(key).decode("utf-8", "surrogatepass")
 
+    def normalized_sorted_items(self, normalize_key: Callable[[str], str]) -> Iterator[tuple[str, JSONValue]]:
+        """Sort normalized keys on disk; refuse collisions without a Python key set."""
+        connection = self._connection
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS json_normalized_keys (parent_id INTEGER, normalized BLOB, child_id INTEGER, PRIMARY KEY(parent_id, normalized)) WITHOUT ROWID"
+        )
+        connection.execute("DELETE FROM json_normalized_keys WHERE parent_id=?", (self._node_id,))
+        cursor = connection.execute(
+            "SELECT key_bytes, child_id FROM json_object_members WHERE parent_id=?", (self._node_id,)
+        )
+        try:
+            for key, child in cursor:
+                check_compute_cancelled()
+                normalized = normalize_key(bytes(key).decode("utf-8", "surrogatepass"))
+                try:
+                    connection.execute(
+                        "INSERT INTO json_normalized_keys VALUES (?, ?, ?)",
+                        (self._node_id, normalized.encode("utf-8", "surrogatepass"), child),
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise ValueError("normalized_json_key_collision") from error
+        finally:
+            cursor.close()
+        cursor = connection.execute(
+            "SELECT normalized, child_id FROM json_normalized_keys WHERE parent_id=? ORDER BY normalized",
+            (self._node_id,),
+        )
+        try:
+            for key, child in cursor:
+                yield bytes(key).decode("utf-8", "surrogatepass"), _load_node(connection, int(child))
+        finally:
+            cursor.close()
+
     def key_union(self, extra: set[str]) -> KeysView[str]:
         """Join a bounded preceding key set without copying this object's keys."""
         connection = self._connection

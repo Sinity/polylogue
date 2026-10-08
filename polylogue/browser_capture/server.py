@@ -7,11 +7,11 @@ import json
 import re
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import BinaryIO, NotRequired, TypedDict
+from typing import BinaryIO, NotRequired, TypedDict, cast
 from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 
@@ -45,6 +45,7 @@ from polylogue.browser_capture.capture_stream import (
     is_storage_exhausted,
     reap_stale_staging,
     stage_capture_body,
+    stage_capture_chunks,
     summarize_capture_file,
 )
 from polylogue.browser_capture.models import (
@@ -85,23 +86,64 @@ from polylogue.browser_capture.receiver import (
     receiver_identity,
     receiver_status_payload,
 )
-from polylogue.core.json import dumps_bytes
 from polylogue.core.loopback import is_loopback_host
 from polylogue.logging import INFO, WARNING, emit, get_logger
 from polylogue.paths import archive_root as default_archive_root
+from polylogue.schemas.observation_spill import StreamedJSONDocument
 
 # Import the daemon event ledger inside capture-health route handlers so HTTP
 # server bootstrap does not load its storage dependencies before a health request.
 
 logger = get_logger(__name__)
 
-#: Bound on a JSON control message (browser-action requests, checkpoints,
-#: pairing, health reports, assertion candidates), which is parsed in memory.
-#: Captures never pass through it: ``POST /v1/browser-captures`` streams its
-#: body into the spool whatever its size.
+#: Bound on the ordinary in-memory control routes (browser actions, pairing,
+#: health reports, assertion candidates). Captures and CaptureJob bodies use
+#: spool staging and the disk-backed JSON view instead.
 MAX_CONTROL_BODY_BYTES = 128 * 1024 * 1024
 _CONTENT_LENGTH = re.compile(r"[0-9]+")
 _SAFE_MEDIA_TYPE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
+_JSON_SPOOL_REFUSAL = b'{"error":{"code":"spool_storage_exhausted","details":{}}}'
+_JSON_STORAGE_FAILURE = b'{"error":{"code":"registry_unavailable","details":{}}}'
+_CAPTURE_JOB_BODY_FIELDS = frozenset(
+    {
+        "acquisition_id",
+        "after",
+        "before_revision",
+        "binding",
+        "checkpoint",
+        "client_protocol",
+        "cursor",
+        "descriptor_digest",
+        "expected_lease_generation",
+        "expected_revision",
+        "generation",
+        "intent",
+        "intent_key",
+        "kind",
+        "lease_id",
+        "lease_ttl_seconds",
+        "limit",
+        "member_name",
+        "member_names",
+        "metadata",
+        "ordinal",
+        "outcome",
+        "payload",
+        "plan_digest",
+        "proof",
+        "provenance",
+        "provider",
+        "provider_meta",
+        "refs",
+        "request_id",
+        "retention",
+        "retry",
+        "scope",
+        "session_id",
+        "sha256",
+        "size_bytes",
+    }
+)
 
 
 class _MissionControlArchivePayload(TypedDict):
@@ -168,10 +210,6 @@ def mission_control_archive_facts(
         logger.warning("browser_capture.mission_control_degraded", error=repr(exc))
         return None
     return cost, assertions
-
-
-def _json_bytes(payload: object) -> bytes:
-    return dumps_bytes(payload)
 
 
 def _origin_allowed(origin: str | None, config: BrowserCaptureReceiverConfig) -> bool:
@@ -263,17 +301,57 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._finish_observed_request(method, started_at)
 
     def _send_json(self, status: HTTPStatus, payload: object) -> None:
-        raw = _json_bytes(payload)
+        encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+        def encoded_chunks() -> Iterator[bytes]:
+            for piece in encoder.iterencode(payload):
+                if piece:
+                    yield piece.encode("utf-8")
+
+        try:
+            staged = stage_capture_chunks(
+                iter(encoded_chunks()), spool_root=self.server.config.spool_path, durable=False
+            )
+        except SpoolStorageExhaustedError:
+            self._send_json_staging_refusal(HTTPStatus.INSUFFICIENT_STORAGE, _JSON_SPOOL_REFUSAL)
+            return
+        except OSError as exc:
+            if is_storage_exhausted(exc):
+                self._send_json_staging_refusal(HTTPStatus.INSUFFICIENT_STORAGE, _JSON_SPOOL_REFUSAL)
+            else:
+                self._send_json_staging_refusal(HTTPStatus.INTERNAL_SERVER_ERROR, _JSON_STORAGE_FAILURE)
+            return
+        try:
+            origin = self.headers.get("Origin")
+            self.send_response(status.value)
+            self.send_header("X-Request-ID", self._request_id())
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(staged.size_bytes))
+            if _origin_allowed(origin, self.server.config):
+                self.send_header("Access-Control-Allow-Origin", origin or "null")
+                self.send_header("Vary", "Origin")
+            self.end_headers()
+            with staged.path.open("rb") as stream:
+                while chunk := stream.read(64 * 1024):
+                    self.wfile.write(chunk)
+        finally:
+            staged.discard()
+
+    def _send_json_staging_refusal(self, status: HTTPStatus, body: bytes) -> None:
+        """Send one fixed storage error without retrying the failed staging path."""
+        if getattr(self, "_polylogue_status", None) is not None:
+            self.close_connection = True
+            return
         origin = self.headers.get("Origin")
         self.send_response(status.value)
         self.send_header("X-Request-ID", self._request_id())
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Content-Length", str(len(body)))
         if _origin_allowed(origin, self.server.config):
             self.send_header("Access-Control-Allow-Origin", origin or "null")
             self.send_header("Vary", "Origin")
         self.end_headers()
-        self.wfile.write(raw)
+        self.wfile.write(body)
 
     def _send_attachment(self, stream: BinaryIO, size: int, *, content_type: str, filename: str) -> None:
         if any(ord(character) < 32 or ord(character) == 127 for character in filename):
@@ -484,7 +562,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     registry = registry_for_receiver(
                         self.server.config.spool_path, receiver_identity(self.server.config)
                     )
-                    with registry.checkpoint_artifact(job_id, digest, descriptor) as (stream, size):
+                    with (
+                        registry.result_scope(),
+                        registry.checkpoint_artifact(job_id, digest, descriptor) as (stream, size),
+                    ):
                         self.send_response(HTTPStatus.OK.value)
                         self.send_header("Content-Type", "application/json")
                         self.send_header("Content-Length", str(size))
@@ -518,25 +599,33 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_job_events_query")
                     return
                 try:
-                    capture_job_events_payload = registry_for_receiver(
+                    registry = registry_for_receiver(
                         self.server.config.spool_path, receiver_identity(self.server.config)
-                    ).events(
-                        job_id,
-                        {
-                            "provider": params.get("provider", [""])[0],
-                            "scope": self._capture_scope_query(params),
-                            "client_protocol": protocol,
-                            "limit": limit,
-                            "before_revision": before_revision,
-                        },
                     )
+                    with registry.result_scope():
+                        capture_job_events_payload = registry.events(
+                            job_id,
+                            {
+                                "provider": params.get("provider", [""])[0],
+                                "scope": self._capture_scope_query(params),
+                                "client_protocol": protocol,
+                                "limit": limit,
+                                "before_revision": before_revision,
+                            },
+                        )
+                        self._send_json(HTTPStatus.OK, capture_job_events_payload)
                 except CaptureJobError as exc:
-                    self._capture_job_error(exc)
+                    if getattr(self, "_polylogue_status", None) is None:
+                        self._capture_job_error(exc)
+                    else:
+                        self.close_connection = True
                     return
                 except (sqlite3.Error, OSError) as exc:
-                    self._capture_job_storage_error(exc)
+                    if getattr(self, "_polylogue_status", None) is None:
+                        self._capture_job_storage_error(exc)
+                    else:
+                        self.close_connection = True
                     return
-                self._send_json(HTTPStatus.OK, capture_job_events_payload)
                 return
             if suffix.startswith("orphans/") and suffix.endswith("/payload"):
                 if self.server.config.auth_token is None:
@@ -552,7 +641,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     registry = registry_for_receiver(
                         self.server.config.spool_path, receiver_identity(self.server.config)
                     )
-                    with registry.inspect_orphan(source_digest, protocol) as (stream, size):
+                    with registry.result_scope(), registry.inspect_orphan(source_digest, protocol) as (stream, size):
                         self.send_response(HTTPStatus.OK.value)
                         self.send_header("Content-Type", "application/json")
                         self.send_header("Content-Length", str(size))
@@ -586,26 +675,33 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     self.server.config.spool_path,
                     receiver_identity(self.server.config),
                 )
-                if job_id == "capabilities":
-                    capture_job_payload = registry.capabilities()
-                elif job_id == "orphans":
-                    capture_job_payload = registry.list_orphans(protocol, params.get("cursor", [None])[0])
-                else:
-                    capture_job_payload = registry.get(
-                        job_id,
-                        {
-                            "provider": params.get("provider", [""])[0],
-                            "scope": self._capture_scope_query(params),
-                            "client_protocol": protocol,
-                        },
-                    )
+                with registry.result_scope():
+                    if job_id == "capabilities":
+                        capture_job_payload = registry.capabilities()
+                    elif job_id == "orphans":
+                        capture_job_payload = registry.list_orphans(protocol, params.get("cursor", [None])[0])
+                    else:
+                        capture_job_payload = registry.get(
+                            job_id,
+                            {
+                                "provider": params.get("provider", [""])[0],
+                                "scope": self._capture_scope_query(params),
+                                "client_protocol": protocol,
+                            },
+                        )
+                    self._send_json(HTTPStatus.OK, capture_job_payload)
             except CaptureJobError as exc:
-                self._capture_job_error(exc)
+                if getattr(self, "_polylogue_status", None) is None:
+                    self._capture_job_error(exc)
+                else:
+                    self.close_connection = True
                 return
             except (sqlite3.Error, OSError) as exc:
-                self._capture_job_storage_error(exc)
+                if getattr(self, "_polylogue_status", None) is None:
+                    self._capture_job_storage_error(exc)
+                else:
+                    self.close_connection = True
                 return
-            self._send_json(HTTPStatus.OK, capture_job_payload)
             return
         self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
 
@@ -990,19 +1086,6 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except (sqlite3.Error, OSError) as exc:
             self._capture_job_storage_error(exc)
 
-    def _capture_job_body(self) -> dict[str, object] | None:
-        payload = self._read_json_body(max_bytes=None)
-        if not isinstance(payload, dict):
-            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_job")
-            return None
-        if "client_protocol" not in payload:
-            raw_protocol = self.headers.get("X-Polylogue-Client-Protocol", "-1")
-            try:
-                payload["client_protocol"] = int(raw_protocol)
-            except ValueError:
-                payload["client_protocol"] = -1
-        return payload
-
     def _capture_job_error(self, exc: CaptureJobError) -> None:
         try:
             status = HTTPStatus(exc.status)
@@ -1023,60 +1106,94 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         )
 
     def _capture_job_post(self, path: str) -> None:
-        payload = self._capture_job_body()
-        if payload is None:
+        staged = self._stage_capture_body()
+        if staged is None:
             return
         try:
-            registry = registry_for_receiver(
-                self.server.config.spool_path,
-                receiver_identity(self.server.config),
-            )
-            if path == "/v1/capture-jobs":
-                status, result = registry.create(payload)
-            elif path == "/v1/capture-jobs/discover":
-                status, result = HTTPStatus.OK, registry.discover(payload)
-            elif path.endswith("/native/begin"):
-                if self.server.config.auth_token is None:
-                    raise CaptureJobError(401, "native_preparation_auth_required")
-                job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/native/begin")
-                status, result = HTTPStatus.OK, registry.native_begin(job_id, payload)
-            elif "/native/" in path:
-                if self.server.config.auth_token is None:
-                    raise CaptureJobError(401, "native_preparation_auth_required")
-                job_id, operation = path.removeprefix("/v1/capture-jobs/").rsplit("/native/", 1)
-                operations = {
-                    "cancel": registry.native_cancel,
-                    "prepare": registry.native_prepare,
-                    "plan": registry.native_plan,
-                    "asset": registry.native_asset,
-                    "finalize": registry.native_finalize,
-                }
-                if operation == "publish":
-                    result = self._publish_native_capture(registry, job_id, payload)
-                    status = HTTPStatus.ACCEPTED
-                elif operation in operations:
-                    status, result = HTTPStatus.OK, operations[operation](job_id, payload)
-                else:
-                    raise CaptureJobError(404, "not_found")
-            elif path.endswith("/update"):
-                job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/update")
-                status, result = HTTPStatus.OK, registry.update(job_id, payload)
-            elif path.endswith("/events"):
-                job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/events")
-                status, result = HTTPStatus.OK, registry.event(job_id, payload)
+            with StreamedJSONDocument(staged.path) as root:
+                if not isinstance(root, dict):
+                    self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_job")
+                    return
+                # SpilledObject is a read-only lazy mapping. The registry
+                # expects a mutable top-level dict for the protocol header;
+                # retain every owned operation field and all nested lazy values.
+                payload = cast(dict[str, object], {key: root[key] for key in root if key in _CAPTURE_JOB_BODY_FIELDS})
+                if "client_protocol" not in payload:
+                    try:
+                        payload["client_protocol"] = int(self.headers.get("X-Polylogue-Client-Protocol", "-1"))
+                    except ValueError:
+                        payload["client_protocol"] = -1
+                registry = registry_for_receiver(
+                    self.server.config.spool_path,
+                    receiver_identity(self.server.config),
+                )
+                try:
+                    with registry.result_scope():
+                        if path == "/v1/capture-jobs":
+                            status, result = registry.create(payload)
+                        elif path == "/v1/capture-jobs/discover":
+                            status, result = HTTPStatus.OK, registry.discover(payload)
+                        elif path.endswith("/native/begin"):
+                            if self.server.config.auth_token is None:
+                                raise CaptureJobError(401, "native_preparation_auth_required")
+                            job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/native/begin")
+                            status, result = HTTPStatus.OK, registry.native_begin(job_id, payload)
+                        elif "/native/" in path:
+                            if self.server.config.auth_token is None:
+                                raise CaptureJobError(401, "native_preparation_auth_required")
+                            job_id, operation = path.removeprefix("/v1/capture-jobs/").rsplit("/native/", 1)
+                            operations = {
+                                "cancel": registry.native_cancel,
+                                "prepare": registry.native_prepare,
+                                "plan": registry.native_plan,
+                                "asset": registry.native_asset,
+                                "finalize": registry.native_finalize,
+                            }
+                            if operation == "publish":
+                                result = self._publish_native_capture(registry, job_id, payload)
+                                status = HTTPStatus.ACCEPTED
+                            elif operation in operations:
+                                status, result = HTTPStatus.OK, operations[operation](job_id, payload)
+                            else:
+                                raise CaptureJobError(404, "not_found")
+                        elif path.endswith("/update"):
+                            job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/update")
+                            status, result = HTTPStatus.OK, registry.update(job_id, payload)
+                        elif path.endswith("/events"):
+                            job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/events")
+                            status, result = HTTPStatus.OK, registry.event(job_id, payload)
+                        else:
+                            job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/adopt")
+                            status, result = HTTPStatus.OK, registry.adopt(job_id, payload)
+                        self._send_json(HTTPStatus(status), result)
+                except CaptureJobError as exc:
+                    if getattr(self, "_polylogue_status", None) is None:
+                        self._capture_job_error(exc)
+                    else:
+                        self.close_connection = True
+                except (ValidationError, ValueError, ijson.JSONError):
+                    if getattr(self, "_polylogue_status", None) is None:
+                        self._capture_job_error(CaptureJobError(400, "invalid_native_preparation"))
+                    else:
+                        self.close_connection = True
+                except (sqlite3.Error, OSError) as exc:
+                    if getattr(self, "_polylogue_status", None) is None:
+                        self._capture_job_storage_error(exc)
+                    else:
+                        self.close_connection = True
+        except (ijson.JSONError, ValueError):
+            logger.warning("browser_capture.invalid_json", request_id=self._request_id())
+            if getattr(self, "_polylogue_status", None) is None:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_json")
             else:
-                job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/adopt")
-                status, result = HTTPStatus.OK, registry.adopt(job_id, payload)
-        except CaptureJobError as exc:
-            self._capture_job_error(exc)
-            return
-        except (ValidationError, ValueError, ijson.JSONError):
-            self._capture_job_error(CaptureJobError(400, "invalid_native_preparation"))
-            return
+                self.close_connection = True
         except (sqlite3.Error, OSError) as exc:
-            self._capture_job_storage_error(exc)
-            return
-        self._send_json(HTTPStatus(status), result)
+            if getattr(self, "_polylogue_status", None) is None:
+                self._capture_job_storage_error(exc)
+            else:
+                self.close_connection = True
+        finally:
+            staged.discard()
 
     def _publish_native_capture(
         self, registry: CaptureJobRegistry, job_id: str, body: dict[str, object]
@@ -1104,7 +1221,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         registry = registry_for_receiver(self.server.config.spool_path, receiver_identity(self.server.config))
         # Admission precedes disk reservation and every body read. The
         # context remains owned until staging and publication settle.
-        with registry.artifact_progress(job_id, descriptor, native=True) as progress:
+        with registry.result_scope(), registry.artifact_progress(job_id, descriptor, native=True) as progress:
             staged = self._stage_capture_body(progress=progress)
             if staged is None:
                 return
@@ -1115,9 +1232,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     if path.endswith("/native/asset")
                     else registry.native_member(job_id, descriptor, staged)
                 )
+                self._send_json(HTTPStatus.OK, result)
             finally:
                 staged.discard()
-        self._send_json(HTTPStatus.OK, result)
 
     def _capture_job_checkpoint(self, path: str) -> None:
         if self.server.config.auth_token is None:
@@ -1128,16 +1245,16 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/checkpoint")
         registry = registry_for_receiver(self.server.config.spool_path, receiver_identity(self.server.config))
-        with registry.artifact_progress(job_id, payload) as progress:
+        with registry.result_scope(), registry.artifact_progress(job_id, payload) as progress:
             staged = self._stage_capture_body(progress=progress)
             if staged is None:
                 return
             try:
                 progress()
                 result = registry.checkpoint(job_id, payload, staged)
+                self._send_json(HTTPStatus.OK, result)
             finally:
                 staged.discard()
-        self._send_json(HTTPStatus.OK, result)
 
     @staticmethod
     def _capture_scope_query(params: dict[str, list[str]]) -> object:

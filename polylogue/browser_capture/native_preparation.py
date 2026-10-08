@@ -17,9 +17,53 @@ from polylogue.sources.parsers.base_models import ParsedAttachment, ParsedSessio
 from polylogue.sources.prepared_message_sink import ScratchSessionSpill
 
 
+def json_chunks(value: object, *, sort_keys: bool = False) -> Iterator[bytes]:
+    """Yield compact ASCII JSON without the C encoder's dict-subclass shortcut.
+
+    ``StreamedJSONDocument`` mappings store values outside ``dict``'s inherited
+    storage. Its Python ``items()`` view keeps arbitrary provider metadata
+    visible while each scalar is encoded.
+    """
+    encoder = json.JSONEncoder(ensure_ascii=True, separators=(",", ":"))
+    if not sort_keys:
+        for piece in encoder.iterencode(value):
+            if piece:
+                yield piece.encode("ascii")
+        return
+
+    from polylogue.schemas.observation_spill import SpilledObject
+
+    def ordered(item: object) -> Iterator[bytes]:
+        if isinstance(item, dict):
+            yield b"{"
+            keys = item.sorted_keys() if isinstance(item, SpilledObject) else sorted(item)
+            for index, key in enumerate(keys):
+                if not isinstance(key, str):
+                    raise TypeError("native JSON object keys must be strings")
+                if index:
+                    yield b","
+                yield from ordered(key)
+                yield b":"
+                yield from ordered(item[key])
+            yield b"}"
+        elif isinstance(item, (list, tuple)):
+            yield b"["
+            for index, child in enumerate(item):
+                if index:
+                    yield b","
+                yield from ordered(child)
+            yield b"]"
+        else:
+            for piece in encoder.iterencode(item):
+                if piece:
+                    yield piece.encode("ascii")
+
+    yield from ordered(value)
+
+
 def json_bytes(value: object) -> bytes:
     # ASCII escapes preserve provider lone surrogates and exact scalar values.
-    return json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    return b"".join(json_chunks(value))
 
 
 def raw_chunks(handle: BinaryIO, progress: Callable[[], None]) -> Iterator[bytes]:
@@ -41,7 +85,7 @@ def envelope_prefix(
     yield b'{"polylogue_capture_kind":"browser_llm_session","schema_version":1,"source":"browser-extension","provenance":'
     yield json_bytes(provenance.model_dump(mode="json"))
     yield b',"provider_meta":'
-    yield json_bytes(metadata)
+    yield from json_chunks(metadata)
     yield b',"raw_provider_payload":'
     if parsed.source_name is Provider.GROK:
         yield b'{"conversation":'

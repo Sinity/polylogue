@@ -16,7 +16,6 @@ import json
 import sqlite3
 import stat
 import threading
-from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -212,58 +211,19 @@ def write_canonical_audit_literal(
     connection: sqlite3.Connection, table: str, column: str, rowid: int, literal: CanonicalAuditLiteral
 ) -> None:
     """Write one TEXT value through the exact existing native SQL creator."""
-    from polylogue.storage.sqlite.connection_profile import (
-        NativeConnectionSettlementError,
-        retained_native_sql_owners_on_current_thread,
-    )
-    from polylogue.storage.sqlite.literal_cells import quote_identifier
+    from polylogue.storage.sqlite.literal_cells import SQLiteLiteralWriteError, write_literal_text
 
     if (table, column) not in {
         ("operation_events", "detail_json"),
         ("audit_continuity_control", "pending_payload_json"),
     }:
         raise AuditContinuityError("canonical audit literal has no declared destination")
-    owner = next(
-        (owner for owner in retained_native_sql_owners_on_current_thread() if owner.connection is connection), None
-    )
-    if owner is None or not connection.in_transaction:
-        raise AuditContinuityError("canonical audit write requires its existing native transaction owner")
-    owner.require_connection()
-    if literal.byte_length > connection.getlimit(sqlite3.SQLITE_LIMIT_LENGTH):
-        raise AuditContinuityError("canonical audit literal exceeds SQLite's physical value limit")
     try:
-        with connection_cursor(
-            connection,
-            f"UPDATE {quote_identifier(table)} SET {quote_identifier(column)}=CAST(zeroblob(?) AS TEXT) WHERE rowid=?",
-            (literal.byte_length, rowid),
-        ) as cursor:
-            if cursor.rowcount != 1:
-                raise AuditContinuityError("canonical audit write lost its original row")
-    except sqlite3.DataError as error:
-        raise AuditContinuityError("canonical audit literal exceeds SQLite's physical record limit") from error
-    blob = connection.blobopen(table, column, rowid)
-    owner.retain_incremental_blob(blob)
-    primary: BaseException | None = None
-    try:
-        with owned_literal_stream(literal.verified_chunks()) as stream:
-            for chunk in stream:
-                for offset in range(0, len(chunk), LITERAL_CHUNK_BYTES):
-                    check_compute_cancelled()
-                    blob.write(chunk[offset : offset + LITERAL_CHUNK_BYTES])
-    except BaseException as error:
-        primary = error
-        raise
-    finally:
-        try:
-            owner.close_incremental_blob(blob)
-        except BaseException as cleanup:
-            owner.close_required = True
-            failure = (
-                cleanup
-                if primary is None
-                else BaseExceptionGroup("Canonical audit write and native Blob close failed", [primary, cleanup])
-            )
-            raise NativeConnectionSettlementError(owner, failure) from cleanup
+        write_literal_text(
+            connection, table, column, rowid, byte_length=literal.byte_length, chunks=literal.verified_chunks
+        )
+    except SQLiteLiteralWriteError as error:
+        raise AuditContinuityError("canonical audit " + str(error)) from error
 
 
 _SOURCE_COUNT_KEYS = tuple(

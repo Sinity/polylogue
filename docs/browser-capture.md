@@ -16,6 +16,16 @@ CaptureJob update receipts validate the full current request digest. A request I
 
 Protocol 2 CaptureJobs use the receiver store at `capture-jobs/v2/` under the browser-capture spool. The earlier `capture-jobs/registry.sqlite3` and its artifacts remain intact as retained evidence. The receiver does not upgrade or read that earlier registry in place.
 
+CaptureJob control requests are staged to the receiver spool and decoded through
+a disk-backed JSON view. Registry responses are encoded to a staged file and
+sent with their exact `Content-Length` in chunks. Intent payloads, event refs
+and payloads, native preparation metadata, and asset outcomes use lazy JSON
+views through registry publication and reads. Their collection cardinality does
+not require a decoded Python tree; individual strings, parser records, and
+SQLite cells still occupy memory while being processed. The
+ordinary browser-action, pairing, health, and assertion control routes retain
+their separate bounded in-memory request contract.
+
 The receiver listens on `127.0.0.1:8765` by default and accepts the route contracts in `polylogue/browser_capture/route_contracts.py`:
 
 - `GET /v1/status` -> `BrowserCaptureReceiverStatusPayload`
