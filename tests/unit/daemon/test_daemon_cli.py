@@ -2495,23 +2495,26 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
             from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
             from polylogue.storage.sqlite.write_lease import write_lease
 
-            with (
-                write_lease("test.fixture.profile-demand", archive_root=archive_root),
-                contextlib.closing(
-                    open_isolated_write_connection(
-                        archive_root / "index.db", purpose="test.fixture.profile-demand", archive_root=archive_root
+            def clear_projection() -> None:
+                with (
+                    write_lease("test.fixture.profile-demand", archive_root=archive_root),
+                    contextlib.closing(
+                        open_isolated_write_connection(
+                            archive_root / "index.db", purpose="test.fixture.profile-demand", archive_root=archive_root
+                        )
+                    ) as conn,
+                ):
+                    assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+                    for table in ("session_latency_profiles", "session_profiles"):
+                        conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+                    conn.execute(
+                        "INSERT INTO session_profile_demand(session_id, revision) VALUES (?, 1) "
+                        "ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1",
+                        (session_id,),
                     )
-                ) as conn,
-            ):
-                assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-                for table in ("session_latency_profiles", "session_profiles"):
-                    conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
-                conn.execute(
-                    "INSERT INTO session_profile_demand(session_id, revision) VALUES (?, 1) "
-                    "ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1",
-                    (session_id,),
-                )
-                conn.commit()
+                    conn.commit()
+
+            await asyncio.to_thread(clear_projection)
             assert not profile_exists()
 
             await run_until_observed_sweep()

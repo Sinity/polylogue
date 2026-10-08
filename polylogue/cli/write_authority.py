@@ -207,6 +207,13 @@ def cli_archive_writer_ownership() -> Iterator[None]:
     resolved_root = root.resolve()
 
     def refuse_unowned_write(path: Path) -> None:
+        from polylogue.core.write_lease import coordinator_write_lease_active, require_write_lease
+
+        # An embedded daemon can serve this CLI from another worker in the
+        # same process. Its admitted coordinator retains its own authority.
+        if coordinator_write_lease_active():
+            require_write_lease("CLI shared-process daemon writer", archive_root=resolved_root)
+            return
         if path.resolve().is_relative_to(resolved_root):
             _refuse_configured_archive_write(path, resolved_root)
         _require_scratch_archive_owner(path, configured_root=resolved_root)
