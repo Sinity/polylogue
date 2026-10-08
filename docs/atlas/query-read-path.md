@@ -297,4 +297,11 @@ from the canonical envelope and its actual lane execution; the HTTP readiness
 chip projects its terminal outcome. An unavailable search index remains an
 explicit degraded HTTP envelope, including when no hits can be returned.
 
+Ordinary list pages and totals share one pinned read and the canonical plan.
+Page windows retain latest and sample semantics; ordinary totals count the
+complete eligible scope, while latest reports at most one. Counts apply content filters in bounded
+candidate batches without collecting the complete result. Random lexical
+post-filtering streams distinct session identities; SQLite's FILE temporary
+storage owns sorting and deduplication instead of an archive-sized Python set.
+
 Canonical ranked search classifies missing or incomplete message FTS, SQLite contention, and unreadable storage as `SearchIndexUnavailableError` before surface rendering. Unrelated SQL failures propagate. HTTP consumes that typed refusal as an explicit degraded search envelope with unknown total, never an executed empty result.
