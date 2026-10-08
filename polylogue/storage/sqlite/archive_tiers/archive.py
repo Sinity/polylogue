@@ -840,7 +840,7 @@ class ArchiveStore:
         self,
         archive_root: Path,
         *,
-        initialize: bool = True,
+        initialize: bool | None = None,
         read_only: bool = False,
         read_timeout: float = 5.0,
         owned_inactive_generation: tuple[str, str] | None = None,
@@ -856,6 +856,10 @@ class ArchiveStore:
         from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
         assert_population_admitted(archive_root)
+        if initialize is None:
+            initialize = not read_only
+        elif initialize and read_only:
+            raise ReadOnlyArchiveError("read-only archive evidence cannot initialize an archive")
         if not validate_index_layout and not read_only:
             raise ValueError("index-layout validation may only be waived for read-only archive access")
         if source_tier_acquisition and read_only:
@@ -1243,8 +1247,6 @@ class ArchiveStore:
             from polylogue.storage.archive_identity import resolve_active_index_path
 
             self.index_db_path = resolve_active_index_path(archive_root)
-        if initialize:
-            initialize_active_archive_root(archive_root)
         if read_only:
             # ``assert_readable_archive_layout`` below is this route's version
             # refusal: it names the generation and the lifecycle action the
@@ -1276,6 +1278,8 @@ class ArchiveStore:
                 ) from exc
             pragma_statements: tuple[str, ...] = ()
         else:
+            if initialize:
+                initialize_active_archive_root(archive_root)
             require_write_lease(
                 f"ArchiveStore(index={self.index_db_path})",
                 archive_root=self._write_lease_archive_root,

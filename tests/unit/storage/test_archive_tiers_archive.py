@@ -250,6 +250,66 @@ def test_connection_blob_store_unwinds_promoted_index_root(tmp_path: Path) -> No
     assert not (generation / "blob").exists()
 
 
+@pytest.mark.parametrize("existing_directory", [False, True])
+def test_read_only_constructor_refuses_missing_archive_without_creating_files(
+    tmp_path: Path, existing_directory: bool
+) -> None:
+    """Default initialization must not turn a read into first-run bootstrap."""
+    from polylogue.core.errors import ArchiveTierUnavailableError
+
+    root = tmp_path / "read-only-missing"
+    if existing_directory:
+        root.mkdir()
+    with pytest.raises(ArchiveTierUnavailableError) as refused:
+        ArchiveStore(root, read_only=True)
+    assert refused.value.tier == "index"
+    assert root.exists() is existing_directory
+    if existing_directory:
+        assert list(root.iterdir()) == []
+
+
+def test_read_only_constructor_refuses_explicit_initialization_before_creating_root(tmp_path: Path) -> None:
+    root = tmp_path / "contradictory-read"
+    with pytest.raises(ReadOnlyArchiveError):
+        ArchiveStore(root, read_only=True, initialize=True)
+    assert not root.exists()
+
+
+def test_read_only_constructor_opens_existing_archive_without_changing_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "existing-read"
+    with ArchiveStore(root):
+        pass
+    before = {
+        str(path.relative_to(root)): sha256(path.read_bytes()).hexdigest() for path in root.rglob("*") if path.is_file()
+    }
+
+    def refuse_bootstrap(*args: object, **kwargs: object) -> None:
+        pytest.fail("read-only constructor invoked archive bootstrap")
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.initialize_active_archive_root", refuse_bootstrap
+    )
+    with ArchiveStore(root, read_only=True) as reader:
+        assert reader._conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 0
+        with pytest.raises(sqlite3.DatabaseError) as refused:
+            reader._conn.execute("CREATE TABLE readonly_must_refuse(value INTEGER)")
+        assert refused.value.sqlite_errorcode == sqlite3.SQLITE_AUTH
+    after = {
+        str(path.relative_to(root)): sha256(path.read_bytes()).hexdigest() for path in root.rglob("*") if path.is_file()
+    }
+    assert {name: after[name] for name in before} == before
+    # SQLite's ordinary Index/User WAL read coordination may create sidecars;
+    # they contain no new committed archive state. Never use immutable=1 to
+    # suppress them, because readers must observe the active writer's WAL.
+    added = set(after) - set(before)
+    assert added <= {"index.db-shm", "index.db-wal", "user.db-shm", "user.db-wal"}
+    for filename in added:
+        if filename.endswith("-wal"):
+            assert (root / filename).stat().st_size == 0
+
+
 def test_read_open_rejects_stale_index_with_generation_and_lifecycle_action(tmp_path: Path) -> None:
     """A stale read must refuse before query SQL can leak a raw SQLite error."""
     generation_root = tmp_path / ".index-generations" / "gen-stale-read"

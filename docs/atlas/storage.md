@@ -170,6 +170,12 @@ existing grant until actual SQL close and original worker exit.
 Archive reads submit their exact UTF-8 request-byte demand to the shared bounded compute owner; interactive and scan work use its interactive-read and bulk-candidate classes. The read controller retains only the connection-weight budget. Compute workers complete their physical Future only after the existing native-owner census settles on the creator thread. Failed close retains the worker, submitter context, reservation or read lease, and backing artifacts; cancellation of an asyncio wrapper does not release them. The existing custody owner can request another cleanup attempt. Reset retains a shared compute owner while its physical workers survive; publishing a distinct owner requires that original owner to settle first. Archive readers and reference seals bind native children to their actual terminal parent, and healthy parents retire after all SQL and artifact obligations settle. Revision projections close their writer before transfer and close each bounded readonly page before yielding immutable rows (`polylogue/core/sql_settlement.py`, `polylogue/storage/sqlite/connection_profile.py`, `polylogue/pipeline/ids.py`).
 ## Baseline construction and durable trains
 
+`ArchiveStore(root, read_only=True)` opens only existing tiers and never bootstraps.
+A missing Index raises `ArchiveTierUnavailableError` without creating the root
+or tier files. Explicit `initialize=True` with `read_only=True` raises
+`ReadOnlyArchiveError`; the constructor defaults initialization to the writable
+mode. `open_existing` uses the same constructor contract.
+
 The immutable fresh archive baseline creates all six tiers at version 1.
 `initialize_active_archive_root` records that baseline's pending intent,
 format marker and bootstrap receipt before advancing durable tiers through
