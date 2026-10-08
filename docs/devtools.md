@@ -217,3 +217,14 @@ between streamed nodes and chunks; GC does not impose node or tree-depth caps.
 The declared GC operation has no execution deadline (`timeout_seconds = 0`).
 It remains owned by AgentCTL and stops through operator cancellation, preserving
 the resumable retired tree and interruption receipt.
+
+### Verification history destination
+
+`POLYLOGUE_VERIFY_HISTORY_PATH` selects the shared history destination; unrelated custom paths remain supported. The operator environment may declare exact retired destinations in `POLYLOGUE_RETIRED_VERIFY_HISTORY_PATHS`, separated by the platform path separator. Writes to those destinations fail before creating directories. Use the current declared destination or an unrelated custom path. Historical files remain readable for provenance and run-ID-aware reconciliation; they are never redirected through an alias. Declared jobs supply the current destination explicitly.
+
+The established managed history retirements are refused even when a long-lived
+parent shell lacks `POLYLOGUE_RETIRED_VERIFY_HISTORY_PATHS`. That variable adds
+operator-specific retirements; it cannot enable the established old addresses.
+Unrelated custom destinations remain supported. Preexisting checkouts that
+precede this guard must enter the current managed environment to inherit the
+current destination.
