@@ -158,11 +158,14 @@ def _session_identity(messages: Iterable[ParsedMessage], created_at: str | None,
     a single blank-text response but a ``create_time``, or with responses but
     no timestamps, still hashes.
     """
-    # Reorder-stable selection of the opening turn: earliest declared
-    # timestamp, ties broken by the (content-derived) message id. Taking
+    # Prefer actual timestamp evidence over an undated turn. Missing time
+    # does not prove that a reply predates an already dated opening. With
+    # no dated turns the message id is only a deterministic selection, not
+    # proof of chronology; an append can then change the selected anchor.
+    # Ties are broken by the (content-derived) message id. Taking
     # ``messages[0]`` would reintroduce exactly the array-order sensitivity
     # this identity exists to remove.
-    opening = min(messages, key=lambda m: (m.timestamp or "", m.provider_message_id), default=None)
+    opening = min(messages, key=lambda m: (m.timestamp is None, m.timestamp or "", m.provider_message_id), default=None)
     if opening is None and created_at is None:
         return fallback_id
     return idless_session_identity(

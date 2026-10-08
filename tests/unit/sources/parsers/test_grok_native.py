@@ -17,6 +17,7 @@ from polylogue.sources.parsers import grok
 from polylogue.sources.parsers.base import AdmissionUnit
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.live_ingest import write_index_session
+from tests.infra.retained_replay import publish_retained_payload
 
 
 @pytest.fixture
@@ -71,6 +72,44 @@ def test_native_direct_nested_replies_and_replay_have_same_semantics(bundle: dic
     ordinary = grok.parse_conversation(bundle, "first")
     replay = grok.parse_native_bundle(nested, "second")[0]
     assert session_revision_projection(ordinary) == session_revision_projection(replay)
+
+
+@pytest.mark.asyncio
+async def test_native_conversation_id_survives_undated_append_and_retained_reorder(
+    tmp_path: Path, bundle: dict[str, Any]
+) -> None:
+    """Native identity remains declared even when timestamps cannot order turns."""
+    from polylogue.core.enums import Provider
+
+    original = grok.parse_conversation(bundle, "first-name")
+    root = tmp_path / "archive"
+    _, written = await publish_retained_payload(
+        root,
+        provider=Provider.GROK,
+        payload=json.dumps(bundle).encode(),
+        source_path="/neutral/native.json",
+        acquired_at_ms=1,
+    )
+    assert written == ("grok-export:native-conversation",)
+    bundle["responses"]["responses"].append(
+        {"responseId": "additional", "parentResponseId": "attachment", "sender": "assistant", "message": "More context"}
+    )
+    bundle["responses"]["responses"].reverse()
+    extended = grok.parse_conversation(bundle, "different-name")
+    assert extended.provider_session_id == original.provider_session_id == "native-conversation"
+    assert {message.provider_message_id for message in original.messages} <= {
+        message.provider_message_id for message in extended.messages
+    }
+    _, written = await publish_retained_payload(
+        root,
+        provider=Provider.GROK,
+        payload=json.dumps(bundle).encode(),
+        source_path="/neutral/native.json",
+        acquired_at_ms=2,
+    )
+    assert written == ("grok-export:native-conversation",)
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        assert archive.read_summary(written[0]).message_count == 5
 
 
 def test_native_fork_keeps_parent_edges_without_guessing_selected_leaf(bundle: dict[str, Any]) -> None:

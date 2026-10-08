@@ -18,6 +18,19 @@ member's own declared provider. Gemini checkpoint logs keep their ordered fold,
 and Hermes ATOF records keep their grouped reducer. Bundle specs do not retain
 the complete decoded cohort.
 
+Grok account exports without native conversation IDs use the shared
+`idless_session_identity` vocabulary: selected opening turn and declared
+conversation creation time. The parser selects the earliest dated admitted
+turn, breaking ties by synthetic message ID. Undated replies cannot replace
+that dated anchor. When every admitted turn is undated, the smallest synthetic
+message ID supplies deterministic, reorder-stable selection; the available
+wire evidence does not establish the original opening or guarantee stability
+under every append. Arrival of earlier dated evidence can also change the
+anchor. Native endpoint bundles use their declared `conversationId` directly.
+The empty entry without admitted content or creation time keeps the existing
+acquisition fallback. No source-path identity, registry or archive migration
+is inferred from missing chronological evidence.
+
 Retained Codex state material preparation records its complete Source statements
 under the original preparation parent before the writer accepts them.
 Interruption during preparation accepts no material rows; replay publishes the

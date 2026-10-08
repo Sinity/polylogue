@@ -996,8 +996,9 @@ def session_id(source_name: Provider | Origin | str, provider_session_id: str) -
 #: The vocabulary is exactly the opening turn plus the conversation's declared
 #: creation time: the earliest content the conversation has, and the one
 #: timestamp a provider does not re-derive per export request. Both are
-#: intrinsic to the conversation, so the identity survives reordering, a
-#: renamed export file, and later turns being appended. Deliberately excluded:
+#: intrinsic to the conversation. When the parser has a dated opening anchor,
+#: its identity survives reordering, a renamed export file, and later or
+#: undated turns being appended. Deliberately excluded:
 #: the title (user- and provider-renameable after the fact), the response
 #: count and any later turn (an ongoing conversation gains turns between
 #: exports), and every acquisition coordinate (file stem, array index, member
@@ -1006,7 +1007,9 @@ def session_id(source_name: Provider | Origin | str, provider_session_id: str) -
 #: Known, accepted limit stated rather than engineered around: two genuinely
 #: distinct conversations that open with a byte-identical first turn at the
 #: same declared creation time are indistinguishable by any signal this
-#: vocabulary can offer.
+#: vocabulary can offer. Fully undated account exports have no evidenced
+#: chronology: their parser deterministically selects an anchor by message ID,
+#: which survives reordering but cannot guarantee stability under every append.
 
 
 def idless_session_identity(
