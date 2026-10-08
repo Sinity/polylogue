@@ -20,7 +20,7 @@ require = ["POLYLOGUE_ARCHIVE_ROOT"]
 POLYLOGUE_ARCHIVE_ROOT = "/realm/state/polylogue"
 
 [workspace]
-root = "/realm/worktrees"
+root = "/realm/worktree"
 default_base = "origin/master"
 retain_artifacts = [
   ".cache/verify/*.json",
