@@ -925,7 +925,7 @@ class DaemonOperationRuntime:
                 client_disconnect.add_listener(disconnect_control)
             return execute_operation(request, context).to_dict()
         recovered_custody: tuple[OperationControlRead, MachineRequestBinding, dict[str, object]] | None = None
-        if spec.accepted_reference:
+        if spec.accepted_reference or spec.durable_request:
             try:
                 control = observe_control_authority(self.archive_root)
             except ValueError as exc:
@@ -966,13 +966,18 @@ class DaemonOperationRuntime:
                     outcome="rejected",
                     error={"code": "request_identity_conflict", "retryable": False},
                 ).to_dict()
-            if durable is not None and durable["outcome"] in {
-                "completed",
-                "degraded",
-                "failed",
-                "cancelled",
-                "interrupted",
-            }:
+            if (
+                spec.accepted_reference
+                and durable is not None
+                and durable["outcome"]
+                in {
+                    "completed",
+                    "degraded",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
+                }
+            ):
                 # Initial generation/recipe preconditions were checked at
                 # acceptance. A historical terminal receipt does not reopen
                 # index/source or become false after ordinary reconvergence.
@@ -1019,16 +1024,33 @@ class DaemonOperationRuntime:
                 ).to_dict()
             if record is not None and record["artifact_kind"] != "insight-preview-pages":
                 recovered_custody = (control, binding, record)
+
+        def admission_refusal(code: str) -> dict[str, object]:
+            # Refusing new execution does not relinquish a durable request.
+            # Both descriptor forms use this boundary before an Exchange exists.
+            if recovered_custody is not None:
+                snapshot, _binding, retained_record = recovered_custody
+                return operation_envelope(
+                    request,
+                    context,
+                    snapshot=snapshot,
+                    outcome="indeterminate",
+                    reference=retained_record,
+                    result=self._recovery_state(retained_record),
+                    error={"code": code, "retryable": False},
+                ).to_dict()
+            return operation_envelope(
+                request,
+                context,
+                outcome="rejected",
+                error={"code": code, "retryable": True},
+            ).to_dict()
+
         request_id = str(request.request_id)
         peer_closed = False
         with self._condition:
             if self._closing:
-                return operation_envelope(
-                    request,
-                    context,
-                    outcome="rejected",
-                    error={"code": "runtime_stopping", "retryable": True},
-                ).to_dict()
+                return admission_refusal("runtime_stopping")
             path = self._terminal_path(request_id)
             if path is not None and path.exists():
                 identity = observe_control_authority(self.archive_root).identity.authority_identity_digest
@@ -1077,12 +1099,7 @@ class DaemonOperationRuntime:
                         try:
                             self._retain_terminal(held)
                         except Exception:
-                            return operation_envelope(
-                                request,
-                                context,
-                                outcome="rejected",
-                                error={"code": "operation_result_custody_unavailable", "retryable": True},
-                            ).to_dict()
+                            return admission_refusal("operation_result_custody_unavailable")
                         self._exchanges.pop(key)
                 # Completed progress exchanges are short-lived replay buffers,
                 # not active work. Keep them long enough for a CLI whose first
@@ -1112,15 +1129,7 @@ class DaemonOperationRuntime:
                         if len(self._exchanges) < 64:
                             break
                 if sum(item.future is None or not item.future.done() for item in self._exchanges.values()) >= 64:
-                    return operation_envelope(
-                        request,
-                        context,
-                        outcome="rejected",
-                        error={
-                            "code": "operation_capacity",
-                            "retryable": True,
-                        },
-                    ).to_dict()
+                    return admission_refusal("operation_capacity")
                 exchange = _Exchange(
                     request,
                     context,
@@ -1148,6 +1157,8 @@ class DaemonOperationRuntime:
                     if request.operation in _STAGED_OPERATIONS:
                         if self._owner_loop is None:
                             self._exchanges.pop(request_id)
+                            if recovered_custody is not None:
+                                return admission_refusal("ingest_runtime_unavailable")
                             return operation_envelope(
                                 request,
                                 context,
@@ -1224,21 +1235,7 @@ class DaemonOperationRuntime:
                         exchange.future = scheduled.future
                 except DaemonBackpressureError:
                     self._exchanges.pop(request_id)
-                    if recovered_custody is not None:
-                        envelope = self._pending_envelope(
-                            exchange, outcome="indeterminate", record=recovered_custody[2]
-                        )
-                        envelope["error"] = {"code": "compute_backpressure", "retryable": False}
-                        return envelope
-                    return operation_envelope(
-                        request,
-                        context,
-                        outcome="rejected",
-                        error={
-                            "code": "compute_backpressure",
-                            "retryable": True,
-                        },
-                    ).to_dict()
+                    return admission_refusal("compute_backpressure")
 
                 def settled(_future: Future[DaemonOperationEnvelope]) -> None:
                     with self._condition:

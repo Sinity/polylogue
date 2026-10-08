@@ -392,3 +392,9 @@ indeterminate result custody rather than authorizing a fresh retry.
 A resumed request inherits its existing durable acceptance, control identity and
 request binding before dispatch. A new exchange cannot turn an accepted
 generation into a safely retryable pre-acceptance refusal.
+
+Both `accepted_reference` and `durable_request` operations recover existing
+request custody before admission. Shutdown, active-operation capacity, terminal
+transfer, missing execution owner and compute refusals retain that reference
+and forbid a fresh-request retry. Durable-request handlers still reconstruct
+their declared products; this lookup does not replace their replay route.
