@@ -1,10 +1,9 @@
 """Durable source-tier publication outbox primitives.
 
-All synchronous functions accept an already-open ``sqlite3.Connection`` and
-never commit or roll back.  ``stage_payload_async`` follows the same rule for
-the async source backend used by ingest.  This lets raw-session acceptance,
-exact material bytes, and the idempotent obligation share one source.db
-transaction without pretending a WAL transaction spans source.db/index.db.
+Functions accept an already-open ``sqlite3.Connection`` and never commit or
+roll back. This lets raw-session acceptance, exact material bytes, and the
+idempotent obligation share one source.db transaction without pretending a
+WAL transaction spans source.db/index.db.
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ import hashlib
 import sqlite3
 from collections.abc import Sequence
 from pathlib import PurePosixPath
-from typing import Protocol, cast, runtime_checkable
 
 from polylogue.sinex.models import (
     ObligationStatus,
@@ -48,18 +46,6 @@ class PublicationPayloadConflictError(RuntimeError):
 
 class PublicationPayloadInvalidError(ValueError):
     """A staged payload is malformed or does not match its declared digest."""
-
-
-@runtime_checkable
-class _AsyncCursor(Protocol):
-    async def fetchone(self) -> object | None: ...
-
-    async def fetchall(self) -> list[object]: ...
-
-
-@runtime_checkable
-class AsyncSqlConnection(Protocol):
-    async def execute(self, sql: str, parameters: Sequence[object] = ()) -> _AsyncCursor: ...
 
 
 Key = tuple[str, str, str, str]
@@ -265,112 +251,6 @@ def stage_payload(
                 f"publication key already exists with different segment bytes at position={position}"
             )
     return obligation
-
-
-async def stage_payload_async(
-    conn: AsyncSqlConnection,
-    *,
-    payload: PublicationPayload,
-    mode: PublicationMode,
-    now_ms: int,
-) -> None:
-    """Async equivalent of :func:`stage_payload`, without transaction ownership."""
-    if mode is PublicationMode.OFF:
-        raise ValueError("stage_payload_async must not be called in off mode")
-    _validate_payload(payload)
-    key = _key(payload)
-    await conn.execute(
-        """
-        INSERT INTO sinex_publication_obligations (
-            object_id, protocol_version, revision_id, manifest_digest, mode,
-            status, attempt_count, created_at_ms, updated_at_ms,
-            next_attempt_at_ms
-        ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
-        ON CONFLICT(object_id, protocol_version, revision_id, manifest_digest)
-        DO UPDATE SET
-            mode = CASE
-                WHEN sinex_publication_obligations.mode = 'mirror'
-                 AND excluded.mode = 'primary' THEN 'primary'
-                ELSE sinex_publication_obligations.mode
-            END,
-            updated_at_ms = CASE
-                WHEN sinex_publication_obligations.mode = 'mirror'
-                 AND excluded.mode = 'primary' THEN excluded.updated_at_ms
-                ELSE sinex_publication_obligations.updated_at_ms
-            END
-        """,
-        (*key, mode.value, now_ms, now_ms, now_ms),
-    )
-    await conn.execute(
-        """
-        INSERT OR IGNORE INTO sinex_publication_payloads (
-            object_id, protocol_version, revision_id, manifest_digest,
-            manifest_bytes, manifest_sha256, manifest_size_bytes,
-            segment_count, total_size_bytes, staged_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            *key,
-            payload.manifest_bytes,
-            payload.manifest_digest,
-            len(payload.manifest_bytes),
-            len(payload.segments),
-            payload.size_bytes,
-            now_ms,
-        ),
-    )
-    cursor = await conn.execute(
-        """
-        SELECT manifest_bytes, manifest_sha256, manifest_size_bytes,
-               segment_count, total_size_bytes
-        FROM sinex_publication_payloads
-        WHERE object_id = ? AND protocol_version = ? AND revision_id = ? AND manifest_digest = ?
-        """,
-        key,
-    )
-    row = await cursor.fetchone()
-    assert row is not None
-    values: tuple[object, ...] = tuple(row)  # type: ignore[arg-type]
-    _assert_existing_payload_matches(
-        manifest_bytes=bytes(cast(bytes, values[0])),
-        manifest_sha256=str(values[1]),
-        manifest_size_bytes=int(cast(int, values[2])),
-        segment_count=int(cast(int, values[3])),
-        total_size_bytes=int(cast(int, values[4])),
-        payload=payload,
-    )
-    for position, (name, segment_bytes) in enumerate(payload.segments):
-        digest = hashlib.sha256(segment_bytes).hexdigest()
-        await conn.execute(
-            """
-            INSERT OR IGNORE INTO sinex_publication_segments (
-                object_id, protocol_version, revision_id, manifest_digest,
-                position, segment_name, segment_bytes, segment_sha256, size_bytes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (*key, position, name, segment_bytes, digest, len(segment_bytes)),
-        )
-        cursor = await conn.execute(
-            """
-            SELECT segment_name, segment_bytes, segment_sha256, size_bytes
-            FROM sinex_publication_segments
-            WHERE object_id = ? AND protocol_version = ? AND revision_id = ?
-              AND manifest_digest = ? AND position = ?
-            """,
-            (*key, position),
-        )
-        existing = await cursor.fetchone()
-        assert existing is not None
-        existing_values: tuple[object, ...] = tuple(existing)  # type: ignore[arg-type]
-        if (
-            str(existing_values[0]),
-            bytes(cast(bytes, existing_values[1])),
-            str(existing_values[2]),
-            int(cast(int, existing_values[3])),
-        ) != (name, segment_bytes, digest, len(segment_bytes)):
-            raise PublicationPayloadConflictError(
-                f"publication key already exists with different segment bytes at position={position}"
-            )
 
 
 def get_obligation(
@@ -623,7 +503,6 @@ def reset_retryable(
 
 
 __all__ = [
-    "AsyncSqlConnection",
     "PublicationPayloadConflictError",
     "PublicationPayloadInvalidError",
     "get_obligation",
@@ -634,5 +513,4 @@ __all__ = [
     "record_obligation",
     "reset_retryable",
     "stage_payload",
-    "stage_payload_async",
 ]

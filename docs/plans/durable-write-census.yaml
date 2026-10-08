@@ -635,13 +635,6 @@ writes:
     tier: "source"
     classification: lifecycle_transition
     reason: "publication obligation status machine (pending -> publishing -> confirmed/rejected/durable_debt): the lease and redrive statements name the admissible prior statuses in the WHERE and never list 'confirmed', and the two upserts elevate mode only mirror->primary through an explicit CASE that otherwise re-writes the stored value"
-  - file: "polylogue/sinex/obligations.py"
-    function: "stage_payload_async"
-    table: "sinex_publication_obligations"
-    kind: "upsert_do_update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "publication obligation status machine (pending -> publishing -> confirmed/rejected/durable_debt): the lease and redrive statements name the admissible prior statuses in the WHERE and never list 'confirmed', and the two upserts elevate mode only mirror->primary through an explicit CASE that otherwise re-writes the stored value"
   - file: "polylogue/storage/blob_gc.py"
     function: "_abandon_pending_gc_generation"
     table: "gc_generation_members"
