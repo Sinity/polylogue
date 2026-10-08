@@ -58,6 +58,13 @@ VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
 VERIFY_HISTORY_PATH = VERIFY_CACHE / "history.jsonl"
 VERIFY_HISTORY_PATH_ENV = "POLYLOGUE_VERIFY_HISTORY_PATH"
+# Established managed addresses must also refuse writes from shells opened
+# before the operator environment started declaring additional retirements.
+RETIRED_MANAGED_HISTORY_PATHS = (
+    "/realm/activity/dev/polylogue/verify-history.jsonl",
+    "/realm/activity/development/polylogue/verify-history.jsonl",
+    "/realm/projects/polylogue/source/development/verify-history.jsonl",
+)
 VERIFY_EVIDENCE_PATH = VERIFY_CACHE / "evidence.jsonl"
 VERIFY_EVIDENCE_PATH_ENV = "POLYLOGUE_VERIFICATION_EVIDENCE_PATH"
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
@@ -67,11 +74,11 @@ PYTEST_CANONICAL_REPORT_NAME = "pytest-report.json"
 
 
 def _validate_history_write_path(path: Path, env: Mapping[str, str] | None = None) -> Path:
-    """Refuse retired destinations declared by the operator environment."""
+    """Refuse established managed retirements and additional configured paths."""
     environ = os.environ if env is None else env
     absolute = Path(os.path.abspath(path.expanduser()))
     retired = environ.get("POLYLOGUE_RETIRED_VERIFY_HISTORY_PATHS", "")
-    for value in retired.split(os.pathsep):
+    for value in (*RETIRED_MANAGED_HISTORY_PATHS, *retired.split(os.pathsep)):
         if not value:
             continue
         old = Path(value).expanduser()

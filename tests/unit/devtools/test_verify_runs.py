@@ -603,3 +603,13 @@ def test_retired_history_destination_is_refused_before_directory_creation(
     assert verify_runs.verify_history_path() == custom
     append_verify_history({"run_id": "synthetic"}, path=custom)
     assert custom.is_file()
+
+
+def test_managed_retired_destination_is_refused_in_an_old_parent_environment() -> None:
+    from devtools.verify_runs import verify_history_path
+
+    with pytest.raises(ValueError, match="destination is retired"):
+        verify_history_path(env={"POLYLOGUE_VERIFY_HISTORY_PATH": "/realm/activity/dev/polylogue/verify-history.jsonl"})
+    assert verify_history_path(env={"POLYLOGUE_VERIFY_HISTORY_PATH": "/custom/verification/history.jsonl"}) == Path(
+        "/custom/verification/history.jsonl"
+    )
