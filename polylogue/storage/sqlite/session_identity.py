@@ -5,7 +5,8 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
+from polylogue.core.provider_identity import canonical_runtime_provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.io_phase_metrics import connection_cursor
 
@@ -72,13 +73,20 @@ def resolve_session_id_in_index(
     exact = _session_matches(conn, "session_id=?", (token,), limit=1, before_input=before_input)
     if exact:
         return str(exact[0][0])
+    prefix = token
     if ":" in token:
-        provider_token, native_id = token.split(":", 1)
-        origin_id = f"{origin_from_provider(Provider.from_string(provider_token)).value}:{native_id}"
-        exact = _session_matches(conn, "session_id=?", (origin_id,), limit=1, before_input=before_input)
-        if exact:
-            return str(exact[0][0])
-    lower_bound, upper_bound = session_id_prefix_bounds(token)
+        source_token, native_id = token.split(":", 1)
+        try:
+            origin = Origin(source_token)
+        except ValueError:
+            provider_value = canonical_runtime_provider(source_token, default="")
+            origin = origin_from_provider(Provider(provider_value)) if provider_value else None
+        if origin is not None:
+            prefix = f"{origin.value}:{native_id}"
+            exact = _session_matches(conn, "session_id=?", (prefix,), limit=1, before_input=before_input)
+            if exact:
+                return str(exact[0][0])
+    lower_bound, upper_bound = session_id_prefix_bounds(prefix)
     where = "session_id >= ?"
     params: tuple[object, ...] = (lower_bound,)
     if upper_bound is not None:

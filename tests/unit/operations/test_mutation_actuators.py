@@ -773,6 +773,50 @@ class TestTagAddActuator:
             rows = conn.execute("SELECT key FROM assertions WHERE kind = 'tag' AND status != 'deleted'").fetchall()
         assert [r[0] for r in rows] == ["review"]
 
+    def test_qualified_origin_prefix_keeps_read_and_tag_target_in_its_namespace(self, tmp_path: Path) -> None:
+        from polylogue.operations.daemon_reads import execute_read_operation
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        codex_session_id = _seed_archive_session(archive_root, native_id="abcdef")
+        unknown_raw_id = "raw-unknown-collision"
+        with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
+            conn.execute(
+                "INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms) "
+                "VALUES (?, 'unknown-export', 'abc', ?, zeroblob(32), 0, 1000)",
+                (unknown_raw_id, str(archive_root / "unknown.json")),
+            )
+        with closing(sqlite3.connect(archive_root / "index.db")) as conn, conn:
+            conn.execute(
+                "INSERT INTO sessions (native_id, origin, raw_id, title, content_hash, created_at_ms, updated_at_ms) "
+                "VALUES ('abc', 'unknown-export', ?, 'Unknown collision', zeroblob(32), 1000, 2000)",
+                (unknown_raw_id,),
+            )
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            read = execute_read_operation(
+                "session.read", {"ref": "session:codex-session:abc"}, archive=archive, serving_identity="test"
+            )
+            assert read["session_id"] == codex_session_id
+            assert archive.resolve_session_id("codex:abcdef") == codex_session_id
+            assert archive.resolve_session_id(codex_session_id) == codex_session_id
+            actuator = TagAddActuator()
+            args = TagAddArgs(archive=archive, session_id="codex-session:abc", tag="right-session")
+            plan = actuator.prepare(args)
+            assert plan.target_refs == (f"session:{codex_session_id}",)
+            actuator.apply(plan, args)
+            with pytest.raises(KeyError):
+                archive.resolve_session_id("nonsense:abc")
+
+        _seed_archive_session(archive_root, native_id="abc-other")
+        with ArchiveStore.open_existing(archive_root) as archive:
+            with pytest.raises(ValueError, match="ambiguous"):
+                archive.resolve_session_id("codex-session:abc")
+
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn:
+            targets = conn.execute("SELECT target_ref FROM assertions WHERE kind = 'tag'").fetchall()
+        assert targets == [(f"session:{codex_session_id}",)]
+
     def test_duplicate_add_is_already_satisfied(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
