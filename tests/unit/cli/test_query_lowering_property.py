@@ -10,12 +10,16 @@ AND/OR/NOT, parentheses) and exact in oracle.
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue.archive.query.expression import compile_expression
 from polylogue.archive.query.filter_kwargs import plan_filter_kwargs
+from polylogue.archive.query.predicate import predicate_from_payload
+from polylogue.core.query_identity import JsonValue, canonical_query_plan
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder
 
@@ -158,7 +162,16 @@ def test_compact_field_alternatives_select_the_same_rows_as_explicit_or(
     )
     with ArchiveStore.open_existing(seeded_query_archive) as archive:
         for expression in expressions:
-            kwargs = plan_filter_kwargs(compile_expression(expression).to_plan())
+            spec = compile_expression(expression)
+            assert spec.boolean_predicate is not None
+            persisted = canonical_query_plan(
+                cast(dict[str, JsonValue], spec.boolean_predicate.to_payload()),
+                grain="session",
+                lane="dialogue",
+                rank_policy="mixed",
+            )["ast"]
+            spec = replace(spec, boolean_predicate=predicate_from_payload(cast(dict[str, object], persisted)))
+            kwargs = plan_filter_kwargs(spec.to_plan())
             observed = {row.session_id for row in archive.list_summaries(limit=100, **kwargs)}
             assert observed == expected
             assert archive.count_sessions(**kwargs) == len(expected)
@@ -168,7 +181,7 @@ def test_compact_scalar_alternatives_retain_other_selection_filters(seeded_query
     with ArchiveStore.open_existing(seeded_query_archive) as archive:
         for expression in (
             "body origin:codex-session title:(haystack|thread)",
-            "sessions where body AND origin:codex-session AND (title:haystack OR title:thread)",
+            "sessions where fts:body AND origin:codex-session AND (title:haystack OR title:thread)",
         ):
             kwargs = plan_filter_kwargs(compile_expression(expression).to_plan())
             expected = {"codex-session:ext-echo", "codex-session:ext-foxtrot"}
