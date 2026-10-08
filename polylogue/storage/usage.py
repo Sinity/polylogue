@@ -11,7 +11,7 @@ import json
 import sqlite3
 from builtins import BaseExceptionGroup
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -476,7 +476,7 @@ class UsageCounters:
     @classmethod
     def from_row(
         cls,
-        row: sqlite3.Row,
+        row: sqlite3.Row | Mapping[str, object],
         *,
         input_key: str,
         output_key: str,
@@ -2183,7 +2183,7 @@ def provider_usage_request_events(
     *,
     start_position: int | None = None,
     include_other_events: bool = False,
-) -> Iterator[dict[str, object]]:
+) -> Generator[dict[str, object], None, None]:
     """Select request snapshots while retaining unkeyed events independently.
 
     Claude request lanes use the latest present counter, including zero.
