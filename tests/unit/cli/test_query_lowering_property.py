@@ -162,3 +162,15 @@ def test_compact_field_alternatives_select_the_same_rows_as_explicit_or(
             observed = {row.session_id for row in archive.list_summaries(limit=100, **kwargs)}
             assert observed == expected
             assert archive.count_sessions(**kwargs) == len(expected)
+
+
+def test_compact_scalar_alternatives_retain_other_selection_filters(seeded_query_archive: Path) -> None:
+    with ArchiveStore.open_existing(seeded_query_archive) as archive:
+        for expression in (
+            "body origin:codex-session title:(haystack|thread)",
+            "sessions where body AND origin:codex-session AND (title:haystack OR title:thread)",
+        ):
+            kwargs = plan_filter_kwargs(compile_expression(expression).to_plan())
+            expected = {"codex-session:ext-echo", "codex-session:ext-foxtrot"}
+            assert {row.session_id for row in archive.list_summaries(limit=100, **kwargs)} == expected
+            assert archive.count_sessions(**kwargs) == len(expected)

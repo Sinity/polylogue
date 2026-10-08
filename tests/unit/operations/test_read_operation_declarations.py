@@ -624,3 +624,16 @@ def test_temporal_missing_selected_reference_does_not_widen_to_text_matches(tmp_
     )
     body = cast(dict[str, Any], result["payload"])
     assert body["temporal_window"]["events"] == []
+
+
+@pytest.mark.parametrize("params", [{"query": ("needle",)}, {"similar_text": "needle"}])
+def test_temporal_selected_reference_retains_text_and_ranking_criteria(
+    tmp_path: Path, params: dict[str, object]
+) -> None:
+    sessions = _seed(tmp_path, count=2, messages=1)
+    result = _run(tmp_path, "read.temporal", {"session_id": sessions[1], "params": params})
+    body = cast(dict[str, Any], result["payload"])
+    events = body["temporal_window"]["events"]
+    assert {ref for event in events for ref in event["evidence_refs"] if ref.startswith("session:")} == {
+        f"session:{sessions[1]}"
+    }
