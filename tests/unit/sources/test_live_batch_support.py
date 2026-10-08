@@ -1314,7 +1314,7 @@ def test_repeated_sqlite_read_faults_defer_without_quarantining_unchanged_input(
     bootstrap_archive_root(tmp_path)
     root = tmp_path / "codex"
     state = root / "state_5.sqlite"
-    _write_plain_sqlite_db(state)
+    _write_codex_thread_state_db(state)
     cursor = CursorStore(tmp_path / "index.db")
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),

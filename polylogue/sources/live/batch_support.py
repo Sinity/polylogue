@@ -1462,6 +1462,7 @@ def _classify_pre_acquisition(
     from polylogue.sources.origin_specs import (
         artifact_rule_for_path,
         database_capability_for_provider,
+        pre_acquisition_path_exclusion,
         recognize_source_class,
     )
 
@@ -1533,15 +1534,10 @@ def _classify_pre_acquisition(
         return PreAcquisitionDecision("declared out-of-scope or structurally unverified state database")
     origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
     jsonl = is_jsonl_source_path(str(path))
-    if sqlite_classification is None and origin_artifact_rule is None and not jsonl:
-        strong = strong_path_classification(path, provider=fallback_provider)
-        if strong is not None and not strong.parse_as_session:
-            # Only definitive sidecar paths are excluded before retained
-            # acquisition. Weak locations reach the same parser at every
-            # size, where decoded evidence determines their disposition. A
-            # path rule reads no bytes, so source-only acquisition applies
-            # it too: intake retains exactly what the baseline requires.
-            return PreAcquisitionDecision("path rule classifies this as non-session evidence")
+    if sqlite_classification is None:
+        exclusion = pre_acquisition_path_exclusion(fallback_provider, path)
+        if exclusion is not None:
+            return PreAcquisitionDecision(exclusion)
     if source_only and not jsonl:
         return PreAcquisitionDecision(None)
     if sqlite_classification is not None:

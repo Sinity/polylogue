@@ -204,6 +204,9 @@ class FileIntakeAdapter(IntakeAdapter):
         self._fresh_page_paths: tuple[Path, ...] = ()
         self._fresh_page_pending = False
         self._fresh_attempted_paths: set[Path] = set()
+        # One admission page's deferrals that have no durable retry cursor.
+        # Acknowledgement must leave these in the existing fresh/local retry walk.
+        self._deferred_without_cursor: set[Path] = set()
         self._root_refused_pending = False
         self._retry_state_lock = threading.Lock()
         self._fresh_retry_debt: dict[Path, float] = {}
@@ -764,6 +767,7 @@ class FileIntakeAdapter(IntakeAdapter):
         # Bookkeeping below assumes the page is attempted; a late degradation
         # (after this entry check) must restore it, since nothing was.
         retry_after_before = self._retry_after
+        self._deferred_without_cursor.clear()
         offered_local_retries = self._retry_page_paths if self._local_retry_page else ()
         for item in items:
             self._consume_retry_item(item)
@@ -951,6 +955,15 @@ class FileIntakeAdapter(IntakeAdapter):
         succeeded = {str(path) for path in (getattr(metrics, "succeeded_paths", ()) or ())}
         failed = set(getattr(metrics, "failed_paths", ()) or ())
         deferred = set(getattr(metrics, "deferred_paths", ()) or ())
+        get_records = getattr(cursor, "get_records", None)
+        deferred_records = (
+            await asyncio.to_thread(get_records, tuple(Path(path) for path in deferred))
+            if deferred and callable(get_records)
+            else {}
+        )
+        self._deferred_without_cursor.update(
+            Path(path) for path in deferred if not self._has_durable_retry_record(deferred_records.get(Path(path)))
+        )
         # ``failed_paths`` carries the retry projection, deferrals included.
         # A deferral is its own outcome, so it must not be reported as a
         # failure here.
@@ -1090,6 +1103,13 @@ class FileIntakeAdapter(IntakeAdapter):
         # deficit is rediscovered on the next pass instead of being skipped.
         # Retry rows may be ahead of ordinary discovery. They cannot advance
         # that walk past files it has not offered yet.
+        if isinstance(item.payload, (str, Path)) and Path(item.payload) in self._deferred_without_cursor:
+            # The batch admitted the deferral, not unread source bytes. Keep
+            # its unacknowledged fresh page/local retry until a coordinate can
+            # be captured; a durable cursor does not yet own this obligation.
+            self._deferred_without_cursor.discard(Path(item.payload))
+            self._consume_retry_item(item)
+            return
         if self._retry_page:
             self._consume_retry_item(item, acknowledged=True)
             return
