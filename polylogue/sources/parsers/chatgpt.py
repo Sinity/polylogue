@@ -1293,7 +1293,7 @@ def _tool_role_result_blocks(
 #   finish_details          -> messages.stop_reason (_CHATGPT_FINISH_STOP_REASONS)
 #   default_model_slug      -> messages.model_name, after model_slug
 #   command, args           -> TOOL_USE tool_name / tool_input
-#   reasoning_title         -> THINKING block metadata -> chatgpt_block_metadata
+#   reasoning_title/titles/status -> chatgpt_message_delivery
 #   dalle                   -> IMAGE block metadata -> chatgpt_block_metadata
 #   ada_visualizations      -> one attachment per file_id
 #   targeted_reply          -> chatgpt_targeted_reply
@@ -1505,7 +1505,6 @@ def extract_messages_from_mapping(
     current_node: str | None = None,
     *,
     admission: AdmissionLedger | None = None,
-    preserve_empty_messages: bool = False,
     default_model_slug: str | None = None,
 ) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     entries = _ListMessageEntries()
@@ -1516,7 +1515,6 @@ def extract_messages_from_mapping(
         entries,
         attachments,
         admission=admission,
-        preserve_empty_messages=preserve_empty_messages,
         default_model_slug=default_model_slug,
     )
     return list(_resolved_messages(entries, active_path)), attachments
@@ -1567,7 +1565,6 @@ def _collect_message_entries(
     attachments: MutableSequence[ParsedAttachment],
     *,
     admission: AdmissionLedger | None,
-    preserve_empty_messages: bool,
     default_model_slug: str | None,
     new_seen_set: Callable[[], MutableSet[str]] = set,
     new_string_map: Callable[[], MutableMapping[str, str]] = dict,
@@ -1719,7 +1716,6 @@ def _collect_message_entries(
         stop_reason: str | None = None
         tool_command: str | None = None
         tool_args: object = None
-        reasoning_render: dict[str, object] = {}
         dalle_provenance: Mapping[str, object] | None = None
 
         # Extract message-level metadata from typed fields
@@ -1741,12 +1737,6 @@ def _collect_message_entries(
             stop_reason = _stop_reason_from_finish_details(msg_metadata.get("finish_details"))
             tool_command = _string_value(msg_metadata, "command")
             tool_args = msg_metadata.get("args")
-            # The title the provider displayed for this reasoning step
-            # ("Extracting lines from XML file"). ``blocks`` has no column
-            # for it, so it rides the THINKING block's metadata into
-            # ``chatgpt_block_metadata``.
-            if (reasoning_title := _string_value(msg_metadata, "reasoning_title")) is not None:
-                reasoning_render["reasoning_title"] = reasoning_title
             if isinstance(dalle_raw := msg_metadata.get("dalle"), Mapping) and dalle_raw:
                 dalle_provenance = dalle_raw
         model_name = str(model_slug) if isinstance(model_slug, str) and model_slug else None
@@ -1834,7 +1824,7 @@ def _collect_message_entries(
                 ParsedContentBlock(
                     type=BlockType.THINKING,
                     text=text,
-                    metadata={"content_type": content_type, **reasoning_render},
+                    metadata={"content_type": content_type},
                 )
             )
         elif content_type == "code":
@@ -2286,15 +2276,6 @@ def _collect_message_entries(
                 attachment = attachments[attachment_ordinal]
                 attachment_occurrence(attachment, idx - 1)
                 attachments[attachment_ordinal] = attachment
-        if not text and not content_blocks and not preserve_empty_messages:
-            if admission is not None:
-                admission.unknown(
-                    AdmissionUnit.MESSAGE,
-                    current_message_ordinal,
-                    node_id,
-                    AdmissionUnknownReason.EMPTY_CONTENT,
-                )
-            continue
 
         status_val = msg.get("status")
         end_turn_val = msg.get("end_turn")
@@ -2734,7 +2715,7 @@ def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> Iterator
         model's own context), ``is_visually_hidden_from_conversation`` (never
         shown to the operator), and the ``channel`` it was emitted on
         (``commentary`` for the tool/analysis stream, ``final`` for the
-        answer). Absent these a hidden, context-dropped, commentary-channel
+        answer), plus the declared reasoning title, titles and status. Absent these a hidden, context-dropped, commentary-channel
         turn reads as conversation the operator saw and the model kept.
     ``chatgpt_jit_plugin_data``
         A just-in-time plugin's call and response payload -- the only
@@ -2765,6 +2746,12 @@ def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> Iterator
             delivery["is_visually_hidden_from_conversation"] = True
         if (channel := _string_value(message, "channel")) is not None:
             delivery["channel"] = channel
+        # Rendering evidence belongs to its native message even when it has
+        # no prose or blocks. Do not manufacture a THINKING block for a label.
+        for key in ("reasoning_title", "reasoning_titles", "reasoning_status"):
+            value = metadata.get(key)
+            if key in metadata:
+                delivery[key] = value
         if delivery:
             yield ParsedSessionEvent(
                 event_type="chatgpt_message_delivery",
@@ -2888,6 +2875,8 @@ CHATGPT_READ_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
                 "command",
                 "args",
                 "reasoning_title",
+                "reasoning_titles",
+                "reasoning_status",
                 "dalle",
                 "ada_visualizations",
                 "targeted_reply",
@@ -3054,7 +3043,6 @@ def parse(
         entries,
         attachments,
         admission=admission,
-        preserve_empty_messages=derived_current_node is not None,
         default_model_slug=conversation_model_slug,
         new_seen_set=spill.seen_set if spill is not None else set,
         new_string_map=spill.string_map if spill is not None else dict,

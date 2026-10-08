@@ -1,0 +1,124 @@
+{
+  "id": "neutral-empty-native",
+  "conversation_id": "neutral-empty-native",
+  "title": "Neutral empty native messages",
+  "create_time": 1700000000.0,
+  "update_time": 1700000003.0,
+  "current_node": "tool-node",
+  "mapping": {
+    "root": {
+      "id": "root",
+      "parent": null,
+      "children": [
+        "user-node"
+      ],
+      "message": null
+    },
+    "user-node": {
+      "id": "user-node",
+      "parent": "root",
+      "children": [
+        "assistant-node",
+        "branch-node"
+      ],
+      "message": {
+        "id": "user-message",
+        "author": {
+          "role": "user",
+          "name": null
+        },
+        "create_time": 1700000000.0,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "Neutral question"
+          ]
+        },
+        "metadata": {}
+      }
+    },
+    "assistant-node": {
+      "id": "assistant-node",
+      "parent": "user-node",
+      "children": [
+        "tool-node"
+      ],
+      "message": {
+        "id": "assistant-message",
+        "author": {
+          "role": "assistant",
+          "name": null
+        },
+        "create_time": 1700000001.0,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            ""
+          ]
+        },
+        "metadata": {
+          "reasoning_title": "Neutral stage",
+          "reasoning_titles": [
+            "Neutral first",
+            "Neutral second"
+          ],
+          "reasoning_status": "in_progress"
+        }
+      }
+    },
+    "tool-node": {
+      "id": "tool-node",
+      "parent": "assistant-node",
+      "children": [],
+      "message": {
+        "id": "tool-message",
+        "author": {
+          "role": "tool",
+          "name": "neutral-engine"
+        },
+        "create_time": null,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            ""
+          ]
+        },
+        "metadata": {
+          "reasoning_title": "Neutral stage",
+          "reasoning_titles": [
+            "Neutral first",
+            "Neutral second"
+          ],
+          "reasoning_status": "in_progress"
+        }
+      }
+    },
+    "branch-node": {
+      "id": "branch-node",
+      "parent": "user-node",
+      "children": [],
+      "message": {
+        "id": "branch-message",
+        "author": {
+          "role": "assistant",
+          "name": null
+        },
+        "create_time": 1700000002.0,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            ""
+          ]
+        },
+        "metadata": {
+          "reasoning_title": "Neutral stage",
+          "reasoning_titles": [
+            "Neutral first",
+            "Neutral second"
+          ],
+          "reasoning_status": "in_progress"
+        }
+      }
+    }
+  }
+}

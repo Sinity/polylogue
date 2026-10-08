@@ -456,13 +456,8 @@ async def test_chatgpt_media_pointers_survive_archive_write_public_read_and_repl
     assert all(attachment.acquisition_status == "unfetched" for attachment in public_attachments)
 
 
-def test_timing_only_provider_node_rehomes_duration_to_the_last_emitted_branch_message() -> None:
-    """A metadata-only winning node must not make its generation duration disappear.
-
-    Production dependency: chatgpt.parse resolves the selected lifecycle owner
-    after message emission. Removing that rehoming projects no message duration
-    and leaves the event attached to an unmaterialized provider message id.
-    """
+def test_timing_only_provider_node_retains_its_own_generation_duration() -> None:
+    """An empty native message remains the exact owner of its timing evidence."""
 
     payload = _load_fixture(_NATIVE_FIXTURE)
     mapping = cast("dict[str, dict[str, object]]", payload["mapping"])
@@ -499,12 +494,15 @@ def test_timing_only_provider_node_rehomes_duration_to_the_last_emitted_branch_m
     by_id = {message.provider_message_id: message for message in session.messages}
     lifecycle = [event for event in session.session_events if event.event_type == "generation_lifecycle"]
 
-    assert len(session.messages) == 8
-    assert by_id["answer-active-message"].duration_ms == 5_190_000
+    assert len(session.messages) == 9
+    assert by_id["timing-only-message"].duration_ms == 5_190_000
+    assert by_id["timing-only-message"].text == ""
+    assert by_id["timing-only-message"].blocks == []
+    assert by_id["answer-active-message"].duration_ms is None
     assert by_id["recap-active-message"].duration_ms is None
     assert session.reported_duration_ms == 5_190_000
     assert len(lifecycle) == 1
-    assert lifecycle[0].source_message_provider_id == "answer-active-message"
+    assert lifecycle[0].source_message_provider_id == "timing-only-message"
 
 
 def test_generation_dedup_preserves_a_distinct_message_local_legacy_duration() -> None:
@@ -806,3 +804,95 @@ async def test_native_full_fidelity_replaces_or_resists_longer_dom_fallback_and_
     assert b'"durationMs":5190000' in raw_material
     assert b'"duration_ms":5190000' in raw_material
     assert b'"thinking_effort":"extended"' in raw_material
+
+
+@pytest.mark.parametrize("browser_envelope", [False, True], ids=["ordinary-native", "browser-native"])
+@pytest.mark.asyncio
+async def test_empty_native_messages_and_reasoning_delivery_survive_retained_write_and_read(
+    tmp_path: Path,
+    browser_envelope: bool,
+) -> None:
+    from polylogue.storage.sqlite.queries.session_events import read_session_events
+
+    wire = _load_fixture(_FIXTURE_DIR / "native-empty-messages-v1.json")
+    payload = wire
+    if browser_envelope:
+        payload = _load_fixture(_BROWSER_FIXTURE)
+        payload["raw_provider_payload"] = wire
+        capture_session = cast("dict[str, object]", payload["session"])
+        capture_session["provider_session_id"] = "neutral-empty-native"
+        capture_session["attachments"] = []
+    parsed = _parse_one(payload)
+    expected = ["user-message", "assistant-message", "branch-message", "tool-message"]
+    assert [message.provider_message_id for message in parsed.messages] == expected
+    assert parsed.messages[0].text == "Neutral question"
+    assert all(message.text == "" and message.blocks == [] for message in parsed.messages[1:])
+    assert parsed.active_leaf_message_provider_id == "tool-message"
+    assert all(
+        message.is_active_path == (message.provider_message_id != "branch-message") for message in parsed.messages
+    )
+    assert parsed.messages[-1].sender_name == "neutral-engine"
+    assert parsed.messages[-1].timestamp is None
+    assert parsed.messages[-1].parent_message_provider_id == "assistant-message"
+    assert parsed.unit_accounting is not None
+    assert list(parsed.unit_accounting.outcomes) == []
+    source_bytes = json.dumps(payload).encode()
+    root = tmp_path / "archive"
+    async with prepared_live_convergence_owner(root) as owner:
+
+        def acquire() -> str:
+            bootstrap_archive_root(root)
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return acquire_full_revision(
+                    archive,
+                    provider=Provider.CHATGPT,
+                    payload=source_bytes,
+                    source_path=tmp_path / "source" / "empty-native.json",
+                    native_id=parsed.provider_session_id,
+                    generation=0,
+                    acquired_at_ms=1800000000000,
+                )
+
+        raw_id = await run_archive_fixture_write(root, acquire)
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
+        assert any(receipt.changed_session_ids for receipt in receipts)
+    session_id = str(make_session_id(parsed.source_name, parsed.provider_session_id))
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        envelope = archive.read_session(session_id)
+        with archive.open_raw_revision_material(raw_id) as (provider, material, source_path, _kind):
+            assert provider is Provider.CHATGPT
+            assert source_path == str(tmp_path / "source" / "empty-native.json")
+            assert material.read() == source_bytes
+    by_id = {message.native_id: message for message in envelope.messages}
+    # Archive positions preserve the declared mapping order, independent of
+    # the parser list's timestamp ordering.
+    assert list(by_id) == ["user-message", "assistant-message", "tool-message", "branch-message"]
+    assert all(message.identity_source == "native" for message in envelope.messages)
+    assert all(message.blocks == () for message in envelope.messages[1:])
+    assert by_id["tool-message"].role == "tool"
+    assert by_id["tool-message"].occurred_at is None
+    assert by_id["tool-message"].parent_message_id == by_id["assistant-message"].message_id
+    assert by_id["branch-message"].is_active_path is False
+    assert by_id["tool-message"].is_active_leaf is True
+    with sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        events = read_session_events(conn, session_id)
+        assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id=?", (session_id,)).fetchone()[0] == 1
+        assert (
+            conn.execute("SELECT sender_name FROM messages WHERE native_id='tool-message'").fetchone()[0]
+            == "neutral-engine"
+        )
+    delivery = {
+        event.source_message_provider_id: event for event in events if event.event_type == "chatgpt_message_delivery"
+    }
+    assert set(delivery) == {"assistant-message", "branch-message", "tool-message"}
+    for native_id, event in delivery.items():
+        assert event.source_message_id == by_id[native_id].message_id
+        # This Index reader exposes no Raw column; Source custody is bound
+        # independently above, not invented on the event projection.
+        assert event.raw_id is None
+        assert event.payload == {
+            "reasoning_title": "Neutral stage",
+            "reasoning_titles": ["Neutral first", "Neutral second"],
+            "reasoning_status": "in_progress",
+        }
