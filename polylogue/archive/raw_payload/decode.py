@@ -599,7 +599,7 @@ def _hermes_sqlite_marker_payload(
     source_path: str | Path | None,
     immutable: bool = False,
 ) -> JSONDocument | None:
-    """Route a raw Hermes SQLite blob (state.db / verification_evidence.db) to its marker payload.
+    """Route an acquired Hermes SQLite export to its marker payload.
 
     Binary-capable detection BEFORE any text decode, mirroring the rebuild
     path's provider dispatch (``sources.revision_backfill._parse_one``, which
@@ -617,11 +617,13 @@ def _hermes_sqlite_marker_payload(
     same versioned structural contract as actual parsing.
     """
     from polylogue.sources.parsers import hermes_state, hermes_verification
-    from polylogue.sources.sqlite_snapshot import is_declared_logical_export
+    from polylogue.sources.sqlite_snapshot import is_declared_logical_export, is_undeclared_logical_export
 
-    if source_path is None or not is_declared_logical_export(path, source_path):
+    if source_path is None or not (
+        is_declared_logical_export(path, source_path) or is_undeclared_logical_export(path, source_path)
+    ):
         # A mutable SQLite source is not its own bytes. Acquisition retains the
-        # declared member's canonical logical export, and the replay route
+        # canonical logical export (member-scoped or unbound full scope), and the replay route
         # (``sources.revision_backfill._parse_one``) refuses anything else. If
         # ingest admitted a historical page image here the two routes would
         # disagree and a reindex would mint a second source authority for

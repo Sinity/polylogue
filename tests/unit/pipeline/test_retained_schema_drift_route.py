@@ -207,3 +207,105 @@ def test_retained_schema_drift_telemetry_follows_replay_and_never_changes_outcom
         assert session_row is not None
         assert session_row[0] == observations[0].raw_id
         assert message_count > 0
+
+
+def test_strict_retained_historical_schema_verdict_reaches_session_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A legacy Claude record accepted by v1 remains publishable on the daemon route."""
+    import json
+    from functools import partial
+
+    from polylogue.core.enums import ValidationStatus
+    from polylogue.schemas.registry import SchemaRegistry
+
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    schema_root = tmp_path / "schemas"
+    registry = SchemaRegistry(storage_root=schema_root)
+
+    def schema(content_type: str) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {
+                "type": {"const": "assistant"},
+                "message": {
+                    "type": "object",
+                    "properties": {
+                        "role": {"const": "assistant"},
+                        "content": {"type": content_type},
+                    },
+                    "required": ["role", "content"],
+                    "additionalProperties": True,
+                },
+            },
+            "required": ["type", "message"],
+            "additionalProperties": True,
+        }
+
+    registry.write_schema_version("claude-code", "v1", schema("array"), element_kind="session_record_stream")
+    registry.write_schema_version("claude-code", "v2", schema("string"), element_kind="session_record_stream")
+    monkeypatch.setattr(
+        "polylogue.schemas.retained_validation.SchemaRegistry", partial(SchemaRegistry, storage_root=schema_root)
+    )
+    from polylogue.schemas.validator import validate_retained_document as real_validate_retained_document
+
+    verdicts: list[RetainedValidationVerdict] = []
+
+    def capture_verdict(*args: object, **kwargs: object) -> RetainedValidationVerdict:
+        verdict = real_validate_retained_document(*args, **kwargs)  # type: ignore[arg-type]
+        verdicts.append(verdict)
+        return verdict
+
+    monkeypatch.setattr("polylogue.schemas.validate_retained_document", capture_verdict)
+
+    legacy_record = {
+        "type": "assistant",
+        "uuid": "legacy-assistant",
+        "sessionId": "legacy-schema-route",
+        "timestamp": "2026-07-01T10:00:01Z",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "legacy record accepted by v1"}],
+        },
+    }
+    payload = (json.dumps(legacy_record) + "\n").encode()
+
+    def acquire() -> str:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=payload,
+                source_path="projects/legacy-schema-route/session.jsonl",
+                canonical_source_path="projects/legacy-schema-route/session.jsonl",
+                acquired_at_ms=1,
+            )
+
+    raw_id = asyncio.run(run_archive_fixture_write(archive_root, acquire))
+
+    async def converge() -> DerivationReport:
+        async with prepared_live_convergence_owner(archive_root, validation_mode=ValidationMode.STRICT) as owner:
+            return await owner.converge_raw_id(raw_id)
+
+    report = asyncio.run(converge())
+    with sqlite3.connect(archive_root / "source.db") as source:
+        validation = source.execute(
+            "SELECT validation_status, validation_mode FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+    with sqlite3.connect(archive_root / "index.db") as index:
+        session = index.execute("SELECT native_id FROM sessions WHERE native_id = 'legacy-schema-route'").fetchone()
+        message_count = index.execute(
+            "SELECT COUNT(*) FROM messages AS message JOIN sessions AS session USING (session_id) "
+            "WHERE session.native_id = 'legacy-schema-route'"
+        ).fetchone()[0]
+
+    assert report.failed == 0
+    assert len(verdicts) == 1
+    assert verdicts[0].schema_resolution is not None
+    assert verdicts[0].schema_resolution.package_version == "v1"
+    assert not verdicts[0].strict_refusal
+    assert validation == (ValidationStatus.PASSED.value, ValidationMode.STRICT.value)
+    assert session == ("legacy-schema-route",)
+    assert message_count == 1

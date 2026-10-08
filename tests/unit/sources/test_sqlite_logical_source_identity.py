@@ -372,6 +372,7 @@ def test_declared_and_undeclared_logical_export_predicates_truth_table(tmp_path:
     cases = (
         (declared_export, declared_source, True, False),
         (backup_export, backup_source, False, True),
+        (declared_export, backup_source, False, False),
         (page_image, declared_source, False, False),
     )
     for material, source, expected_declared, expected_undeclared in cases:
@@ -887,7 +888,8 @@ async def test_sqlite_acquisition_failure_does_not_fail_its_healthy_siblings(
     healthy = root / "verification_evidence.db"
     try:
         _write_state_db(broken, sessions=1)
-        _write_state_db(healthy, sessions=1)
+        with sqlite3.connect(healthy) as conn:
+            conn.executescript((Path(__file__).parents[2] / "fixtures/hermes/verification-ledger.sql").read_text())
         real_snapshot = snapshot_sqlite_to_blob
 
         def fail_only_state(path: Path, *args: Any, **kwargs: Any) -> Any:
@@ -901,9 +903,8 @@ async def test_sqlite_acquisition_failure_does_not_fail_its_healthy_siblings(
 
         assert result.failed_file_count == 1
         assert [Path(path).name for path in result.failed_paths] == ["state.db"]
-        # The sibling completes its own observation. Its bytes are a state
-        # schema under the verification-ledger name, so the ledger parser
-        # settles it as a typed no-session observation rather than a session.
+        # The healthy declared ledger completes its own empty observation;
+        # the failed state database cannot assign it a failure cursor.
         assert {Path(path).name for path in result.succeeded_paths} | {
             Path(path).name for path in result.settled_exclusion_paths
         } == {"verification_evidence.db"}

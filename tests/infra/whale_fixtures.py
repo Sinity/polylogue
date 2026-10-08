@@ -403,40 +403,29 @@ def acquire_codex_revision_chain(
         planner_ops_backup: Path | None = None
         try:
             raw_ids: list[str] = []
+            append_ids: list[str] = []
             sizes: list[int] = []
             sha256s: list[str] = []
-            # Acquisition publishes raw rows and blobs through the daemon's
-            # admitted writer, exactly as configured-source catch-up does.
-            async with prepared_live_convergence_owner(archive_root) as acquisition_owner:
-                service = AcquisitionService(
-                    backend,
-                    execution=DriveCatchupExecution(
-                        acquisition_owner._write_coordinator,
-                        compute_adapter=acquisition_owner._compute_adapter,
-                    ),
-                )
-                for revision, size, sha256 in fixture.iter_revisions(source_path):
-                    if revision_observer is not None:
-                        revision_observer(revision, source_path)
-                    result = await service.acquire_sources([Source(name="codex", path=source_path)])
-                    if result.errors:
-                        raise AssertionError(
-                            f"acquisition reported {result.errors} error(s) at revision {revision}: {result.counts}"
-                        )
-                    raw_ids.extend(result.raw_ids)
-                    sizes.append(size)
-                    sha256s.append(sha256)
 
             def plan_and_bind() -> tuple[tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
                 # Ordinary synchronous archive writes and the owned append
                 # route (its own event loop) run off this acquisition loop.
                 nonlocal active_index_path, planner_index_backup, planner_source_backup, planner_ops_backup
                 with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-                    full_payloads = tuple(
-                        archive.raw_revision_material(raw_id)[1]
-                        for raw_id in raw_ids[: fixture.dimensions.append_fragment_count + 1]
-                    )
-                    terminal_payload = archive.raw_revision_material(raw_ids[-1])[1]
+                    terminal_payload = archive.raw_revision_material(raw_ids[0])[1]
+                # Future snapshots supply literal tails, but must not become
+                # durable full heads before the live append proof has run.
+                # Otherwise canonical replay correctly selects that newer full
+                # head and defers these historical suffixes.
+                planner_path = source_path.with_name(".codex-planner-revisions.jsonl")
+                try:
+                    full_payloads_list: list[bytes] = []
+                    for revision in range(fixture.dimensions.append_fragment_count + 1):
+                        fixture.write_revision(planner_path, revision)
+                        full_payloads_list.append(planner_path.read_bytes())
+                    full_payloads = tuple(full_payloads_list)
+                finally:
+                    planner_path.unlink(missing_ok=True)
 
                 active_index_path = ArchiveLocation.resolve(archive_root).active_index_path
                 planner_index_backup = archive_root / ".codex-804-planner-index.db"
@@ -459,6 +448,18 @@ def acquire_codex_revision_chain(
                     cursor=cursor,
                     parser_fingerprint=_PARSER_FINGERPRINT,
                 )
+
+                async def publish_planner_baseline() -> None:
+                    # Full intake retains bytes without publishing Index rows.
+                    # Append planning and restored append publication each need
+                    # this baseline established by the canonical raw owner.
+                    async with prepared_live_convergence_owner(archive_root) as retained_owner:
+                        result = await retained_owner.converge_raw_id(raw_ids[0])
+                        while result.pending and not result.done and not result.failed:
+                            result = await retained_owner.converge_raw_id(raw_ids[0])
+                        if result.failed or result.pending or result.done != 1:
+                            raise AssertionError(f"planner baseline convergence did not settle: {result!r}")
+
                 # Admission is classified off the lease, as the live pre-writer
                 # stage does; the Source-writing body runs under the archive
                 # lease, as the daemon's writer runs it.
@@ -471,6 +472,7 @@ def acquire_codex_revision_chain(
                     )
                 if full_result.failed or full_result.succeeded != [source_path]:
                     raise AssertionError(f"production planner baseline ingest failed: {full_result!r}")
+                asyncio.run(publish_planner_baseline())
                 processor._record_full_cursor(
                     source_path,
                     raw_fingerprint=full_result.raw_fingerprints.get(source_path),
@@ -557,20 +559,7 @@ def acquire_codex_revision_chain(
                         ),
                     )
 
-                async def publish_restored_planner_baseline() -> None:
-                    # The snapshots above intentionally restore the all-raw,
-                    # unpublished acquisition state. Re-establish the selected
-                    # full baseline on that state before asking the append
-                    # planner to classify suffixes; otherwise every append is
-                    # correctly deferred behind the unbound acquisition rows.
-                    async with prepared_live_convergence_owner(archive_root) as retained_owner:
-                        result = await retained_owner.converge_raw_id(raw_ids[0])
-                        while result.pending and not result.done and not result.failed:
-                            result = await retained_owner.converge_raw_id(raw_ids[0])
-                        if result.failed or result.pending or result.done != 1:
-                            raise AssertionError(f"restored planner baseline convergence did not settle: {result!r}")
-
-                asyncio.run(publish_restored_planner_baseline())
+                asyncio.run(publish_planner_baseline())
                 for plan in plans:
                     append_result = run_owned_append_plans(archive_root, owner, [plan])
                     if append_result.failed or (append_result.succeeded != [plan] and append_result.deferred != [plan]):
@@ -582,8 +571,8 @@ def acquire_codex_revision_chain(
                         ).fetchone()
                     if row is None:
                         raise AssertionError(f"append ingestion dropped source index {plan.source_index}")
-                    raw_ids.append(str(row[0]))
-                append_raw_ids = tuple(raw_ids[fixture.dimensions.revision_count :])
+                    append_ids.append(str(row[0]))
+                append_raw_ids = tuple(append_ids)
                 with sqlite3.connect(active_index_path) as conn:
                     append_application_rows = tuple(
                         (str(row[0]), str(row[1]), None if row[2] is None else str(row[2]))
@@ -605,7 +594,31 @@ def acquire_codex_revision_chain(
                 source_path.write_bytes(terminal_payload)
                 return tuple(raw_ids), tuple(sizes), tuple(sha256s)
 
-            return await asyncio.to_thread(plan_and_bind)
+            # Acquisition publishes raw rows and blobs through the daemon's
+            # admitted writer, exactly as configured-source catch-up does.
+            async with prepared_live_convergence_owner(archive_root) as acquisition_owner:
+                service = AcquisitionService(
+                    backend,
+                    execution=DriveCatchupExecution(
+                        acquisition_owner._write_coordinator,
+                        compute_adapter=acquisition_owner._compute_adapter,
+                    ),
+                )
+                for revision, size, sha256 in fixture.iter_revisions(source_path):
+                    if revision_observer is not None:
+                        revision_observer(revision, source_path)
+                    result = await service.acquire_sources([Source(name="codex", path=source_path)])
+                    if result.errors:
+                        raise AssertionError(
+                            f"acquisition reported {result.errors} error(s) at revision {revision}: {result.counts}"
+                        )
+                    raw_ids.extend(result.raw_ids)
+                    sizes.append(size)
+                    sha256s.append(sha256)
+                    if revision == 0:
+                        await asyncio.to_thread(plan_and_bind)
+
+            return tuple(raw_ids + append_ids), tuple(sizes), tuple(sha256s)
         finally:
             if planner_index_backup is not None and planner_index_backup.exists() and active_index_path is not None:
                 copy_sqlite_database(planner_index_backup, active_index_path)

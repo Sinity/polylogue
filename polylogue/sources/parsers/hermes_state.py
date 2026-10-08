@@ -210,6 +210,10 @@ def looks_like_state_db_path(path: Path, *, immutable: bool = False) -> bool:
 def require_declared_export(path: Path, source_path: str | None, *, field: str) -> None:
     """Refuse a marker whose named database is not its own declared export.
 
+    Unbound exports are parsed only from the acquisition owner's retained blob
+    in revision_backfill, never from a path carried by imported JSON. Their
+    header declares scope, but cannot associate that path with this JSON source.
+
     A typed refusal, not a silent skip: an artifact that carries the marker and
     then declines to be what it claims is a parse failure the ingest boundary
     records, which is the ordinary outcome for malformed evidence.
@@ -237,10 +241,9 @@ def parse_state_db_payload(
     database the operator never meant to ingest -- a confused deputy that files
     another database's content into the archive under a false source identity.
 
-    Minting a marker already requires the path to be the declared logical
-    export for its source (``raw_payload.decode``); this is the same check on
-    the consuming side, so the two routes agree about which bytes a marker may
-    name.
+    Acquired noncanonical exports are decoded for validation and parsed from
+    their retained blob by the acquisition owner. A JSON marker has no such
+    custody, so this route accepts only the declared member pairing.
     """
     path_value = payload.get("state_db_path")
     if not isinstance(path_value, str) or not path_value:

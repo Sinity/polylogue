@@ -133,3 +133,49 @@ def test_codex_blob_clone_is_reflink_first_and_isolated_on_forced_fallback(
     fallback.joinpath("payload").write_bytes(b"private mutation")
     assert source.joinpath("payload").read_bytes() == source_bytes
     assert not source.joinpath("payload").samefile(fallback / "payload")
+
+
+@pytest.mark.timeout(0)
+@pytest.mark.parametrize("revision_count,append_count", [(5, 2), (20, 16)])
+def test_reduced_codex_revision_chain_rewinds_then_plans_every_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, revision_count: int, append_count: int
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.whale_fixtures import acquire_codex_revision_chain
+
+    root = tmp_path / "reduced-codex-proof"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    initialize_active_archive_root(root)
+    dimensions = WhaleFixtureDimensions(
+        revision_count=revision_count,
+        append_fragment_count=append_count,
+        terminal_wire_bytes=1024 * 1024,
+        near_terminal_predecessor_bytes=256 * 1024,
+        giant_attachment_raw_bytes=32 * 1024,
+    )
+    fixture = CodexRevisionChainFixture(dimensions=dimensions, session_native_id="reduced-codex-proof")
+    observed_revisions: list[int] = []
+
+    def observe_revision(revision: int, path: Path) -> None:
+        assert revision == len(observed_revisions)
+        assert path.stat().st_size > 0
+        observed_revisions.append(revision)
+
+    raw_ids, sizes, hashes = acquire_codex_revision_chain(
+        root, fixture, root / "fixture-sources" / "rollout-proof.jsonl", revision_observer=observe_revision
+    )
+    assert len(raw_ids) == len(set(raw_ids)) == revision_count + append_count
+    assert len(sizes) == len(hashes) == revision_count
+    assert observed_revisions == list(range(revision_count))
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    conn = open_readonly_connection(root / "source.db")
+    try:
+        appended = conn.execute(
+            "SELECT raw_id, source_index FROM raw_sessions WHERE revision_kind='append' ORDER BY source_index"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert [(row[0], row[1]) for row in appended] == list(
+        zip(raw_ids[revision_count:], range(revision_count, revision_count + append_count), strict=True)
+    )
