@@ -660,6 +660,7 @@ def initialize_archive_database(
     *,
     allow_create: bool = True,
     expected_version: int | None = None,
+    archive_root: Path | None = None,
     inactive_destination: InactiveTierDestination | None = None,
     page_size: int | None = None,
     inactive_generation: bool = False,
@@ -674,6 +675,10 @@ def initialize_archive_database(
     not an ordinary archive root.  Such a writer must carry the manifest-bound
     destination capability so a typo cannot silently open the active or a
     foreign generation.  Validation happens before ``sqlite3.connect``.
+
+    Inactive Index generations also name their owning active archive explicitly:
+    their database parent is a candidate directory, not the archive root whose
+    write lease admits publication.
     """
     from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
@@ -699,6 +704,21 @@ def initialize_archive_database(
         )
     elif inactive_destination is not None:
         raise ArchiveTupleError("inactive_destination does not match an archive tuple candidate path")
+    if inactive_destination is not None:
+        configured_root = inactive_destination.archive_root
+        if archive_root is not None and Path(archive_root).resolve(strict=False) != Path(configured_root).resolve(
+            strict=False
+        ):
+            raise ArchiveTupleError("archive_root does not match inactive_destination ownership")
+    elif archive_root is not None:
+        configured_root = archive_root
+    elif inactive_generation:
+        raise ValueError("inactive generation initialization requires its owning archive_root")
+    else:
+        configured_root = path.parent
+    from polylogue.storage.sqlite.write_lease import require_write_lease
+
+    require_write_lease("initialize archive tier", archive_root=configured_root)
     if allow_create:
         # Fresh bootstrap must not follow a pre-existing durable pathname out
         # of the archive root.  ``Path.exists()`` misses dangling symlinks,
@@ -727,7 +747,7 @@ def initialize_archive_database(
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = (
-            _connect_archive_writer(path, profile=WRITE_CONNECTION_PROFILE, archive_root=path.parent)
+            _connect_archive_writer(path, profile=WRITE_CONNECTION_PROFILE, archive_root=configured_root)
             if tier is ArchiveTier.SOURCE
             else connect_measured(path)
         )
@@ -743,7 +763,7 @@ def initialize_archive_database(
             raise RuntimeError(f"durable tier is not a safe existing file; refusing runtime initialization: {path}")
         conn = (
             _connect_archive_writer(
-                path, profile=WRITE_CONNECTION_PROFILE, archive_root=path.parent, existing_only=True
+                path, profile=WRITE_CONNECTION_PROFILE, archive_root=configured_root, existing_only=True
             )
             if tier is ArchiveTier.SOURCE
             else connect_measured(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)

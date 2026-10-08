@@ -139,6 +139,9 @@ def _destination_context(destination: InactiveTierDestination) -> tuple[Inactive
     archive_root = destination.archive_root
     location = ArchiveLocation.resolve(archive_root)
     validate_inactive_destination(destination, location, expected_tier=ArchiveTier.EMBEDDINGS)
+    from polylogue.storage.sqlite.write_lease import require_write_lease
+
+    require_write_lease("inactive embedding tuple generation", archive_root=archive_root)
     tuple_location = ArchiveTupleAllocator(location).load(destination.tuple_id)
     return tuple_location.embeddings, tuple_location.manifest
 

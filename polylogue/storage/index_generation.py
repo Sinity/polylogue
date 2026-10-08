@@ -1059,7 +1059,13 @@ class IndexGenerationStore:
                 f"IndexGenerationStore.create(index={index_path})",
                 archive_root=self.archive_root,
             )
-            initialize_archive_database(index_path, ArchiveTier.INDEX, page_size=page_size, inactive_generation=True)
+            initialize_archive_database(
+                index_path,
+                ArchiveTier.INDEX,
+                page_size=page_size,
+                archive_root=self.archive_root,
+                inactive_generation=True,
+            )
             generation = IndexGeneration(
                 generation_id=generation_id,
                 owner_id=owner,

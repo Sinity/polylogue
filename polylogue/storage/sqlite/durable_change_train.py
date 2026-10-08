@@ -11,7 +11,7 @@ import re
 import sqlite3
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import resources
@@ -391,8 +391,10 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
         _validate_fresh_durable_bootstrap_intent(archive_root)
     marker_root.mkdir(parents=True, exist_ok=True)
     versions: dict[str, int] = {}
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
     for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
-        with sqlite_connection(archive_root / f"{tier.value}.db") as connection:
+        with closing(open_readonly_connection(archive_root / f"{tier.value}.db", validate_schema=False)) as connection:
             versions[tier.value] = int(connection.execute("PRAGMA user_version").fetchone()[0])
     payload: dict[str, object] = {
         "format": _FRESH_DURABLE_BOOTSTRAP_FORMAT,
@@ -2042,6 +2044,7 @@ def _open_existing_tier(tier_path: Path) -> Iterator[sqlite3.Connection]:
     collector here retains three descriptors per open.
     """
     from polylogue.storage.sqlite.population_admission import assert_population_admitted
+    from polylogue.storage.sqlite.write_lease import require_write_lease
 
     assert_population_admitted(tier_path)
     try:
@@ -2054,6 +2057,7 @@ def _open_existing_tier(tier_path: Path) -> Iterator[sqlite3.Connection]:
         raise DurableChangeTrainError(
             "durable tier was replaced by an unsafe file; refusing startup initialization/release"
         )
+    require_write_lease("open existing durable tier", archive_root=tier_path.parent)
     opened = False
     try:
         with sqlite_connection(f"{tier_path.resolve(strict=True).as_uri()}?mode=rw", uri=True) as connection:
@@ -2564,7 +2568,7 @@ def execute_durable_change_train(
     legacy_result: MigrationResult | None = None
     floor = DURABLE_MIGRATION_ADOPTION_FLOORS.get(tier)
     if floor is not None and current_version < floor:
-        with sqlite_connection(tier_path) as conn:
+        with _open_existing_tier(tier_path) as conn:
             legacy_result = _migration_runner.migrate_archive_tier(
                 conn,
                 tier,
@@ -2681,7 +2685,7 @@ def execute_durable_change_train(
         train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
     if train.state is DurableChangeTrainState.RESERVED:
         previous_revision = train.revision
-        with sqlite_connection(tier_path) as conn:
+        with _open_existing_tier(tier_path) as conn:
             train = authorize_durable_change_train_backup(
                 conn,
                 train,
@@ -2692,7 +2696,7 @@ def execute_durable_change_train(
     if train.state is DurableChangeTrainState.BACKUP_AUTHORIZED:
         previous_revision = train.revision
         try:
-            with sqlite_connection(tier_path) as conn:
+            with _open_existing_tier(tier_path) as conn:
                 train = apply_durable_change_train(conn, train)
         except DurableChangeTrainApplyError as exc:
             _persist_train_transition(manifest_path, exc.failed_train, expected_revision=previous_revision)
