@@ -2965,9 +2965,11 @@ def test_accepted_restore_backpressure_retains_indeterminate_terminal_identity(
         assert attempts == 1
 
 
+@pytest.mark.parametrize("admission", ["compute", "capacity", "closing"])
 def test_restarted_accepted_ingest_backpressure_preserves_durable_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    admission: str,
 ) -> None:
     """A new exchange inherits durable acceptance before its first compute phase."""
     from polylogue.core.compute import DaemonBackpressureError
@@ -3031,36 +3033,144 @@ def test_restarted_accepted_ingest_backpressure_preserves_durable_custody(
         assert release.wait(timeout=30)
 
     with running_daemon_operations(root, session_derivation=True) as restarted:
-        durable = restarted.runtime._durable
+        blocker = None
+        callers: list[threading.Thread] = []
+        settled = None
+        outcomes: list[dict[str, object]] = []
+        if admission == "compute":
+            durable = restarted.runtime._durable
 
-        def observe_after_worker_settlement(exchange: Any) -> Any:
-            # Observe the actual failed staged future before the read loop can
-            # return its early accepted reference. Preserve the durable reader.
-            assert exchange.future is not None
-            with pytest.raises(DaemonBackpressureError):
-                exchange.future.result(timeout=10)
-            return durable(exchange)
+            def observe_after_worker_settlement(exchange: Any) -> Any:
+                assert exchange.future is not None
+                with pytest.raises(DaemonBackpressureError):
+                    exchange.future.result(timeout=10)
+                return durable(exchange)
 
-        monkeypatch.setattr(restarted.runtime, "_durable", observe_after_worker_settlement)
+            monkeypatch.setattr(restarted.runtime, "_durable", observe_after_worker_settlement)
+            blocker = restarted.execution_kernel.submit(
+                occupy_input_capacity, admission_class="control", estimated_bytes=0, exclusive_bytes=True
+            )
+            assert entered.wait(timeout=5)
+        elif admission == "capacity":
+            import asyncio
+
+            from polylogue.operations import daemon_mutations
+            from polylogue.operations.daemon_execution import operation_envelope
+
+            admitted = threading.Semaphore(0)
+            settled = asyncio.Event()
+
+            async def hold_preview(req: Any, context: Any) -> Any:
+                admitted.release()
+                await settled.wait()
+                return operation_envelope(req, context, outcome="cancelled")
+
+            monkeypatch.setattr(daemon_mutations, "execute_selected_preview_operation", hold_preview)
+            for ordinal in range(64):
+                other = DaemonOperationRequest.from_dict(
+                    DaemonOperationRequest(
+                        "mutation.session.delete.preview",
+                        {"session_ids": ["codex:absent"]},
+                        request_id=f"occupied-preview-{ordinal}",
+                        archive_root=str(root),
+                    ).to_dict()
+                )
+                caller = threading.Thread(
+                    target=lambda req=other: outcomes.append(restarted.runtime.call(req, principal))
+                )
+                callers.append(caller)
+                caller.start()
+            assert all(admitted.acquire(timeout=10) for _ in callers)
+            with restarted.runtime._condition:
+                assert (
+                    sum(
+                        item.future is not None and not item.future.done()
+                        for item in restarted.runtime._exchanges.values()
+                    )
+                    == 64
+                )
+        else:
+            restarted.runtime._closing = True
+        try:
+            response = restarted.client.operation(
+                request.operation, request.payload, archive_root=str(root), request_id=str(request.request_id)
+            )
+            assert response is not None, response
+            assert response["outcome"] == ("accepted" if admission == "compute" else "indeterminate"), response
+            if admission == "compute":
+                assert response["error"] is None
+            else:
+                assert response["error"]["code"] == (
+                    "operation_capacity" if admission == "capacity" else "runtime_stopping"
+                )
+                assert response["error"]["retryable"] is False
+            assert response["accepted_reference"] == retained["reference"]
+            assert response["result"]["reference"] == retained["reference"]
+        finally:
+            if blocker is not None:
+                release.set()
+                blocker.future.result(timeout=10)
+            if callers:
+                assert settled is not None
+                assert restarted._loop.loop is not None
+                restarted._loop.loop.call_soon_threadsafe(settled.set)
+                for caller in callers:
+                    caller.join(timeout=10)
+                    assert not caller.is_alive()
+                assert len(outcomes) == 64
+            restarted.runtime._closing = False
+
+
+def test_restarted_durable_preview_compute_refusal_preserves_reference(tmp_path: Path) -> None:
+    """durable_request previews retain custody before their first compute read."""
+    root = tmp_path / "archive"
+    ids: tuple[str, ...] = ()
+
+    def seed(root: Path) -> None:
+        nonlocal ids
+        ids = _seed_sessions(root, count=1)
+
+    request_id = "durable-preview-replay"
+    with running_daemon_operations(root, seed_archive=seed) as first:
+        prepared = first.client.operation_to_completion(
+            "mutation.session.delete.preview",
+            {"session_ids": list(ids)},
+            archive_root=str(root),
+            request_id=request_id,
+        )
+        assert prepared is not None and prepared["outcome"] == "completed", prepared
+        reference = prepared["result"]["reference"]
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def occupy_input_capacity() -> None:
+        entered.set()
+        assert release.wait(timeout=30)
+
+    with running_daemon_operations(root) as restarted:
         blocker = restarted.execution_kernel.submit(
             occupy_input_capacity, admission_class="control", estimated_bytes=0, exclusive_bytes=True
         )
         try:
             assert entered.wait(timeout=5)
-            response = restarted.client.operation(
-                request.operation, request.payload, archive_root=str(root), request_id=str(request.request_id)
+            replay = restarted.client.operation(
+                "mutation.session.delete.preview",
+                {"session_ids": list(ids)},
+                archive_root=str(root),
+                request_id=request_id,
             )
-            assert response is not None and response["outcome"] == "accepted", response
-            # Progress operations hand back existing custody first; the
-            # settled refusal must not become a fresh retry authorization.
-            assert response["error"] is None
-            assert response["accepted_reference"] == retained["reference"]
-            assert response["result"]["reference"] == retained["reference"]
-            status = restarted.client.operation(
-                "operation.status", {"request_id": str(request.request_id)}, archive_root=str(root)
-            )
-            assert status is not None and status["result"]["outcome"] == "accepted", status
-            assert status["result"]["reference"] == retained["reference"]
+            assert replay is not None and replay["outcome"] != "rejected", replay
+            assert replay["accepted_reference"] == reference
+            assert replay.get("error") is None or replay["error"]["retryable"] is False
         finally:
             release.set()
             blocker.future.result(timeout=10)
+        restored = restarted.client.operation_to_completion(
+            "mutation.session.delete.preview",
+            {"session_ids": list(ids)},
+            archive_root=str(root),
+            request_id=request_id,
+        )
+        assert restored is not None and restored["outcome"] == "completed", restored
+        assert restored["result"] == prepared["result"]
