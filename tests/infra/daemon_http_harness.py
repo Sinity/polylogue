@@ -39,6 +39,7 @@ from unittest.mock import MagicMock
 from polylogue.daemon.web_auth import WebCredentialRegistry
 
 if TYPE_CHECKING:
+    from polylogue.api import Polylogue
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 
 
@@ -162,3 +163,18 @@ def capture_responses(handler: DaemonAPIHandler) -> tuple[MagicMock, MagicMock]:
     handler._send_error = send_error  # type: ignore[method-assign]
     handler._send_json = send_json  # type: ignore[method-assign]
     return send_error, send_json
+
+
+def execute_session_list_query(params: dict[str, list[str]], limit: int = 50, offset: int = 0) -> object:
+    """Exercise canonical list execution with HTTP parameter parsing and real archive reads."""
+    import asyncio
+
+    from polylogue.daemon.http import _build_query_spec_params
+
+    handler = make_daemon_handler("GET", "/api/sessions")
+    query_params = _build_query_spec_params(params, handler)
+
+    async def query(poly: Polylogue) -> object:
+        return await handler._do_list(poly, query_params, limit, offset)
+
+    return asyncio.run(handler._run_archive_query(query))

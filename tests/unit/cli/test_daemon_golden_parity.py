@@ -378,19 +378,7 @@ def test_find_then_read_transcript_survives_daemon_proxied_keyword_search(
     golden_parity_workspace: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression for polylogue-ajmu.
-
-    ``find QUERY then read --view transcript`` (default plain-text rendering,
-    the "summary"/"transcript" views' shared query-set renderer) used to crash
-    with ``KeyError: 'rank'`` once a daemon was reachable and the query was a
-    keyword FTS search rather than an exact session ref -- even with exactly
-    one matching session, no disambiguation involved. Root cause: the daemon's
-    ``_archive_search_hit_payload`` (``daemon/http.py``) put ``rank`` as a
-    top-level sibling of ``session``/``match``, while the shared text renderer
-    ``_hit_line`` (``cli/archive_query.py``) -- and every other search-hit
-    producer (direct CLI ``_hit_payload``, MCP ``archive_search_hit_payload``)
-    -- reads ``match["rank"]``.
-    """
+    """Daemon-ranked match references remain readable through query-set transcript rendering."""
     archive_root = golden_parity_workspace["archive_root"]
     from polylogue.cli import cli
 

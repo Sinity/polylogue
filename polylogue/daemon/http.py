@@ -144,7 +144,6 @@ if TYPE_CHECKING:
     from polylogue.operations.daemon_protocol import DaemonOperationRequest
     from polylogue.operations.mutation_transaction import MutationPrincipal
     from polylogue.storage.sqlite.archive_tiers.archive import (
-        ArchiveSessionSearchHit,
         ArchiveSessionSummary,
         ArchiveStore,
     )
@@ -668,77 +667,6 @@ def _csv_values(params: dict[str, list[str]], key: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
-def _archive_datetime_to_ms(value: datetime | None) -> int | None:
-    if value is None:
-        return None
-    return int(value.timestamp() * 1000)
-
-
-def _archive_filter_kwargs_from_spec(
-    spec: SessionQuerySpec,
-    *,
-    since_ms: int | None,
-    until_ms: int | None,
-) -> dict[str, object]:
-    """Storage-layer filter kwargs derived from one merged ``SessionQuerySpec``.
-
-    Every key here is accepted identically by ``ArchiveStore.list_summaries``/
-    ``search_summaries``/``count_sessions``/``count_search_sessions`` — the
-    complete filter surface those four SQL entry points share (polylogue-4p1.1
-    parity test: ``tests/unit/daemon/test_web_reader.py::
-    test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field``).
-    ``session_id`` is deliberately NOT included: it is passed as a separate
-    keyword by the caller because ``count_sessions`` does not accept it.
-
-    ``root`` (polylogue-j8u2) resolves the default result unit to top-level
-    sessions when the request left it unset -- see
-    :func:`~polylogue.archive.query.spec.resolve_default_root_filter`. This
-    keeps the daemon-proxied session-list route in parity with the declared
-    ``cli.query`` read (``polylogue/operations/daemon_reads.py``), which is now
-    the CLI's only session-query executor and applies the same resolution this
-    daemon path must match exactly (golden-parity coverage:
-    ``tests/unit/cli/test_daemon_golden_parity.py::
-    test_find_list_json_parity_between_direct_and_daemon``).
-    """
-    from polylogue.archive.query.spec import resolve_default_root_filter
-
-    origins = spec.origins
-    origin = origins[0] if len(origins) == 1 else None
-    return {
-        "origin": origin,
-        "origins": origins,
-        "excluded_origins": spec.excluded_origins,
-        "tags": spec.tags,
-        "excluded_tags": spec.excluded_tags,
-        "repo_names": spec.repo_names,
-        "project_refs": spec.project_refs,
-        "has_types": spec.has_types,
-        "has_tool_use": spec.filter_has_tool_use,
-        "has_thinking": spec.filter_has_thinking,
-        "has_paste": spec.filter_has_paste,
-        "tool_terms": spec.tool_terms,
-        "excluded_tool_terms": spec.excluded_tool_terms,
-        "action_terms": spec.action_terms,
-        "excluded_action_terms": spec.excluded_action_terms,
-        "action_sequence": spec.action_sequence,
-        "action_text_terms": spec.action_text_terms,
-        "referenced_paths": spec.referenced_path,
-        "cwd_prefix": spec.cwd_prefix,
-        "typed_only": spec.typed_only,
-        "message_type": spec.message_type,
-        "title": spec.title,
-        "min_messages": spec.min_messages,
-        "max_messages": spec.max_messages,
-        "min_words": spec.min_words,
-        "max_words": spec.max_words,
-        "since_ms": since_ms,
-        "until_ms": until_ms,
-        "since_session_id": spec.since_session_id,
-        "boolean_predicate": spec.boolean_predicate,
-        "root": resolve_default_root_filter(spec.root, boolean_predicate=spec.boolean_predicate),
-    }
-
-
 def _dump_target_ref(target_ref: TargetRefPayload) -> dict[str, object]:
     return target_ref.model_dump(mode="json", exclude_none=True)
 
@@ -1198,10 +1126,8 @@ def _build_query_spec_params(
 ) -> dict[str, object]:
     """Build SessionQuerySpec-compatible params from HTTP query string.
 
-    Shared by every ``/api/sessions``-style fast path (both the full-backend
-    ``_do_list`` and the split-archive ``_do_archive_session_list``,
-    polylogue-4p1.1) so a filter param is parsed once, in one place, instead
-    of being hand-mirrored per route.
+    API and server-rendered session lists pass these operands to the canonical
+    query executor, so filter, ordering and retrieval semantics have one owner.
     """
     spec_params: dict[str, object] = {}
 
@@ -2562,8 +2488,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             default=DEFAULT_SESSION_LIST_LIMIT,
         )
         offset = max(0, self._get_int(params, "offset", 0))
+
+        async def _list(poly: Polylogue) -> object:
+            return await self._do_list(poly, query_params, limit, offset, route="/sessions")
+
         try:
-            page = self._do_archive_session_list(archive_root, params, limit, offset, "/sessions")
+            query_params = _build_query_spec_params(params, self)
+            cursor = self._get_param(params, "cursor")
+            if cursor:
+                query_params["cursor"] = cursor
+            page = self._sync_run(_list)
         except QuerySpecError as exc:
             self._send_webui_html(
                 HTTPStatus.BAD_REQUEST,
@@ -2751,7 +2685,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
 
         async def _search(poly: Polylogue) -> object:
-            return await self._do_search_list(poly, spec, limit, 0)
+            return await self._do_search_list(poly, spec, limit, 0, route="/search")
 
         try:
             result = self._sync_run(_search)
@@ -3380,16 +3314,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if cursor:
             query_params["cursor"] = cursor
 
-        archive_root = _web_reader_archive_root()
-        # The split archive list fast path is offset based. Search continuations
-        # carry a ranked keyset cursor, so send them through the canonical
-        # search builder instead of repeating page one and dropping the cursor.
-        if archive_root is not None and not cursor:
-            self._send_json(HTTPStatus.OK, self._do_archive_session_list(archive_root, params, limit, offset, route))
-            return
-
         async def _list(poly: Polylogue) -> object:
-            return await self._do_list(poly, query_params, limit, offset)
+            return await self._do_list(poly, query_params, limit, offset, route=route)
 
         result = self._sync_run(_list)
         self._send_json(HTTPStatus.OK, result)
@@ -3400,6 +3326,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         query_params: dict[str, object],
         limit: int,
         offset: int,
+        *,
+        route: str = "/api/sessions",
     ) -> object:
         from polylogue.archive.query.expression import compile_expression_into
         from polylogue.archive.query.spec import SessionQuerySpec
@@ -3419,7 +3347,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # pure-DSL queries whose clauses only set structured fields with no
         # FTS text, e.g. ``origin:codex has:paste``).
         if spec.query_terms or spec.contains_terms:
-            return await self._do_search_list(poly, spec, limit, offset)
+            return await self._do_search_list(poly, spec, limit, offset, route=route)
 
         # A pure vector-only request (similar_text, no FTS term) must surface
         # the same typed EmbeddingRetrievalNotReadyError the CLI and MCP give,
@@ -3428,10 +3356,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # are not ready), which daemon_safe_handler maps to its 409 status
         # instead of falling through to a generic ValueError (#1749).
         if spec.similar_text or spec.similar_session_id:
-            return await self._do_search_list(poly, spec, limit, offset)
+            return await self._do_search_list(poly, spec, limit, offset, route=route)
 
         filter_obj = spec.build_filter(poly.config)
-        summaries = await filter_obj.list_summaries()
+        try:
+            summaries = await filter_obj.list_summaries()
+        except ValueError as exc:
+            if spec.session_id is None:
+                raise
+            from polylogue.archive.query.spec import QuerySpecError
+
+            raise QuerySpecError("id", spec.session_id) from exc
         total = await spec.count(poly.config)
 
         diagnostics = None
@@ -3483,7 +3418,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             ),
             "limit": limit,
             "offset": offset,
-            "route_state": _route_readiness_payload(route_state_name, "/api/sessions", reason=route_state_reason),
+            "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),
         }
         if diagnostics is not None:
             result["diagnostics"] = diagnostics.model_dump(mode="json")
@@ -3495,6 +3430,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         spec: SessionQuerySpec,
         limit: int,
         offset: int,
+        *,
+        route: str = "/api/sessions",
     ) -> object:
         """Return the canonical :class:`SearchEnvelope` for ranked queries.
 
@@ -3517,286 +3454,55 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
         except InvalidSearchCursorError as exc:
             return QueryErrorPayload(error="invalid_cursor", detail=str(exc)).model_dump(mode="json")
-        return envelope.model_dump(mode="json")
+        except ValueError as exc:
+            if spec.session_id is None:
+                raise
+            from polylogue.archive.query.spec import QuerySpecError
 
-    def _do_archive_session_list(
-        self,
-        archive_root: Path,
-        params: dict[str, list[str]],
-        limit: int,
-        offset: int,
-        route: str = "/api/sessions",
-    ) -> object:
-        from polylogue.archive.query.expression import compile_expression_into
-        from polylogue.archive.query.search_hits import search_query_text
-        from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec, parse_query_date
+            raise QuerySpecError("id", spec.session_id) from exc
+        except (DatabaseError, sqlite3.Error) as exc:
+            degraded_reason = _search_index_degraded_reason(exc)
+            if degraded_reason is None:
+                raise
+            from polylogue.archive.query.search_hits import search_query_text
+            from polylogue.surfaces.payloads import build_search_envelope
 
-        # Build one SessionQuerySpec from every accepted HTTP query param via
-        # the shared builder (_build_query_spec_params), then route the free
-        # text ``query`` param through the shared expression parser/lowerer
-        # so DSL clauses like ``origin:codex has:paste since:7d`` map to the
-        # correct filter fields instead of being passed as literal FTS text
-        # (#1860). This is the single spec construction path for both this
-        # split-archive fast path and the full-backend ``_do_list`` — a
-        # filter field added to SessionQuerySpec.from_params is honored here
-        # automatically instead of silently missing until this function is
-        # separately edited (polylogue-4p1.1). ``contains`` reaches
-        # ``contains_terms`` as a literal term via ``from_params`` itself, so
-        # it never risks the ExpressionCompileError a DSL-parsed value with
-        # spaces or field-like tokens would raise (#1873 Bug 7).
-        spec_query_params = _build_query_spec_params(params, self)
-        query_str = str(spec_query_params.pop("query", "") or "").strip()
-        base = SessionQuerySpec.from_params(spec_query_params)
-        spec = compile_expression_into(query_str, base) if query_str else base
-
-        fts_terms = spec.query_terms + spec.contains_terms
-        fts_query = search_query_text(fts_terms)
-
-        # parse_query_date raises QuerySpecError (a PolylogueError carrying
-        # http_status_code=400) for unparseable dates; daemon_safe_handler maps
-        # it to the QueryErrorPayload-shaped 400 the other surfaces return.
-        since_dt = parse_query_date("since", spec.since)
-        until_dt = parse_query_date("until", spec.until)
-        since_ms = _archive_datetime_to_ms(since_dt)
-        until_ms = _archive_datetime_to_ms(until_dt)
-
-        origins = spec.origins
-        origin = origins[0] if len(origins) == 1 else None
-        # session_id is passed separately to list_summaries/search_summaries
-        # (count_sessions does not accept this param, so it cannot go in _filter_kw).
-        spec_session_id = spec.session_id
-
-        # Every remaining structured filter is read directly off the merged
-        # spec — no per-field HTTP-param re-read for anything SessionQuerySpec
-        # already models (polylogue-4p1.1).
-        _filter_kw = _archive_filter_kwargs_from_spec(spec, since_ms=since_ms, until_ms=until_ms)
-        filtered = bool(
-            fts_query
-            or spec_session_id
-            or origin
-            or origins
-            or spec.excluded_origins
-            or spec.tags
-            or spec.excluded_tags
-            or spec.repo_names
-            or spec.project_refs
-            or spec.has_types
-            or spec.tool_terms
-            or spec.excluded_tool_terms
-            or spec.action_terms
-            or spec.excluded_action_terms
-            or spec.action_sequence
-            or spec.action_text_terms
-            or spec.referenced_path
-            or spec.cwd_prefix
-            or spec.typed_only
-            or spec.message_type
-            or spec.title
-            or spec.min_messages is not None
-            or spec.max_messages is not None
-            or spec.min_words is not None
-            or spec.max_words is not None
-            or since_dt is not None
-            or until_dt is not None
-            or spec.since_session_id
-            or spec.boolean_predicate is not None
-            or spec.filter_has_paste
-            or spec.filter_has_tool_use
-            or spec.filter_has_thinking
-        )
-
-        with archive_read_context(
-            archive_root,
-            operation="http.archive.read",
-            arguments={"path": getattr(self, "path", "")},
-            projection="http-read",
-        ) as archive:
-            # Resolve an ``id:`` clause once, up front, so both branches share one
-            # miss/ambiguous policy. list_summaries/search_summaries resolve the
-            # token internally and raise KeyError (miss) / ValueError (ambiguous);
-            # left unhandled those reach the safe handler as a 500. A miss is a
-            # typed-empty page and an ambiguous prefix is a 400 query-spec error,
-            # matching the other query surfaces.
-            resolved_session_id = spec_session_id
-            if spec_session_id is not None:
-                try:
-                    resolved_session_id = archive.resolve_session_id(spec_session_id)
-                except KeyError:
-                    if fts_query:
-                        from polylogue.operations.action_contracts import query_result_action_affordance_payloads
-
-                        reason = "No session matched the id filter."
-                        return {
-                            "outcome": decide_outcome(matched=0, empty_reason="id_filter_matched_nothing").to_dict(),
-                            "query": fts_query,
-                            "retrieval_lane": "dialogue",
-                            "ranking_policy": "mixed-bm25-rrf-vector",
-                            "ranking_policy_version": "1",
-                            "hits": [],
-                            "total": 0,
-                            "limit": limit,
-                            "offset": offset,
-                            "route_state": _route_readiness_payload("no_results", route, reason=reason),
-                            "action_affordances": [
-                                action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
-                            ],
-                        }
-                    reason = "No session matched the id filter."
-                    return {
-                        "outcome": decide_outcome(matched=0, empty_reason="id_filter_matched_nothing").to_dict(),
-                        "items": [],
-                        "total": 0,
-                        "limit": limit,
-                        "offset": offset,
-                        "route_state": _route_readiness_payload("no_results", route, reason=reason),
-                    }
-                except ValueError as exc:
-                    raise QuerySpecError("id", spec_session_id) from exc
-            if fts_query:
-                from polylogue.operations.action_contracts import query_result_action_affordance_payloads
-
-                try:
-                    hits = self._run_archive_bounded_query(
-                        archive,
-                        deadline_s=None,
-                        compute=lambda: archive.search_summaries(
-                            fts_query,
-                            limit=limit,
-                            offset=offset,
-                            session_id=resolved_session_id,
-                            **_filter_kw,
-                        ),
-                    )
-                except (DatabaseError, sqlite3.Error) as exc:
-                    degraded_reason = _search_index_degraded_reason(exc)
-                    if degraded_reason is None:
-                        raise
-                    diagnostics = QueryMissDiagnosticsPayload(
-                        message=degraded_reason,
-                        filters=(f"query={fts_query!r}",),
-                        reasons=(
-                            QueryMissReasonPayload(
-                                code="search_index_degraded",
-                                severity="warning",
-                                summary=degraded_reason,
-                                detail="The sessions route returned an explicit degraded state instead of a zero-hit "
-                                "result because the archive search index could not be read.",
-                            ),
-                        ),
-                        archive_session_count=None,
-                    ).model_dump(mode="json", by_alias=True)
-                    return {
-                        "outcome": decide_outcome(matched=0, degraded=("search_index_degraded",)).to_dict(),
-                        "query": fts_query,
-                        "retrieval_lane": "dialogue",
-                        "ranking_policy": "mixed-bm25-rrf-vector",
-                        "ranking_policy_version": "1",
-                        "hits": [],
-                        "total": None,
-                        "limit": limit,
-                        "offset": offset,
-                        "diagnostics": diagnostics,
-                        "route_state": _route_readiness_payload(
-                            "degraded",
-                            route,
-                            reason=degraded_reason,
-                            component="message_fts",
-                            stale_available=False,
-                        ),
-                        "action_affordances": [
-                            action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
-                        ],
-                    }
-                total = self._run_archive_bounded_query(
-                    archive,
-                    deadline_s=None,
-                    compute=lambda: archive.count_search_sessions(
-                        fts_query,
-                        session_id=resolved_session_id,
-                        **_filter_kw,  # type: ignore[arg-type]
+            query = search_query_text(spec.query_terms + spec.contains_terms)
+            diagnostics = QueryMissDiagnosticsPayload(
+                message=degraded_reason,
+                filters=(f"query={query!r}",),
+                reasons=(
+                    QueryMissReasonPayload(
+                        code="search_index_degraded",
+                        severity="warning",
+                        summary=degraded_reason,
+                        detail="The canonical search could not read the archive search index.",
                     ),
-                )
-                search_outcome = decide_outcome(matched=len(hits))
-                route_state_name, route_state_reason = _session_list_state(search_outcome, filtered=True)
-                from polylogue.archive.query.spec import session_count_unit_label
-
-                payload: dict[str, object] = {
-                    "outcome": search_outcome.to_dict(),
-                    "query": fts_query,
-                    "retrieval_lane": "dialogue",
-                    "ranking_policy": "mixed-bm25-rrf-vector",
-                    "ranking_policy_version": "1",
-                    "hits": [self._archive_search_hit_payload(hit) for hit in hits],
-                    "total": total,
-                    "total_unit": session_count_unit_label(cast("bool | None", _filter_kw.get("root"))),
-                    "limit": limit,
-                    "offset": offset,
-                    "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),
-                    "action_affordances": [
-                        action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
-                    ],
-                }
-                if not hits:
-                    # Zero-result query: attach a diagnostics envelope (matching
-                    # the archive reader contract) so the surface can explain the
-                    # miss instead of rendering a bare empty list.
-                    archive_count = self._run_archive_bounded_query(
-                        archive,
-                        deadline_s=None,
-                        compute=lambda: archive.count_sessions(**_filter_kw),  # type: ignore[arg-type]
-                    )
-                    filters = tuple(
-                        label
-                        for label in (
-                            f"query={fts_query!r}",
-                            f"origin={origin}" if origin else None,
-                            f"tags={list(spec.tags)}" if spec.tags else None,
-                        )
-                        if label is not None
-                    )
-                    payload["diagnostics"] = QueryMissDiagnosticsPayload(
-                        message=f"No sessions matched {fts_query!r}.",
-                        filters=filters,
-                        reasons=(),
-                        archive_session_count=archive_count,
-                    ).model_dump(mode="json", by_alias=True)
-                return payload
-            summaries = self._run_archive_bounded_query(
-                archive,
-                deadline_s=None,
-                compute=lambda: archive.list_summaries(
-                    limit=limit,
-                    offset=offset,
-                    session_id=resolved_session_id,
-                    **_filter_kw,
                 ),
+                archive_session_count=None,
             )
-            # count_sessions has no session_id param, so when the page is scoped to
-            # a single resolved id an archive-wide total would be reported for a
-            # one-session match. An id matches at most one session, so the scoped
-            # total is the page length.
-            total = (
-                len(summaries)
-                if resolved_session_id is not None
-                else self._run_archive_bounded_query(
-                    archive,
-                    deadline_s=None,
-                    compute=lambda: archive.count_sessions(**_filter_kw),  # type: ignore[arg-type]
-                )
+            envelope = build_search_envelope(
+                (),
+                total=None,
+                limit=limit,
+                offset=offset,
+                query=query,
+                retrieval_lane=spec.retrieval_lane,
+                sort=spec.sort,
+                diagnostics=diagnostics,
+            ).model_copy(update={"outcome": decide_outcome(matched=0, degraded=("search_index_degraded",))})
+            payload = envelope.model_dump(mode="json")
+            payload["route_state"] = _route_readiness_payload(
+                "degraded",
+                route,
+                reason=degraded_reason,
+                component="message_fts",
             )
-            archive_list_outcome = decide_outcome(matched=len(summaries))
-            route_state_name, route_state_reason = _session_list_state(archive_list_outcome, filtered=filtered)
-            from polylogue.archive.query.spec import session_count_unit_label
-
-            return {
-                "outcome": archive_list_outcome.to_dict(),
-                "items": [self._archive_summary_payload(summary) for summary in summaries],
-                "total": total,
-                "total_unit": session_count_unit_label(cast("bool | None", _filter_kw.get("root"))),
-                "limit": limit,
-                "offset": offset,
-                "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),
-            }
+            return payload
+        payload = envelope.model_dump(mode="json")
+        state, reason = _session_list_state(envelope.outcome, filtered=spec.has_filters())
+        payload["route_state"] = _route_readiness_payload(state, route, reason=reason)
+        return payload
 
     def _archive_summary_payload(self, summary: ArchiveSessionSummary) -> dict[str, object]:
         """Project one archive summary row into the web reader's list shape.
@@ -3836,31 +3542,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "tags": list(domain.tags),
             "flags": None,
             "summary": None,
-        }
-
-    def _archive_search_hit_payload(self, hit: ArchiveSessionSearchHit) -> dict[str, object]:
-        session_id = str(hit.session_id)
-        message_id = str(hit.message_id)
-        session_ref = TargetRefPayload.session(session_id)
-        message_ref = TargetRefPayload.message(session_id=session_id, message_id=message_id)
-        return {
-            "session": {
-                "id": session_id,
-                "title": hit.title or session_id,
-                "origin": hit.origin,
-                "target_ref": _dump_target_ref(session_ref),
-                "anchor": reader_anchor("session", session_id),
-                "actions": _dump_actions(reader_session_actions()),
-            },
-            "match": {
-                "rank": hit.rank,
-                "message_id": message_id,
-                "block_id": hit.block_id,
-                "snippet": hit.snippet,
-                "target_ref": _dump_target_ref(message_ref),
-                "anchor": reader_anchor("message", message_id),
-                "actions": _dump_actions(reader_message_actions()),
-            },
         }
 
     # ------------------------------------------------------------------

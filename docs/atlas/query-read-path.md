@@ -252,3 +252,11 @@ current materializer version. Available thread and latency projections remain
 readable with unknown provenance; profile reads still require a profile row.
 Recorded versions are returned unchanged. Query-time projections may declare
 their own known projection version independently of profile materialization.
+
+HTTP API and server-rendered session lists compile the same complete query
+specification and execute through the canonical summary or search-envelope
+route on every page. Explicit ordering, similarity and continuation operands
+reach that owner without a first-page storage lowering. Ranked metadata comes
+from the canonical envelope and its actual lane execution; the HTTP readiness
+chip projects its terminal outcome. An unavailable search index remains an
+explicit degraded HTTP envelope, including when no hits can be returned.

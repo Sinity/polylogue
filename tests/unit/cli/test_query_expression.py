@@ -72,6 +72,7 @@ from polylogue.archive.query.predicate import (
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.protocols import ScopedVectorQuery
 from polylogue.core.refs import ObjectRef
+from tests.infra.daemon_http_harness import execute_session_list_query
 from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.identity import archive_block_id, archive_message_id
 from tests.infra.live_ingest import write_index_session
@@ -6367,7 +6368,6 @@ class TestDaemonContainsParamNotCompiled:
         normalized to a MATCH-safe FTS query and simply returns no matches. The
         old code did ``query or contains`` and compiled the contains value.
         """
-        from polylogue.daemon.http import DaemonAPIHandler
         from tests.infra.storage_records import SessionBuilder
 
         index_db = workspace_env["archive_root"] / "index.db"
@@ -6378,12 +6378,8 @@ class TestDaemonContainsParamNotCompiled:
             .add_message("m1", role="user", text="ordinary content")
             .save()
         )
-        handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
-
         # Would raise ExpressionCompileError if compiled; must not here.
-        payload = handler._do_archive_session_list(
-            workspace_env["archive_root"], {"contains": ["action:badaction"]}, 50, 0
-        )
+        payload = execute_session_list_query({"contains": ["action:badaction"]}, 50, 0)
         assert isinstance(payload, dict)
         assert payload["total"] == 0
 
@@ -6399,11 +6395,6 @@ class TestDaemonSessionIdFilter:
     Replaces the earlier source-grep regression (#1873 Bug 7/8) with real calls
     into the archive session-list route over a seeded archive.
     """
-
-    def _handler(self) -> Any:
-        from polylogue.daemon.http import DaemonAPIHandler
-
-        return DaemonAPIHandler.__new__(DaemonAPIHandler)
 
     def _seed(self, index_db: Path, specs: list[tuple[str, str]]) -> list[str]:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -6435,9 +6426,7 @@ class TestDaemonSessionIdFilter:
         ids = self._seed(index_db, [("alpha", "alpha body"), ("beta", "beta body")])
         assert len(ids) == 2
 
-        payload = self._handler()._do_archive_session_list(
-            workspace_env["archive_root"], {"query": [f"id:{ids[0]}"]}, 50, 0
-        )
+        payload = execute_session_list_query({"query": [f"id:{ids[0]}"]}, 50, 0)
         assert isinstance(payload, dict)
         # total must be scoped to the id match, NOT the archive-wide count of 2.
         assert payload["total"] == 1
@@ -6449,9 +6438,7 @@ class TestDaemonSessionIdFilter:
         ids = self._seed(index_db, [("alpha", "alpha body"), ("beta", "beta body")])
         assert len(ids) == 2
 
-        payload = self._handler()._do_archive_session_list(
-            workspace_env["archive_root"], {"query": [f"session:{ids[0]}"]}, 50, 0
-        )
+        payload = execute_session_list_query({"query": [f"session:{ids[0]}"]}, 50, 0)
         assert isinstance(payload, dict)
         assert payload["total"] == 1
         items = payload["items"]
@@ -6461,9 +6448,7 @@ class TestDaemonSessionIdFilter:
         index_db = workspace_env["archive_root"] / "index.db"
         self._seed(index_db, [("alpha", "alpha body")])
 
-        payload = self._handler()._do_archive_session_list(
-            workspace_env["archive_root"], {"query": ["id:nonexistentnope"]}, 50, 0
-        )
+        payload = execute_session_list_query({"query": ["id:nonexistentnope"]}, 50, 0)
         # A missing id is a typed-empty page, not a 500 propagated from resolve.
         assert payload["items"] == []
         assert payload["total"] == 0
@@ -6475,9 +6460,7 @@ class TestDaemonSessionIdFilter:
         index_db = workspace_env["archive_root"] / "index.db"
         self._seed(index_db, [("alpha", "alpha body")])
 
-        payload = self._handler()._do_archive_session_list(
-            workspace_env["archive_root"], {"query": ["session:nonexistentnope"]}, 50, 0
-        )
+        payload = execute_session_list_query({"query": ["session:nonexistentnope"]}, 50, 0)
         assert payload["items"] == []
         assert payload["total"] == 0
         assert payload["limit"] == 50
@@ -6495,7 +6478,7 @@ class TestDaemonSessionIdFilter:
         assert prefix and prefix not in ids, "need a shared, non-exact prefix"
 
         with pytest.raises(QuerySpecError):
-            self._handler()._do_archive_session_list(workspace_env["archive_root"], {"query": [f"id:{prefix}"]}, 50, 0)
+            execute_session_list_query({"query": [f"id:{prefix}"]}, 50, 0)
 
     def test_contains_filters_without_query(self, workspace_env: dict[str, Path]) -> None:
         index_db = workspace_env["archive_root"] / "index.db"
@@ -6503,9 +6486,7 @@ class TestDaemonSessionIdFilter:
 
         # ?contains=foo with no ?query= must still filter (Bug 7): it routes to the
         # FTS branch as a literal term rather than returning the unfiltered page.
-        payload = self._handler()._do_archive_session_list(
-            workspace_env["archive_root"], {"contains": ["findmetoken"]}, 50, 0
-        )
+        payload = execute_session_list_query({"contains": ["findmetoken"]}, 50, 0)
         assert isinstance(payload, dict)
         hits = payload.get("hits")
         assert isinstance(hits, list) and len(hits) == 1
