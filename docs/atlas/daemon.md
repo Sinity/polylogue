@@ -304,3 +304,11 @@ objects, and terminal unavailable objects. Terminal provider refusals and
 excision remain visible through their typed acquisition events; the stored
 `unavailable` disposition does not distinguish their reasons. Stage scheduling
 uses executable transport work, so blocked identity cannot keep retrying.
+
+
+Bulk tag and metadata mutation plans retain original requested IDs and the
+missing-ID gap separately from exact authorized session targets. Ordinary
+recovery replays only those targets and reports the frozen named gap, even
+if a missing session has appeared since authorization. Correction recovery
+checks the exact kind, payload, note and normalized author before replay;
+an already committed matching effect preserves its creation and update times.

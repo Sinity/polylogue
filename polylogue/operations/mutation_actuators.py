@@ -1097,7 +1097,7 @@ class BulkTagActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: BulkTagArgs) -> MutationPlan:
-        resolved, _unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
+        resolved, unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
@@ -1108,13 +1108,15 @@ class BulkTagActuator(ConvergentReplay):
                 "session_ids": list(resolved),
                 "tags": list(args.tags),
                 "requested_session_count": len(args.session_ids),
+                "requested_session_ids": list(args.session_ids),
+                "unresolved_session_ids": list(unresolved),
             },
         )
 
     def apply(self, plan: MutationPlan, args: BulkTagArgs) -> MutationReceipt:
         session_ids: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
         tags: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("tags") or ()))
-        requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
+        requested_count = cast("int", plan.context["requested_session_count"])
         # Every planned id is stored exactly or the apply stops before its
         # first write; none is re-resolved to a prefix sibling.
         args.archive.require_stored_session_ids(session_ids)
@@ -1127,7 +1129,7 @@ class BulkTagActuator(ConvergentReplay):
             assertions += changed
             if changed > 0:
                 affected += 1
-        _, unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
+        unresolved = tuple(cast("list[str]", plan.context["unresolved_session_ids"]))
         outcome = _narrowed_plan_outcome(matched=affected, unresolved=unresolved)
         status: MutationTargetStatus = "applied" if affected else "already_satisfied"
         return MutationReceipt(
@@ -1158,7 +1160,7 @@ class BulkTagActuator(ConvergentReplay):
         # carries no author: production bulk tagging never sets one.
         return BulkTagArgs(
             archive=handles.archive,
-            session_ids=tuple(cast("list[str]", plan.context["session_ids"])),
+            session_ids=tuple(cast("list[str]", plan.context["requested_session_ids"])),
             tags=tuple(cast("list[str]", plan.context["tags"])),
         )
 
@@ -1258,7 +1260,7 @@ class BulkMetadataSetActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: BulkMetadataSetArgs) -> MutationPlan:
-        resolved, _unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
+        resolved, unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
@@ -1269,6 +1271,8 @@ class BulkMetadataSetActuator(ConvergentReplay):
                 "session_ids": list(resolved),
                 "pairs": [[key, value] for key, value in args.pairs],
                 "requested_session_count": len(args.session_ids),
+                "requested_session_ids": list(args.session_ids),
+                "unresolved_session_ids": list(unresolved),
             },
         )
 
@@ -1276,7 +1280,7 @@ class BulkMetadataSetActuator(ConvergentReplay):
         session_ids: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
         planned_pairs = cast("list[list[object]]", plan.context.get("pairs") or [])
         pairs: tuple[tuple[str, object], ...] = tuple((str(pair[0]), pair[1]) for pair in planned_pairs)
-        requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
+        requested_count = cast("int", plan.context["requested_session_count"])
         args.archive.require_stored_session_ids(session_ids)
         affected = 0
         assertions = 0
@@ -1285,7 +1289,7 @@ class BulkMetadataSetActuator(ConvergentReplay):
             assertions += changed
             if changed > 0:
                 affected += 1
-        _, unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
+        unresolved = tuple(cast("list[str]", plan.context["unresolved_session_ids"]))
         outcome = _narrowed_plan_outcome(matched=affected, unresolved=unresolved)
         status: MutationTargetStatus = "applied" if affected else "already_satisfied"
         return MutationReceipt(
@@ -1313,7 +1317,7 @@ class BulkMetadataSetActuator(ConvergentReplay):
     def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> BulkMetadataSetArgs:
         return BulkMetadataSetArgs(
             archive=handles.archive,
-            session_ids=tuple(cast("list[str]", plan.context["session_ids"])),
+            session_ids=tuple(cast("list[str]", plan.context["requested_session_ids"])),
             pairs=tuple((str(pair[0]), pair[1]) for pair in cast("list[list[object]]", plan.context["pairs"])),
         )
 
@@ -2757,6 +2761,22 @@ class CorrectionRecordActuator(ConvergentReplay):
             author_kind=cast("str | None", plan.context["author_kind"]),
         )
 
+    def already_applied(self, handles: ReplayHandles, plan: MutationPlan) -> bool:
+        from polylogue.storage.sqlite.archive_tiers.user_write import correction_effect_matches
+
+        with closing(
+            open_readonly_connection(handles.archive_root / "user.db", timeout_class="background-read")
+        ) as conn:
+            return correction_effect_matches(
+                conn,
+                "insight",
+                str(plan.context["session_id"]),
+                str(plan.context["kind"]),
+                {"payload": plan.context["payload"], "note": plan.context["note"]},
+                author_ref=cast("str | None", plan.context["author_ref"]),
+                author_kind=cast("str | None", plan.context["author_kind"]),
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class CorrectionDeleteArgs:
@@ -3150,12 +3170,10 @@ def _partition_requested_session_ids(
 
     A multi-target mutation may not silently shrink to the ids that still
     resolve: an id excised between selection and execution is a *named gap*,
-    not an absence of intent. PREPARE plans the resolved half; APPLY re-runs
-    this split over the caller's own ids so it can decide one honest terminal
-    outcome instead of reporting success over a smaller set than the caller
-    asked for. The declared plan context is a closed model
-    (``machine_plan_context``), so the gap is carried on the receipt, which is
-    where the terminal outcome is decided anyway.
+    not an absence of intent. PREPARE freezes the resolved half as effect
+    targets and retains original IDs and named gaps in the closed machine
+    context. APPLY and recovery report that same gap without resolving it
+    into newly available targets.
 
     A multi-target selection is a set of full session ids its caller already
     resolved once (the CLI from its query, a facade caller from its own

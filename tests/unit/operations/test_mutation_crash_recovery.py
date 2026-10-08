@@ -17,6 +17,7 @@ terminal reason; breaking an actuator's convergence (for example, letting
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing
@@ -992,3 +993,115 @@ def _prepared_blocker_crash_and_restart(root: Path, crash: Crash) -> str:
         return operation_id
 
     return asyncio.run(run())
+
+
+@pytest.mark.parametrize("family", ["bulk-tag", "bulk-metadata-set"])
+@pytest.mark.parametrize("selection", ["partial", "missing", "present"])
+@pytest.mark.parametrize("crash", ["before-apply", "after-apply"])
+def test_bulk_recovery_retains_original_named_gaps_without_widening_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str, selection: str, crash: Crash
+) -> None:
+    """Losing missing IDs in the persisted plan turns recovered degraded into empty/ok."""
+    root = tmp_path / "archive"
+    root.mkdir()
+    sid = _seed_archive_session(root, native_id="bootstrap")
+    missing = "codex-session:arrives-later"
+    ids = (sid, missing) if selection == "partial" else (missing,) if selection == "missing" else (sid,)
+    scenario = next(item for item in _SCENARIOS if item.name == family)
+    args = (
+        (lambda _root, archive: actuators.BulkTagArgs(archive, ids, ("neutral",)))
+        if family == "bulk-tag"
+        else (lambda _root, archive: actuators.BulkMetadataSetArgs(archive, ids, (("neutral", "value"),)))
+    )
+    scenario = _Scenario(scenario.name, scenario.actuator, args, scenario.applied)
+    operation_id = _crash_mid_mutation(root, scenario, crash)
+    # Newly available request evidence must never become a new authorized target.
+    _seed_archive_session(root, native_id="arrives-later")
+    resolutions = []
+    original = type(scenario.actuator).recover
+
+    def observe(self: Any, handles: Any, plan: Any) -> Any:
+        resolution = original(self, handles, plan)
+        resolutions.append(resolution)
+        return resolution
+
+    monkeypatch.setattr(type(scenario.actuator), "recover", observe)
+    recover_on_admitted_owner(root)
+    assert len(resolutions) == 1
+    receipt = resolutions[0].receipt
+    assert receipt is not None
+    expected_missing = [] if selection == "present" else [missing]
+    assert receipt.domain_receipt["unresolved_session_ids"] == expected_missing
+    assert receipt.domain_receipt["session_count"] == len(ids)
+    assert receipt.domain_receipt["outcome"]["state"] == (
+        "degraded" if expected_missing else "ok" if crash == "before-apply" else "empty"
+    )
+    assert receipt.target_refs == (() if selection == "missing" else (f"session:{sid}",))
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        assert archive.read_user_metadata(missing) == {}
+    with closing(sqlite3.connect(root / "user.db")) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM assertions WHERE target_ref = ?", (f"session:{missing}",)).fetchone()[0]
+            == 0
+        )
+    with open_verified_sqlite_read_connection(root / "audit.db") as conn:
+        assert tuple(
+            conn.execute(
+                "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+        ) == ("completed", "recovered_complete")
+
+
+@pytest.mark.parametrize("crash", ["before-apply", "after-apply"])
+@pytest.mark.parametrize("change", [None, "payload", "note", "author_ref", "author_kind"])
+def test_correction_recovery_keeps_exact_committed_effect_and_timestamps(
+    tmp_path: Path, frozen_clock: Any, crash: Crash, change: str | None
+) -> None:
+    """Exact replay must preserve time; any changed effect must still be applied."""
+    root = tmp_path / "archive"
+    root.mkdir()
+    sid = _seed_archive_session(root, native_id="bootstrap")
+    planned: dict[str, Any] = {
+        "payload": {"tag": "neutral"},
+        "note": "original",
+        "author_ref": "user:fixture",
+        "author_kind": "user",
+    }
+
+    def args(_root: Path, archive: ArchiveStore) -> actuators.CorrectionRecordArgs:
+        return actuators.CorrectionRecordArgs(archive, sid, "tag_reject", **planned)
+
+    scenario = _Scenario("correction-record", actuators.CorrectionRecordActuator(), args, _always)
+    _crash_mid_mutation(root, scenario, crash)
+    if crash == "after-apply" and change is not None:
+        changed = dict(planned)
+        changed[change] = (
+            {"tag": "changed"}
+            if change == "payload"
+            else "service"
+            if change == "author_kind"
+            else "user:changed"
+            if change == "author_ref"
+            else "changed"
+        )
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            archive.record_correction(sid, "tag_reject", **changed)
+
+    def rows() -> list[tuple[Any, ...]]:
+        with closing(sqlite3.connect(root / "user.db")) as conn:
+            return conn.execute(
+                "SELECT value_json, author_ref, author_kind, created_at_ms, updated_at_ms FROM assertions WHERE kind='correction'"
+            ).fetchall()
+
+    before = rows()
+    frozen_clock.advance(60)
+    recover_on_admitted_owner(root)
+    after = rows()
+    assert len(after) == 1
+    assert json.loads(after[0][0]) == {"payload": planned["payload"], "note": planned["note"]}
+    assert after[0][1:3] == ("user:fixture", "user")
+    if crash == "after-apply" and change is None:
+        assert after == before
+    elif before:
+        assert after[0][3] == before[0][3]
+        assert after[0][4] > before[0][4]

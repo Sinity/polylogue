@@ -727,6 +727,11 @@ def _part_args(
     )
     if preview.plan.operation == "mutate-delete-session":
         return runtime_operation_binding(SessionDeleteActuator()), SessionDeleteArgs(archive, ids)
+    if requested_session_ids is None and preview.plan.operation in {
+        "mutate-bulk-tag-sessions",
+        "mutate-bulk-set-metadata",
+    }:
+        ids = tuple(cast(list[str], preview.plan.context["requested_session_ids"]))
     if preview.plan.operation == "mutate-bulk-tag-sessions":
         return runtime_operation_binding(BulkTagActuator()), BulkTagArgs(
             archive, ids, tuple(cast(list[str], preview.plan.context["tags"]))

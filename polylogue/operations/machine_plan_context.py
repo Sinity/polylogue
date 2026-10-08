@@ -19,14 +19,30 @@ class _DeleteContext(BaseModel):
     session_ids: list[str] = Field(max_length=256)
 
 
-class _TagContext(_DeleteContext):
+class _BulkContext(_DeleteContext):
+    requested_session_ids: list[str]
+    unresolved_session_ids: list[str]
+    requested_session_count: int = Field(ge=0, le=10_000)
+
+    @model_validator(mode="after")
+    def validate_request_evidence(self) -> _BulkContext:
+        if self.requested_session_count != len(self.requested_session_ids):
+            raise ValueError("bulk replay request count must match its original IDs")
+        requested = list(dict.fromkeys(self.requested_session_ids))
+        unresolved = set(self.unresolved_session_ids)
+        if self.unresolved_session_ids != [value for value in requested if value in unresolved]:
+            raise ValueError("bulk replay gaps must be distinct ordered original request IDs")
+        if self.session_ids != [value for value in requested if value not in unresolved]:
+            raise ValueError("bulk replay effect targets must be the exact request partition")
+        return self
+
+
+class _TagContext(_BulkContext):
     tags: list[str]
-    requested_session_count: int = Field(ge=0, le=10_000)
 
 
-class _MetadataContext(_DeleteContext):
+class _MetadataContext(_BulkContext):
     pairs: list[list[object]]
-    requested_session_count: int = Field(ge=0, le=10_000)
 
     @model_validator(mode="after")
     def validate_pairs(self) -> _MetadataContext:

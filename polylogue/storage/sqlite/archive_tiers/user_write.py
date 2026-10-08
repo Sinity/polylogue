@@ -845,6 +845,32 @@ def upsert_correction(
     return read_archive_correction_envelope(conn, correction_id)
 
 
+def correction_effect_matches(
+    conn: sqlite3.Connection,
+    target_type: str,
+    target_id: str,
+    correction_type: str,
+    payload: dict[str, object],
+    *,
+    author_ref: str | None = None,
+    author_kind: str | None = None,
+) -> bool:
+    """Inspect the exact current correction effect without restamping its assertion."""
+    assertion = read_assertion_envelope(
+        conn, assertion_id_for_correction(correction_id_for(target_type, target_id, correction_type))
+    )
+    return (
+        assertion is not None
+        and assertion.status != AssertionStatus.DELETED
+        and assertion.kind == AssertionKind.CORRECTION
+        and assertion.target_ref == normalize_object_ref_text(f"{target_type}:{target_id}")
+        and assertion.key == correction_type
+        and assertion.value == payload
+        and assertion.author_ref == normalize_object_ref_text(_normalize_assertion_author_ref(author_ref))
+        and assertion.author_kind == _normalize_assertion_author_kind(author_kind)
+    )
+
+
 def upsert_saved_view(
     conn: sqlite3.Connection,
     name: str,
