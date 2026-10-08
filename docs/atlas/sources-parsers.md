@@ -2,6 +2,11 @@
 
 ## Area boundary
 
+Post-ingest hook-paste enrichment reads admitted Source hook evidence and
+publishes Index paste markers through `open_isolated_write_connection` with
+its configured archive root. The factory enforces that root’s writer lease
+without relying on the global SQLite opener interceptor.
+
 Sources acquire bytes and identify their material source. Detection chooses a
 provider parser by input shape. `RawObservationConvergenceOwner` coordinates
 retained preparation through `RawObservationDerivation`; JSONL and non-JSON

@@ -19,7 +19,6 @@ It is called by the daemon after each live-ingest batch completes.
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Iterable
 from hashlib import sha256
 from pathlib import Path
@@ -30,8 +29,7 @@ from polylogue.core.hook_payload import hook_record_field, matched_reader_keys
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import get_logger
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from polylogue.storage.sqlite.write_lease import require_write_lease
+from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
 
 logger = get_logger(__name__)
 
@@ -144,8 +142,9 @@ def _archive_source_path(db_path: Path) -> Path:
 
 
 def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, object]], *, archive_root: Path) -> int:
-    require_write_lease(f"hook paste enrichment({index_db})", archive_root=archive_root)
-    conn = sqlite3.connect(str(index_db))
+    conn = open_isolated_write_connection(
+        index_db, purpose=f"hook paste enrichment({index_db})", archive_root=archive_root
+    )
     updated = 0
     updated_sessions: set[str] = set()
     try:

@@ -434,3 +434,20 @@ def test_late_hook_publication_schedules_its_old_session_not_the_next_batch(
             ("next-batch-session", 0),
             ("old-session", 1),
         ]
+
+
+@pytest.mark.parametrize("wrong_root_lease", [False, True])
+def test_hook_paste_writer_requires_its_archive_lease_without_global_guard(
+    tmp_path: Path, wrong_root_lease: bool
+) -> None:
+    """Replacing the factory with raw sqlite3.connect loses this refusal."""
+    from contextlib import nullcontext
+
+    from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement, write_lease
+
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    lease = write_lease("fixture.other-archive", archive_root=other_root) if wrong_root_lease else nullcontext()
+    with arm_write_lease_enforcement(), lease, pytest.raises(UnleasedWriteError):
+        hook_paste_enrichment._enrich_archive_paste_from_hooks(tmp_path / "index.db", [], archive_root=tmp_path)
+    assert not (tmp_path / "index.db").exists()
