@@ -141,13 +141,7 @@ def execute_temporal_read(
     if spec.limit is None:
         spec = replace(spec, limit=50)
     session_ref = payload.get("session_id")
-    if (
-        isinstance(session_ref, str)
-        and session_ref
-        and not any(
-            (spec.query_terms, spec.contains_terms, spec.exclude_text_terms, spec.similar_text, spec.similar_session_id)
-        )
-    ):
+    if isinstance(session_ref, str) and session_ref:
         try:
             summaries = [archive_summary_to_domain(archive.read_summary(archive.resolve_session_id(session_ref)))]
         except KeyError:

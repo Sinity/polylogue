@@ -27,6 +27,14 @@ are sorted for identity, while directional sequence steps retain order. The
 production evaluator executes the persisted predicate, so canonicalization
 must preserve its selection meaning (`core/query_identity.py`).
 
+Compact scalar alternatives such as `id:(A|B)` and `title:(alpha|beta)`
+select the same session relation as explicit OR, including under NOT. Each
+title alternative retains the ordinary substring-match semantics.
+
+A temporal read with a resolved single-session reference retains that session
+even when its original selection contains text or ranking criteria. An absent
+reference selects a query set; a missing selected reference stays empty.
+
 ## Shared read input
 
 `ReadRequest.normalize` and `read_contract_schema` share the flat input

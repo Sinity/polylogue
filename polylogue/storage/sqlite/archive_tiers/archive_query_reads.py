@@ -6,7 +6,7 @@ import json
 import math
 import sqlite3
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
@@ -1486,6 +1486,14 @@ def _field_predicate_clause(
 ) -> tuple[str, list[object]]:
     field = predicate.bound_field_name(context="lowering session Boolean predicates")
     values = predicate.values
+    if field in {"id", "session", "title"} and len(values) > 1:
+        alternatives = [
+            _field_predicate_clause(table_alias, replace(predicate, values=(value,)), tags_relation=tags_relation)
+            for value in values
+        ]
+        return " OR ".join(f"({clause})" for clause, _ in alternatives), [
+            parameter for _, parameters in alternatives for parameter in parameters
+        ]
     kwargs: dict[str, Any] = {}
     if field in {"id", "session"}:
         if not values:

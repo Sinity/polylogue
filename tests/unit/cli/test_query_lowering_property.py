@@ -132,3 +132,32 @@ def test_the_reference_evaluator_separates_the_corpus() -> None:
     for title in _TITLES:
         matched = _expected(lambda _origin, row_title, title=title: row_title == title)
         assert 0 < len(matched) < len(_CORPUS)
+
+
+@pytest.mark.parametrize("field", ["id", "session", "title", "origin"])
+@pytest.mark.parametrize("negated", [False, True])
+def test_compact_field_alternatives_select_the_same_rows_as_explicit_or(
+    seeded_query_archive: Path, field: str, negated: bool
+) -> None:
+    if field in {"id", "session"}:
+        values = ("claude-code-session:ext-alpha", "claude-code-session:ext-bravo")
+        expected = set(values)
+    elif field == "title":
+        values = ("needle", "haystack")
+        expected = _expected(lambda _origin, title: title in values)
+    else:
+        values = ("claude-code-session", "codex-session")
+        expected = _expected(lambda origin, _title: origin in values)
+    if negated:
+        expected = _expected(lambda _origin, _title: True) - expected
+    prefix = "NOT " if negated else ""
+    expressions = (
+        f"sessions where {prefix}{field}:({'|'.join(values)})",
+        f"sessions where {prefix}({field}:{values[0]} OR {field}:{values[1]})",
+    )
+    with ArchiveStore.open_existing(seeded_query_archive) as archive:
+        for expression in expressions:
+            kwargs = plan_filter_kwargs(compile_expression(expression).to_plan())
+            observed = {row.session_id for row in archive.list_summaries(limit=100, **kwargs)}
+            assert observed == expected
+            assert archive.count_sessions(**kwargs) == len(expected)
