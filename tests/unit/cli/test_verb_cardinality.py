@@ -606,7 +606,8 @@ def test_temporal_cli_first_with_text_keeps_only_the_resolved_session(
         builder.add_message(
             text="needle temporal evidence",
             blocks=[
-                {"type": "tool_use", "tool_name": "Bash", "tool_id": f"shell-{index}", "input": {"command": "pwd"}}
+                {"type": "text", "text": "needle temporal evidence"},
+                {"type": "tool_use", "tool_name": "Bash", "tool_id": f"shell-{index}", "input": {"command": "pwd"}},
             ],
         ).save()
     with cli_daemon_archive(tmp_path, monkeypatch) as stack:
@@ -617,8 +618,11 @@ def test_temporal_cli_first_with_text_keeps_only_the_resolved_session(
             for call in calls.call_args_list
             if call.args[0].operation == "read.temporal"
         ]
-    assert len(selected) == 1 and selected[0]
     assert result.exit_code == 0, result.output
+    assert len(selected) == 1 and selected[0], (
+        result.output,
+        [call.args[0].operation for call in calls.call_args_list],
+    )
     events = json.loads(result.output)["temporal_window"]["events"]
     refs = {ref for event in events for ref in event["evidence_refs"] if ref.startswith("session:")}
     assert refs == {f"session:{selected[0]}"}
