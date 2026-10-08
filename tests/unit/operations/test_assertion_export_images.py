@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -170,5 +171,112 @@ def test_export_cancellation_retires_partial_image_and_closes_source_cursor(
             assert pinned.archive._conn.execute("SELECT COUNT(*) FROM user_tier.assertions").fetchone()[0] == 513
         assert len(scratch) == 1
         assert not scratch[0].exists()
+    finally:
+        owner.close()
+
+
+@pytest.mark.uses_real_clock("starts the real UDS listener and coordinator loop")
+def test_daemon_abandoned_equivalent_starts_share_bytes_and_release_independently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tempfile
+    from concurrent.futures import ThreadPoolExecutor
+
+    original_directory = tempfile.TemporaryDirectory
+    scratch: list[Path] = []
+
+    def tracked_directory(*args: Any, **kwargs: Any) -> tempfile.TemporaryDirectory[str]:
+        directory = original_directory(*args, **kwargs)
+        if kwargs.get("prefix") == "polylogue-assertion-export-":
+            scratch.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr("polylogue.operations.assertion_export.tempfile.TemporaryDirectory", tracked_directory)
+    root = tmp_path / "archive"
+    with running_daemon_operations(root, seed_archive=_seed) as stack:
+        # Each completed first-page HTTP exchange disconnects, with no release
+        # or continuation. Restoring a fresh image per start makes this red.
+        for _ in range(12):
+            abandoned = stack.client.operation("user.assertions.export", {"page_size": 1}, archive_root=str(root))
+            assert abandoned is not None and abandoned["result"]["total"] == 513
+
+        def start() -> dict[str, object]:
+            response = stack.client.operation("user.assertions.export", {"page_size": 1}, archive_root=str(root))
+            assert response is not None
+            return cast(dict[str, object], response["result"])
+
+        with ThreadPoolExecutor(max_workers=2) as callers:
+            left, right = list(callers.map(lambda _: start(), range(2)))
+        assert left["selection_ref"] != right["selection_ref"]
+        assert len(scratch) == 1 and (scratch[0] / "rows.db").is_file()
+        released = stack.client.operation(
+            "user.assertions.export.release", {"selection_ref": left["selection_ref"]}, archive_root=str(root)
+        )
+        assert released is not None and released["result"]["released"] is True
+        final_payload = {"selection_ref": right["selection_ref"], "offset": 512, "page_size": 1}
+        final = stack.client.operation("user.assertions.export", final_payload, archive_root=str(root))
+        replay = stack.client.operation("user.assertions.export", final_payload, archive_root=str(root))
+        assert final is not None and replay is not None
+        assert final["result"] == replay["result"]
+        assert final["result"]["next_offset"] is None
+        assert final["result"]["items"][0]["assertion_id"] == "neutral-0000"
+    assert not scratch[0].exists()
+
+
+def test_new_assertion_frame_retires_abandoned_bytes_without_recreating_an_older_pinned_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tempfile
+
+    from polylogue.archive.query.transaction import QueryContinuationStaleError
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    _seed(root)
+    original_directory = tempfile.TemporaryDirectory
+    scratch: list[Path] = []
+
+    def tracked_directory(*, prefix: str) -> tempfile.TemporaryDirectory[str]:
+        directory = original_directory(prefix=prefix, dir=tmp_path)
+        scratch.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr("polylogue.operations.assertion_export.tempfile.TemporaryDirectory", tracked_directory)
+    owner = AssertionExportImages()
+    principal = MutationPrincipal("neutral", frozenset(), "cli")
+    dependencies = DaemonReadDependencies(assertion_exports=owner, assertion_export_principal=principal)
+    try:
+        with open_operation_read(root) as older:
+            first = execute_read_operation(
+                "user.assertions.export",
+                {"page_size": 1},
+                archive=older.archive,
+                serving_identity="test",
+                dependencies=dependencies,
+            )
+            with sqlite3.connect(root / "user.db") as user:
+                user.execute("DELETE FROM assertions WHERE assertion_id = 'neutral-0000'")
+            with open_operation_read(root) as newer:
+                current = execute_read_operation(
+                    "user.assertions.export",
+                    {"page_size": 1},
+                    archive=newer.archive,
+                    serving_identity="test",
+                    dependencies=dependencies,
+                )
+                assert current["total"] == 512
+                assert len(scratch) == 2 and not scratch[0].exists() and scratch[1].exists()
+                with pytest.raises(QueryContinuationStaleError):
+                    execute_read_operation(
+                        "user.assertions.export",
+                        {"selection_ref": first["selection_ref"], "offset": 1},
+                        archive=older.archive,
+                        serving_identity="test",
+                        dependencies=dependencies,
+                    )
+                assert scratch[1].exists()
+                assert owner.release(str(first["selection_ref"]), principal)
+                assert owner.release(str(current["selection_ref"]), principal)
+                assert not scratch[1].exists()
     finally:
         owner.close()

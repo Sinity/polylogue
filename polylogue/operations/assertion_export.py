@@ -19,13 +19,15 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _ExportImage:
     directory: tempfile.TemporaryDirectory[str]
     principal: tuple[str, str]
     scope: tuple[tuple[str, ...] | None, tuple[str, ...] | None, int | None]
     epoch: str
     count: int
+    references: int = 0
+    retired_epoch: str | None = None
 
     @property
     def path(self) -> Path:
@@ -45,16 +47,21 @@ def assertion_export_epoch(archive: ArchiveStore) -> str:
 
 
 class AssertionExportImages:
-    """One daemon owns image bytes until completion, release, or settled shutdown.
+    """Share immutable bytes, with independently releasable client references.
 
-    Only scalar metadata resides in this registry. The complete selection lives
-    in private disk relations; a lost client release retains bytes until this
-    runtime shuts down, without an arbitrary expiry or selection-size ceiling.
+    Equivalent starts share one disk relation. Lost releases retain scalar
+    handles, not another complete image. Observing a newer assertion revision
+    retires older bytes after active page reads settle under the owner lock.
     """
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._images: dict[str, _ExportImage] = {}
+        self._references: dict[str, _ExportImage] = {}
+        self._images: dict[
+            tuple[tuple[str, str], tuple[tuple[str, ...] | None, tuple[str, ...] | None, int | None], str],
+            _ExportImage,
+        ] = {}
+        self._frames: dict[str, tuple[int, str]] = {}
         self._closed = False
 
     def close(self) -> None:
@@ -62,18 +69,42 @@ class AssertionExportImages:
             self._closed = True
             images = tuple(self._images.values())
             self._images.clear()
+            self._references.clear()
+            self._frames.clear()
             for image in images:
                 image.directory.cleanup()
 
     def release(self, reference: str, principal: MutationPrincipal) -> bool:
         with self._lock:
-            image = self._images.get(reference)
+            image = self._references.get(reference)
             if image is None:
                 return False
             self._require_principal(image, principal)
-            del self._images[reference]
-            image.directory.cleanup()
+            del self._references[reference]
+            image.references -= 1
+            if not image.references and image.retired_epoch is None:
+                del self._images[(image.principal, image.scope, image.epoch)]
+                image.directory.cleanup()
             return True
+
+    def _observe_frame(self, epoch: str) -> None:
+        from polylogue.archive.query.transaction import QueryContinuationStaleError
+
+        identity, revision_text = epoch.rsplit(":", 1)
+        revision = int(revision_text)
+        latest = self._frames.get(identity)
+        if latest is not None and revision < latest[0]:
+            # An older pinned reader must not recreate bytes already proven
+            # obsolete by a newer snapshot of the same physical User tier.
+            raise QueryContinuationStaleError(issued_epoch=epoch, current_epoch=latest[1])
+        if latest is None or revision > latest[0]:
+            self._frames[identity] = (revision, epoch)
+            for key, image in tuple(self._images.items()):
+                image_identity, image_revision = image.epoch.rsplit(":", 1)
+                if image_identity == identity and int(image_revision) < revision:
+                    image.directory.cleanup()
+                    image.retired_epoch = epoch
+                    del self._images[key]
 
     @staticmethod
     def _require_principal(image: _ExportImage, principal: MutationPrincipal) -> None:
@@ -96,6 +127,7 @@ class AssertionExportImages:
         scope: tuple[tuple[str, ...] | None, tuple[str, ...] | None, int | None],
         principal: MutationPrincipal,
         checkpoint: Callable[[], None],
+        epoch: str,
     ) -> str:
         from polylogue.storage.sqlite.archive_tiers.user_write import (
             assertion_envelope_to_payload,
@@ -103,7 +135,13 @@ class AssertionExportImages:
         )
         from polylogue.storage.sqlite.connection_profile import readonly_temp_staging
 
-        epoch = assertion_export_epoch(archive)
+        key = ((principal.actor_ref, principal.surface), scope, epoch)
+        image = self._images.get(key)
+        if image is not None:
+            reference = f"assertion-export:{uuid4().hex}"
+            image.references += 1
+            self._references[reference] = image
+            return reference
         directory = tempfile.TemporaryDirectory(prefix="polylogue-assertion-export-")
         count = 0
         try:
@@ -133,11 +171,9 @@ class AssertionExportImages:
                 rows.commit()
             checkpoint()
             reference = f"assertion-export:{uuid4().hex}"
-            image = _ExportImage(directory, (principal.actor_ref, principal.surface), scope, epoch, count)
-            with self._lock:
-                if self._closed:
-                    raise InterruptedError("assertion export owner is closed")
-                self._images[reference] = image
+            image = _ExportImage(directory, (principal.actor_ref, principal.surface), scope, epoch, count, references=1)
+            self._images[key] = image
+            self._references[reference] = image
             return reference
         except BaseException:
             directory.cleanup()
@@ -159,23 +195,29 @@ class AssertionExportImages:
         scope = self._scope(payload)
         reference = payload.get("selection_ref")
         offset = int(cast(int, payload.get("offset", 0)))
-        if reference is None:
-            if offset:
-                raise ValueError("continued assertion export requires its owned selection")
-            reference = self._prepare(archive, scope, principal, checkpoint)
-        if not isinstance(reference, str):
-            raise ValueError("invalid assertion export selection")
         with self._lock:
-            image = self._images.get(reference)
+            if self._closed:
+                raise InterruptedError("assertion export owner is closed")
+            checkpoint()
+            current = assertion_export_epoch(archive)
+            self._observe_frame(current)
+            if reference is None:
+                if offset:
+                    raise ValueError("continued assertion export requires its owned selection")
+                reference = self._prepare(archive, scope, principal, checkpoint, current)
+            if not isinstance(reference, str):
+                raise ValueError("invalid assertion export selection")
+            image = self._references.get(reference)
             if image is None:
                 raise ValueError("assertion export selection is unavailable")
             self._require_principal(image, principal)
             if scope != image.scope:
                 raise ValueError("assertion export selection parameters changed")
             try:
-                current = assertion_export_epoch(archive)
-                if current != image.epoch:
-                    raise QueryContinuationStaleError(issued_epoch=image.epoch, current_epoch=current)
+                if image.retired_epoch is not None or current != image.epoch:
+                    raise QueryContinuationStaleError(
+                        issued_epoch=image.epoch, current_epoch=image.retired_epoch or current
+                    )
                 checkpoint()
                 size = int(cast(int, payload.get("page_size", 256)))
                 start = min(offset, image.count)

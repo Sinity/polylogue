@@ -216,8 +216,13 @@ and assertion-only User frame. Assertion changes refuse continuation; unrelated
 Index ingestion and User settings do not. The original attached User authority
 remains required, including for an empty export. The final page remains
 replayable until `user.assertions.export.release`; release reads no User tier.
-The daemon deletes abandoned images after its exchanges physically settle on
-shutdown. There is no selection expiry or population cap.
+Equivalent starts for the same principal, filters, limit and assertion frame
+share one immutable image with independent release references. A release
+cannot invalidate another client's final-page replay. Observing a newer
+assertion revision retires older image bytes after page reads settle; their
+remaining handles still refuse continuation as stale. The daemon deletes
+abandoned current images after its exchanges physically settle on shutdown.
+There is no selection expiry or population cap.
 CLI JSON and JSONL exports stage the complete walk, release the image, then
 publish output; failed and cancelled walks also release it.
 Python callers use `iter_assertions_for_export`. One assertion's payload remains
