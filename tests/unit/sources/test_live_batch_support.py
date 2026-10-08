@@ -1295,6 +1295,71 @@ def test_unreadable_state_database_stays_retryable_instead_of_excluded(tmp_path:
     assert record is None or record.excluded is False
 
 
+@pytest.mark.parametrize("fault_stage", ["classification", "capture"])
+def test_repeated_sqlite_read_faults_defer_without_quarantining_unchanged_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault_stage: str
+) -> None:
+    """Six native BUSY reads must not spend the cursor's five-failure budget.
+
+    The real producer, batch caller and writer owners run on every pass. Returning
+    these reads as generic failures would exclude the unchanged database before
+    the successful read, leaving its raw bytes permanently unacquired.
+    """
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "codex"
+    state = root / "state_5.sqlite"
+    _write_plain_sqlite_db(state)
+    cursor = CursorStore(tmp_path / "index.db")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="codex-state", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    target = (
+        "polylogue.sources.sqlite_inspection.classify_sqlite_source"
+        if fault_stage == "classification"
+        else "polylogue.sources.sqlite_snapshot.snapshot_sqlite_to_blob"
+    )
+    import importlib
+
+    module_name, function_name = target.rsplit(".", 1)
+    original = getattr(importlib.import_module(module_name), function_name)
+    reads = 0
+
+    def transient_read(*args: Any, **kwargs: Any) -> Any:
+        nonlocal reads
+        reads += 1
+        if reads <= 6:
+            fault = sqlite3.OperationalError("synthetic source read busy")
+            fault.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            raise fault
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, transient_read)
+    metrics = [run_ingest_files(processor, [state], emit_event=False) for _ in range(6)]
+    record = cursor.get_record(state)
+    assert record is not None
+    assert record.failure_count == 0
+    assert record.excluded is False
+    assert record.next_retry_at is not None
+    assert reads == 6
+    assert all(item.failed_file_count == 0 and item.deferred_file_count == 1 for item in metrics)
+    assert all(item.retry_paths == [str(state)] for item in metrics)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+
+    recovered = run_ingest_files(processor, [state], emit_event=False)
+    assert recovered.failed_file_count == 0
+    assert recovered.deferred_file_count == 0
+    assert recovered.succeeded_file_count == 1
+    run_ingest_files(processor, [state], emit_event=False)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT source_path FROM raw_sessions").fetchall() == [(str(state),)]
+    record = cursor.get_record(state)
+    assert record is not None and record.failure_count == 0 and record.excluded is False
+
+
 def test_pre_acquisition_reports_a_retryable_read_as_its_typed_fault(tmp_path: Path) -> None:
     """Callers see one typed retryable fault, never a raw SQLite or OS error.
 
