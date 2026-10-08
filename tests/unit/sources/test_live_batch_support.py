@@ -1360,7 +1360,7 @@ def test_repeated_sqlite_read_faults_defer_without_quarantining_unchanged_input(
     recovered = run_ingest_files(processor, [state], emit_event=False)
     assert recovered.failed_file_count == 0
     assert recovered.deferred_file_count == 0
-    assert recovered.succeeded_paths == (str(state),)
+    assert recovered.succeeded_paths == (state,)
     run_ingest_files(processor, [state], emit_event=False)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT source_path FROM raw_sessions").fetchall() == [(str(state),)]
