@@ -90,14 +90,14 @@ def test_no_cycle_anchor_returns_none() -> None:
 
 def test_linear_projection_over_fixed_fixture() -> None:
     plan = _plan(quota=30_000.0, basis=QuotaBasis.credits)
-    # Cycle anchor day=1; for now=May 11, cycle starts May 1, 30-day cycle => ends May 31.
+    # Cycle anchor day=1; for now=May 11, cycle starts May 1, 31-day cycle => ends June 1.
     now = datetime(2026, 5, 11, 0, 0, tzinfo=UTC)
     usage = _full_coverage(date(2026, 5, 1), days=10, per_day=1000.0, basis=QuotaBasis.credits)
     outlook = build_cycle_outlook(plan, usage, now=now, method=ProjectionMethod.linear)
     assert outlook is not None
     assert outlook.cycle_to_date["credits"] == pytest.approx(10_000.0)
     assert outlook.burn_rate_per_day["credits"] == pytest.approx(1000.0)
-    assert outlook.projected_total["credits"] == pytest.approx(30_000.0)
+    assert outlook.projected_total["credits"] == pytest.approx(31_000.0)
     assert outlook.projection_method is ProjectionMethod.linear
     assert outlook.coverage_ratio == 1.0
     assert outlook.incomplete_days == ()
@@ -159,7 +159,7 @@ def test_quota_projected_breach_without_actual_overage() -> None:
     # Low used, but projection crosses quota before cycle end -> breach_day set.
     plan = _plan(quota=20_000.0, basis=QuotaBasis.credits)
     now = datetime(2026, 5, 11, 0, 0, tzinfo=UTC)
-    # 1000/day for 10 days => used = 10_000, projected linear = 30_000 (over 20_000 quota)
+    # 1000/day for 10 days => used = 10_000, projected linear = 31_000 (over 20_000 quota)
     usage = _full_coverage(date(2026, 5, 1), days=10, per_day=1000.0, basis=QuotaBasis.credits)
     outlook = build_cycle_outlook(plan, usage, now=now)
     assert outlook is not None
@@ -173,7 +173,7 @@ def test_quota_projected_breach_without_actual_overage() -> None:
     # Actual overage is zero, projected overage is positive.
     assert len(outlook.overage_rows) == 1
     assert outlook.overage_rows[0].actual_overage == 0.0
-    assert outlook.overage_rows[0].projected_overage == pytest.approx(10_000.0)
+    assert outlook.overage_rows[0].projected_overage == pytest.approx(11_000.0)
 
 
 def test_multi_basis_cycle_keeps_all_keys() -> None:

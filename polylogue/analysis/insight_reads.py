@@ -50,6 +50,7 @@ def _session_cost_insight_page(archive: ArchiveStore, request: SessionCostInsigh
     def scan(*, limit: int | None = None, offset: int = 0) -> Iterator[SessionCostInsight]:
         return archive.iter_session_cost_insights(
             session_id=request.session_id,
+            time_basis=request.time_basis,
             origin=request.origin,
             since_ms=_archive_query_date_ms("since", request.since),
             until_ms=_archive_query_date_ms("until", request.until),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import shutil
@@ -163,6 +164,104 @@ def test_target_created_during_staging_is_preserved_without_overwrite(
                 pinned.archive, InsightExportBundleRequest(output_path=target, insights=("profiles",))
             )
     assert (target / "marker").read_text() == "keep"
+    assert not list(tmp_path.glob(".bundle.tmp-*"))
+
+
+def test_overwrite_restores_previous_on_failure_and_replaces_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    root = tmp_path / "archive"
+    _seed(root)
+    target = tmp_path / "bundle"
+    with open_operation_read(root) as pinned:
+        export_insight_bundle(pinned.archive, InsightExportBundleRequest(output_path=target, insights=("profiles",)))
+    original_bundle = {path.relative_to(target): path.read_bytes() for path in target.rglob("*") if path.is_file()}
+    assert original_bundle[Path("manifest.json")]
+    original_replace = Path.replace
+    staged_contents: dict[str, bytes] = {}
+    failed_publication = False
+
+    def fail_stage_install(path: Path, destination: Path) -> Path:
+        nonlocal failed_publication
+        if path.parent == target.parent and path.name.startswith(f".{target.name}.tmp-") and destination == target:
+            failed_publication = True
+            staged_contents.update(
+                {
+                    staged.relative_to(path).as_posix(): staged.read_bytes()
+                    for staged in path.rglob("*")
+                    if staged.is_file()
+                }
+            )
+            raise OSError(errno.EIO, "synthetic final export rename failure")
+        return original_replace(path, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_stage_install)
+    with open_operation_read(root) as pinned:
+        with pytest.raises(OSError) as raised:
+            export_insight_bundle(
+                pinned.archive,
+                InsightExportBundleRequest(output_path=target, insights=("profiles",), overwrite=True),
+            )
+
+    assert raised.value.errno == errno.EIO
+    assert failed_publication
+    assert staged_contents["manifest.json"]
+    assert staged_contents["insights/session_profiles.jsonl"]
+    assert {
+        path.relative_to(target): path.read_bytes() for path in target.rglob("*") if path.is_file()
+    } == original_bundle
+    assert not list(tmp_path.glob(".bundle.tmp-*"))
+    assert not list(tmp_path.glob(".bundle.previous-*"))
+
+    monkeypatch.undo()
+    with open_operation_read(root) as pinned:
+        result = export_insight_bundle(
+            pinned.archive,
+            InsightExportBundleRequest(
+                output_path=target, insights=("profiles",), overwrite=True, include_readme=False
+            ),
+        )
+    assert result.output_path == target
+    assert (target / "manifest.json").is_file()
+    assert not (target / "README.md").exists()
+    assert not list(tmp_path.glob(".bundle.tmp-*"))
+    assert not list(tmp_path.glob(".bundle.previous-*"))
+
+
+def test_overwrite_keeps_recovery_bundle_if_restore_rename_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    _seed(root)
+    target = tmp_path / "bundle"
+    with open_operation_read(root) as pinned:
+        export_insight_bundle(pinned.archive, InsightExportBundleRequest(output_path=target, insights=("profiles",)))
+    original_bundle = {path.relative_to(target): path.read_bytes() for path in target.rglob("*") if path.is_file()}
+    original_replace = Path.replace
+
+    def fail_install_and_restore(path: Path, destination: Path) -> Path:
+        if path.parent == target.parent and path.name.startswith(f".{target.name}.tmp-") and destination == target:
+            raise OSError(errno.EIO, "synthetic final export rename failure")
+        if path.parent == target.parent and path.name.startswith(f".{target.name}.previous-") and destination == target:
+            raise OSError(errno.EIO, "synthetic previous bundle restore failure")
+        return original_replace(path, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_install_and_restore)
+    with open_operation_read(root) as pinned:
+        with pytest.raises(BaseExceptionGroup, match="previous bundle is recoverable"):
+            export_insight_bundle(
+                pinned.archive,
+                InsightExportBundleRequest(output_path=target, insights=("profiles",), overwrite=True),
+            )
+
+    backups = list(tmp_path.glob(".bundle.previous-*"))
+    assert len(backups) == 1
+    backup = backups[0]
+    assert {
+        path.relative_to(backup): path.read_bytes() for path in backup.rglob("*") if path.is_file()
+    } == original_bundle
+    assert not target.exists()
     assert not list(tmp_path.glob(".bundle.tmp-*"))
 
 

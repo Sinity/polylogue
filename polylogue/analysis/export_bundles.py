@@ -206,11 +206,41 @@ def _publish_target(tmp_target: Path, request: InsightExportBundleRequest) -> No
     if target.exists() or target.is_symlink():
         if not request.overwrite:
             raise InsightExportBundleError(f"Export target already exists: {target}")
-        if target.is_dir() and not target.is_symlink():
-            shutil.rmtree(target)
-        else:
-            target.unlink()
+        # Directory rename cannot replace a populated directory portably. Move
+        # the old complete bundle aside first, install the staged bundle, then
+        # restore the old name if installation fails. The sibling backup is
+        # also the explicit recovery location if restoration itself fails.
+        backup = target.parent / f".{target.name}.previous-{uuid.uuid4().hex}"
+        while backup.exists() or backup.is_symlink():
+            backup = target.parent / f".{target.name}.previous-{uuid.uuid4().hex}"
+        target.replace(backup)
+        try:
+            tmp_target.replace(target)
+        except BaseException as publication_error:
+            try:
+                backup.replace(target)
+            except BaseException as restoration_error:
+                raise BaseExceptionGroup(
+                    f"Export installation failed; previous bundle is recoverable at {backup}",
+                    [publication_error, restoration_error],
+                ) from None
+            raise
+        try:
+            _remove_export_target(backup)
+        except BaseException as cleanup_error:
+            raise InsightExportBundleError(
+                f"New export is installed at {target}, but previous bundle cleanup failed at {backup}"
+            ) from cleanup_error
+        return
     tmp_target.replace(target)
+
+
+def _remove_export_target(path: Path) -> None:
+    """Remove a moved export target without following a symlink."""
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
 
 
 def export_insight_bundle(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import ConfigDict, Field, model_validator
 
@@ -122,7 +122,11 @@ class ArchiveCoverageInsightQuery(OriginTimeWindowInsightQuery):
     limit: int | None = None
 
 
+SessionCostTimeBasis = Literal["source", "created"]
+
+
 class SessionCostInsightQuery(OriginTimeWindowInsightQuery):
+    time_basis: SessionCostTimeBasis = "source"
     session_id: str | None = None
     model: str | None = None
     status: str | None = None
@@ -612,6 +616,7 @@ __all__ = [
     "DaySessionSummaryInsight",
     "SessionCostInsight",
     "SessionCostInsightQuery",
+    "SessionCostTimeBasis",
     "SessionEnrichmentPayload",
     "SessionEvidencePayload",
     "SessionInferencePayload",

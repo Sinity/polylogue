@@ -83,8 +83,8 @@ class CycleWindow(BaseModel):
     def _coherent(self) -> CycleWindow:
         if self.end <= self.start:
             raise ValueError("cycle end must be strictly after cycle start")
-        if not (self.start <= self.now <= self.end):
-            raise ValueError("now must fall within [start, end]")
+        if not (self.start <= self.now < self.end):
+            raise ValueError("now must fall within [start, end)")
         return self
 
 
@@ -224,12 +224,16 @@ def _group_by_basis(
     usage: Sequence[DailyUsage],
     window: CycleWindow,
 ) -> dict[str, dict[date, float]]:
-    """Group cycle-window usage into ``{basis: {day: amount}}``."""
+    """Group elapsed cycle days into ``{basis: {day: amount}}``.
+
+    Callers must bound the current day at the exact as-of instant before
+    aggregation: a daily row cannot distinguish pre-now and post-now usage.
+    """
     grouped: dict[str, dict[date, float]] = {}
     start_day = window.start.date()
     end_day = window.end.date()
     for row in usage:
-        if row.day < start_day or row.day > end_day:
+        if row.day < start_day or row.day >= end_day or row.day > window.now.date():
             continue
         key = _basis_key(row.basis)
         grouped.setdefault(key, {})[row.day] = grouped.get(key, {}).get(row.day, 0.0) + row.amount

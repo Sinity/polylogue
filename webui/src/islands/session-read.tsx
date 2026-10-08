@@ -19,6 +19,36 @@ export interface SessionReadIslandProps {
 /** The daemon's typed refusal for a message reference this session does not contain. */
 const MESSAGE_NOT_FOUND = 'message_not_found';
 
+type MessageAnchor =
+  | { readonly kind: 'empty' }
+  | { readonly kind: 'malformed' }
+  | { readonly kind: 'target'; readonly targetId: string; readonly messageId: string };
+
+function decodeMessageAnchor(hash: string): MessageAnchor {
+  const encodedTargetId = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (!encodedTargetId) {
+    return { kind: 'empty' };
+  }
+
+  let targetId: string;
+  try {
+    // Search links URL-encode provider-native message IDs. Decode once here,
+    // where the URL representation becomes an exact archive reference.
+    targetId = decodeURIComponent(encodedTargetId);
+  } catch (error) {
+    if (error instanceof URIError) {
+      return { kind: 'malformed' };
+    }
+    throw error;
+  }
+
+  return {
+    kind: 'target',
+    targetId,
+    messageId: targetId.startsWith('msg-') ? targetId.slice(4) : targetId,
+  };
+}
+
 function messageTimestamp(timestamp: string | null): string {
   return timestamp ?? 'Time unavailable';
 }
@@ -88,11 +118,15 @@ export function SessionReadIsland({
   const buttonLabel = exhausted ? 'All messages loaded' : 'Load more messages';
 
   useEffect(() => {
-    const targetId = initialHash.startsWith('#') ? initialHash.slice(1) : initialHash;
-    if (!targetId || document.getElementById(targetId) !== null) {
+    const anchor = decodeMessageAnchor(initialHash);
+    if (anchor.kind === 'malformed') {
+      setStatus('The linked message URL is malformed.');
       return;
     }
-    const targetMessageId = targetId.startsWith('msg-') ? targetId.slice(4) : targetId;
+    if (anchor.kind === 'empty' || document.getElementById(anchor.targetId) !== null) {
+      return;
+    }
+    const { targetId, messageId: targetMessageId } = anchor;
     let cancelled = false;
     // The deep link names a message, so ask the daemon for the window holding
     // it (polylogue-i5vqc). The previous implementation walked pages from the
