@@ -36,7 +36,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandidate, plan_revision_replay
 from polylogue.archive.zip_admission import open_zip_entry
 from polylogue.config import Source
-from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute import DaemonBackpressureError, DaemonOperationCancelled
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.degraded import is_fully_degraded
 from polylogue.core.enums import Origin, Provider
@@ -1535,6 +1535,11 @@ class LiveBatchProcessor:
                     if isinstance(exc, UnleasedWriteError):
                         # A missing writer is a configuration refusal, not a
                         # property of these files: never count them failed.
+                        raise
+                    if isinstance(exc, DaemonBackpressureError):
+                        # Bounded compute admission is pass-level infrastructure
+                        # pressure; poisoning each source cursor would quarantine
+                        # valid input before the next pass can retry it.
                         raise
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
                         # Archive contention is infrastructure state, not a

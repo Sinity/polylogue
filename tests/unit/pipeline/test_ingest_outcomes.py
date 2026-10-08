@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.compute import DaemonBackpressureError
 from polylogue.core.enums import IngestOutcome
 from polylogue.pipeline.ingest_outcomes import (
     classify_archive_write_exception,
@@ -92,6 +93,16 @@ def test_real_sqlite_lock_classifies_transient_error(tmp_path: Path) -> None:
     assert disposition.outcome is IngestOutcome.TRANSIENT_ERROR
     assert disposition.retryable is True
     assert disposition.evidence_ref == "archive_write:OperationalError"
+
+
+def test_daemon_compute_backpressure_classifies_as_retryable() -> None:
+    """The shared typed compute refusal is infrastructure pressure, not bad input."""
+    exc = DaemonBackpressureError("daemon compute admission is saturated; retry shortly")
+    disposition = classify_archive_write_exception(exc)
+
+    assert disposition.outcome is IngestOutcome.TRANSIENT_ERROR
+    assert disposition.retryable is True
+    assert disposition.evidence_ref == "archive_write:DaemonBackpressureError"
 
 
 def test_non_transient_database_error_classifies_parser_defect_not_swallowed() -> None:

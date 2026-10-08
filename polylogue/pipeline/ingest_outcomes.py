@@ -217,19 +217,20 @@ def storage_fault_disposition(kind: StorageFaultKind, *, diagnostic: str | None)
 def classify_archive_write_exception(exc: BaseException) -> IngestAttemptDisposition:
     """Classify a batch-level archive-write failure (the daemon writer boundary).
 
-    A ``sqlite3.OperationalError`` recognized by
-    :func:`polylogue.sources.live.sqlite_locking.is_transient_sqlite_lock` is
-    retryable infrastructure contention, never a poisoned payload. A storage
-    fault (:func:`polylogue.core.storage_faults.storage_fault_kind`) is
-    retryable infrastructure failure for the same reason. Any other
+    A typed daemon-compute backpressure refusal, a transient SQLite lock, or a
+    storage fault is retryable infrastructure contention, never a poisoned
+    payload. Any other
     exception escaping the archive-write boundary is treated as a parser
     defect (see AC2: materialization/index-failure is deliberately deferred
     to follow-up work, so it also lands here today rather than silently
     vanishing as ``LEGACY_UNKNOWN``).
     """
+    from polylogue.core.compute import DaemonBackpressureError
     from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 
     evidence_ref = f"archive_write:{type(exc).__name__}"
+    if isinstance(exc, DaemonBackpressureError):
+        return transient_error_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
         return transient_error_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
     fault = storage_fault_kind(exc)

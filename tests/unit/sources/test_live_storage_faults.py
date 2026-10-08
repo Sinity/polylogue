@@ -19,6 +19,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue import Polylogue
+from polylogue.core.compute import DaemonBackpressureError
 from polylogue.daemon.intake import AdmissionOutcome
 from polylogue.logging import capture
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
@@ -178,6 +179,37 @@ async def test_index_write_storage_fault_refuses_page_without_marking_input(
         assert [(event.get("level"), event.get("reason")) for event in refusals] == [
             ("error", "storage_fault.capacity")
         ]
+
+        await _assert_recovers(archive, watcher, source_path)
+    finally:
+        watcher.stop()
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_index_write_compute_backpressure_stays_retryable_and_recovers(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compute admission refusal leaves the retained source retryable and later indexable."""
+    archive, watcher, source_path = storage_env
+    _fail_first_index_write(
+        monkeypatch,
+        DaemonBackpressureError("daemon compute admission is saturated; retry shortly"),
+    )
+    try:
+        outcomes = await _admit(watcher)
+
+        assert outcomes
+        assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
+        cursor = watcher._cursor.get_record(source_path)
+        assert cursor is None or (cursor.failure_count == 0 and not cursor.excluded)
+        assert all(error is None for _parsed, error in _raw_parse_states(archive.archive_root, source_path))
+        assert _latest_attempt(watcher) == (
+            "failed",
+            "transient_error",
+            "archive_write:DaemonBackpressureError",
+        )
 
         await _assert_recovers(archive, watcher, source_path)
     finally:
