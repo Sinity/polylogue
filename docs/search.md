@@ -989,7 +989,7 @@ via the daemon under
 | `total` | Total matching sessions, or `null` when the lane cannot compute it cheaply. |
 | `limit` / `offset` | Applied page size and row offset. Offset-based pagination is **best-effort** for ranked results. |
 | `next_offset` | Convenience offset pointer; only set when more results are likely. |
-| `next_cursor` | Opaque keyset cursor encoding rank, score, session id, and resolved retrieval lane. **Preferred** for stable rank-first pagination across pages — pass it back unchanged in the next request. |
+| `next_cursor` | Opaque producer position bound to the query, lane, and order. **Preferred** for live anchored pagination — pass it back unchanged in the next request. |
 | `query` | The FTS query text actually applied after CLI/MCP/HTTP coercion. Empty when no FTS query was given. |
 | `sort` | Applied explicit sort field (`"date"`, `"messages"`, `"words"`, etc.) or `null` to preserve the lane's natural rank order. Ranked search will not silently fall back to date sort. |
 | `retrieval_lane` | Resolved lane that actually ran (`dialogue` / `actions` / `hybrid` / `semantic` / `auto`). |
@@ -1069,13 +1069,17 @@ search.
 ### Pagination
 
 For ranked queries, prefer `next_cursor` over `offset`. Cursor
-pagination encodes the rank tie-breaker
-(`(rank, score, session_id, retrieval_lane)`) and is stable under
-archive growth between page fetches. Offset pagination is supported for
+pagination resumes after the anchor in the current pinned result relation.
+Insertions ahead of a present anchor do not shift continuation. A removed
+anchor uses its saved complete order key. Natural BM25 and hybrid scores
+can change with the corpus, so this is not a frozen walk: reranking can
+revisit rows already seen. Random order does not support cursors. Python callback predicates remain
+valid in-process queries with offset pagination; they have no serializable
+selection identity and do not emit a search cursor. Offset pagination is supported for
 non-ranked list paths and as a best-effort fallback for ranked paths.
 
 The cursor is an opaque URL-safe base64 token (a versioned JSON
-envelope; see :class:`polylogue.surfaces.payloads.SearchCursor`).
+envelope; see :class:`polylogue.archive.query.search_cursor.SearchCursor`).
 Consumers MUST treat it as opaque and pass it back unchanged.
 
 ```bash

@@ -9,6 +9,13 @@
 # unclassified until a reviewer assigns a permitted classification.
 package: polylogue
 sites:
+  - file: "polylogue/archive/query/archive_execution.py"
+    function: "_session_search_relation"
+    subject: "sort"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: presentation_projection
+    reason: "Structural session search orders its pinned query relation by the existing default date sort; this does not read, correct or write derived archive state."
   - file: "polylogue/sources/parsers/hermes_state.py"
     function: "_parse_session_row"
     subject: "is_active_leaf"

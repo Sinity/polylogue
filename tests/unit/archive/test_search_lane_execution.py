@@ -22,6 +22,7 @@ from polylogue.archive.query.execution_control import (
 )
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.search_contract import LaneFailure
+from polylogue.archive.query.search_cursor import decode_search_cursor
 from polylogue.archive.query.search_hits import project_search_hits
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.session.domain_models import SessionSummary
@@ -34,7 +35,6 @@ from polylogue.mcp.payloads import session_search_result_payload
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.sqlite.connection_profile import ReadFrameCancelledError, ReadFrameExpiredError
-from polylogue.surfaces.payloads import decode_search_cursor
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.storage_records import SessionBuilder
 
@@ -826,3 +826,84 @@ def test_archive_read_failure_is_not_relabelled_as_a_degraded_vector_lane(
                 archive=pinned.archive,
             )
     assert backend.calls == 1
+
+
+@pytest.mark.parametrize("lane", ("semantic", "hybrid"))
+def test_native_score_and_saved_order_survive_vector_settlement(lane_archive: LaneArchive, lane: str) -> None:
+    root, _config, ids = lane_archive
+    with open_operation_read(root) as pinned:
+        message_ids = [
+            pinned.archive.read_session(ids[name]).messages[0].message_id
+            for name in ("dialogue", "action-one", "action-two")
+        ]
+        backend = _VectorReply(hits=tuple(zip(message_ids, (0.1, 0.2, 0.3), strict=True)))
+        plan = SessionQueryPlan(
+            query_terms=("needle",) if lane == "hybrid" else (),
+            similar_text="needle",
+            retrieval_lane=lane,
+            vector_provider=cast(VectorProvider, backend),
+            limit=1,
+        )
+        first = archive_search_hits(plan, archive_root=root, config=None, archive=pinned.archive)
+        assert first.execution.next_cursor
+        native = first.hits[0][0]
+        assert native.position and native.score is not None
+        projected = project_search_hits(plan, first)
+        assert projected[0].score == native.score
+        assert native.position.key[0].value == native.score
+        if lane == "semantic":
+            assert native.score == 0.1
+        # A closer new provider result precedes the anchor in the current relation.
+        backend.hits = ((message_ids[2], 0.01), (message_ids[0], 0.1), (message_ids[1], 0.2))
+        resumed = archive_search_hits(
+            replace(plan, cursor=first.execution.next_cursor), archive_root=root, config=None, archive=pinned.archive
+        )
+        current = archive_search_hits(replace(plan, limit=10), archive_root=root, config=None, archive=pinned.archive)
+        anchor_index = next(i for i, (hit, _) in enumerate(current.hits) if hit.session_id == native.session_id)
+        assert [hit.session_id for hit, _ in resumed.hits] == [
+            hit.session_id for hit, _ in current.hits[anchor_index + 1 : anchor_index + 2]
+        ]
+
+
+def test_cursor_scan_cancellation_propagates(lane_archive: LaneArchive, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, _config, _ids = lane_archive
+    plan = SessionQueryPlan(query_terms=("needle",), sort="date", limit=1)
+    with open_operation_read(root) as pinned:
+        first = archive_search_hits(plan, archive_root=root, config=None, archive=pinned.archive)
+        assert first.execution.next_cursor
+
+        def cancelled() -> None:
+            raise QueryCancelledError("synthetic cancelled continuation")
+
+        monkeypatch.setattr(pinned.archive, "check_operation_read", cancelled)
+        with pytest.raises(QueryCancelledError):
+            archive_search_hits(
+                replace(plan, cursor=first.execution.next_cursor),
+                archive_root=root,
+                config=None,
+                archive=pinned.archive,
+            )
+
+
+def test_wrong_cursor_refused_before_vector_traversal(lane_archive: LaneArchive) -> None:
+    from polylogue.archive.query.search_cursor import InvalidSearchCursorError
+
+    root, _config, ids = lane_archive
+    with open_operation_read(root) as pinned:
+        message_ids = [
+            pinned.archive.read_session(ids[name]).messages[0].message_id for name in ("dialogue", "action-one")
+        ]
+        backend = _VectorReply(hits=tuple(zip(message_ids, (0.1, 0.2), strict=True)))
+        plan = SessionQueryPlan(
+            similar_text="needle", retrieval_lane="semantic", vector_provider=cast(VectorProvider, backend), limit=1
+        )
+        first = archive_search_hits(plan, archive_root=root, config=None, archive=pinned.archive)
+        assert first.execution.next_cursor and backend.calls == 1
+        with pytest.raises(InvalidSearchCursorError):
+            archive_search_hits(
+                replace(plan, similar_text="other", cursor=first.execution.next_cursor),
+                archive_root=root,
+                config=None,
+                archive=pinned.archive,
+            )
+        assert backend.calls == 1

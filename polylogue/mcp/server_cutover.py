@@ -570,8 +570,6 @@ async def _query_advanced_sessions(
         )
 
     if searching:
-        from polylogue.surfaces.cursor_identity import search_cursor_request_identity
-
         transaction = QueryTransaction(
             archive_root,
             QueryTransactionRequest(
@@ -596,8 +594,6 @@ async def _query_advanced_sessions(
                         config=config,
                         archive_root=archive_root,
                         include_affordances=False,
-                        cursor=None,
-                        request_identity=search_cursor_request_identity(request.response_arguments()),
                     )
                 )
             )

@@ -701,6 +701,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
     QueryFieldDescriptor(
         name="latest",
         spec_attr="latest",
+        plan_attr="latest",
+        plan_active=_is_true,
         spec_active=_is_true,
         selection_filter=True,
         mcp_names=("latest",),

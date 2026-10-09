@@ -3750,6 +3750,12 @@ components:
           - type: 'null'
           default: null
           title: Message Id
+        block_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Block Id
         snippet:
           anyOf:
           - type: string
@@ -3949,26 +3955,26 @@ components:
         \ response shape (#1266). The same envelope\nis emitted from every read surface so downstream consumers — shell\n\
         pipelines, LLM tool-use harnesses, web clients — see one stable\ncontract regardless of which surface produced the\
         \ result.\n\nFields:\n\n- ``hits``: ordered tuple of :class:`SessionSearchHitPayload`\n  (already evidence-bearing\
-        \ — see #873).\n- ``total``: total number of matching sessions. Every read surface\n  (CLI, MCP, daemon HTTP, Python\
-        \ API) computes this via the shared\n  ``spec.count()`` so the field carries a concrete count uniformly\n  (#1749).\
-        \ ``None`` is reserved for the genuine no-spec case where a\n  surface emits a hits list with no backing query spec\
-        \ to count from.\n- ``limit``: applied page size.\n- ``offset``: applied byte/row offset (offset-based pagination\
-        \ is\n  \"best-effort, not stable\" for ranked results; prefer ``next_cursor``).\n- ``next_offset``: convenience pointer\
-        \ for offset-based clients; only\n  set when more results are likely available.\n- ``next_cursor``: opaque keyset\
-        \ cursor encoding (rank, session_id)\n  for stable rank-first pagination. Pass back unchanged in the\n  following\
-        \ request.\n- ``query``: the search query text actually applied (after CLI/MCP/HTTP\n  coercion). Empty string when\
-        \ there is no FTS query.\n- ``sort``: applied sort field, e.g. ``\"rank\"`` (default for ranked\n  search), ``\"date\"\
-        ``, ``\"messages\"``. ``None`` when no explicit sort\n  was requested and the underlying lane order is preserved.\n\
-        - ``retrieval_lane``: the *resolved* per-hit ranking lane — one of\n  ``\"dialogue\"``, ``\"actions\"``, ``\"hybrid\"\
-        ``, ``\"semantic\"``,\n  ``\"auto\"``. This is distinct from the *request* ``retrieval_lane``\n  input parameter,\
-        \ whose closed accepted vocabulary is only\n  ``QUERY_RETRIEVAL_LANES`` (``\"auto\"``/``\"dialogue\"``/``\"actions\"\
-        ``/\n  ``\"hybrid\"``) — ``\"semantic\"`` is never a request lane (a vector-only\n  run is driven by ``similar_text``)\
-        \ but IS reported here as the\n  resolved lane for vector hits (#1749). ``auto`` means the surface\n  left the lane\
-        \ to the planner.\n- ``ranking_policy``: policy identifier the lane used to order hits.\n  Currently always :data:`RANKING_POLICY_MIXED`.\n\
-        - ``ranking_policy_version``: numeric version of the ranking policy\n  so external consumers can detect ordering changes.\n\
-        - ``action_affordances``: query-result actions clients may offer after\n  receiving this result set. This is intentionally\
-        \ top-level so it is not\n  confused with per-hit reader actions in ``hit.match.actions``.\n- ``diagnostics``: optional\
-        \ zero-result explanation when the query\n  produced no hits but filters were applied."
+        \ — see #873).\n- ``total``: number of matching sessions when known. Ranked union and\n  vector relations may have\
+        \ an unknown total. Dialogue hits have block\n  grain, so a session total never decides their continuation.\n- ``limit``:\
+        \ applied page size.\n- ``offset``: applied byte/row offset (offset-based pagination is\n  \"best-effort, not stable\"\
+        \ for ranked results; prefer ``next_cursor``).\n- ``next_offset``: convenience pointer for offset-based clients; only\n\
+        \  set when producer lookahead proves a successor.\n- ``next_cursor``: opaque producer position. A present anchor\
+        \ resumes\n  after its current position; a removed anchor uses its saved full order\n  key. Ranking changes can revisit\
+        \ earlier rows. Pass back unchanged in the\n  following request.\n- ``query``: the search query text actually applied\
+        \ (after CLI/MCP/HTTP\n  coercion). Empty string when there is no FTS query.\n- ``sort``: applied sort field, e.g.\
+        \ ``\"rank\"`` (default for ranked\n  search), ``\"date\"``, ``\"messages\"``. ``None`` when no explicit sort\n  was\
+        \ requested and the underlying lane order is preserved.\n- ``retrieval_lane``: the *resolved* per-hit ranking lane\
+        \ — one of\n  ``\"dialogue\"``, ``\"actions\"``, ``\"hybrid\"``, ``\"semantic\"``,\n  ``\"auto\"``. This is distinct\
+        \ from the *request* ``retrieval_lane``\n  input parameter, whose closed accepted vocabulary is only\n  ``QUERY_RETRIEVAL_LANES``\
+        \ (``\"auto\"``/``\"dialogue\"``/``\"actions\"``/\n  ``\"hybrid\"``) — ``\"semantic\"`` is never a request lane (a\
+        \ vector-only\n  run is driven by ``similar_text``) but IS reported here as the\n  resolved lane for vector hits (#1749).\
+        \ ``auto`` means the surface\n  left the lane to the planner.\n- ``ranking_policy``: policy identifier the lane used\
+        \ to order hits.\n  Currently always :data:`RANKING_POLICY_MIXED`.\n- ``ranking_policy_version``: numeric version\
+        \ of the ranking policy\n  so external consumers can detect ordering changes.\n- ``action_affordances``: query-result\
+        \ actions clients may offer after\n  receiving this result set. This is intentionally top-level so it is not\n  confused\
+        \ with per-hit reader actions in ``hit.match.actions``.\n- ``diagnostics``: optional zero-result explanation when\
+        \ the query\n  produced no hits but filters were applied."
       properties:
         snapshot_epoch:
           anyOf:

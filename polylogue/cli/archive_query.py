@@ -52,7 +52,6 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.errors import FIRST_RUN_INDEX_GUIDANCE, ArchiveTierUnavailableError
 from polylogue.logging import get_logger
-from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 from polylogue.surfaces.outcome import (
     OutcomeEnvelope,
     decide_outcome,
@@ -72,11 +71,11 @@ from polylogue.surfaces.outcome import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from polylogue.archive.query.search_cursor import SearchCursor
     from polylogue.archive.stats import ArchiveStats
     from polylogue.surfaces.payloads import (
         MutationOperation,
         QueryMissDiagnosticsPayload,
-        SearchCursor,
     )
 
 
@@ -580,7 +579,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     :mod:`polylogue.cli.lowering`), and renders the result.
     """
     params = dict(request.params)
-    cursor_request_identity = search_cursor_request_identity({**params, "query": request.query_terms})
     _reject_unsupported_params(params)
     _validate_retrieval_params(params)
     config_started_at = perf_counter()
@@ -652,8 +650,14 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     )
     offset = compiled_spec.offset if compiled_spec.offset > 0 else _offset(params)
     cursor = _decode_cursor(_optional_str(params.get("cursor")))
-    _validate_cursor_request_identity(cursor, cursor_request_identity)
-    page_offset = cursor.r if cursor is not None else offset
+    if cursor is not None:
+        from polylogue.archive.query.search_cursor import InvalidSearchCursorError, validate_plan_cursor
+
+        try:
+            validate_plan_cursor(compiled_spec.to_plan())
+        except InvalidSearchCursorError as exc:
+            raise click.UsageError(f"invalid --cursor: {exc}") from exc
+    page_offset = offset
     sample_count = _optional_int(params.get("sample"))
     if sample_count is not None:
         if cursor is not None:
@@ -1057,18 +1061,13 @@ def _submit_mutation_operation(
 def _decode_cursor(token: str | None) -> SearchCursor | None:
     if token is None:
         return None
-    from polylogue.surfaces.payloads import InvalidSearchCursorError, decode_search_cursor
+    from polylogue.archive.query.search_cursor import InvalidSearchCursorError, decode_search_cursor
 
     try:
         cursor = decode_search_cursor(token)
     except InvalidSearchCursorError as exc:
         raise click.UsageError(f"invalid --cursor: {exc}") from exc
     return cursor
-
-
-def _validate_cursor_request_identity(cursor: SearchCursor | None, request_identity: str) -> None:
-    if cursor is not None and cursor.query_hash is not None and cursor.query_hash != request_identity:
-        raise click.UsageError("invalid --cursor: cursor belongs to a different ranked-search request")
 
 
 def _open_session(env: AppEnv, session_id: str, *, output_format: str, print_url: bool) -> None:

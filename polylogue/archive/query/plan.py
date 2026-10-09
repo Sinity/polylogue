@@ -102,6 +102,7 @@ class SessionQueryPlan:
     reverse: bool = False
     limit: int | None = None
     sample: int | None = None
+    latest: bool = False
     similar_text: str | None = None
     similar_session_id: str | None = None
     predicates: tuple[Callable[[Session], bool], ...] = ()

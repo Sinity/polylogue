@@ -23,7 +23,6 @@ from polylogue.surfaces.authority import AuthorityEnvelope
 from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
-    SearchCursor,
     SearchEnvelope,
     SurfacePayloadModel,
     build_search_envelope,
@@ -497,7 +496,7 @@ class MCPArchiveSearchHitPayload(SurfacePayloadModel):
 
     rank: int
     session_id: str
-    block_id: str
+    block_id: str | None
     message_id: str
     origin: str
     source: str
@@ -731,7 +730,6 @@ def session_search_result_payload(
     query: str = "",
     retrieval_lane: str = "auto",
     sort: str | None = None,
-    cursor: SearchCursor | None = None,
 ) -> SearchEnvelope:
     """Build the canonical :class:`SearchEnvelope` for an MCP search call.
 
@@ -763,7 +761,6 @@ def session_search_result_payload(
         retrieval_lane=resolved_lane,
         sort=sort,
         diagnostics=diag_payload,
-        cursor=cursor,
         execution=hits.execution,
     )
 

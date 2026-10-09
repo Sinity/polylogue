@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 from polylogue.archive.query.retrieval import search_limit
 from polylogue.archive.query.retrieval import search_query_text as plan_search_query_text
 from polylogue.archive.query.search_contract import SearchExecution
+from polylogue.archive.query.search_cursor import SearchPosition
 from polylogue.archive.query.support import session_to_summary
 
 if TYPE_CHECKING:
@@ -49,6 +50,8 @@ class SessionSearchHit:
     lane_rank: int | None = None
     lane_contribution: float | None = None
     raw_score: float | None = None
+    block_id: str | None = None
+    position: SearchPosition | None = None
 
     @property
     def session_id(self) -> str:
@@ -160,6 +163,8 @@ def session_search_hit_from_session(
     lane_rank: int | None = None,
     lane_contribution: float | None = None,
     raw_score: float | None = None,
+    block_id: str | None = None,
+    position: SearchPosition | None = None,
 ) -> SessionSearchHit:
     terms = search_terms(query_terms)
     matching_message = next(
@@ -181,10 +186,12 @@ def session_search_hit_from_session(
         score=score,
         matched_terms=matched_terms,
         score_components=score_components or {},
-        score_kind=score_kind or default_score_kind(retrieval_lane),
+        score_kind=(score_kind or default_score_kind(retrieval_lane)) if match_surface != "session" else None,
         lane_rank=lane_rank,
         lane_contribution=lane_contribution,
         raw_score=raw_score,
+        block_id=block_id,
+        position=position,
     )
 
 
@@ -203,6 +210,8 @@ def session_search_hit_from_summary(
     lane_rank: int | None = None,
     lane_contribution: float | None = None,
     raw_score: float | None = None,
+    block_id: str | None = None,
+    position: SearchPosition | None = None,
 ) -> SessionSearchHit:
     return SessionSearchHit(
         summary=summary,
@@ -214,10 +223,12 @@ def session_search_hit_from_summary(
         score=score,
         matched_terms=matched_terms,
         score_components=score_components or {},
-        score_kind=score_kind or default_score_kind(retrieval_lane),
+        score_kind=(score_kind or default_score_kind(retrieval_lane)) if match_surface != "session" else None,
         lane_rank=lane_rank,
         lane_contribution=lane_contribution,
         raw_score=raw_score,
+        block_id=block_id,
+        position=position,
     )
 
 
@@ -296,11 +307,6 @@ async def search_hits_for_plan(
     from polylogue.archive.query.transaction import run_archive_read
     from polylogue.storage.archive_identity import archive_file_set_root
 
-    if not plan_has_search_hit_evidence(plan):
-        return SearchHitResults([], SearchExecution((), ()))
-    query_text = plan.similar_text or plan_search_query_text(plan)
-    if not query_text and plan.similar_session_id is None:
-        return SearchHitResults([], SearchExecution((), ()))
     archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     result = await run_archive_read(
         archive_root,
@@ -334,7 +340,8 @@ def project_search_hits(
         fused_score: float | None
         primary_contribution: float | None
         if result.retrieval_lane == "hybrid":
-            components, fused_score = _hybrid_score_components(native_hit.lane_ranks or {})
+            components, _component_score = _hybrid_score_components(native_hit.lane_ranks or {})
+            fused_score = native_hit.score
             primary_rank, primary_contribution = primary_lane_evidence(components)
         else:
             components = {
@@ -342,7 +349,7 @@ def project_search_hits(
                 for lane, rank_value in (native_hit.lane_ranks or {}).items()
                 if rank_value is not None
             }
-            fused_score = None
+            fused_score = native_hit.score
             primary_contribution = None
             # A single-lane hit has no RRF contribution and no lane_ranks
             # mapping: its native rank is the lane rank.
@@ -357,14 +364,17 @@ def project_search_hits(
                 _archive_summary_to_domain(summary),
                 rank=native_hit.rank or rank,
                 retrieval_lane=result.retrieval_lane,
-                match_surface=search_hit_surface(result.retrieval_lane),
-                message_id=native_hit.message_id,
+                match_surface="session" if not native_hit.message_id else search_hit_surface(result.retrieval_lane),
+                message_id=native_hit.message_id or None,
+                block_id=native_hit.block_id,
+                position=native_hit.position,
                 snippet=native_hit.snippet,
                 matched_terms=terms,
-                score=fused_score,
+                score=fused_score if native_hit.message_id else None,
+                score_kind="bm25" if result.retrieval_lane == "actions" else default_score_kind(result.retrieval_lane),
                 score_components=components,
-                raw_score=fused_score,
-                lane_rank=primary_rank,
+                raw_score=fused_score if native_hit.message_id else None,
+                lane_rank=primary_rank if native_hit.message_id else None,
                 lane_contribution=primary_contribution,
             )
         )
