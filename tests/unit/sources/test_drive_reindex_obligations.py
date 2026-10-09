@@ -90,6 +90,7 @@ def _retained_drift_verdict(payload: dict[str, Any], tmp_path: Path) -> Retained
         raw_id="raw-drive",
         revision_sha256="d" * 64,
         evidence_id="raw-drive",
+        signature_directory=(source).parent,
     )
 
 

@@ -27,8 +27,8 @@ from polylogue.core.json import (
     is_json_value,
     loads,
 )
-from polylogue.core.json_envelope import OversizedRecord, bounded_lines
 from polylogue.core.provider_identity import profile_root_for_artifact
+from polylogue.sources.decoder_json import DecodedRecordSequence
 from polylogue.sources.dispatch import detect_provider
 
 _BINARY_ARTIFACT_MARKER = "unrecognized_binary_artifact"
@@ -81,6 +81,17 @@ class RawPayloadEnvelope:
     artifact: ArtifactClassification
     malformed_jsonl_lines: int = 0
     malformed_jsonl_detail: str | None = None
+
+    def close(self) -> None:
+        """Release decoded records after every borrowed sample has been consumed."""
+        if isinstance(self.payload, DecodedRecordSequence):
+            self.payload.close()
+
+    def __enter__(self) -> RawPayloadEnvelope:
+        return self
+
+    def __exit__(self, *_error: object) -> None:
+        self.close()
 
 
 @dataclass(frozen=True)
@@ -141,53 +152,10 @@ def _decode_jsonl_payload(
     raw: Path | bytes | str,
     *,
     jsonl_dict_only: bool = False,
-) -> tuple[list[JSONValue], int, str | None]:
-    """Decode JSONL incrementally to avoid full-file line splitting.
-
-    When *raw* is a :class:`~pathlib.Path`, lines are streamed directly
-    from the file handle — the full file is never loaded into memory.
-    """
-    lines: list[JSONValue] = []
-    malformed_lines = 0
-    malformed_detail: str | None = None
-    first_line = True
-    line_number = 0
-
-    with raw_line_stream(raw) as stream:
-        for raw_line in bounded_lines(stream):
-            line_number += 1
-            if isinstance(raw_line, OversizedRecord):
-                malformed_lines += 1
-                if malformed_detail is None:
-                    malformed_detail = f"line {line_number}: record of {raw_line.size} bytes is beyond the record bound"
-                continue
-            try:
-                line = decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
-            except UnicodeDecodeError as exc:
-                malformed_lines += 1
-                if malformed_detail is None:
-                    malformed_detail = f"line {line_number}: {exc.reason}"
-                continue
-            if first_line:
-                line = line.lstrip("\ufeff")
-                first_line = False
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                parsed = _load_json_record(line)
-            except (JSONDecodeError, ValueError) as exc:
-                malformed_lines += 1
-                if malformed_detail is None:
-                    malformed_detail = f"line {line_number}: {exc}"
-                continue
-            if jsonl_dict_only and not isinstance(parsed, dict):
-                continue
-            lines.append(parsed)
-
-    if not lines:
-        raise ValueError("No valid JSONL records found")
-    return lines, malformed_lines, malformed_detail
+) -> tuple[DecodedRecordSequence, int, str | None]:
+    """Decode every physical record while retaining its exact owned tape."""
+    with raw_byte_stream(raw) as stream:
+        return DecodedRecordSequence.from_archive_jsonl(stream, textual=isinstance(raw, str), dict_only=jsonl_dict_only)
 
 
 def _sample_jsonl_payload_with_detail(
@@ -530,10 +498,8 @@ def build_raw_payload_envelope(
     blobs must pass ``sqlite_immutable=True`` so SQLite cannot create ``-wal``
     or ``-shm`` namespace entries beside the blob.
 
-    When *raw_content* is a :class:`~pathlib.Path`, JSONL payloads are
-    decoded line-by-line from disk before being materialized into a
-    Python list. This avoids reading the whole file into one byte string,
-    but grouped-provider parses still hold the decoded records in memory.
+    JSONL payloads borrow a repeatable owned tape. Keep this envelope open
+    until classification, schema observation, and every selected sample finish.
     """
     provider_for_binary = Provider.from_string(payload_provider or fallback_provider)
     if isinstance(raw_content, Path):
@@ -572,25 +538,30 @@ def build_raw_payload_envelope(
         jsonl_dict_only=jsonl_dict_only,
         prefer_jsonl=prefer_jsonl,
     )
-    provider = _infer_payload_provider(
-        payload,
-        source_path=source_path,
-        fallback_provider=fallback_provider,
-        payload_provider=payload_provider,
-    )
-    artifact = classify_artifact(
-        payload,
-        provider=provider,
-        source_path=source_path,
-    )
-    return RawPayloadEnvelope(
-        payload=payload,
-        provider=provider,
-        wire_format=wire_format,
-        artifact=artifact,
-        malformed_jsonl_lines=malformed_jsonl_lines,
-        malformed_jsonl_detail=malformed_jsonl_detail,
-    )
+    try:
+        provider = _infer_payload_provider(
+            payload,
+            source_path=source_path,
+            fallback_provider=fallback_provider,
+            payload_provider=payload_provider,
+        )
+        artifact = classify_artifact(
+            payload,
+            provider=provider,
+            source_path=source_path,
+        )
+        return RawPayloadEnvelope(
+            payload=payload,
+            provider=provider,
+            wire_format=wire_format,
+            artifact=artifact,
+            malformed_jsonl_lines=malformed_jsonl_lines,
+            malformed_jsonl_detail=malformed_jsonl_detail,
+        )
+    except BaseException:
+        if isinstance(payload, DecodedRecordSequence):
+            payload.close()
+        raise
 
 
 def _hermes_sqlite_marker_payload(

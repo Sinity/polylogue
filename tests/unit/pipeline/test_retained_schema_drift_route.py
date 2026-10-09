@@ -116,6 +116,7 @@ def test_retained_schema_drift_telemetry_follows_replay_and_never_changes_outcom
             jsonl=bool(kwargs.get("jsonl", False)),
             schema_resolution=resolution,
             schema_resolution_is_explicit=True,
+            signature_directory=path.parent,
         )
         verdicts.append(verdict)
         if verdict.drift_observation is not None:
@@ -154,7 +155,7 @@ def test_retained_schema_drift_telemetry_follows_replay_and_never_changes_outcom
     assert len(observations) == int(mode is not ValidationMode.OFF)
     if mode is not ValidationMode.OFF:
         assert observations[0].classification == "field_changed"
-        assert observations[0].unseen_key_signature
+        assert observations[0].unseen_key_signature.byte_count > 0
     with sqlite3.connect(archive_root / "index.db") as conn:
         session_row = conn.execute(
             "SELECT raw_id, message_count FROM sessions WHERE native_id = 'drift-route'"

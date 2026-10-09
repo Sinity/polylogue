@@ -18,6 +18,7 @@ from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.schemas import observation_spill, retained_validation
+from polylogue.schemas.drift_sentinel import DriftSignature
 from polylogue.schemas.packages import SchemaResolution, SchemaResolutionReason
 from polylogue.schemas.retained_validation import PrefixValidationState, _bounded_validator, _normalized
 from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
@@ -28,6 +29,10 @@ from polylogue.schemas.validator import (
     validate_retained_document,
 )
 from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+
+def _signature_text(signature: DriftSignature) -> str:
+    return b"".join(signature.iter_utf8_chunks()).decode("utf-8", "surrogatepass")
 
 
 def _schema(kind: object) -> dict[str, object]:
@@ -250,6 +255,7 @@ def _late_invalid_variant(schema: object, witness: object) -> object | None:
 
 
 class _RetainedValidationArguments(TypedDict):
+    signature_directory: Path
     provider: str
     path: Path
     raw_id: str
@@ -268,6 +274,7 @@ def test_retained_strict_counts_late_failure_and_advisory_accepts(tmp_path: Path
     args: _RetainedValidationArguments = {
         "provider": "claude-code",
         "path": path,
+        "signature_directory": tmp_path,
         "raw_id": "raw-a",
         "revision_sha256": "a" * 64,
         "evidence_id": "raw-a",
@@ -327,6 +334,7 @@ def test_retained_validation_reports_real_nested_schema_traversal_progress(
         schema_resolution=_resolution("v2"),
         schema_resolution_is_explicit=True,
         registry=registry,
+        signature_directory=(path).parent,
     )
 
     assert verdict.sample_count == 1
@@ -362,6 +370,7 @@ def test_retained_validation_productive_identity_uses_source_recipe_not_attempt_
             jsonl=True,
             schema_resolution=_resolution("v2"),
             schema_resolution_is_explicit=True,
+            signature_directory=path.parent,
         )
 
     original = identity(path=tmp_path / "attempt-a.jsonl")
@@ -444,6 +453,7 @@ def test_zip_occurrence_validation_progress_reuses_only_the_same_captured_member
                 evidence_id="same-raw-id",
                 source_path=coordinate.declared_member,
                 captured_zip_coordinate=coordinate,
+                signature_directory=(path).parent,
             )
             productive_ids = [
                 str(fields["productive_id"]) for event, fields in emitted if event == "daemon.work.progress"
@@ -557,6 +567,7 @@ def test_retained_schema_validation_membership_does_not_decode_spilled_values(
         schema_resolution=_resolution("v2"),
         schema_resolution_is_explicit=True,
         registry=registry,
+        signature_directory=(path).parent,
     )
 
     assert verdict.status is ValidationStatus.PASSED
@@ -586,6 +597,7 @@ def test_retained_historical_fallback_replays_every_jsonl_record(tmp_path: Path)
         schema_resolution=_resolution("v2"),
         schema_resolution_is_explicit=False,
         registry=registry,
+        signature_directory=(path).parent,
     )
 
     assert verdict.status is ValidationStatus.PASSED
@@ -653,6 +665,7 @@ def test_prefix_validation_state_matches_each_current_and_historical_resolution(
         mode=ValidationMode.STRICT,
         registry=registry,
         scratch_directory=tmp_path,
+        signature_directory=tmp_path,
     ) as state:
         for record_index, record in enumerate(records, start=1):
             state.observe(record)
@@ -673,6 +686,7 @@ def test_prefix_validation_state_matches_each_current_and_historical_resolution(
                 source_path=str(path),
                 jsonl=True,
                 registry=registry,
+                signature_directory=(path).parent,
             )
             assert streamed == ordinary
             if record_index == 2:
@@ -739,6 +753,7 @@ def test_prefix_validation_state_preserves_sampler_witness_order_at_64_records(t
         mode=ValidationMode.ADVISORY,
         registry=registry,
         scratch_directory=tmp_path,
+        signature_directory=tmp_path,
     ) as state:
         for record_index, record in enumerate(records, start=1):
             state.observe(record)
@@ -759,6 +774,7 @@ def test_prefix_validation_state_preserves_sampler_witness_order_at_64_records(t
                 source_path=str(path),
                 jsonl=True,
                 registry=registry,
+                signature_directory=(path).parent,
             )
             assert streamed == ordinary
             assert streamed.schema_resolution is not None
@@ -784,6 +800,7 @@ def test_retained_drift_reduction_is_order_independent(tmp_path: Path) -> None:
             schema_resolution=resolution,
             schema_resolution_is_explicit=True,
             registry=registry,
+            signature_directory=(path).parent,
         )
 
     rows = [{"type": "record", "kind": 1, "alpha": 1}, {"type": "record", "kind": 2, "beta": 1}]
@@ -794,8 +811,8 @@ def test_retained_drift_reduction_is_order_independent(tmp_path: Path) -> None:
     assert reverse.drift_observation is not None
     assert forward.drift_observation.classification == "field_changed"
     assert reverse.drift_observation.classification == "field_changed"
-    assert forward.drift_observation.unseen_key_signature == "alpha"
-    assert reverse.drift_observation.unseen_key_signature == "alpha"
+    assert _signature_text(forward.drift_observation.unseen_key_signature) == "alpha"
+    assert _signature_text(reverse.drift_observation.unseen_key_signature) == "alpha"
 
 
 def test_retained_drift_classifies_default_and_known_unread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -814,6 +831,7 @@ def test_retained_drift_classifies_default_and_known_unread(tmp_path: Path, monk
         schema_resolution=_resolution("v2"),
         schema_resolution_is_explicit=True,
         registry=registry,
+        signature_directory=(path).parent,
     )
     unread = validate_retained_document(
         "claude-code",
@@ -825,13 +843,14 @@ def test_retained_drift_classifies_default_and_known_unread(tmp_path: Path, monk
         schema_resolution=_resolution("v2", explicit_reason="exact_structure"),
         schema_resolution_is_explicit=True,
         registry=registry,
+        signature_directory=(path).parent,
     )
 
     assert unseen.drift_observation is not None
     assert unseen.drift_observation.classification == "unseen_shape"
     assert unread.drift_observation is not None
     assert unread.drift_observation.classification == "known_field_unread"
-    assert unread.drift_observation.unseen_key_signature == "kind"
+    assert _signature_text(unread.drift_observation.unseen_key_signature) == "kind"
 
 
 def test_public_validator_shares_spill_safe_extended_keywords() -> None:
@@ -895,6 +914,7 @@ def test_retained_reduces_many_invalid_records_and_closes_spill_on_cancellation(
         schema_resolution=resolution,
         schema_resolution_is_explicit=True,
         registry=registry,
+        signature_directory=(path).parent,
     )
     assert verdict.sample_count == 512
     assert verdict.invalid_count == 512
@@ -925,6 +945,7 @@ def test_retained_reduces_many_invalid_records_and_closes_spill_on_cancellation(
             schema_resolution=resolution,
             schema_resolution_is_explicit=True,
             registry=registry,
+            signature_directory=(path).parent,
         )
     assert captured["database"]
     assert not Path(captured["database"]).exists()
@@ -952,6 +973,7 @@ def test_retained_invalid_record_peak_memory_does_not_track_error_count(tmp_path
             schema_resolution=resolution,
             schema_resolution_is_explicit=True,
             registry=registry,
+            signature_directory=(path).parent,
         )
         assert (verdict.sample_count, verdict.invalid_count, verdict.error_count, verdict.drift_count) == (
             count,
@@ -962,7 +984,7 @@ def test_retained_invalid_record_peak_memory_does_not_track_error_count(tmp_path
         assert verdict.first_diagnostic is not None and "kind" in verdict.first_diagnostic
         assert verdict.drift_observation is not None
         assert verdict.drift_observation.classification == "field_changed"
-        assert verdict.drift_observation.unseen_key_signature == "added_0"
+        assert _signature_text(verdict.drift_observation.unseen_key_signature) == "added_0"
         return verdict.invalid_count
 
     validate(paths[256], 256)  # Warm package/schema caches before tracing the comparative runs.
@@ -1086,6 +1108,7 @@ def test_retained_drift_classification_preserves_combined_precedence(
         schema_resolution=_resolution("v2", explicit_reason=reason),
         schema_resolution_is_explicit=True,
         registry=registry,
+        signature_directory=(path).parent,
     )
     observation = verdict.drift_observation
     assert (None if observation is None else observation.classification) == expected
@@ -1095,7 +1118,7 @@ def test_retained_drift_classification_preserves_combined_precedence(
             BENIGN_CLASSIFICATIONS if expected == "new_field" else RISKY_CLASSIFICATIONS
         )
     if expected in {"field_changed", "unseen_shape", "new_field"} and extra:
-        assert observation is not None and observation.unseen_key_signature == "added_0"
+        assert observation is not None and _signature_text(observation.unseen_key_signature) == "added_0"
 
 
 def test_retained_new_field_signature_is_sorted_and_repeated_records_do_not_duplicate_it(tmp_path: Path) -> None:
@@ -1120,10 +1143,11 @@ def test_retained_new_field_signature_is_sorted_and_repeated_records_do_not_dupl
             schema_resolution=_resolution("v2", explicit_reason="exact_structure"),
             schema_resolution_is_explicit=True,
             registry=registry,
+            signature_directory=(path).parent,
         )
         assert verdict.drift_observation is not None
         assert verdict.drift_observation.classification == "new_field"
-        signatures.append(verdict.drift_observation.unseen_key_signature)
+        signatures.append(_signature_text(verdict.drift_observation.unseen_key_signature))
     assert signatures == ["alpha,beta", "alpha,beta"]
 
 
@@ -1161,3 +1185,51 @@ def test_reused_registry_retained_current_historical_and_reload_match_fresh(tmp_
     rejected = verdict(reader, explicit=True)
     assert rejected == verdict(SchemaRegistry(storage_root=tmp_path / "schemas"), explicit=True)
     assert rejected.status is ValidationStatus.FAILED
+
+
+def test_retained_signature_spills_exact_bytes_past_sqlite_cell_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A complete sorted signature survives the schema owner's closure and keeps its winner."""
+    from collections.abc import Generator
+    from contextlib import contextmanager
+
+    original_scratch = scratch_connection_context
+
+    @contextmanager
+    def small_cells(**kwargs: Any) -> Generator[sqlite3.Connection, None, None]:
+        with original_scratch(**kwargs) as connection:
+            connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 32768)
+            yield connection
+
+    monkeypatch.setattr(observation_spill, "scratch_connection_context", small_cells)
+    registry = _registry(tmp_path, {"type": "string"})
+    names = [f"added_{index:05d}" for index in range(8000)]
+    path = tmp_path / "wide.jsonl"
+    _write_jsonl(path, [{"type": "record", "kind": "value", **dict.fromkeys(reversed(names), 1)}])
+    verdict = validate_retained_document(
+        "claude-code",
+        path,
+        mode=ValidationMode.ADVISORY,
+        raw_id="wide",
+        revision_sha256="a" * 64,
+        evidence_id="wide",
+        jsonl=True,
+        schema_resolution=_resolution("v2", explicit_reason="exact_structure"),
+        schema_resolution_is_explicit=True,
+        registry=registry,
+        signature_directory=tmp_path,
+    )
+    observation = verdict.drift_observation
+    assert observation is not None
+    expected = ",".join(names).encode()
+    assert observation.unseen_key_signature.byte_count == len(expected) > 32768
+    assert b"".join(observation.unseen_key_signature.iter_utf8_chunks()) == expected
+    assert verdict.drift_count == len(names)
+    from dataclasses import replace
+
+    from polylogue.schemas.retained_validation import _stronger_drift
+
+    earlier = replace(observation, unseen_key_signature=DriftSignature.from_text("aaa", directory=tmp_path))
+    assert _stronger_drift(observation, earlier) is earlier
+    assert _stronger_drift(earlier, observation) is earlier

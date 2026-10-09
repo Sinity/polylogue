@@ -42,6 +42,7 @@ from polylogue.schemas.drift_sentinel import (
     NEW_FIELD,
     UNSEEN_SHAPE,
     DriftClassification,
+    DriftSignature,
     SchemaDriftObservation,
 )
 from polylogue.schemas.packages import SchemaResolution
@@ -107,9 +108,10 @@ def _retained_validation_productive_identity(
     schema_resolution: SchemaResolution | None = None,
     schema_resolution_is_explicit: bool = False,
     registry: SchemaRegistry | None = None,
+    signature_directory: Path,
 ) -> str:
     """Identify validation work by its retained source recipe, never scratch path."""
-    del path, registry
+    del path, registry, signature_directory
     resolution = None
     if schema_resolution is not None:
         resolution = (
@@ -215,7 +217,9 @@ class _SampleValidationReducer:
         connection: sqlite3.Connection,
         *,
         source_path: str | None,
+        signature_directory: Path,
     ) -> None:
+        self.signature_directory = signature_directory
         self.schema = schema
         self.provider = provider
         self.resolution = resolution
@@ -267,6 +271,7 @@ class _SampleValidationReducer:
             raw_id="",
             native_id_example=self.source_path or "",
             is_valid=valid,
+            signature_directory=self.signature_directory,
         )
         self.connection.execute("DELETE FROM retained_drift WHERE sample=?", (self.sample_count,))
         self.connection.execute("DELETE FROM retained_unread WHERE sample=?", (self.sample_count,))
@@ -336,7 +341,9 @@ class PrefixValidationState:
         mode: ValidationMode,
         registry: SchemaRegistry | None = None,
         scratch_directory: Path | None = None,
+        signature_directory: Path,
     ) -> None:
+        self.signature_directory = signature_directory
         self.provider = canonical_provider(provider)
         self.source_path = source_path
         self.mode = ValidationMode.from_string(mode)
@@ -477,6 +484,7 @@ class PrefixValidationState:
                 self._base_resolution,
                 self.connection,
                 source_path=self.source_path,
+                signature_directory=self.signature_directory,
             )
         return _PrefixSchemaReducer(version, schema, reducer)
 
@@ -628,12 +636,14 @@ def validate_retained_document(
     schema_resolution: SchemaResolution | None = None,
     schema_resolution_is_explicit: bool = False,
     registry: SchemaRegistry | None = None,
+    signature_directory: Path,
 ) -> RetainedValidationVerdict:
     """Decode and validate a complete retained JSON document using disk spill.
 
     Validation mode controls schema validation only.  Decoding remains the
     caller's independent admission concern, and drift never changes whether
-    the source revision can be published.
+    the source revision can be published. The caller retains signature_directory
+    until the verdict's drift observation has been sampled after publication.
     """
     mode = ValidationMode.from_string(mode)
     if mode is ValidationMode.OFF:
@@ -692,6 +702,7 @@ def validate_retained_document(
             resolved,
             spill.connection,
             source_path=source_path,
+            signature_directory=signature_directory,
         )
         for sample in _validation_samples(payload, selected_schema, canonical):
             reducer.observe(sample)
@@ -1292,21 +1303,14 @@ def _reduce_sample_drift(
     raw_id: str,
     native_id_example: str,
     is_valid: bool,
+    signature_directory: Path,
 ) -> SchemaDriftObservation | None:
     if resolution is None:
         return None
     path_count = int(
         connection.execute("SELECT COUNT(*) FROM retained_drift WHERE sample=?", (sample_index,)).fetchone()[0]
     )
-    path_signature = str(
-        connection.execute(
-            "SELECT group_concat(path, ',') FROM (SELECT path FROM retained_drift WHERE sample=? ORDER BY path)",
-            (sample_index,),
-        ).fetchone()[0]
-        or ""
-    )
     unread_count = 0
-    unread_signature = ""
     if not path_count and is_valid:
         unread_names = unread_field_names(normalize_provider_token(str(provider)))
         connection.execute("DELETE FROM retained_unread WHERE sample=?", (sample_index,))
@@ -1316,13 +1320,6 @@ def _reduce_sample_drift(
                 connection.execute("INSERT OR IGNORE INTO retained_unread VALUES (?,?)", (sample_index, str(key)))
         unread_count = int(
             connection.execute("SELECT COUNT(*) FROM retained_unread WHERE sample=?", (sample_index,)).fetchone()[0]
-        )
-        unread_signature = str(
-            connection.execute(
-                "SELECT group_concat(path, ',') FROM (SELECT path FROM retained_unread WHERE sample=? ORDER BY path)",
-                (sample_index,),
-            ).fetchone()[0]
-            or ""
         )
     classification: DriftClassification | None
     if not is_valid:
@@ -1337,7 +1334,22 @@ def _reduce_sample_drift(
         classification = None
     if classification is None:
         return None
-    signature = unread_signature if classification == KNOWN_FIELD_UNREAD else path_signature
+    table = "retained_unread" if classification == KNOWN_FIELD_UNREAD else "retained_drift"
+
+    def signature_chunks() -> Iterator[bytes]:
+        cursor = connection.execute(f"SELECT path FROM {table} WHERE sample=? ORDER BY path", (sample_index,))
+        try:
+            first = True
+            for (path,) in cursor:
+                check_compute_cancelled()
+                if not first:
+                    yield b","
+                first = False
+                yield path.encode("utf-8", "surrogatepass")
+        finally:
+            cursor.close()
+
+    signature = DriftSignature.from_utf8_chunks(signature_chunks(), directory=signature_directory)
     return SchemaDriftObservation(
         origin=str(origin_from_provider(provider)),
         element_kind=resolution.element_kind,
@@ -1360,4 +1372,4 @@ def _stronger_drift(
     right = _DRIFT_STRENGTH[candidate.classification]
     if right != left:
         return candidate if right > left else current
-    return min(current, candidate, key=lambda item: item.unseen_key_signature)
+    return candidate if candidate.unseen_key_signature.compare(current.unseen_key_signature) < 0 else current

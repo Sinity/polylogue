@@ -747,6 +747,7 @@ def validate_retained_document(
     schema_resolution: SchemaResolution | None = None,
     schema_resolution_is_explicit: bool = False,
     registry: SchemaRegistry | None = None,
+    signature_directory: Path,
 ) -> RetainedValidationVerdict:
     """Validate a retained source revision with a compact spill-backed verdict.
 
@@ -777,6 +778,7 @@ def validate_retained_document(
             schema_resolution=schema_resolution,
             schema_resolution_is_explicit=schema_resolution_is_explicit,
             registry=active_registry,
+            signature_directory=signature_directory,
         )
 
 

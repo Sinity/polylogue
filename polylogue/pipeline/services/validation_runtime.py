@@ -143,138 +143,139 @@ def _validate_record_sync(
             counts_delta=counts_delta,
         )
 
-    validation_status = ValidationStatus.PASSED
-    validation_error: str | None = None
-    parseable = True
-    drift_count = 0
+    with envelope:
+        validation_status = ValidationStatus.PASSED
+        validation_error: str | None = None
+        parseable = True
+        drift_count = 0
 
-    # Malformed-line loss is a structural decode defect, independent of
-    # whether the surviving records classify as a session (polylogue-o8c3m):
-    # `_classify_list` samples only the first 32 decoded records to decide
-    # `schema_eligible`, so a JSONL file whose *content* the classifier
-    # doesn't recognise (e.g. a hook-event/metadata-shaped stream) would
-    # otherwise skip malformed-line accounting entirely in STRICT mode --
-    # silently hiding real data loss behind an unrelated classification gate.
-    # Strict mode must fail on malformed lines regardless of artifact kind;
-    # the schema-eligibility skip still applies once that check is clear.
-    if malformed_lines and validation_mode is ValidationMode.STRICT:
-        malformed_error = _format_malformed_jsonl_error(
-            malformed_lines=malformed_lines,
-            malformed_detail=malformed_detail,
-        )
-        counts_delta["invalid"] += 1
-        return _ValidationOutcome(
-            validation_status=ValidationStatus.FAILED,
-            validation_error=malformed_error,
-            parse_error=malformed_error,
-            parseable=False,
-            canonical_provider=canonical_provider,
-            payload_provider=payload_provider,
-            drift_count=0,
-            counts_delta=counts_delta,
-        )
+        # Malformed-line loss is a structural decode defect, independent of
+        # whether the surviving records classify as a session (polylogue-o8c3m):
+        # `_classify_list` samples only the first 32 decoded records to decide
+        # `schema_eligible`, so a JSONL file whose *content* the classifier
+        # doesn't recognise (e.g. a hook-event/metadata-shaped stream) would
+        # otherwise skip malformed-line accounting entirely in STRICT mode --
+        # silently hiding real data loss behind an unrelated classification gate.
+        # Strict mode must fail on malformed lines regardless of artifact kind;
+        # the schema-eligibility skip still applies once that check is clear.
+        if malformed_lines and validation_mode is ValidationMode.STRICT:
+            malformed_error = _format_malformed_jsonl_error(
+                malformed_lines=malformed_lines,
+                malformed_detail=malformed_detail,
+            )
+            counts_delta["invalid"] += 1
+            return _ValidationOutcome(
+                validation_status=ValidationStatus.FAILED,
+                validation_error=malformed_error,
+                parse_error=malformed_error,
+                parseable=False,
+                canonical_provider=canonical_provider,
+                payload_provider=payload_provider,
+                drift_count=0,
+                counts_delta=counts_delta,
+            )
 
-    if not envelope.artifact.schema_eligible:
+        if not envelope.artifact.schema_eligible:
+            return _ValidationOutcome(
+                validation_status=ValidationStatus.SKIPPED,
+                validation_error=f"Artifact excluded from session schema inference: {envelope.artifact.kind.value}",
+                parse_error=None,
+                parseable=False,
+                canonical_provider=canonical_provider,
+                payload_provider=payload_provider,
+                drift_count=0,
+                counts_delta=counts_delta,
+            )
+
+        if malformed_lines:
+            # Advisory mode does not fail the record, but the malformed-line loss is
+            # still counted and surfaced rather than silently demoted (#1745).
+            counts_delta["malformed_jsonl_lines"] += malformed_lines
+            logger.warning(
+                "Malformed JSONL lines counted in advisory mode",
+                raw_id=raw_record.raw_id,
+                provider=raw_record.source_name,
+                malformed_lines=malformed_lines,
+                malformed_detail=malformed_detail,
+            )
+
+        payload_validation = _validator_for_payload(
+            envelope,
+            source_path=raw_record.source_path,
+        )
+        if payload_validation is None:
+            counts_delta["skipped_no_schema"] += 1
+
+        collected_errors: list[str] = []
+        collected_drift: list[str] = []
+
+        if payload_validation is not None:
+            validator = payload_validation.validator
+            validation_results = payload_validation.sample_results
+            if validation_results:
+                invalid_count = 0
+                for _sample, sample_result in validation_results:
+                    if not sample_result.is_valid:
+                        invalid_count += 1
+                        collected_errors.extend(sample_result.errors[:2])
+                    if sample_result.has_drift:
+                        drift_count += 1
+                        collected_drift.extend(sample_result.drift_warnings[:3])
+
+                canonical_provider = validator.provider or envelope.provider
+
+                if invalid_count:
+                    counts_delta["invalid"] += 1
+                    logger.warning(
+                        "Schema validation errors for %s",
+                        canonical_provider,
+                        raw_id=raw_record.raw_id,
+                        samples=len(validation_results),
+                        invalid_samples=invalid_count,
+                        errors=collected_errors[:5],
+                    )
+                    if validation_mode is ValidationMode.STRICT:
+                        first_error = collected_errors[0] if collected_errors else "unknown schema validation error"
+                        validation_status = ValidationStatus.FAILED
+                        validation_error = f"Schema validation failed for {canonical_provider}: {first_error}"
+                        parseable = False
+                else:
+                    counts_delta["validated"] += 1
+
+                if drift_count:
+                    counts_delta["drift"] += 1
+                    drift_counts_delta[canonical_provider] = drift_count
+                    logger.info(
+                        "Schema drift detected for %s",
+                        canonical_provider,
+                        raw_id=raw_record.raw_id,
+                        drift=collected_drift[:10],
+                    )
+        elif parseable:
+            validation_status = ValidationStatus.SKIPPED
+
+        total_elapsed = _time.perf_counter() - t_start
+        if total_elapsed > 1.0:
+            logger.info(
+                "slow_validate",
+                raw_id=raw_record.raw_id[:16],
+                elapsed_s=round(total_elapsed, 2),
+                blob_mb=round(raw_record.blob_size / (1024 * 1024), 1),
+                provider=raw_record.source_name,
+                status=str(validation_status),
+            )
+
         return _ValidationOutcome(
-            validation_status=ValidationStatus.SKIPPED,
-            validation_error=f"Artifact excluded from session schema inference: {envelope.artifact.kind.value}",
+            validation_status=validation_status,
+            validation_error=validation_error,
             parse_error=None,
-            parseable=False,
+            parseable=parseable,
             canonical_provider=canonical_provider,
             payload_provider=payload_provider,
-            drift_count=0,
+            drift_count=drift_count,
             counts_delta=counts_delta,
+            drift_counts_delta=drift_counts_delta,
         )
-
-    if malformed_lines:
-        # Advisory mode does not fail the record, but the malformed-line loss is
-        # still counted and surfaced rather than silently demoted (#1745).
-        counts_delta["malformed_jsonl_lines"] += malformed_lines
-        logger.warning(
-            "Malformed JSONL lines counted in advisory mode",
-            raw_id=raw_record.raw_id,
-            provider=raw_record.source_name,
-            malformed_lines=malformed_lines,
-            malformed_detail=malformed_detail,
-        )
-
-    payload_validation = _validator_for_payload(
-        envelope,
-        source_path=raw_record.source_path,
-    )
-    if payload_validation is None:
-        counts_delta["skipped_no_schema"] += 1
-
-    collected_errors: list[str] = []
-    collected_drift: list[str] = []
-
-    if payload_validation is not None:
-        validator = payload_validation.validator
-        validation_results = payload_validation.sample_results
-        if validation_results:
-            invalid_count = 0
-            for _sample, sample_result in validation_results:
-                if not sample_result.is_valid:
-                    invalid_count += 1
-                    collected_errors.extend(sample_result.errors[:2])
-                if sample_result.has_drift:
-                    drift_count += 1
-                    collected_drift.extend(sample_result.drift_warnings[:3])
-
-            canonical_provider = validator.provider or envelope.provider
-
-            if invalid_count:
-                counts_delta["invalid"] += 1
-                logger.warning(
-                    "Schema validation errors for %s",
-                    canonical_provider,
-                    raw_id=raw_record.raw_id,
-                    samples=len(validation_results),
-                    invalid_samples=invalid_count,
-                    errors=collected_errors[:5],
-                )
-                if validation_mode is ValidationMode.STRICT:
-                    first_error = collected_errors[0] if collected_errors else "unknown schema validation error"
-                    validation_status = ValidationStatus.FAILED
-                    validation_error = f"Schema validation failed for {canonical_provider}: {first_error}"
-                    parseable = False
-            else:
-                counts_delta["validated"] += 1
-
-            if drift_count:
-                counts_delta["drift"] += 1
-                drift_counts_delta[canonical_provider] = drift_count
-                logger.info(
-                    "Schema drift detected for %s",
-                    canonical_provider,
-                    raw_id=raw_record.raw_id,
-                    drift=collected_drift[:10],
-                )
-    elif parseable:
-        validation_status = ValidationStatus.SKIPPED
-
-    total_elapsed = _time.perf_counter() - t_start
-    if total_elapsed > 1.0:
-        logger.info(
-            "slow_validate",
-            raw_id=raw_record.raw_id[:16],
-            elapsed_s=round(total_elapsed, 2),
-            blob_mb=round(raw_record.blob_size / (1024 * 1024), 1),
-            provider=raw_record.source_name,
-            status=str(validation_status),
-        )
-
-    return _ValidationOutcome(
-        validation_status=validation_status,
-        validation_error=validation_error,
-        parse_error=None,
-        parseable=parseable,
-        canonical_provider=canonical_provider,
-        payload_provider=payload_provider,
-        drift_count=drift_count,
-        counts_delta=counts_delta,
-        drift_counts_delta=drift_counts_delta,
-    )
 
 
 __all__ = ["_ValidationOutcome", "_validate_record_sync"]

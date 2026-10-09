@@ -477,41 +477,42 @@ def _iter_schema_units_from_db(
                         reason="payload_envelope_missing",
                     )
                     continue
-                if canonical_schema_provider(envelope.provider) != str(source_name):
+                with envelope:
+                    if canonical_schema_provider(envelope.provider) != str(source_name):
+                        _record_terminal(
+                            terminal_recorder,
+                            row,
+                            status="intentionally_excluded",
+                            reason="provider_mismatch",
+                        )
+                        continue
+                    units = extract_schema_units_from_payload(
+                        envelope.payload,
+                        source_name=source_name,
+                        source_path=row.source_path,
+                        raw_id=row.raw_id,
+                        observed_at=row.observed_at,
+                        config=observation_config,
+                        max_samples=max_samples,
+                        values_compacted=values_compacted,
+                    )
+                    if not units:
+                        _record_terminal(
+                            terminal_recorder,
+                            row,
+                            status="unsupported",
+                            reason="no_schema_eligible_units",
+                        )
+                        continue
+                    yield from units
+                    artifact_kinds = {unit.artifact_kind for unit in units}
                     _record_terminal(
                         terminal_recorder,
                         row,
-                        status="intentionally_excluded",
-                        reason="provider_mismatch",
+                        status="included",
+                        reason="observed_schema_units",
+                        artifact_kind=next(iter(artifact_kinds)) if len(artifact_kinds) == 1 else "mixed",
                     )
-                    continue
-                units = extract_schema_units_from_payload(
-                    envelope.payload,
-                    source_name=source_name,
-                    source_path=row.source_path,
-                    raw_id=row.raw_id,
-                    observed_at=row.observed_at,
-                    config=observation_config,
-                    max_samples=max_samples,
-                    values_compacted=values_compacted,
-                )
-                if not units:
-                    _record_terminal(
-                        terminal_recorder,
-                        row,
-                        status="unsupported",
-                        reason="no_schema_eligible_units",
-                    )
-                    continue
-                yield from units
-                artifact_kinds = {unit.artifact_kind for unit in units}
-                _record_terminal(
-                    terminal_recorder,
-                    row,
-                    status="included",
-                    reason="observed_schema_units",
-                    artifact_kind=next(iter(artifact_kinds)) if len(artifact_kinds) == 1 else "mixed",
-                )
 
 
 @overload

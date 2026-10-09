@@ -2027,6 +2027,7 @@ class RawObservationDerivation(RawObservationInspection):
                         jsonl=True,
                         captured_zip_coordinate=captured.zip_coordinate,
                         registry=self._schema_registry,
+                        signature_directory=neutral_directory,
                     )
                 neutral = dataclasses.replace(neutral, validation_verdict=verdict)
                 carry.neutral_artifacts[neutral_keys[raw_id]] = neutral

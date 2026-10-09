@@ -85,6 +85,7 @@ def test_retained_validation_keeps_later_type_failure_over_new_field(
             jsonl=bool(kwargs.get("jsonl", False)),
             schema_resolution=resolution,
             schema_resolution_is_explicit=True,
+            signature_directory=path.parent,
         )
         verdicts.append(verdict)
         return verdict

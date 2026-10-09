@@ -1022,6 +1022,7 @@ def _attach_retained_validation_verdict(
                     jsonl=jsonl,
                     captured_zip_coordinate=captured_zip_coordinate,
                     registry=schema_registry,
+                    signature_directory=directory,
                 )
             return dataclasses.replace(artifact, validation_verdict=verdict)
         except BaseException as primary:
@@ -1246,26 +1247,31 @@ def prepare_retained_non_json_artifact(
                     ArtifactStreamClassification(classification, False, 1),
                 )
             verdict = None
-            if envelope is not None and classification.schema_eligible:
-                marker_path = Path(directory) / f"validation-marker-{uuid.uuid4().hex}.json"
-                try:
-                    marker_path.write_text(json.dumps(envelope.payload, ensure_ascii=False), encoding="utf-8")
-                    from polylogue.schemas import validate_retained_document
+            try:
+                if envelope is not None and classification.schema_eligible:
+                    marker_path = Path(directory) / f"validation-marker-{uuid.uuid4().hex}.json"
+                    try:
+                        marker_path.write_text(json.dumps(envelope.payload, ensure_ascii=False), encoding="utf-8")
+                        from polylogue.schemas import validate_retained_document
 
-                    verdict = validate_retained_document(
-                        envelope.provider,
-                        marker_path,
-                        mode=validation_mode,
-                        raw_id=raw_id,
-                        revision_sha256=blob_hash,
-                        evidence_id=raw_id,
-                        source_path=source_path,
-                        jsonl=False,
-                        captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
-                        registry=schema_registry,
-                    )
-                finally:
-                    marker_path.unlink(missing_ok=True)
+                        verdict = validate_retained_document(
+                            envelope.provider,
+                            marker_path,
+                            mode=validation_mode,
+                            raw_id=raw_id,
+                            revision_sha256=blob_hash,
+                            evidence_id=raw_id,
+                            source_path=source_path,
+                            jsonl=False,
+                            captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
+                            signature_directory=directory,
+                            registry=schema_registry,
+                        )
+                    finally:
+                        marker_path.unlink(missing_ok=True)
+            finally:
+                if envelope is not None:
+                    envelope.close()
             if publisher is not None:
                 _prepare_attachment_publications(store, publisher, Path(directory))
                 _prepare_sidecar_publications(store, publisher, Path(directory))

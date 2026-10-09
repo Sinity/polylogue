@@ -409,71 +409,72 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
 
     try:
         envelope, schema_observations, cohort_id = _inspect_payload_envelope(record, blob_store=resolved_blob_store)
-        payload_provider = envelope.provider
-        artifact = envelope.artifact
-        resolution: SchemaResolution | None = None
-        has_supported_resolution = False
+        with envelope:
+            payload_provider = envelope.provider
+            artifact = envelope.artifact
+            resolution: SchemaResolution | None = None
+            has_supported_resolution = False
 
-        # The envelope's malformed count comes from the inspection prefix only.
-        # For stream artifacts larger than the prefix, re-scan the whole blob so
-        # malformed lines past the prefix are not silently invisible (#1745).
-        malformed_jsonl_lines, partial_decode = _stream_loss_accounting(
-            record,
-            wire_format=envelope.wire_format,
-            prefix_malformed_lines=envelope.malformed_jsonl_lines,
-            blob_store=resolved_blob_store,
-        )
-
-        if artifact.parse_as_session and artifact.schema_eligible and malformed_jsonl_lines == 0:
-            resolution, has_supported_resolution = _resolve_payload_support(
-                registry=registry,
-                payload_provider=payload_provider,
-                payload=envelope.payload,
-                source_path=record.source_path,
-                observations=schema_observations,
+            # The envelope's malformed count comes from the inspection prefix only.
+            # For stream artifacts larger than the prefix, re-scan the whole blob so
+            # malformed lines past the prefix are not silently invisible (#1745).
+            malformed_jsonl_lines, partial_decode = _stream_loss_accounting(
+                record,
+                wire_format=envelope.wire_format,
+                prefix_malformed_lines=envelope.malformed_jsonl_lines,
+                blob_store=resolved_blob_store,
             )
-        resolved_package_version = resolution.package_version if resolution is not None else None
-        resolved_element_kind = resolution.element_kind if resolution is not None else None
-        resolution_reason = resolution.reason if resolution is not None else None
 
-        support_status = _support_status(
-            parse_as_session=artifact.parse_as_session,
-            schema_eligible=artifact.schema_eligible,
-            malformed_jsonl_lines=malformed_jsonl_lines,
-            artifact_kind=artifact.kind.value,
-            has_supported_resolution=has_supported_resolution,
-            had_decode_error=False,
-            partial_decode=partial_decode,
-        )
+            if artifact.parse_as_session and artifact.schema_eligible and malformed_jsonl_lines == 0:
+                resolution, has_supported_resolution = _resolve_payload_support(
+                    registry=registry,
+                    payload_provider=payload_provider,
+                    payload=envelope.payload,
+                    source_path=record.source_path,
+                    observations=schema_observations,
+                )
+            resolved_package_version = resolution.package_version if resolution is not None else None
+            resolved_element_kind = resolution.element_kind if resolution is not None else None
+            resolution_reason = resolution.reason if resolution is not None else None
 
-        return ArtifactObservationRecord(
-            observation_id=observation_id,
-            raw_id=record.raw_id,
-            payload_provider=payload_provider,
-            source_name=record.source_name,
-            source_path=record.source_path,
-            source_index=record.source_index,
-            file_mtime=record.file_mtime,
-            wire_format=envelope.wire_format,
-            artifact_kind=artifact.kind.value,
-            classification_reason=artifact.reason,
-            parse_as_session=artifact.parse_as_session,
-            schema_eligible=artifact.schema_eligible,
-            support_status=support_status,
-            malformed_jsonl_lines=malformed_jsonl_lines,
-            decode_error=None,
-            bundle_scope=bundle_scope,
-            cohort_id=cohort_id or schema_cluster_id(envelope.payload, artifact.cohort),
-            resolved_package_version=resolved_package_version,
-            resolved_element_kind=resolved_element_kind,
-            resolution_reason=resolution_reason,
-            link_group_key=_link_group_key(record.source_path),
-            sidecar_agent_type=(
-                _sidecar_agent_type(envelope.payload) if artifact.kind is ArtifactKind.AGENT_SIDECAR_META else None
-            ),
-            first_observed_at=observed_at,
-            last_observed_at=observed_at,
-        )
+            support_status = _support_status(
+                parse_as_session=artifact.parse_as_session,
+                schema_eligible=artifact.schema_eligible,
+                malformed_jsonl_lines=malformed_jsonl_lines,
+                artifact_kind=artifact.kind.value,
+                has_supported_resolution=has_supported_resolution,
+                had_decode_error=False,
+                partial_decode=partial_decode,
+            )
+
+            return ArtifactObservationRecord(
+                observation_id=observation_id,
+                raw_id=record.raw_id,
+                payload_provider=payload_provider,
+                source_name=record.source_name,
+                source_path=record.source_path,
+                source_index=record.source_index,
+                file_mtime=record.file_mtime,
+                wire_format=envelope.wire_format,
+                artifact_kind=artifact.kind.value,
+                classification_reason=artifact.reason,
+                parse_as_session=artifact.parse_as_session,
+                schema_eligible=artifact.schema_eligible,
+                support_status=support_status,
+                malformed_jsonl_lines=malformed_jsonl_lines,
+                decode_error=None,
+                bundle_scope=bundle_scope,
+                cohort_id=cohort_id or schema_cluster_id(envelope.payload, artifact.cohort),
+                resolved_package_version=resolved_package_version,
+                resolved_element_kind=resolved_element_kind,
+                resolution_reason=resolution_reason,
+                link_group_key=_link_group_key(record.source_path),
+                sidecar_agent_type=(
+                    _sidecar_agent_type(envelope.payload) if artifact.kind is ArtifactKind.AGENT_SIDECAR_META else None
+                ),
+                first_observed_at=observed_at,
+                last_observed_at=observed_at,
+            )
     except DaemonOperationCancelled:
         raise
     except Exception as exc:

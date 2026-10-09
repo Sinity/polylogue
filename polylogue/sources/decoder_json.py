@@ -8,20 +8,20 @@ import re
 import sys
 import tempfile
 from builtins import BaseExceptionGroup
-from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import closing
 from dataclasses import dataclass, field
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Protocol, TypeAlias, TypeGuard, TypeVar, cast, overload
+from typing import IO, TYPE_CHECKING, Never, Protocol, SupportsIndex, TypeAlias, TypeGuard, TypeVar, cast, overload
 
 import ijson
 
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.content_identity import JSON_TEXT_ENCODINGS
-from polylogue.core.json import JSONDecodeError, decode_provider_utf8, normalize_json_decimal
+from polylogue.core.json import JSONDecodeError, _ValidatedJSONContainer, decode_provider_utf8, normalize_json_decimal
 from polylogue.core.json import loads as json_loads
 from polylogue.core.json_envelope import JSONL_MEMORY_BUFFER_BYTES, OversizedRecord, bounded_lines
 from polylogue.logging import get_logger
@@ -71,7 +71,7 @@ class _TreeRecordRef:
     node_id: int
 
 
-class DecodedRecordSequence(Sequence[JsonValue]):
+class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
     """Creator-local, repeatable decoded records with disk-backed ordinal lookup.
 
     Only values produced by the decoder enter this private tape. It carries
@@ -79,6 +79,7 @@ class DecodedRecordSequence(Sequence[JsonValue]):
     """
 
     def __init__(self, records: Iterable[JsonValue]) -> None:
+        list.__init__(self)
         self._spool: PickleSpool[JsonValue | _TreeRecordRef] = PickleSpool(indexed=True)
         self._tree: StreamedJSONDocument | None = None
         self._closed = False
@@ -149,14 +150,93 @@ class DecodedRecordSequence(Sequence[JsonValue]):
             raise
         return tape
 
-    def _append_document(self, path: Path, *, allow_nonfinite: bool, strip_bom: bool) -> None:
+    @classmethod
+    def from_archive_jsonl(
+        cls, handle: JsonlReadable, *, textual: bool = False, dict_only: bool = False
+    ) -> tuple[DecodedRecordSequence, int, str | None]:
+        """Own retained raw records with the archival provider-text policy."""
+        from polylogue.core.json_envelope import _LineSource
+
+        tape = cls(())
+        malformed = 0
+        detail = None
+        first_decoded = True
+        try:
+            with tempfile.TemporaryDirectory(prefix="polylogue-raw-jsonl-") as directory:
+                raw_path = Path(directory) / "line.json"
+                converted = Path(directory) / "text.json"
+                source = _LineSource(handle)
+                line_number = 0
+                while (line := source.next_line()) is not None:
+                    line_number += 1
+                    raw = _capture_jsonl_line(iter(partial(line.read, 64 * 1024), b""), raw_path, whitespace=b"")
+                    try:
+                        if raw is not None:
+                            text = raw.decode("utf-8", "surrogatepass") if textual else decode_provider_utf8(raw)
+                            if first_decoded:
+                                text = text.lstrip("\ufeff")
+                            first_decoded = False
+                            text = text.strip()
+                            if not text:
+                                continue
+                            value = cast(JsonValue, json.loads(text))
+                            if not dict_only or isinstance(value, dict):
+                                tape._spool.append(value)
+                        else:
+                            nonempty = _convert_archive_text(
+                                raw_path, converted, textual=textual, first_decoded=first_decoded
+                            )
+                            first_decoded = False
+                            if not nonempty:
+                                continue
+                            tape._append_document(
+                                converted,
+                                allow_nonfinite=True,
+                                strip_bom=False,
+                                provider_utf8=False,
+                                dict_only=dict_only,
+                                text_encoding="utf-8",
+                            )
+                    except (json.JSONDecodeError, ijson.JSONError, UnicodeError, ValueError) as error:
+                        malformed += 1
+                        if detail is None:
+                            reason = error.reason if isinstance(error, UnicodeDecodeError) else str(error)
+                            detail = f"line {line_number}: {reason}"
+            if not tape:
+                raise ValueError("No valid JSONL records found")
+            return tape, malformed, detail
+        except BaseException:
+            tape.close()
+            raise
+
+    def _append_document(
+        self,
+        path: Path,
+        *,
+        allow_nonfinite: bool,
+        strip_bom: bool,
+        provider_utf8: bool = True,
+        dict_only: bool = False,
+        text_encoding: str | None = None,
+    ) -> None:
         if self._tree is None:
             from polylogue.schemas.observation_spill import StreamedJSONDocument
 
             self._tree = StreamedJSONDocument(None)
             self._tree.__enter__()
-        node = self._tree.append_document(path, allow_nonfinite=allow_nonfinite, strip_bom=strip_bom)
-        self._spool.append(_TreeRecordRef(node))
+        node = self._tree.append_document(
+            path,
+            allow_nonfinite=allow_nonfinite,
+            strip_bom=strip_bom,
+            provider_utf8=provider_utf8,
+            text_encoding=text_encoding,
+        )
+        if (
+            not dict_only
+            or self._tree.connection.execute("SELECT kind FROM json_nodes WHERE id=?", (node,)).fetchone()[0]
+            == "object"
+        ):
+            self._spool.append(_TreeRecordRef(node))
 
     def _value(self, retained: JsonValue | _TreeRecordRef) -> JsonValue:
         if isinstance(retained, _TreeRecordRef):
@@ -175,16 +255,17 @@ class DecodedRecordSequence(Sequence[JsonValue]):
             raise RuntimeError("decoded record sequence is closed")
 
     @overload
-    def __getitem__(self, ordinal: int) -> JsonValue: ...
+    def __getitem__(self, ordinal: SupportsIndex) -> JsonValue: ...
 
     @overload
     def __getitem__(self, ordinal: slice) -> list[JsonValue]: ...
 
-    def __getitem__(self, ordinal: int | slice) -> JsonValue | list[JsonValue]:
+    def __getitem__(self, ordinal: SupportsIndex | slice) -> JsonValue | list[JsonValue]:
         self._require_open()
         check_compute_cancelled()
         if isinstance(ordinal, slice):
             return [self[index] for index in range(*ordinal.indices(len(self)))]
+        ordinal = ordinal.__index__()
         if ordinal < 0:
             ordinal += len(self)
         if not 0 <= ordinal < len(self):
@@ -197,6 +278,28 @@ class DecodedRecordSequence(Sequence[JsonValue]):
             self._require_open()
             check_compute_cancelled()
             yield self._value(value)
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, (list, DecodedRecordSequence))
+            and len(self) == len(other)
+            and all(left == right for left, right in zip(self, other, strict=True))
+        )
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    def __contains__(self, value: object) -> bool:
+        return any(item == value for item in self)
+
+    def __bool__(self) -> bool:
+        return bool(len(self))
+
+    def _immutable(self, *args: object, **kwargs: object) -> Never:
+        raise TypeError("decoded record sequence is read-only")
+
+    append = clear = extend = insert = pop = remove = reverse = sort = _immutable
+    __setitem__ = __delitem__ = __iadd__ = __imul__ = _immutable
 
     def close(self) -> None:
         if self._closed:
@@ -431,6 +534,38 @@ def _convert_jsonl_text(
                 output.write(value.encode("utf-8", "surrogatepass"))
             if not chunk:
                 return nonempty
+
+
+def _convert_archive_text(source: Path, target: Path, *, textual: bool, first_decoded: bool) -> bool:
+    """Finish decoding before choosing first-line BOM policy; trim Unicode whitespace on disk."""
+    from polylogue.schemas.observation_spill import _ExactJSONText
+
+    encoding = "utf-8" if textual else "utf-8-sig"
+    started = False
+    bom_started = not first_decoded
+    written = last_content = 0
+    with source.open("rb") as input_stream, target.open("wb") as output:
+        reader = _ExactJSONText(input_stream, encoding, strip_bom=False, provider_utf8=not textual)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="surrogatepass")
+        while True:
+            check_compute_cancelled()
+            chunk = reader.read(64 * 1024)
+            value = decoder.decode(chunk, final=not chunk)
+            if not bom_started:
+                value = value.lstrip("\ufeff")
+                bom_started = bool(value)
+            if not started:
+                value = value.lstrip()
+                started = bool(value)
+            encoded = value.encode("utf-8", "surrogatepass")
+            output.write(encoded)
+            content = value.rstrip().encode("utf-8", "surrogatepass")
+            if content:
+                last_content = written + len(content)
+            written += len(encoded)
+            if not chunk:
+                output.truncate(last_content)
+                return bool(last_content)
 
 
 def _append_large_jsonl_record(tape: DecodedRecordSequence, source: Path, converted: Path) -> bool:

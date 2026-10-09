@@ -572,6 +572,12 @@ durable contract from a surface serializer. The provider guides under
 
 ## Settled decode and partial admission
 
+Declared raw JSONL envelopes retain a repeatable read-only record tape. Small
+records use a bounded memory buffer; larger records keep exact scalar chunks
+and lazy containers on disk. The envelope owns that tape until classification,
+schema observation, and all borrowed samples finish. Its archival BOM, Unicode
+whitespace, and provider-surrogate policy remains separate from source repair.
+
 Live intake and retained census share `terminal_decode_evidence`: a known-provider
 JSON document or complete JSONL record that cannot decode settles as
 `terminal_corrupt_input`. Unknown-provider decode failures retain their distinct

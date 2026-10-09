@@ -589,10 +589,10 @@ class _ExactJSONText(io.RawIOBase):
     low unit. Only adjacent directly encoded provider units pair here.
     """
 
-    def __init__(self, handle: Any, encoding: str, *, strip_bom: bool = True) -> None:
+    def __init__(self, handle: Any, encoding: str, *, strip_bom: bool = True, provider_utf8: bool = True) -> None:
         self.handle = handle
         self.decoder = codecs.getincrementaldecoder(encoding)(errors="surrogatepass")
-        self.provider_utf8 = encoding in {"utf-8", "utf-8-sig"}
+        self.provider_utf8 = provider_utf8 and encoding in {"utf-8", "utf-8-sig"}
         self.strip_bom = strip_bom
         self.pending = bytearray()
         self.held_high = ""
@@ -713,7 +713,15 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
         connection = self.connection
         return cast(JSONDocument, _load_node(connection, _store_schema_node(connection, value)))
 
-    def append_document(self, path: Path, *, allow_nonfinite: bool = True, strip_bom: bool = True) -> int:
+    def append_document(
+        self,
+        path: Path,
+        *,
+        allow_nonfinite: bool = True,
+        strip_bom: bool = True,
+        provider_utf8: bool = True,
+        text_encoding: str | None = None,
+    ) -> int:
         """Append one complete record to an empty-path owner's lazy tape.
 
         A failed attempt leaves no nodes or tokens. The caller may replay
@@ -724,7 +732,14 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
         connection = self.connection
         connection.execute("SAVEPOINT json_record")
         try:
-            node = self._decode(connection, path, allow_nonfinite=allow_nonfinite, strip_bom=strip_bom)
+            node = self._decode(
+                connection,
+                path,
+                allow_nonfinite=allow_nonfinite,
+                strip_bom=strip_bom,
+                provider_utf8=provider_utf8,
+                text_encoding=text_encoding,
+            )
             ordinal = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM json_array_items WHERE parent_id=?", (self._root_id,)
@@ -760,7 +775,14 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
         connection.execute("INSERT INTO json_array_items VALUES (?,?,?)", (self._root_id, ordinal, node))
 
     def _decode(
-        self, connection: sqlite3.Connection, path: Path, *, allow_nonfinite: bool = True, strip_bom: bool = True
+        self,
+        connection: sqlite3.Connection,
+        path: Path,
+        *,
+        allow_nonfinite: bool = True,
+        strip_bom: bool = True,
+        provider_utf8: bool = True,
+        text_encoding: str | None = None,
     ) -> int:
         stack: list[_Frame] = []
         tokens = _ScalarTokenStore(connection, allow_nonfinite=allow_nonfinite)
@@ -843,9 +865,11 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
         from polylogue.core.json_envelope import LexemeAlignedReader, _PrefixStringReader
 
         with path.open("rb") as stream:
-            encoding = json.detect_encoding(stream.read(4))
+            encoding = text_encoding or json.detect_encoding(stream.read(4))
             stream.seek(0)
-            with io.BufferedReader(_ExactJSONText(stream, encoding, strip_bom=strip_bom)) as reader:
+            with io.BufferedReader(
+                _ExactJSONText(stream, encoding, strip_bom=strip_bom, provider_utf8=provider_utf8)
+            ) as reader:
                 scalar_reader = _PrefixStringReader(
                     reader,
                     scalar_values=True,

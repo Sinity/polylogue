@@ -183,6 +183,7 @@ def test_strict_retained_validation_uses_accepted_historical_schema_resolution(
         schema_resolution=requested_resolution,
         schema_resolution_is_explicit=False,
         registry=schema_registry,
+        signature_directory=(path).parent,
     )
 
     assert result.status is ValidationStatus.PASSED

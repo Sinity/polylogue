@@ -76,6 +76,7 @@ def test_actual_package_resolution_keeps_unused_four_mib_scalar_on_disk(
                 evidence_id="neutral",
                 jsonl=True,
                 registry=SchemaRegistry(storage_root=tmp_path / "registry"),
+                signature_directory=(target).parent,
             )
         )
     assert verdicts[0] == verdicts[1]
@@ -137,7 +138,9 @@ def test_boolean_additional_and_drift_do_not_request_unknown_value(tmp_path: Pat
                 "properties": {"known": {"type": "integer"}},
                 "additionalProperties": additional,
             }
-            reducer = _SampleValidationReducer(schema, Provider.HERMES, None, document._connection, source_path=None)
+            reducer = _SampleValidationReducer(
+                schema, Provider.HERMES, None, document._connection, source_path=None, signature_directory=tmp_path
+            )
             reducer.observe(document)
             assert reducer.invalid_count == invalid
             assert reducer.drift_count == 1
@@ -198,6 +201,7 @@ def test_codex_package_recognition_does_not_copy_unknown_payload_scalar(
         evidence_id="neutral",
         jsonl=True,
         registry=SchemaRegistry(storage_root=tmp_path / "registry"),
+        signature_directory=(target).parent,
     )
     assert verdict.sample_count == 3
     assert verdict.invalid_count == 0

@@ -268,6 +268,7 @@ def _read_head_and_prove(
             mode=validation_mode,
             scratch_directory=validation_directory,
             registry=registry,
+            signature_directory=validation_directory,
         ) as validation,
         source_read.open_raw_revision_material(raw_ids[-1]) as (head_provider, payload, _path, head_kind),
     ):
