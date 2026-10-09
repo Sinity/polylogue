@@ -1,28 +1,19 @@
-"""Focused contracts for Drive ingestion helpers and live attachment acquisition.
-
-`_apply_drive_attachments`/`iter_drive_sessions` (the decoupled, dead
-local-path-writing attachment path) were removed as part of polylogue-83u.2:
-they had zero live callers and wrote to `attachment.path` instead of
-`inline_bytes`, so acquired Drive attachment bytes never reached the blob
-store. The live path is `iter_drive_raw_data`, which now resolves
-Drive-hosted attachment references (`driveDocument`/`driveImage`/etc.) via the
-same live client used to download the session document, injecting fetched
-bytes into the raw payload before it is cached/blob-stored. The tests below
-exercise that live path end to end through the ordinary parse+write pipeline,
-proving `acquisition_status='acquired'` with a blob at the attachment's true
-SHA-256 (AC#1, Drive sub-case), and that a fetch failure leaves the attachment
-honestly `unfetched` rather than fabricating a hash.
-"""
+"""Drive source acquisition retains provider bytes through cache and CAS."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import tracemalloc
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
+import pytest
+
 from polylogue.config import Source
+from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.json import JSONValue
 from polylogue.sources import DriveFile, download_drive_files
 from polylogue.sources.drive import drive_cache_file_path, iter_drive_raw_data
@@ -37,7 +28,7 @@ class _DriveSessionClient:
 
     files: list[DriveFile]
     payload_bytes: dict[str, bytes]
-    download_bytes_calls: list[str] = field(default_factory=list)
+    download_into_calls: list[str] = field(default_factory=list)
 
     def resolve_folder_id(self, folder_ref: str) -> str:
         return f"folder:{folder_ref}"
@@ -46,7 +37,7 @@ class _DriveSessionClient:
         yield from self.files
 
     def download_json_payload(self, file_id: str, *, name: str) -> JSONValue:
-        raise NotImplementedError("iter_drive_raw_data uses download_bytes, not download_json_payload")
+        raise NotImplementedError("iter_drive_raw_data uses download_into, not download_json_payload")
 
     def download_to_path(self, file_id: str, dest: Path) -> DriveFile:
         raise NotImplementedError("not used by the live raw-acquisition path")
@@ -55,11 +46,11 @@ class _DriveSessionClient:
         return next(file for file in self.iter_json_files("") if file.file_id == file_id)
 
     def download_bytes(self, file_id: str) -> bytes:
-        self.download_bytes_calls.append(file_id)
-        return self.payload_bytes[file_id]
+        raise AssertionError("raw acquisition must stream")
 
     def download_into(self, file_id: str, handle: IO[bytes]) -> None:
-        raise NotImplementedError("attachment bytes are fetched by the convergence stage, not raw acquisition")
+        self.download_into_calls.append(file_id)
+        handle.write(self.payload_bytes[file_id])
 
 
 def _empty_cursor_state() -> CursorStatePayload:
@@ -113,7 +104,7 @@ def test_iter_drive_raw_data_replaces_torn_cache_even_when_revision_is_unchanged
     )
 
     assert len(records) == 1
-    assert client.download_bytes_calls == ["file-1"]
+    assert client.download_into_calls == ["file-1"]
     assert json.loads(cache.read_bytes()) == payload
 
 
@@ -160,5 +151,81 @@ def test_iter_drive_raw_data_replaces_a_cache_rewritten_with_attachment_bytes(tm
     )
 
     assert len(records) == 1
-    assert client.download_bytes_calls == ["file-1"]
+    assert client.download_into_calls == ["file-1"]
     assert json.loads(cache.read_bytes()) == payload
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_large_drive_document_stays_on_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cached: bool) -> None:
+    prefix = b'{"chunkedPrompt":{"chunks":[{"role":"user","text":"neutral"}]}}'
+    chunk = b" " * 65536
+    count = 256
+    size = len(prefix) + len(chunk) * count
+    digest = hashlib.sha256(prefix)
+    for _ in range(count):
+        digest.update(chunk)
+
+    class StreamingClient(_DriveSessionClient):
+        def download_into(self, file_id: str, handle: IO[bytes]) -> None:
+            self.download_into_calls.append(file_id)
+            handle.write(prefix)
+            for _ in range(count):
+                handle.write(chunk)
+
+    client = StreamingClient(
+        files=[DriveFile("large", "neutral.json", "application/json", "2026-01-01T00:00:00Z", size)],
+        payload_bytes={},
+    )
+    source = Source(name="gemini", folder="neutral", path=tmp_path / "cache")
+    assert source.path is not None
+    cache = drive_cache_file_path(drive_cache_directory(source.path, "folder:neutral"), "large")
+    if cached:
+        cache.parent.mkdir(parents=True)
+        with cache.open("wb") as handle:
+            handle.write(prefix)
+            for _ in range(count):
+                handle.write(chunk)
+        cache.with_name(cache.name + ".revision").write_text("2026-01-01T00:00:00Z")
+
+    def refuse_resident_read(_path: Path) -> bytes:
+        raise AssertionError("raw acquisition must never read a whole file")
+
+    monkeypatch.setattr(Path, "read_bytes", refuse_resident_read)
+    store = BlobStore(tmp_path / "blob")
+    tracemalloc.start()
+    try:
+        records = list(iter_drive_raw_data(source=source, client=client, blob_store=store))
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < size // 2
+    assert len(records) == 1
+    assert records[0].blob_hash == digest.hexdigest()
+    assert records[0].blob_size == size
+    assert records[0].raw_bytes == b""
+    assert client.download_into_calls == ([] if cached else ["large"])
+    with cache.open("rb") as cache_reader:
+        assert hashlib.file_digest(cache_reader, "sha256").hexdigest() == digest.hexdigest()
+    with store.blob_path(digest.hexdigest()).open("rb") as blob_reader:
+        assert hashlib.file_digest(blob_reader, "sha256").hexdigest() == digest.hexdigest()
+
+
+def test_cancelled_drive_download_releases_private_stage(tmp_path: Path) -> None:
+    class CancelledClient(_DriveSessionClient):
+        def download_into(self, file_id: str, handle: IO[bytes]) -> None:
+            handle.write(b"unfinished")
+            raise DaemonOperationCancelled("neutral cancellation")
+
+    client = CancelledClient(
+        files=[DriveFile("file-1", "neutral.json", "application/json", "2026-01-01T00:00:00Z", 100)],
+        payload_bytes={},
+    )
+    store = BlobStore(tmp_path / "blob")
+    with pytest.raises(DaemonOperationCancelled):
+        list(
+            iter_drive_raw_data(
+                source=Source(name="gemini", folder="neutral", path=tmp_path / "cache"), client=client, blob_store=store
+            )
+        )
+    assert not list(tmp_path.rglob(".blob.*"))
+    assert not list((tmp_path / "cache").rglob("*.json"))

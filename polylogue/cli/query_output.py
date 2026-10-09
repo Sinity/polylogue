@@ -28,7 +28,6 @@ from polylogue.operations.authority import authority_for_config
 from polylogue.rendering.identity import IdentityFrame, identity_frame
 from polylogue.surfaces.authority import AuthorityEnvelope
 from polylogue.surfaces.payloads import (
-    SearchCursor,
     SessionSearchHitPayload,
     build_search_envelope,
     model_json_document,
@@ -498,7 +497,6 @@ def format_search_envelope(
     sort: str | None,
     total: int | None = None,
     message_counts: dict[str, int] | None = None,
-    cursor: SearchCursor | None = None,
     authority: AuthorityEnvelope | None = None,
 ) -> str:
     """Render the canonical :class:`SearchEnvelope` JSON for ranked search.
@@ -529,7 +527,6 @@ def format_search_envelope(
         query=query,
         retrieval_lane=resolved_lane,
         sort=sort,
-        cursor=cursor,
         authority=authority,
         execution=hits.execution,
     )
@@ -543,16 +540,12 @@ async def output_search_hits(
     repo: SessionOutputStore | None = None,
     *,
     total: int | None = None,
-    cursor: SearchCursor | None = None,
 ) -> None:
     """Output evidence-bearing search hits with optional rich table rendering.
 
     ``total`` is the count of matching sessions (from ``spec.count()``)
-    threaded by the caller so the JSON envelope reports a concrete total like
-    every other read surface (#1749). ``cursor`` carries a previously-decoded
-    :class:`SearchCursor` when the request is a paginated follow-up (#1268);
-    JSON envelope output uses it to drop hits up to and including the anchor
-    and to mint a fresh ``next_cursor`` from the page tail.
+    threaded by the caller so the JSON envelope reports a concrete total.
+    The producer's execution metadata owns the page and continuation.
     """
     started_at = monotonic()
     msg_counts: dict[str, int] = {}
@@ -578,7 +571,6 @@ async def output_search_hits(
                 sort=sort_value,
                 total=total,
                 message_counts=msg_counts,
-                cursor=cursor,
                 authority=authority_for_config(env.config, server_identity="direct", started_at=started_at),
             )
         )

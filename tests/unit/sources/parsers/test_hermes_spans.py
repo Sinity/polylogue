@@ -194,6 +194,9 @@ def test_real_nemo_relay_atif_fixture_yields_step_extra_telemetry_evidence() -> 
     tools = cast(list[dict[str, Any]], availability["tools"])
     assert len(tools) == 3
     assert all({"name", "description", "parameters"} <= tool.keys() for tool in tools)
+    assert tools == payload["steps"][1]["extra"]["llm_request"]["tools"]
+    assert tools[0]["strict"] is False
+    assert "type" in tools[0]
     assert availability["parallel_tool_calls"] is True
     assert availability["reasoning_effort"] == "<redacted>"
     assert availability["tool_choice"] == "<redacted>"

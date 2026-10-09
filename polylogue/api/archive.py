@@ -5764,9 +5764,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     ) -> BulkTagMutationResult:
         """Apply a bulk-tag operation across many sessions (#862).
 
-        Validation (empty inputs and size limits) is enforced inside the
-        :class:`ArchiveMutationsMixin` so every surface sees the same
-        behavior.
+        Reject empty selections and tags before submitting the audited daemon
+        product.
 
         Routed through ``OperationExecutor``/``BulkTagActuator`` (t46.9 phase
         2); see :meth:`add_tag` for the shared-contract rationale.
@@ -5777,10 +5776,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             raise ValueError("bulk_tag_sessions requires at least one session_id")
         if not tags:
             raise ValueError("bulk_tag_sessions requires at least one tag")
-        if len(session_ids) > 100:
-            raise ValueError("bulk_tag_sessions supports at most 100 session_ids")
-        if len(tags) > 20:
-            raise ValueError("bulk_tag_sessions supports at most 20 tags")
 
         receipt, _plan = await submit_facade_product(
             self.config,

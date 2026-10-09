@@ -55,6 +55,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, TypeVar, cas
 
 from polylogue.core.enums import PrincipalSurface
 from polylogue.core.errors import SchemaRefusalError
+from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.operations.machine_receipts import MachineHistoricalReceipt, encode_machine_receipt
 
 if TYPE_CHECKING:
@@ -1666,6 +1667,15 @@ def resolve_interrupted_operation(
             raise RecoveryDeferredError(
                 f"original Excision recovery refused: {type(exc).__name__}: {exc}"[:512]
             ) from exc
+        # Actuators can wrap native errors without erasing their typed cause.
+        # Contention cannot settle the effect of the original accepted intent.
+        cause: BaseException | None = exc
+        seen: set[int] = set()
+        while cause is not None and id(cause) not in seen:
+            if is_transient_sqlite_lock(cause):
+                raise RecoveryDeferredError(f"{operation.operation} recovery encountered SQLite contention") from exc
+            seen.add(id(cause))
+            cause = cause.__cause__
         return RecoveryResolution("replay-failed", f"{type(exc).__name__}: {exc}"[:512])
 
 

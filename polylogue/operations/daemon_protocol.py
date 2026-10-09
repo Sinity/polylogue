@@ -687,8 +687,8 @@ class FacadeTagRemoveRequest(_OperationPayload):
 
 
 class FacadeBulkTagSessionsRequest(_OperationPayload):
-    session_ids: list[str] = Field(min_length=1, max_length=100)
-    tags: list[str] = Field(min_length=1, max_length=20)
+    session_ids: list[str] = Field(min_length=1)
+    tags: list[str] = Field(min_length=1)
     author_ref: str | None = None
     author_kind: str | None = None
 

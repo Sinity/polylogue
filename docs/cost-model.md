@@ -176,6 +176,11 @@ elsewhere:
 Catalog coverage is explicit. When any model row lacks a catalog price, the
 complete `catalog_api_equivalent_usd` is `null` and its evidence value is
 `unknown`; exact token evidence remains `known`.
+Incomplete provider lanes also keep complete catalog cost and exact token
+evidence unknown, even when the model has a catalog rate. Physical and logical
+pricing lanes expose `incomplete_provider_row_count` and the
+`incomplete_provider_lanes` caveat; their numeric usage and priced subtotal
+remain available as partial measurements.
 `catalog_priced_subtotal_usd` retains the numeric subtotal for matched rows,
 with the unmatched row count and coverage exclusion explaining why it is not
 the complete total. Empty usage frames are unknown rather than a measured

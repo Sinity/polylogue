@@ -51,7 +51,7 @@ polylogue --since "last month" find 'since:"last month"' then read --all --forma
 | `ndjson` | One JSON object per line |
 | `yaml` | Query-set envelope as YAML |
 | `plaintext` | Unformatted query-set rows |
-| `csv` | Comma-separated query-set rows |
+| `csv` | Message rows with one header for the complete query set |
 
 These are the formats supported by the standard query-set export path. Default
 output varies by view and cardinality, so specify a format in automation. Other
@@ -68,8 +68,9 @@ polylogue --since yesterday find 'since:yesterday' then read --all --format yaml
 ## Content Blocks
 
 Reads include all selected content blocks: text, thinking blocks, tool use, tool
-results, images, code blocks, and document references. Use query-unit
-expressions or explicit read views to narrow what is selected before rendering.
+results, images, code blocks, and document references. Markdown and HTML transcripts
+render the complete tool argument object, including nested values and long commands.
+Use query-unit expressions or explicit read views to narrow what is selected before rendering.
 
 ## Sharing Considerations
 
@@ -80,3 +81,11 @@ expressions or explicit read views to narrow what is selected before rendering.
 - Attachment references are preserved but binary blobs are not rendered.
 - Use query-unit filters or a narrower read view to produce cleaner output for
   non-technical audiences.
+
+## Insight bundles
+
+`ops insights export --out <directory>` writes JSONL rows with their JSON schemas,
+a manifest, and readiness coverage. Nullable required fields remain explicit JSON
+`null` values so every row can validate against its bundled schema. The command
+maps its supplied terminal outcome to the shared CLI exit statuses: 0 for `ok`,
+2 for `empty`, and 1 for `degraded` or `error`.

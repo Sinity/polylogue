@@ -131,7 +131,7 @@ def _write_insight_jsonl(
     with closing(items), path.open("w", encoding="utf-8") as stream:
         for item in items:
             checkpoint()
-            stream.write(item.model_dump_json(exclude_none=True))
+            stream.write(item.model_dump_json())
             stream.write("\n")
             count += 1
     return count

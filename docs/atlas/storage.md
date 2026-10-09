@@ -48,6 +48,9 @@ match. A path or payload that merely resembles a sidecar does not settle an
 unreceipted raw; decode failures, unsupported/refused artifacts, validation
 refusals, mixed session cohorts, and missing or stale receipts remain visible
 gaps (`storage/archive_readiness.py`).
+Retained replay uses the same membership currency requirement. Missing or older
+non-session membership receipts remain pending, and the canonical Source census
+publishes the current receipt before replay; a schema exemption cannot skip it.
 
 The bounded daemon status projection reuses this durable receipt and identity
 check without opening raw blobs. It keeps the raw/index join count visible
@@ -73,6 +76,11 @@ Recovery uses the same supplied compute owner and short writer admissions; no
 Source capability crosses the preparation lifetime.
 
 ## Backup readability
+
+The backup manifest retains the original live-store blob debt before acquisition
+recovery. Restore reports unrestored references from the authenticated package's
+own closure and carried bytes, so exact recovery does not remain a destination
+gap. Declared-absent Source references remain visible as unrestored bytes.
 
 Backup preflight preserves SQLite read failures and cancellation through both
 check-only and acquisition operations before a package is published. Its
@@ -345,6 +353,7 @@ memory contributors.
 - Full parsed-session replacement explicitly removes attachment-native-ID dependents before their attachment refs, so bulk rebuilds preserve foreign-key integrity while enforcement is disabled. The delete is scoped to the replaced session's refs and leaves other sessions' identities intact (`_clear_session_projection_rows` in `polylogue/storage/sqlite/archive_tiers/write.py`).
 - `messages.content_address` witnesses the complete declared message hash projection, including block metadata, file edits and web constructs. A parent replacement may retain a branch edge only where that complete witness agrees; a same-ID message with changed content cannot silently become the child's inherited prefix (`_message_content_address` in `polylogue/storage/sqlite/archive_tiers/write.py`).
 - `messages.identity_source` records which identity path fired; its index CHECK is generated from the semantic `MessageIdentitySource` Literal (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:360-365`; `polylogue/core/types.py:13-16`).
+- Id-less appends continue above the greatest stored occurrence for each content digest. Materialized-prefix replay preserves existing ordinals, including gaps left by removed tail messages; an append never renumbers those anchors (`_stored_content_occurrences` in `polylogue/storage/sqlite/archive_tiers/write.py`).
 - `blocks.block_id` is stored-generated as `message_id || ':' || position`; tool command/path and `search_text` projections are virtual generated columns (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:561-566`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:635-650`).
 - Sessions, messages, and blocks are `STRICT`; message and block ownership is enforced by cascading FKs (`polylogue/storage/sqlite/archive_tiers/index.py:527-647`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:330-333`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:93`).
 - `material_origin` is independently constrained from role, preserving authoredness as a separate axis (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:399-405`).
@@ -453,8 +462,13 @@ Readiness, full replay completion, current Source/User/Audit observers and
 previously resolving purchased message references must all pass before the
 normal reference-checked promotion. No durable or purchased tier is replaced.
 Interrupted MEMORY candidates are discarded through their owner and rebuilt;
-a published successor completes its existing promotion tail and idempotent
-Source acknowledgement on restart. Unsupported physical DDL, durable schemas,
+a published successor completes its existing promotion tail on restart.
+Promotion and restart do not derive durable parse success from Index receipts.
+Unacknowledged successful session components remain eligible for ordinary retained
+replay, which prepares current evidence and publishes its original Source permit
+after the Index outcome. This can require an additional preparation pass after
+a cold build; terminal, deferred and non-session dispositions keep their existing
+inspection behavior. Unsupported physical DDL, durable schemas,
 changed custody or missing reference coverage remain explicit refusals.
 
 ## Tool-result association
@@ -550,3 +564,11 @@ source availability. A present original with absent retained bytes is blocking
 An absent original with retained bytes remains nonblocking `source_missing`.
 These checks inspect CAS existence, while retained-byte validation owns full
 body fidelity.
+
+Drive attachment convergence pages byte and supplier-attribution obligations.
+A shared acquired attachment still owes each reference's exact retained raw,
+acquisition coordinate and blob hash in Source. References beyond the current
+window and references added after acquisition bind verified retained bytes
+without another provider request. Attachment readiness includes these pending
+attributions in its `allowed_unfetched` count; global acquired status alone
+does not discharge them (`operations/attachment_convergence.py`).

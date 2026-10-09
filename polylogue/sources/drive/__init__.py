@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from io import BytesIO
+from functools import partial
 from pathlib import Path
 
 import ijson
 
 from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.storage.blob_publication import publication_receipt_id
@@ -93,48 +94,14 @@ def _cache_revision_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.revision")
 
 
-def _read_valid_cache(path: Path, revision: str | None) -> bytes | None:
-    """Return cached bytes only when they are the provider's complete, readable document at ``revision``.
-
-    A cache is keyed by native file ID, so without its revision a document that
-    changed on Drive would be served from the stale copy forever. A revision
-    that cannot be proven (no provider ``modifiedTime``, or no record of the
-    cached one) is a miss.
-    """
-    if revision is None:
-        return None
-    try:
-        if _cache_revision_path(path).read_text(encoding="utf-8") != revision:
-            return None
-        raw = path.read_bytes()
-        if not raw.strip():
-            return None
-        for _event in ijson.parse(BytesIO(raw), multiple_values=True):
-            pass
-        return raw
-    except (OSError, UnicodeDecodeError, ijson.JSONError, TypeError, ValueError):
-        return None
-
-
 def _cache_document_is_readable(path: Path) -> bool:
-    """Prove a cached Drive document still decodes, without materializing it.
-
-    The cursor skip must not treat a truncated or corrupt cache as authority,
-    but proving that needs a decode, not the decoded object. Running
-    ``_read_valid_cache`` ahead of the revision comparison meant an unchanged
-    AI Studio document paid ``json.loads`` -- its whole object graph, several
-    times the file size -- on every scan, which is what this memory-bounded
-    route exists to avoid. ``ijson`` and a line iterator prove the same thing
-    in bounded memory, and admit exactly the same documents
-    ``_read_valid_cache`` returns bytes for.
-    """
+    """Validate every JSON event in a cache without retaining its contents."""
     try:
         with path.open("rb") as handle:
-            # Consume every event: short-circuiting on the first one would
-            # accept a truncated document, which is exactly the cache
-            # ``_read_valid_cache`` refuses to hand back.
+            # EOF is part of the proof; a prefix cannot prove a cache complete.
             events = 0
             for _event in ijson.parse(handle, multiple_values=True):
+                check_compute_cancelled()
                 events += 1
             return events > 0
     except (OSError, UnicodeDecodeError, ValueError, ijson.JSONError):
@@ -155,17 +122,24 @@ def _replace_atomically(path: Path, raw: bytes) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def _cache_holds_readable_revision(path: Path, revision: str) -> bool:
-    """Whether the cache is ``revision``'s document and still decodes, without materializing it."""
+def _cache_revision_matches(path: Path, revision: str | None) -> bool:
+    """Only a recorded provider revision can select a cached payload."""
+    if revision is None:
+        return False
     try:
         if _cache_revision_path(path).read_text(encoding="utf-8") != revision:
             return False
     except OSError:
         return False
-    return _cache_document_is_readable(path)
+    return True
 
 
-def _write_cache_atomically(path: Path, raw: bytes, revision: str | None) -> None:
+def _cache_holds_readable_revision(path: Path, revision: str | None) -> bool:
+    """Whether the recorded revision still has a complete readable cache."""
+    return _cache_revision_matches(path, revision) and _cache_document_is_readable(path)
+
+
+def _write_cache_atomically(path: Path, source: Path, revision: str | None) -> None:
     """Replace the cache, then record the revision it holds.
 
     The document is written first: a crash between the two writes leaves the
@@ -173,7 +147,20 @@ def _write_cache_atomically(path: Path, raw: bytes, revision: str | None) -> Non
     re-downloads, never as a stale hit.
     """
     _cache_revision_path(path).unlink(missing_ok=True)
-    _replace_atomically(path, raw)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
+            temporary = Path(handle.name)
+            with source.open("rb") as reader:
+                while chunk := reader.read(1024 * 1024):
+                    check_compute_cancelled()
+                    handle.write(chunk)
+        temporary.replace(path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     if revision is not None:
         _replace_atomically(_cache_revision_path(path), revision.encode("utf-8"))
 
@@ -289,49 +276,72 @@ def iter_drive_raw_data(
                 # needs the payload, so nothing here reads it.
                 continue
 
-            raw_bytes = _read_valid_cache(cache_path, file_meta.modified_time) if cache_exists else None
-            if raw_bytes is None:
-                try:
-                    before = drive_client.get_metadata(file_meta.file_id, refresh=True)
-                    raw_bytes = drive_client.download_bytes(file_meta.file_id)
-                    after = drive_client.get_metadata(file_meta.file_id, refresh=True)
-                    if any(
-                        (observed.file_id, observed.mime_type, observed.modified_time, observed.size_bytes)
-                        != (file_meta.file_id, file_meta.mime_type, file_meta.modified_time, file_meta.size_bytes)
-                        for observed in (before, after)
-                    ):
-                        witness.changed = True
-                        continue
-                except DaemonOperationCancelled:
-                    raise
-                except Exception as exc:
-                    tracker.record_failure(file_name=file_meta.name, error=exc)
-                    witness.record_failure(source_path, "download", exc)
-                    logger.warning(
-                        "Failed to download Drive payload for %s (%s): %s",
-                        file_meta.name,
-                        file_meta.file_id,
-                        exc,
-                    )
-                    continue
-                try:
-                    _write_cache_atomically(cache_path, raw_bytes, file_meta.modified_time)
-                except DaemonOperationCancelled:
-                    raise
-                except Exception as exc:
-                    tracker.record_failure(file_name=file_meta.name, error=exc)
-                    witness.record_failure(source_path, "cache", exc)
-                    continue
+            def checkpoint(status: Callable[[], None] | None = heartbeat) -> None:
+                check_compute_cancelled()
+                if status is not None:
+                    status()
 
+            prepared = None
             try:
-                blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
-            except DaemonOperationCancelled:
-                raise
-            except Exception as exc:
-                tracker.record_failure(file_name=file_meta.name, error=exc)
-                witness.record_failure(source_path, "blob", exc)
-                continue
-            del raw_bytes
+                if cache_exists and _cache_revision_matches(cache_path, file_meta.modified_time):
+                    try:
+                        prepared = blob_store.prepare_from_path(cache_path, heartbeat=checkpoint)
+                        # Validate the exact retained copy, not a separately
+                        # reopened cache name that a replacement could change.
+                        if not _cache_document_is_readable(prepared.temporary_path):
+                            blob_store.discard_prepared(prepared)
+                            prepared = None
+                    except DaemonOperationCancelled:
+                        raise
+                    except Exception as exc:
+                        tracker.record_failure(file_name=file_meta.name, error=exc)
+                        witness.record_failure(source_path, "blob", exc)
+                        continue
+                if prepared is None:
+                    try:
+                        before = drive_client.get_metadata(file_meta.file_id, refresh=True)
+                        prepared = blob_store.prepare_from_writer(
+                            partial(drive_client.download_into, file_meta.file_id), heartbeat=checkpoint
+                        )
+                        after = drive_client.get_metadata(file_meta.file_id, refresh=True)
+                        if any(
+                            (observed.file_id, observed.mime_type, observed.modified_time, observed.size_bytes)
+                            != (file_meta.file_id, file_meta.mime_type, file_meta.modified_time, file_meta.size_bytes)
+                            for observed in (before, after)
+                        ):
+                            witness.changed = True
+                            continue
+                    except DaemonOperationCancelled:
+                        raise
+                    except Exception as exc:
+                        tracker.record_failure(file_name=file_meta.name, error=exc)
+                        witness.record_failure(source_path, "download", exc)
+                        logger.warning(
+                            "Failed to download Drive payload for %s (%s): %s",
+                            file_meta.name,
+                            file_meta.file_id,
+                            exc,
+                        )
+                        continue
+                    try:
+                        _write_cache_atomically(cache_path, prepared.temporary_path, file_meta.modified_time)
+                    except DaemonOperationCancelled:
+                        raise
+                    except Exception as exc:
+                        tracker.record_failure(file_name=file_meta.name, error=exc)
+                        witness.record_failure(source_path, "cache", exc)
+                        continue
+                try:
+                    blob_hash, blob_size = blob_store.publish_prepared(prepared)
+                except DaemonOperationCancelled:
+                    raise
+                except Exception as exc:
+                    tracker.record_failure(file_name=file_meta.name, error=exc)
+                    witness.record_failure(source_path, "blob", exc)
+                    continue
+            finally:
+                if prepared is not None:
+                    blob_store.discard_prepared(prepared)
 
             witness.record_acquired_revision(source_path, file_meta.modified_time)
             provider_hint = Provider.from_string(source.name)

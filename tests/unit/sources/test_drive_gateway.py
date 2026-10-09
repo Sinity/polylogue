@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.sources.drive.gateway import (
     DEFAULT_DRIVE_RETRIES,
     DEFAULT_DRIVE_RETRY_BASE,
@@ -133,9 +134,10 @@ def test_resolve_drive_retry_policy_contract() -> None:
         (2, 2, None, True),
         (5, 1, DriveAuthError, False),
         (5, 1, DriveNotFoundError, False),
+        (5, 1, DaemonOperationCancelled, False),
         (2, 3, None, False),
     ],
-    ids=["transient-recovers", "auth-terminal", "notfound-terminal", "exhausted"],
+    ids=["transient-recovers", "auth-terminal", "notfound-terminal", "cancelled", "exhausted"],
 )
 def test_call_with_retry_contract(
     retries: int,

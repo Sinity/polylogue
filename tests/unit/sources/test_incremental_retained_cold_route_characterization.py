@@ -14,6 +14,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
@@ -164,7 +166,9 @@ def _replay_until_valid(archive_root: Path, raw_id: str) -> None:
         raise AssertionError(f"retained replay did not converge for {raw_id}")
 
 
-def test_live_retained_and_owned_cold_routes_publish_one_interpretation(tmp_path: Path) -> None:
+def test_live_retained_and_owned_cold_routes_publish_one_interpretation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """One acquired raw publishes the same rows through every route owner.
 
     The retained arm acquires the raw with the revision identity live intake
@@ -238,14 +242,43 @@ def test_live_retained_and_owned_cold_routes_publish_one_interpretation(tmp_path
         clear_cold_build_generation()
         if not generation.settled:
             generation.discard()
+    promoted = _snapshot(cold_root)
+    assert promoted["raw_terminal"] == cold_before_promotion["raw_terminal"]
+    cold_raw_id = str(_rows(cold_root / "source.db", "SELECT raw_id FROM raw_sessions")[0][0])
+
+    # The regular retained stage must select the pending Source component
+    # despite complete Index output, and acknowledge only current preparation.
+    from polylogue.operations.raw_observation_derivation import (
+        raw_observation_backlog_snapshot,
+        raw_observation_inspection_frame,
+    )
+    from polylogue.sources import prepared_jsonl
+    from polylogue.storage.derived.raw import RawObservationInspection
+
+    inspection = RawObservationInspection(cold_root)
+    assert inspection.inspect(raw_observation_inspection_frame(cold_root), (cold_raw_id,))[cold_raw_id] == "stale"
+    backlog = raw_observation_backlog_snapshot(cold_root, limit=10)
+    assert backlog["page_complete"] and backlog["candidate_count"] == 1
+    assert [row["raw_id"] for row in cast(list[dict[str, Any]], backlog["top_raw_rows"])] == [cold_raw_id]
+    preparation_calls = 0
+    prepare = prepared_jsonl.prepare_jsonl_blob
+
+    def count_preparation(*args: Any, **kwargs: Any) -> Any:
+        nonlocal preparation_calls
+        preparation_calls += 1
+        return prepare(*args, **kwargs)
+
+    monkeypatch.setattr(prepared_jsonl, "prepare_jsonl_blob", count_preparation)
+    _replay_until_valid(cold_root, cold_raw_id)
+    assert preparation_calls == 1, preparation_calls
+    assert inspection.inspect(raw_observation_inspection_frame(cold_root), (cold_raw_id,))[cold_raw_id] == "valid"
+    assert raw_observation_backlog_snapshot(cold_root, limit=10)["candidate_count"] == 0
     cold = _snapshot(cold_root)
 
     assert live == cold, {key: (live[key], cold[key]) for key in live if live[key] != cold[key]}
-    # A cold build has no live Source authority: its replay leaves the parse
-    # unacknowledged, and promotion, its commit point, acknowledges it.
-    # Anti-vacuity: drop the promotion stamp and ``cold`` keeps the
-    # unparsed raw, so the live/cold equality above goes red.
-    assert cold_before_promotion["raw_terminal"] == ((0, 0, 0, None),)
+    # Cold replay and promotion preserve pending Source evidence. The regular
+    # retained stage above establishes the same durable outcome as live ingest.
+    assert cold_before_promotion["raw_terminal"] == ((0, 0, 1, "passed"),)
     assert {key: value for key, value in cold_before_promotion.items() if key != "raw_terminal"} == {
         key: value for key, value in cold.items() if key != "raw_terminal"
     }

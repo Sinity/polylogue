@@ -300,7 +300,10 @@ class DaemonSupervisor:
             message=message,
             frame=self._frame,
         )
-        task = self._tasks.pop(name, None)
+        # Halting stops new scheduling, not ownership of the existing child.
+        # Cancellation may still be settling its physical work; wait and
+        # shutdown must retain that child just as they retain other services.
+        task = self._tasks.get(name)
         if task is not None and not task.done():
             task.cancel()
         self._states[name] = ServiceState.HALTED

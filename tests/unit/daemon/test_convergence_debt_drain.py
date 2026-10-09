@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.sources.live.cursor import CursorStore
@@ -42,7 +43,7 @@ def _seed(root: Path, stage: str, count: int) -> None:
             deferred=True,
         )
     with sqlite3.connect(root / "ops.db") as conn:
-        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00', updated_at_ms = 1000")
         conn.commit()
 
 
@@ -251,6 +252,7 @@ def test_a_row_re_recorded_after_the_run_started_survives_the_ledger(archive: Pa
         [debt],
         {("archive_wide", "source_path", subject): _Converged()},
         {"archive_wide": 4000},
+        run_started_by_stage={"archive_wide": 4000},
     )
     assert retried == 1
     assert len(_rows(archive)) == 1
@@ -264,9 +266,13 @@ def test_skipped_retry_preserves_unmeasured_debt(archive: Path, stage: str) -> N
     cursor = CursorStore(archive / "index.db")
     subject = "synthetic-session"
     cursor.record_convergence_debt(stage=stage, subject_type="session_id", subject_id=subject, error="owed")
+    with sqlite3.connect(archive / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET updated_at_ms = 1000")
     [debt] = cursor.list_convergence_debt(limit=10)
     state = SimpleNamespace(converged=True, stages={"lineage": "skipped"}, last_error=None)
-    daemon_cli._record_convergence_debt_retries(cursor, [debt], {(stage, "session_id", subject): state})
+    daemon_cli._record_convergence_debt_retries(
+        cursor, [debt], {(stage, "session_id", subject): state}, run_started_by_stage={stage: 2000}
+    )
     assert _rows(archive) == [("lineage", subject)]
 
 
@@ -276,12 +282,77 @@ def test_generic_retry_preserves_each_unevaluated_stage(archive: Path) -> None:
     cursor = CursorStore(archive / "index.db")
     subject = "synthetic-session"
     cursor.record_convergence_debt(stage="convergence", subject_type="session_id", subject_id=subject, error="owed")
+    with sqlite3.connect(archive / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET updated_at_ms = 1000")
     [debt] = cursor.list_convergence_debt(limit=10)
     state = SimpleNamespace(
         converged=False, stages={"lineage": "skipped", "titles": "failed", "summary": "done"}, last_error="pending"
     )
-    daemon_cli._record_convergence_debt_retries(cursor, [debt], {("convergence", "session_id", subject): state})
+    daemon_cli._record_convergence_debt_retries(
+        cursor,
+        [debt],
+        {("convergence", "session_id", subject): state},
+        run_started_by_stage={"convergence": 2000},
+    )
     assert _rows(archive) == [("lineage", subject), ("titles", subject)]
+
+
+@pytest.mark.parametrize("updated_ms", [1000, 2000, 3000])
+def test_subject_clear_only_settles_debt_older_than_its_run(archive: Path, updated_ms: int) -> None:
+    """A successful retry cannot delete a same-millisecond or newer failure."""
+    from types import SimpleNamespace
+
+    cursor = CursorStore(archive / "index.db")
+    subject = "synthetic-session"
+    stage = "hook_paste_enrichment"
+    cursor.record_convergence_debt(stage=stage, subject_type="session_id", subject_id=subject, error="owed")
+    with sqlite3.connect(archive / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET updated_at_ms = ?", (updated_ms,))
+    [debt] = cursor.list_convergence_debt()
+    state = SimpleNamespace(stages={stage: "done"}, last_error=None)
+    assert (
+        daemon_cli._record_convergence_debt_retries(
+            cursor, [debt], {(stage, "session_id", subject): state}, run_started_by_stage={stage: 2000}
+        )
+        == 1
+    )
+    assert _rows(archive) == ([] if updated_ms < 2000 else [(stage, subject)])
+
+
+@pytest.mark.parametrize("converges", [False, True])
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor", "polylogue.sources.live.convergence_debt_retry")
+def test_new_subject_failure_survives_between_publication_and_ledger(
+    archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
+    frozen_clock: Any,
+    converges: bool,
+) -> None:
+    """Drive the page route: an interleaved failure survives success and failure."""
+    stage = _Stage("per_subject", subject_independent=False, converges=converges)
+    _install(monkeypatch, stage)
+    _seed(archive, stage.name, 1)
+    cursor = CursorStore(archive / "index.db", initialize=False)
+    [old] = cursor.list_convergence_debt()
+    newer = []
+    original_admit = admit_stage_write
+
+    def admit(actor: str, work: Any) -> Any:
+        if actor == "maintenance.convergence_debt.ledger":
+            frozen_clock.advance(1)
+            cursor.record_convergence_debt(
+                stage=stage.name,
+                subject_type=old.subject_type,
+                subject_id=old.subject_id,
+                error="new failure after retry publication",
+            )
+            newer.extend(cursor.list_convergence_debt())
+        return original_admit(actor, work)
+
+    monkeypatch.setattr(daemon_cli, "admit_stage_write", admit)
+    assert daemon_cli._drain_convergence_debt_once(archive / "index.db", compute_adapter=bounded_compute_adapter) == 1
+    assert len(stage.executions) == 1
+    assert cursor.list_convergence_debt() == newer
 
 
 @pytest.mark.parametrize("due", [False, True])

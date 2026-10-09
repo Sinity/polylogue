@@ -47,7 +47,7 @@ def test_maintenance_route_family_names_only_the_operation_it_executes() -> None
         "/api/demo/augment": ("maintenance", "operational"),
     }
     assert all(route.auth_policy == "bearer_if_configured_and_same_origin" for route in routes.values())
-    assert routes["/api/reset"].write_gate
+    assert not routes["/api/reset"].write_gate
     assert not routes["/api/ingest"].write_gate and not routes["/api/demo/augment"].write_gate
     assert routes["/api/reset"].migration_reason
     assert not routes["/api/demo/augment"].migration_reason

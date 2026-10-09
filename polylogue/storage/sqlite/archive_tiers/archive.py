@@ -29,6 +29,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import IO, TYPE_CHECKING, Any, BinaryIO, Concatenate, Literal, NoReturn, ParamSpec, TypedDict, TypeVar, cast
 
+from polylogue.archive.query.search_cursor import SearchPosition, position
+
 from .source_items import SourceItemAdmission
 
 if TYPE_CHECKING:
@@ -504,12 +506,14 @@ class ArchiveSessionSearchHit:
 
     rank: int
     session_id: str
-    block_id: str
+    block_id: str | None
     message_id: str
     origin: str
     title: str | None
     snippet: str
     lane_ranks: dict[str, int | None] | None = None
+    score: float | None = None
+    position: SearchPosition | None = None
 
 
 # polylogue-qsb4: both traversals recurse natively over the `delegations`
@@ -7226,6 +7230,10 @@ class ArchiveStore:
         if actions_only:
             where = f"{where} AND b.block_type IN ('tool_use', 'tool_result')"
         order_by = _search_order_by(sort=sort, reverse=reverse)
+        order_terms = () if sort == "random" else _search_order_terms(sort=sort, reverse=reverse)
+        order_projection = "".join(
+            f", {expression} AS cursor_key_{index}" for index, (expression, _) in enumerate(order_terms)
+        )
         params: list[object] = [match_query, *filter_params]
         params.extend([-1 if limit is None else limit, offset])
         cursor = self._conn.cursor()
@@ -7235,7 +7243,7 @@ class ArchiveStore:
                 SELECT b.block_id, b.message_id, b.session_id, s.origin, s.native_id, s.title,
                        b.search_text AS fallback_text,
                        snippet(messages_fts, 0, '[', ']', '...', 12) AS snippet,
-                       rank
+                       rank {order_projection}
                 FROM messages_fts
                 JOIN blocks b ON b.rowid = messages_fts.rowid
                 JOIN sessions s ON s.session_id = b.session_id
@@ -7253,6 +7261,17 @@ class ArchiveStore:
                     yield (
                         ArchiveSessionSearchHit(
                             rank=index,
+                            score=float(row["rank"]),
+                            position=position(
+                                "block",
+                                str(row["block_id"]),
+                                tuple(
+                                    (row[f"cursor_key_{i}"], descending, False)
+                                    for i, (_, descending) in enumerate(order_terms)
+                                ),
+                            )
+                            if order_terms
+                            else None,
                             session_id=str(row["session_id"]),
                             block_id=str(row["block_id"]),
                             message_id=str(row["message_id"]),
@@ -7492,14 +7511,14 @@ class ArchiveStore:
                 cursor.execute(
                     "CREATE TEMP TABLE scoped_search_lane_hits ("
                     "lane TEXT NOT NULL, session_id TEXT NOT NULL, ordinal INTEGER NOT NULL, "
-                    "block_id TEXT NOT NULL, message_id TEXT NOT NULL, origin TEXT NOT NULL, "
-                    "title TEXT, snippet TEXT NOT NULL, PRIMARY KEY (lane, session_id))"
+                    "block_id TEXT, message_id TEXT NOT NULL, origin TEXT NOT NULL, "
+                    "title TEXT, snippet TEXT NOT NULL, score REAL, PRIMARY KEY (lane, session_id))"
                 )
                 cursor.execute(
                     "CREATE TEMP TABLE scoped_search_order (session_id TEXT PRIMARY KEY, "
                     "unmeasured INTEGER NOT NULL, sort_value TEXT NOT NULL COLLATE polylogue_result_number, "
                     "sort_time INTEGER NOT NULL, "
-                    "sort_id TEXT NOT NULL, sort_ordinal INTEGER NOT NULL) STRICT"
+                    "sort_id TEXT NOT NULL) STRICT"
                 )
                 cursor.executemany(
                     "INSERT OR IGNORE INTO scoped_search_sessions VALUES (?)", ((sid,) for sid in session_ids)
@@ -7526,7 +7545,7 @@ class ArchiveStore:
         with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
             cursor.executemany(
                 """INSERT OR IGNORE INTO scoped_search_lane_hits
-                   SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                   SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
                    WHERE EXISTS (SELECT 1 FROM scoped_search_sessions WHERE session_id = ?)""",
                 (
                     (
@@ -7538,6 +7557,7 @@ class ArchiveStore:
                         hit.origin,
                         hit.title,
                         hit.snippet,
+                        hit.score,
                         hit.session_id,
                     )
                     for ordinal, hit in enumerate(hits, start=1)
@@ -7548,15 +7568,12 @@ class ArchiveStore:
         with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
             cursor.execute("DELETE FROM scoped_search_lane_hits WHERE lane = ?", (lane,))
 
-    def settle_scoped_search_order(self, keys: Iterable[tuple[str, bool, int | float, int, str, int]]) -> None:
+    def settle_scoped_search_order(self, keys: Iterable[tuple[str, bool, int | float, int, str]]) -> None:
         """Stage exact current comparator values without retaining candidates."""
         with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
             cursor.executemany(
-                "INSERT INTO scoped_search_order VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    (sid, unmeasured, str(value), time, tie_id, ordinal)
-                    for sid, unmeasured, value, time, tie_id, ordinal in keys
-                ),
+                "INSERT INTO scoped_search_order VALUES (?, ?, ?, ?, ?)",
+                ((sid, unmeasured, str(value), time, tie_id) for sid, unmeasured, value, time, tie_id in keys),
             )
 
     def iter_scoped_search_hits(
@@ -7569,12 +7586,12 @@ class ArchiveStore:
         offset: int = 0,
     ) -> Generator[ArchiveSessionSearchHit, None, None]:
         """Order fully settled session lane ranks, then apply the session window."""
-        ordering = "score DESC, session_id" if hybrid else "vector_rank, session_id"
+        ordering = "score DESC, session_id" if hybrid else f"vector_distance {'DESC' if reverse else 'ASC'}, session_id"
         order_join = ""
         if explicit_sort:
             direction = "ASC" if reverse else "DESC"
             ordering = (
-                f"unmeasured ASC, sort_value {direction}, sort_time {direction}, sort_id {direction}, sort_ordinal ASC"
+                f"unmeasured ASC, sort_value {direction}, sort_time {direction}, sort_id {direction}, session_id ASC"
             )
             order_join = "JOIN scoped_search_order USING (session_id)"
         with closing(self._conn.cursor()) as cursor:
@@ -7586,7 +7603,8 @@ class ArchiveStore:
                     SELECT session_id, SUM(1.0 / ({_archive_query_reads.HYBRID_RRF_K} + lane_rank)) AS score,
                            MAX(CASE WHEN lane = 'text' THEN lane_rank END) AS text_rank,
                            MAX(CASE WHEN lane = 'action' THEN lane_rank END) AS action_rank,
-                           MAX(CASE WHEN lane = 'vector' THEN lane_rank END) AS vector_rank
+                           MAX(CASE WHEN lane = 'vector' THEN lane_rank END) AS vector_rank,
+                           MAX(CASE WHEN lane = 'vector' THEN score END) AS vector_distance
                     FROM lane_ranks GROUP BY session_id
                 ), selected AS (
                     SELECT *, ROW_NUMBER() OVER (ORDER BY {ordering}) AS result_rank
@@ -7605,8 +7623,27 @@ class ArchiveStore:
                 for row in rows:
                     yield ArchiveSessionSearchHit(
                         rank=int(row["result_rank"]),
+                        score=float(row["score"] if hybrid else row["vector_distance"]),
+                        position=position(
+                            "session",
+                            str(row["session_id"]),
+                            (
+                                (
+                                    (row["unmeasured"], False, False),
+                                    (row["sort_value"], not reverse, True),
+                                    (row["sort_time"], not reverse, False),
+                                    (row["sort_id"], not reverse, False),
+                                    (str(row["session_id"]), False, False),
+                                )
+                                if explicit_sort
+                                else (
+                                    (row["score"] if hybrid else row["vector_distance"], hybrid or reverse, False),
+                                    (str(row["session_id"]), False, False),
+                                )
+                            ),
+                        ),
                         session_id=str(row["session_id"]),
-                        block_id=str(row["block_id"]),
+                        block_id=str(row["block_id"]) if row["block_id"] is not None else None,
                         message_id=str(row["message_id"]),
                         origin=str(row["origin"]),
                         title=row["title"],
@@ -7723,7 +7760,7 @@ class ArchiveStore:
         rows_by_message_id = {str(row["message_id"]): row for row in rows}
         deduped: list[ArchiveSessionSearchHit] = []
         seen_sessions: set[str] = set()
-        for message_id, _score in scored_message_ids:
+        for message_id, score in scored_message_ids:
             row = rows_by_message_id.get(message_id)
             if row is None:
                 continue
@@ -7735,8 +7772,9 @@ class ArchiveStore:
             deduped.append(
                 ArchiveSessionSearchHit(
                     rank=len(deduped) + 1,
+                    score=score,
                     session_id=session_id,
-                    block_id=str(row["block_id"] or message_id),
+                    block_id=str(row["block_id"]) if row["block_id"] is not None else None,
                     message_id=message_id,
                     origin=str(row["origin"]),
                     title=str(row["title"]) if row["title"] is not None else None,
@@ -8768,58 +8806,46 @@ def _session_text_match_relation(*, actions_only: bool, reverse: bool = False) -
     """
 
 
-def _summary_order_by(*, sample: bool, sort: str | None, reverse: bool) -> str:
-    if sample or sort == "random":
-        return "ORDER BY RANDOM()"
-    direction = "ASC" if reverse else "DESC"
+def _summary_order_terms(*, sort: str | None, reverse: bool) -> tuple[tuple[str, bool], ...]:
+    descending = not reverse
+    tail = (("s.sort_key_ms", descending), ("s.session_id", descending))
     if sort in {None, "date"}:
-        return f"ORDER BY s.sort_key_ms IS NULL, s.sort_key_ms {direction}, s.session_id {direction}"
-    if sort == "messages":
-        return f"ORDER BY s.message_count {direction}, s.sort_key_ms {direction}, s.session_id {direction}"
-    if sort == "words":
-        return f"ORDER BY s.word_count {direction}, s.sort_key_ms {direction}, s.session_id {direction}"
+        return (("s.sort_key_ms IS NULL", False), *tail)
+    if sort in {"messages", "words"}:
+        return (("s.message_count" if sort == "messages" else "s.word_count", descending), *tail)
     if sort == "longest":
-        return f"""
-            ORDER BY (
-                SELECT COALESCE(MAX(m.word_count), 0)
-                FROM messages m
-                WHERE m.session_id = s.session_id
-            ) {direction}, s.sort_key_ms {direction}, s.session_id {direction}
-        """
+        return (
+            ("(SELECT COALESCE(MAX(m.word_count), 0) FROM messages m WHERE m.session_id = s.session_id)", descending),
+            *tail,
+        )
     if sort == "tokens":
-        # polylogue-qgyuj: a session none of whose messages carries a token
-        # counter has an UNKNOWN total, not a measured zero. The inner
-        # COALESCE stays -- a message with a known input_tokens and an
-        # unknown cache_read_tokens must still contribute its known part
-        # (bare addition would null the whole row) -- but the sum itself must
-        # not rank "never measured" alongside "measured zero". The leading
-        # key holds unmeasured sessions out of the ranked band in BOTH
-        # directions, exactly as ``s.sort_key_ms IS NULL`` does for the date
-        # sort; without it, ``sort=tokens --reverse`` answered "which
-        # sessions used the fewest tokens" with the sessions whose provider
-        # reports no per-message usage at all (every ChatGPT export). EXISTS
-        # stops at the first measured message rather than re-summing.
-        return f"""
-            ORDER BY NOT EXISTS (
-                SELECT 1
-                FROM messages m
-                WHERE m.session_id = s.session_id
-                  AND (m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL
-                       OR m.cache_read_tokens IS NOT NULL OR m.cache_write_tokens IS NOT NULL)
-            ), (
-                SELECT COALESCE(SUM(COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0)
-                    + COALESCE(m.cache_read_tokens, 0) + COALESCE(m.cache_write_tokens, 0)), 0)
-                FROM messages m
-                WHERE m.session_id = s.session_id
-            ) {direction}, s.sort_key_ms {direction}, s.session_id {direction}
-        """
+        measured = "NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.session_id AND (m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL OR m.cache_read_tokens IS NOT NULL OR m.cache_write_tokens IS NOT NULL))"
+        value = "(SELECT COALESCE(SUM(COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0) + COALESCE(m.cache_read_tokens, 0) + COALESCE(m.cache_write_tokens, 0)), 0) FROM messages m WHERE m.session_id = s.session_id)"
+        return ((measured, False), (value, descending), *tail)
     raise ValueError("archive root query sort must be one of date, messages, words, longest, tokens, random.")
 
 
+def _order_sql(terms: tuple[tuple[str, bool], ...]) -> str:
+    return "ORDER BY " + ", ".join(expression + (" DESC" if descending else " ASC") for expression, descending in terms)
+
+
+def _summary_order_by(*, sample: bool, sort: str | None, reverse: bool) -> str:
+    if sample or sort == "random":
+        return "ORDER BY RANDOM()"
+    return _order_sql(_summary_order_terms(sort=sort, reverse=reverse))
+
+
+def _search_order_terms(*, sort: str | None, reverse: bool) -> tuple[tuple[str, bool], ...]:
+    terms = (
+        (("rank", reverse), ("s.session_id", False))
+        if sort is None
+        else _summary_order_terms(sort=sort, reverse=reverse)
+    )
+    return (*terms, ("b.block_id", False))
+
+
 def _search_order_by(*, sort: str | None, reverse: bool) -> str:
-    if sort is None:
-        return "ORDER BY rank DESC" if reverse else "ORDER BY rank"
-    return _summary_order_by(sample=False, sort=sort, reverse=reverse)
+    return "ORDER BY RANDOM()" if sort == "random" else _order_sql(_search_order_terms(sort=sort, reverse=reverse))
 
 
 def _with_session_id_filter(

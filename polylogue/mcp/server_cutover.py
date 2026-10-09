@@ -473,6 +473,8 @@ async def _query_sessions(
             retrieval_lane="dialogue",
             sort=envelope_request.sort,
         )
+        # This typed owner carries a framed continuation rather than a search cursor.
+        envelope = envelope.model_copy(update={"next_offset": payload.next_offset})
         return hooks.json_payload(
             MCPRootPayload(
                 root={
@@ -482,7 +484,21 @@ async def _query_sessions(
                 }
             )
         )
-    return hooks.json_payload(payload)
+    from polylogue.surfaces.outcome import OutcomeEnvelope
+
+    return hooks.json_payload(
+        MCPRootPayload(
+            root={
+                **payload.model_dump(mode="json"),
+                "unit": "sessions",
+                "outcome": OutcomeEnvelope(
+                    state=payload.outcome,
+                    reason=payload.coverage.gaps[0] if payload.coverage.gaps else None,
+                    detail={"gaps": payload.coverage.gaps} if payload.coverage.gaps else {},
+                ).to_dict(),
+            }
+        )
+    )
 
 
 async def _query_advanced_sessions(
@@ -556,8 +572,6 @@ async def _query_advanced_sessions(
         )
 
     if searching:
-        from polylogue.surfaces.cursor_identity import search_cursor_request_identity
-
         transaction = QueryTransaction(
             archive_root,
             QueryTransactionRequest(
@@ -582,8 +596,6 @@ async def _query_advanced_sessions(
                         config=config,
                         archive_root=archive_root,
                         include_affordances=False,
-                        cursor=None,
-                        request_identity=search_cursor_request_identity(request.response_arguments()),
                     )
                 )
             )

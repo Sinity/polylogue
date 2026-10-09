@@ -56,7 +56,6 @@ async def iter_source_raw_stream(
     *,
     blob_root: Path | None = None,
     blob_store: BlobStore | None = None,
-    known_mtimes: dict[str, str] | None = None,
     known_cursors: dict[str, dict[str, object]] | None = None,
     cursor_state: CursorStatePayload | None = None,
     observation_callback: ObservationCallback | None = None,
@@ -76,7 +75,6 @@ async def iter_source_raw_stream(
     iterator = iter(
         acquisition_root.iter_source_acquisition_records(
             source,
-            known_mtimes=known_mtimes,
             known_cursors=known_cursors,
             cursor_state=cursor_state,
             blob_root=blob_root,
@@ -244,7 +242,6 @@ async def iter_raw_record_stream(
             source,
             blob_root=blob_root,
             blob_store=blob_store,
-            known_mtimes=known_mtimes,
             known_cursors=known_cursors,
             cursor_state=cursor_state,
             observation_callback=observation_callback,

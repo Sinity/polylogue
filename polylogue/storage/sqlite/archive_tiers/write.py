@@ -2855,8 +2855,8 @@ def write_parsed_session_to_archive(
                         )
                     add_timing("index.merge_prepare", t0)
                     # The append frontier has two coordinates now: the next
-                    # position, and the per-digest occurrence counts the stored
-                    # rows already consumed. Prepared rows pinned against either
+                    # position, and the next per-digest occurrence above the
+                    # stored ordinals. Prepared rows pinned against either
                     # stale value would generate ids that collide with, or skip
                     # past, what is stored (polylogue-eqsri).
                     stored_content_occurrences = (
@@ -7214,24 +7214,25 @@ def _next_message_position(conn: sqlite3.Connection, session_id: str) -> int:
 def _stored_content_occurrences(
     conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
 ) -> dict[str, int]:
-    """Return per-digest content-occurrence counts already stored for a session.
+    """Return the next content occurrence for each digest stored in a session.
 
     The append-side analogue of ``_next_message_position``: an appended
     message whose declared semantics match one already written continues that
     digest's numbering instead of restarting at zero and colliding with the
-    stored row's ``message_id``.
+    stored row's ``message_id``. Materialized-prefix identity scopes preserve
+    their existing ordinals across replacement, so retained rows can have gaps.
     """
     if before_input is not None:
         before_input(
             "messages",
-            ("content_identity",),
+            ("content_identity", "content_occurrence"),
             "SELECT rowid FROM messages WHERE session_id=? AND content_identity IS NOT NULL",
             (session_id,),
         )
     with connection_cursor(
         conn,
         """
-        SELECT content_identity, COUNT(*)
+        SELECT content_identity, MAX(content_occurrence) + 1
         FROM messages
         WHERE session_id = ? AND content_identity IS NOT NULL
         GROUP BY content_identity

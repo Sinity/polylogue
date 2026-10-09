@@ -113,7 +113,7 @@ def test_shared_output_occurrences_and_tied_witnesses_are_preserved(
             archive=frame.archive,
         )
     assert [(hit.session_id, hit.message_id) for hit, _ in result.hits] == [ids[("a", "first")], ids[("b", "same")]]
-    assert all(hit.block_id.startswith(hit.message_id) for hit, _ in result.hits)
+    assert all(hit.block_id is not None and hit.block_id.startswith(hit.message_id) for hit, _ in result.hits)
 
 
 def test_near_uses_all_seeds_and_preserves_minimum_distance(
@@ -572,7 +572,11 @@ def test_sql_comparison_keys_match_current_python_owner_on_held_rows(
                     # composed session, not the date-only summary comparator.
                     numeric = sort in {"messages", "tokens", "words", "longest"}
                     use_full = full or numeric
-                    expected = plan._sort_sessions(sessions) if use_full else plan._sort_summaries(summaries)
+                    expected = (
+                        plan._sort_sessions(sorted(sessions, key=lambda row: str(row.id)))
+                        if use_full
+                        else plan._sort_summaries(sorted(summaries, key=lambda row: str(row.id)))
+                    )
                     with frame.archive.scoped_search_population(selected_ids):
                         hits = [
                             frame.archive.semantic_summaries([(ids[(sid, "m0")][1], 0.0)], limit=1)[0]
@@ -580,15 +584,9 @@ def test_sql_comparison_keys_match_current_python_owner_on_held_rows(
                         ]
                         frame.archive.settle_scoped_search_lane("vector", hits)
                         keys = (
-                            (
-                                (str(row.id), *session_order_values(plan, row), ordinal)
-                                for ordinal, row in enumerate(sessions, start=1)
-                            )
+                            ((str(row.id), *session_order_values(plan, row)) for row in sessions)
                             if use_full
-                            else (
-                                (str(row.id), *summary_order_values(plan, row), ordinal)
-                                for ordinal, row in enumerate(summaries, start=1)
-                            )
+                            else ((str(row.id), *summary_order_values(plan, row)) for row in summaries)
                         )
                         frame.archive.settle_scoped_search_order(keys)
                         actual = list(

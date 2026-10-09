@@ -11,7 +11,9 @@ successor is ready. Cancellation physically settles the original work and leaves
 the predecessor authoritative until promotion; restart discards interrupted
 inactive candidates and replays retained bytes without re-acquiring originals.
 Normal services start only after successful preflight. A current successor is
-not rebuilt again. The verified-empty bootstrap transition remains separate,
+not rebuilt again. Source parse acknowledgements remain with the regular retained
+replay stage; promotion and restart preserve pending states and current failures.
+The verified-empty bootstrap transition remains separate,
 and its successful promotion skips populated reconstruction in that startup.
 
 Python child processes for Source readers, the optional browser host and demo
@@ -20,7 +22,7 @@ Installed console entry points can inject dependency paths only in memory;
 child imports do not depend on ambient `PYTHONPATH` or a checkout cwd. Module
 children retain their module entry point and argument semantics.
 
-HTTP mutations first acquire the existing writer bridge admission. Their bodies
+HTTP mutations with inline write bodies first acquire the existing writer bridge admission. Their bodies
 run on the coordinator's writer worker under explicit child-task delegation;
 they do not enter the read compute pool or acquire another writer gate. A client
 wait deadline reports an indeterminate result and leaves accepted work owned.
@@ -34,6 +36,10 @@ available to the original owner. A supervised service constructs its coroutine
 inside the owned task, so cancellation before startup leaves no unawaited
 watcher coroutine.
 
+The session-reset adapter submits its caller-owned delete preview through the
+facade to the resident daemon without holding an outer writer admission. The
+canonical delete operation acquires that same coordinator.
+
 Before a new mutation begins, recovery discovery reads orphaned operations and
 unrouted file-replacement plans through the settled Audit continuity view. It
 does not acquire writer custody on the preparation creator. Discovery already
@@ -46,6 +52,10 @@ Recovery resolution events name the resolver: authenticated request recovery use
 the request principal, while automated startup uses `daemon:recovery`. The
 continuity command retains this identity for crash replay; the original
 `operation_runs.actor_ref` remains the actor who began the operation.
+
+Bulk-tag plans retain the requested assertion author independently of the
+operation actor. Both machine-part reconstruction and startup replay publish
+the remaining tags with that same author, including after a partial apply.
 
 The daemon holds writer/rebuild exclusion for its lifetime. `DaemonWriteCoordinator` serializes publication and retains ownership until a cancelled operation actually terminates. `DaemonAPIHTTPServer.execution_kernel` is passed to the UDS server and to daemon derivation owners; their `DaemonWriteThreadBridge` instances use the same coordinator (`polylogue/daemon/cli.py:2653-2658`; `polylogue/daemon/cli.py:2725-2750`; `polylogue/daemon/http.py:5697-5734`; `polylogue/daemon/write_coordinator.py:772-790`).
 
@@ -113,6 +123,8 @@ The generic stage engine remains for optional Sinex publication, raw-authority c
 The stage walk itself runs off the writer lease. Each stage declares how it reaches the writer: `bridged` means it computes, downloads and drains outside admission and brackets only its short publication with `admit_stage_write`; `whole_execute` is the named residual for a stage that has not split compute from publication yet, and the engine holds the writer across its whole `execute`. Read the field, not the caller's control flow, to know which a stage is (`polylogue/daemon/convergence.py:690-697`; `polylogue/daemon/convergence.py:760-771`; `polylogue/core/stage_admission.py:59-70`). Live append and full ingest still invoke the generic stage pass through `_converge_paths`; the daemon also runs it for owed recovery. Successful debt settlement must name the actual evaluated subject and stage, rather than infer session completion from a source path (`polylogue/sources/live/batch.py`, `_converge_paths`).
 
 `convergence_debt` remains disposable retry state for those surviving stage callers. The generic drain excludes domain-owned stages through `_OWNED_DEBT_STAGES` (`polylogue/daemon/cli.py:143-151`) and filters them before retry (`polylogue/daemon/cli.py:1728-1734`). FTS, embeddings, raw parsing and session profiles therefore do not use the generic stage rows as publication authority. Raw retention has its own live-ingest retry owner (`polylogue/daemon/cli.py:137-142`).
+
+The generic retry ledger settles or re-records a subject only while its debt predates that stage's run. A failure recorded in the run's start millisecond or later survives the older pass, including the gap between publication and the ledger's writer admission (`DaemonConverger`; `CursorStore.convergence_debt_recorded_before`; `daemon.cli._record_convergence_debt_retries`). Archive-wide settlement uses the same strict cutoff.
 
 ## Cadence loops
 
@@ -335,6 +347,16 @@ recovery replays only those targets and reports the frozen named gap, even
 if a missing session has appeared since authorization. Correction recovery
 checks the exact kind, payload, note and normalized author before replay;
 an already committed matching effect preserves its creation and update times.
+
+Saved-view preparation strips the requested name before resolving collisions
+and recording its plan. Apply and recovery consume that admitted name, so a
+padded Python API name cannot retire a view absent from the authorized targets
+or restamp an already committed view during recovery.
+
+Startup mutation recovery retains the original interrupted run and target
+barrier when replay encounters typed SQLite contention, including contention
+wrapped by an actuator. A later healthy startup retries the recorded intent.
+Deterministic replay refusals keep their terminal failure classification.
 
 Long source preparation emits `daemon.work.progress` through the structured field registry. `unit_id` identifies an invocation and `productive_id` identifies the retry-stable source recipe; both are registered opaque identifiers. The fresh-build observer counts only counter advances above that recipe’s high-water. Repeated or reset retry counters do not prove progress, while advancing preparation remains observable before durable publication.
 

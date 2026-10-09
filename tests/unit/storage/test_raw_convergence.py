@@ -475,7 +475,7 @@ def test_canonical_terminal_support_cannot_authorize_deferred_replay(tmp_path: P
     )
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
-            "UPDATE raw_sessions SET parsed_at_ms = 2, parse_error = ? WHERE raw_id = ?",
+            "UPDATE raw_sessions SET parsed_at_ms = 2, parse_error = ?, validation_mode='advisory' WHERE raw_id = ?",
             ("changed wording", raw_id),
         )
         upsert_raw_artifact(
@@ -586,7 +586,7 @@ def test_canonical_reset_index_replays_only_when_parse_is_newer_than_validation_
 
 
 def test_canonical_tied_validation_refusal_is_terminal_without_republishing_output(tmp_path: Path) -> None:
-    """A tied validation failure is terminal refusal, not retryable output debt."""
+    """A tied STRICT failure is terminal refusal, not retryable output debt."""
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(
         tmp_path,
@@ -595,7 +595,7 @@ def test_canonical_tied_validation_refusal_is_terminal_without_republishing_outp
         provider=Provider.CODEX,
         payload=_codex_conversation_bytes("tied-validation"),
     )
-    assert _derive(tmp_path).failed == 0
+    assert _derive(tmp_path, validation_mode=ValidationMode.STRICT).failed == 0
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         parsed_at_ms = int(
@@ -612,10 +612,10 @@ def test_canonical_tied_validation_refusal_is_terminal_without_republishing_outp
         conn.execute("DELETE FROM raw_revision_applications WHERE raw_id = ?", (raw_id,))
         conn.commit()
 
-    report = _derive(tmp_path)
+    report = _derive(tmp_path, validation_mode=ValidationMode.STRICT)
     assert report.done == 0
     assert report.pending == report.failed == 0
-    assert _inspect(tmp_path, raw_id) == "valid"
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.STRICT) == "valid"
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute(
             "SELECT validation_status, validated_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)

@@ -1,0 +1,6 @@
+{"type":"session_meta","payload":{"id":"neutral-occurrences","timestamp":"2026-01-01T00:00:00Z"}}
+{"type":"event_msg","timestamp":"2026-01-01T00:00:01Z","payload":{"type":"user_message","client_id":"prompt-one","message":"continue"}}
+{"type":"response_item","timestamp":"2026-01-01T00:00:01Z","payload":{"type":"message","id":"message-one","role":"user","content":[{"type":"input_text","text":"continue"}]}}
+{"type":"event_msg","timestamp":"2026-01-01T01:00:00Z","payload":{"type":"user_message","client_id":"prompt-two","message":"continue"}}
+{"type":"response_item","timestamp":"2026-01-01T01:00:01Z","payload":{"type":"reasoning","id":"reasoning-one","summary":[{"type":"summary_text","text":"Inspect the sample."}]}}
+{"type":"message","timestamp":"2026-01-01T01:00:02Z","role":"assistant","id":"code-one","content":[{"type":"code","code":"print(1)","language":"python"}]}

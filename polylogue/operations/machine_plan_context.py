@@ -53,6 +53,8 @@ class _BulkContext(_DeleteContext):
 
 class _TagContext(_BulkContext):
     tags: list[str]
+    author_ref: str | None
+    author_kind: str | None
 
 
 class _MetadataContext(_BulkContext):

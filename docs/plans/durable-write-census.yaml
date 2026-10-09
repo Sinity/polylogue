@@ -1171,7 +1171,7 @@ writes:
     kind: "update"
     tier: "source"
     classification: two_phase_recovery
-    reason: "cross-tier two-phase abort: the caller holds the index write transaction and has observed no ingest_marker_witnesses row for this request in the current incarnation, so the pending prepare never committed there and was never accepted or delivered; the update matches request_key, raw_id and the retained carrier_digest with rowcount == 1 and installs the validated current interpretation; accepted carriers are never touched"
+    reason: "cross-tier two-phase abort: the caller holds the index write transaction and has observed that the pending prepare never committed there, so the input was never accepted or delivered; the update matches request_key, raw_id and the retained carrier_digest with rowcount == 1 and installs the validated current interpretation; accepted carriers are never touched"
   - file: "polylogue/storage/sqlite/durable_change_train.py"
     function: "_probe_raw_byte_revision_dependents"
     table: "raw_sessions"

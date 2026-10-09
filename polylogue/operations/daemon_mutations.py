@@ -834,7 +834,11 @@ def _part_args(
         ids = tuple(cast(list[str], preview.plan.context["requested_session_ids"]))
     if preview.plan.operation == "mutate-bulk-tag-sessions":
         return runtime_operation_binding(BulkTagActuator()), BulkTagArgs(
-            archive, ids, tuple(cast(list[str], preview.plan.context["tags"]))
+            archive,
+            ids,
+            tuple(cast(list[str], preview.plan.context["tags"])),
+            author_ref=cast("str | None", preview.plan.context["author_ref"]),
+            author_kind=cast("str | None", preview.plan.context["author_kind"]),
         )
     if preview.plan.operation == "mutate-bulk-set-metadata":
         pairs = tuple((str(pair[0]), pair[1]) for pair in cast(list[list[object]], preview.plan.context["pairs"]))

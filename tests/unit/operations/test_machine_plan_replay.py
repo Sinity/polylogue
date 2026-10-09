@@ -100,7 +100,7 @@ def test_real_plan_replays_before_authorization_without_losing_its_hash(
             operation, preview, principal = _prepare_preview(
                 executor,
                 BulkTagActuator(),
-                BulkTagArgs(archive, ids, ("neutral-tag",)),
+                BulkTagArgs(archive, ids, ("neutral-tag",), author_ref="agent:synthetic", author_kind="agent"),
                 principal,
                 archive_instance_id=instance,
                 archive_identity_digest=ArchiveIdentity.resolve(tmp_path).authority_identity_digest,
@@ -151,6 +151,10 @@ def test_real_plan_replays_before_authorization_without_losing_its_hash(
             _, resumed_args = _part_args(archive, recovered)
             assert isinstance(resumed_args, BulkTagArgs | BulkMetadataSetArgs)
             assert resumed_args.session_ids == ids
+            if family == "tag":
+                assert isinstance(resumed_args, BulkTagArgs)
+                assert resumed_args.author_ref == "agent:synthetic"
+                assert resumed_args.author_kind == "agent"
     authorization = executor.authorize_bound(operation, recovered, principal, confirmation_strength="bound_token")
     target_kind = "issue_authorization"
     with monkeypatch.context() as patch:
@@ -211,6 +215,8 @@ def test_bulk_machine_replay_refuses_inconsistent_request_evidence(invalid: str)
         "unresolved_session_ids": ["missing"],
         "requested_session_count": 2,
         "tags": ["neutral"],
+        "author_ref": None,
+        "author_kind": None,
     }
     context[
         {"count": "requested_session_count", "gap": "unresolved_session_ids", "targets": "session_ids"}[invalid]

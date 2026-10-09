@@ -25,12 +25,7 @@ _PRODUCTS: dict[str, tuple[type[Any], type[Any]]] = {
     "set_metadata": (actuators.MetadataSetActuator, actuators.MetadataSetArgs),
     "delete_metadata": (actuators.MetadataDeleteActuator, actuators.MetadataDeleteArgs),
     "bulk_tag_sessions": (actuators.BulkTagActuator, actuators.BulkTagArgs),
-    "add_mark": (actuators.MarkAddActuator, actuators.MarkArgs),
-    "remove_mark": (actuators.MarkRemoveActuator, actuators.MarkArgs),
-    "save_annotation": (actuators.AnnotationSaveActuator, actuators.AnnotationSaveArgs),
-    "delete_annotation": (actuators.AnnotationDeleteActuator, actuators.AnnotationDeleteArgs),
     "save_view": (actuators.SavedViewSaveActuator, actuators.SavedViewSaveArgs),
-    "delete_view": (actuators.SavedViewDeleteActuator, actuators.SavedViewDeleteArgs),
     "create_recall_pack": (actuators.RecallPackSaveActuator, actuators.RecallPackSaveArgs),
     "delete_recall_pack": (actuators.RecallPackDeleteActuator, actuators.RecallPackDeleteArgs),
     "save_workspace": (actuators.WorkspaceSaveActuator, actuators.WorkspaceSaveArgs),
@@ -38,32 +33,12 @@ _PRODUCTS: dict[str, tuple[type[Any], type[Any]]] = {
     "record_correction": (actuators.CorrectionRecordActuator, actuators.CorrectionRecordArgs),
     "delete_correction": (actuators.CorrectionDeleteActuator, actuators.CorrectionDeleteArgs),
     "clear_corrections": (actuators.CorrectionsClearActuator, actuators.CorrectionsClearArgs),
-    "capture_assertion_candidate": (
-        actuators.CaptureAssertionCandidateActuator,
-        actuators.CaptureAssertionCandidateArgs,
-    ),
     "post_blackboard_note": (actuators.BlackboardPostActuator, actuators.BlackboardPostArgs),
 }
 
 
 def _normalize_product_fields(product: str, fields: dict[str, Any]) -> dict[str, Any]:
-    if product == "capture_assertion_candidate":
-        import hashlib
-        import uuid
-
-        from polylogue.core.refs import normalize_object_ref_text
-
-        key = fields.get("idempotency_key")
-        if key is None:
-            fields["assertion_id"] = f"assertion-terminal-note:{uuid.uuid4()}"
-        else:
-            identity = hashlib.sha256(
-                f"{normalize_object_ref_text(fields['author_ref'])}\0{key.strip()}".encode(
-                    "utf-8", errors="surrogatepass"
-                )
-            ).hexdigest()
-            fields["assertion_id"] = f"assertion-terminal-note:{identity}"
-    elif product == "post_blackboard_note":
+    if product == "post_blackboard_note":
         import uuid
 
         from polylogue.archive.blackboard import BLACKBOARD_KINDS, build_blackboard_body
@@ -93,10 +68,6 @@ def _normalize_product_fields(product: str, fields: dict[str, Any]) -> dict[str,
             raise ValueError("bulk_tag_sessions requires at least one session_id")
         if not tags:
             raise ValueError("bulk_tag_sessions requires at least one tag")
-        if len(session_ids) > 100:
-            raise ValueError("bulk_tag_sessions supports at most 100 session_ids")
-        if len(tags) > 20:
-            raise ValueError("bulk_tag_sessions supports at most 20 tags")
         fields["session_ids"] = tuple(session_ids)
         fields["tags"] = tuple(tags)
     elif product in {"record_correction", "delete_correction"}:

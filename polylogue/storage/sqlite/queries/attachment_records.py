@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime
 
 import aiosqlite
@@ -65,22 +64,6 @@ def contested_native_id_predicate(*, ref_alias: str = "r") -> str:
         f"WHERE ani.ref_id = {ref_alias}.ref_id AND ani.id_kind IN ({kinds}) "
         "GROUP BY ani.ref_id, ani.id_kind HAVING COUNT(*) > 1)"
     )
-
-
-UNFETCHED_DRIVE_REFERENCE_SQL = """
-    FROM attachments AS a
-    JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id
-    WHERE a.acquisition_status = 'unfetched'
-      AND r.upload_origin = 'drive'
-"""
-
-
-def unresolved_attachment_identity_count(conn: sqlite3.Connection) -> int:
-    """Count owed Drive references whose retained identities are contested."""
-    row = conn.execute(
-        f"SELECT COUNT(*) {UNFETCHED_DRIVE_REFERENCE_SQL} AND {contested_native_id_predicate()}"
-    ).fetchone()
-    return int(row[0])
 
 
 #: The three identity columns both session reads project, composed once.

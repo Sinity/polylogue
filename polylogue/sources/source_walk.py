@@ -200,7 +200,6 @@ def _setup_source_walk(
     *,
     cursor_state: CursorStatePayload | None,
     include_mtime: bool,
-    known_mtimes: dict[str, str] | None,
     known_cursors: dict[str, dict[str, object]] | None = None,
     discover_sidecars: bool,
     blob_store: BlobStore | None = None,
@@ -212,7 +211,6 @@ def _setup_source_walk(
     paths_to_process, skipped_mtime = _cursor._select_paths_for_processing(
         paths,
         include_file_mtime=include_mtime,
-        known_mtimes=known_mtimes,
         known_cursors=known_cursors,
         source_name=source.name,
     )

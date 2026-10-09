@@ -1003,6 +1003,70 @@ class TestTagRemoveActuator:
 
 
 class TestBulkTagActuator:
+    def test_startup_replays_partial_tags_with_the_original_author(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Dropping authors from the durable plan misattributes the recovered suffix."""
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        first_id = _seed_archive_session(archive_root, native_id="bulk-restart-first")
+        second_id = _seed_archive_session(archive_root, native_id="bulk-restart-second")
+        actuator = BulkTagActuator()
+        binding = runtime_operation_binding(actuator)
+        principal = MutationPrincipal("test", frozenset({"archive.bulk_tag_sessions"}), "api", "write")
+        author_ref, author_kind = "agent:synthetic", "agent"
+
+        class InterruptedApply(BaseException):
+            pass
+
+        original_add = ArchiveStore.add_user_tags
+
+        def interrupt_second(
+            archive: ArchiveStore, session_ids: tuple[str, ...], tags: tuple[str, ...], **kwargs: Any
+        ) -> int:
+            if session_ids == (second_id,):
+                raise InterruptedApply
+            return original_add(archive, session_ids, tags, **kwargs)
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor.for_archive_root(archive_root)
+            args = BulkTagArgs(
+                archive,
+                (first_id, second_id, "missing-neutral"),
+                ("neutral-tag",),
+                author_ref=author_ref,
+                author_kind=author_kind,
+            )
+            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=archive_root)
+            authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
+            assert executor._audit is not None
+            operation_id = executor._audit.consume_authorization_and_start(preview, authorization)
+            with monkeypatch.context() as patch:
+                patch.setattr(ArchiveStore, "add_user_tags", interrupt_second)
+                with pytest.raises(InterruptedApply):
+                    actuator.apply(preview.plan, args)
+
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn:
+            assert conn.execute("SELECT target_ref FROM assertions WHERE kind='tag'").fetchall() == [
+                (f"session:{first_id}",)
+            ]
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn, conn:
+            conn.execute(
+                "UPDATE operation_attempts SET worker_id='pid:999999999:0' WHERE operation_id=?", (operation_id,)
+            )
+
+        recover_on_admitted_owner(archive_root)
+
+        with closing(sqlite3.connect(archive_root / "user.db")) as conn:
+            rows = conn.execute(
+                "SELECT target_ref, author_ref, author_kind FROM assertions WHERE kind='tag' ORDER BY target_ref"
+            ).fetchall()
+        assert rows == [(f"session:{sid}", author_ref, author_kind) for sid in (first_id, second_id)]
+        with closing(sqlite3.connect(archive_root / "audit.db")) as conn:
+            assert conn.execute(
+                "SELECT status, terminal_reason FROM operation_runs WHERE operation_id=?", (operation_id,)
+            ).fetchone() == ("completed", "recovered_complete")
+
     def test_skips_unresolved_sessions_and_tags_the_rest(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()

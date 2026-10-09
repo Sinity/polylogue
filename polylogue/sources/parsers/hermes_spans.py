@@ -1384,10 +1384,7 @@ def _tool_availability_events(
     tools = json_document_list(llm_request.get("tools"))
     if tools:
         payload["tool_count"] = len(tools)
-        payload["tools"] = [
-            {"name": tool.get("name"), "description": tool.get("description"), "parameters": tool.get("parameters")}
-            for tool in tools
-        ]
+        payload["tools"] = [dict(tool) for tool in tools]
     instructions = llm_request.get("instructions")
     payload["has_instructions"] = isinstance(instructions, str) and bool(instructions)
     payload["has_input"] = llm_request.get("input") is not None

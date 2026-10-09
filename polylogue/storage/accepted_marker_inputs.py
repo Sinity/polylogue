@@ -698,13 +698,12 @@ def replace_uncommitted_pending_marker_input_sync(
 ) -> None:
     """Replace a pending carrier whose index transaction provably never committed.
 
-    A pending carrier is the prepare half of a two-tier commit: its index
-    witness is inserted in the same index transaction as the writes it
-    describes. The caller, holding the index write transaction, has observed
-    no witness for this request in the current incarnation, so the retained
-    bytes were never witnessed here and never accepted or delivered. They
-    describe a rolled-back (or replaced-index) attempt, and the current
-    interpretation supersedes them. Accepted carriers are never replaced.
+    A pending carrier is the prepare half of a two-tier commit. Its caller
+    holds the Index write transaction and establishes that the corresponding
+    publication did not commit in this incarnation, so the retained bytes
+    were never accepted or delivered. They describe a rolled-back (or
+    replaced-index) attempt, and the current interpretation supersedes them.
+    Accepted carriers are never replaced.
     """
     _validate(batch)
     _assert_marker_input_not_excised_sync(conn, batch.identity, batch.raw_id)

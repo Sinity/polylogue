@@ -749,6 +749,7 @@ export type SessionSearchMatchPayload = {
   readonly [key: string]: ReaderActionAvailabilityPayload;
 };
   readonly anchor?: string | null;
+  readonly block_id?: string | null;
   readonly lane_contribution?: number | null;
   readonly lane_rank?: number | null;
   readonly match_surface: string;

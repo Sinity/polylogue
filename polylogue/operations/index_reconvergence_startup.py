@@ -57,14 +57,6 @@ def _require_shape(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
         raise IndexReconvergenceRefusedError(f"unprovable_{tier.value}_shape")
 
 
-def _acknowledge_promoted(root: Path, index: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.revision_governance import stamp_promoted_revision_parse_success
-    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
-
-    with closing(open_source_tier_write_connection(root / "source.db", archive_root=root)) as source:
-        stamp_promoted_revision_parse_success(source, index)
-
-
 def reconverge_managed_index_on_startup(
     root: Path,
     *,
@@ -107,8 +99,6 @@ def reconverge_managed_index_on_startup(
             else:
                 active = store.load(index.parent.name)
                 if active.owner_id == _OWNER and active.state == "active":
-                    with write_admission("daemon.index_reconvergence.acknowledge"):
-                        _acknowledge_promoted(root, index)
                     return None
                 if active.owner_id != _OWNER or active.state != "promoting":
                     return None
@@ -178,7 +168,6 @@ def reconverge_managed_index_on_startup(
                 original.validate_observers_current()
                 require_current()
                 store.complete_promotion_recovery(recovering.generation_id)
-                _acknowledge_promoted(root, index)
             return recovering.generation_id
         operation_id = str(uuid.uuid4())
         require_candidate_capacity(root, operation_id=operation_id, baseline_digest=snapshot)
@@ -280,6 +269,5 @@ def reconverge_managed_index_on_startup(
             with write_admission("daemon.index_reconvergence.promote"):
                 require_current()
                 promoted = store.promote(generation, prepared)
-                _acknowledge_promoted(root, Path(promoted.index_path))
         emit("daemon.index_reconvergence.startup", outcome="ok", state="complete", generation_id=promoted.generation_id)
         return promoted.generation_id

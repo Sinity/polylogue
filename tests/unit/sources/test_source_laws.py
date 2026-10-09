@@ -888,7 +888,9 @@ def test_parse_payload_generic_messages_keeps_timestamps(
     """tf0e: the generic-messages fallback must not silently drop available
     created_at/updated_at -- it should extract them from whichever key name
     variant the source payload actually uses."""
-    monkeypatch.setattr(dispatch_module, "extract_messages_from_list", lambda messages: [])
+    # Dispatch admits authored conversations; metadata alone is refused.
+    authored = [_parsed_message("timestamp-user", role="user", text="A dated message.")]
+    monkeypatch.setattr(dispatch_module, "extract_messages_from_list", lambda messages: authored)
 
     sessions = parse_payload(
         Provider.DRIVE.value,
@@ -959,7 +961,7 @@ def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pyte
             title=fallback_id,
             created_at=None,
             updated_at=None,
-            messages=[],
+            messages=[_parsed_message("dispatch-user", role="user", text="A routed message.")],
         )
 
     monkeypatch.setattr(chatgpt_parser, "parse", fake_parse)
@@ -993,7 +995,7 @@ def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkey
             title=fallback_id,
             created_at=None,
             updated_at=None,
-            messages=[],
+            messages=[_parsed_message("dispatch-user", role="user", text="A routed message.")],
         )
         # A parser owns a disposition for every outer record it consumed
         # (#5816); the stand-in accounts for them as the real parser does.
@@ -1099,7 +1101,7 @@ def test_initialize_cursor_state_tracks_latest_path_and_mtime(tmp_path: Path) ->
     assert cursor_state["latest_mtime"] == newer.stat().st_mtime
 
 
-def test_select_paths_for_processing_skips_known_mtimes_only_when_mtime_enabled(tmp_path: Path) -> None:
+def test_select_paths_for_processing_returns_mtime_only_when_enabled(tmp_path: Path) -> None:
     first = tmp_path / "first.json"
     second = tmp_path / "second.json"
     first.write_text("{}", encoding="utf-8")
@@ -1113,21 +1115,19 @@ def test_select_paths_for_processing_skips_known_mtimes_only_when_mtime_enabled(
     selected, skipped = _select_paths_for_processing(
         [first, second],
         include_file_mtime=True,
-        known_mtimes={str(first): first_mtime},
     )
-    assert skipped == 1
-    assert selected == [(second, second_mtime)]
+    assert skipped == 0
+    assert selected == [(first, first_mtime), (second, second_mtime)]
 
     selected_without_mtime, skipped_without_mtime = _select_paths_for_processing(
         [first, second],
         include_file_mtime=False,
-        known_mtimes={str(first): first_mtime},
     )
     assert skipped_without_mtime == 0
     assert selected_without_mtime == [(first, None), (second, None)]
 
 
-def test_select_paths_for_processing_requires_every_zip_member_mtime(tmp_path: Path) -> None:
+def test_select_paths_for_processing_reacquires_zip_container(tmp_path: Path) -> None:
     archive = tmp_path / "export.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("first.json", b"{}")
@@ -1138,7 +1138,6 @@ def test_select_paths_for_processing_requires_every_zip_member_mtime(tmp_path: P
     selected, skipped = _select_paths_for_processing(
         [archive],
         include_file_mtime=True,
-        known_mtimes={f"{archive}:first.json": mtime},
     )
 
     assert skipped == 0
@@ -2899,7 +2898,7 @@ def test_iter_source_acquisition_records_refuses_foreign_members_at_a_bound_loca
     assert "foreign_origin_content" in str(cursor_state["failed_files"])
 
 
-def test_iter_source_acquisition_records_skips_known_mtimes_without_reading_file(tmp_path: Path) -> None:
+def test_iter_source_acquisition_records_skips_matching_stat_cursor(tmp_path: Path) -> None:
     skipped = tmp_path / "cached.json"
     fresh = tmp_path / "fresh.json"
     skipped.write_text('{"id":"cached"}', encoding="utf-8")
@@ -2909,7 +2908,14 @@ def test_iter_source_acquisition_records_skips_known_mtimes_without_reading_file
         acquired_payloads(
             iter_source_acquisition_records(
                 Source(name="chatgpt", path=tmp_path),
-                known_mtimes={str(skipped): str(_get_file_mtime(skipped))},
+                known_cursors={
+                    str(skipped): {
+                        "st_dev": skipped.stat().st_dev,
+                        "st_ino": skipped.stat().st_ino,
+                        "st_size": skipped.stat().st_size,
+                        "mtime_ns": skipped.stat().st_mtime_ns,
+                    }
+                },
             )
         )
     )

@@ -29,6 +29,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.runtime_matching import matches_referenced_path
+from polylogue.archive.query.search_cursor import decode_search_cursor
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.session.domain_models import Session as ArchiveSession
 from polylogue.archive.stats import ArchiveStats
@@ -49,7 +50,6 @@ from polylogue.core.types import SessionId
 from polylogue.services import build_runtime_services
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
-from polylogue.surfaces.payloads import decode_search_cursor
 from tests.infra.archive_store_double import ArchiveStoreDouble, install_archive_store_double
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.daemon_operations import running_daemon_operations
@@ -671,7 +671,9 @@ def test_async_execute_query_archive_routes_pure_structured_terms_to_list(
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def search_summaries(self, *_args: object, **_kwargs: object) -> list[ArchiveSessionSearchHit]:
+        def iter_search_summaries(
+            self, *_args: object, **_kwargs: object
+        ) -> Generator[ArchiveSessionSearchHit, None, None]:
             raise AssertionError("pure structured positional queries must not use FTS search")
 
         def count_sessions(self, **kwargs: object) -> int:
@@ -732,7 +734,9 @@ def test_async_execute_query_archive_exact_id_clause_reads_session(
             assert token == "chatgpt-export:72aa7ed5-4c0f-42b9-b5c0-138d23a0d1cb"
             return token
 
-        def search_summaries(self, *_args: object, **_kwargs: object) -> list[ArchiveSessionSearchHit]:
+        def iter_search_summaries(
+            self, *_args: object, **_kwargs: object
+        ) -> Generator[ArchiveSessionSearchHit, None, None]:
             raise AssertionError("exact id: refs must not fall through to FTS")
 
         def read_session_page(self, session_id: str, *, limit: int, offset: int) -> ArchiveSessionEnvelope:
@@ -784,7 +788,9 @@ def test_async_execute_query_archive_bare_native_ref_resolves_before_fts(
             assert token == native_id
             return f"chatgpt-export:{native_id}"
 
-        def search_summaries(self, *_args: object, **_kwargs: object) -> list[ArchiveSessionSearchHit]:
+        def iter_search_summaries(
+            self, *_args: object, **_kwargs: object
+        ) -> Generator[ArchiveSessionSearchHit, None, None]:
             raise AssertionError("bare native refs must resolve before lexical search")
 
         def read_session_page(self, session_id: str, *, limit: int, offset: int) -> ArchiveSessionEnvelope:
@@ -835,10 +841,10 @@ def test_async_execute_query_archive_unresolved_bare_ref_falls_back_to_fts(
             assert token == "missing-native-12345"
             raise KeyError(token)
 
-        def search_summaries(self, query: str, **kwargs: object) -> list[ArchiveSessionSearchHit]:
+        def iter_search_summaries(self, query: str, **kwargs: object) -> Generator[ArchiveSessionSearchHit, None, None]:
             assert query == "missing-native-12345"
             assert kwargs["session_id"] is None
-            return []
+            yield from []
 
     install_archive_store_double(monkeypatch, FakeArchiveStore())
 
@@ -1465,7 +1471,9 @@ def test_async_execute_query_archive_outputs_grouped_search_stats(
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def search_summaries(self, *_args: object, **_kwargs: object) -> list[ArchiveSessionSearchHit]:
+        def iter_search_summaries(
+            self, *_args: object, **_kwargs: object
+        ) -> Generator[ArchiveSessionSearchHit, None, None]:
             raise AssertionError("stats grouping must not consume paged search hits")
 
         def aggregate_sessions(self, mode: str, **kwargs: object) -> dict[str, int]:
@@ -1509,12 +1517,12 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def search_summaries(
+        def iter_search_summaries(
             self,
             query: str,
             *,
-            limit: int,
-            offset: int,
+            limit: int | None,
+            offset: int = 0,
             sort: str | None,
             reverse: bool,
             session_id: str | None,
@@ -1548,11 +1556,11 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
             since_session_id: str | None,
             boolean_predicate: object = None,
             root: bool | None = None,
-        ) -> list[ArchiveSessionSearchHit]:
+        ) -> Generator[ArchiveSessionSearchHit, None, None]:
             assert query == "needle"
             # The ranked fetch width is the executor's own; what this case
             # asserts is the filter lowering below it, flag by flag.
-            assert limit == 5
+            assert limit is None
             assert offset == 0
             assert sort is None
             assert reverse is False
@@ -1584,7 +1592,7 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
             assert since_ms == 1767312000000
             assert until_ms is None
             assert since_session_id is None
-            return [
+            yield from [
                 ArchiveSessionSearchHit(
                     rank=1,
                     session_id="codex-session:native-1",
@@ -1715,10 +1723,10 @@ def test_async_execute_query_archive_searches_within_session_id(
             assert token == "native-1"
             return "codex-session:native-1"
 
-        def search_summaries(self, query: str, **kwargs: object) -> list[ArchiveSessionSearchHit]:
+        def iter_search_summaries(self, query: str, **kwargs: object) -> Generator[ArchiveSessionSearchHit, None, None]:
             assert query == "needle"
             assert kwargs["session_id"] == "codex-session:native-1"
-            return [
+            yield from [
                 ArchiveSessionSearchHit(
                     rank=1,
                     session_id="codex-session:native-1",
@@ -1847,7 +1855,7 @@ def test_async_execute_query_archive_paginates_lists_by_offset(
     install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     # A plain list is paginated by offset against the indexed total, not by an
-    # opaque cursor: cursors carry a rank and belong to ranked retrieval (see
+    # opaque cursor: cursors carry a producer anchor and belong to search retrieval (see
     # test_async_execute_query_archive_uses_vector_provider_for_semantic_search,
     # which asserts the issued cursor's lane). The requested page size reaches
     # the store exactly and the continuation is the next offset.
@@ -2098,9 +2106,9 @@ def test_async_execute_query_archive_accepts_lexical_retrieval_flags(
             assert query == "needle"
             return 0
 
-        def search_summaries(self, query: str, **kwargs: object) -> list[ArchiveSessionSearchHit]:
+        def iter_search_summaries(self, query: str, **kwargs: object) -> Generator[ArchiveSessionSearchHit, None, None]:
             assert query == "needle"
-            return []
+            yield from []
 
     install_archive_store_double(monkeypatch, FakeArchiveStore())
 
@@ -2139,11 +2147,11 @@ def test_async_execute_query_archive_sorts_search_terms(
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def search_summaries(self, query: str, **kwargs: object) -> list[ArchiveSessionSearchHit]:
+        def iter_search_summaries(self, query: str, **kwargs: object) -> Generator[ArchiveSessionSearchHit, None, None]:
             assert query == "needle"
             assert kwargs["sort"] == "messages"
             assert kwargs["reverse"] is True
-            return []
+            yield from []
 
     install_archive_store_double(monkeypatch, FakeArchiveStore())
 
@@ -2223,6 +2231,7 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
             return [
                 ArchiveSessionSearchHit(
                     rank=1,
+                    score=0.2,
                     session_id="codex-session:native-1",
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
@@ -2232,6 +2241,7 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
                 ),
                 ArchiveSessionSearchHit(
                     rank=2,
+                    score=0.3,
                     session_id="codex-session:native-2",
                     block_id="codex-session:native-2:m1:0",
                     message_id="codex-session:native-2:m1",
@@ -2292,8 +2302,7 @@ def test_async_execute_query_archive_refuses_a_cursor_minted_by_a_different_quer
     of silently paginating B with A's page offset.
 
     Anti-vacuity (polylogue-t4l2q): emptying the
-    ``_validate_cursor_request_identity`` call site in
-    ``polylogue/cli/archive_query.py`` makes this test red -- query B would
+    canonical ``validate_plan_cursor`` call in the producer and CLI adapter makes this test red -- query B would
     then accept A's cursor and return rows. The direct-helper tests do not
     cover that wiring.
     """
@@ -2340,6 +2349,7 @@ def test_async_execute_query_archive_refuses_a_cursor_minted_by_a_different_quer
             return [
                 ArchiveSessionSearchHit(
                     rank=index,
+                    score=_score,
                     session_id=session_id,
                     block_id=f"{session_id}:m1:0",
                     message_id=f"{session_id}:m1",
@@ -2400,7 +2410,7 @@ def test_async_execute_query_archive_refuses_a_cursor_minted_by_a_different_quer
                 },
             )
         )
-    assert "different ranked-search request" in str(exc_info.value)
+    assert "different search request" in str(exc_info.value)
 
 
 def test_async_execute_query_archive_uses_vector_provider_for_session_seed_similarity(
@@ -2462,6 +2472,7 @@ def test_async_execute_query_archive_uses_vector_provider_for_session_seed_simil
             return [
                 ArchiveSessionSearchHit(
                     rank=1,
+                    score=0.2,
                     session_id="codex-session:native-1",
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
@@ -2471,6 +2482,7 @@ def test_async_execute_query_archive_uses_vector_provider_for_session_seed_simil
                 ),
                 ArchiveSessionSearchHit(
                     rank=2,
+                    score=0.3,
                     session_id="codex-session:native-2",
                     block_id="codex-session:native-2:m1:0",
                     message_id="codex-session:native-2:m1",
@@ -2721,6 +2733,7 @@ def test_async_execute_query_archive_accepts_explicit_semantic_lane(
             return [
                 ArchiveSessionSearchHit(
                     rank=1,
+                    score=0.2,
                     session_id="codex-session:native-1",
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
@@ -2819,6 +2832,7 @@ def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
             return [
                 ArchiveSessionSearchHit(
                     rank=1,
+                    score=0.2,
                     session_id="codex-session:native-1",
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",

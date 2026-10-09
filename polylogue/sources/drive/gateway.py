@@ -14,6 +14,8 @@ from tenacity import (
 )
 from typing_extensions import TypedDict
 
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.json import JSONDocument, JSONDocumentList
 from polylogue.logging import get_logger
 
@@ -267,7 +269,9 @@ class DriveServiceGateway:
                 max=10,
             ),
             retry=retry_if_exception_type(Exception)
-            & retry_if_not_exception_type((DriveAuthError, DriveNotFoundError, DriveAccessDeniedError)),
+            & retry_if_not_exception_type(
+                (DriveAuthError, DriveNotFoundError, DriveAccessDeniedError, DaemonOperationCancelled)
+            ),
             reraise=True,
         )
         return retryer(attempt)
@@ -339,6 +343,7 @@ class DriveServiceGateway:
         prior_position = position()
         stalled_chunks = 0
         while True:
+            check_compute_cancelled()
             _, done = downloader.next_chunk()
             if done:
                 return

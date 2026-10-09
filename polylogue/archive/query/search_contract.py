@@ -38,6 +38,9 @@ class SearchExecution:
     lane_ranks: dict[str, dict[str, int | None]] | None = None
     completed_lanes: tuple[LaneName, ...] = ()
     exactness: Literal["exact"] | None = None
+    has_more: bool | None = None
+    effective_offset: int | None = None
+    next_cursor: str | None = None
 
     @property
     def degraded(self) -> bool:

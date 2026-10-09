@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from collections.abc import Callable, Mapping
 from tempfile import TemporaryFile
@@ -132,6 +134,7 @@ def run_query_set_read(
     with TemporaryFile(mode="w+t", encoding="utf-8") as staged:
         if output_format in _ARRAY_FORMATS:
             staged.write("[\n")
+        csv_header: list[str] | None = None
         for index, row in enumerate(selection.rows):
             session, read_outcome = _read_selected_session(env, request, row.session_id, selection.snapshot_epoch or "")
             assert isinstance(read_outcome, OutcomeEnvelope)
@@ -147,6 +150,17 @@ def run_query_set_read(
             rendered = (
                 renderer(session, render_format, fields) if renderer else format_session(session, render_format, fields)
             )
+            if output_format == "csv":
+                csv_rows = csv.reader(io.StringIO(rendered))
+                header = next(csv_rows, None)
+                if header is None or (csv_header is not None and header != csv_header):
+                    raise ValueError("session CSV changed its columns")
+                writer = csv.writer(staged)
+                if csv_header is None:
+                    writer.writerow(header)
+                    csv_header = header
+                writer.writerows(csv_rows)
+                continue
             if output_format in _PER_LINE_FORMATS:
                 rendered = json.dumps(json.loads(rendered), separators=(",", ":"))
             elif output_format in _ARRAY_FORMATS:

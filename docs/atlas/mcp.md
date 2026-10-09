@@ -110,6 +110,7 @@ projection, together with that projection's source-tier path.
 ## Insight projections
 
 Registry-backed projections use the insight descriptor's fetch/payload contract and forward the requested offset to descriptors that declare pagination, after their session filters and before their result window. For descriptors that declare `query`, `expression` is that projection's text search, without a second DSL parser. For example, `query(projection="threads", expression="strong", limit=1, offset=1)` selects the second strong work thread. Reference expressions retain their existing reference-pipeline precedence. Descriptors without a query field retain their declared filters.
+Session-list projections and the sessions/origin-recent resources carry `unit="sessions"` and the shared object-shaped terminal `outcome`. The typed session-list adapter preserves its owner's verdict and every named coverage gap; advanced listing uses the same outcome owner as other row envelopes. The discriminated `session_operation` family retains its separately declared owner result schema.
 `postmortem` and `pathologies` call their analysis facades and attach the shared
 terminal `outcome` at the MCP operation boundary. An empty, complete scope is
 `empty`; a truncated scope or missing profiles/digests is `degraded` even when

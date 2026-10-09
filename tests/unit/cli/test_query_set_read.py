@@ -1168,3 +1168,19 @@ def test_unbound_empty_selection_refuses_before_delivery(view: str, monkeypatch:
     assert delivered == []
     with pytest.raises(OperationEnvelopeError):
         selection.finish()
+
+
+def test_query_set_csv_has_one_header_and_complete_message_rows() -> None:
+    import csv
+    import io
+
+    sessions = [
+        make_conv(id="neutral-a", messages=[make_msg(id="message-a", role="user", text='Żółć, "one"\nsecond line')]),
+        make_conv(id="neutral-b", messages=[make_msg(id="message-b", role="assistant", text="other message  ")]),
+    ]
+    output = _capture_run(_stub_env(sessions), _request(), "csv", None)
+    rows = list(csv.DictReader(io.StringIO(output)))
+    assert [(row["session_id"], row["message_id"], row["text"]) for row in rows] == [
+        ("neutral-a", "message-a", 'Żółć, "one"\nsecond line'),
+        ("neutral-b", "message-b", "other message  "),
+    ]

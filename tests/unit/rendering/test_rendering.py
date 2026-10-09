@@ -6,7 +6,7 @@ MERGED: test_branch_rendering.py + test_none_guards.py
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
 import pytest
@@ -16,6 +16,7 @@ from hypothesis import strategies as st
 from polylogue.archive.models import Message, Session, SessionSummary
 from polylogue.cli.query_output import format_summary_list
 from polylogue.core.enums import BlockType, Origin, Provider
+from polylogue.core.json import JSONDocument
 from polylogue.core.types import SessionId
 from polylogue.rendering.block_models import RenderableBlock
 from polylogue.rendering.blocks import (
@@ -339,15 +340,8 @@ class TestMediaBlockRendering:
         assert "media-text" not in render_blocks_html([block])
 
 
-class TestToolUseInputSummary:
-    """`_tool_input_summary`'s folded one-line summary for tool_use blocks.
-
-    Regression for the #2629 review: a ChatGPT web-search tool_input shape
-    (``{"search_query": [{"q": "..."}], "response_length": "medium"}``)
-    previously fell through to the generic key=value fallback, which picks
-    the first scalar-valued key -- "response_length=medium" -- silently
-    dropping the actual search terms from the folded summary.
-    """
+class TestToolUseInputRendering:
+    """Full transcript tool arguments retain search terms and other argument fields."""
 
     def test_chatgpt_search_query_list_of_dicts_shows_query_text(self) -> None:
         block = RenderableBlock(
@@ -362,7 +356,7 @@ class TestToolUseInputSummary:
         markdown = render_blocks_markdown([block])
         assert "Hetzner Cloud prices" in markdown
         assert "CCX53 pricing" in markdown
-        assert "response_length=medium" not in markdown
+        assert '"response_length": "medium"' in markdown
 
     def test_search_query_list_of_plain_strings_shows_query_text(self) -> None:
         block = RenderableBlock(
@@ -382,7 +376,7 @@ class TestToolUseInputSummary:
             tool_input={"command": "ls -la"},
         )
         markdown = render_blocks_markdown([block])
-        assert "`ls -la`" in markdown
+        assert '"command": "ls -la"' in markdown
 
 
 class TestPlainConsoleLiteralOutput:
@@ -780,3 +774,47 @@ def test_markdown_uses_remote_attachment_urls_without_a_local_path() -> None:
     markdown = format_session_markdown(session)
     assert "https://example.test/message.txt" in markdown
     assert "https://example.test/session.txt" in markdown
+
+
+@pytest.mark.parametrize("renderer", [render_blocks_markdown, render_blocks_html, render_blocks_plaintext])
+def test_full_tool_arguments_survive_transcript_rendering(renderer: Callable[[Sequence[RenderableBlock]], str]) -> None:
+    from html import unescape
+
+    arguments: JSONDocument = {
+        "path": "/workspace/neutral.txt",
+        "command": "echo " + "x" * 100 + " suffix",
+        "query": "unicode Żółć " * 20,
+        "nested": {"replacement": "before\n```\nafter", "empty": None},
+    }
+    block = RenderableBlock(type="tool_use", tool_name="neutral", tool_input=arguments)
+    rendered = unescape(renderer([block]))
+    serialized = json.dumps(arguments, ensure_ascii=False, indent=2)
+    assert serialized in rendered
+    if renderer is render_blocks_markdown:
+        assert "````json\n" in rendered
+
+
+def test_full_tool_raw_arguments_survive_transcript_rendering() -> None:
+    raw = "neutral non-JSON argument " + "x" * 100
+    block = RenderableBlock(type="tool_use", tool_name="neutral", tool_input_raw=raw)
+    assert raw in render_blocks_markdown([block])
+
+
+@pytest.mark.parametrize("output_format", ["markdown", "html", "obsidian"])
+def test_full_session_formats_preserve_selected_tool_arguments(output_format: str) -> None:
+    from html import unescape
+
+    from polylogue.rendering.formatting import format_session
+
+    arguments = {"path": "/workspace/neutral.txt", "replacement": "Żółć " + "x" * 100, "nested": {"empty": None}}
+    message = make_msg(id="neutral-tool", role="assistant", text="")
+    message.blocks = [{"type": "tool_use", "tool_name": "Edit", "tool_input": arguments}]
+    session = _make_conv([message])
+    rendered = unescape(format_session(session, output_format, None))
+    assert json.dumps(arguments, ensure_ascii=False, indent=2) in rendered
+
+
+def test_plaintext_preserves_raw_tool_argument_trailing_whitespace() -> None:
+    raw = "neutral raw argument\n  \t"
+    block = RenderableBlock(type="tool_use", tool_name="neutral", tool_input_raw=raw)
+    assert render_blocks_plaintext([block]) == "[Tool: neutral]\n" + raw

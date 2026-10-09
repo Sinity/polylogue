@@ -615,7 +615,6 @@ def iter_source_sessions_with_raw(
     *,
     cursor_state: CursorStatePayload | None = None,
     capture_raw: bool = True,
-    known_mtimes: dict[str, str] | None = None,
     blob_root: Path | None = None,
     blob_store: BlobStore | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
@@ -634,7 +633,6 @@ def iter_source_sessions_with_raw(
         source,
         cursor_state=cursor_state,
         include_mtime=capture_raw,
-        known_mtimes=known_mtimes,
         discover_sidecars=True,
         blob_store=blob_store,
     )

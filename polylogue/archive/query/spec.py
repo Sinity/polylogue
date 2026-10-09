@@ -558,6 +558,7 @@ def query_spec_to_plan(
         reverse=spec.reverse,
         limit=spec.limit,
         sample=spec.sample,
+        latest=spec.latest,
         filter_has_tool_use=spec.filter_has_tool_use,
         filter_has_thinking=spec.filter_has_thinking,
         filter_has_paste=spec.filter_has_paste,

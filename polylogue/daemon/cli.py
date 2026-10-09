@@ -1600,6 +1600,7 @@ def _drain_convergence_debt_page(
 
     subject_states: dict[tuple[str, str, str], object] = {}
     converged_whole_archive: dict[str, int] = {}
+    run_started_by_stage: dict[str, int] = {}
     retryable_debt = tuple(due_debt)
     if retryable_debt:
         for stage_name in dict.fromkeys(debt.stage for debt in retryable_debt):
@@ -1614,6 +1615,7 @@ def _drain_convergence_debt_page(
             )
             subject_independent = stage_name != "convergence" and stages_by_name[stage_name].subject_independent
             run_started_ms = int(time.time() * 1000)
+            run_started_by_stage[stage_name] = run_started_ms
             if subject_independent and paths:
                 # The stage's check and work ignore the subject, so one run
                 # answers for every subject it owes. Run it once, on one
@@ -1644,7 +1646,14 @@ def _drain_convergence_debt_page(
     check_compute_cancelled()
     retried = admit_stage_write(
         "maintenance.convergence_debt.ledger",
-        partial(_record_convergence_debt_retries, cursor, due_debt, subject_states, converged_whole_archive),
+        partial(
+            _record_convergence_debt_retries,
+            cursor,
+            due_debt,
+            subject_states,
+            converged_whole_archive,
+            run_started_by_stage=run_started_by_stage,
+        ),
     )
     return retried, len(page)
 
@@ -1654,6 +1663,8 @@ def _record_convergence_debt_retries(
     due_debt: Sequence[Any],
     subject_states: dict[tuple[str, str, str], object],
     converged_whole_archive: Mapping[str, int] | None = None,
+    *,
+    run_started_by_stage: Mapping[str, int],
 ) -> int:
     """Update the ops debt ledger for one drained pass. The only write here."""
     from polylogue.sources.live.convergence_debt import is_deferred_stage_state, stage_state_value
@@ -1705,6 +1716,17 @@ def _record_convergence_debt_retries(
             )
             continue
         retried += 1
+        # The stage released its publication admission before this ledger
+        # admission. Live ingest may have recorded a newer failure for this
+        # same subject in between. Its row owns the next retry, regardless of
+        # whether this older pass succeeded or failed.
+        if not cursor.convergence_debt_recorded_before(
+            stage=debt.stage,
+            subject_type=debt.subject_type,
+            subject_id=debt.subject_id,
+            recorded_before_ms=run_started_by_stage[debt.stage],
+        ):
+            continue
         stages_map = getattr(state, "stages", None)
         stages_map = stages_map if isinstance(stages_map, dict) else {}
         settled = (

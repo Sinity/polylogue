@@ -674,40 +674,14 @@ def _search_payload(
             "or use a structural list query and retry"
         )
 
-    from dataclasses import fields
-
     from polylogue.archive.query.archive_execution import archive_search_hits
     from polylogue.archive.query.search_contract import LaneFailure
     from polylogue.archive.query.search_hits import project_search_hits
     from polylogue.core.errors import EmbeddingRetrievalNotReadyError
-    from polylogue.surfaces.cursor_identity import search_cursor_request_identity
-    from polylogue.surfaces.payloads import (
-        SessionSearchHitPayload,
-        build_search_envelope,
-        decode_search_cursor,
-        search_cursor_lane_matches_request,
-    )
+    from polylogue.surfaces.payloads import SessionSearchHitPayload, build_search_envelope
 
-    request_identity = search_cursor_request_identity(
-        {
-            field.name: getattr(spec, field.name)
-            for field in fields(spec)
-            if field.name not in {"cursor", "offset", "limit", "vector_provider", "predicates"}
-        }
-    )
-    cursor = decode_search_cursor(spec.cursor) if spec.cursor else None
-    if cursor is not None and not search_cursor_lane_matches_request(cursor.lane, spec.retrieval_lane):
-        from polylogue.surfaces.payloads import InvalidSearchCursorError
-
-        raise InvalidSearchCursorError(
-            f"cursor was minted for retrieval_lane={cursor.lane!r} but this request is {spec.retrieval_lane!r}"
-        )
-    if cursor is not None and cursor.query_hash is not None and cursor.query_hash != request_identity:
-        from polylogue.surfaces.payloads import InvalidSearchCursorError
-
-        raise InvalidSearchCursorError("cursor belongs to a different ranked-search request")
     display_limit = spec.limit or 50
-    fetch_spec = replace(spec, offset=cursor.r, limit=display_limit * 2) if cursor is not None else spec
+    fetch_spec = replace(spec, limit=display_limit)
     needs_vector = bool(
         fetch_spec.similar_text or fetch_spec.similar_session_id or fetch_spec.retrieval_lane == "hybrid"
     )
@@ -777,18 +751,14 @@ def _search_payload(
             resolve_default_root_filter(fetch_spec.root, boolean_predicate=fetch_spec.boolean_predicate)
         ),
         limit=display_limit,
-        offset=cursor.r if cursor is not None else spec.offset,
+        offset=spec.offset,
         query=query_text,
         retrieval_lane=resolved_lane,
         sort=spec.sort,
-        cursor=cursor,
-        request_identity=request_identity,
         execution=hits.execution,
         authority=authority,
     )
-    # The builder decides ``outcome`` from the page it emits -- after the
-    # cursor trims stragglers and the limit truncates -- so the emitted hits
-    # and the authority count must be that same page, never the raw fetch.
+    # Authority reports the same producer-selected page as the envelope.
     emitted_hits = envelope_model.hits
     if envelope_model.authority is not None:
         envelope_model = envelope_model.model_copy(
@@ -800,32 +770,6 @@ def _search_payload(
     # The envelope keeps its own explicit nulls -- a vector page's ``total`` is
     # an honest ``None`` and dropping the key would read as "not reported".
     envelope["hits"] = [hit.model_dump(mode="json", exclude_none=True) for hit in emitted_hits]
-    # The ranked envelope's own continuation is ``next_cursor``; ``next_offset``
-    # is the offset-shaped answer the list page also gives, decided by the one
-    # helper so a client walking pages cannot see the two paths disagree.
-    #
-    # ``total`` is deliberately session-grain -- it is what ``total_unit``
-    # labels and what ``_archive_count_sessions_for_spec`` counts -- while the
-    # hits are block-grain: ``ArchiveStore.search_summaries`` selects FTS block
-    # rows with no DISTINCT over ``session_id``, so ten matching blocks in one
-    # session are ten hits. Comparing ``offset + len(hits)`` against a session
-    # total is a unit error that terminates the walk early: ten hits from one
-    # session fill the first page while another session's hit waits at offset
-    # ten, and a total of two makes that page look final. There is no
-    # hit-grain denominator to compare against, so continuation is decided by
-    # the helper's own no-total rule -- a page that filled its bound continues,
-    # a short page terminates -- rather than by a denominator in the wrong
-    # unit.
-    # The continuation must track what this response actually emitted: the
-    # cursor page's own effective offset (``cursor.r``, not the caller's
-    # original ``spec.offset``) plus the *emitted* page after the cursor
-    # trims stragglers and the limit truncates it -- not the raw fetch.
-    envelope["next_offset"] = page_next_offset(
-        offset=cursor.r if cursor is not None else spec.offset,
-        returned=len(emitted_hits),
-        total=None,
-        limit=display_limit,
-    )
     return envelope
 
 

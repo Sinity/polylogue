@@ -20,10 +20,9 @@ from polylogue.storage.sqlite.archive_tiers.context_delivery_write import (
     ArchiveContextDeliverySummary,
 )
 from polylogue.surfaces.authority import AuthorityEnvelope
-from polylogue.surfaces.outcome import OutcomeEnvelope
+from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
-    SearchCursor,
     SearchEnvelope,
     SurfacePayloadModel,
     build_search_envelope,
@@ -324,6 +323,8 @@ class MCPPaginatedQueryResultPayload(SurfacePayloadModel):
     """Paginated query result envelope for list_sessions."""
 
     items: tuple[MCPMatchedSessionSummaryPayload, ...]
+    unit: Literal["sessions"] = "sessions"
+    outcome: OutcomeEnvelope
     # Semantic/vector retrieval does not expose an exact archive cardinality;
     # ``None`` is honest and keeps lower-bound page probes from masquerading as
     # totals.
@@ -495,7 +496,7 @@ class MCPArchiveSearchHitPayload(SurfacePayloadModel):
 
     rank: int
     session_id: str
-    block_id: str
+    block_id: str | None
     message_id: str
     origin: str
     source: str
@@ -634,6 +635,7 @@ def session_query_result_payload(
         offset=offset,
         next_offset=next_offset,
         diagnostics=(MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics) if diagnostics else None),
+        outcome=decide_outcome(matched=len(sessions)),
     )
 
 
@@ -728,7 +730,6 @@ def session_search_result_payload(
     query: str = "",
     retrieval_lane: str = "auto",
     sort: str | None = None,
-    cursor: SearchCursor | None = None,
 ) -> SearchEnvelope:
     """Build the canonical :class:`SearchEnvelope` for an MCP search call.
 
@@ -760,7 +761,6 @@ def session_search_result_payload(
         retrieval_lane=resolved_lane,
         sort=sort,
         diagnostics=diag_payload,
-        cursor=cursor,
         execution=hits.execution,
     )
 

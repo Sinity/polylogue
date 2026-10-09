@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
-import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,7 +13,6 @@ from polylogue.archive.context_models import ContextImage
 from polylogue.config import Config
 from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.core.enums import AssertionKind, AssertionStatus
-from polylogue.core.refs import normalize_object_ref_text, parse_public_ref
 from polylogue.operations.archive_mutation import require_archive_write_authority as _require_archive_write_authority
 from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
 from polylogue.operations.operation_context_types import OperationContext
@@ -114,190 +111,13 @@ def _archive_judge_assertion_candidate(
         raise RuntimeError(f"failed to judge assertion candidate: {exc}") from exc
 
 
-def _archive_capture_assertion_candidate(
-    config: Config,
-    *,
-    body_text: str,
-    kind: AssertionKind,
-    refs: Sequence[str] = (),
-    scope_refs: Sequence[str] = (),
-    cwd: Path | None = None,
-    author_ref: str = "user:local",
-    author_kind: str = "user",
-    idempotency_key: str | None = None,
-    ttl_seconds: int | None = None,
-    capture_provenance: Mapping[str, object] | None = None,
-) -> Any:
-    """Write one terminal-captured assertion through the user-tier gate.
-
-    ``ttl_seconds``, when given, stamps ``staleness={"expires_at_ms": ...}``
-    on the written row (polylogue-37t.1): the admission read
-    (:func:`~polylogue.storage.sqlite.archive_tiers.user_write.list_assertion_claims`)
-    excludes expired claims from the preamble compiler and every other
-    ``ASSERTION_CLAIM_KINDS`` consumer once ``expires_at_ms`` elapses, with no
-    new assertion status introduced.
-    """
-
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope, upsert_assertion
-
-    normalized_body = body_text.strip()
-    if not normalized_body:
-        raise ValueError("note text cannot be empty")
-    normalized_author_ref = normalize_object_ref_text(author_ref)
-    normalized_author_kind = author_kind.strip().lower()
-    if not normalized_author_kind:
-        raise ValueError("author_kind cannot be empty")
-    if ttl_seconds is not None and ttl_seconds <= 0:
-        raise ValueError("ttl_seconds must be positive")
-
-    normalized_idempotency_key = None if idempotency_key is None else idempotency_key.strip()
-    if idempotency_key is not None and not normalized_idempotency_key:
-        raise ValueError("idempotency_key cannot be empty")
-    if normalized_idempotency_key is not None and len(normalized_idempotency_key) > 240:
-        raise ValueError("idempotency_key exceeds 240 characters")
-
-    if normalized_idempotency_key is None:
-        assertion_id = f"assertion-terminal-note:{uuid.uuid4()}"
-    else:
-        identity = hashlib.sha256(
-            f"{normalized_author_ref}\0{normalized_idempotency_key}".encode("utf-8", errors="surrogatepass")
-        ).hexdigest()
-        assertion_id = f"assertion-terminal-note:{identity}"
-    _require_archive_write_authority(config, "api.capture_assertion_candidate")
-    with ArchiveStore.open_existing(_active_archive_root(config), read_only=False) as archive:
-        from polylogue.operations.mutation_actuators import resolve_assertion_candidate_refs
-
-        resolved_refs = resolve_assertion_candidate_refs(archive, refs, cwd=cwd)
-        normalized_scope_refs = [parse_public_ref(ref).format() for ref in scope_refs]
-        target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"
-        user_db = archive.user_db_path
-
-    fingerprint_document = {
-        "author_kind": normalized_author_kind,
-        "author_ref": normalized_author_ref,
-        "body_text": normalized_body,
-        "evidence_refs": list(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
-        "kind": kind.value,
-        "scope_refs": normalized_scope_refs,
-        "target_ref": target_ref,
-    }
-    capture_fingerprint = hashlib.sha256(
-        json.dumps(
-            fingerprint_document,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8", errors="surrogatepass")
-    ).hexdigest()
-
-    try:
-        _require_archive_write_authority(config, "api.capture_assertion_candidate")
-        conn = open_connection(user_db, archive_root=user_db.parent)
-        conn.row_factory = sqlite3.Row
-        try:
-            # The key lookup and first write share one reservation. Without
-            # this, two changed captures racing on the same key could both
-            # observe absence and the later writer would overwrite history.
-            conn.execute("BEGIN IMMEDIATE")
-            existing = read_assertion_envelope(conn, assertion_id)
-            if existing is not None:
-                existing_value = existing.value if isinstance(existing.value, dict) else {}
-                existing_scope_refs = existing_value.get("scope_refs")
-                existing_document = {
-                    "author_kind": existing.author_kind,
-                    "author_ref": existing.author_ref,
-                    "body_text": existing.body_text,
-                    "evidence_refs": existing.evidence_refs,
-                    "kind": existing.kind.value,
-                    "scope_refs": existing_scope_refs if isinstance(existing_scope_refs, list) else [],
-                    "target_ref": existing.target_ref,
-                }
-                existing_fingerprint = hashlib.sha256(
-                    json.dumps(
-                        existing_document,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8", errors="surrogatepass")
-                ).hexdigest()
-                if existing_fingerprint == capture_fingerprint:
-                    conn.commit()
-                    return existing
-                raise ValueError("idempotency_key conflicts with a different assertion candidate capture")
-            capture_now_ms = int(datetime.now(UTC).timestamp() * 1000)
-            staleness = None if ttl_seconds is None else {"expires_at_ms": capture_now_ms + ttl_seconds * 1000}
-            envelope = upsert_assertion(
-                conn,
-                assertion_id=assertion_id,
-                target_ref=target_ref,
-                scope_ref=normalized_scope_refs[0] if normalized_scope_refs else None,
-                kind=kind,
-                key="terminal-note",
-                value={
-                    "capture_surface": "browser" if capture_provenance is not None else "terminal",
-                    "scope_refs": normalized_scope_refs,
-                    "unanchored": not bool(resolved_refs),
-                    **({"source_observation": dict(capture_provenance)} if capture_provenance is not None else {}),
-                },
-                body_text=normalized_body,
-                author_ref=normalized_author_ref,
-                author_kind=normalized_author_kind,
-                evidence_refs=tuple(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
-                status=AssertionStatus.CANDIDATE,
-                staleness=staleness,
-                context_policy={"inject": False, "promotion_required": True},
-                now_ms=capture_now_ms,
-            )
-            conn.commit()
-            return envelope
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        raise RuntimeError(f"failed to capture assertion candidate: {exc}") from exc
-
-
-def _archive_judge_assertion_candidates(
-    config: Config,
-    *,
-    items: Sequence[Any],
-) -> Any:
-    """Write an independently-recoverable bulk candidate judgment batch."""
-
-    from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidates
-
-    user_db = _active_archive_root(config) / "user.db"
-    if not user_db.exists():
-        raise ValueError("assertion user tier is not initialized")
-    _require_archive_write_authority(config, "api.judge_assertion_candidates")
-    try:
-        conn = open_connection(user_db, archive_root=user_db.parent)
-        conn.row_factory = sqlite3.Row
-        try:
-            result = judge_assertion_candidates(conn, items)
-            conn.commit()
-            return result
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        raise RuntimeError(f"failed to judge assertion candidates: {exc}") from exc
-
-
 def _archive_record_comparative_judgment(
     config: Config,
     judgment: Any,
     *,
     author_kind: str,
 ) -> Any:
-    """Write one comparative judgment (rxdo.9.11/9.6/9.7/9.12) as an assertion row.
-
-    Mirrors :func:`_archive_judge_assertion_candidates`'s connection
-    lifecycle. This is the first production caller of
-    :func:`~polylogue.storage.sqlite.archive_tiers.user_write.upsert_comparative_judgment_assertion`
-    -- the storage/read functions were fully built and tested but never
-    invoked outside ``tests/unit/storage/`` before the ``judge compare`` /
-    ``judge calibration`` CLI commands.
-    """
+    """Write a comparative judgment through its canonical assertion primitive."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from polylogue.storage.sqlite.archive_tiers.user_write import upsert_comparative_judgment_assertion

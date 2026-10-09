@@ -2,6 +2,18 @@
 
 ## Area boundary
 
+Gemini CLI result blocks retain both model-facing output and error text when
+the provider reports both streams. Divergent terminal renderings remain
+separately marked. Hermes ATIF tool availability events retain each declared
+tool definition in full, including its type and strictness setting.
+
+Codex event-message mirrors consume one matching response occurrence only
+when exact text and role also carry a shared native identity, timestamp instant,
+or unambiguous turn ID. Contradictory time or turn evidence prevents matching;
+uncorrelated repetitions remain messages. Native reasoning IDs survive lowering,
+and admitted code-only messages retain their CODE blocks. Claude Code session
+time extrema compare instants while messages keep their declared offsets.
+
 Post-ingest hook-paste enrichment reads admitted Source hook evidence and
 publishes Index paste markers through `open_isolated_write_connection` with
 its configured archive root. The factory enforces that root’s writer lease
@@ -105,6 +117,11 @@ Configured local acquisition carries each read failure through its async stream
 into scan and acquire error counts. Failed paths withhold their stat cursors;
 successfully committed files retain their cursors. Persistence failures are
 counted by the writer once, before source completion withholds their cursors.
+Local byte inputs skip only on a matching complete captured stat tuple; a
+matching timestamp cannot override changed identity or size. ZIP containers
+and mutable SQLite inputs always reach acquisition. ZIP membership comes
+from the captured container, and committed WAL content participates in the
+SQLite logical revision even when the main file's stat tuple is unchanged.
 
 `source_snapshot.py` publishes a declared root's complete member inventory or
 an unavailable result. Frontier member paths use the same captured root identity
@@ -512,3 +529,11 @@ contains that seed rather than reoffering the page callback. Canonical
 membership and discovered dependency expansion remain owned by the original
 reader and preparation. Failed unrelated siblings cannot repeatedly turn
 healthy page seeds into failed subjects.
+
+Drive raw acquisition downloads through `download_into` into its caller-owned
+prepared CAS file. Metadata before and after the transfer must match the
+listing before cache replacement or CAS publication. Cache validation reads
+every JSON event; admitted cache files are stream-hashed into prepared CAS
+files. Cache copies use bounded reads of those exact staged bytes, and every
+cancelled or refused transfer discards its private stage. Raw identity and
+publication receipts describe the unmodified provider bytes.

@@ -217,12 +217,61 @@ class TestBulkTagSessions:
             with pytest.raises(ValueError, match="tag"):
                 await poly.bulk_tag_sessions([_native("conv-mut")], [])
 
-    async def test_oversize_inputs_raise(self, workspace_env: dict[str, Path]) -> None:
-        db_path = _seed(workspace_env)
-        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            many_ids = [f"id-{i}" for i in range(101)]
-            with pytest.raises(ValueError, match="at most 100"):
-                await poly.bulk_tag_sessions(many_ids, ["t"])
-            many_tags = [f"t{i}" for i in range(21)]
-            with pytest.raises(ValueError, match="at most 20"):
-                await poly.bulk_tag_sessions([_native("conv-mut")], many_tags)
+    @pytest.mark.parametrize(("session_count", "tag_count"), [(101, 1), (1, 21)])
+    async def test_large_valid_inputs_reach_the_audited_product(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        session_count: int,
+        tag_count: int,
+    ) -> None:
+        """Restoring any API, normalization or request cap refuses a valid scope."""
+        from polylogue.operations.daemon_protocol import FacadeBulkTagSessionsRequest
+        from polylogue.operations.mutation_actuators import BulkTagActuator, BulkTagArgs
+        from polylogue.operations.mutation_transaction import MutationPlan
+
+        db_path = db_setup(workspace_env)
+        session_ids = []
+        for ordinal in range(session_count):
+            cid = f"bulk-large-{ordinal}"
+            SessionBuilder(db_path, cid).provider("claude-code").add_message(text="Neutral fixture").save()
+            session_ids.append(_native(cid))
+        tags = [f"neutral-tag-{ordinal}" for ordinal in range(tag_count)]
+        author_ref, author_kind = "agent:synthetic", "agent"
+        payload = {
+            "session_ids": session_ids,
+            "tags": tags,
+            "author_ref": author_ref,
+            "author_kind": author_kind,
+        }
+        assert FacadeBulkTagSessionsRequest.model_validate(payload).session_ids == session_ids
+
+        prepared: list[MutationPlan] = []
+        original_prepare = BulkTagActuator.prepare
+
+        def observe_prepare(actuator: BulkTagActuator, args: BulkTagArgs) -> MutationPlan:
+            plan = original_prepare(actuator, args)
+            prepared.append(plan)
+            return plan
+
+        monkeypatch.setattr(BulkTagActuator, "prepare", observe_prepare)
+        with daemon_serving_archive(workspace_env["archive_root"]):
+            async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+                first = await poly.bulk_tag_sessions(session_ids, tags, author_ref=author_ref, author_kind=author_kind)
+                second = await poly.bulk_tag_sessions(session_ids, tags, author_ref=author_ref, author_kind=author_kind)
+
+        assert prepared
+        assert all(plan.context["requested_session_ids"] == session_ids for plan in prepared)
+        assert all(plan.context["tags"] == tags for plan in prepared)
+        assert all(plan.context["author_ref"] == author_ref for plan in prepared)
+        assert first.session_count == session_count
+        assert first.tag_count == tag_count
+        assert first.affected_count == session_count
+        assert first.skipped_count == 0
+        assert second.affected_count == 0
+        assert second.skipped_count == session_count
+        with sqlite3.connect(workspace_env["archive_root"] / "user.db") as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM assertions WHERE kind='tag' AND author_ref=? AND author_kind=?",
+                (author_ref, author_kind),
+            ).fetchone() == (session_count * tag_count,)

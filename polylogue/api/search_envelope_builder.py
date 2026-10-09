@@ -12,21 +12,17 @@ adapters stay thin and the per-file LOC budget on
 from __future__ import annotations
 
 from contextlib import suppress
-from dataclasses import fields, replace
+from dataclasses import replace
 from time import monotonic
 from typing import TYPE_CHECKING
 
 from polylogue.operations.authority import authority_for_config
 from polylogue.surfaces.authority import AuthorityEnvelope
-from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 from polylogue.surfaces.payloads import (
-    InvalidSearchCursorError,
     QueryMissDiagnosticsPayload,
     SearchEnvelope,
     SessionSearchHitPayload,
     build_search_envelope,
-    decode_search_cursor,
-    search_cursor_lane_matches_request,
 )
 
 if TYPE_CHECKING:
@@ -66,65 +62,9 @@ async def build_search_envelope_for_spec(
     started_at = monotonic()
     display_limit = limit if limit is not None else (spec.limit or 50)
     display_offset = offset if offset is not None else spec.offset
-    request_identity = search_cursor_request_identity(
-        {
-            field.name: getattr(spec, field.name)
-            for field in fields(spec)
-            if field.name not in {"cursor", "offset", "limit", "vector_provider", "predicates"}
-        }
-    )
-    decoded_cursor = decode_search_cursor(spec.cursor) if spec.cursor else None
-    if decoded_cursor is not None and not search_cursor_lane_matches_request(decoded_cursor.lane, spec.retrieval_lane):
-        raise InvalidSearchCursorError(
-            f"cursor was minted for retrieval_lane={decoded_cursor.lane!r} but this request is {spec.retrieval_lane!r}"
-        )
-    if (
-        decoded_cursor is not None
-        and decoded_cursor.query_hash is not None
-        and decoded_cursor.query_hash != request_identity
-    ):
-        raise InvalidSearchCursorError("cursor belongs to a different ranked-search request")
-
-    fetch_spec = spec
-    if decoded_cursor is not None:
-        # Advance the SQL fetch past the cursor anchor; the builder will drop
-        # any straggler rows whose (score, session_id) sort at or before
-        # the anchor under the lane's natural ordering.
-        fetch_spec = replace(
-            spec,
-            offset=decoded_cursor.r,
-            limit=(spec.limit or display_limit) + display_limit,
-            cursor=spec.cursor,
-        )
-
+    fetch_spec = replace(spec, limit=display_limit, offset=display_offset)
     hits: list[SessionSearchHit] = await facade.search_session_hits(fetch_spec)
     execution = getattr(hits, "execution", None)
-    filter_only = fetch_spec.boolean_predicate is not None or (
-        not fetch_spec.query_terms
-        and not fetch_spec.contains_terms
-        and fetch_spec.similar_text is None
-        and fetch_spec.similar_session_id is None
-        and fetch_spec.has_filters()
-    )
-    if not hits and filter_only:
-        # Filter-only expressions have no ranked-search evidence, but they are
-        # still valid envelope queries.  Keep this fallback in the canonical
-        # builder rather than reintroducing a surface-local execution branch.
-        from polylogue.archive.query.search_hits import session_search_hit_from_session
-
-        sessions = await facade.list_sessions_for_spec(fetch_spec)
-        hits = [
-            session_search_hit_from_session(
-                session,
-                query_terms=(),
-                # Ranks are absolute in the fetched relation, so a cursor page
-                # continues after its anchor instead of restarting at 1.
-                rank=(fetch_spec.offset or 0) + index,
-                retrieval_lane="auto",
-                match_surface="session",
-            )
-            for index, session in enumerate(sessions, start=1)
-        ]
     # A vector candidate page is not the archive-wide hybrid union. Counting
     # through the semantic-only list route can report zero beside lexical hits
     # and suppress continuation. As on the daemon route, qualify that total as
@@ -144,15 +84,11 @@ async def build_search_envelope_for_spec(
         hit_payloads,
         total=total,
         limit=display_limit,
-        # A cursor page starts after its anchor's rank, so the continuation
-        # fields describe the page actually fetched, not the request's offset.
-        offset=decoded_cursor.r if decoded_cursor is not None else display_offset,
+        offset=display_offset,
         query=query if query is not None else _search_query_text(spec),
         retrieval_lane=resolved_lane,
         sort=spec.sort,
         diagnostics=diagnostics_payload,
-        cursor=decoded_cursor,
-        request_identity=request_identity,
         execution=execution,
         authority=authority
         or authority_for_config(
@@ -195,11 +131,10 @@ async def build_archive_search_envelope(
 
     ``cursor`` is an opaque keyset token previously returned as
     :attr:`SearchEnvelope.next_cursor` (#1268). When supplied, the
-    underlying fetch is advanced past the cursor anchor and the response
-    page begins strictly after it. The cursor's encoded rank is used as
-    the effective offset, so a follow-up call with the same query and
-    lane returns the contiguous successor page even if the archive has
-    grown between requests.
+    producer relocates a present anchor in the current pinned relation and
+    continues after it. A removed anchor uses its saved complete order key.
+    Corpus-dependent reranking can revisit earlier rows; a cursor does not
+    freeze the archive or the whole walk.
     """
     from polylogue.archive.query.spec import SessionQuerySpec
 

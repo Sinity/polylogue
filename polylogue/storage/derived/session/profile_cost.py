@@ -11,18 +11,22 @@ The pricing catalog is consulted per model, not per session, and a batch read
 groups one ``session_model_usage`` query by session, so a batch of N profiles
 costs N dictionary lookups over one query rather than N queries or N catalog
 loads.
+
+Provider-reported money is read through the canonical session-cost projection
+on the same snapshot and overrides the catalog total, including explicit zero.
 """
 
 from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import aiosqlite
 
 from polylogue.archive.semantic.cost_compute import compute_session_cost
 from polylogue.archive.semantic.cost_records import ModelUsageTotals
+from polylogue.storage.usage import SessionUsageCost, session_usage_costs_for_connection
 
 if TYPE_CHECKING:
     from polylogue.storage.derived.session.records import SessionProfileRecord
@@ -33,6 +37,7 @@ __all__ = [
     "profile_cost_lanes",
     "read_model_usage_batch_async",
     "read_model_usage_batch_sync",
+    "read_session_costs_batch_async",
 ]
 
 _MODEL_USAGE_SQL = """
@@ -110,10 +115,28 @@ def profile_cost_lanes(model_usage: Sequence[ModelUsageTotals]) -> ProfileCostLa
     )
 
 
+async def read_session_costs_batch_async(
+    conn: aiosqlite.Connection, session_ids: Sequence[str]
+) -> dict[str, SessionUsageCost]:
+    """Read the canonical money authority on the caller's SQLite snapshot."""
+    result = await conn._execute(  # type: ignore[no-untyped-call]
+        session_usage_costs_for_connection, conn._conn, session_ids
+    )
+    return cast(dict[str, SessionUsageCost], result)
+
+
 def apply_profile_cost_lanes(
     record: SessionProfileRecord,
     model_usage: Mapping[str, Sequence[ModelUsageTotals]],
+    session_costs: Mapping[str, SessionUsageCost],
 ) -> SessionProfileRecord:
     """Return ``record`` with its cost lanes recomputed from ``model_usage``."""
     lanes = profile_cost_lanes(model_usage.get(str(record.session_id), ()))
+    cost = session_costs.get(str(record.session_id))
+    if cost is not None and cost.provider_reported_usd is not None:
+        lanes.update(
+            total_cost_usd=cost.provider_reported_usd,
+            cost_provenance="provider_reported",
+            cost_is_estimated=False,
+        )
     return record.model_copy(update=lanes)

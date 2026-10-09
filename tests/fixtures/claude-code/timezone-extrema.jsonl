@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"neutral-timezone","uuid":"user-one","timestamp":"2026-01-01T10:00:00+02:00","message":{"role":"user","content":"Inspect the sample."}}
+{"type":"assistant","sessionId":"neutral-timezone","uuid":"assistant-one","timestamp":"2026-01-01T09:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"The sample is ready."}]}}

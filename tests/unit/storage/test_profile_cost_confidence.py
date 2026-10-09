@@ -98,3 +98,66 @@ async def test_public_profile_record_keeps_canonical_estimated_evidence(
         fields = ("status", "confidence", "total_usd", "basis", "missing_reasons", "provenance")
         assert {field: estimate[field] for field in fields} == {field: expected[field] for field in fields}
         assert estimate.get("unavailable_reason") is None
+
+
+@pytest.mark.parametrize("reported", [0.0, 12.5])
+@pytest.mark.asyncio
+async def test_profile_read_routes_preserve_exact_provider_money(
+    workspace_env: dict[str, Path], reported: float
+) -> None:
+    import aiosqlite
+
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from polylogue.storage.query_models import SessionProfileListQuery
+    from polylogue.storage.sqlite.queries.session_insight_profile_reads import (
+        get_session_profile,
+        get_session_profiles_batch,
+        list_session_profiles,
+    )
+    from tests.infra.archive_templates import run_off_event_loop
+    from tests.infra.index_writer import write_fixture_index_session
+    from tests.infra.storage_records import db_setup, materialize_session_insights
+
+    path = db_setup(workspace_env)
+    session_id = "codex-session:provider-profile-cost"
+
+    def write() -> None:
+        with connect_measured(path) as conn:
+            conn.row_factory = sqlite3.Row
+            write_fixture_index_session(
+                conn,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="provider-profile-cost",
+                    reported_cost_usd=reported,
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m",
+                            role=Role.ASSISTANT,
+                            model_name="gpt-4o",
+                            input_tokens=100,
+                            output_tokens=0,
+                            cache_read_tokens=0,
+                            cache_write_tokens=0,
+                            text="done",
+                        )
+                    ],
+                ),
+            )
+        materialize_session_insights(path)
+
+    run_off_event_loop(write)
+    async with aiosqlite.connect(path) as conn:
+        conn.row_factory = aiosqlite.Row
+        single = await get_session_profile(conn, session_id)
+        batch = await get_session_profiles_batch(conn, [session_id])
+        listed = await list_session_profiles(conn, SessionProfileListQuery())
+        for record in (single, batch[session_id], listed[0]):
+            assert record is not None
+            assert record.total_cost_usd == reported
+            assert record.cost_provenance == "provider_reported"
+            assert not record.cost_is_estimated
+            assert record.total_input_tokens == 100

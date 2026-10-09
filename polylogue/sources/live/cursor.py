@@ -1925,6 +1925,25 @@ class CursorStore:
         """Clear derived convergence debt after successful convergence."""
         self._clear_convergence_debt_from_ops(subject_type=subject_type, subject_id=subject_id, stage=stage)
 
+    def convergence_debt_recorded_before(
+        self, *, stage: str, subject_type: str, subject_id: str, recorded_before_ms: int
+    ) -> bool:
+        """Decide whether a retry still owns this subject's ledger transition.
+
+        The retry ledger calls this inside its existing writer admission, before
+        clearing or re-recording a row. A row recorded in the run's start
+        millisecond or later may describe work the retry never evaluated.
+        """
+        with self._connect_ops_read() as conn:
+            return (
+                conn.execute(
+                    "SELECT 1 FROM convergence_debt "
+                    "WHERE stage = ? AND target_type = ? AND target_id = ? AND updated_at_ms < ?",
+                    (stage, subject_type, subject_id, recorded_before_ms),
+                ).fetchone()
+                is not None
+            )
+
     def release_deferred_convergence_debt(self) -> int:
         """Make every deferred debt row due now; failed rows keep their backoff.
 

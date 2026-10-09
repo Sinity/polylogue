@@ -94,6 +94,44 @@ def test_provider_usage_event_identity_requires_a_message_anchor() -> None:
     )
 
 
+def test_incomplete_provider_lanes_remain_unknown_in_physical_and_logical_pricing(tmp_path: Path) -> None:
+    """A known model price cannot complete an unmappable provider counter."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        write_fixture_index_session(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="partial-pricing-lanes",
+                models_used=["gpt-4o"],
+                messages=[
+                    ParsedMessage(provider_message_id="m", role=Role.ASSISTANT, model_name="gpt-4o", text="done")
+                ],
+                session_events=[
+                    ParsedSessionEvent(
+                        event_type="token_count", payload={"model": "gpt-4o", "last_token_usage": {"input_tokens": 100}}
+                    ),
+                    ParsedSessionEvent(
+                        event_type="token_count", payload={"model": "gpt-4o", "last_token_usage": {"total_tokens": 50}}
+                    ),
+                ],
+            ),
+        )
+        report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
+        for lanes in (report.pricing_lanes, report.logical_pricing_lanes):
+            (lane,) = lanes
+            assert lane.usage.total_tokens == 100
+            assert lane.catalog_priced_subtotal_usd > 0
+            assert lane.incomplete_provider_row_count == 1
+            assert lane.catalog_api_equivalent_usd is None
+            assert lane.catalog_api_equivalent_evidence.value_state == "unknown"
+            assert lane.exact_total_tokens_evidence.value_state == "unknown"
+            assert not lane.catalog_api_equivalent_evidence.coverage.complete
+            assert "incomplete_provider_lanes" in lane.caveats
+    finally:
+        conn.close()
+
+
 def test_origin_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(

@@ -980,7 +980,7 @@ def _ordered_scoped_hits(
         yield hits
         return
 
-    def keys() -> Iterator[tuple[str, bool, int | float, int, str, int]]:
+    def keys() -> Iterator[tuple[str, bool, int | float, int, str]]:
         for hit in hits:
             archive.check_operation_read()
             if full:
@@ -997,7 +997,7 @@ def _ordered_scoped_hits(
                 )
             else:
                 values = summary_order_values(plan, archive_summary_to_domain(archive.read_summary(hit.session_id)))
-            yield hit.session_id, *values, hit.rank
+            yield hit.session_id, *values
 
     archive.settle_scoped_search_order(keys())
     with closing(
@@ -1008,6 +1008,120 @@ def _ordered_scoped_hits(
         )
     ) as ordered:
         yield ordered
+
+
+def _search_page(
+    plan: SessionQueryPlan,
+    archive: ArchiveStore,
+    hits: Iterator[ArchiveSessionSearchHit],
+    execution: SearchExecution,
+    lane: str,
+    limit: int,
+) -> ArchiveSearchResult:
+    """Relocate a live anchor before selecting a bounded successor page.
+
+    A present identity wins over old values. If it disappeared, exhaust the
+    current relation while retaining only the first limit+1 strict successors
+    of its remembered full comparator. Cancellation is checked on every row.
+    """
+    from polylogue.archive.query.search_cursor import (
+        InvalidSearchCursorError,
+        encode_search_cursor,
+        plan_cursor_identity,
+        validate_plan_cursor,
+    )
+
+    identity = plan_cursor_identity(plan)
+    cursor = validate_plan_cursor(plan)
+    if cursor is not None:
+        if cursor.query_hash != identity or cursor.lane != lane:
+            raise InvalidSearchCursorError("cursor belongs to a different search request")
+        if plan.sort == "random":
+            raise InvalidSearchCursorError("random search does not support cursors")
+    page: list[ArchiveSessionSearchHit] = []
+    fallback: list[ArchiveSessionSearchHit] = []
+    anchor_found = cursor is None
+    effective_offset = plan.offset
+    fallback_offset = 0
+    seen = 0
+    for index, hit in enumerate(hits):
+        seen = index + 1
+        archive.check_operation_read()
+        if cursor is not None and not anchor_found:
+            if hit.position is None:
+                raise InvalidSearchCursorError("search producer has no continuation position")
+            is_after = hit.position.after(cursor.position)
+            if (hit.position.grain, hit.position.identity) == (cursor.position.grain, cursor.position.identity):
+                anchor_found = True
+                effective_offset = index + 1
+                fallback.clear()
+                continue
+            if len(fallback) < limit + 1 and is_after:
+                if not fallback:
+                    fallback_offset = index
+                fallback.append(hit)
+            continue
+        if cursor is None and index < plan.offset:
+            continue
+        page.append(hit)
+        if len(page) == limit + 1:
+            break
+    if not anchor_found:
+        page = fallback
+        effective_offset = fallback_offset if fallback else seen
+    has_more = len(page) > limit and not plan.latest
+    page = page[:limit]
+    token = None
+    if has_more and page and page[-1].position is not None and not plan.predicates and plan.sort != "random":
+        token = encode_search_cursor(page[-1].position, lane=lane, request_identity=identity)
+    return ArchiveSearchResult(
+        _pair_hits(archive, page),
+        lane,
+        replace(execution, has_more=has_more, effective_offset=effective_offset, next_cursor=token),
+    )
+
+
+@contextmanager
+def _session_search_relation(
+    plan: SessionQueryPlan, archive: ArchiveStore, *, text: str, structural: bool
+) -> Iterator[Iterator[ArchiveSessionSearchHit]]:
+    """Disk-owned first witnesses for action and structural session grain."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit
+
+    with archive.scoped_search_population(_qualified_scope(plan, archive, None)):
+        if structural:
+
+            def witnesses() -> Iterator[ArchiveSessionSearchHit]:
+                for sid in archive.iter_scoped_search_session_ids():
+                    row = archive.read_summary(sid)
+                    yield ArchiveSessionSearchHit(
+                        rank=0,
+                        session_id=sid,
+                        block_id=None,
+                        message_id="",
+                        origin=row.origin,
+                        title=row.title,
+                        snippet="",
+                        score=0.0,
+                    )
+
+            archive.settle_scoped_search_lane("vector", witnesses())
+        else:
+            with closing(
+                archive.iter_search_summaries(
+                    text,
+                    limit=None,
+                    actions_only=True,
+                    sort=plan.sort,
+                    reverse=plan.reverse,
+                    **plan_filter_kwargs(plan),
+                )
+            ) as source:
+                archive.settle_scoped_search_lane("vector", source)
+        with closing(archive.iter_scoped_search_hits(hybrid=False, reverse=plan.reverse)) as settled:
+            ordered_plan = replace(plan, sort=plan.sort or "date") if structural else plan
+            with _ordered_scoped_hits(ordered_plan, archive, settled, full=False) as ordered:
+                yield ordered
 
 
 def archive_search_hits(
@@ -1026,28 +1140,30 @@ def archive_search_hits(
     setup evidence from an operation-scoped reader, not a request to retry
     construction outside that reader's snapshot.
     """
-    from dataclasses import replace as _replace
 
+    from polylogue.archive.query.search_cursor import validate_plan_cursor
+
+    validate_plan_cursor(plan)
     text = plan.similar_text or _plan_text_query(plan) or ""
     limit = plan.limit if plan.limit is not None else default_limit
-    offset = plan.offset
     filter_kwargs = plan_filter_kwargs(plan)
 
     def read(archive: ArchiveStore) -> ArchiveSearchResult:
-        if not _ranked_window(plan) and plan.retrieval_lane in {"auto", "dialogue", "actions"}:
-            if plan.retrieval_lane == "actions":
-                candidates = _fts_lane_candidates(archive, plan, text=text, limit=offset + limit, actions_only=True)
-                hits = [
-                    _replace(hit, rank=offset + rank)
-                    for rank, hit in enumerate(candidates[offset : offset + limit], start=1)
-                ]
-                return ArchiveSearchResult(
-                    _pair_hits(archive, hits), "actions", SearchExecution(("action",), ("action",))
-                )
-            hits = archive.search_summaries(
-                text, limit=limit, offset=offset, sort=plan.sort, reverse=plan.reverse, **filter_kwargs
+        structural = not text and plan.similar_session_id is None and not _ranked_window(plan)
+        if structural and not plan.has_filters():
+            return ArchiveSearchResult(
+                [], "auto", SearchExecution((), (), has_more=False, effective_offset=plan.offset)
             )
-            return ArchiveSearchResult(_pair_hits(archive, hits), "dialogue", SearchExecution(("text",), ("text",)))
+        if structural or (not _ranked_window(plan) and plan.retrieval_lane == "actions"):
+            lane = "auto" if structural else "actions"
+            execution = SearchExecution((), ()) if structural else SearchExecution(("action",), ("action",))
+            with _session_search_relation(plan, archive, text=text, structural=structural) as hits:
+                return _search_page(plan, archive, hits, execution, lane, limit)
+        if not _ranked_window(plan) and plan.retrieval_lane in {"auto", "dialogue"}:
+            with closing(
+                archive.iter_search_summaries(text, limit=None, sort=plan.sort, reverse=plan.reverse, **filter_kwargs)
+            ) as hits:
+                return _search_page(plan, archive, hits, SearchExecution(("text",), ("text",)), "dialogue", limit)
 
         with (
             _scoped_ranked_hits(
@@ -1059,11 +1175,13 @@ def archive_search_hits(
             ) as (ranked_hits, execution),
             _ordered_scoped_hits(plan, archive, ranked_hits, full=False) as ordered_hits,
         ):
-            page = list(islice(ordered_hits, offset, None if plan.limit is None else offset + plan.limit))
-            return ArchiveSearchResult(
-                _pair_hits(archive, page),
-                "hybrid" if plan.retrieval_lane == "hybrid" else "semantic",
+            return _search_page(
+                plan,
+                archive,
+                ordered_hits,
                 execution,
+                "hybrid" if plan.retrieval_lane == "hybrid" else "semantic",
+                limit,
             )
 
     from polylogue.storage.fts.fts_lifecycle import search_index_read_refusal

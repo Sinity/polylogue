@@ -47,7 +47,6 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
     from polylogue.surfaces.payloads import (
         QueryUnitResultEnvelope,
-        SearchCursor,
         SearchEnvelope,
     )
 
@@ -317,7 +316,7 @@ def archive_session_list_payload(
         # ``archive_search_hits`` already received this page's offset.  Do not
         # apply it a second time after coalescing its raw block hits.
         page = summaries
-        next_offset = offset + len(page) if len(result.hits) == limit else None
+        next_offset = (result.execution.effective_offset or 0) + len(page) if result.execution.has_more else None
         return MCPPaginatedQueryResultPayload(
             items=tuple(
                 archive_matched_summary_payload(
@@ -331,6 +330,13 @@ def archive_session_list_payload(
             limit=limit,
             offset=offset,
             next_offset=next_offset,
+            outcome=decide_outcome(
+                matched=len(page),
+                degraded=(
+                    *(f"lane_failed:{failure.lane}" for failure in result.execution.failed_lanes),
+                    *(f"lane_unavailable:{lane}" for lane in result.execution.unavailable_lanes),
+                ),
+            ),
         )
     filters = archive_query_filters(spec)
     text_query = _archive_text_query(spec)
@@ -386,6 +392,7 @@ def archive_session_list_payload(
         limit=limit,
         offset=offset,
         next_offset=next_offset,
+        outcome=decide_outcome(matched=len(page)),
     )
 
 
@@ -436,8 +443,6 @@ def archive_search_payload(
     config: Config | None = None,
     archive_root: Path | None = None,
     include_affordances: bool = False,
-    cursor: SearchCursor | None = None,
-    request_identity: str | None = None,
 ) -> SearchEnvelope:
     """Build MCP search from the same ranked read and lane evidence as the API."""
     from polylogue.archive.query.archive_execution import archive_search_hits
@@ -475,8 +480,6 @@ def archive_search_payload(
         sort=sort,
         action_affordances=_search_affordances(include_affordances),
         diagnostics=diagnostics,
-        cursor=cursor,
-        request_identity=request_identity,
         authority=authority,
         execution=result.execution,
     )

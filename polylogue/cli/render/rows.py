@@ -267,7 +267,7 @@ def _page_envelope(
         "offset": offset,
         "next_offset": raw_next_offset if isinstance(raw_next_offset, int) else None,
         # The operation mints the ranked continuation cursor itself
-        # (``build_search_envelope`` -> ``build_search_cursor``); dropping it
+        # (``archive_search_hits``); dropping it
         # here made ranked pages non-continuable by transport.
         "next_cursor": next_cursor if isinstance(next_cursor, str) else None,
         "source": source,

@@ -467,6 +467,49 @@ def test_supervisor_halt_records_durably_and_stops_the_task(tmp_path: Path) -> N
     assert HaltRegistry(tmp_path).is_halted(unit_id(UnitKind.SERVICE, "secret_scan_sweep"))
 
 
+def test_halted_service_remains_owned_while_cancellation_settles(tmp_path: Path) -> None:
+    """Removing a halted child would let wait and shutdown finish before it."""
+
+    async def scenario() -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        release = asyncio.Event()
+
+        async def settling_service() -> None:
+            started.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+
+        supervisor = _supervisor(halts=HaltRegistry(tmp_path))
+        child = supervisor.start("secret_scan_sweep", settling_service)
+        assert child is not None
+        await started.wait()
+        supervisor.halt("secret_scan_sweep", reason=HaltReason.OPERATOR_HALT, message="paused")
+        await cancelled.wait()
+        waiter = asyncio.create_task(supervisor.wait())
+        shutdown = asyncio.create_task(supervisor.shutdown())
+        try:
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert child in supervisor.tasks
+            assert not child.done()
+            assert not waiter.done()
+            assert not shutdown.done()
+        finally:
+            release.set()
+            await child
+            await waiter
+            report = await shutdown
+        assert report.clean
+        assert report.stopped == ("secret_scan_sweep",)
+        assert supervisor.state("secret_scan_sweep") is ServiceState.HALTED
+
+    asyncio.run(scenario())
+
+
 def test_profile_selection_comes_from_the_production_registry() -> None:
     """A focused profile narrows the one registry; it never adds to it."""
 

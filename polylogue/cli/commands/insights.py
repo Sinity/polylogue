@@ -455,8 +455,11 @@ def insights_export_command(
         fail("insights export", str(exc))
     if output_format == "json" or ctx.find_root().params.get("output_format") == "json":
         emit_success({**result.model_dump(mode="json"), "outcome": selected.outcome.to_dict()})
-        return
-    _render_export_plain(result)
+    else:
+        _render_export_plain(result)
+    from polylogue.cli.render.outcome import finish_supplied_outcome
+
+    finish_supplied_outcome(selected.outcome)
 
 
 @ops_insights_command.command("fable-packet")

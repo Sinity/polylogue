@@ -1091,7 +1091,6 @@ class ColdBuildGeneration:
             raise
         self._promoted = True
         try:
-            self._stamp_promoted_parse_success(promoted)
             from polylogue.sources.live.production_baseline import clear_pending_production_baseline
 
             clear_pending_production_baseline(self.archive_root, self.source_baseline)
@@ -1112,8 +1111,8 @@ class ColdBuildGeneration:
         from polylogue.core.write_lease import current_write_lease
 
         if self._promoted:
-            # The promotion tail writes Source (parse acknowledgements), so it
-            # runs under the writer custody its caller holds or takes here.
+            # The remaining tail retires its baseline receipt under writer
+            # custody. Source acknowledgement belongs to ordinary retained replay.
             if current_write_lease() is not None:
                 return self.reconcile_promoted()
             from polylogue.storage.sqlite.write_lease import write_lease
@@ -1129,21 +1128,6 @@ class ColdBuildGeneration:
             require_write_lease("cold-build promotion", archive_root=self.archive_root)
             with write_lease("storage.cold_build.promote", archive_root=self.archive_root):
                 return self.promote_prepared(prepared)
-
-    def _stamp_promoted_parse_success(self, promoted: IndexGeneration) -> None:
-        """Acknowledge the cold replay's parses at promotion, its commit point.
-
-        A cold build has no live Source authority, so its replay stages no
-        Source effects; the promoted Index names the raws it applied, and
-        those are acknowledged here, under the promotion's writer custody.
-        """
-        from polylogue.storage.sqlite.archive_tiers.revision_governance import stamp_promoted_revision_parse_success
-        from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
-
-        with closing(
-            open_source_tier_write_connection(self.archive_root / "source.db", archive_root=self.archive_root)
-        ) as source:
-            stamp_promoted_revision_parse_success(source, Path(promoted.index_path))
 
     def reconcile_promoted(self) -> IndexGeneration:
         """Finish a failed receipt tail only after confirming the active pointer."""
@@ -1164,7 +1148,6 @@ class ColdBuildGeneration:
                 promoted = self._store.complete_promotion_recovery(self.generation_id)
             if promoted.state != "active":
                 raise RuntimeError("promoted cold-build candidate has incomplete metadata")
-            self._stamp_promoted_parse_success(promoted)
             if not self._receipt_cleared:
                 from polylogue.sources.live.production_baseline import clear_pending_production_baseline
 

@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping, MutableMapping, MutableSequence, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, TypeAlias, cast
 
 from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
@@ -24,7 +25,7 @@ from polylogue.core.enums import (
     ToolResultUnknownReason,
 )
 from polylogue.core.hashing import hash_text
-from polylogue.core.timestamps import format_timestamp
+from polylogue.core.timestamps import format_timestamp, parse_timestamp
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction, detect_micro_compaction
 from polylogue.sources import value_bounds
@@ -2040,6 +2041,8 @@ class _SessionAccumulator:
     messages: MutableSequence[ParsedMessage] = field(default_factory=list)
     created_at: str | None = None
     updated_at: str | None = None
+    created_at_instant: datetime | None = None
+    updated_at_instant: datetime | None = None
     seen_uuids: set[str] | SqliteStringSet = field(default_factory=set)
     duplicate_uuid_count: int = 0
     first_duplicate_uuid: str | None = None
@@ -2372,9 +2375,11 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         if persisted_this_record:
             acc.sidecar_persisted_counts[record_type] = acc.sidecar_persisted_counts.get(record_type, 0) + 1
         return True
-    if timestamp:
-        acc.created_at = timestamp if acc.created_at is None or timestamp < acc.created_at else acc.created_at
-        acc.updated_at = timestamp if acc.updated_at is None or timestamp > acc.updated_at else acc.updated_at
+    if timestamp and (instant := parse_timestamp(timestamp)) is not None:
+        if acc.created_at_instant is None or instant < acc.created_at_instant:
+            acc.created_at, acc.created_at_instant = timestamp, instant
+        if acc.updated_at_instant is None or instant > acc.updated_at_instant:
+            acc.updated_at, acc.updated_at_instant = timestamp, instant
 
     # Emitted before the empty-content drop below: the turn's thinking
     # configuration and its capability attribution are facts about the record,

@@ -3433,7 +3433,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         starts strictly after the anchor (#1268).
         """
         from polylogue.api.search_envelope_builder import build_search_envelope_for_spec
-        from polylogue.surfaces.payloads import InvalidSearchCursorError
+        from polylogue.archive.query.search_cursor import InvalidSearchCursorError
 
         try:
             envelope = await build_search_envelope_for_spec(

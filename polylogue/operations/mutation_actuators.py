@@ -1129,6 +1129,8 @@ class BulkTagActuator(ConvergentReplay):
                 "requested_session_count": len(args.session_ids),
                 "requested_session_ids": list(args.session_ids),
                 "unresolved_session_ids": list(unresolved),
+                "author_ref": args.author_ref,
+                "author_kind": args.author_kind,
             },
         )
 
@@ -1143,7 +1145,10 @@ class BulkTagActuator(ConvergentReplay):
         assertions = 0
         for session_id in session_ids:
             changed = args.archive.add_user_tags(
-                (session_id,), tags, author_ref=args.author_ref, author_kind=args.author_kind
+                (session_id,),
+                tags,
+                author_ref=cast("str | None", plan.context["author_ref"]),
+                author_kind=cast("str | None", plan.context["author_kind"]),
             )
             assertions += changed
             if changed > 0:
@@ -1175,12 +1180,12 @@ class BulkTagActuator(ConvergentReplay):
         )
 
     def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> BulkTagArgs:
-        # The machine plan context is closed (``machine_plan_context``) and
-        # carries no author: production bulk tagging never sets one.
         return BulkTagArgs(
             archive=handles.archive,
             session_ids=tuple(cast("list[str]", plan.context["requested_session_ids"])),
             tags=tuple(cast("list[str]", plan.context["tags"])),
+            author_ref=cast("str | None", plan.context["author_ref"]),
+            author_kind=cast("str | None", plan.context["author_kind"]),
         )
 
 
@@ -2246,7 +2251,12 @@ class SavedViewSaveActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: SavedViewSaveArgs) -> MutationPlan:
-        collision = args.archive.get_view_by_name(args.name)
+        name = args.name.strip()
+        if not name:
+            raise ValueError("name must not be empty")
+        # Storage binds and retires names after stripping whitespace. Resolve
+        # that same name before authorization so every replaced view is named.
+        collision = args.archive.get_view_by_name(name)
         collision_view_id = (
             collision["view_id"] if collision is not None and collision["view_id"] != args.view_id else None
         )
@@ -2273,7 +2283,7 @@ class SavedViewSaveActuator(ConvergentReplay):
             reversible=True,
             context={
                 "view_id": args.view_id,
-                "name": args.name,
+                "name": name,
                 "query_json": args.query_json,
                 "collision_view_id": collision_view_id,
                 "watch": args.watch,

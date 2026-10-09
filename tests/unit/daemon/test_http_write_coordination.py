@@ -88,14 +88,14 @@ def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
         (["api", "reset"], "_handle_reset", "http.reset"),
     ],
 )
-def test_authenticated_write_route_holds_gate_around_handler(path: list[str], handler_name: str, actor: str) -> None:
+def test_reset_route_delegates_admission_to_resident_writer(path: list[str], handler_name: str, actor: str) -> None:
     timeline: list[str] = []
     handler = _handler(path, timeline)
     setattr(handler, handler_name, lambda: timeline.append("body"))
 
     handler._do_post_impl()
 
-    assert timeline == [f"enter:{actor}", "body", f"exit:{actor}"]
+    assert timeline == ["body"]
 
 
 def test_ingest_route_delegates_publication_ownership_to_operation_runtime() -> None:
