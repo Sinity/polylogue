@@ -23,7 +23,7 @@ import polylogue.sources.parsers.hermes_state as hermes_state
 import polylogue.sources.sqlite_export as sqlite_export
 from polylogue.core.enums import BlockType, TitleSource
 from polylogue.core.json import JSONDocument
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.hermes_state import parse_state_db, parse_state_db_payload
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -318,7 +318,7 @@ def test_state_db_replay_preserves_native_session_key_binding(
     live = parse_state_db(live_path)
     retained = parse_state_db(export_path)
 
-    def observed(sessions: list[hermes_state.ParsedSession]) -> list[tuple[str, list[tuple[str, int, str | None]]]]:
+    def observed(sessions: list[ParsedSession]) -> list[tuple[str, list[tuple[str, int, str | None]]]]:
         return [
             (
                 session.provider_session_id,
