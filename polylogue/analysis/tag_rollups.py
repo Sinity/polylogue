@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING
 
 from polylogue.analysis.archive import SessionTagRollupInsight
 from polylogue.analysis.archive_models import ArchiveInsightProvenance
-from polylogue.core.enums import Origin
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -39,17 +38,14 @@ def synthesize_origin_tag_rollups(
     synthesized origin tag can satisfy, so the substring filter behaves the
     same as it does against real tag rows.
     """
-    counts = archive.stats_by(
-        "origin",
+    counts = archive.origin_session_counts(
+        origin=origin,
         since_ms=since_ms,
         until_ms=until_ms,
     )
     needle = query.strip().lower() if query else None
-    origin_filter = Origin(origin).value if origin is not None else None
     rollups: list[SessionTagRollupInsight] = []
-    for origin_value, count in counts.items():
-        if origin_filter is not None and origin_value != origin_filter:
-            continue
+    for origin_value, (count, logical_count) in counts.items():
         if count <= 0:
             continue
         tag = f"{_ORIGIN_TAG_PREFIX}{origin_value}"
@@ -59,7 +55,7 @@ def synthesize_origin_tag_rollups(
             SessionTagRollupInsight(
                 tag=tag,
                 session_count=count,
-                logical_session_count=count,
+                logical_session_count=logical_count,
                 explicit_count=0,
                 auto_count=0,
                 origin_breakdown={origin_value: count},

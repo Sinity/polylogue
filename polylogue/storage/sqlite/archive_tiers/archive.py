@@ -3947,41 +3947,51 @@ class ArchiveStore:
             where.append("s.sort_key_ms <= ?")
             params.append(until_ms)
 
+        # Settle each session/model amount before reducing the cohort. A
+        # session-wide report is attributable only when it has one model.
         rows = self._conn.execute(
             f"""
-            SELECT s.origin AS source_name,
-                   u.model_name AS model_name,
-                   COUNT(DISTINCT u.session_id) AS session_count,
-                   COALESCE(SUM(u.provider_cost_usd), {MODEL_USAGE_CATALOG_SUM_SQL}, CASE WHEN (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN MAX(s.reported_cost_usd) ELSE 0.0 END, 0.0) AS stored_cost_usd,
-                   COALESCE(SUM(u.cost_credits), 0.0) AS stored_credits,
-                   COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
-                   COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
-                   COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens,
-                   COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
-                   COALESCE(SUM(
-                       u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens
-                   ), 0) AS total_tokens,
-                   COALESCE(
-                       CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
-                            WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced'
+            WITH selected_usage AS (
+                SELECT u.*, s.origin AS source_name,
+                       s.updated_at_ms, s.sort_key_ms,
+                       CASE WHEN u.provider_cost_usd IS NOT NULL THEN u.provider_cost_usd
                             WHEN s.reported_cost_usd IS NOT NULL
-                                 AND (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN 'origin_reported' END,
-                       'unknown'
-                   ) AS cost_provenance,
-                   MAX(s.updated_at_ms) AS source_updated_at,
-                   MAX(s.sort_key_ms) AS source_sort_key,
-                   json_group_array(DISTINCT u.session_id) AS session_ids
-            FROM session_model_usage u
-            JOIN sessions s ON s.session_id = u.session_id
-            LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
-            WHERE {" AND ".join(where)}
-            GROUP BY s.origin,
-                     u.model_name,
-                     CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
-                          WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced'
-                          WHEN s.reported_cost_usd IS NOT NULL
-                               AND (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN 'origin_reported'
-                          ELSE 'unknown' END
+                                 AND (SELECT COUNT(*) FROM session_model_usage u2
+                                      WHERE u2.session_id = u.session_id) = 1
+                            THEN s.reported_cost_usd
+                            WHEN u.provider_lanes_complete = 1
+                                 AND (u.provider_usage_observed OR
+                                      u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens > 0)
+                            THEN u.catalog_cost_usd END AS selected_cost_usd,
+                       CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                            WHEN s.reported_cost_usd IS NOT NULL
+                                 AND (SELECT COUNT(*) FROM session_model_usage u2
+                                      WHERE u2.session_id = u.session_id) = 1
+                            THEN 'origin_reported'
+                            WHEN u.provider_lanes_complete = 1
+                                 AND (u.provider_usage_observed OR
+                                      u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens > 0)
+                                 AND u.catalog_cost_usd IS NOT NULL THEN 'priced'
+                            ELSE 'unknown' END AS cost_provenance
+                FROM session_model_usage u
+                JOIN sessions s ON s.session_id = u.session_id
+                WHERE {" AND ".join(where)}
+            )
+            SELECT source_name, model_name,
+                   COUNT(DISTINCT session_id) AS session_count,
+                   SUM(selected_cost_usd) AS stored_cost_usd,
+                   COALESCE(SUM(cost_credits), 0.0) AS stored_credits,
+                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                   COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                   COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0) AS total_tokens,
+                   cost_provenance,
+                   MAX(updated_at_ms) AS source_updated_at,
+                   MAX(sort_key_ms) AS source_sort_key,
+                   json_group_array(DISTINCT session_id) AS session_ids
+            FROM selected_usage
+            GROUP BY source_name, model_name, cost_provenance
             """,
             tuple(params),
         ).fetchall()
@@ -3991,7 +4001,7 @@ class ArchiveStore:
             SELECT s.origin AS source_name,
                    NULL AS model_name,
                    COUNT(DISTINCT s.session_id) AS session_count,
-                   COALESCE(SUM(s.reported_cost_usd), 0.0) AS stored_cost_usd,
+                   SUM(s.reported_cost_usd) AS stored_cost_usd,
                    0.0 AS stored_credits,
                    0 AS input_tokens,
                    0 AS output_tokens,
@@ -4070,17 +4080,17 @@ class ArchiveStore:
             )
 
             entry.session_count += effective_session_count
-            if stored_cost_usd > 0 and provenance in {"exact", "origin_reported"}:
+            if row["stored_cost_usd"] is not None and provenance in {"exact", "origin_reported"}:
                 status = "exact"
                 confidence = 1.0
-            elif stored_cost_usd > 0:
+            elif row["stored_cost_usd"] is not None:
                 status = "priced"
                 confidence = 0.7 if provenance == "estimated" else 0.9
             else:
                 status = "unavailable"
                 confidence = 0.0
             entry.status_counts[status] = entry.status_counts.get(status, 0) + effective_session_count
-            if stored_cost_usd > 0:
+            if row["stored_cost_usd"] is not None:
                 entry.priced_session_count += effective_session_count
                 entry.confidence_total += effective_session_count * confidence
             else:
@@ -5157,6 +5167,28 @@ class ArchiveStore:
             tuple(params),
         ).fetchall()
         return {str(row["tag"]): int(row["count"] or 0) for row in rows}
+
+    def origin_session_counts(
+        self,
+        *,
+        origin: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+    ) -> dict[str, tuple[int, int]]:
+        """Count physical sessions and canonical logical roots per origin."""
+        where, params = _session_filter_clause("s", origin=_origin_value(origin), since_ms=since_ms, until_ms=until_ms)
+        rows = self._conn.execute(
+            f"""
+            SELECT s.origin, COUNT(DISTINCT s.session_id) AS physical_count,
+                   COUNT(DISTINCT COALESCE(s.root_session_id, s.session_id)) AS logical_count
+            FROM sessions s
+            {where}
+            GROUP BY s.origin
+            """,
+            params,
+        )
+        with closing(rows):
+            return {str(row["origin"]): (int(row["physical_count"]), int(row["logical_count"])) for row in rows}
 
     def list_session_tag_rollup_insights(
         self,

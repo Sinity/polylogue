@@ -607,6 +607,8 @@ Provider total-only or reasoning-only counters cannot establish the priced input
 
 Event projection and stored catalog costs retain precision; the origin/model rollup rounds only after summing. Session buckets are replaced directly for cumulative observations without rescanning other sessions. Memory follows the distinct session/model result cardinality, with stored source events streamed. The caller owns the transaction; projection performs no commits. This additive-derived column moves the Index identity and must land before reconvergence; there is no durable migration or live rebuild in this delivery.
 
+Public cost rollups settle each session/model's dollar basis before summing the origin/model cohort. Per-model provider dollars take precedence, followed by a session report attributable to exactly one model, then an observed complete catalog amount. Unknown amounts remain absent through SQL reduction and contribute to unavailable counts; a reported zero remains exact. Session-wide reports are never repeated across several models. Origin tag rollups count distinct physical sessions and distinct `COALESCE(root_session_id, session_id)` logical roots under the requested origin/date scope, matching the scalar thread membership projection without loading profiles or transcripts.
+
 ## Retained schema coverage
 
 Replay preparation owns the schema registry and its exact current-snapshot
