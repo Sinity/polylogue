@@ -393,6 +393,7 @@ async def _query_sessions(
     # ``total`` -- while the CLI clamped the same input and answered.
     bounded_limit = hooks.clamp_limit(limit if limit is not None else DEFAULT_SESSION_LIST_LIMIT)
 
+    cls = SessionList
     if continuation is None:
         probe = (
             build_session_query_request(
@@ -411,6 +412,7 @@ async def _query_sessions(
             .build_spec(hooks.clamp_limit)
             .to_plan()
         )
+        cls = SessionSearch if probe.fts_terms else SessionList
         if (
             probe.has_post_filters()
             or probe.similar_text
@@ -435,7 +437,6 @@ async def _query_sessions(
                 min_words=min_words,
             )
 
-    cls = SessionSearch if continuation is None and probe.fts_terms else SessionList
     continuation_request = None
     if continuation:
         from polylogue.archive.query.transaction import QueryContinuation

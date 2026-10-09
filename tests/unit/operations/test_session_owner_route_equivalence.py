@@ -487,8 +487,10 @@ async def test_action_lane_excludes_dialogue_and_reports_its_lane(tmp_path: Path
     assert generic["total"] is None  # Ranked action envelopes do not declare an exact total.
     mcp = await _mcp_sessions(root, "needle lane:actions")
     assert mcp["retrieval_lane"] == "actions"
-    assert [hit["session"]["id"] for hit in mcp["hits"]] == [action]
-    assert mcp["hits"][0]["match"]["retrieval_lane"] == "actions"
+    mcp_hits = mcp["hits"]
+    assert isinstance(mcp_hits, list)
+    assert [hit["session"]["id"] for hit in mcp_hits] == [action]
+    assert mcp_hits[0]["match"]["retrieval_lane"] == "actions"
 
     assert page.items[0].match.retrieval_lane == "actions"
 
@@ -717,7 +719,9 @@ async def test_generic_read_executes_compiled_expression_window(tmp_path: Path, 
     assert generic == owner
     assert generic[2:4] == (2, outer_offset or 1)
     mcp = await _mcp_sessions(root, expression, limit=20, offset=outer_offset)
-    assert [item["id"] for item in mcp["items"]] == generic[0]
+    mcp_items = mcp["items"]
+    assert isinstance(mcp_items, list)
+    assert [item["id"] for item in mcp_items] == generic[0]
     assert (mcp["limit"], mcp["offset"]) == generic[2:4]
 
 
@@ -729,4 +733,6 @@ async def test_mcp_advanced_random_listing_retains_boolean_selection(tmp_path: P
     owner = await _owner_list(root, expression=expression)
     mcp = await _mcp_sessions(root, expression, limit=20, sort="random")
     assert mcp["total"] == owner[1] == 2
-    assert {item["id"] for item in mcp["items"]} == set(owner[0])
+    mcp_items = mcp["items"]
+    assert isinstance(mcp_items, list)
+    assert {item["id"] for item in mcp_items} == set(owner[0])
