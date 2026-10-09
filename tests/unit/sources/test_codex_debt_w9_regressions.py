@@ -182,9 +182,9 @@ class _DriveClient:
     def get_metadata(self, _file_id: str, *, refresh: bool = False) -> DriveFile:
         return self.file
 
-    def download_bytes(self, _file_id: str) -> bytes:
+    def download_into(self, _file_id: str, handle: Any) -> None:
         self.downloads += 1
-        return self.payload
+        handle.write(self.payload)
 
 
 def _cached_drive_source(root: Path, name: str, payload: bytes) -> tuple[Source, Path, _DriveClient]:
@@ -253,14 +253,18 @@ def test_w9_drive_failed_cache_publication_removes_temporary(
                 raise OSError("injected cache close failure")
 
     monkeypatch.setattr(tempfile, "NamedTemporaryFile", FailingTemporary)
-    with pytest.raises(OSError, match="injected cache"):
-        list(
-            drive.iter_drive_raw_data(
-                source=source,
-                client=cast(Any, client),
-                blob_store=BlobStore(tmp_path / "blob"),
-            )
+    cursor: dict[str, Any] = {}
+    records = list(
+        drive.iter_drive_raw_data(
+            source=source,
+            client=cast(Any, client),
+            blob_store=BlobStore(tmp_path / "blob"),
+            cursor_state=cast(Any, cursor),
         )
+    )
+    assert records == []
+    assert cursor["error_count"] == 1
+    assert "injected cache" in cursor["latest_error"]
     assert client.downloads == 1
     assert cache.read_bytes() == b"{"
     # The revision marker is dropped before publication by design; only the
@@ -278,7 +282,7 @@ def test_w9_drive_unchanged_large_integer_cache_does_not_download(tmp_path: Path
             source=source,
             client=cast(Any, client),
             blob_store=BlobStore(tmp_path / "blob"),
-            known_mtimes={str(cache): _TIMESTAMP},
+            known_mtimes={drive_source_coordinate("gemini", "w9-folder", "w9-file"): _TIMESTAMP},
         )
     )
     assert records == []

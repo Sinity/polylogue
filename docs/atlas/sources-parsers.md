@@ -529,3 +529,11 @@ contains that seed rather than reoffering the page callback. Canonical
 membership and discovered dependency expansion remain owned by the original
 reader and preparation. Failed unrelated siblings cannot repeatedly turn
 healthy page seeds into failed subjects.
+
+Drive raw acquisition downloads through `download_into` into its caller-owned
+prepared CAS file. Metadata before and after the transfer must match the
+listing before cache replacement or CAS publication. Cache validation reads
+every JSON event; admitted cache files are stream-hashed into prepared CAS
+files. Cache copies use bounded reads of those exact staged bytes, and every
+cancelled or refused transfer discards its private stage. Raw identity and
+publication receipts describe the unmodified provider bytes.

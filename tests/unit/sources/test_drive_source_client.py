@@ -398,7 +398,10 @@ def test_download_to_path_contract(
         assert abs(dest.stat().st_mtime - 1735689600.0) < 1
 
 
-def test_download_to_path_cleans_up_temp_file_when_download_fails(tmp_path: Path) -> None:
+@pytest.mark.parametrize("failure", [OSError("download blew up"), KeyboardInterrupt(), SystemExit()])
+def test_download_to_path_cleans_up_temp_file_when_download_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException
+) -> None:
     metadata = DriveFile(
         file_id="file-1",
         name="payload.json",
@@ -406,11 +409,12 @@ def test_download_to_path_cleans_up_temp_file_when_download_fails(tmp_path: Path
         modified_time=None,
         size_bytes=5,
     )
-    client = _source_client(download_error=OSError("download blew up"))
+    client = _source_client()
+    monkeypatch.setattr(client._gateway, "download_file", MagicMock(side_effect=failure))
     client._meta_cache["file-1"] = metadata
 
     dest = tmp_path / "payload.json"
-    with pytest.raises(OSError, match="download blew up"):
+    with pytest.raises(type(failure)):
         client.download_to_path("file-1", dest)
 
     assert not list(tmp_path.glob("tmp*"))

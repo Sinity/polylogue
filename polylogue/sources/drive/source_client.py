@@ -163,11 +163,10 @@ class DriveSourceClient:
                         writable_handle: _WritableBinaryHandle = handle
                         self._gateway.download_file(file_id, writable_handle)
                     tmp_path.replace(dest)
-                except Exception:
+                finally:
                     if tmp_path is not None:
                         with contextlib.suppress(OSError):
-                            tmp_path.unlink()
-                    raise
+                            tmp_path.unlink(missing_ok=True)
 
             self._gateway.call_with_retry(_download_once)
 

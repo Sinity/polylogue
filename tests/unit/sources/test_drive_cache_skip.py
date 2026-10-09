@@ -1,21 +1,4 @@
-"""An unchanged Drive revision must not decode its cache to prove the skip.
-
-``iter_drive_raw_data`` called ``_read_valid_cache`` -- ``read_bytes`` plus a
-whole-document ``json.loads`` -- before comparing the Drive revision against
-``known_mtimes``. A large unchanged AI Studio document therefore paid its
-complete object graph on every scan, which is what this memory-bounded
-acquisition route exists to avoid. The skip only needs a decode, never the
-decoded object, so it now runs ``_cache_document_is_readable`` (a streamed
-``ijson``/line proof) and materializes bytes only when a payload is produced.
-
-Anti-vacuity: move ``_read_valid_cache`` back above the revision comparison in
-``polylogue/sources/drive/__init__.py`` and
-``test_unchanged_cache_is_not_materialized`` goes red -- the recording stub
-records a call. ``test_corrupt_cache_is_reacquired`` pins the opposite
-direction so a validator that simply always says "readable" cannot pass, and
-``test_validators_admit_the_same_documents`` pins that the streamed proof
-admits exactly the documents the byte reader hands back.
-"""
+"""Drive cache revisions preserve exact bytes without resident payload reads."""
 
 from __future__ import annotations
 
@@ -28,10 +11,9 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.core.json import JSONValue, is_json_value
-from polylogue.sources import drive as drive_module
 from polylogue.sources.drive import (
     _cache_document_is_readable,
-    _read_valid_cache,
+    _cache_holds_readable_revision,
     drive_cache_file_path,
     iter_drive_raw_data,
 )
@@ -102,19 +84,13 @@ def _run(tmp_path: Path, cache_bytes: bytes) -> tuple[_StubDriveClient, list[Pat
 
 
 def test_unchanged_cache_is_not_materialized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    reads: list[Path] = []
+    def refuse_resident_read(_path: Path) -> bytes:
+        raise AssertionError("cache bytes must remain on disk")
 
-    def _recording_read(path: Path, revision: str | None) -> bytes | None:
-        reads.append(path)
-        return _read_valid_cache(path, revision)
-
-    monkeypatch.setattr(drive_module, "_read_valid_cache", _recording_read)
-
+    monkeypatch.setattr(Path, "read_bytes", refuse_resident_read)
     client, _paths, items = _run(tmp_path, b'{"chunkedPrompt": {"chunks": [{"role": "user"}]}}')
-
     assert items == []
     assert client.downloaded == []
-    assert reads == []
 
 
 def test_corrupt_cache_is_reacquired(tmp_path: Path) -> None:
@@ -127,7 +103,7 @@ def test_corrupt_cache_is_reacquired(tmp_path: Path) -> None:
 def test_a_cache_from_an_earlier_revision_is_redownloaded(tmp_path: Path) -> None:
     """A document that changed on Drive is re-downloaded, not served from cache.
 
-    Anti-vacuity: drop the revision comparison in ``_read_valid_cache`` and
+    Anti-vacuity: drop the revision comparison in ``_cache_holds_readable_revision`` and
     the stale cached document is returned while the grown one is never read.
     """
     source = Source(name="gemini", folder="Google AI Studio", path=tmp_path)
@@ -175,4 +151,6 @@ def test_validators_admit_the_same_documents(tmp_path: Path, name: str, payload:
     path.write_bytes(payload)
     path.with_name(f"{path.name}.revision").write_text(_MTIME)
 
-    assert _cache_document_is_readable(path) is (_read_valid_cache(path, _MTIME) is not None)
+    readable = bool(payload.strip()) and name not in {"truncated", "bad.jsonl"}
+    assert _cache_document_is_readable(path) is readable
+    assert _cache_holds_readable_revision(path, _MTIME) is readable
