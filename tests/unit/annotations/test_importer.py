@@ -186,6 +186,60 @@ async def test_import_streams_complete_population_and_legal_unicode_without_old_
 
 
 @pytest.mark.asyncio
+async def test_import_cancelled_at_acceptance_keeps_validated_rows_and_schema_unpublished(
+    workspace_env: dict[str, Path],
+) -> None:
+    archive_root = workspace_env["archive_root"]
+
+    def seed() -> None:
+        with ArchiveStore(archive_root) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="annotation-target",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                ),
+            )
+
+    run_off_event_loop(seed)
+    registry = AnnotationSchemaRegistry()
+    registry.register(_schema())
+    body = io.BytesIO(
+        json.dumps(
+            {
+                "row_key": "cancelled",
+                "value": {"label": "yes", "confidence": 0.8},
+                "evidence_refs": ["codex-session:annotation-target"],
+            }
+        ).encode("utf-8")
+    )
+
+    class CancelledBeforeAcceptanceError(RuntimeError):
+        pass
+
+    def cancel() -> None:
+        assert body.tell() == len(body.getbuffer())
+        raise CancelledBeforeAcceptanceError
+
+    async with Polylogue(archive_root=archive_root) as poly:
+        with pytest.raises(CancelledBeforeAcceptanceError):
+            await import_annotation_batch(
+                poly, _request("cancelled"), input=body, registry=registry, before_durable_execution=cancel
+            )
+    assert not body.closed
+    with connect_user_db(archive_root / "user.db") as connection:
+        assert (
+            connection.execute("SELECT count(*) FROM annotation_batches WHERE batch_id='cancelled'").fetchone()[0] == 0
+        )
+        assert connection.execute("SELECT count(*) FROM assertions WHERE key='cancelled'").fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT count(*) FROM annotation_schemas WHERE schema_id='test.import'").fetchone()[0]
+            == 0
+        )
+
+
+@pytest.mark.asyncio
 async def test_import_roundtrip_keeps_failures_candidates_and_independent_batches(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
