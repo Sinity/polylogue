@@ -112,7 +112,7 @@ def test_block_identity_preserves_opaque_parent_message_id() -> None:
     assert block_id("session:n: a ", content_identity="a" * 64) == f"session:n: a :b:{'a' * 64}:0"
 
 
-@pytest.mark.parametrize("native_id", ["abc:n:tail", "abc:c:digest.0", " a ", "   "])
+@pytest.mark.parametrize("native_id", ["abc:n:tail", "abc:c:digest.0", "x:s:eda080", " a ", "   "])
 def test_message_identity_inverse_uses_the_declared_parent_boundary(native_id: str) -> None:
     sid = "origin:session:n:part:c:tail"
     mid = message_id(sid, native_id)

@@ -58,10 +58,11 @@ def message_local_id(
     semantics are byte-identical; it counts only within one digest, so an
     unrelated insertion never moves it.
     """
-    if native_id is not None and not isinstance(native_id, str):
-        raise ValueError("message native_id must be text or None")
-    if native_id is not None and native_id != "":
-        return f"n:{native_id}"
+    from polylogue.core.message_native_identity import message_native_key
+
+    native_key = message_native_key(native_id)
+    if native_key is not None:
+        return native_key
     identity = _required_text("content_identity", content_identity or "")
     return f"c:{identity}.{_required_non_negative('content_occurrence', content_occurrence)}"
 
@@ -93,8 +94,10 @@ def split_message_local_id(stored_message_id: str, *, parent_session_id: str) ->
     if not stored_message_id.startswith(prefix):
         raise ValueError("message id does not belong to its declared session")
     local = stored_message_id[len(prefix) :]
-    if local.startswith("n:") and local[2:] != "":
-        return local[2:], None, 0
+    if local.startswith(("n:", "s:")):
+        from polylogue.core.message_native_identity import native_id_from_key
+
+        return native_id_from_key(local), None, 0
     if local.startswith("c:"):
         identity, separator, occurrence = local[2:].rpartition(".")
         if separator and identity and occurrence.isdigit():
@@ -104,7 +107,7 @@ def split_message_local_id(stored_message_id: str, *, parent_session_id: str) ->
 
 def block_id(parent_message_id: str, *, content_identity: str, content_occurrence: int = 0) -> str:
     """Return the immutable Source-content ID beneath its owning message."""
-    if not isinstance(parent_message_id, str) or parent_message_id == "":
+    if parent_message_id == "":
         raise ValueError("message_id cannot be empty and must be text")
     message = parent_message_id
     if (

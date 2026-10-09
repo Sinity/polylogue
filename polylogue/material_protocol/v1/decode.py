@@ -8,10 +8,10 @@ is ``verify.py``'s job and should run before decode on any untrusted input.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 
 from polylogue.core.json import JSONValue
+from polylogue.core.message_native_identity import native_id_from_storage, source_native_id_from_json
 from polylogue.material_protocol.v1.canonical import parse_json_value
 from polylogue.material_protocol.v1.errors import SegmentMissingError, SemanticClosureError, SequenceOrderError
 from polylogue.material_protocol.v1.manifest import RevisionManifest, SegmentDescriptor, require_current_semantics
@@ -118,11 +118,12 @@ def _decode_session_revision(manifest: RevisionManifest, segment_bytes: dict[int
             parent_message_id = record.get("parent_message_id")
             messages_by_id[message_id] = DecodedMessage(
                 message_id=message_id,
-                native_id=str(native_id) if native_id is not None else None,
-                source_native_id=(
-                    json.loads(str(record["source_native_id_json"]))
-                    if record.get("source_native_id_json") is not None
-                    else None
+                native_id=native_id_from_storage(
+                    str(native_id) if native_id is not None else None,
+                    str(record["source_native_id_json"]) if record.get("source_native_id_json") is not None else None,
+                ),
+                source_native_id=source_native_id_from_json(
+                    str(record["source_native_id_json"]) if record.get("source_native_id_json") is not None else None
                 ),
                 position=int(record["position"]),  # type: ignore[arg-type]
                 variant_index=int(record["variant_index"]),  # type: ignore[arg-type]

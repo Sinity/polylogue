@@ -37,6 +37,12 @@ from pydantic import BaseModel
 from polylogue.core.enums import Origin
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.message_native_identity import (
+    message_native_key,
+    native_id_from_key,
+    source_native_id_from_json,
+    source_native_id_json,
+)
 from polylogue.core.sql_settlement import current_native_sql_lifetimes
 from polylogue.core.work_progress import advance_work_progress
 from polylogue.sources import value_bounds
@@ -105,6 +111,13 @@ def _from_text_json(model: type[_ModelT], encoded: str) -> _ModelT:
     differently in JSON mode (a paste digest's hex) read the
     :data:`SINK_JSON_CONTEXT` flag and parse as JSON mode would.
     """
+    if model is ParsedMessage:
+        payload = json.loads(encoded)
+        for field in ("provider_message_id", "parent_message_provider_id"):
+            if field in payload:
+                payload[field] = source_native_id_from_json(payload[field])
+        payload["provider_message_id"] = payload.get("provider_message_id") or ""
+        return model.model_validate(payload, context=SINK_JSON_CONTEXT)
     if not _may_hold_escaped_surrogate(encoded) or _ESCAPED_SURROGATE.search(encoded) is None:
         return model.model_validate_json(encoded)
     return model.model_validate(json.loads(encoded), context=SINK_JSON_CONTEXT)
@@ -341,6 +354,8 @@ def _message_json(value: ParsedMessage) -> str:
     for block, block_payload in zip(value.blocks, payload["blocks"], strict=True):
         if block.source_content_identity is not None:
             block_payload["source_content_identity"] = block.source_content_identity
+    payload["provider_message_id"] = source_native_id_json(value.provider_message_id)
+    payload["parent_message_provider_id"] = source_native_id_json(value.parent_message_provider_id)
     payload["parent_message_position"] = value.parent_message_position
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
     if value.active_leaf_fallback:
@@ -355,6 +370,7 @@ def _event_json(value: ParsedSessionEvent) -> str:
     ordinary_payload = {key: item for key, item in value.payload.items() if key not in streamed_arrays}
     payload = value.model_dump(mode="json", exclude={"payload"})
     payload["payload"] = ordinary_payload
+    payload["source_message_provider_id"] = source_native_id_json(value.source_message_provider_id)
     payload["boundary_message_position"] = value.boundary_message_position
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
     if streamed_arrays:
@@ -370,6 +386,7 @@ def _event_from_json(encoded: str, path: Path, connection: sqlite3.Connection | 
     """Restore explicitly tagged streamed payload arrays from the prepared store."""
     payload = json.loads(encoded)
     if not isinstance(payload, dict) or payload.get("$polylogue_prepared_event") != 1:
+        payload["source_message_provider_id"] = source_native_id_from_json(payload.get("source_message_provider_id"))
         return ParsedSessionEvent.model_validate(payload)
     event = payload.get("event")
     arrays = payload.get("streamed_arrays")
@@ -381,6 +398,7 @@ def _event_from_json(encoded: str, path: Path, connection: sqlite3.Connection | 
             _restore_streamed_arrays(event, arrays, path, reader, marker_connection=None)
     else:
         _restore_streamed_arrays(event, arrays, path, owner, marker_connection=owner)
+    event["source_message_provider_id"] = source_native_id_from_json(event.get("source_message_provider_id"))
     return ParsedSessionEvent.model_validate(event)
 
 
@@ -408,6 +426,7 @@ def _restore_streamed_arrays(
 
 def _attachment_json(value: ParsedAttachment) -> str:
     payload = value.model_dump(mode="json")
+    payload["message_provider_id"] = source_native_id_json(value.message_provider_id)
     payload["message_position"] = value.message_position
     payload["message_variant_index"] = value.message_variant_index
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
@@ -420,6 +439,7 @@ def _attachment_json(value: ParsedAttachment) -> str:
 
 def _attachment_from_json(encoded: str) -> ParsedAttachment:
     payload = json.loads(encoded)
+    payload["message_provider_id"] = source_native_id_from_json(payload.get("message_provider_id"))
     inline = payload.pop("_prepared_inline_bytes", None)
     if inline is not None:
         payload["inline_bytes"] = base64.b64decode(inline, validate=True)
@@ -809,8 +829,8 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             "WHERE session_ordinal = ? AND message_ordinal = ?",
             (
                 _message_json(value),
-                value.provider_message_id,
-                value.parent_message_provider_id,
+                message_native_key(value.provider_message_id),
+                message_native_key(value.parent_message_provider_id),
                 int(bool(value.is_active_leaf)),
                 self.session_ordinal,
                 ordinal,
@@ -834,8 +854,8 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 self.session_ordinal,
                 self._count,
                 _message_json(value),
-                value.provider_message_id,
-                value.parent_message_provider_id,
+                message_native_key(value.provider_message_id),
+                message_native_key(value.parent_message_provider_id),
                 int(bool(value.is_active_leaf)),
             ),
             kind="prepared message row",
@@ -1174,7 +1194,7 @@ class SqliteProviderMessageIds(Set[str | None]):
         with self._connection() as conn:
             row = conn.execute(
                 "SELECT 1 FROM prepared_message WHERE session_ordinal = ? AND provider_id IS ? LIMIT 1",
-                (self.messages.session_ordinal, value),
+                (self.messages.session_ordinal, message_native_key(value)),
             ).fetchone()
             return row is not None
 
@@ -1184,7 +1204,7 @@ class SqliteProviderMessageIds(Set[str | None]):
                 f"SELECT DISTINCT provider_id FROM prepared_message WHERE {self._where()} ORDER BY provider_id",
                 (self.messages.session_ordinal,),
             ):
-                yield provider_id
+                yield native_id_from_key(provider_id) if provider_id is not None else None
             return
         if self.include_none:
             with _prepared_reader(self.messages.path) as connection:
@@ -1209,7 +1229,7 @@ class SqliteProviderMessageIds(Set[str | None]):
                 return
             after = str(rows[-1][0])
             for (provider_id,) in rows:
-                yield str(provider_id)
+                yield native_id_from_key(str(provider_id))
 
     def __len__(self) -> int:
         with self._connection() as conn:

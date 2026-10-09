@@ -72,6 +72,14 @@ from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.json_envelope import top_level_envelopes
+from polylogue.core.message_native_identity import (
+    message_native_key,
+    native_id_from_key,
+    native_id_from_storage,
+    normalized_message_native_id,
+    source_native_id_json,
+    sqlite_message_native_id,
+)
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.sources import origin_from_provider
@@ -4205,9 +4213,7 @@ def _iter_message_rows(
         values: dict[str, object] = {
             "session_id": session_id,
             "native_id": _stored_message_native_id(message, duplicate_native_ids),
-            "source_native_id_json": (
-                json.dumps(message.provider_message_id, ensure_ascii=True) if message.provider_message_id else None
-            ),
+            "source_native_id_json": (source_native_id_json(message.provider_message_id)),
             "position": position,
             "role": _enum_value(message.role),
             "message_type": _enum_value(message.message_type),
@@ -4277,6 +4283,7 @@ def _write_append_messages_and_blocks(
         if column.extract_placeholder == "?"
     ]
     native_index = message_columns.index("native_id")
+    carrier_index = message_columns.index("source_native_id_json")
     message_iter = iter(message_rows)
     block_iter = iter(block_rows)
     pending_messages: list[tuple[object, ...]] = []
@@ -4295,7 +4302,7 @@ def _write_append_messages_and_blocks(
     for message, message_row in zip(messages, message_iter, strict=True):
         message_blocks = _message_blocks(message)
         aligned_blocks = islice(block_iter, len(message_blocks))
-        if _stored_native_id_exists(conn, session_id, message_row[native_index]):
+        if _stored_native_id_exists(conn, session_id, message_row[native_index], carrier=message_row[carrier_index]):
             for _ in aligned_blocks:
                 pass
             continue
@@ -4324,7 +4331,10 @@ def _append_has_new_native_messages(
         if column.extract_placeholder == "?"
     ]
     native_index = columns.index("native_id")
-    return any(not _stored_native_id_exists(conn, session_id, row[native_index]) for row in rows)
+    carrier_index = columns.index("source_native_id_json")
+    return any(
+        not _stored_native_id_exists(conn, session_id, row[native_index], carrier=row[carrier_index]) for row in rows
+    )
 
 
 def _append_has_auxiliary_input(session: ParsedSession) -> bool:
@@ -5468,7 +5478,7 @@ class _UnionMap(Mapping[str, str | None]):
                 return
             after = str(rows[-1][0])
             first = False
-            yield from (str(row[0]) for row in rows)
+            yield from (native_id_from_key(str(row[0])) for row in rows)
 
     def __len__(self) -> int:
         with self.scratch.access() as conn:
@@ -7694,8 +7704,8 @@ class _StoredSessionParents(Mapping[str, str]):
         inherited = self._inherited.get(key)
         if inherited is not None:
             return inherited
-        native_id = _sqlite_text(key)
-        if not native_id or native_id in self._duplicates:
+        native_id = normalized_message_native_id(key)
+        if not native_id or message_native_key(native_id) in self._duplicates:
             raise KeyError(key)
         candidate = archive_message_id(self._session_id, native_id)
         if self._conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (candidate,)).fetchone() is None:
@@ -12004,8 +12014,8 @@ def _write_session_events(
                     and source_message_provider_id
                     and event.event_type not in _TYPED_USAGE_EVENT_TYPES
                     and (
-                        source_message_provider_id in duplicate_native_ids
-                        or source_message_provider_id in ambiguous_source_provider_ids
+                        message_native_key(source_message_provider_id) in duplicate_native_ids
+                        or message_native_key(source_message_provider_id) in ambiguous_source_provider_ids
                     )
                 ):
                     raise MessageOwnerAmbiguityError("event native message ID requires exact occurrence evidence")
@@ -12096,7 +12106,7 @@ def _write_session_events(
                 # vanished. The usage is still real evidence about this session;
                 # record it with its declared provider id and a typed statement of
                 # what the attribution actually is.
-                declared_provider_id = _sqlite_text(event.source_message_provider_id)
+                declared_provider_id = normalized_message_native_id(event.source_message_provider_id)
                 declared_provider_id = declared_provider_id or None
                 resolution = _provider_usage_source_resolution(
                     declared_provider_id,
@@ -12153,7 +12163,7 @@ class _DiskMessageEventIndex(Mapping[str, str]):
         return self._sql_owner.require_connection()
 
     def __setitem__(self, key: str, value: str) -> None:
-        self._conn.execute("INSERT OR REPLACE INTO owner VALUES (?, ?)", (key, value))
+        self._conn.execute("INSERT OR REPLACE INTO owner VALUES (?, ?)", (message_native_key(key), value))
 
     def add_boundary(self, position: int, message_id: str) -> None:
         self._conn.execute("INSERT OR IGNORE INTO boundary VALUES (?, ?)", (position, message_id))
@@ -12166,7 +12176,9 @@ class _DiskMessageEventIndex(Mapping[str, str]):
         return str(row[0]) if row is not None else None
 
     def __getitem__(self, key: str) -> str:
-        row = self._conn.execute("SELECT message_id FROM owner WHERE provider_id = ?", (key,)).fetchone()
+        row = self._conn.execute(
+            "SELECT message_id FROM owner WHERE provider_id = ?", (message_native_key(key),)
+        ).fetchone()
         if row is None:
             raise KeyError(key)
         return str(row[0])
@@ -12239,7 +12251,10 @@ def _provider_usage_source_resolution(
         return "session"
     if source_message_id is not None:
         return "resolved"
-    if declared_provider_id in ambiguous_source_provider_ids or declared_provider_id in duplicate_native_ids:
+    if (
+        message_native_key(declared_provider_id) in ambiguous_source_provider_ids
+        or message_native_key(declared_provider_id) in duplicate_native_ids
+    ):
         return "ambiguous"
     return "unresolved"
 
@@ -16899,7 +16914,7 @@ def _message_id(
     content_identity, content_occurrence = content_identities[fallback_position]
     return archive_message_id(
         session_id,
-        _stored_message_native_id(message, duplicate_native_ids),
+        _effective_message_native_id(message, duplicate_native_ids),
         content_identity=content_identity,
         content_occurrence=content_occurrence,
     )
@@ -17030,9 +17045,9 @@ class _DiskDuplicateNativeIds(frozenset[str]):
 
 
 def _normalized_message_native_id(message: ParsedMessage) -> str | None:
-    from polylogue.core.message_native_identity import normalized_message_native_id
+    from polylogue.core.message_native_identity import message_native_key
 
-    return normalized_message_native_id(message.provider_message_id)
+    return message_native_key(message.provider_message_id)
 
 
 def _effective_message_native_id(message: ParsedMessage, duplicate_native_ids: frozenset[str]) -> str | None:
@@ -17090,10 +17105,10 @@ def _stored_message_native_id(message: ParsedMessage, duplicate_native_ids: froz
     Native IDs are opaque. Only literal empty is absent; duplicate exact
     IDs use content identity and occurrence. Whitespace stays significant.
     """
-    return _effective_message_native_id(message, duplicate_native_ids)
+    return sqlite_message_native_id(_effective_message_native_id(message, duplicate_native_ids))
 
 
-def _stored_native_id_exists(conn: sqlite3.Connection, session_id: str, native_id: object) -> bool:
+def _stored_native_id_exists(conn: sqlite3.Connection, session_id: str, native_id: object, *, carrier: object) -> bool:
     """Whether a normalized incoming ID already has a row in this session."""
     # Every writer, including prefix materialization, stores this generated
     # identity. Seek its unique key rather than scanning the session's native
@@ -17103,7 +17118,13 @@ def _stored_native_id_exists(conn: sqlite3.Connection, session_id: str, native_i
         and bool(native_id)
         and conn.execute(
             "SELECT 1 FROM messages WHERE message_id = ? AND session_id = ? AND native_id = ? LIMIT 1",
-            (f"{session_id}:n:{native_id}", session_id, native_id),
+            (
+                archive_message_id(
+                    session_id, native_id_from_storage(native_id, carrier if isinstance(carrier, str) else None)
+                ),
+                session_id,
+                native_id,
+            ),
         ).fetchone()
         is not None
     )

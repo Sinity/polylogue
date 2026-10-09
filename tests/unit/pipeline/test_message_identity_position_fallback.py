@@ -379,10 +379,10 @@ def test_opaque_native_whitespace_resolves_distinct_message_owners(disk: bool) -
     context = disk_message_owner_resolution(messages) if disk else nullcontext(message_owner_resolution(messages))
     with context as resolution:
         assert not resolution.ambiguous_provider_ids
-        assert dict(resolution.unique_provider_keys) == {native: native for native in ("dup", " dup ", "   ")}
+        assert dict(resolution.unique_provider_keys) == {native: "n:" + native for native in ("dup", " dup ", "   ")}
         for message in messages:
             attachment = ParsedAttachment(
                 provider_attachment_id="file", message_provider_id=message.provider_message_id
             )
-            assert attachment_message_owner_key(attachment, resolution) == message.provider_message_id
+            assert attachment_message_owner_key(attachment, resolution) == "n:" + message.provider_message_id
     assert session_content_hash(_session(messages)) != session_content_hash(_session([messages[0]]))

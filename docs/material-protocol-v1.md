@@ -280,3 +280,11 @@ including whitespace and Unicode normalization form. Only literal empty is
 absent. Exact duplicate names use content identity and occurrence; distinct
 spellings never become duplicate names through whitespace normalization.
 Parent message names and the message part of block IDs use the same law.
+
+A native message name containing a UTF-16 surrogate code unit uses
+`s:{UTF-8-surrogatepass bytes in lowercase hex}` instead of `n:{name}`.
+Its wire `native_id` is the hex value, and `source_native_id_json` holds
+`{"encoding":"utf8-surrogatepass","value":"<hex>"}`. Ordinary names keep
+`n:{name}` and a JSON string carrier. This tagged union preserves exact
+surrogate code units, including a pair distinct from a Unicode scalar.
+Duplicate and owner scratch keys use the complete `n:` or `s:` key.

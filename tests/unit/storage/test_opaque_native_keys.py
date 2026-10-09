@@ -1,0 +1,93 @@
+"""Exact Source names survive prepared storage and Index/material identity lowering."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from polylogue.core.enums import BlockType, Provider, Role
+from polylogue.core.identity_law import message_id, split_message_local_id
+from polylogue.core.message_native_identity import (
+    message_native_key,
+    source_native_id_from_json,
+    source_native_id_json,
+)
+from polylogue.pipeline.ids import disk_message_owner_resolution, session_content_hash
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.prepared_message_sink import SqliteMessageStore
+from tests.infra.index_writer import write_fixture_index_session
+from tests.unit.sinex.test_material_adapter import _decoded_publication
+from tests.unit.storage.test_archive_tiers_write import _connect
+
+_NAMES = ("\ud800", "\ud800\udc00", "\U00010000", "eda080", "x:s:eda080", " dup ")
+
+
+@pytest.mark.parametrize("disk", [False, True])
+def test_native_keys_keep_exact_source_names_through_index_and_publication(tmp_path: Path, disk: bool) -> None:
+    messages = [
+        ParsedMessage(
+            provider_message_id=native,
+            position=i,
+            role=Role.USER,
+            text="same",
+            parent_message_provider_id=_NAMES[i - 1] if i else None,
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="same")],
+        )
+        for i, native in enumerate(_NAMES)
+    ]
+    store = SqliteMessageStore(tmp_path / "prepared.db")
+    sink = store.new_sink()
+    sink.extend(messages)
+    operand = sink if disk else messages
+    assert [message.provider_message_id for message in sink] == list(_NAMES)
+    assert set(sink.provider_message_ids(include_none=True)) == set(_NAMES)
+    with disk_message_owner_resolution(operand) as owners:
+        assert set(owners.unique_provider_keys) == set(_NAMES)
+        assert not owners.ambiguous_provider_ids
+    session = ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="native-law", messages=operand)
+    conn = _connect(tmp_path / "index.db")
+    sid = write_fixture_index_session(conn, session)
+    rows = conn.execute(
+        "SELECT message_id, parent_message_id, source_native_id_json FROM messages ORDER BY position"
+    ).fetchall()
+    assert [row["message_id"] for row in rows] == [message_id(sid, native) for native in _NAMES]
+    assert [source_native_id_from_json(row["source_native_id_json"]) for row in rows] == list(_NAMES)
+    assert [row["parent_message_id"] for row in rows[1:]] == [row["message_id"] for row in rows[:-1]]
+    _payload, decoded = _decoded_publication(session)
+    assert [message.native_id for message in decoded.messages] == list(_NAMES)
+    assert [message.source_native_id for message in decoded.messages] == list(_NAMES)
+    decoded_sid = decoded.session["session_id"]
+    assert isinstance(decoded_sid, str)
+    for message, native in zip(decoded.messages, _NAMES, strict=True):
+        assert split_message_local_id(message.message_id, parent_session_id=decoded_sid) == (
+            native,
+            None,
+            0,
+        )
+    conn.close()
+    store.close()
+
+
+def test_native_keys_are_injective_and_independent_of_mutable_content() -> None:
+    keys = [message_native_key(native) for native in _NAMES]
+    assert len(set(keys)) == len(_NAMES)
+    for native in _NAMES:
+        assert source_native_id_from_json(source_native_id_json(native)) == native
+        first = ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="same-native",
+            messages=[ParsedMessage(provider_message_id=native, role=Role.USER, text="before")],
+        )
+        edited = first.model_copy(deep=True)
+        edited.messages[0].text = "after"
+        assert message_id("session", native) == message_id("session", edited.messages[0].provider_message_id)
+        assert session_content_hash(first) != session_content_hash(edited)
+    pair = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="unicode",
+        messages=[ParsedMessage(provider_message_id="\ud800\udc00", role=Role.USER, text="same")],
+    )
+    scalar = pair.model_copy(deep=True)
+    scalar.messages[0].provider_message_id = "\U00010000"
+    assert session_content_hash(pair) != session_content_hash(scalar)

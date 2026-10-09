@@ -293,4 +293,6 @@ def test_publication_parent_and_block_ids_preserve_opaque_native_whitespace() ->
     parsed.session_events[0].source_message_provider_id = " m2 "
     _payload, decoded = _decoded_publication(parsed)
     assert decoded.messages[1].parent_message_id == decoded.messages[0].message_id
-    assert decoded.messages[1].blocks[0]["block_id"].startswith(decoded.messages[1].message_id + ":b:")
+    block_id = decoded.messages[1].blocks[0]["block_id"]
+    assert isinstance(block_id, str)
+    assert block_id.startswith(decoded.messages[1].message_id + ":b:")

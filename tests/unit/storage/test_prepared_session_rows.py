@@ -88,12 +88,12 @@ def test_disk_duplicate_native_ids_cross_thread_lookup_and_cleanup(tmp_path: Pat
 
     with ThreadPoolExecutor(max_workers=1) as writer, ThreadPoolExecutor(max_workers=1) as owner:
         assert writer.submit(
-            lambda: ("dup" in duplicates, "unique" in duplicates, len(duplicates), list(duplicates))
+            lambda: ("n:dup" in duplicates, "n:unique" in duplicates, len(duplicates), list(duplicates))
         ).result() == (
             True,
             False,
             1,
-            ["dup"],
+            ["n:dup"],
         )
         owner.submit(duplicates.close).result()
     duplicates.close()

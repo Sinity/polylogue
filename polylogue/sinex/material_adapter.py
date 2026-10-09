@@ -31,7 +31,11 @@ from polylogue.core.enums import (
 )
 from polylogue.core.identity_law import split_message_local_id
 from polylogue.core.json import JSONValue
-from polylogue.core.message_native_identity import normalized_message_native_id, stored_message_native_id
+from polylogue.core.message_native_identity import (
+    message_native_key,
+    normalized_message_native_id,
+    stored_message_native_id,
+)
 from polylogue.core.timestamps import to_epoch_ms
 from polylogue.core.web_urls import native_id_from_session_id
 from polylogue.material_protocol.v1 import (
@@ -538,7 +542,7 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
     # identity the archive stores rather than a parallel positional one.
     content_identities = message_content_identities(list(raw_messages))
     native_counts = Counter(
-        native for message in raw_messages if (native := normalized_message_native_id(message.provider_message_id))
+        native for message in raw_messages if (native := message_native_key(message.provider_message_id))
     )
     duplicate_native_ids = frozenset(native for native, count in native_counts.items() if count > 1)
     for index, message in enumerate(raw_messages):

@@ -25,6 +25,7 @@ from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_item_payload, hash_payload
 from polylogue.core.iterator_lifetime import settled_iterator
 from polylogue.core.json import JSONValue
+from polylogue.core.message_native_identity import message_native_key, native_id_from_key
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.sql_settlement import NativeSQLCustodyOwner, current_native_sql_lifetimes
@@ -403,7 +404,13 @@ def _model_hash_payload(model: object, fields: frozenset[str], prose: frozenset[
     can hash like a missing value (polylogue-vp5qk).
     """
     return {
-        field: _hash_field_value(getattr(model, field), prose=field in prose) for field in _sorted_hash_fields(fields)
+        field: _hash_field_value(
+            message_native_key(getattr(model, field))
+            if field == "parent_message_provider_id"
+            else getattr(model, field),
+            prose=field in prose,
+        )
+        for field in _sorted_hash_fields(fields)
     }
 
 
@@ -1639,7 +1646,7 @@ def _message_revision_match_id(message: ParsedMessage) -> str:
     """
     native_id = message.provider_message_id
     if native_id:
-        return native_id
+        return message_native_key(native_id) or ""
     payload: dict[str, JSONValue] = {
         "role": str(message.role),
         "timestamp": message.timestamp,
@@ -1705,7 +1712,13 @@ class _SqliteOwnerLookup(Mapping[_T, str]):
     def __getitem__(self, key: _T) -> str:
         row = self._conn.execute(
             "SELECT value FROM owner_lookup WHERE kind = ? AND key = ?",
-            (self._kind, json.dumps(key, separators=(",", ":"))),
+            (
+                self._kind,
+                json.dumps(
+                    message_native_key(key) if self._kind == "provider" and isinstance(key, str) else key,
+                    separators=(",", ":"),
+                ),
+            ),
         ).fetchone()
         if row is None:
             raise KeyError(key)
@@ -1714,7 +1727,14 @@ class _SqliteOwnerLookup(Mapping[_T, str]):
     def __iter__(self) -> Iterator[_T]:
         for (key,) in self._conn.execute("SELECT key FROM owner_lookup WHERE kind = ?", (self._kind,)):
             value = json.loads(key)
-            yield cast(_T, tuple(value) if self._kind == "physical" else value)
+            yield cast(
+                _T,
+                tuple(value)
+                if self._kind == "physical"
+                else native_id_from_key(value)
+                if self._kind == "provider"
+                else value,
+            )
 
     def __len__(self) -> int:
         return int(self._conn.execute("SELECT COUNT(*) FROM owner_lookup WHERE kind = ?", (self._kind,)).fetchone()[0])
@@ -1732,7 +1752,17 @@ class _SqliteOwnerItems(ItemsView[_T, str]):
         lookup = self._mapping
         for key, value in lookup._conn.execute("SELECT key, value FROM owner_lookup WHERE kind = ?", (lookup._kind,)):
             decoded = json.loads(key)
-            yield cast(_T, tuple(decoded) if lookup._kind == "physical" else decoded), str(value)
+            yield (
+                cast(
+                    _T,
+                    tuple(decoded)
+                    if lookup._kind == "physical"
+                    else native_id_from_key(decoded)
+                    if lookup._kind == "provider"
+                    else decoded,
+                ),
+                str(value),
+            )
 
 
 class _SqliteOwnerAmbiguities(Set[_T]):
@@ -1743,14 +1773,27 @@ class _SqliteOwnerAmbiguities(Set[_T]):
     def __contains__(self, key: object) -> bool:
         row = self._conn.execute(
             "SELECT count FROM owner_count WHERE kind = ? AND key = ?",
-            (self._kind, json.dumps(key, separators=(",", ":"))),
+            (
+                self._kind,
+                json.dumps(
+                    message_native_key(key) if self._kind == "provider" and isinstance(key, str) else key,
+                    separators=(",", ":"),
+                ),
+            ),
         ).fetchone()
         return row is not None and int(row[0]) > 1
 
     def __iter__(self) -> Iterator[_T]:
         for (key,) in self._conn.execute("SELECT key FROM owner_count WHERE kind = ? AND count > 1", (self._kind,)):
             value = json.loads(key)
-            yield cast(_T, tuple(value) if self._kind == "physical" else value)
+            yield cast(
+                _T,
+                tuple(value)
+                if self._kind == "physical"
+                else native_id_from_key(value)
+                if self._kind == "provider"
+                else value,
+            )
 
     def __len__(self) -> int:
         return int(
@@ -1798,7 +1841,7 @@ def disk_message_owner_resolution(messages: Sequence[ParsedMessage]) -> Iterator
                     coordinate = _message_owner_coordinate(message, ordinal)
                     stable = coordinate.stable_key
                     physical = coordinate.physical_key
-                    provider = message.provider_message_id or None
+                    provider = message_native_key(message.provider_message_id)
                     yield (
                         ordinal,
                         revision,

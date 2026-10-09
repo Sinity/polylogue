@@ -8,11 +8,10 @@ once it has settled the full ordered record list for a revision (see
 
 from __future__ import annotations
 
-import json
-
 from polylogue.core.digest import nfc
 from polylogue.core.identity_law import block_id, message_local_id
 from polylogue.core.json import JSONValue
+from polylogue.core.message_native_identity import message_native_key, source_native_id_json, sqlite_message_native_id
 from polylogue.material_protocol.v1.input_model import (
     AttachmentInput,
     BlockInput,
@@ -129,9 +128,15 @@ def message_record(session_id: str, message: MessageInput) -> dict[str, JSONValu
         "record_id": message_id,
         "session_id": session_id,
         "message_id": message_id,
-        "native_id": message.native_id,
+        "native_id": sqlite_message_native_id(message.native_id),
         "source_native_id_json": (
-            json.dumps(message.source_native_id, ensure_ascii=True) if message.source_native_id is not None else None
+            source_native_id_json(
+                message.source_native_id
+                if message.source_native_id is not None
+                else message.native_id
+                if (message_native_key(message.native_id) or "").startswith("s:")
+                else None
+            )
         ),
         "position": message.position,
         "variant_index": message.variant_index,

@@ -337,7 +337,7 @@ MESSAGES_SPEC = _make_table_spec(
     (
         _raw_column(
             "message_id",
-            "message_id TEXT GENERATED ALWAYS AS (session_id || ':' || CASE WHEN native_id IS NULL THEN 'c:' || content_identity || '.' || content_occurrence ELSE 'n:' || native_id END) STORED UNIQUE",
+            "message_id TEXT GENERATED ALWAYS AS (session_id || ':' || CASE WHEN native_id IS NULL THEN 'c:' || content_identity || '.' || content_occurrence WHEN json_extract(source_native_id_json, '$.encoding') = 'utf8-surrogatepass' THEN 's:' || native_id ELSE 'n:' || native_id END) STORED UNIQUE",
             record_name="message_id",
             domain_name="id",
         ),

@@ -720,8 +720,8 @@ async def test_surrogate_native_message_id_round_trips_consistently(async_backen
             async_backend, "SELECT COUNT(*) FROM blocks WHERE message_id = ?", message_row["message_id"]
         )
 
-    assert message_row["native_id"] == "�tail"
-    assert message_row["message_id"] == f"{session_id}:n:�tail"
+    assert message_row["native_id"] == raw_native_id.encode("utf-8", "surrogatepass").hex()
+    assert message_row["message_id"] == f"{session_id}:s:{raw_native_id.encode('utf-8', 'surrogatepass').hex()}"
     assert block_count == 1
 
 

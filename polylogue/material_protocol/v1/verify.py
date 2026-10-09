@@ -24,12 +24,11 @@ Two entry points:
 
 from __future__ import annotations
 
-import json
-
 from polylogue.core.enums import Origin
 from polylogue.core.hashing import hash_bytes
 from polylogue.core.identity_law import block_id, message_local_id, split_message_local_id
 from polylogue.core.json import JSONValue
+from polylogue.core.message_native_identity import native_id_from_storage, source_native_id_from_json
 from polylogue.material_protocol.v1.canonical import canonical_bytes, parse_json_value
 from polylogue.material_protocol.v1.constants import HEAD_SEGMENT_INDEX
 from polylogue.material_protocol.v1.encode import HEAD_KINDS, SEQUENCE_RULE, TRANSCRIPT_KINDS
@@ -205,8 +204,9 @@ def _check_semantic_closure(
         source_name_json = message.get("source_native_id_json")
         if source_name_json is not None:
             try:
-                if not isinstance(source_name_json, str) or not isinstance(json.loads(source_name_json), str):
+                if not isinstance(source_name_json, str):
                     raise ValueError("Source occurrence name is not JSON text")
+                source_native_id_from_json(source_name_json)
             except (ValueError, TypeError) as exc:
                 raise SemanticClosureError("invalid Source occurrence name") from exc
         native_id = message.get("native_id")
@@ -214,7 +214,9 @@ def _check_semantic_closure(
             if native_id is not None and not isinstance(native_id, str):
                 raise ValueError("native message id is not text")
             if native_id:
-                local_id = message_local_id(native_id)
+                local_id = message_local_id(
+                    native_id_from_storage(native_id, source_name_json if isinstance(source_name_json, str) else None)
+                )
             else:
                 stored_native, identity, occurrence = split_message_local_id(
                     message_id, parent_session_id=manifest.session_id
