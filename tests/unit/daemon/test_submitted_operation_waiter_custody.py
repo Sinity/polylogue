@@ -88,6 +88,7 @@ def test_async_submitted_operation_waiters_use_physical_settlement_contract() ->
     from polylogue.daemon import cli, drive_catchup, operation_runtime
 
     for module in (cli, drive_catchup, operation_runtime):
+        assert module.__file__ is not None
         source = Path(module.__file__).read_text(encoding="utf-8")
         assert "wrap_future(submitted.future)" not in source
     assert "return await submitted.wait()" in Path(cli.__file__).read_text(encoding="utf-8")

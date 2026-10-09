@@ -477,6 +477,7 @@ def test_pointer_swapped_recovery_finishes_owned_promotion_tail(
     assert active != old and old.exists()
     metadata = tuple((root / ".index-generations").glob("gen-*/generation.json"))
     temporary = active.parent / "generation.json.tmp"
+    temporary_identity = None
     if leftover_temporary:
         temporary.write_bytes(b"neutral interrupted atomic write")
         temporary_identity = temporary.stat()
@@ -508,6 +509,7 @@ def test_pointer_swapped_recovery_finishes_owned_promotion_tail(
 
     if leftover_temporary:
         assert temporary.read_bytes() == b"neutral interrupted atomic write"
+        assert temporary_identity is not None
         assert temporary.stat().st_ino == temporary_identity.st_ino
 
 

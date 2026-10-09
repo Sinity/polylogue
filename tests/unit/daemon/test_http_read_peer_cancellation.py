@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import inspect
 import socket
 import threading
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar, cast
 from unittest.mock import patch
 
 import pytest
 
-from polylogue.archive.query.execution_control import QueryCancelledError
-from polylogue.daemon.http import DaemonAPIHandler
+from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext
+from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+T = TypeVar("T")
 
 
 @pytest.mark.parametrize("route", ["query-units", "messages"])
@@ -22,14 +27,14 @@ def test_peer_eof_interrupts_actual_native_read(tmp_path: Path, route: str) -> N
     handler.connection = server_socket
     handler.path = "/api/query-units?expression=messages"
     entered = threading.Event()
-    failures = []
-    contexts = []
+    failures: list[BaseException] = []
+    contexts: list[QueryExecutionContext] = []
 
     from polylogue.archive.query.transaction import QueryTransaction
 
     original_run = QueryTransaction.run_sync
 
-    def track_context(self: QueryTransaction, work: object) -> object:
+    def track_context(self: QueryTransaction, work: Callable[[ArchiveStore], T]) -> T:
         contexts.append(self.context)
         return original_run(self, work)
 
@@ -44,7 +49,11 @@ def test_peer_eof_interrupts_actual_native_read(tmp_path: Path, route: str) -> N
     def run() -> None:
         try:
             if route == "query-units":
-                DaemonAPIHandler._handle_query_units.__wrapped__(handler, {"expression": ["messages where role:user"]})
+                handle_query_units = cast(
+                    Callable[[DaemonAPIHandler, dict[str, list[str]]], None],
+                    inspect.unwrap(DaemonAPIHandler._handle_query_units),
+                )
+                handle_query_units(handler, {"expression": ["messages where role:user"]})
             else:
                 handler._do_archive_get_messages(tmp_path, "neutral", limit=1, offset=0)
         except BaseException as exc:
@@ -73,24 +82,24 @@ def test_peer_eof_interrupts_actual_native_read(tmp_path: Path, route: str) -> N
 
 
 def test_scheduled_http_read_keeps_peer_cancellation_in_nested_query(tmp_path: Path) -> None:
-    from types import SimpleNamespace
-
     from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
     from polylogue.core.compute import BoundedComputeAdapter, DaemonOperationCancelled
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(tmp_path)
     entered = threading.Event()
-    failures = []
-    contexts = []
+    failures: list[BaseException] = []
+    contexts: list[QueryExecutionContext] = []
     server_socket, peer = socket.socketpair()
     kernel = BoundedComputeAdapter(max_workers=2, queue_units=4)
     handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
-    handler.server = SimpleNamespace(execution_kernel=kernel)
+    server = object.__new__(DaemonAPIHTTPServer)
+    server.execution_kernel = kernel
+    handler.server = server
     handler.connection = server_socket
     handler.path = "/api/sessions"
 
-    async def read(_self: DaemonAPIHandler, _handler: object) -> object:
+    async def read(_self: DaemonAPIHandler, _handler: Callable[[ArchiveStore], object]) -> object:
         transaction = QueryTransaction(
             tmp_path, QueryTransactionRequest(operation="http.archive.read", arguments={}, page_size=1)
         )
@@ -106,7 +115,7 @@ def test_scheduled_http_read_keeps_peer_cancellation_in_nested_query(tmp_path: P
 
     def run() -> None:
         try:
-            handler._sync_run(None)
+            handler._sync_run(lambda _archive: None)
         except BaseException as exc:
             failures.append(exc)
 

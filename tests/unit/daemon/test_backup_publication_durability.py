@@ -164,16 +164,16 @@ def test_restore_dependencies_precede_fence_retirement_and_fail_closed(
                 "blob": destination / blob,
                 "directory": (destination / blob).parent,
             }
-            if path == targets.get(failure) and not failed:
+            if failure is not None and path == targets.get(failure) and not failed:
                 failed = True
                 raise OSError("synthetic restore dependency failure")
         actual_fsync(fd)
 
-    def unlink(path: Path, *args: object, **kwargs: object) -> None:
+    def unlink(path: Path, missing_ok: bool = False) -> None:
         nonlocal failed
         if path == destination / POPULATION_PENDING:
             events.append("fence-retired")
-        actual_unlink(path, *args, **kwargs)
+        actual_unlink(path, missing_ok=missing_ok)
         if path == destination / POPULATION_PENDING and failure == "fence_interrupt" and not failed:
             failed = True
             raise KeyboardInterrupt
