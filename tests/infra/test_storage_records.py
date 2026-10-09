@@ -122,6 +122,26 @@ def test_make_message_preserves_json_content_block_input() -> None:
     assert message.blocks[0].tool_input == '{"command":"pytest -q"}'
 
 
+def test_fixture_block_identity_survives_unrelated_prefix_and_counts_only_duplicates() -> None:
+    original = [{"type": "text", "text": "same prose"}, {"type": "text", "text": "same prose"}]
+    plain = make_message(blocks=original)
+    prefixed = make_message(blocks=[{"type": "thinking", "text": "unrelated thought"}, *original])
+
+    assert [block.block_id for block in plain.blocks] == [block.block_id for block in prefixed.blocks[1:]]
+    assert [block.content_occurrence for block in plain.blocks] == [0, 1]
+    assert plain.blocks[0].content_identity == plain.blocks[1].content_identity
+    assert prefixed.blocks[0].content_identity != plain.blocks[0].content_identity
+
+
+def test_fixture_block_identity_matches_the_parsed_source_semantics() -> None:
+    from polylogue.pipeline.ids import block_content_identity
+    from tests.infra.storage_records import _record_to_parsed_session
+
+    message = make_message(blocks=[{"type": "tool_result", "tool_id": "call-neutral", "text": "neutral result"}])
+    parsed = _record_to_parsed_session(make_session(), [message], [])
+    assert message.blocks[0].content_identity == block_content_identity(parsed.messages[0].blocks[0])
+
+
 # ---------------------------------------------------------------------------
 # polylogue-ugkho: a seeded row must be indistinguishable from a produced one
 # in ``identity_source`` and ``material_origin``.

@@ -15,6 +15,7 @@ _TOKEN = st.text(
     max_size=32,
 ).filter(lambda value: bool(value.strip()))
 _POSITION = st.integers(min_value=0, max_value=100_000)
+_BLOCK_CONTENT_IDENTITY = st.text(alphabet="0123456789abcdef", min_size=64, max_size=64)
 
 
 @given(origin=_TOKEN, native_id=_TOKEN)
@@ -55,10 +56,21 @@ def test_idless_message_id_is_its_content_identity_plus_occurrence(
     assert (left_id == right_id) is (left == right)
 
 
-@given(parent=_TOKEN, message_native_id=_TOKEN, block_position=_POSITION)
-def test_block_id_appends_block_position(parent: str, message_native_id: str, block_position: int) -> None:
+@given(parent=_TOKEN, message_native_id=_TOKEN, identity=_BLOCK_CONTENT_IDENTITY, left=_POSITION, right=_POSITION)
+def test_block_id_uses_content_identity_and_identical_content_occurrence(
+    parent: str, message_native_id: str, identity: str, left: int, right: int
+) -> None:
     mid = message_id(session_id("chatgpt", parent), message_native_id)
-    assert block_id(mid, position=block_position) == f"{mid}:{block_position}"
+    left_id = block_id(mid, content_identity=identity, content_occurrence=left)
+    right_id = block_id(mid, content_identity=identity, content_occurrence=right)
+    assert left_id == f"{mid}:b:{identity}:{left}"
+    assert right_id == f"{mid}:b:{identity}:{right}"
+    assert (left_id == right_id) is (left == right)
+
+
+def test_block_identity_rejects_a_transcript_position() -> None:
+    with pytest.raises(TypeError):
+        cast(Callable[..., str], block_id)("message", position=0)
 
 
 def test_native_ids_are_opaque_and_may_contain_colons() -> None:
@@ -86,8 +98,16 @@ def test_native_and_content_message_ids_are_disjoint() -> None:
         (message_local_id, (None,), {}),
         (message_local_id, (None,), {"content_identity": "   "}),
         (message_local_id, (None,), {"content_identity": "abc", "content_occurrence": -1}),
-        (block_id, ("",), {"position": 0}),
-        (block_id, ("message",), {"position": -1}),
+        (block_id, ("",), {"content_identity": "a" * 64}),
+        (block_id, ("message",), {"content_identity": "a" * 64, "content_occurrence": -1}),
+        (block_id, ("message",), {"content_identity": "a" * 63}),
+        (block_id, ("message",), {"content_identity": "A" * 64}),
+        (block_id, ("message",), {"content_identity": "g" * 64}),
+        (block_id, ("message",), {"content_identity": None}),
+        (block_id, ("message",), {"content_identity": "a" * 64, "content_occurrence": True}),
+        (block_id, ("message",), {"content_identity": "a" * 64, "content_occurrence": 1.5}),
+        (block_id, ("message",), {"content_identity": "a" * 64, "content_occurrence": None}),
+        (block_id, ("message",), {"content_identity": "a" * 64, "content_occurrence": "1"}),
     ],
 )
 def test_identity_law_rejects_invalid_inputs(fn: object, args: tuple[object, ...], kwargs: dict[str, object]) -> None:

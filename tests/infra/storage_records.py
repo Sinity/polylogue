@@ -28,6 +28,7 @@ from polylogue.core.json import dumps, loads, require_json_document, require_jso
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamps import _timestamp_sort_key
 from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
+from polylogue.pipeline.ids import block_content_identity
 from polylogue.pipeline.services.acquisition_records import pending_pre_parse_raw_admission_request
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -190,6 +191,13 @@ def _merge_media_type_into_metadata(metadata: str | None, media_type: str | None
     return dumps(base)
 
 
+def _block_json_object(value: str | None) -> dict[str, object] | None:
+    if not value:
+        return None
+    parsed = loads(value)
+    return dict(parsed) if isinstance(parsed, dict) else None
+
+
 def _content_block_record(
     *,
     message_id: str,
@@ -208,15 +216,44 @@ def _content_block_record(
     tool_result_exit_code: int | None = None,
     tool_outcome: ToolOutcome | None = None,
     tool_result_outcome_unknown_reason: str | None = None,
+    content_occurrence: int = 0,
 ) -> BlockRecord:
     # #1240: media_type is now stored inside the block-metadata JSON.
     merged_metadata = _merge_media_type_into_metadata(metadata, media_type)
+    unknown_reason = tool_result_outcome_unknown_reason
+    typed_block = BlockType.from_string(block_type)
+    if (
+        typed_block is BlockType.TOOL_RESULT
+        and tool_result_is_error is None
+        and tool_result_exit_code is None
+        and tool_outcome is None
+        and unknown_reason is None
+    ):
+        unknown_reason = "not_reported"
+    identity = block_content_identity(
+        ParsedContentBlock(
+            type=typed_block,
+            text=text,
+            tool_name=tool_name,
+            tool_id=tool_id,
+            tool_input=_block_json_object(tool_input),
+            metadata=_block_json_object(merged_metadata),
+            media_type=media_type,
+            signature=signature,
+            is_error=None if tool_result_is_error is None else bool(tool_result_is_error),
+            exit_code=tool_result_exit_code,
+            tool_outcome=tool_outcome,
+            outcome_unknown_reason=unknown_reason,
+        )
+    )
     return BlockRecord(
-        block_id=BlockRecord.make_id(message_id, block_index),
+        block_id=BlockRecord.make_id(message_id, content_identity=identity, content_occurrence=content_occurrence),
         message_id=_message_id(message_id),
         session_id=_session_id(session_id),
         block_index=block_index,
-        type=BlockType.from_string(block_type),
+        content_identity=identity,
+        content_occurrence=content_occurrence,
+        type=typed_block,
         text=text,
         tool_name=tool_name,
         tool_id=tool_id,
@@ -270,21 +307,33 @@ def _normalize_content_blocks(
     if not isinstance(raw_blocks, list):
         return []
     blocks: list[BlockRecord] = []
+    occurrences: dict[str, int] = {}
     for idx, raw_block in enumerate(raw_blocks):
         if isinstance(raw_block, BlockRecord):
-            blocks.append(raw_block)
-            continue
-        if isinstance(raw_block, Mapping):
+            block = raw_block
+        elif isinstance(raw_block, Mapping):
             if not all(isinstance(key, str) for key in raw_block):
                 raise TypeError("content block keys must be strings")
-            blocks.append(
-                _content_block_from_mapping(
-                    block=cast(MessageMapping, raw_block),
-                    message_id=message_id,
-                    session_id=session_id,
-                    block_index=idx,
-                )
+            block = _content_block_from_mapping(
+                block=cast(MessageMapping, raw_block),
+                message_id=message_id,
+                session_id=session_id,
+                block_index=idx,
             )
+        else:
+            continue
+        occurrence = occurrences.get(block.content_identity, 0)
+        occurrences[block.content_identity] = occurrence + 1
+        blocks.append(
+            block.model_copy(
+                update={
+                    "content_occurrence": occurrence,
+                    "block_id": BlockRecord.make_id(
+                        message_id, content_identity=block.content_identity, content_occurrence=occurrence
+                    ),
+                }
+            )
+        )
     return blocks
 
 
@@ -304,6 +353,7 @@ def make_content_block(
     tool_result_is_error: int | None = None,
     tool_result_exit_code: int | None = None,
     tool_result_outcome_unknown_reason: str | None = None,
+    content_occurrence: int = 0,
 ) -> BlockRecord:
     return _content_block_record(
         message_id=message_id,
@@ -320,6 +370,7 @@ def make_content_block(
         tool_result_is_error=tool_result_is_error,
         tool_result_exit_code=tool_result_exit_code,
         tool_result_outcome_unknown_reason=tool_result_outcome_unknown_reason,
+        content_occurrence=content_occurrence,
     )
 
 
