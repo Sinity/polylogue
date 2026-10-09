@@ -10,7 +10,7 @@ import json
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -464,7 +464,7 @@ async def test_list_summaries_by_query_hydrates_session_profile_slice(monkeypatc
     )
 
     @asynccontextmanager
-    async def snapshot():
+    async def snapshot() -> AsyncIterator[SimpleNamespace]:
         yield queries
 
     queries.read_snapshot = snapshot

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,7 +49,7 @@ def _session_record(session_id: str, *, title: str, source_name: str = "chatgpt"
 @dataclass
 class _FakeQueries(SQLiteQueryStore):
     @asynccontextmanager
-    async def read_snapshot(self):
+    async def read_snapshot(self) -> AsyncIterator[_FakeQueries]:
         yield self
 
     hits: SessionSearchResult

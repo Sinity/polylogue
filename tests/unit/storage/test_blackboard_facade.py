@@ -168,9 +168,11 @@ async def test_blackboard_page_counts_filtered_notes_before_window(workspace_env
                     author_kind="user",
                 )
             first = await poly.read_blackboard_page(kind="blocker", scope_repo="scope", limit=1)
+            assert first.next_offset is not None
             second = await poly.read_blackboard_page(
                 kind="blocker", scope_repo="scope", limit=1, offset=first.next_offset
             )
+            assert second.next_offset is not None
             last = await poly.read_blackboard_page(
                 kind="blocker", scope_repo="scope", limit=1, offset=second.next_offset
             )
