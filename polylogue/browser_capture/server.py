@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import re
+import secrets
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
@@ -67,6 +68,8 @@ from polylogue.browser_capture.models import (
     BrowserCapturePairingRedeemRequest,
     BrowserCaptureReceiverAttestationPayload,
     BrowserCaptureReceiverAttestationRequest,
+    BrowserCaptureReceiverStatusAttestationRequest,
+    BrowserCaptureReceiverStatusChallengePayload,
 )
 from polylogue.browser_capture.pairing import (
     PairingCodeAlreadyUsedError,
@@ -79,12 +82,15 @@ from polylogue.browser_capture.pairing import (
 from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
     BrowserCaptureSpoolConflictError,
+    ReceiverCredentialError,
     admit_staged_capture,
     attest_receiver,
     capture_response_id,
     existing_capture_state,
     receiver_identity,
+    receiver_request_config,
     receiver_status_payload,
+    receiver_status_proof,
 )
 from polylogue.core.loopback import is_loopback_host
 from polylogue.logging import INFO, WARNING, emit, get_logger
@@ -226,11 +232,11 @@ def _is_loopback(host: str) -> bool:
     return is_loopback_host(host)
 
 
-def _check_token(headers: dict[str, str], config: BrowserCaptureReceiverConfig) -> bool:
+def _check_token(auth: str | None, config: BrowserCaptureReceiverConfig) -> bool:
     """Validate Authorization: Bearer <token> when auth is configured."""
     if config.auth_token is None:
         return True
-    auth = headers.get("Authorization", "")
+    auth = auth or ""
     return bool(auth.startswith("Bearer ") and hmac.compare_digest(auth[7:], config.auth_token))
 
 
@@ -276,6 +282,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
     server: BrowserCaptureHTTPServer
     _polylogue_request_id: str
     _polylogue_status: int | None
+    receiver_config: BrowserCaptureReceiverConfig
+    _status_nonce: str | None = None
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -308,13 +316,25 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
     def _observe_request(self, method: str, fn: Callable[[], None]) -> None:
         started_at = time.perf_counter()
+        self._polylogue_status = None
+        self._polylogue_request_id = ""
         try:
+            try:
+                self.receiver_config = receiver_request_config(self.server.config)
+            except ReceiverCredentialError:
+                self.receiver_config = self.server.config
+                self._safe_error(HTTPStatus.SERVICE_UNAVAILABLE, "receiver_credential_unavailable")
+                return
             fn()
         finally:
             self._finish_observed_request(method, started_at)
 
-    def _send_json(self, status: HTTPStatus, payload: object) -> None:
-        encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    def _send_json(
+        self, status: HTTPStatus, payload: object, *, status_challenge: str | None = None, keep_alive: bool = False
+    ) -> None:
+        encoder = json.JSONEncoder(
+            ensure_ascii=False, separators=(",", ":"), allow_nan=False, sort_keys=status_challenge is not None
+        )
 
         def encoded_chunks() -> Iterator[bytes]:
             for piece in encoder.iterencode(payload):
@@ -323,7 +343,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
         try:
             staged = stage_capture_chunks(
-                iter(encoded_chunks()), spool_root=self.server.config.spool_path, durable=False
+                iter(encoded_chunks()), spool_root=self.receiver_config.spool_path, durable=False
             )
         except SpoolStorageExhaustedError:
             self._send_json_staging_refusal(HTTPStatus.INSUFFICIENT_STORAGE, _JSON_SPOOL_REFUSAL)
@@ -340,7 +360,19 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self.send_header("X-Request-ID", self._request_id())
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(staged.size_bytes))
-            if _origin_allowed(origin, self.server.config):
+            if keep_alive:
+                self.send_header("Connection", "keep-alive")
+                self.close_connection = False
+            if status_challenge is not None:
+                secret = self.receiver_config.auth_token
+                assert secret is not None
+                self.send_header(
+                    "X-Polylogue-Status-Proof",
+                    receiver_status_proof(
+                        secret, receiver_identity(self.receiver_config), status_challenge, payload_sha256=staged.sha256
+                    ),
+                )
+            if _origin_allowed(origin, self.receiver_config):
                 self.send_header("Access-Control-Allow-Origin", origin or "null")
                 self.send_header("Vary", "Origin")
             self.end_headers()
@@ -360,7 +392,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self.send_header("X-Request-ID", self._request_id())
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        if _origin_allowed(origin, self.server.config):
+        if _origin_allowed(origin, self.receiver_config):
             self.send_header("Access-Control-Allow-Origin", origin or "null")
             self.send_header("Vary", "Origin")
         self.end_headers()
@@ -381,7 +413,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             "Content-Disposition",
             f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quote(filename, safe='')}",
         )
-        if _origin_allowed(origin, self.server.config):
+        if _origin_allowed(origin, self.receiver_config):
             self.send_header("Access-Control-Allow-Origin", origin or "null")
             self.send_header("Vary", "Origin")
         self.end_headers()
@@ -394,7 +426,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
     def _reject_origin(self) -> bool:
         origin = self.headers.get("Origin")
-        if _origin_allowed(origin, self.server.config):
+        if _origin_allowed(origin, self.receiver_config):
             return False
         logger.warning("browser_capture.origin_rejected", request_id=self._request_id(), origin=origin)
         self._safe_error(HTTPStatus.FORBIDDEN, "origin_not_allowed")
@@ -402,10 +434,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
     def _reject_token(self) -> bool:
         """Reject if auth token is configured and not present."""
-        config = self.server.config
+        config = self.receiver_config
         if config.auth_token is None:
             return False
-        if _check_token(dict(self.headers), config):
+        if _check_token(self.headers.get("Authorization"), config):
             return False
         # The daemon normally uses the lazy stdlib logger, whose plain handler
         # does not render structured kwargs.  Keep this rejection forensic
@@ -450,6 +482,18 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self._observe_request("GET", self._do_get)
 
     def _do_get(self) -> None:
+        if urlparse(self.path).path == "/v1/receiver/status-challenge":
+            if self._reject_origin():
+                return
+            self._status_nonce = secrets.token_urlsafe(32)
+            self._send_json(
+                HTTPStatus.OK,
+                BrowserCaptureReceiverStatusChallengePayload(
+                    receiver_id=receiver_identity(self.receiver_config), challenge=self._status_nonce
+                ).model_dump(mode="json"),
+                keep_alive=True,
+            )
+            return
         if self._reject_origin() or self._reject_token():
             return
         parsed = urlparse(self.path)
@@ -457,7 +501,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, BrowserCaptureCapabilitiesPayload().model_dump(mode="json"))
             return
         if parsed.path == "/v1/status":
-            self._send_json(HTTPStatus.OK, receiver_status_payload(self.server.config))
+            self._send_json(HTTPStatus.OK, receiver_status_payload(self.receiver_config))
             return
         if parsed.path == "/v1/archive-state":
             params = parse_qs(parsed.query)
@@ -471,8 +515,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 existing_capture_state(
                     provider,
                     session_id,
-                    spool_path=self.server.config.spool_path,
-                    archive_root=self.server.config.archive_root,
+                    spool_path=self.receiver_config.spool_path,
+                    archive_root=self.receiver_config.archive_root,
                 ),
             )
             return
@@ -501,8 +545,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 actions = (
                     [claimed]
                     if claim_by
-                    and (claimed := claim_action(claim_by, spool_path=self.server.config.spool_path)) is not None
-                    else ([] if claim_by else list_actions(spool_path=self.server.config.spool_path))
+                    and (claimed := claim_action(claim_by, spool_path=self.receiver_config.spool_path)) is not None
+                    else ([] if claim_by else list_actions(spool_path=self.receiver_config.spool_path))
                 )
             except ValueError:
                 self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
@@ -519,7 +563,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             body_started = False
             try:
                 with open_action_attachment(
-                    action_id, attachment_id, spool_path=self.server.config.spool_path
+                    action_id, attachment_id, spool_path=self.receiver_config.spool_path
                 ) as result:
                     if result is None:
                         self._safe_error(HTTPStatus.NOT_FOUND, "unknown_browser_action_attachment")
@@ -547,7 +591,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/v1/browser-actions/"):
             action_id = parsed.path[len("/v1/browser-actions/") :]
             try:
-                action = get_action(action_id, spool_path=self.server.config.spool_path)
+                action = get_action(action_id, spool_path=self.receiver_config.spool_path)
             except ValueError:
                 self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
                 return
@@ -563,7 +607,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/v1/capture-jobs/"):
             suffix = parsed.path.removeprefix("/v1/capture-jobs/")
             if "/checkpoint-artifacts/" in suffix:
-                if self.server.config.auth_token is None:
+                if self.receiver_config.auth_token is None:
                     self._safe_error(HTTPStatus.UNAUTHORIZED, "checkpoint_artifact_auth_required")
                     return
                 job_id, digest = suffix.split("/checkpoint-artifacts/", 1)
@@ -573,7 +617,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 sent = False
                 try:
                     registry = registry_for_receiver(
-                        self.server.config.spool_path, receiver_identity(self.server.config)
+                        self.receiver_config.spool_path, receiver_identity(self.receiver_config)
                     )
                     with (
                         registry.result_scope(),
@@ -584,7 +628,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                         self.send_header("Content-Length", str(size))
                         self.send_header("X-Request-ID", self._request_id())
                         origin = self.headers.get("Origin")
-                        if _origin_allowed(origin, self.server.config):
+                        if _origin_allowed(origin, self.receiver_config):
                             self.send_header("Access-Control-Allow-Origin", origin or "null")
                             self.send_header("Vary", "Origin")
                         self.end_headers()
@@ -613,7 +657,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     return
                 try:
                     registry = registry_for_receiver(
-                        self.server.config.spool_path, receiver_identity(self.server.config)
+                        self.receiver_config.spool_path, receiver_identity(self.receiver_config)
                     )
                     with registry.result_scope():
                         capture_job_events_payload = registry.events(
@@ -640,7 +684,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                         self.close_connection = True
                 return
             if suffix.startswith("orphans/") and suffix.endswith("/payload"):
-                if self.server.config.auth_token is None:
+                if self.receiver_config.auth_token is None:
                     self._safe_error(HTTPStatus.UNAUTHORIZED, "orphan_inspection_auth_required")
                     return
                 source_digest = suffix[len("orphans/") : -len("/payload")]
@@ -651,7 +695,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     protocol = -1
                 try:
                     registry = registry_for_receiver(
-                        self.server.config.spool_path, receiver_identity(self.server.config)
+                        self.receiver_config.spool_path, receiver_identity(self.receiver_config)
                     )
                     with registry.result_scope(), registry.inspect_orphan(source_digest, protocol) as (stream, size):
                         self.send_response(HTTPStatus.OK.value)
@@ -659,7 +703,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                         self.send_header("Content-Length", str(size))
                         self.send_header("X-Request-ID", self._request_id())
                         origin = self.headers.get("Origin")
-                        if _origin_allowed(origin, self.server.config):
+                        if _origin_allowed(origin, self.receiver_config):
                             self.send_header("Access-Control-Allow-Origin", origin or "null")
                             self.send_header("Vary", "Origin")
                         self.end_headers()
@@ -684,8 +728,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 protocol = -1
             try:
                 registry = registry_for_receiver(
-                    self.server.config.spool_path,
-                    receiver_identity(self.server.config),
+                    self.receiver_config.spool_path,
+                    receiver_identity(self.receiver_config),
                 )
                 with registry.result_scope():
                     if job_id == "capabilities":
@@ -775,7 +819,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return chunk
 
         try:
-            return stage_capture_body(read_chunk, length, spool_root=self.server.config.spool_path)
+            return stage_capture_body(read_chunk, length, spool_root=self.receiver_config.spool_path)
         except CaptureBodyIncompleteError:
             emit(
                 "browser_capture.incomplete_body",
@@ -834,6 +878,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         # bearer itself.
         if path == "/v1/receiver/attest":
             self._receiver_attest()
+            return
+        if path == "/v1/receiver/status-attest":
+            self._receiver_status_attest()
             return
         if self._reject_token():
             return
@@ -923,7 +970,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             error(HTTPStatus.BAD_REQUEST, "missing_extension_instance_id")
             return None
         try:
-            result = admit_staged_capture(staged, summary, spool_path=self.server.config.spool_path)
+            result = admit_staged_capture(staged, summary, spool_path=self.receiver_config.spool_path)
         except BrowserCaptureSpoolConflictError as exc:
             logger.warning("browser_capture.spool_conflict", request_id=self._request_id(), error=str(exc))
             error(HTTPStatus.CONFLICT, "spool_conflict")
@@ -996,14 +1043,14 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             from polylogue.daemon.socket_path import daemon_socket_path
             from polylogue.daemon_client import DaemonClient
 
-            root = self.server.config.archive_root or default_archive_root()
+            root = self.receiver_config.archive_root or default_archive_root()
             provider_message_id = str(observation["provider_message_id"])
             origin = str(observation["origin"])
             conversation_id = str(observation["provider_conversation_id"])
             expected_message_ref = f"{origin}:{conversation_id}:n:{provider_message_id}"
             if payload["target_ref"] != expected_message_ref:
                 raise ValueError("selected message target does not match its native observation")
-            config = self.server.config
+            config = self.receiver_config
             # The client holds the credential; the receipt it returns does not.
             client = DaemonClient(
                 daemon_socket_path(root),
@@ -1067,7 +1114,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             if length is None:
                 return
             try:
-                reference = store_action_attachment(self.rfile.read, length, spool_path=self.server.config.spool_path)
+                reference = store_action_attachment(self.rfile.read, length, spool_path=self.receiver_config.spool_path)
             except ValueError:
                 self._safe_error(HTTPStatus.BAD_REQUEST, "incomplete_browser_action_attachment")
                 return
@@ -1135,8 +1182,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     except ValueError:
                         payload["client_protocol"] = -1
                 registry = registry_for_receiver(
-                    self.server.config.spool_path,
-                    receiver_identity(self.server.config),
+                    self.receiver_config.spool_path,
+                    receiver_identity(self.receiver_config),
                 )
                 try:
                     with registry.result_scope():
@@ -1145,12 +1192,12 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                         elif path == "/v1/capture-jobs/discover":
                             status, result = HTTPStatus.OK, registry.discover(payload)
                         elif path.endswith("/native/begin"):
-                            if self.server.config.auth_token is None:
+                            if self.receiver_config.auth_token is None:
                                 raise CaptureJobError(401, "native_preparation_auth_required")
                             job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/native/begin")
                             status, result = HTTPStatus.OK, registry.native_begin(job_id, payload)
                         elif "/native/" in path:
-                            if self.server.config.auth_token is None:
+                            if self.receiver_config.auth_token is None:
                                 raise CaptureJobError(401, "native_preparation_auth_required")
                             job_id, operation = path.removeprefix("/v1/capture-jobs/").rsplit("/native/", 1)
                             operations = {
@@ -1218,7 +1265,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         return registry.native_publish(job_id, body, admit)
 
     def _capture_job_native_member(self, path: str) -> None:
-        if self.server.config.auth_token is None:
+        if self.receiver_config.auth_token is None:
             self._safe_error(HTTPStatus.UNAUTHORIZED, "native_preparation_auth_required")
             return
         try:
@@ -1229,7 +1276,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_native_descriptor")
             return
         job_id = path.removeprefix("/v1/capture-jobs/").rsplit("/native/", 1)[0]
-        registry = registry_for_receiver(self.server.config.spool_path, receiver_identity(self.server.config))
+        registry = registry_for_receiver(self.receiver_config.spool_path, receiver_identity(self.receiver_config))
         # Admission precedes disk reservation and every body read. The
         # context remains owned until staging and publication settle.
         with registry.result_scope(), registry.artifact_progress(job_id, descriptor, native=True) as progress:
@@ -1248,14 +1295,14 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 staged.discard()
 
     def _capture_job_checkpoint(self, path: str) -> None:
-        if self.server.config.auth_token is None:
+        if self.receiver_config.auth_token is None:
             self._safe_error(HTTPStatus.UNAUTHORIZED, "checkpoint_artifact_auth_required")
             return
         payload = self._checkpoint_descriptor()
         if payload is None:
             return
         job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/checkpoint")
-        registry = registry_for_receiver(self.server.config.spool_path, receiver_identity(self.server.config))
+        registry = registry_for_receiver(self.receiver_config.spool_path, receiver_identity(self.receiver_config))
         with registry.result_scope(), registry.artifact_progress(job_id, payload) as progress:
             staged = self._stage_capture_body(progress=progress)
             if staged is None:
@@ -1324,8 +1371,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             request = BrowserActionRequest.model_validate(payload)
             action = enqueue_action(
                 request,
-                receiver_id=receiver_identity(self.server.config),
-                spool_path=self.server.config.spool_path,
+                receiver_id=receiver_identity(self.receiver_config),
+                spool_path=self.receiver_config.spool_path,
             )
         except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action")
@@ -1351,7 +1398,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         try:
             request = BrowserActionUpdateRequest.model_validate(payload)
-            action = update_action(action_id, request, spool_path=self.server.config.spool_path)
+            action = update_action(action_id, request, spool_path=self.receiver_config.spool_path)
         except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_update")
             return
@@ -1379,7 +1426,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         try:
             request = BrowserActionReconcileRequest.model_validate(payload)
-            action = reconcile_action(action_id, request, spool_path=self.server.config.spool_path)
+            action = reconcile_action(action_id, request, spool_path=self.receiver_config.spool_path)
         except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_reconciliation")
             return
@@ -1404,7 +1451,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         try:
             request = BrowserActionApprovalDecisionRequest.model_validate(payload)
-            action = decide_action_approval(action_id, request, spool_path=self.server.config.spool_path)
+            action = decide_action_approval(action_id, request, spool_path=self.receiver_config.spool_path)
         except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_approval")
             return
@@ -1432,8 +1479,12 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_pairing_request")
             return
+        secret = self.receiver_config.auth_token
+        if secret is None:
+            self._safe_error(HTTPStatus.CONFLICT, "receiver_auth_disabled")
+            return
         try:
-            token = redeem_pairing_code(request.code)
+            token = redeem_pairing_code(request.code, token=secret)
         except (PairingCodeExpiredError, PairingCodeAlreadyUsedError, PairingCodeInvalidError) as exc:
             logger.warning(
                 "browser_capture.pairing_redeem_rejected", request_id=self._request_id(), reason=type(exc).__name__
@@ -1453,8 +1504,33 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             HTTPStatus.OK,
             BrowserCapturePairingRedeemPayload(
                 auth_token=token,
-                receiver_id=receiver_identity(self.server.config),
+                receiver_id=receiver_identity(self.receiver_config),
             ).model_dump(mode="json"),
+        )
+
+    def _receiver_status_attest(self) -> None:
+        nonce, self._status_nonce = self._status_nonce, None
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        try:
+            request = BrowserCaptureReceiverStatusAttestationRequest.model_validate(payload)
+        except ValidationError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_status_attestation_request")
+            return
+        secret = self.receiver_config.auth_token
+        identity = receiver_identity(self.receiver_config)
+        if (
+            secret is None
+            or nonce is None
+            or request.challenge != nonce
+            or request.receiver_id != identity
+            or not hmac.compare_digest(request.proof, receiver_status_proof(secret, identity, request.challenge))
+        ):
+            self._safe_error(HTTPStatus.UNAUTHORIZED, "receiver_authentication_failed")
+            return
+        self._send_json(
+            HTTPStatus.OK, receiver_status_payload(self.receiver_config), status_challenge=request.challenge
         )
 
     def _receiver_attest(self) -> None:
@@ -1466,7 +1542,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_attestation_request")
             return
-        proof = attest_receiver(self.server.config, request.challenge)
+        proof = attest_receiver(self.receiver_config, request.challenge)
         if proof is None:
             # With auth disabled there is no secret to prove possession of.
             self._safe_error(HTTPStatus.CONFLICT, "receiver_auth_disabled")
@@ -1475,7 +1551,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             HTTPStatus.OK,
             BrowserCaptureReceiverAttestationPayload(
                 api_schema=BROWSER_CAPTURE_API_SCHEMA,
-                receiver_id=receiver_identity(self.server.config),
+                receiver_id=receiver_identity(self.receiver_config),
                 proof=proof,
             ).model_dump(mode="json"),
         )
@@ -1485,8 +1561,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         state = existing_capture_state(
             provider,
             provider_session_id,
-            spool_path=self.server.config.spool_path,
-            archive_root=self.server.config.archive_root,
+            spool_path=self.receiver_config.spool_path,
+            archive_root=self.receiver_config.archive_root,
         )
         indexed_value = state.get("indexed_session_id")
         indexed = indexed_value if isinstance(indexed_value, str) else None
@@ -1497,7 +1573,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         # made cost and assertions permanently unavailable in production while
         # every test that passed a temporary root saw them. The assertion
         # candidate handler resolves it the same way.
-        archive_root = self.server.config.archive_root or default_archive_root()
+        archive_root = self.receiver_config.archive_root or default_archive_root()
         projection: _MissionControlPayload = {
             "status": "available" if indexed else "uncaptured",
             "archive": {
@@ -1604,6 +1680,7 @@ def make_server(
     archive_root: Path | None = None,
     allow_remote: bool = False,
     auth_token: str | None = None,
+    auth_token_path: Path | None = None,
     extra_origins: tuple[str, ...] = (),
     api_auth_token: str | None = None,
     api_allow_no_auth: bool = False,
@@ -1620,6 +1697,7 @@ def make_server(
         allowed_origins=frozenset(allowed_origins),
         allow_remote=allow_remote,
         auth_token=auth_token,
+        auth_token_path=auth_token_path,
         api_auth_token=api_auth_token,
         api_allow_no_auth=api_allow_no_auth,
     )

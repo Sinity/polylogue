@@ -490,6 +490,20 @@ class BrowserCaptureReceiverAttestationRequest(BaseModel):
     challenge: str = Field(pattern=RECEIVER_ATTESTATION_CHALLENGE_PATTERN)
 
 
+class BrowserCaptureReceiverStatusChallengePayload(BaseModel):
+    """One receiver-issued status nonce owned by the current HTTP connection."""
+
+    receiver_id: str = Field(min_length=8, max_length=80)
+    challenge: str = Field(pattern=RECEIVER_ATTESTATION_CHALLENGE_PATTERN)
+
+
+class BrowserCaptureReceiverStatusAttestationRequest(BrowserCaptureReceiverAttestationRequest):
+    """A bearer-free, authenticated request for signed receiver status."""
+
+    receiver_id: str = Field(min_length=8, max_length=80)
+    proof: str = Field(pattern=r"^[A-Za-z0-9_-]{43}$")
+
+
 class BrowserCaptureReceiverAttestationPayload(BaseModel):
     """Proof that this receiver holds the bearer, without revealing it."""
 
@@ -914,6 +928,8 @@ __all__ = [
     "BrowserCaptureProvenance",
     "BrowserCaptureReceiverAttestationPayload",
     "BrowserCaptureReceiverAttestationRequest",
+    "BrowserCaptureReceiverStatusAttestationRequest",
+    "BrowserCaptureReceiverStatusChallengePayload",
     "BrowserCaptureReceiverStatusPayload",
     "BrowserCaptureSession",
     "BrowserCaptureSessionKind",

@@ -6,6 +6,7 @@ from importlib import import_module
 
 import click
 
+from polylogue.config import Config, PolylogueConfig, load_polylogue_config
 from polylogue.core.json import JSONDocument, dumps, json_document
 
 _COMMANDS = {
@@ -70,7 +71,7 @@ def main() -> None:
     require_free_threaded_runtime(consumer="polylogued")
 
 
-def _live_daemon_status_payload() -> JSONDocument:
+def _live_daemon_status_payload(config: Config | PolylogueConfig) -> JSONDocument:
     """Read the daemon's status once over its peer-verified machine socket."""
     from polylogue.cli.operation_kernel import (
         OperationKernelError,
@@ -78,10 +79,9 @@ def _live_daemon_status_payload() -> JSONDocument:
         OperationUnavailableError,
         dispatch,
     )
-    from polylogue.config import load_polylogue_config
 
     try:
-        result = dispatch(load_polylogue_config(), OperationRequest("status", {}), daemon_only=True)
+        result = dispatch(config, OperationRequest("status", {}), daemon_only=True)
     except OperationKernelError as exc:
         reason = (
             "daemon_absent"
@@ -103,17 +103,9 @@ def _live_daemon_status_payload() -> JSONDocument:
 @main.command("status", help="Show configured daemon component status.")
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 def status_command(output_format: str | None) -> None:
-    payload = _live_daemon_status_payload()
+    payload = _live_daemon_status_payload(load_polylogue_config())
     if output_format == "json":
         click.echo(dumps(payload))
-    elif "status_snapshot" in payload and payload.get("ok") is False and "archive_storage" not in payload:
-        snapshot = payload["status_snapshot"]
-        if not isinstance(snapshot, dict):
-            raise click.ClickException("daemon returned invalid status metadata")
-        click.echo(f"Polylogue daemon: {snapshot['state']}")
-        for key, label in (("reason", "Reason"), ("detail", "Detail"), ("request_id", "Request")):
-            if value := snapshot.get(key):
-                click.echo(f"{label}: {value}")
     else:
         from polylogue.daemon.status import format_daemon_status_lines
 

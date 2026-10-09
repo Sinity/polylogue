@@ -64,6 +64,7 @@ their separate bounded in-memory request contract.
 The receiver listens on `127.0.0.1:8765` by default and accepts the route contracts in `polylogue/browser_capture/route_contracts.py`:
 
 - `GET /v1/status` -> `BrowserCaptureReceiverStatusPayload`
+- `POST /v1/receiver/status-attest` with `receiver_id`, fresh `challenge` and request `proof` -> status payload authenticated by the `X-Polylogue-Status-Proof` response header; the bearer remains local
 - `GET /v1/archive-state?provider=chatgpt&provider_session_id=...` -> `BrowserCaptureArchiveStatePayload`
 - `POST /v1/browser-captures` with `BrowserCaptureEnvelope` -> `BrowserCaptureAcceptedPayload` or `BrowserCaptureErrorPayload`
 - `PUT /v1/browser-action-attachments` -> streamed immutable attachment input, returning its SHA-256 `attachment_ref` and byte count
@@ -93,10 +94,14 @@ relative `artifact_ref`. It must not expose absolute paths. Deployment smoke
 uses this endpoint as an invariant check: a receiver that says `captured: true`
 without raw/index/message evidence is considered broken, not merely stale.
 
-Inspect the receiver target directly with `polylogued browser-capture status`,
-include it in the daemon component summary with `polylogued status`, or include
-the same component status in archive health output with `polylogue ops doctor
---daemon`.
+Inspect the running receiver's observed policy through the daemon with
+`polylogued status` or `polylogue ops doctor --daemon`.
+`polylogued browser-capture status` reads the configured receiver directly, including
+standalone `browser-capture serve`, using existing credentials without minting or rotation.
+For a standalone listener override, pass the matching `status --host HOST --port PORT`; omitted values use resolved settings. Credentialed observations use `POST /v1/receiver/status-attest`. A fresh challenge and request HMAC authenticate the caller before status disclosure; a response HMAC binds the challenge, persisted receiver identity and exact staged JSON bytes. The persisted bearer never crosses this observation socket, including through a relay. The returned identity is checked. For an explicitly unauthenticated listener, use `status --allow-no-auth` (or the matching configured/environment opt-out); this sends no credential and checks identity and disabled authentication. Use `--require-auth` to override a configured no-auth setting for a credentialed listener. Status waits for completion or operator cancellation, stages and validates responses incrementally, and retains the lazy origin roster only through output. Invalid JSON/schema is a named refusal; local response-spill failures report `receiver_observation_storage_failed`. These routes report the bound server's resolved authentication,
+allowed origins and remote policy. Before bind or after shutdown, policy remains
+unknown rather than being inferred from defaults. Status never includes bearer
+token values. Its nonsecret identity file may be readable by other users, but must be an owner-controlled regular file without group/other write permission. The token remains owner-only. Descriptor reads refuse symlinks, and local identity/token failures are named before any receiver connection is opened.
 
 ## Control-plane browser boundary
 
@@ -535,9 +540,9 @@ local process can hold the receiver port while the daemon is stopped. The host
 therefore sends a fresh 32-byte challenge to the endpoint's
 `POST /v1/receiver/attest` and releases the bearer only when the answer is the
 HMAC-SHA256, keyed by that bearer, over the receiver identity and the challenge.
-The bearer itself never crosses the socket during this check. An endpoint that
+The bearer itself never crosses the socket during this check. This possession proof alone does not establish endpoint ownership against a forwarding relay; native bootstrap transport remains a separate follow-up (`polylogue-xgj34`). An endpoint that
 does not answer yields `receiver_unreachable`; one that answers with anything
-else yields `receiver_authentication_failed`. When a status probe is refused
+else yields `receiver_authentication_failed`. Local response staging or spill failures yield `receiver_observation_storage_failed` in the native-messaging error envelope; they are distinct from peer reachability or authentication. When a status probe is refused
 with `401`, the extension asks the host for the current bearer once per health
 check; a second refusal is reported as `unauthorized` rather than retried.
 
@@ -683,3 +688,9 @@ and restores them through `polylogue.configureReceiver`; it waits for an
 in-flight configuration mutation before restoration. Its configure response
 carries the admitted configuration revision, so restoration refuses independent
 reset or configure even when endpoint and token values match. Restoration does not resume automatic capture.
+
+Configured receivers pin the current owner-only persisted token for each HTTP operation, so `browser-capture token show --rotate` immediately invalidates the previous bearer without restarting the receiver. Direct library servers retain their explicit in-memory credential authority. An unavailable persisted credential produces `receiver_credential_unavailable` (503), without a frozen-token fallback.
+
+Authenticated status first obtains `/v1/receiver/status-challenge`, a receiver-issued nonce owned by that kept-alive connection. `/v1/receiver/status-attest` consumes it once before checking the signed request. The client prohibits reconnecting before attestation; recorded requests cannot authorize another connection or a restarted receiver. Local native SQL settlement failures produce `receiver_observation_storage_failed` and retain the original cleanup owner.
+
+Pairing-code redemption validates and consumes the code, then returns the receiver’s pinned token; it does not consult or mint an unrelated default credential. A receiver with authentication disabled refuses redemption with `receiver_auth_disabled`. The local `browser-capture action` command enqueues through its spool owner and has no receiver authentication options or credential publication side effect. Lazy JSON read failures are classified at the SQLite view producer; renderer and output exceptions retain their original identity.

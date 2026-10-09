@@ -322,26 +322,28 @@ def test_catchup_receipt_recovery_sweeps_every_non_terminal_status() -> None:
 
 
 def test_daemon_status_lines_include_latest_embedding_catchup() -> None:
-    lines = format_daemon_status_lines(
-        {
-            "embedding_readiness": {
-                "embedding_enabled": True,
-                "embedding_coverage_percent": 12.5,
-                "embedding_pending_count": 10,
-                "embedding_pending_message_count": 200,
-                "embedding_stale_count": 0,
-                "embedding_failure_count": 0,
-                "embedding_estimated_cost_usd": 0.02,
-                "embedding_model": "voyage-4",
-                "embedding_dimension": 1024,
-                "embedding_latest_catchup_run": {
-                    "status": "running",
-                    "processed_sessions": 3,
-                    "planned_sessions": 10,
-                    "embedded_messages": 42,
-                },
+    lines = list(
+        format_daemon_status_lines(
+            {
+                "embedding_readiness": {
+                    "embedding_enabled": True,
+                    "embedding_coverage_percent": 12.5,
+                    "embedding_pending_count": 10,
+                    "embedding_pending_message_count": 200,
+                    "embedding_stale_count": 0,
+                    "embedding_failure_count": 0,
+                    "embedding_estimated_cost_usd": 0.02,
+                    "embedding_model": "voyage-4",
+                    "embedding_dimension": 1024,
+                    "embedding_latest_catchup_run": {
+                        "status": "running",
+                        "processed_sessions": 3,
+                        "planned_sessions": 10,
+                        "embedded_messages": 42,
+                    },
+                }
             }
-        }
+        )
     )
     assert "  latest catch-up: running, 3/10 convs, 42 msgs embedded" in lines
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from polylogue.cli.shared.check_models import CheckCommandResult
 from polylogue.cli.shared.check_support import format_count_mapping
 from polylogue.cli.shared.check_workflow import CheckCommandOptions
@@ -88,11 +90,17 @@ def append_runtime_lines(lines: list[str], result: CheckCommandResult, *, plain:
     )
 
 
-def append_daemon_lines(lines: list[str], result: CheckCommandResult) -> None:
+def daemon_lines(result: CheckCommandResult) -> Iterator[str]:
     if result.daemon_report is None:
         return
-    lines.extend(["", "Daemon Components:"])
-    lines.extend(f"  {line}" for line in format_daemon_status_lines(result.daemon_report)[1:])
+    yield ""
+    yield "Daemon Components:"
+    rendered = format_daemon_status_lines(result.daemon_report)
+    snapshot = result.daemon_report.get("status_snapshot")
+    if not (result.daemon_report.get("ok") is False and isinstance(snapshot, dict)):
+        next(rendered, None)
+    for line in rendered:
+        yield f"  {line}"
 
 
 def append_blob_lines(lines: list[str], result: CheckCommandResult) -> None:
@@ -229,17 +237,19 @@ def build_report_lines(
     env: AppEnv,
     result: CheckCommandResult,
     options: CheckCommandOptions,
-) -> list[str]:
-    """Build the full plain-mode report body."""
+) -> Iterator[str]:
+    """Emit report sections without collecting the receiver origin roster."""
     lines = build_readiness_lines(env, result, options)
     append_derived_model_lines(lines, result)
     append_schema_lines(lines, result)
     append_artifact_coverage_lines(lines, result)
     append_artifact_observation_lines(lines, result)
     append_runtime_lines(lines, result, plain=env.ui.plain)
-    append_daemon_lines(lines, result)
+    yield from lines
+    yield from daemon_lines(result)
+    lines.clear()
     append_blob_lines(lines, result)
-    return lines
+    yield from lines
 
 
 # ---------------------------------------------------------------------------
@@ -252,11 +262,13 @@ def render_plain_output(
     result: CheckCommandResult,
     options: CheckCommandOptions,
 ) -> None:
-    env.ui.summary("Health Check", build_report_lines(env, result, options))
+    env.ui.console.print("-- Health Check --")
+    for line in build_report_lines(env, result, options):
+        env.ui.console.print(line)
 
 
 __all__ = [
-    "append_daemon_lines",
+    "daemon_lines",
     "render_plain_output",
     "status_icon",
 ]

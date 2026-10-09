@@ -338,7 +338,7 @@ def test_real_converger_outcomes_reach_status_and_read_surfaces(tmp_path: Path) 
     assert isinstance(convergence, dict)
     assert convergence["failed_count"] == 1
     assert convergence["deferred_count"] == 1
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     assert "Convergence debt: 1 failed, 1 deferred, 0 retry due" in lines
 
 

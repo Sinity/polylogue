@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from polylogue.cli.shared.check_models import CheckCommandResult
 from polylogue.cli.shared.check_rendering_plain import (
@@ -177,7 +177,7 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
         },
     )
 
-    lines = build_report_lines(env, result, _options(verbose=True))
+    lines = list(build_report_lines(env, result, _options(verbose=True)))
     rendered = "\n".join(lines)
 
     assert "db: busy" in rendered
@@ -197,7 +197,7 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
     assert "Browser capture spool: ready" in rendered
 
 
-def test_render_plain_output_delegates_to_summary() -> None:
+def test_render_plain_output_emits_lines_incrementally() -> None:
     env = _env(plain=True)
     result = CheckCommandResult(report=ReadinessReport())
     options = _options()
@@ -206,4 +206,5 @@ def test_render_plain_output_delegates_to_summary() -> None:
         render_plain_output(env, result, options)
 
     build_lines.assert_called_once_with(env, result, options)
-    env.ui.summary.assert_called_once_with("Health Check", ["alpha"])
+    assert env.ui.console.print.call_args_list == [call("-- Health Check --"), call("alpha")]
+    env.ui.summary.assert_not_called()

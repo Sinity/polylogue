@@ -13,7 +13,7 @@ from click.testing import CliRunner
 
 import polylogue.logging as plog
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.daemon import status as status_module
 from polylogue.daemon.commands import status_command as daemon_status_command
 from polylogue.daemon.fts_status import FTSReadiness
@@ -28,6 +28,7 @@ from polylogue.daemon.status import (
 )
 from polylogue.daemon.status_snapshot import (
     STATUS_SNAPSHOT_STATE_FAMILY,
+    configure_browser_capture_status,
     configure_runtime_components,
     get_status_snapshot_payload,
     refresh_status_snapshot,
@@ -303,27 +304,29 @@ def test_caller_payload_refresh_uses_invocation_frame(monkeypatch: pytest.Monkey
 
 def test_daemon_status_plain_output_reports_schema_and_cursor_debt() -> None:
     """Daemon status must surface actionable split-store and cursor-state evidence."""
-    lines = format_daemon_status_lines(
-        {
-            "daemon_liveness": True,
-            "archive_storage": {
-                "active_store": "archive_file_set",
-                "present_tiers": ["source", "index"],
-                "missing_tiers": ["embeddings", "user", "audit", "ops"],
-                "schema_mismatches": ["index"],
-                "archive_root_matches_configured": False,
-                "archive_root": "/tmp/active-archive",
-            },
-            "live_cursor": {
-                "tracked_file_count": 3,
-                "failed_file_count": 1,
-                "excluded_file_count": 1,
-                "retry_due_file_count": 1,
-                "in_backoff_file_count": 0,
-                "omitted_file_count": 2,
-            },
-            "failing_files": ["/capture/broken.jsonl"],
-        }
+    lines = list(
+        format_daemon_status_lines(
+            {
+                "daemon_liveness": True,
+                "archive_storage": {
+                    "active_store": "archive_file_set",
+                    "present_tiers": ["source", "index"],
+                    "missing_tiers": ["embeddings", "user", "audit", "ops"],
+                    "schema_mismatches": ["index"],
+                    "archive_root_matches_configured": False,
+                    "archive_root": "/tmp/active-archive",
+                },
+                "live_cursor": {
+                    "tracked_file_count": 3,
+                    "failed_file_count": 1,
+                    "excluded_file_count": 1,
+                    "retry_due_file_count": 1,
+                    "in_backoff_file_count": 0,
+                    "omitted_file_count": 2,
+                },
+                "failing_files": ["/capture/broken.jsonl"],
+            }
+        )
     )
 
     assert (
@@ -338,20 +341,22 @@ def test_daemon_status_plain_output_reports_schema_and_cursor_debt() -> None:
 
 
 def test_daemon_status_plain_output_reports_judgment_scheduler_receipt() -> None:
-    lines = format_daemon_status_lines(
-        {
-            "assertion_candidate_queue": {
-                "state": "scheduler-stalled",
-                "pending_count": 2,
-                "producer_status": "completed",
-                "scheduler_state": "fresh",
-                "producer_debt_count": 0,
-                "judgment_scheduler_receipt_status": "failed",
-                "judgment_scheduler_receipt_at_ms": 1_800_000_000_000,
-                "judgment_scheduler_receipt_age_ms": 90_000,
-                "judgment_scheduler_receipt_reason": "configuration_reload_failed",
+    lines = list(
+        format_daemon_status_lines(
+            {
+                "assertion_candidate_queue": {
+                    "state": "scheduler-stalled",
+                    "pending_count": 2,
+                    "producer_status": "completed",
+                    "scheduler_state": "fresh",
+                    "producer_debt_count": 0,
+                    "judgment_scheduler_receipt_status": "failed",
+                    "judgment_scheduler_receipt_at_ms": 1_800_000_000_000,
+                    "judgment_scheduler_receipt_age_ms": 90_000,
+                    "judgment_scheduler_receipt_reason": "configuration_reload_failed",
+                }
             }
-        }
+        )
     )
 
     receipt_lines = [line for line in lines if "judgment scheduler receipt:" in line]
@@ -498,6 +503,9 @@ def test_status_snapshot_uses_runtime_browser_capture_state(
         watcher_roots=("/watch/a", "/watch/b"),
         browser_capture_enabled=True,
     )
+    configure_browser_capture_status(
+        BrowserCaptureReceiverConfig(spool_path=tmp_path / "capture", auth_token="neutral")
+    )
 
     snapshot = refresh_status_snapshot(rich=False)
 
@@ -642,16 +650,9 @@ def test_build_daemon_status_uses_one_lifecycle_snapshot(tmp_path: Path) -> None
     assert status.daemon_lifecycle == fresh
 
 
-def test_daemon_status_redacts_default_browser_capture_spool(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
+def test_daemon_status_redacts_observed_browser_capture_spool(tmp_path: Path) -> None:
     expected_spool = tmp_path / "browser-capture"
-    monkeypatch.setattr(
-        BrowserCaptureReceiverConfig,
-        "default",
-        classmethod(lambda cls: BrowserCaptureReceiverConfig(spool_path=expected_spool)),
-    )
+    configure_browser_capture_status(BrowserCaptureReceiverConfig(spool_path=expected_spool, auth_token="neutral"))
 
     payload = daemon_status_payload(sources=())
 
@@ -659,22 +660,16 @@ def test_daemon_status_redacts_default_browser_capture_spool(
     browser_capture = payload["browser_capture"]
     assert isinstance(browser_capture, dict)
     assert browser_capture["spool_ready"] is True
+    assert browser_capture["auth_required"] is True
     assert "spool_path" not in browser_capture
     component_state = payload["component_state"]
     assert isinstance(component_state, dict)
     assert component_state["browser_capture"] == "running"
 
 
-def test_browser_capture_status_payload_can_include_spool_path(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
+def test_browser_capture_status_payload_can_include_observed_spool_path(tmp_path: Path) -> None:
     expected_spool = tmp_path / "browser-capture"
-    monkeypatch.setattr(
-        BrowserCaptureReceiverConfig,
-        "default",
-        classmethod(lambda cls: BrowserCaptureReceiverConfig(spool_path=expected_spool)),
-    )
+    configure_browser_capture_status(BrowserCaptureReceiverConfig(spool_path=expected_spool))
 
     payload = browser_capture_status_payload(include_spool_path=True)
 
@@ -692,7 +687,7 @@ def test_daemon_status_honors_explicit_disabled_browser_capture(
         classmethod(lambda cls: BrowserCaptureReceiverConfig(spool_path=expected_spool)),
     )
 
-    status = build_daemon_status(sources=(), browser_capture_enabled=False)
+    status = build_daemon_status(sources=())
 
     assert status.browser_capture_active is False
     assert status.component_state.browser_capture == "stopped"
@@ -814,7 +809,7 @@ def test_health_alert_count_excludes_ok_severity_checks(tmp_path: Path) -> None:
     assert health["alert_count"] == 0
     assert health["checks_run"] == 6
 
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     assert "Health: ok (0 alerts)" in lines
 
 
@@ -851,7 +846,7 @@ def test_health_alert_count_reflects_a_real_problem_not_ok(tmp_path: Path) -> No
     assert health["alert_count"] == 1
     assert health["checks_run"] == 2
 
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     assert "Health: error (1 alerts)" in lines
     assert not any("ok (" in line and "1" in line for line in lines if line.startswith("Health:"))
 
@@ -894,7 +889,7 @@ def test_status_labels_configured_and_disabled_health_tiers(
 
     assert health_payload["configured_tiers"] == expected_tiers
     assert health_payload["tiers"] == expected_states
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     assert "  Tiers: " + ", ".join(f"{tier}={state}" for tier, state in expected_states.items()) in lines
 
 
@@ -925,7 +920,7 @@ def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: P
     first_failure = failing_files[0]
     assert isinstance(first_failure, dict)
     assert first_failure["source_path"] == str(failed)
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     assert "Live cursor: 1 tracked, 1 failed, 0 excluded, 0 retry due, 1 in backoff" in lines
     assert "Failing files: 1" in lines
     # polylogue-ix5r: a non-excluded, not-yet-due failing file is labeled "in
@@ -958,7 +953,7 @@ def test_daemon_status_failing_files_listing_labels_excluded_rows_with_age(tmp_p
     ):
         payload = daemon_status_payload(sources=())
 
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     matching = [line for line in lines if str(excluded) in line]
     assert len(matching) == 1
     assert "permanent until file replaced" in matching[0]
@@ -1112,7 +1107,7 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
     metadata = cast(dict[str, object], raw_component["metadata"])
     assert metadata["category_counts"] == {"raw_id_join_gap": 238}
 
-    lines = format_daemon_status_lines(status_payload)
+    lines = list(format_daemon_status_lines(status_payload))
     assert "Raw materialization: 62/300 materialized; 238 raw/index join gap(s) need classification" in lines
     assert raw_replay["candidate_count"] == 3
     assert "Raw replay backlog: 3 raw row(s), 15.0 MB pending; largest 10.0 MB" in lines
@@ -1168,7 +1163,7 @@ def test_daemon_status_preserves_lost_source_evidence(monkeypatch: pytest.Monkey
     claim_guard = cast(dict[str, dict[str, object]], status_payload["claim_guard"])
     assert claim_guard["converged"]["value"] is False
     assert status_payload["ok"] is False
-    rendered = format_daemon_status_lines(status_payload)
+    rendered = list(format_daemon_status_lines(status_payload))
     assert any(line.startswith("Raw frontier integrity: violated") for line in rendered)
     assert any("indexed session(s) reference raw evidence missing" in line for line in rendered)
 
@@ -1284,7 +1279,7 @@ def test_plain_daemon_status_reports_bounded_embedding_pending_messages() -> Non
         }
     }
 
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
 
     assert (
         "Embeddings: disabled (key present; none/none, not ready; 7 pending convs, pending msgs not calculated)"
@@ -1318,7 +1313,7 @@ def test_daemon_status_caps_failed_file_samples(tmp_path: Path) -> None:
     assert live_cursor["failed_file_count"] == 55
     assert live_cursor["sampled_file_count"] == 50
     assert live_cursor["omitted_file_count"] == 5
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     assert "Failing files: 50 shown, 5 omitted" in lines
 
 
@@ -1407,7 +1402,7 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     first_event = recent_events[0]
     assert isinstance(first_event, dict)
     assert first_event["current_path"] == str(source)
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     assert "Live ingest attempts: 1 running" in lines
     assert "  latest: running full_parse 0/1 files" in lines
     assert "  workload: read amp 0.00x, 0.00 MiB/s source, 0.00 files/s" in lines
@@ -1519,7 +1514,7 @@ def test_daemon_status_reads_ops_tier_from_archive_tiers(tmp_path: Path) -> None
     assert latest["rss_current_mb"] == 42.0
     assert latest["cgroup_path"] == "/user.slice/v1.scope"
     assert latest["cgroup_memory_current_mb"] == 2048.0
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     assert any(line.startswith("Live ingest attempts: 1 running") for line in lines)
     assert any(line.startswith("  latest: running ") and line.endswith("full_parse 3/7 files") for line in lines)
     assert "  storage route: archive_full (source,index), 1 payloads outside memory" in lines
@@ -1620,7 +1615,7 @@ def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> No
     assert isinstance(first_recent, dict)
     assert first_recent["subject_id"] == str(source)
     assert {item["status"] for item in recent if isinstance(item, dict)} == {"failed", "deferred"}
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     assert "Convergence debt: 1 failed, 1 deferred, 0 retry due" in lines
     assert "  derived: 1 failed, 0 deferred, 0 retry due" in lines
     assert "  fts: 0 failed, 1 deferred, 0 retry due" in lines
@@ -1830,7 +1825,7 @@ def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_de
         patch("polylogue.daemon.status.embedding_readiness_info", return_value={}),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
     ):
-        status = build_daemon_status(sources=(), browser_capture_enabled=False)
+        status = build_daemon_status(sources=())
 
     assert status.archive_storage.archive_schema_ready is True
     assert status.archive_storage.archive_materialization_ready is False
@@ -1913,7 +1908,7 @@ def test_build_daemon_status_claim_guard_reports_openable_but_not_converged(tmp_
         patch("polylogue.daemon.status.embedding_readiness_info", return_value={}),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
     ):
-        status = build_daemon_status(sources=(), browser_capture_enabled=False)
+        status = build_daemon_status(sources=())
 
     claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
     assert claim_guard["openable"]["value"] is True
@@ -2005,7 +2000,7 @@ def test_build_daemon_status_claim_guard_keeps_operation_debt_separate(
         patch("polylogue.daemon.status.embedding_readiness_info", return_value={}),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
     ):
-        status = build_daemon_status(sources=(), browser_capture_enabled=False)
+        status = build_daemon_status(sources=())
 
     assert status.convergence.available is (debt_setup in {"pending", "empty"})
     claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
@@ -2092,7 +2087,6 @@ def test_build_daemon_status_claim_guard_keeps_registry_debt_health_separate(
     )
     status = build_daemon_status(
         sources=(),
-        browser_capture_enabled=False,
         include_raw_replay_backlog=False,
         include_exact_raw_materialization_readiness=False,
         registry=StatusComponentRegistry(specs),
@@ -2362,7 +2356,7 @@ def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
         payload = daemon_status_payload(sources=())
 
     assert payload["ok"] is expected_ok
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     if expected_ok:
         assert not any("Raw failures: unavailable" in line for line in lines)
     else:
@@ -2785,7 +2779,7 @@ def test_daemon_status_flags_stale_live_ingest_attempts(tmp_path: Path, frozen_c
     assert updated_age_s >= 600
     assert attempts["stuck_running_count"] == 1
     assert attempts["slow_running_count"] == 0
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     assert "Live ingest attempts: 1 running, 1 stuck" in lines
     assert "  latest: running stuck planning 0/1 files" in lines
 
@@ -2860,7 +2854,7 @@ def test_daemon_status_flags_slow_but_progressing_live_ingest_attempt(
     assert isinstance(latest, dict)
     assert latest["progress_classification"] == "slow"
     assert latest["stale"] is False
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     assert "Live ingest attempts: 1 running, 1 slow" in lines
     assert any(line.startswith("  latest: running slow ") for line in lines)
 
@@ -2944,7 +2938,7 @@ def test_daemon_status_never_reports_excluded_cursor_as_retry_due(tmp_path: Path
     assert status.live_cursor.excluded_oldest_age_s is not None
     assert status.live_cursor.excluded_oldest_age_s >= 0.0
 
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     live_cursor_line = next(line for line in lines if line.startswith("Live cursor:"))
     assert "1 excluded (permanent until file replaced" in live_cursor_line
     assert "0 retry due" in live_cursor_line
@@ -4123,7 +4117,6 @@ def test_daemon_publication_status_preserves_invalid_config_diagnostic(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.core.json import json_document
     from polylogue.daemon.status import _sinex_publication_status_info
 
     monkeypatch.setenv("POLYLOGUE_SINEX_MODE", "bogus")
@@ -4132,8 +4125,28 @@ def test_daemon_publication_status_preserves_invalid_config_diagnostic(
     assert payload["state"] == "unavailable"
     assert payload["code"] == "sinex_mode_unrecognized"
     assert "active_lag" not in payload
-    lines = format_daemon_status_lines(json_document({"sinex_publication": payload}))
+    lines = list(format_daemon_status_lines(json_document({"sinex_publication": payload})))
     publication_lines = [line for line in lines if line.startswith("Sinex publication:")]
     assert len(publication_lines) == 1
     assert "unavailable" in publication_lines[0]
     assert " lag" not in publication_lines[0]
+
+
+def test_rich_status_uses_one_receiver_policy_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    observed = {"active": True, "auth_required": True, "allow_remote": False, "allowed_origins": []}
+    calls = 0
+
+    def snapshot(*, include_spool_path: bool = False) -> JSONDocument:
+        nonlocal calls
+        calls += 1
+        assert calls == 1, "rich status must not reread receiver policy after component collection"
+        return json_document(observed)
+
+    monkeypatch.setattr(status_module, "browser_capture_status_payload", snapshot)
+    payload = _health_payload(tmp_path, DaemonHealth())
+    assert calls == 1
+    assert payload["browser_capture"] == observed
+    assert payload["browser_capture_active"] is True
+    component = payload["component_state"]
+    assert isinstance(component, dict)
+    assert component["browser_capture"] == "running"

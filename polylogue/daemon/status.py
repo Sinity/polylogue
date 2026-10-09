@@ -7,14 +7,13 @@ import json
 import os
 import sqlite3
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast, get_args
 
 from pydantic import BaseModel, Field, StrictInt, ValidationInfo, field_validator
 
-from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.config import Config
 from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.core.json import JSONDocument, json_document
@@ -657,6 +656,7 @@ class DaemonStatus(BaseModel):
     status_components: list[dict[str, object]] = Field(default_factory=list)
     claim_guard: dict[str, object] = Field(default_factory=dict)
     browser_capture_active: bool = False
+    browser_capture_policy: dict[str, object] = Field(default_factory=dict)
     # ``None`` means source-tier evidence could not be read; zero means the
     # corresponding query completed and found no rows.
     raw_parse_failures: int | None = None
@@ -711,11 +711,13 @@ def live_source_status_payload(sources: tuple[WatchSource, ...]) -> JSONDocument
 
 def browser_capture_status_payload(*, include_spool_path: bool = False) -> JSONDocument:
     """Return safe status for the browser-capture receiver component."""
-    payload = receiver_status_payload(BrowserCaptureReceiverConfig.default())
+    from polylogue.daemon.status_snapshot import browser_capture_runtime_status
+
+    payload = browser_capture_runtime_status()
     if not include_spool_path:
         payload.pop("spool_path", None)
         payload.pop("artifact_path", None)
-    return json_document(payload)
+    return payload
 
 
 def browser_capture_status_public_payload() -> JSONDocument:
@@ -2565,7 +2567,6 @@ def _component_is_unmeasured(snapshot: ComponentSnapshot, *, current_fingerprint
 def build_daemon_status(
     *,
     sources: tuple[WatchSource, ...] | None = None,
-    browser_capture_enabled: bool | None = None,
     include_expensive_health: bool = False,
     include_raw_replay_backlog: bool = True,
     include_exact_raw_materialization_readiness: bool = True,
@@ -2591,9 +2592,10 @@ def build_daemon_status(
     -recompute contract.
     """
     watch_sources = sources if sources is not None else default_sources()
-    # Unknown means a status read outside the daemon, which serves the
-    # receiver by default.
-    browser_capture_active = browser_capture_enabled if browser_capture_enabled is not None else True
+    # An enabled switch alone cannot prove that the receiver bound. Outside
+    # the runtime owner, its actual policy and liveness remain unobserved.
+    browser_capture_policy = browser_capture_status_payload()
+    browser_capture_active = browser_capture_policy.get("active") is True
     active_db = _active_status_db_path()
 
     # Status observes the configured health schedule. This keeps MEDIUM
@@ -2996,6 +2998,7 @@ def build_daemon_status(
         health=health,
         health_tiers=health_tiers,
         browser_capture_active=browser_capture_active,
+        browser_capture_policy=cast(dict[str, object], browser_capture_policy),
         rss_current_mb=rss_current_mb,
         rss_peak_mb=rss_peak_mb,
         cgroup_memory_current_mb=cgroup_memory_current_mb,
@@ -3088,7 +3091,6 @@ def daemon_status_payload(
     *,
     config: Config | None = None,
     sources: tuple[WatchSource, ...] | None = None,
-    browser_capture_enabled: bool | None = None,
     include_raw_replay_backlog: bool = False,
     include_exact_raw_materialization_readiness: bool = False,
     include_archive_debt: bool = False,
@@ -3131,7 +3133,6 @@ def daemon_status_payload(
 
     status = build_daemon_status(
         sources=sources,
-        browser_capture_enabled=browser_capture_enabled,
         include_raw_replay_backlog=include_raw_replay_backlog,
         include_exact_raw_materialization_readiness=include_exact_raw_materialization_readiness,
         registry=registry,
@@ -3269,7 +3270,7 @@ def daemon_status_payload(
             "status_components": status.status_components,
             "claim_guard": status.claim_guard,
             "live": live_source_status_payload(watch_sources),
-            "browser_capture": browser_capture_status_payload(),
+            "browser_capture": status.browser_capture_policy,
             # The archive this daemon answers for, from the same producer as
             # the pinned operation read: the HTTP route serves this payload.
             **archive_identity_status(archive_root(), _active_status_db_path()),
@@ -3419,8 +3420,25 @@ def _failing_periodic_loops(loops: object) -> list[dict[str, object]]:
     return [loop for loop in loops if isinstance(loop, dict) and loop.get("last_run_failed") is True]
 
 
-def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
+def format_browser_capture_policy_lines(payload: JSONDocument) -> list[str]:
+    """Render observed receiver policy with explicit unknown values."""
+    auth = payload.get("auth_required")
+    remote = payload.get("allow_remote")
+    auth_state = "required" if auth is True else "disabled" if auth is False else "unknown"
+    remote_state = "allowed" if remote is True else "disabled" if remote is False else "unknown"
+    return [f"Browser capture authentication: {auth_state}", f"Browser capture remote access: {remote_state}"]
+
+
+def format_daemon_status_lines(payload: JSONDocument) -> Iterator[str]:
     """Render daemon component status as plain text lines."""
+    snapshot = payload.get("status_snapshot")
+    if payload.get("ok") is False and "archive_storage" not in payload and isinstance(snapshot, dict):
+        lines = [f"Polylogue daemon: {snapshot['state']}"]
+        for key, label in (("reason", "Reason"), ("detail", "Detail"), ("request_id", "Request")):
+            if value := snapshot.get(key):
+                lines.append(f"{label}: {value}")
+        yield from lines
+        return
     lines = ["Polylogue daemon"]
     halted = payload.get("halted_units")
     if isinstance(halted, list) and halted:
@@ -3556,9 +3574,23 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     if isinstance(browser_capture, dict):
         spool_state = "ready" if browser_capture.get("spool_ready") else "unavailable"
         lines.append(f"Browser capture spool: {spool_state}")
+        yield from lines
+        lines.clear()
         origins = browser_capture.get("allowed_origins", [])
-        origin_text = ", ".join(str(item) for item in origins) if isinstance(origins, list) else str(origins)
-        lines.append(f"Browser capture origins: {origin_text}")
+        yield "Browser capture origins:"
+        if isinstance(origins, list):
+            for origin in origins:
+                yield f"  {origin}"
+        lines.extend(
+            format_browser_capture_policy_lines(
+                json_document(
+                    {
+                        "auth_required": browser_capture.get("auth_required"),
+                        "allow_remote": browser_capture.get("allow_remote"),
+                    }
+                )
+            )
+        )
     failing_files = payload.get("failing_files")
     live_cursor = payload.get("live_cursor")
     if isinstance(live_cursor, dict) and live_cursor.get("available") is False:
@@ -3951,4 +3983,4 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     f"{_safe_int(material.get('processed_sessions'))}/"
                     f"{_safe_int(material.get('planned_sessions'))} convs"
                 )
-    return lines
+    yield from lines

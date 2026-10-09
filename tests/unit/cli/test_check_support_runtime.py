@@ -192,15 +192,21 @@ def test_run_check_workflow_includes_daemon_status_when_requested() -> None:
     env = _env()
     config = _config()
     report = _report()
-    daemon_report = {"ok": True, "daemon": "polylogued"}
+    daemon_report = {
+        "ok": True,
+        "daemon": "polylogued",
+        "browser_capture": {"active": True, "auth_required": True, "allow_remote": False},
+    }
 
     with (
         patch("polylogue.cli.shared.check_workflow.load_effective_config", return_value=config),
         patch("polylogue.cli.shared.check_workflow.get_readiness", return_value=report),
-        patch("polylogue.cli.shared.check_workflow.daemon_status_payload", return_value=daemon_report) as daemon_status,
+        patch(
+            "polylogue.cli.shared.check_workflow._live_daemon_status_payload", return_value=daemon_report
+        ) as daemon_status,
     ):
         result = check_workflow.run_check_workflow(env, _options(check_daemon=True))
 
     assert result.report is report
     assert result.daemon_report is daemon_report
-    daemon_status.assert_called_once_with()
+    daemon_status.assert_called_once_with(config)

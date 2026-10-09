@@ -2,23 +2,33 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import http.client
 import json
 import os
 import secrets
+import sqlite3
 import struct
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import ParseResult, urlparse
+
+from ijson.common import JSONError
 
 from polylogue.browser_capture.models import BROWSER_CAPTURE_API_SCHEMA
 from polylogue.browser_capture.receiver import (
     load_or_mint_receiver_identity,
     load_or_mint_receiver_token,
     receiver_attestation_proof,
+    receiver_status_proof,
 )
+from polylogue.core.json import JSONValue
+from polylogue.schemas.observation_spill import StreamedJSONDocument, StreamedJSONReadError
+from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
 
 NATIVE_HOST_NAME = "com.polylogue.browser_capture"
 
@@ -125,38 +135,128 @@ def _authenticate_receiver(endpoint: ParseResult, receiver_id: str, secret: str)
     """Challenge the endpoint; ``None`` when it answers with the bearer-keyed proof.
 
     Otherwise return the refusal code: ``receiver_unreachable`` when nothing
-    answered, ``receiver_authentication_failed`` when something else did. Only
+    answered, ``receiver_authentication_failed`` when something else did, and
+    ``receiver_observation_storage_failed`` when local response custody could
+    not create, write, decode or close its spill. Only
     the challenge crosses the socket, so an impostor listening on the receiver
-    port learns nothing it can use and cannot answer.
+    port learns no bearer from this exchange. This proof alone does not
+    establish endpoint ownership against a relay to another genuine receiver.
     """
-    challenge = secrets.token_urlsafe(32)
-    path = endpoint.path.rstrip("/") + "/v1/receiver/attest"
     connection = http.client.HTTPConnection(
         endpoint.hostname or "", endpoint.port or 80, timeout=RECEIVER_ATTESTATION_IDLE_TIMEOUT_S
     )
+    challenge = secrets.token_urlsafe(32)
+    headers = {"Content-Type": "application/json"}
     try:
         connection.request(
             "POST",
-            path,
+            endpoint.path.rstrip("/") + "/v1/receiver/attest",
             body=json.dumps({"challenge": challenge}),
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         response = connection.getresponse()
-        raw = response.read()
+        if response.status != 200:
+            return "receiver_authentication_failed"
+        with _receiver_response_document(response) as body:
+            proof = body.get("proof") if isinstance(body, dict) else None
+            if (
+                isinstance(proof, str)
+                and proof.isascii()
+                and hmac.compare_digest(proof, receiver_attestation_proof(secret, receiver_id, challenge))
+            ):
+                return None
     except (OSError, http.client.HTTPException):
         return "receiver_unreachable"
+    except ReceiverObservationStorageError:
+        return "receiver_observation_storage_failed"
+    except (ValueError, JSONError):
+        return "receiver_authentication_failed"
     finally:
         connection.close()
-    try:
-        body = json.loads(raw) if response.status == 200 else None
-    except ValueError:
-        body = None
-    proof = body.get("proof") if isinstance(body, dict) else None
-    if isinstance(proof, str) and hmac.compare_digest(
-        proof, receiver_attestation_proof(secret, receiver_id, challenge)
-    ):
-        return None
     return "receiver_authentication_failed"
+
+
+class ReceiverResponseAuthenticationError(ValueError):
+    """The received status bytes lack the challenge-bound receiver proof."""
+
+
+class ReceiverResponsePayloadError(ValueError):
+    """The received JSON bytes could not be decoded into a complete document."""
+
+
+class ReceiverNetworkReadError(OSError):
+    """The peer failed while streaming response bytes, before local decoding."""
+
+
+class ReceiverObservationStorageError(RuntimeError):
+    """The local response spill could not preserve a complete observation."""
+
+
+@contextmanager
+def _receiver_response_document(
+    response: http.client.HTTPResponse, *, status_auth: tuple[str, str, str] | None = None
+) -> Iterator[JSONValue]:
+    """Own a complete receiver JSON response without retaining its wire collection."""
+    try:
+        scratch = tempfile.TemporaryDirectory(prefix="polylogue-receiver-response-")
+    except OSError as exc:
+        response.close()
+        raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
+    try:
+        path = Path(scratch.name) / "response.json"
+        digest = hashlib.sha256()
+        stream = None
+        try:
+            stream = path.open("wb")
+        except OSError as exc:
+            raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
+        try:
+            while True:
+                try:
+                    chunk = response.read(64 * 1024)
+                except (OSError, http.client.HTTPException) as exc:
+                    raise ReceiverNetworkReadError("receiver_unreachable") from exc
+                if not chunk:
+                    break
+                try:
+                    stream.write(chunk)
+                except OSError as exc:
+                    raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
+                digest.update(chunk)
+        finally:
+            try:
+                stream.close()
+            except OSError as exc:
+                raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
+        if status_auth is not None:
+            secret, identity, challenge = status_auth
+            proof = response.getheader("X-Polylogue-Status-Proof", "")
+            expected = receiver_status_proof(secret, identity, challenge, payload_sha256=digest.hexdigest())
+            if not proof.isascii() or not hmac.compare_digest(proof, expected):
+                raise ReceiverResponseAuthenticationError("receiver_authentication_failed")
+        owner = StreamedJSONDocument(path)
+        try:
+            document = owner.__enter__()
+        except (sqlite3.Error, OSError, NativeConnectionSettlementError) as exc:
+            raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
+        except (ValueError, JSONError) as exc:
+            raise ReceiverResponsePayloadError("receiver_status_invalid_payload") from exc
+        try:
+            try:
+                yield document
+            except StreamedJSONReadError as exc:
+                raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
+        finally:
+            try:
+                owner.__exit__(*sys.exc_info())
+            except (sqlite3.Error, OSError, NativeConnectionSettlementError) as exc:
+                raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
+    finally:
+        response.close()
+        try:
+            scratch.cleanup()
+        except OSError as exc:
+            raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
 
 
 def main() -> int:

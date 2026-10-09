@@ -1201,6 +1201,10 @@ writes:
     classification: private_witness_hydration
     reason: "Only raw_existence_journal_control and audit_continuity_control rowid 1 canonical DDL seeds are replaced in the creator-owned private Native witness. The exact retained original image is restored before the first captured statement under the baseline-only hydration phase. The original Source observer is untouched; this classification grants no live Source write authority."
 caller_supplied_sql:
+  - file: "polylogue/schemas/observation_spill.py"
+    function: "_read_rows"
+    parameter: "sql"
+    reason: "All production callers, directly or through _read_row, supply literal SELECTs over json_nodes, json_object_members, json_array_items, json_normalized_keys, or profile_fields on StreamedJSONDocument's existing creator-owned private scratch connection. The helper executes, steps, and closes that borrowed read cursor while retaining typed SQLite failure attributes; it constructs no connection, grants no archive write authority, and leaves scratch mutations with their existing producers."
   - file: "polylogue/storage/sqlite/connection_profile.py"
     function: "execute_pragma_statement"
     parameter: "statement"

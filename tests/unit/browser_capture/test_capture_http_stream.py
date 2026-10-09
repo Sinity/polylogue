@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import socket
+import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http.client import HTTPConnection
@@ -318,3 +319,35 @@ def test_capture_job_http_discards_staged_body_after_parse_or_disconnect_failure
     assert response.status == 400
     assert payload["error"] == expected_error
     assert not list((tmp_path / ".staging").glob(".capture-*.tmp"))
+
+
+def test_capture_job_lazy_sqlite_full_preserves_storage_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.schemas.observation_spill import SpilledObject
+
+    original_enter = StreamedJSONDocument.__enter__
+    failure = sqlite3.OperationalError("neutral SQLite physical value storage exhausted")
+    failure.sqlite_errorcode = sqlite3.SQLITE_FULL
+    failure.sqlite_errorname = "SQLITE_FULL"
+
+    class FailedConnection:
+        def execute(self, *args: Any, **kwargs: Any) -> Any:
+            raise failure
+
+    def fail_lazy_read(document: StreamedJSONDocument) -> object:
+        root = original_enter(document)
+        assert isinstance(root, SpilledObject)
+        root._connection = cast(sqlite3.Connection, FailedConnection())
+        return root
+
+    monkeypatch.setattr(StreamedJSONDocument, "__enter__", fail_lazy_read)
+    with receiver(tmp_path) as (host, port):
+        connection = HTTPConnection(host, port)
+        try:
+            connection.request("POST", "/v1/capture-jobs", body=b'{"provider":"chatgpt"}', headers=_headers())
+            response = connection.getresponse()
+            assert response.status == 507
+            assert json.loads(response.read()) == {"error": {"code": "spool_storage_exhausted", "details": {}}}
+        finally:
+            connection.close()

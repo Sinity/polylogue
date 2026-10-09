@@ -192,3 +192,68 @@ def test_streamed_dynamic_keys_and_growing_nested_variants_do_not_accumulate_in_
     # growing recursive schema. This margin includes transient SQLite/Python
     # cursor and decoder allocations; a 32x shape increase stays bounded.
     assert peaks[1] < peaks[0] + 2_000_000, peaks
+
+
+@pytest.mark.parametrize("view", ["keys", "sorted_keys", "items", "array"])
+def test_abandoned_lazy_view_propagates_its_cursor_close_failure(tmp_path: Path, view: str) -> None:
+    import sqlite3
+    import sys
+    from collections.abc import Generator
+    from typing import Any, cast
+
+    from polylogue.schemas.observation_spill import SpilledArray, SpilledObject, StreamedJSONReadError
+
+    path = tmp_path / "neutral.json"
+    path.write_text('{"neutral":[1,2]}')
+    observed: list[object] = []
+    previous_hook = sys.unraisablehook
+    sys.unraisablehook = observed.append
+    try:
+        with StreamedJSONDocument(path) as document:
+            assert isinstance(document, SpilledObject)
+            actual = document._connection
+            failed_cursors: list[sqlite3.Cursor] = []
+
+            class FailedCloseCursor:
+                def __init__(self, cursor: sqlite3.Cursor) -> None:
+                    self.cursor = cursor
+
+                def __iter__(self) -> FailedCloseCursor:
+                    return self
+
+                def __next__(self) -> Any:
+                    return next(self.cursor)
+
+                def close(self) -> None:
+                    raise sqlite3.OperationalError("neutral lazy cursor close failure")
+
+            class Connection:
+                def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> Any:
+                    cursor = actual.execute(sql, parameters)
+                    if "ORDER BY" in sql:
+                        failed_cursors.append(cursor)
+                        return FailedCloseCursor(cursor)
+                    return cursor
+
+            connection = cast(sqlite3.Connection, Connection())
+            mapping = SpilledObject(connection, document._node_id)
+            if view == "array":
+                array = document["neutral"]
+                assert isinstance(array, SpilledArray)
+                iterator = iter(SpilledArray(connection, array._node_id))
+            elif view == "items":
+                iterator = iter(mapping.items())
+            elif view == "sorted_keys":
+                iterator = mapping.sorted_keys()
+            else:
+                iterator = iter(mapping)
+            try:
+                next(iterator)
+                with pytest.raises(StreamedJSONReadError, match="streamed_json_read_failed"):
+                    cast(Generator[object, None, None], iterator).close()
+                assert not observed
+            finally:
+                for cursor in failed_cursors:
+                    cursor.close()
+    finally:
+        sys.unraisablehook = previous_hook

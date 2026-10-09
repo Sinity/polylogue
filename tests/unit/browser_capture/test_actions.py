@@ -942,7 +942,6 @@ def test_action_cli_streams_the_original_open_file_into_reference_storage(
     monkeypatch.setattr(browser_actions, "browser_capture_spool_root", lambda: tmp_path)
     monkeypatch.setattr(BrowserCaptureReceiverConfig, "default", lambda: SimpleNamespace(spool_path=tmp_path))
     monkeypatch.setattr(capture_cli, "receiver_identity", lambda _config: _RECEIVER_ID)
-    monkeypatch.setattr(capture_cli, "resolve_receiver_auth_token", lambda *_args, **_kwargs: None)
     result = CliRunner().invoke(
         capture_cli.action_command,
         [
@@ -993,3 +992,37 @@ def test_attachment_directory_retry_rechecks_preexisting_unsynced_ancestors(
     reference = store_action_attachment(io.BytesIO(b"neutral").read, 7, spool_path=root)
     assert tmp_path in observed
     assert (root / "browser-actions" / ".inputs" / reference).exists()
+
+
+def test_local_action_enqueue_does_not_publish_receiver_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    from click.testing import CliRunner
+
+    from polylogue.browser_capture.receiver import load_or_mint_receiver_token
+    from polylogue.daemon import browser_capture as capture_cli
+
+    current = load_or_mint_receiver_token()
+
+    def refuse_startup(*args: object, **kwargs: object) -> None:
+        raise AssertionError("local enqueue must not publish receiver credentials")
+
+    monkeypatch.setattr(capture_cli, "resolve_receiver_auth_token", refuse_startup)
+    arguments = [
+        "--provider",
+        "chatgpt",
+        "--text",
+        "Neutral action",
+        "--model-slug",
+        "gpt-5-6-pro",
+        "--model-label",
+        "GPT-5.6 Sol",
+        "--effort-label",
+        "Pro",
+        "--format",
+        "json",
+    ]
+    result = CliRunner().invoke(capture_cli.action_command, arguments)
+    assert result.exit_code == 0, result.output
+    assert load_or_mint_receiver_token() == current
+    refused = CliRunner().invoke(capture_cli.action_command, [*arguments, "--auth-token", "neutral-other-token"])
+    assert refused.exit_code == 2
+    assert load_or_mint_receiver_token() == current

@@ -394,7 +394,7 @@ def test_daemon_status_names_every_halted_unit_and_is_not_ok(tmp_path: Path, mon
     assert records[0]["reason"] == "terminal_refusal"
     assert records[0]["frame"] == "daemon:1"
 
-    lines = format_daemon_status_lines(payload)
+    lines = list(format_daemon_status_lines(payload))
     assert any("source:claude-code" in line for line in lines)
     assert any("HALTED" in line for line in lines)
 

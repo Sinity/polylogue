@@ -2228,7 +2228,7 @@ async def _run_daemon_services_under_active_writer_lease(
     """
     from polylogue.daemon import process_start as _process_start
     from polylogue.daemon.intake_adapters import ColdBuildGeneration
-    from polylogue.daemon.status_snapshot import configure_runtime_components
+    from polylogue.daemon.status_snapshot import configure_browser_capture_status, configure_runtime_components
     from polylogue.paths import archive_root
 
     global _daemon_lifecycle, _pidfile_path
@@ -2788,7 +2788,7 @@ async def _run_daemon_services_under_active_writer_lease(
     cold_build: ColdBuildGeneration | None = None
     try:
         if enable_browser_capture:
-            from polylogue.paths import browser_capture_spool_root
+            from polylogue.paths import browser_capture_receiver_token_path, browser_capture_spool_root
 
             resolved_browser_capture_auth_token = resolve_receiver_auth_token(
                 browser_capture_auth_token, allow_no_auth=browser_capture_allow_no_auth
@@ -2798,6 +2798,9 @@ async def _run_daemon_services_under_active_writer_lease(
                 browser_capture_port,
                 allow_remote=browser_capture_allow_remote,
                 auth_token=resolved_browser_capture_auth_token,
+                auth_token_path=(
+                    browser_capture_receiver_token_path() if resolved_browser_capture_auth_token is not None else None
+                ),
                 extra_origins=browser_capture_extra_origins,
                 archive_root=archive_root_path,
                 api_auth_token=api_auth_token,
@@ -2807,7 +2810,8 @@ async def _run_daemon_services_under_active_writer_lease(
                 "browser_capture_server",
                 lambda: _serve_until_complete(server, label="browser-capture"),
             )
-            if lifecycle_events_enabled:
+            configure_browser_capture_status(server.config if server_task is not None else None)
+            if lifecycle_events_enabled and server_task is not None:
                 await _emit_daemon_lifecycle_event(
                     "component_started",
                     archive_root_path=archive_root_path,
@@ -3853,6 +3857,7 @@ async def _run_daemon_services_under_active_writer_lease(
 
             set_cold_build_progress_provider(None)
             set_cold_build_settlement_provider(None)
+            configure_browser_capture_status(None)
             if server is not None:
                 with contextlib.suppress(Exception):
                     server.server_close()

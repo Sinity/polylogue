@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from http import HTTPStatus
 from http.client import HTTPConnection
 from pathlib import Path
@@ -71,7 +71,7 @@ def test_mint_and_redeem_pairing_code_returns_current_token(tmp_path: Path) -> N
     # Plaintext code must never be persisted to disk, only its hash.
     assert minted.code not in state_path.read_text(encoding="utf-8")
 
-    resolved = redeem_pairing_code(minted.code, path=state_path, token_path=token_path)
+    resolved = redeem_pairing_code(minted.code, path=state_path, token=load_or_mint_receiver_token(token_path))
 
     assert resolved == expected_token
 
@@ -81,10 +81,10 @@ def test_redeem_pairing_code_is_single_use(tmp_path: Path) -> None:
     token_path = tmp_path / "token"
     minted = mint_pairing_code(path=state_path)
 
-    redeem_pairing_code(minted.code, path=state_path, token_path=token_path)
+    redeem_pairing_code(minted.code, path=state_path, token=load_or_mint_receiver_token(token_path))
 
     with pytest.raises((PairingCodeInvalidError, PairingCodeAlreadyUsedError)):
-        redeem_pairing_code(minted.code, path=state_path, token_path=token_path)
+        redeem_pairing_code(minted.code, path=state_path, token=load_or_mint_receiver_token(token_path))
 
 
 def test_redeem_pairing_code_rejects_wrong_code(tmp_path: Path) -> None:
@@ -92,7 +92,7 @@ def test_redeem_pairing_code_rejects_wrong_code(tmp_path: Path) -> None:
     mint_pairing_code(path=state_path)
 
     with pytest.raises(PairingCodeInvalidError):
-        redeem_pairing_code("WRONGCODE", path=state_path)
+        redeem_pairing_code("WRONGCODE", path=state_path, token="neutral-owned-token")
 
 
 def test_redeem_pairing_code_rejects_expired_code(tmp_path: Path) -> None:
@@ -104,14 +104,14 @@ def test_redeem_pairing_code_rejects_expired_code(tmp_path: Path) -> None:
     state_path.write_text(json.dumps(record), encoding="utf-8")
 
     with pytest.raises(PairingCodeExpiredError):
-        redeem_pairing_code(minted.code, path=state_path)
+        redeem_pairing_code(minted.code, path=state_path, token="neutral-owned-token")
 
 
 def test_redeem_pairing_code_with_no_pending_code_is_invalid(tmp_path: Path) -> None:
     state_path = tmp_path / "pairing"
 
     with pytest.raises(PairingCodeInvalidError):
-        redeem_pairing_code("ANYCODE1", path=state_path)
+        redeem_pairing_code("ANYCODE1", path=state_path, token="neutral-owned-token")
 
 
 def test_redeem_pairing_code_locks_out_after_max_wrong_attempts(tmp_path: Path) -> None:
@@ -120,12 +120,12 @@ def test_redeem_pairing_code_locks_out_after_max_wrong_attempts(tmp_path: Path) 
 
     for _ in range(PAIRING_CODE_MAX_ATTEMPTS):
         with pytest.raises(PairingCodeInvalidError):
-            redeem_pairing_code("WRONGCODE", path=state_path)
+            redeem_pairing_code("WRONGCODE", path=state_path, token="neutral-owned-token")
 
     # The *correct* code is now also rejected -- the pending code is burned,
     # not just individual wrong guesses.
     with pytest.raises((PairingCodeRateLimitedError, PairingCodeError)):
-        redeem_pairing_code(minted.code, path=state_path)
+        redeem_pairing_code(minted.code, path=state_path, token="neutral-owned-token")
 
 
 def test_mint_pairing_code_replaces_any_prior_pending_code(tmp_path: Path) -> None:
@@ -135,9 +135,9 @@ def test_mint_pairing_code_replaces_any_prior_pending_code(tmp_path: Path) -> No
 
     assert first.code != second.code
     with pytest.raises(PairingCodeInvalidError):
-        redeem_pairing_code(first.code, path=state_path)
+        redeem_pairing_code(first.code, path=state_path, token="neutral-owned-token")
     # The newer code still works.
-    redeem_pairing_code(second.code, path=state_path)
+    redeem_pairing_code(second.code, path=state_path, token="neutral-owned-token")
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +346,7 @@ def test_pairing_start_cli_mints_a_redeemable_code(cli_workspace: dict[str, Path
     assert len(payload["code"]) == 8
     assert payload["ttl_seconds"] > 0
     # The code the CLI just printed must actually redeem.
-    redeem_pairing_code(payload["code"])
+    redeem_pairing_code(payload["code"], token="neutral-owned-token")
 
 
 def test_pairing_start_cli_human_output_does_not_leak_the_bearer_token(cli_workspace: dict[str, Path]) -> None:
@@ -512,3 +512,47 @@ def test_capture_history_http_oversized_page_keeps_continuation(tmp_path: Path, 
             if cursor is None:
                 break
     assert seen == list(reversed(ids))
+
+
+@pytest.mark.parametrize("persisted", [False, True])
+def test_pairing_returns_bound_receiver_token_instead_of_global_token(tmp_path: Path, persisted: bool) -> None:
+    from polylogue.browser_capture.receiver import persist_receiver_token
+
+    global_token = load_or_mint_receiver_token()
+    receiver_token = "neutral-independent-receiver-token"
+    token_path = tmp_path / "owned-token"
+    if persisted:
+        persist_receiver_token(receiver_token, token_path)
+    server = make_server(
+        "127.0.0.1",
+        0,
+        spool_path=tmp_path / "spool",
+        auth_token=receiver_token,
+        auth_token_path=token_path if persisted else None,
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        minted = mint_pairing_code()
+        with closing(HTTPConnection("127.0.0.1", server.server_port)) as connection:
+            connection.request(
+                "POST",
+                "/v1/pairing/redeem",
+                body=json.dumps({"code": minted.code}),
+                headers={"Origin": _EXTENSION_ORIGIN, "Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            assert response.status == 200
+            paired = json.loads(response.read())["auth_token"]
+        assert paired == receiver_token
+        assert paired != global_token
+        with closing(HTTPConnection("127.0.0.1", server.server_port)) as connection:
+            connection.request("GET", "/v1/status", headers={"authorization": f"Bearer {paired}"})
+            response = connection.getresponse()
+            assert response.status == 200
+            response.read()
+        assert load_or_mint_receiver_token() == global_token
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

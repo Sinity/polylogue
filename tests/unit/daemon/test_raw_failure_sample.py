@@ -974,14 +974,16 @@ class TestRawFailureInfoProducesTypedSamples:
             assert status["raw_failure_lifecycle_state"] == "unavailable"
             assert status["raw_failure_lifecycle_reason"]
             rendered = "\n".join(
-                format_daemon_status_lines(
-                    cast(
-                        JSONDocument,
-                        {
-                            "raw_failure_lifecycle_available": status["raw_failure_lifecycle_available"],
-                            "raw_failure_lifecycle_state": status["raw_failure_lifecycle_state"],
-                            "raw_failure_lifecycle_reason": status["raw_failure_lifecycle_reason"],
-                        },
+                list(
+                    format_daemon_status_lines(
+                        cast(
+                            JSONDocument,
+                            {
+                                "raw_failure_lifecycle_available": status["raw_failure_lifecycle_available"],
+                                "raw_failure_lifecycle_state": status["raw_failure_lifecycle_state"],
+                                "raw_failure_lifecycle_reason": status["raw_failure_lifecycle_reason"],
+                            },
+                        )
                     )
                 )
             )
