@@ -1470,6 +1470,8 @@ def test_prepared_gemini_sidecars_preserve_stderr_and_independent_display(tmp_pa
         {
             "id": "answer",
             "type": "gemini",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "content": "",
             "toolCalls": [
                 {
                     "id": "stderr-call",

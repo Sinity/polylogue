@@ -178,7 +178,8 @@ def test_real_nemo_relay_atif_fixture_reaches_the_hermes_parser() -> None:
     assert len(message_events) == 5
     assert all(event.payload["message_char_len"] == len("<redacted>") for event in message_events)
     [tool_step] = [event for event in llm_events if event.payload.get("shape") == "tool_calls"]
-    assert "llm_response_usage" in tool_step.payload
+    assert tool_step.payload["llm_call_count"] == 1
+    assert tool_step.payload["invocation_framework"] == payload["steps"][-1]["extra"]["invocation"]["framework"]
 
     # Step 6 (real evidence: 4 parallel tool_calls plus observation.results,
     # drawn from a separate live trajectory -- see fixtures/hermes/atif/README.md)
