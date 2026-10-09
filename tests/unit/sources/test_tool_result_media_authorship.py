@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import sqlite3
 from pathlib import Path
@@ -11,9 +13,8 @@ from polylogue.sources.dispatch import iter_parsed_stream, parse_payload
 from polylogue.sources.parsers.base import AdmissionUnit
 from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.index_writer import fixture_index_connection, write_fixture_index_session
-from tests.infra.live_ingest import write_index_session
+from tests.infra.retained_replay import publish_retained_payload
 
 
 @pytest.mark.parametrize("reply_role", ["assistant", "user", "tool"])
@@ -74,7 +75,14 @@ def test_claude_nested_result_media_survives_parse_accounting_and_stored_tree(
             "is_error": False,
             "content": [
                 {"type": "text", "text": "Neutral result"},
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "bmV1dHJhbA=="}},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+                    },
+                },
                 {
                     "type": "document",
                     "title": "Neutral document",
@@ -121,7 +129,10 @@ def test_claude_nested_result_media_survives_parse_accounting_and_stored_tree(
     ]
     assert message.blocks[0].text == "Neutral result"
     assert message.blocks[2].text == "Neutral document body"
-    assert [attachment.inline_bytes for attachment in parsed.attachments] == [b"neutral", b"Neutral document body"]
+    assert [attachment.inline_bytes for attachment in parsed.attachments] == [
+        base64.b64decode(content[0]["content"][1]["source"]["data"]),
+        b"Neutral document body",
+    ]
     assert parsed.unit_accounting is not None
     parsed.unit_accounting.assert_conserved()
     assert parsed.unit_accounting.expected[AdmissionUnit.PART] == 5
@@ -130,9 +141,20 @@ def test_claude_nested_result_media_survives_parse_accounting_and_stored_tree(
         outcome.unit is AdmissionUnit.PART and outcome.key == "future_media"
         for outcome in parsed.unit_accounting.outcomes
     )
-    with ArchiveStore(tmp_path / "archive") as archive:
-        session_id = write_index_session(archive, parsed)
-        archive.commit()
+    wire = (
+        "\n".join(json.dumps(record) for record in payload) if isinstance(payload, list) else json.dumps(payload)
+    ).encode()
+    _, session_ids = asyncio.run(
+        publish_retained_payload(
+            tmp_path / "archive",
+            provider=provider,
+            payload=wire,
+            source_path="neutral-media.jsonl" if provider is Provider.CLAUDE_CODE else "neutral-media.json",
+            acquired_at_ms=1,
+        )
+    )
+    assert len(session_ids) == 1
+    session_id = session_ids[0]
     with sqlite3.connect(tmp_path / "archive" / "index.db") as conn:
         rows = conn.execute(
             "SELECT block_type,text,semantic_extra_json FROM blocks WHERE session_id=? ORDER BY position", (session_id,)

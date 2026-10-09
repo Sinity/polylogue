@@ -489,7 +489,12 @@ def test_parse_code_stream_admission_accounts_unknown_records() -> None:
     accounting = from_stream.unit_accounting
     assert accounting is not None
     assert accounting.expected[AdmissionUnit.OUTER_RECORD] == 2
-    assert [outcome.disposition for outcome in accounting.iter_outcomes()] == [
+    assert accounting.expected[AdmissionUnit.PART] == 1
+    assert accounting.expected[AdmissionUnit.BLOCK] == 1
+    accounting.assert_conserved()
+    assert [
+        outcome.disposition for outcome in accounting.iter_outcomes() if outcome.unit is AdmissionUnit.OUTER_RECORD
+    ] == [
         AdmissionDisposition.MATERIALIZED,
         AdmissionDisposition.TYPED_UNKNOWN,
     ]
