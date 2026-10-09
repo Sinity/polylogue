@@ -165,6 +165,8 @@ Every declared `PERIODIC` service runs through one runner rather than its own `w
 
 ## Readiness and intake
 
+Daemon composition publishes its effective watch-source tuple with runtime component state. Rich status and health collection consume that same selection; persistent registries keep observations and in-flight work separate for each roster. Fast health fingerprints include the selected names, roots and current availability. The non-fast health cadence remains independent of archive WAL churn.
+
 Readiness derives from domain inspection and is reported separately from operation health. FTS does not consult a freshness ledger, and debt cannot certify insight readiness (`polylogue/daemon/fts_status.py:162-168`; `polylogue/readiness/claim_guard.py:1-26`; `polylogue/storage/sqlite/archive_tiers/archive.py:1`).
 
 Current configuration determines whether embedding readiness is required even

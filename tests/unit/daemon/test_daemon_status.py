@@ -35,6 +35,7 @@ from polylogue.daemon.status_snapshot import (
 )
 from polylogue.operations.status_protocol import StatusComponentRegistry
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -183,7 +184,7 @@ def test_status_snapshot_refresh_failure_keeps_last_good_evidence_stale(
         lambda **_kwargs: {"ok": False, "checked_at": "minimal"},
     )
     monkeypatch.setattr("polylogue.daemon.status.daemon_status_payload", collect)
-    monkeypatch.setattr("polylogue.daemon.status.periodic_status_component_registry", lambda: None)
+    monkeypatch.setattr("polylogue.daemon.status.periodic_status_component_registry", lambda **_kwargs: None)
 
     refresh_status_snapshot()
     unavailable = cast(dict[str, Any], get_status_snapshot_payload()["status_snapshot"])
@@ -502,7 +503,7 @@ def test_status_snapshot_uses_runtime_browser_capture_state(
     configure_runtime_components(
         api_enabled=True,
         watcher_enabled=True,
-        watcher_roots=("/watch/a", "/watch/b"),
+        watch_sources=(WatchSource(name="a", root=Path("/watch/a")), WatchSource(name="b", root=Path("/watch/b"))),
         browser_capture_enabled=True,
     )
     configure_browser_capture_status(

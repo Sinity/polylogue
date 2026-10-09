@@ -33,6 +33,7 @@ from polylogue.readiness.capability import (
     normalize_raw_frontier_status_payload,
     unknown_raw_frontier_integrity_projection,
 )
+from polylogue.sources.live import WatchSource
 from polylogue.storage.archive_identity import ArchiveLocation, resolve_active_index_path
 
 _SNAPSHOT_LOCK = threading.Lock()
@@ -47,7 +48,7 @@ class RuntimeComponentState:
 
     api_enabled: bool | None = None
     watcher_enabled: bool | None = None
-    watcher_roots: tuple[str, ...] = ()
+    watch_sources: tuple[WatchSource, ...] | None = None
     browser_capture_enabled: bool | None = None
     browser_capture_status: Mapping[str, JSONValue] | None = None
 
@@ -233,7 +234,7 @@ def configure_runtime_components(
     *,
     api_enabled: bool | None = None,
     watcher_enabled: bool | None = None,
-    watcher_roots: tuple[str, ...] = (),
+    watch_sources: tuple[WatchSource, ...] | None = None,
     browser_capture_enabled: bool | None = None,
 ) -> None:
     """Record daemon component switches for request-safe status snapshots."""
@@ -242,9 +243,14 @@ def configure_runtime_components(
         _RUNTIME_COMPONENT_STATE = RuntimeComponentState(
             api_enabled=api_enabled,
             watcher_enabled=watcher_enabled,
-            watcher_roots=tuple(watcher_roots),
+            watch_sources=watch_sources,
             browser_capture_enabled=browser_capture_enabled,
         )
+
+
+def runtime_watch_sources() -> tuple[WatchSource, ...] | None:
+    """Return the selection published by the daemon composition owner."""
+    return _runtime_component_state().watch_sources
 
 
 class _ReceiverOriginRoster(list[str]):
@@ -397,7 +403,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         # is measured rather than a literal null; a route that could not open
         # it renders the explicit unavailable state instead.
         **quick_check.payload(),
-        "watcher_roots": list(runtime.watcher_roots),
+        "watcher_roots": [str(source.root) for source in runtime.watch_sources or ()],
         "browser_capture_active": browser_capture_enabled,
         "failing_files": [],
         "live_cursor": {},
@@ -598,12 +604,14 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
                     # registry lets a still-running attempt be observed
                     # (``refreshing``) instead of restarted, and reuses the
                     # real result once it finishes.
+                    sources = runtime_watch_sources()
                     payload = daemon_status_payload(
+                        sources=sources,
                         include_raw_replay_backlog=False,
                         include_exact_raw_materialization_readiness=False,
                         include_archive_debt=False,
                         include_assertion_candidate_queue=True,
-                        registry=periodic_status_component_registry(),
+                        registry=periodic_status_component_registry(sources=sources),
                         collecting_status_snapshot=True,
                     )
                 else:
@@ -692,6 +700,7 @@ __all__ = [
     "configure_runtime_components",
     "configure_browser_capture_status",
     "browser_capture_runtime_status",
+    "runtime_watch_sources",
     "get_status_snapshot_payload",
     "refresh_status_snapshot",
     "reset_status_snapshot",

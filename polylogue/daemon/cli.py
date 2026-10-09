@@ -2301,7 +2301,7 @@ async def _run_daemon_services_under_active_writer_lease(
     configure_runtime_components(
         api_enabled=enable_api,
         watcher_enabled=enable_watch,
-        watcher_roots=tuple(str(source.root) for source in sources),
+        watch_sources=sources if enable_watch else (),
         browser_capture_enabled=enable_browser_capture,
     )
 

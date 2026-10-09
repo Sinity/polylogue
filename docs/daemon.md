@@ -443,7 +443,7 @@ root help and status do not initialize the service loop.
   (`DAEMON_HEARTBEAT_STALE_AFTER_SECONDS`, 2x the interval)
 - `disk_space` — free disk space (warns at 500 MB, critical at 100 MB)
 - `wal_size` — WAL file size (warns at 50 MB, errors at 200 MB)
-- `source_availability` — watch roots exist and are readable
+- `source_availability` — selected watch roots exist and are readable. Rich daemon status and healthz use the effective daemon selection, including an empty selection when watching is disabled. Standalone health uses conventional roots. Persistent status registries retain health per source selection and invalidate fast health when a selected root changes availability.
 
 **Medium** (sub-10s queries):
 - `fts_readiness` — FTS index coverage vs. total messages
