@@ -456,9 +456,8 @@ class DaemonOperationRuntime:
                 assert isinstance(snapshot, PinnedOperationRead)
                 exchange.cancellation.add_listener(snapshot.archive.interrupt_reads)
 
-    def request_deadline_unix_ms(self, request: DaemonOperationRequest) -> int:
+    def request_deadline_unix_ms(self, request: DaemonOperationRequest) -> int | None:
         deadline = self._exchanges[str(request.request_id)].deadline_unix_ms
-        assert deadline is not None  # only write owners request durable deadline evidence
         return deadline
 
     def stop_reason(self, request: DaemonOperationRequest) -> str | None:

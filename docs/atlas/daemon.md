@@ -266,6 +266,26 @@ Context compilation submits its disposable scheduler ledger with the compilation
 
 ## Resident insight pages
 
+`maintenance.insights.rebuild` freezes its exact selection from one pinned
+Index reader into a private SQLite spool. Target ordinals supply pages of at
+most 256 targets; neither explicit selection nor page count has a population
+ceiling. The manifest digest is accumulated page by page. Audit stages and
+seals the existing durable page rows, verifying the complete predecessor chain
+and digest without retaining all plans or authorization references in memory.
+Execution and historical receipt reads use those exact pages; later sessions
+cannot enter an accepted rebuild. The staging owner removes its private spool
+after physical staging settles, including cancellation and failure.
+
+An insight rebuild has no implicit execution deadline. Audit derives its typed
+expiry policy from the exact persisted maintenance request and page. A live
+request with no accepted deadline owns progress when the preview carries its
+preparation timestamp as a witness. The authorization carries its own issuance
+timestamp. Those integers in the existing expiry columns are witnesses, not
+wall-clock deadlines. Caller-supplied deadlines retain their original expiry
+policy. Standalone previews cannot acquire progress ownership from a timestamp
+or context flag. Cancellation, archive identity, Index generation and recipe
+checks continue to govern publication; the durable plan context is unchanged.
+
 The eleven registered `analyze insights` list commands call `insights.list`
 through the daemon. Its closed discriminated request and result branches use
 the registry's existing query and item models. The canonical page reader is

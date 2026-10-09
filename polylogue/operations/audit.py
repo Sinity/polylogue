@@ -10,7 +10,7 @@ import secrets
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum
@@ -74,7 +74,7 @@ from polylogue.storage.sqlite.audit_leaf import (
 
 if TYPE_CHECKING:
     from polylogue.operations.daemon_protocol import DaemonOperationRequest
-    from polylogue.operations.insight_acceptance import AcceptedInsightPart
+    from polylogue.operations.insight_acceptance import AcceptedInsightPart, InsightExpiryPolicy, SealedInsightParts
 
 AuditTargetState = Literal[
     "pending",
@@ -120,7 +120,6 @@ HANDSHAKE_IDLE_MS = 60_000
 
 #: Staged kinds of paged machine batches.
 MACHINE_PAGE_KINDS = frozenset(machine_pages_kind(kind) for kind in _PAGED_MACHINE_KINDS.values())
-_MAX_INSIGHT_ACCEPTED_PARTS = 4096
 _INSIGHT_MACHINE_OPERATION = "maintenance.insights.rebuild"
 
 
@@ -1327,7 +1326,7 @@ class AuditRepository:
                     ),
                 )
             else:
-                if prior[0] != "insight-preview-pages" or int(prior[1]) >= _MAX_INSIGHT_ACCEPTED_PARTS:
+                if prior[0] != "insight-preview-pages":
                     raise MachineRequestConflictError("insight preview staging request cannot accept another page")
                 ordinal = int(prior[1])
                 conn.execute(
@@ -1398,9 +1397,12 @@ class AuditRepository:
     def _bind_machine_batch(
         conn: sqlite3.Connection, mutation: AuditMutation, binding: MachineRequestBinding, result: object
     ) -> None:
-        refs = cast(list[str], result)
         insight = binding.operation_name == _INSIGHT_MACHINE_OPERATION and mutation.kind == "seal_insight_execution"
-        limit = _MAX_INSIGHT_ACCEPTED_PARTS if insight else _MAX_MACHINE_AUTHORITY_PARTS
+        if insight:
+            AuditRepository._bind_insight_machine_seal(conn, mutation, binding, result)
+            return
+        refs = cast(list[str], result)
+        limit = _MAX_MACHINE_AUTHORITY_PARTS
         if not refs or len(refs) > limit:
             raise ValueError(f"machine authority batch must contain between 1 and {limit} parts")
         kind = {
@@ -1445,24 +1447,6 @@ class AuditRepository:
                 ).rowcount
                 if changed != 1:
                     raise MachineRequestConflictError("machine page does not continue its staged request")
-        elif insight:
-            changed = conn.execute(
-                """UPDATE machine_requests SET artifact_kind = ?, artifact_ref = ?, accepted_at_ms = ?,
-                    accepted_deadline_unix_ms = ?
-                WHERE archive_identity = ? AND request_id = ?
-                  AND artifact_kind = 'insight-preview-pages' AND part_count = ?""",
-                (
-                    kind,
-                    refs[0],
-                    mutation.created_at_ms,
-                    mutation.mapping_payload.get("accepted_deadline_unix_ms"),
-                    binding.archive_identity,
-                    binding.request_id,
-                    len(refs),
-                ),
-            ).rowcount
-            if changed != 1:
-                raise MachineRequestConflictError("insight seal does not match its staged immutable page chain")
         else:
             conn.execute(
                 """INSERT INTO machine_requests(
@@ -1497,29 +1481,66 @@ class AuditRepository:
             ).fetchone()
             if row is None or row[0] != binding.principal_ref or row[1] != binding.archive_identity:
                 raise MachineRequestConflictError("batch authority differs from authenticated archive intent")
-            if insight:
-                changed = conn.execute(
-                    """UPDATE machine_request_parts SET artifact_ref = ?, authorization_ref = ?
-                    WHERE archive_identity = ? AND request_id = ? AND ordinal = ?
-                      AND preview_ref = ? AND authorization_ref IS NULL AND operation_id IS NULL""",
-                    (ref, authorization_ref, binding.archive_identity, binding.request_id, ordinal, preview_ref),
-                ).rowcount
-                if changed != 1:
-                    raise MachineRequestConflictError("insight seal page differs from its staged preview reference")
-            else:
-                conn.execute(
-                    """INSERT INTO machine_request_parts(
-                        archive_identity, request_id, ordinal, artifact_ref, preview_ref, authorization_ref
-                    ) VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        binding.archive_identity,
-                        binding.request_id,
-                        offset + ordinal,
-                        ref,
-                        preview_ref,
-                        authorization_ref,
-                    ),
-                )
+            conn.execute(
+                """INSERT INTO machine_request_parts(
+                    archive_identity, request_id, ordinal, artifact_ref, preview_ref, authorization_ref
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    binding.archive_identity,
+                    binding.request_id,
+                    offset + ordinal,
+                    ref,
+                    preview_ref,
+                    authorization_ref,
+                ),
+            )
+
+    @staticmethod
+    def _bind_insight_machine_seal(
+        conn: sqlite3.Connection, mutation: AuditMutation, binding: MachineRequestBinding, result: object
+    ) -> None:
+        summary = cast(dict[str, object], result)
+        count = int(cast(int, summary["page_count"]))
+        changed = conn.execute(
+            """UPDATE machine_requests SET artifact_kind='execution-batch', artifact_ref=?, accepted_at_ms=?,
+                accepted_deadline_unix_ms=? WHERE archive_identity=? AND request_id=?
+                AND artifact_kind='insight-preview-pages' AND part_count=?""",
+            (
+                summary["first_authorization_ref"],
+                mutation.created_at_ms,
+                mutation.mapping_payload.get("accepted_deadline_unix_ms"),
+                binding.archive_identity,
+                binding.request_id,
+                count,
+            ),
+        ).rowcount
+        if changed != 1:
+            raise MachineRequestConflictError("insight seal does not match its staged immutable page chain")
+        principal = cast(dict[str, object], mutation.mapping_payload["principal"])
+        authority = """SELECT a.authorization_id FROM operation_authorizations a
+            WHERE a.preview_id=machine_request_parts.preview_ref AND a.actor_ref=? AND a.surface=? AND a.state='active'"""
+        changed = conn.execute(
+            f"""UPDATE machine_request_parts SET authorization_ref=({authority}), artifact_ref=({authority})
+                WHERE archive_identity=? AND request_id=? AND authorization_ref IS NULL AND operation_id IS NULL""",
+            (
+                principal["actor_ref"],
+                principal["surface"],
+                principal["actor_ref"],
+                principal["surface"],
+                binding.archive_identity,
+                binding.request_id,
+            ),
+        ).rowcount
+        if changed != count:
+            raise MachineRequestConflictError("insight seal page differs from its staged preview reference")
+
+    def machine_part(self, binding: MachineRequestBinding, ordinal: int) -> dict[str, object] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM machine_request_parts WHERE archive_identity=? AND request_id=? AND ordinal=?",
+                (binding.archive_identity, binding.request_id, ordinal),
+            ).fetchone()
+            return None if row is None else dict(row)
 
     def machine_parts(self, binding: MachineRequestBinding) -> list[dict[str, object]]:
         if self.machine_request(binding) is None:
@@ -1533,61 +1554,81 @@ class AuditRepository:
                 )
             ]
 
-    def sealed_insight_parts(
-        self, binding: MachineRequestBinding, principal: MutationPrincipal
-    ) -> tuple[AcceptedInsightPart, ...]:
+    def sealed_insight_parts(self, binding: MachineRequestBinding, principal: MutationPrincipal) -> SealedInsightParts:
         """Reload the exact immutable insights manifest already sealed to a request."""
 
-        from polylogue.operations.insight_acceptance import (
-            accepted_part_from_plan,
-            insight_manifest_digest,
-        )
+        from polylogue.operations.insight_acceptance import SealedInsightParts, insight_manifest_digest
 
         if binding.operation_name != _INSIGHT_MACHINE_OPERATION:
             raise ValueError("machine request is not an insights maintenance request")
         record = self.machine_request(binding)
         if record is None or record.get("artifact_kind") != "execution-batch":
             raise ValueError("insight manifest is not sealed")
-        raw_parts = self.machine_parts(binding)
         part_count = record.get("part_count")
-        if type(part_count) is not int or part_count != len(raw_parts) or not raw_parts:
+        if type(part_count) is not int or part_count < 1:
             raise AuthorizationMismatchError("sealed insight manifest has incomplete machine parts")
-        parts: list[AcceptedInsightPart] = []
-        for ordinal, raw in enumerate(raw_parts):
-            raw_ordinal = raw["ordinal"]
-            if type(raw_ordinal) is not int or raw_ordinal != ordinal or raw["authorization_ref"] is None:
-                raise AuthorizationMismatchError("sealed insight manifest part is incomplete")
-            preview = self.preview_for_principal(str(raw["preview_ref"]), principal)
-            if (
-                preview.plan.operation != "mutate-rebuild-insights"
-                or preview.plan.archive_identity_digest != binding.archive_identity
-            ):
-                raise AuthorizationMismatchError("sealed insight preview differs from request operation or archive")
-            authorization_preview, _ = self.authorization_for_principal(str(raw["authorization_ref"]), principal)
-            if authorization_preview.preview_ref != preview.preview_ref:
-                raise AuthorizationMismatchError("sealed insight authorization differs from its preview page")
-            parts.append(
-                accepted_part_from_plan(
-                    preview.plan,
-                    preview_ref=preview.preview_ref,
-                    authorization_ref=str(raw["authorization_ref"]),
-                )
+        with self._connection() as conn:
+            stored_count = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM machine_request_parts WHERE archive_identity=? AND request_id=?",
+                    (binding.archive_identity, binding.request_id),
+                ).fetchone()[0]
             )
+        if stored_count != part_count:
+            raise AuthorizationMismatchError("sealed insight manifest has incomplete machine parts")
+        parts = SealedInsightParts(self, binding, principal, part_count)
         first = parts[0]
-        if any(
-            part.ordinal != ordinal
-            or part.page_count != len(parts)
-            or part.scope_kind != first.scope_kind
-            or part.index_generation != first.index_generation
-            or part.recipe_version != first.recipe_version
-            or part.manifest_digest != first.manifest_digest
-            or part.previous_preview_ref != (None if ordinal == 0 else parts[ordinal - 1].preview_ref)
-            for ordinal, part in enumerate(parts)
-        ):
-            raise AuthorizationMismatchError("sealed insight manifest pages disagree on their immutable facts")
-        if insight_manifest_digest(tuple(parts)) != first.manifest_digest:
+        if insight_manifest_digest(parts) != first.manifest_digest:
             raise AuthorizationMismatchError("sealed insight manifest digest differs from its page facts")
-        return tuple(parts)
+        return parts
+
+    def sealed_insight_part(
+        self, binding: MachineRequestBinding, principal: MutationPrincipal, ordinal: int
+    ) -> AcceptedInsightPart:
+        from polylogue.operations.insight_acceptance import accepted_part_from_plan
+
+        raw = self.machine_part(binding, ordinal)
+        if raw is None or raw["authorization_ref"] is None:
+            raise AuthorizationMismatchError("sealed insight manifest part is incomplete")
+        preview = self.preview_for_principal(str(raw["preview_ref"]), principal)
+        if (
+            preview.plan.operation != "mutate-rebuild-insights"
+            or preview.plan.archive_identity_digest != binding.archive_identity
+        ):
+            raise AuthorizationMismatchError("sealed insight preview differs from request operation or archive")
+        authorization_preview, _ = self.authorization_for_principal(str(raw["authorization_ref"]), principal)
+        if authorization_preview.preview_ref != preview.preview_ref:
+            raise AuthorizationMismatchError("sealed insight authorization differs from its preview page")
+        part = accepted_part_from_plan(
+            preview.plan, preview_ref=preview.preview_ref, authorization_ref=str(raw["authorization_ref"])
+        )
+        if part.ordinal != ordinal:
+            raise AuthorizationMismatchError("sealed insight manifest part ordering differs from its stored ordinal")
+        return part
+
+    def iter_sealed_insight_parts(
+        self, binding: MachineRequestBinding, principal: MutationPrincipal
+    ) -> Iterator[AcceptedInsightPart]:
+        record = self.machine_request(binding)
+        if record is None or record["artifact_kind"] != "execution-batch":
+            raise ValueError("insight manifest is not sealed")
+        count = int(cast(int, record["part_count"]))
+        first: AcceptedInsightPart | None = None
+        previous: str | None = None
+        for ordinal in range(count):
+            part = self.sealed_insight_part(binding, principal, ordinal)
+            first = part if first is None else first
+            if (
+                part.page_count != count
+                or part.scope_kind != first.scope_kind
+                or part.index_generation != first.index_generation
+                or part.recipe_version != first.recipe_version
+                or part.manifest_digest != first.manifest_digest
+                or part.previous_preview_ref != previous
+            ):
+                raise AuthorizationMismatchError("sealed insight manifest pages disagree on their immutable facts")
+            previous = part.preview_ref
+            yield part
 
     def machine_preview_summary(self, binding: MachineRequestBinding) -> dict[str, object]:
         """Describe a sealed preview from bounded durable facts, not a ref list."""
@@ -1837,12 +1878,12 @@ class AuditRepository:
             if (
                 not isinstance(head_preview_ref, str)
                 or type(page_count) is not int
-                or not 1 <= page_count <= _MAX_INSIGHT_ACCEPTED_PARTS
+                or page_count < 1
                 or not isinstance(manifest_digest, str)
                 or len(manifest_digest) != 64
                 or any(char not in "0123456789abcdef" for char in manifest_digest)
             ):
-                raise ValueError("insight seal requires a bounded typed manifest head")
+                raise ValueError("insight seal requires a typed manifest head")
             if self._machine_binding is None or self._machine_binding[1] != kind:
                 raise ValueError("insight seal requires an authenticated machine binding")
             binding = self._machine_binding[0]
@@ -1940,7 +1981,11 @@ class AuditRepository:
                         self._machine_binding[0],
                         authorization_refs=(authorization.authorization_id,),
                     )
-                    if self._machine_binding is not None and authorization.authorization_id is not None
+                    if (
+                        self._machine_binding is not None
+                        and authorization.authorization_id is not None
+                        and self._machine_binding[0].operation_name != _INSIGHT_MACHINE_OPERATION
+                    )
                     else consume_now_ms
                 ),
                 "operation_id": f"operation:{secrets.token_urlsafe(18)}",
@@ -2391,7 +2436,7 @@ class AuditRepository:
         self._validate_execution_reservations(refs, principal)
         return list(refs)
 
-    def _validate_execution_reservations(self, refs: tuple[str, ...], principal: MutationPrincipal) -> None:
+    def _validate_execution_reservations(self, refs: Iterable[str], principal: MutationPrincipal) -> None:
         """Check exact one-shot authority without allocating a domain attempt."""
 
         now_ms = int(cast(int, self._command_value("now_ms", int(time.time() * 1000))))
@@ -2424,9 +2469,11 @@ class AuditRepository:
                         issued_at_ms=now_ms,
                         authorization_ref=ref,
                     )
-                    self._require_reset_page_completion(page, len(refs), proof)
+                    self._require_reset_page_completion(page, len(cast(tuple[str, ...], refs)), proof)
                 elif int(row[3]) <= now_ms:
-                    raise TokenExpiredError("execution authority is expired")
+                    preview, _ = self.authorization_for_principal(ref, principal)
+                    if self.insight_expiry_policy(preview, principal) != "maintenance_progress":
+                        raise TokenExpiredError("execution authority is expired")
                 capabilities = {
                     str(r[0])
                     for r in conn.execute(
@@ -2445,7 +2492,7 @@ class AuditRepository:
         page_count: int,
         manifest_digest: str,
         principal: MutationPrincipal,
-    ) -> list[str]:
+    ) -> dict[str, object]:
         """Seal a typed insights page chain into existing exact machine parts.
 
         The WAL command contains only the manifest head/count/digest.  Each
@@ -2461,9 +2508,17 @@ class AuditRepository:
             principal,
             expected_archive_identity=self._insight_bound_archive_identity(),
         )
-        refs = tuple(part.authorization_ref for part in parts)
-        self._validate_execution_reservations(refs, principal)
-        return list(refs)
+        first_authorization: str | None = None
+
+        def references() -> Iterator[str]:
+            nonlocal first_authorization
+            for part in parts:
+                if first_authorization is None:
+                    first_authorization = part.authorization_ref
+                yield part.authorization_ref
+
+        self._validate_execution_reservations(references(), principal)
+        return {"first_authorization_ref": first_authorization, "page_count": page_count}
 
     def _resolve_insight_manifest(
         self,
@@ -2473,34 +2528,44 @@ class AuditRepository:
         principal: MutationPrincipal,
         *,
         expected_archive_identity: str,
-    ) -> tuple[AcceptedInsightPart, ...]:
-        """Reconstruct and verify an ordered bounded preview chain from audit rows."""
+    ) -> Iterator[AcceptedInsightPart]:
+        """Verify the complete ordered preview chain while retaining one page."""
 
         from polylogue.operations.insight_acceptance import (
-            MAX_INSIGHT_ACCEPTED_PARTS,
+            InsightManifestDigest,
             accepted_part_from_plan,
-            insight_manifest_digest,
         )
 
-        if not 1 <= page_count <= MAX_INSIGHT_ACCEPTED_PARTS:
-            raise ValueError("insight manifest page count exceeds the bounded authority budget")
-        cursor = head_preview_ref
-        reverse: list[AcceptedInsightPart] = []
-        seen: set[str] = set()
+        if page_count < 1:
+            raise ValueError("insight manifest page count must be positive")
+        binding = self._insight_machine_binding()
+        record = self.machine_request(binding)
+        if record is None or record["artifact_kind"] != "insight-preview-pages" or record["part_count"] != page_count:
+            raise AuthorizationMismatchError("insight manifest staged count differs from its sealed count")
+        first: AcceptedInsightPart | None = None
+        previous: str | None = None
+        digest = InsightManifestDigest()
         with self._connection() as conn:
-            for expected_ordinal in range(page_count - 1, -1, -1):
-                if cursor in seen:
-                    raise AuthorizationMismatchError("insight manifest preview chain contains a cycle")
-                seen.add(cursor)
+            for expected_ordinal in range(page_count):
+                raw = self.machine_part(binding, expected_ordinal)
+                if raw is None or raw["authorization_ref"] is not None or raw["operation_id"] is not None:
+                    raise AuthorizationMismatchError("insight staged preview page is absent or already reserved")
+                cursor = str(raw["preview_ref"])
                 preview = self.preview_for_principal(cursor, principal)
                 if preview.plan.operation != "mutate-rebuild-insights":
                     raise AuthorizationMismatchError("insight manifest preview has another operation")
                 if preview.plan.archive_identity_digest != expected_archive_identity:
                     raise AuthorizationMismatchError("insight manifest preview has another archive authority")
+                deadline = self._command_value("accepted_deadline_unix_ms", self._machine_deadline_unix_ms)
+                progress_owned = preview.plan.expires_at_ms == preview.plan.prepared_at_ms
+                if (deadline is None) != progress_owned or (
+                    deadline is not None and deadline != preview.plan.expires_at_ms
+                ):
+                    raise AuthorizationMismatchError("insight manifest lifetime differs from its accepted deadline")
                 rows = conn.execute(
                     """SELECT authorization_id FROM operation_authorizations
                     WHERE preview_id = ? AND actor_ref = ? AND surface = ? AND state = 'active'
-                    ORDER BY authorization_id""",
+                    ORDER BY authorization_id LIMIT 2""",
                     (cursor, principal.actor_ref, principal.surface),
                 ).fetchall()
                 if len(rows) != 1:
@@ -2508,23 +2573,73 @@ class AuditRepository:
                 part = accepted_part_from_plan(preview.plan, preview_ref=cursor, authorization_ref=str(rows[0][0]))
                 if part.ordinal != expected_ordinal or part.page_count != page_count:
                     raise AuthorizationMismatchError("insight manifest page ordering differs from its sealed count")
-                reverse.append(part)
-                cursor = part.previous_preview_ref or ""
-        if cursor:
-            raise AuthorizationMismatchError("insight manifest chain has an unexpected predecessor")
-        parts = tuple(reversed(reverse))
-        first = parts[0]
-        if any(
-            part.scope_kind != first.scope_kind
-            or part.index_generation != first.index_generation
-            or part.recipe_version != first.recipe_version
-            or part.manifest_digest != manifest_digest
-            for part in parts
-        ):
-            raise AuthorizationMismatchError("insight manifest pages disagree on immutable acceptance facts")
-        if insight_manifest_digest(parts) != manifest_digest:
+                first = part if first is None else first
+                if (
+                    part.previous_preview_ref != previous
+                    or part.scope_kind != first.scope_kind
+                    or part.index_generation != first.index_generation
+                    or part.recipe_version != first.recipe_version
+                    or part.manifest_digest != manifest_digest
+                ):
+                    raise AuthorizationMismatchError("insight manifest pages disagree on immutable acceptance facts")
+                previous = part.preview_ref
+                digest.update(part)
+                yield part
+        if previous != head_preview_ref:
+            raise AuthorizationMismatchError("insight manifest head differs from its exact page chain")
+        if digest.hexdigest() != manifest_digest:
             raise AuthorizationMismatchError("insight manifest digest does not match its exact page chain")
-        return parts
+
+    def insight_expiry_policy(self, preview: MutationPreview, principal: MutationPrincipal) -> InsightExpiryPolicy:
+        """Judge lifetime from exact staged maintenance custody, never from a public preview.
+
+        Progress-owned pages retain an integer preparation witness in the existing
+        preview schema and an issuance witness in authorization rows. Cancellation, generation and recipe currentness remain
+        checked by the resident owner; caller-chosen deadlines retain expiry.
+        """
+        if (
+            preview.plan.operation != "mutate-rebuild-insights"
+            or preview.plan.expires_at_ms != preview.plan.prepared_at_ms
+        ):
+            return "caller_deadline"
+        with self._connection() as conn:
+            rows = conn.execute(
+                """SELECT m.principal_ref, m.archive_identity, m.artifact_kind,
+                          m.accepted_deadline_unix_ms, m.stop_reason, p.ordinal,
+                          v.plan_hash, v.principal_surface, v.principal_actor_ref
+                   FROM machine_requests m JOIN machine_request_parts p
+                   ON m.archive_identity=p.archive_identity AND m.request_id=p.request_id AND p.ordinal=?
+                   JOIN operation_previews v ON v.preview_id=p.preview_ref
+                   WHERE m.archive_identity=? AND m.principal_ref=? AND m.operation_name=? AND p.preview_ref=? LIMIT 2""",
+                (
+                    preview.plan.context["page_ordinal"],
+                    preview.plan.archive_identity_digest,
+                    principal.actor_ref,
+                    _INSIGHT_MACHINE_OPERATION,
+                    preview.preview_ref,
+                ),
+            ).fetchall()
+        owned = len(rows) == 1 and (
+            rows[0][0] == principal.actor_ref
+            and rows[0][1] == preview.plan.archive_identity_digest
+            and rows[0][2] in {"insight-preview-pages", "execution-batch"}
+            and rows[0][3] is None
+            and rows[0][4] is None
+            and rows[0][5] == preview.plan.context["page_ordinal"]
+            and rows[0][6] == preview.plan.plan_hash
+            and rows[0][7] == principal.surface
+            and rows[0][8] == principal.actor_ref
+        )
+        return "maintenance_progress" if owned else "caller_deadline"
+
+    def _insight_machine_binding(self) -> MachineRequestBinding:
+        if self._machine_binding is not None:
+            return self._machine_binding[0]
+        if self._coordinated_mutation is not None:
+            raw = self._coordinated_mutation.mapping_payload.get("machine_request")
+            if isinstance(raw, dict):
+                return MachineRequestBinding(**cast(dict[str, str], raw))
+        raise AuthorizationMismatchError("insight seal has no authenticated machine request")
 
     def _insight_bound_archive_identity(self) -> str:
         """Resolve the authenticated request archive in live and replayed seals."""
@@ -2813,7 +2928,10 @@ class AuditRepository:
                 or authorization.expires_at_ms != effective_issued_at_ms
             ):
                 raise AuthorizationMismatchError("authorization differs from its verified reset custody")
-            durable_expires_at_ms = int(preview_row[1]) if proof is None else effective_issued_at_ms
+            progress_owned = self.insight_expiry_policy(preview, principal) == "maintenance_progress"
+            durable_expires_at_ms = (
+                effective_issued_at_ms if proof is not None or progress_owned else int(preview_row[1])
+            )
             durable_capabilities = tuple(
                 str(row[0])
                 for row in conn.execute(
@@ -2847,7 +2965,7 @@ class AuditRepository:
             # A paged handshake judges expiry as of its progress, not its wall
             # time (``handshake_as_of_ms``); issuance time stays real.
             as_of_ms = cast(int, self._command_value("authority_as_of_ms", effective_issued_at_ms))
-            if proof is None and as_of_ms >= durable_expires_at_ms:
+            if proof is None and not progress_owned and as_of_ms >= durable_expires_at_ms:
                 conn.execute(
                     "UPDATE operation_previews SET state = 'expired' WHERE preview_id = ? AND state = 'prepared'",
                     (preview.preview_ref,),
@@ -3042,7 +3160,18 @@ class AuditRepository:
                     issued_at_ms=now_ms,
                     authorization_ref=str(row[0]),
                 )
-            if not reset and int(row[7]) <= cast(int, self._command_value("authority_as_of_ms", now_ms)):
+            insight_principal = MutationPrincipal(
+                actor_ref=authorization.actor,
+                surface=cast(Any, authorization.surface),
+                role_label=authorization.role or None,
+                capabilities=frozenset(authorization.capabilities),
+            )
+            progress_owned = self.insight_expiry_policy(preview, insight_principal) == "maintenance_progress"
+            if (
+                not reset
+                and not progress_owned
+                and int(row[7]) <= cast(int, self._command_value("authority_as_of_ms", now_ms))
+            ):
                 conn.execute(
                     "UPDATE operation_authorizations SET state = 'expired' WHERE authorization_id = ?",
                     (str(row[0]),),

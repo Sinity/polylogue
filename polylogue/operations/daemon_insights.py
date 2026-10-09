@@ -11,7 +11,12 @@ from polylogue.operations.audit import MachineRequestBinding
 from polylogue.operations.bindings import OperationBinding, runtime_operation_binding
 from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
 from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
-from polylogue.operations.insight_acceptance import AcceptedInsightPart, InsightAcceptance, SessionInsightPartReceipt
+from polylogue.operations.insight_acceptance import (
+    AcceptedInsightPart,
+    InsightAcceptance,
+    SealedInsightParts,
+    SessionInsightPartReceipt,
+)
 from polylogue.operations.insight_planning import (
     AcceptedInsightActuator,
     InsightManifest,
@@ -44,14 +49,14 @@ class InsightExecution:
         self.binding: MachineRequestBinding | None = None
         self.snapshot: PinnedOperationRead | None = None
         self.record: dict[str, object] | None = None
-        self.parts: tuple[AcceptedInsightPart, ...] = ()
+        self.parts: SealedInsightParts | None = None
         self.expiry_ms = self.runtime.request_deadline_unix_ms(request)
 
     def stop_reason(self) -> str | None:
         reason = self.runtime.stop_reason(self.request)
         if self.record is not None and self.record.get("stop_reason"):
             reason = str(self.record["stop_reason"])
-        if int(time() * 1000) >= self.expiry_ms:
+        if self.expiry_ms is not None and int(time() * 1000) >= self.expiry_ms:
             reason = reason or "deadline"
         return reason
 
@@ -76,7 +81,7 @@ class InsightExecution:
                     self.request.fingerprint,
                     self.request.operation,
                 )
-                with self.audit.settled_machine_read():
+                with self.audit.settled_machine_read(wait_for_lock=True):
                     self.record = self.audit.machine_request(self.binding)
                     if self.record is not None and self.record["artifact_kind"] == "execution-batch":
                         self.parts = self.audit.sealed_insight_parts(self.binding, self.context.principal)
@@ -100,6 +105,12 @@ class InsightExecution:
         manifest = await self.runtime.compute_phase(prepare)
         if manifest is None:
             return
+        try:
+            await self._stage_manifest(manifest)
+        finally:
+            manifest.close()
+
+    async def _stage_manifest(self, manifest: InsightManifest) -> None:
         assert self.binding is not None
         binding = self.binding
         acceptance = InsightAcceptance(self.audit, binding, self.context.principal)
@@ -110,11 +121,13 @@ class InsightExecution:
                 self.check_stop()
                 now_ms = int(time() * 1000)
                 instance = self.audit.ensure_archive_authority(now_ms=now_ms)
-                staged = self.audit.machine_parts(binding)
-                if staged:
-                    first = self.audit.preview_for_principal(str(staged[0]["preview_ref"]), self.context.principal)
+                staged = self.audit.machine_part(binding, 0)
+                if staged is not None:
+                    first = self.audit.preview_for_principal(str(staged["preview_ref"]), self.context.principal)
                     now_ms = first.plan.prepared_at_ms
-                    self.expiry_ms = first.plan.expires_at_ms
+                    self.expiry_ms = (
+                        None if first.plan.expires_at_ms == first.plan.prepared_at_ms else first.plan.expires_at_ms
+                    )
                 plan = insight_page_plan(
                     manifest,
                     ordinal,
@@ -131,7 +144,7 @@ class InsightExecution:
             previous = await self.runtime.write_phase("insights.stage", stage)
         assert previous is not None
 
-        def seal() -> tuple[AcceptedInsightPart, ...]:
+        def seal() -> SealedInsightParts:
             self.check_stop()
             parts = acceptance.seal(
                 head_preview_ref=previous,
@@ -144,11 +157,18 @@ class InsightExecution:
 
         self.parts = await self.runtime.write_phase("insights.accept", seal)
 
+    def part(self, ordinal: int) -> AcceptedInsightPart:
+        assert self.parts is not None
+        with self.audit.settled_machine_read(wait_for_lock=True):
+            return self.parts[ordinal]
+
     async def begin(self, part: AcceptedInsightPart) -> StartedBoundMutation | None:
         def start() -> StartedBoundMutation | None:
             self.check_stop()
             assert self.binding is not None
-            durable_part = self.audit.machine_parts(self.binding)[part.ordinal]
+            durable_part = self.audit.machine_part(self.binding, part.ordinal)
+            if durable_part is None:
+                raise ValueError("accepted insight page is absent")
             if durable_part["operation_id"] is not None:
                 # A consumed page is reconciled from its receipt, never rerun.
                 return None
@@ -168,7 +188,7 @@ class InsightExecution:
     async def state(self) -> dict[str, object]:
         def read() -> dict[str, object]:
             assert self.binding is not None
-            with self.audit.settled_machine_read():
+            with self.audit.settled_machine_read(wait_for_lock=True):
                 record = self.audit.machine_request(self.binding)
                 if record is None:
                     raise ValueError("insight request has no durable binding")
@@ -202,8 +222,8 @@ class InsightExecution:
                     "manifest_digest": part.manifest_digest,
                     "index_generation": part.index_generation,
                     "recipe_version": part.recipe_version,
-                    "targets": tuple(asdict(target) for target in observed.targets),
-                    "unattempted_target_refs": observed.remaining_unattempted_target_refs,
+                    "targets": [asdict(target) for target in observed.targets],
+                    "unattempted_target_refs": list(observed.remaining_unattempted_target_refs),
                     "terminal_summary": terminal_summary,
                 }
             )
@@ -239,7 +259,13 @@ async def execute_insights_rebuild_operation(
     try:
         await execution.accept()
         totals = {"profiles": 0}
-        for part in execution.parts:
+        assert execution.parts is not None
+        for ordinal in range(len(execution.parts)):
+
+            def read_part(ordinal: int = ordinal) -> AcceptedInsightPart:
+                return execution.part(ordinal)
+
+            part = await execution.runtime.compute_phase(read_part)
             active_part = part
             active_observed = None
             active = await execution.begin(part)
@@ -247,8 +273,10 @@ async def execute_insights_rebuild_operation(
 
                 def prior(part: AcceptedInsightPart = part) -> InsightPartHistoricalReceipt | None:
                     assert execution.binding is not None
-                    with execution.audit.settled_machine_read():
-                        raw = execution.audit.machine_parts(execution.binding)[part.ordinal]
+                    with execution.audit.settled_machine_read(wait_for_lock=True):
+                        raw = execution.audit.machine_part(execution.binding, part.ordinal)
+                        if raw is None:
+                            raise ValueError("accepted insight page is absent")
                         run = execution.audit.get_operation(str(raw["operation_id"]))
                         if run is None or run["status"] != "completed":
                             return None
@@ -299,11 +327,13 @@ async def execute_insights_rebuild_operation(
                             raise ValueError("accepted insight generation or recipe changed before final view read")
                         execution.snapshot = pinned
                         execution.runtime.observe_snapshot(request, pinned)
-                        return insight_terminal_view_counts(
-                            pinned.archive,
-                            tuple(target for accepted in execution.parts for target in accepted.targets),
-                            check_stop=execution.check_stop,
-                        )
+                        assert execution.parts is not None
+                        with execution.audit.settled_machine_read(wait_for_lock=True):
+                            return insight_terminal_view_counts(
+                                pinned.archive,
+                                (target for accepted in execution.parts for target in accepted.targets),
+                                check_stop=execution.check_stop,
+                            )
 
                 threads, tags = await execution.runtime.compute_phase(views)
                 summary = {**totals, "threads": threads, "tag_rollups": tags}

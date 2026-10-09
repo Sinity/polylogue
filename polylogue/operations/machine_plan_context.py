@@ -118,8 +118,8 @@ class _InsightContext(BaseModel):
     scope_kind: Literal["explicit", "full"]
     index_generation: str = Field(min_length=1)
     recipe_version: str = Field(min_length=1)
-    page_ordinal: int = Field(ge=0, le=4095)
-    page_count: int = Field(ge=1, le=4096)
+    page_ordinal: int = Field(ge=0)
+    page_count: int = Field(ge=1)
     manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     previous_preview_ref: str | None = None
     targets: list[_InsightTargetContext] = Field(max_length=256)

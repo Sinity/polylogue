@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Literal, TypeAlias, TypeVar, cast
 
 from polylogue.operations.mutation_transaction import MutationPlan, MutationPreview
 
@@ -19,12 +20,12 @@ if TYPE_CHECKING:
     from polylogue.operations.bindings import OperationBinding
     from polylogue.operations.mutation_transaction import MutationAuthorization, MutationPrincipal, OperationExecutor
 
+InsightExpiryPolicy: TypeAlias = Literal["caller_deadline", "maintenance_progress"]
 InsightScopeKind: TypeAlias = Literal["explicit", "full"]
 InsightTargetDisposition: TypeAlias = Literal["required", "excess"]
 InsightPartDisposition: TypeAlias = Literal["already_satisfied", "published", "pending", "stale", "failed", "unknown"]
 
 MAX_INSIGHT_PART_TARGETS = 256
-MAX_INSIGHT_ACCEPTED_PARTS = 4096
 ArgsT = TypeVar("ArgsT")
 
 
@@ -59,8 +60,8 @@ class AcceptedInsightPart:
     def __post_init__(self) -> None:
         if not self.preview_ref or not self.authorization_ref or len(self.plan_hash) != 64:
             raise ValueError("accepted insight part lacks an exact authority reference")
-        if not 0 <= self.ordinal < self.page_count <= MAX_INSIGHT_ACCEPTED_PARTS:
-            raise ValueError("accepted insight page ordinal is outside the bounded manifest")
+        if not 0 <= self.ordinal < self.page_count:
+            raise ValueError("accepted insight page ordinal is outside the manifest")
         if len(self.manifest_digest) != 64 or any(char not in "0123456789abcdef" for char in self.manifest_digest):
             raise ValueError("accepted insight manifest digest must be SHA-256 hex")
         if not self.index_generation.startswith("index-generation:") or not self.recipe_version:
@@ -231,11 +232,15 @@ def accepted_part_from_plan(
     return part
 
 
-def insight_manifest_digest(parts: tuple[AcceptedInsightPart, ...]) -> str:
-    """Hash exact ordered page facts, never an ambient cursor or rediscovery."""
+class InsightManifestDigest:
+    """The canonical JSON-array digest, retaining only one page's encoded facts."""
 
-    payload = [
-        {
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256(b"[")
+        self._count = 0
+
+    def update(self, part: AcceptedInsightPart) -> None:
+        payload = {
             "ordinal": part.ordinal,
             "scope_kind": part.scope_kind,
             "index_generation": part.index_generation,
@@ -244,9 +249,46 @@ def insight_manifest_digest(parts: tuple[AcceptedInsightPart, ...]) -> str:
                 {"target_ref": target.target_ref, "disposition": target.disposition} for target in part.targets
             ],
         }
-        for part in parts
-    ]
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        if self._count:
+            self._digest.update(b",")
+        self._digest.update(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        self._count += 1
+
+    def hexdigest(self) -> str:
+        finished = self._digest.copy()
+        finished.update(b"]")
+        return finished.hexdigest()
+
+
+def insight_manifest_digest(parts: Iterable[AcceptedInsightPart]) -> str:
+    """Hash exact ordered page facts, never an ambient cursor or rediscovery."""
+    digest = InsightManifestDigest()
+    for part in parts:
+        digest.update(part)
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class SealedInsightParts:
+    """A validated Audit manifest reference; each ordinal reloads one exact page."""
+
+    audit: AuditRepository
+    binding: MachineRequestBinding
+    principal: MutationPrincipal
+    count: int
+
+    def __len__(self) -> int:
+        return self.count
+
+    def __getitem__(self, ordinal: int) -> AcceptedInsightPart:
+        if ordinal < 0:
+            ordinal += self.count
+        if not 0 <= ordinal < self.count:
+            raise IndexError(ordinal)
+        return self.audit.sealed_insight_part(self.binding, self.principal, ordinal)
+
+    def __iter__(self) -> Iterator[AcceptedInsightPart]:
+        return self.audit.iter_sealed_insight_parts(self.binding, self.principal)
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,9 +314,12 @@ class InsightAcceptance:
             preview_ref="pending-preview",
             authorization_ref="pending-authorization",
         )
-        parts = self.audit.machine_parts(self.binding)
-        if expected.ordinal < len(parts):
-            raw = parts[expected.ordinal]
+        record = self.audit.machine_request(self.binding)
+        count = 0 if record is None else int(cast(int, record["part_count"]))
+        if expected.ordinal < count:
+            raw = self.audit.machine_part(self.binding, expected.ordinal)
+            if raw is None:
+                raise ValueError("staged insight page is absent")
             preview = self.audit.preview_for_principal(str(raw["preview_ref"]), self.principal)
             durable = accepted_part_from_plan(
                 preview.plan,
@@ -284,7 +329,7 @@ class InsightAcceptance:
             if durable != replace(expected, preview_ref=preview.preview_ref):
                 raise ValueError("staged insight page differs from the supplied immutable plan")
             return preview
-        if expected.ordinal != len(parts):
+        if expected.ordinal != count:
             raise ValueError("insight pages must stage in contiguous ordinal order")
         with self.audit.bind_machine_request(self.binding, transition="append_insight_preview"):
             preview_ref = self.audit.append_insight_preview(plan, self.principal)
@@ -316,8 +361,8 @@ class InsightAcceptance:
         head_preview_ref: str,
         page_count: int,
         manifest_digest: str,
-        deadline_unix_ms: int,
-    ) -> tuple[AcceptedInsightPart, ...]:
+        deadline_unix_ms: int | None,
+    ) -> SealedInsightParts:
         """Atomically reserve a complete immutable page chain, or reload it.
 
         The caller may prepare pages and authorizations before this transition,
@@ -356,10 +401,12 @@ __all__ = [
     "AcceptedInsightTarget",
     "InsightCertifiedCounts",
     "InsightAcceptance",
+    "InsightExpiryPolicy",
+    "InsightManifestDigest",
+    "SealedInsightParts",
     "InsightPartDisposition",
     "InsightScopeKind",
     "InsightTargetDisposition",
-    "MAX_INSIGHT_ACCEPTED_PARTS",
     "MAX_INSIGHT_PART_TARGETS",
     "SessionInsightPartReceipt",
     "SessionInsightTargetReceipt",

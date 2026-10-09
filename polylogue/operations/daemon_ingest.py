@@ -763,6 +763,7 @@ class IngestExecution:
                 assert self.binding is not None
                 now_ms = int(time() * 1000)
                 deadline = self.runtime.request_deadline_unix_ms(self.request)
+                assert deadline is not None  # ingest retains its declared execution deadline
                 expires_at_ms = deadline
                 instance = self.audit.ensure_archive_authority(now_ms=now_ms)
                 actuator = IngestActuator(manifest, instance, self.binding.archive_identity, now_ms, expires_at_ms)

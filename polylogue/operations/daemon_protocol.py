@@ -1992,7 +1992,6 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.LONG_RUNNING,
         DaemonFallback.NEVER,
         capability="archive.rebuild_insights",
-        deadline_s=300.0,
         progress=True,
         accepted_reference=True,
         request_contract="maintenance.insights.rebuild.request/v1",
