@@ -757,8 +757,14 @@ class RawObservationInspection:
                     typed_schema_ineligible = False
                     if is_jsonl_source_path(raw["source_path"]):
                         retained_path = BlobStore(self.archive_root / "blob").blob_path(bytes(raw["blob_hash"]).hex())
-                        with retained_path.open("rb") as retained_input:
-                            typed_schema_ineligible = jsonl_parse_prefix_size_of_handle(retained_input) == 0
+                        try:
+                            with retained_path.open("rb") as retained_input:
+                                typed_schema_ineligible = jsonl_parse_prefix_size_of_handle(retained_input) == 0
+                        except FileNotFoundError:
+                            # Exact-source restoration is a compute admission.
+                            # A missing CAS file must reach that owner rather
+                            # than fail while inspecting its empty census.
+                            return "stale"
             if not (
                 raw["validation_mode"] is None
                 and census is not None

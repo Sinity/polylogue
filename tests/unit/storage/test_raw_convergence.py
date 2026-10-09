@@ -1877,6 +1877,30 @@ def test_empty_census_schema_exemption_requires_retained_jsonl_frontier(tmp_path
     assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "stale"
 
 
+def test_empty_jsonl_census_missing_cas_reaches_exact_source_restoration(tmp_path: Path) -> None:
+    from polylogue.storage.blob_store import BlobStore
+
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "empty-session.jsonl"
+    source.write_bytes(b"")
+    raw_id = _admit(tmp_path, (), provider=Provider.CODEX, path=str(source), payload=b"")
+    assert _derive(tmp_path, validation_mode=ValidationMode.OFF).failed == 0
+    blob_path = BlobStore(tmp_path / "blob").blob_path(hashlib.sha256(b"").hexdigest())
+    blob_path.unlink()
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "stale"
+    # Fair session discovery excludes settled non-session inputs. An exact
+    # selected Raw request still reaches the resident restoration admission.
+    report = run_on_convergence_owner(
+        tmp_path, "test.raw.empty.restore", lambda compute: _converge_raw(tmp_path, compute, raw_id)
+    )
+    assert report.failed == 0, report.outcomes
+    assert blob_path.read_bytes() == b""
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "valid"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone() == (None,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchone() == (0,)
+
+
 def test_sessionless_json_document_still_requires_schema_policy(tmp_path: Path) -> None:
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(tmp_path, (), provider=Provider.CODEX, path="session.json", payload=b"[]")
