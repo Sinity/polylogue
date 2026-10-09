@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.daemon.derivation import (
     Budget,
     DerivationFrame,
@@ -52,13 +53,23 @@ def discover_pending_hook_carriers(archive_root: Path, limit: int) -> tuple[tupl
         return ()
     adapter = make_hook_events_derivation(archive_root)
     frame = hook_events_frame(archive_root)
-    try:
-        keys, _next_cursor = adapter.required_page(frame, cursor=None, limit=limit)
-    except (FileNotFoundError, OSError):
-        return ()
-    if not keys:
-        return ()
-    stale = tuple(key for key, status in adapter.inspect(frame, keys).items() if status != "valid")
+    cursor = None
+    pending: list[str] = []
+    while True:
+        check_compute_cancelled()
+        try:
+            keys, next_cursor = adapter.required_page(frame, cursor=cursor, limit=limit)
+        except (FileNotFoundError, OSError):
+            return ()
+        if not keys:
+            break
+        check_compute_cancelled()
+        pending.extend(key for key, status in adapter.inspect(frame, keys).items() if status != "valid")
+        if len(pending) >= limit or next_cursor is None:
+            break
+        cursor = next_cursor
+    check_compute_cancelled()
+    stale = tuple(pending[:limit])
     if not stale:
         return ()
     from polylogue.operations.operation_context import open_operation_read

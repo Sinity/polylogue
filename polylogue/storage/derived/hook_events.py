@@ -27,6 +27,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.logging import WARNING, emit
 from polylogue.sources.hooks import (
     CarrierLine,
@@ -40,6 +41,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     CarrierHookEvent,
     hook_carrier_coordinate,
+    hook_event_payload_digest,
 )
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -122,10 +124,9 @@ class HookEventsDerivation:
 
     domain = HOOK_EVENTS_DOMAIN
     prerequisites: tuple[str, ...] = ()
-    #: Bump when the materialized rows change shape. The identity of an event
-    #: and of its carrier coordinate are both content-derived, so a bump
-    #: re-publishes over the same keys rather than duplicating them.
-    recipe_version = "hook-events-carrier-v1"
+    #: Bump when materialized authority changes. Event identity remains stable
+    #: while the carrier coordinate also binds its physical byte position.
+    recipe_version = "hook-events-carrier-v2"
 
     def __init__(self, archive_root: Path) -> None:
         self.archive_root = archive_root
@@ -250,6 +251,7 @@ class HookEventsDerivation:
             return {key: self._inspect(conn, key) for key in keys}
 
     def _inspect(self, conn: sqlite3.Connection, key: str) -> str:
+        check_compute_cancelled()
         descriptor = self._descriptor(conn, key)
         if descriptor is None:
             return "stale"
@@ -268,14 +270,22 @@ class HookEventsDerivation:
             # on a key no publication can ever resolve.
             return "valid"
         recorded = {
-            str(row["relative_path"])
+            str(row["relative_path"]): (str(row["hook_event_id"]), bytes(row["payload_digest"]))
             for row in conn.execute(
-                "SELECT relative_path FROM hook_event_carriers WHERE source_id = ? AND relative_path LIKE ?",
+                "SELECT relative_path, hook_event_id, payload_digest FROM hook_event_carriers "
+                "WHERE source_id = ? AND relative_path LIKE ?",
                 (identity.source_id, f"{identity.relative_path}#%"),
             )
         }
-        expected = {hook_carrier_coordinate(identity.relative_path, base_offset + line.byte_offset) for line in lines}
-        return "valid" if expected <= recorded else "stale"
+        events = carrier_hook_events(lines, source_path=source_path, base_offset=base_offset)
+        for carried in events:
+            check_compute_cancelled()
+            coordinate = hook_carrier_coordinate(
+                identity.relative_path, carried.byte_offset, carried.event.hook_event_id
+            )
+            if recorded.get(coordinate) != (carried.event.hook_event_id, hook_event_payload_digest(carried.event)):
+                return "stale"
+        return "valid"
 
     def _binding(self, conn: sqlite3.Connection, identity: HookCarrierIdentity, blob_hash: str) -> str:
         recorded = sorted(

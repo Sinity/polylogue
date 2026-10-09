@@ -22,6 +22,15 @@ post-hoc session JSONL with events that are otherwise unavailable there.
    carrier. Nothing is acknowledged or moved; the carrier bytes stay put and
    the rows are recomputable from them.
 
+Materialization records each carrier's root-relative path, absolute byte
+offset and event identity. A producer that recreates a lost day/PID pathname
+can therefore retain a new event at an already used offset. Inspection checks
+the canonical payload digest as well as that coordinate; reusing an event
+identity with changed content remains an explicit immutable-identity conflict.
+Pending discovery follows the raw-ID pages past completed carriers until it
+fills its requested pending page or reaches the end, observing cancellation
+between pages. Restart repeats that read from retained Source evidence.
+
 A harness fires two hooks per tool call, so step 1 runs twice per tool call
 per concurrent agent. `polylogue hooks install` therefore renders the command
 as a direct `python -I -S .../hook_producer.py` invocation: no console-script

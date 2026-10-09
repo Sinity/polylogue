@@ -736,3 +736,49 @@ def test_arriving_metadata_excluded_request_dump_is_not_hashed(tmp_path: Path, m
         assert frontier.complete
         assert [member.coordinate for member in frontier.members] == ["sessions/session_neutral.json"]
     assert excluded.is_file()
+
+
+def test_configured_frontier_keeps_initial_refusal_when_root_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later successful bind cannot certify an initially refused member split."""
+    from polylogue import paths
+
+    home = tmp_path / "home"
+    codex = home / ".codex"
+    codex.mkdir(parents=True)
+    archive = tmp_path / "archive"
+    (archive / "hooks").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
+    monkeypatch.setattr(paths, "archive_root", lambda: archive)
+    monkeypatch.setattr(
+        "polylogue.sources.hooks.hook_spool_sources",
+        lambda: (SimpleNamespace(source_id="primary-hook-spool", root=archive / "hooks"),),
+    )
+    original = Path.lstat
+    denied_once = False
+
+    def refuse_first(path: Path) -> os.stat_result:
+        nonlocal denied_once
+        if path == codex and not denied_once:
+            denied_once = True
+            raise PermissionError("synthetic initial member selection refusal")
+        return original(path)
+
+    monkeypatch.setattr(Path, "lstat", refuse_first)
+    frontier = continuity.configured_source_frontier(archive)
+    try:
+        assert denied_once
+        assert frontier.root_states["configured:codex-state"] is FrontierState.UNAVAILABLE
+        assert not frontier.complete
+        frontier.verify_integrity()
+    finally:
+        frontier.close()
+    # The next observation has its own complete selection and can recover.
+    recovered = continuity.configured_source_frontier(archive)
+    try:
+        assert recovered.root_states["configured:codex-state"] is FrontierState.VALID_EMPTY
+        recovered.verify_integrity()
+    finally:
+        recovered.close()

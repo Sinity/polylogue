@@ -407,13 +407,17 @@ def _frontier_digest(
 _CAPTURED_INODE = re.compile(r"dev:(\d+):ino:(\d+)")
 
 
-def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFrontier:
+def build_source_frontier(
+    declarations: Iterable[SourceDeclaration], *, initial_refusals: Mapping[str, str] | None = None
+) -> SourceFrontier:
     """Enumerate every configured root, retaining unavailable roots as blockers."""
     rows = tuple(declarations)
     if not rows:
         raise SourceContinuityError("source frontier declaration is empty")
     if len({row.source_id for row in rows}) != len(rows):
         raise SourceContinuityError("source frontier contains duplicate source IDs")
+    if set(initial_refusals or ()) - {row.source_id for row in rows}:
+        raise SourceContinuityError("source frontier refusal names an undeclared root")
     if len({Path(row.root).resolve(strict=False) for row in rows}) != len(rows):
         raise SourceContinuityError("source frontier contains duplicate roots")
     from polylogue.sources.source_snapshot import (
@@ -428,6 +432,13 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
     blockers: list[str] = []
     try:
         for declaration in rows:
+            initial_refusal = (initial_refusals or {}).get(declaration.source_id)
+            if initial_refusal is not None:
+                # The configured member split was refused before binding.
+                # Later readability cannot complete that earlier denominator.
+                states[declaration.source_id] = FrontierState.UNAVAILABLE
+                blockers.append(f"unavailable:{declaration.source_id}:{declaration.root}:{initial_refusal}")
+                continue
             before_count = store.count
             try:
                 binding = bind_source_observation(declaration)
@@ -521,6 +532,7 @@ def configured_source_frontier(archive_root: Path) -> SourceFrontier:
         raise SourceContinuityError("archive root differs from the resolved source-spool configuration")
 
     rows: list[SourceDeclaration] = []
+    initial_refusals: dict[str, str] = {}
     source_paths = getattr(runtime, "source_paths", None)
     canonical_paths = (
         ("claude-code", "claude_code"),
@@ -553,20 +565,27 @@ def configured_source_frontier(archive_root: Path) -> SourceFrontier:
             # The complete hook root is declared below so pending envelopes
             # and provider carriers share the same spool owner.
             continue
+        root_observed = True
         try:
             path.lstat()
         except FileNotFoundError:
+            root_observed = False
             # Resolved canonical paths are optional until present. A path
             # already admitted by the runtime/watch declarations remains in
             # the denominator even if it disappeared before this observation.
             if name not in runtime_source_names:
                 continue
-        except OSError:
-            pass
+            initial_refusals[f"configured:{name}"] = "declared source disappeared before member selection"
+        except OSError as exc:
+            root_observed = False
+            initial_refusals[f"configured:{name}"] = str(exc)
         layout_name = None if name == "claude-code-history" else name
         role = SourceRole.APPEND_JSONL if name == "claude-code-history" else SourceRole.DIRECTORY
         try:
-            is_directory = path.is_dir()
+            # Keep an unreadable declaration for the frontier owner to mark
+            # unavailable. A second successful type probe cannot authorize
+            # the provisional database/exclusion walk after failed custody.
+            is_directory = root_observed and path.is_dir()
         except OSError:
             is_directory = False
         if not is_directory and layout_name is not None and name not in dict(canonical_paths):
@@ -643,7 +662,7 @@ def configured_source_frontier(archive_root: Path) -> SourceFrontier:
         if _source_path_present(pending):
             rows.append(SourceDeclaration(f"{spec.source_id}:pending", SourceRole.SPOOL, pending, True))
     unique: dict[str, SourceDeclaration] = {row.source_id: row for row in rows}
-    frontier = build_source_frontier(unique.values())
+    frontier = build_source_frontier(unique.values(), initial_refusals=initial_refusals)
     for spool_root, expected in observed_spools:
         try:
             after_identity = spool_root.lstat()
