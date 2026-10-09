@@ -2451,6 +2451,57 @@ async def _run_daemon_services_under_active_writer_lease(
         archive_owner.release()
         raise
 
+    def prepare_empty_index_transition() -> None:
+        from contextlib import contextmanager
+
+        from polylogue.operations.empty_index_startup import (
+            EmptyIndexTransitionRefusedError,
+            replace_empty_managed_index_on_startup,
+        )
+        from polylogue.operations.reset_safety import archive_tiers_closed
+
+        startup_kernel.require_current_creator()
+
+        @contextmanager
+        def admit_writer(actor: str) -> Iterator[object]:
+            with (
+                startup_bridge.hold(actor) as delegation,
+                adopt_write_lease(delegation),
+                write_lease(actor, archive_root=archive_root_path),
+            ):
+                yield None
+
+        with archive_tiers_closed(archive_root_path):
+            try:
+                generation_id = replace_empty_managed_index_on_startup(
+                    archive_root_path, archive_owner=archive_owner, write_admission=admit_writer
+                )
+            except EmptyIndexTransitionRefusedError as exc:
+                emit("daemon.empty_index.transition", level=WARNING, outcome="refused", reason=exc.reason)
+                return
+        if generation_id is not None:
+            emit(
+                "daemon.empty_index.transition",
+                outcome="ok",
+                reason="empty_managed_schema_replaced",
+                generation_id=generation_id,
+            )
+
+    try:
+        await write_coordinator.run_prepared_sync(
+            "daemon.empty_index.startup",
+            prepare_empty_index_transition,
+            submit_worker=lambda worker: (
+                startup_kernel.submit(
+                    propagate(worker), admission_class="control", estimated_bytes=0, exclusive_bytes=True
+                ).future
+            ),
+            settlement_owners=retained_native_settlement_owners_on_current_thread,
+        )
+    except BaseException:
+        archive_owner.release()
+        raise
+
     # Announce only after the daemon has acquired the authoritative archive
     # lease, so a competing owner receives an error without a false startup
     # message.
