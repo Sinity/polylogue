@@ -11,6 +11,7 @@ observation, and telemetry never chooses source identity or gates publication.
 from __future__ import annotations
 
 import contextlib
+import os
 import tempfile
 from collections.abc import Generator, Iterable
 from dataclasses import dataclass
@@ -94,10 +95,13 @@ class DriftSignature:
                     continue
                 if output is None:
                     directory.mkdir(parents=True, exist_ok=True)
-                    output = tempfile.NamedTemporaryFile(  # noqa: SIM115 - retain one handle through streaming
-                        mode="wb", prefix=".polylogue-drift-signature-", dir=directory, delete=False
-                    )
-                    path = Path(output.name)
+                    descriptor, filename = tempfile.mkstemp(prefix=".polylogue-drift-signature-", dir=directory)
+                    path = Path(filename)
+                    try:
+                        output = os.fdopen(descriptor, "wb")
+                    except BaseException:
+                        os.close(descriptor)
+                        raise
                     if buffered:
                         output.write(buffered)
                         buffered.clear()

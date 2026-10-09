@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import TypedDict
 
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
@@ -16,7 +17,12 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
-def _signature_kwargs(value: str) -> dict[str, object]:
+class _SignatureKwargs(TypedDict):
+    signature_chunks: tuple[bytes, ...]
+    signature_byte_count: int
+
+
+def _signature_kwargs(value: str) -> _SignatureKwargs:
     payload = value.encode("utf-8", errors="surrogatepass")
     return {"signature_chunks": (payload,), "signature_byte_count": len(payload)}
 

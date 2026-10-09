@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -85,7 +86,7 @@ def test_storage_rechunks_large_signature_below_sqlite_cell_limit_and_metadata_o
 def test_signature_iterator_failure_rolls_back_sample_and_chunks(tmp_path: Path) -> None:
     conn = _ops_conn(tmp_path / "ops.db")
 
-    def fail_after_one_chunk():
+    def fail_after_one_chunk() -> Iterator[bytes]:
         yield b"a" * 8192
         raise RuntimeError("synthetic signature read failure")
 
