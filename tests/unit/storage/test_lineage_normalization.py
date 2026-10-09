@@ -4643,6 +4643,61 @@ def test_an_append_keeps_the_materialized_identity_scope(tmp_path: Path) -> None
     assert set(materialized) <= set(replayed)
 
 
+def test_an_append_preserves_materialized_ids_after_replay_leaves_an_occurrence_gap(tmp_path: Path) -> None:
+    """Red twin: COUNT(*) reuses the copied prefix's occurrence after a tail removal."""
+    parent = [_msg("", Role.USER, "hi", 0), _msg("", Role.ASSISTANT, "answer", 1)]
+    child = [*parent, _msg("", Role.USER, "hi", 2), _msg("", Role.USER, "hi", 3)]
+    _materialize_then_replay(
+        tmp_path,
+        parent,
+        child,
+        [_msg("", Role.USER, "hi", 0), _msg("", Role.ASSISTANT, "another answer", 1)],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+
+        def session(messages: list[ParsedMessage]) -> ParsedSession:
+            return ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="child",
+                parent_session_provider_id="parent",
+                branch_type=BranchType.FORK,
+                messages=messages,
+            )
+
+        write_fixture_index_session(conn, session(child[:-1]), force_replace=True)
+        before = _child_ids(conn, "codex-session:child")
+        occurrences = conn.execute(
+            "SELECT content_occurrence FROM messages WHERE session_id = ? AND role = 'user' "
+            "ORDER BY content_occurrence",
+            ("codex-session:child",),
+        ).fetchall()
+        assert [row[0] for row in occurrences] == [0, 2]
+
+        write_fixture_index_session(conn, session([_msg("", Role.USER, "hi", 0)]), merge_append=True)
+        after = _child_ids(conn, "codex-session:child")
+        assert set(before) < set(after)
+        assert len(after) == len(before) + 1
+        assert [
+            row[0]
+            for row in conn.execute(
+                "SELECT content_occurrence FROM messages WHERE session_id = ? AND role = 'user' "
+                "ORDER BY content_occurrence",
+                ("codex-session:child",),
+            )
+        ] == [0, 2, 3]
+        envelope = read_archive_session_envelope(conn, "codex-session:child")
+        assert envelope.lineage_complete
+        assert ["".join(block.text or "" for block in message.blocks) for message in envelope.messages] == [
+            "hi",
+            "answer",
+            "hi",
+            "hi",
+        ]
+    finally:
+        close_fixture_index_connection(conn)
+
+
 def test_a_materialized_child_keeps_its_ids_after_a_replay_drops_its_parent(tmp_path: Path) -> None:
     """The identity scope belongs to the child, not to its parent edge.
 
