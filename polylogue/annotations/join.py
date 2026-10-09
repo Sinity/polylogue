@@ -133,7 +133,7 @@ def _group_value(row: AnnotationStructuralJoinRow, dimension: AnnotationGroupDim
     value = row.structural.get(dimension)
     if dimension == "time" and isinstance(row.structural.get("created_at"), str):
         value = str(row.structural["created_at"])[:10]
-    return value if value is not None else "unknown"
+    return value
 
 
 def _groups(

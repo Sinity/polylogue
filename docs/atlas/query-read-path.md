@@ -312,6 +312,18 @@ The `ops insights audit` command also uses resident `insights.rigor`: every regi
 
 Annotation imports return a committed immutable batch/count summary through CLI, MCP and Python, independent of later evidence reads. Resolving the returned `annotation-batch:` ref pages exact assertion references followed by validation errors through `items`, `total`, `offset` and `next_offset`. Error items preserve the original failure fields (including line and row key) and both failure/error ordinals; empty or non-array error documents remain complete failure items. The original User batch is the sole authority. Count and selected items use one User read transaction. SQLite parses stored JSON and may scan/sort entries for each ordered offset page; Python decodes only the selected window. Scalar and metadata previews retain their explicit partial-evidence descriptors. Collection preview caps and response-row duplication are retired.
 
+Import validation retains rows, admitted row keys and ordered failures on one
+request-owned scratch SQLite relation. Physical LF separates JSONL records;
+legal Unicode line and paragraph characters inside strings remain content.
+Authorization targets the immutable batch reference and binds the complete
+provenance and validated row digests. Schema, streamed batch collection TEXT
+cells and all candidate assertions commit in one User transaction. Retry and
+interruption recovery hash the retained batch incrementally. Python memory
+scales with one JSONL row and the finite control/metadata record, rather than
+the complete row or failure population. No total-byte, line-byte or row-count
+ceiling changes a valid import outcome. Structural annotation grouping retains
+null dimensions as JSON null, distinct from literal strings such as `unknown`.
+
 ## Thread search
 
 The public thread insight route searches session identity, title, repository URL, branch, support level, and the payload's thread/member support signals before the requested result window. API, MCP registry projection, and insight exports share `ArchiveStore.iter_thread_insights`. Strong and moderate threads remain distinct; a root without a materialized profile remains readable from the same session evidence as an exact public thread read. Profile absence does not silently consume a page slot. Search does not hydrate all threads before selecting a page. The former async thread-list adapter and its row-only mapper are retired with their unused query DTO; exact retained thread-record reads still use their existing profile owner.

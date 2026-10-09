@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import sqlite3
 from dataclasses import replace
@@ -531,13 +532,6 @@ def test_accept_then_durable_batch_import_requires_label_judgment_for_active_que
     assert asyncio.run(join_fixture_annotations(facade, active_request)).joined_count == 0
 
     batch_request = AnnotationBatchImportRequest(
-        jsonl=json.dumps(
-            {
-                "row_key": "topic-1",
-                "value": {"topic": "procurement", "confidence": 0.88},
-                "evidence_refs": ["session:topic-session"],
-            }
-        ),
         batch_id="archive-topic-backfill-1",
         schema_id=active.schema_id,
         schema_version=active.version,
@@ -553,6 +547,17 @@ def test_accept_then_durable_batch_import_requires_label_judgment_for_active_que
         import_annotation_batch(
             facade,  # type: ignore[arg-type]
             batch_request,
+            input=io.BytesIO(
+                (
+                    json.dumps(
+                        {
+                            "row_key": "topic-1",
+                            "value": {"topic": "procurement", "confidence": 0.88},
+                            "evidence_refs": ["session:topic-session"],
+                        }
+                    )
+                ).encode("utf-8")
+            ),
             resolve_ref=_resolved,
         )
     )
@@ -597,6 +602,17 @@ def test_accept_then_durable_batch_import_requires_label_judgment_for_active_que
         import_annotation_batch(
             facade,  # type: ignore[arg-type]
             batch_request,
+            input=io.BytesIO(
+                (
+                    json.dumps(
+                        {
+                            "row_key": "topic-1",
+                            "value": {"topic": "procurement", "confidence": 0.88},
+                            "evidence_refs": ["session:topic-session"],
+                        }
+                    )
+                ).encode("utf-8")
+            ),
             resolve_ref=_resolved,
         )
     )

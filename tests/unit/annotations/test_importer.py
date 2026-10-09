@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -48,9 +49,8 @@ def _schema() -> AnnotationSchema:
     )
 
 
-def _request(batch_id: str, jsonl: str) -> AnnotationBatchImportRequest:
+def _request(batch_id: str) -> AnnotationBatchImportRequest:
     return AnnotationBatchImportRequest(
-        jsonl=jsonl,
         batch_id=batch_id,
         schema_id="test.import",
         schema_version=1,
@@ -117,6 +117,75 @@ def _delegation_parent() -> ParsedSession:
 
 
 @pytest.mark.asyncio
+async def test_import_streams_complete_population_and_legal_unicode_without_old_caps(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """The ordinary writer retains every row, including one formerly oversized row."""
+    archive_root = workspace_env["archive_root"]
+
+    def seed() -> None:
+        with ArchiveStore(archive_root) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="annotation-target",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                ),
+            )
+
+    run_off_event_loop(seed)
+    schema = AnnotationSchema(
+        schema_id="test.import",
+        version=1,
+        title="Uncapped import",
+        fields=(AnnotationField(name="label", value_type="string"),),
+        target_ref_kinds=("session",),
+        evidence_policy="required",
+        status="active",
+    )
+    registry = AnnotationSchemaRegistry()
+    registry.register(schema)
+    special = "before\u0085middle\u2028paragraph\u2029after" + "x" * 70_000
+    path = tmp_path / "labels.jsonl"
+    with path.open("wb") as output:
+        for index in range(10_001):
+            output.write(
+                (
+                    json.dumps(
+                        {
+                            "row_key": f"row-{index}",
+                            "value": {"label": special if index == 0 else "yes"},
+                            "evidence_refs": ["codex-session:annotation-target"],
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\r\n"
+                ).encode("utf-8")
+            )
+    assert path.stat().st_size > 1_048_576
+    async with Polylogue(archive_root=archive_root) as poly:
+        with path.open("rb") as input:
+            result = await import_annotation_batch(poly, _request("uncapped"), input=input, registry=registry)
+            assert not input.closed
+    assert (result.status, result.total_count, result.valid_count, result.invalid_count) == ("ok", 10_001, 10_001, 0)
+    with connect_user_db(archive_root / "user.db") as conn:
+        first = conn.execute("SELECT value_json FROM assertions WHERE key='row-0'").fetchone()
+        assert first is not None
+        assert json.loads(first[0])["label"] == special
+        assert (
+            conn.execute("SELECT count(*) FROM assertions WHERE scope_ref=?", (result.batch_ref,)).fetchone()[0]
+            == 10_001
+        )
+    with ArchiveStore.open_existing(archive_root) as archive:
+        page = archive.get_annotation_batch_page("uncapped", limit=2, offset=9_999)
+    assert page is not None
+    assert (page.total, page.next_offset) == (10_001, None)
+    assert [item["ordinal"] for item in page.items] == [9_999, 10_000]
+
+
+@pytest.mark.asyncio
 async def test_import_roundtrip_keeps_failures_candidates_and_independent_batches(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -178,8 +247,12 @@ async def test_import_roundtrip_keeps_failures_candidates_and_independent_batche
     registry.register(_schema())
 
     async with Polylogue(archive_root=archive_root, db_path=index_db) as poly:
-        first = await import_annotation_batch(poly, _request("batch-one", jsonl), registry=registry)
-        second = await import_annotation_batch(poly, _request("batch-two", jsonl), registry=registry)
+        first = await import_annotation_batch(
+            poly, _request("batch-one"), input=io.BytesIO(jsonl.encode("utf-8")), registry=registry
+        )
+        second = await import_annotation_batch(
+            poly, _request("batch-two"), input=io.BytesIO(jsonl.encode("utf-8")), registry=registry
+        )
 
     assert executed == ["AnnotationBatchImportActuator", "AnnotationBatchImportActuator"]
     assert (first.total_count, first.valid_count, first.invalid_count) == (5, 4, 1)
@@ -290,7 +363,6 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
     ]
     jsonl = "\n".join(json.dumps(row) for row in (*valid_rows, *invalid_rows))
     request = AnnotationBatchImportRequest(
-        jsonl=jsonl,
         batch_id="delegation-retry",
         schema_id=DELEGATION_DISCOURSE_SCHEMA.schema_id,
         schema_version=DELEGATION_DISCOURSE_SCHEMA.version,
@@ -303,8 +375,8 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
 
     with running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root)):
         async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
-            first = await import_annotation_batch(poly, request)
-            replayed = await import_annotation_batch(poly, request)
+            first = await import_annotation_batch(poly, request, input=io.BytesIO(jsonl.encode("utf-8")))
+            replayed = await import_annotation_batch(poly, request, input=io.BytesIO(jsonl.encode("utf-8")))
             disagreement_rows: list[dict[str, object]] = []
             for row in valid_rows:
                 value = dict(cast(dict[str, object], row["value"]))
@@ -315,15 +387,15 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
                 request.model_copy(
                     update={
                         "batch_id": "delegation-disagreement",
-                        "jsonl": "\n".join(json.dumps(row) for row in disagreement_rows),
                     }
                 ),
+                input=io.BytesIO("\n".join(json.dumps(row) for row in disagreement_rows).encode("utf-8")),
             )
             missing_target = request.model_copy(
                 update={"batch_id": "missing-target", "target_ref": "delegation:missing"}
             )
             with pytest.raises(ValueError, match="does not resolve"):
-                await import_annotation_batch(poly, missing_target)
+                await import_annotation_batch(poly, missing_target, input=io.BytesIO(jsonl.encode("utf-8")))
 
             resolution = await poly.resolve_ref(first.batch_ref)
             assert resolution.payload is not None
@@ -434,7 +506,9 @@ async def test_interrupted_import_is_resolved_complete_or_absent_at_restart(
     monkeypatch.setattr(OperationExecutor, "execute_bound", die_mid_import)
     async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
         with pytest.raises(_Killed):
-            await import_annotation_batch(poly, _request("batch-killed", jsonl), registry=registry)
+            await import_annotation_batch(
+                poly, _request("batch-killed"), input=io.BytesIO(jsonl.encode("utf-8")), registry=registry
+            )
     (operation_id,) = started
     with sqlite3.connect(archive_root / "audit.db") as conn:
         conn.execute(
@@ -511,10 +585,14 @@ async def test_interrupted_import_reusing_a_batch_id_is_not_mistaken_for_its_pre
         raise _Killed
 
     async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
-        await import_annotation_batch(poly, _request("batch-reused", row("first")), registry=registry)
+        await import_annotation_batch(
+            poly, _request("batch-reused"), input=io.BytesIO(row("first").encode("utf-8")), registry=registry
+        )
         monkeypatch.setattr(OperationExecutor, "execute_bound", die_before_apply)
         with pytest.raises(_Killed):
-            await import_annotation_batch(poly, _request("batch-reused", row("second")), registry=registry)
+            await import_annotation_batch(
+                poly, _request("batch-reused"), input=io.BytesIO(row("second").encode("utf-8")), registry=registry
+            )
     (operation_id,) = started
     with sqlite3.connect(archive_root / "audit.db") as conn:
         conn.execute(

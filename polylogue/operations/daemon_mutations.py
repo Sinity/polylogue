@@ -1302,7 +1302,6 @@ def mutation_annotation_import_batch(
     assert context.runtime is not None
     payload = request.payload
     product_request = AnnotationBatchImportRequest(
-        jsonl=str(payload["jsonl"]),
         batch_id=str(payload["batch_id"]),
         schema_id=str(payload["schema_id"]),
         schema_version=int(cast(int, payload["schema_version"])),
@@ -1346,13 +1345,19 @@ def mutation_annotation_import_batch(
         # then commits.
         runtime.begin_unbound_write(request, snapshot=snapshot)
 
+    input_body = context.input_body
+    if input_body is None:
+        raise ValueError("annotation import requires its acquired input body")
+
     async def _run() -> AnnotationBatchImportResult:
-        with adopt_write_lease(delegation):
+        with adopt_write_lease(delegation), input_body.path.open("rb") as input:
             handle = cast(Any, _DaemonImportArchiveHandle())
             if registry is None:
-                return await import_annotation_batch(handle, product_request, before_durable_execution=accept)
+                return await import_annotation_batch(
+                    handle, product_request, input=input, before_durable_execution=accept
+                )
             return await import_annotation_batch(
-                handle, product_request, registry=registry, before_durable_execution=accept
+                handle, product_request, input=input, registry=registry, before_durable_execution=accept
             )
 
     result = asyncio.run(_run())

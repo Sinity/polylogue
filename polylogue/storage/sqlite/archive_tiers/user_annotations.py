@@ -9,7 +9,7 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from polylogue.annotations.batch import AnnotationBatch, AnnotationBatchError
 from polylogue.annotations.schema import (
@@ -21,6 +21,128 @@ from polylogue.annotations.schema import (
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.json import loads as json_loads
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text
+
+if TYPE_CHECKING:
+    from polylogue.annotations.import_spill import AnnotationImportSpill
+
+
+def annotation_batch_provenance_digest(conn: sqlite3.Connection, batch_id: str) -> str | None:
+    """Hash the existing immutable batch without decoding its collections."""
+    from contextlib import closing
+
+    from polylogue.annotations.batch import ANNOTATION_BATCH_PROVENANCE_FORMAT
+    from polylogue.core.compute_cancel import check_compute_cancelled
+    from polylogue.core.digest import REFERENCE, canonical_bytes
+    from polylogue.storage.sqlite.connection_profile import native_sql_owner_for_connection
+    from polylogue.storage.sqlite.literal_cells import stream_literal_blob
+
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        """SELECT rowid, batch_id, schema_id, schema_version, target_ref, source_result_ref,
+                  actor_ref, model_ref, prompt_ref, total_count, valid_count,
+                  invalid_count, abstained_count, created_at_ms,
+                  length(CAST(assertion_refs_json AS BLOB)) AS refs_bytes,
+                  length(CAST(validation_failures_json AS BLOB)) AS failures_bytes,
+                  length(CAST(metadata_json AS BLOB)) AS metadata_bytes
+           FROM annotation_batches WHERE batch_id=?""",
+        (batch_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    owner = native_sql_owner_for_connection(conn)
+    if owner is None:
+        raise AnnotationBatchError("batch digest requires its retained native read owner")
+    fields = {
+        key: row[key] for key in dict(row) if key not in {"rowid", "refs_bytes", "failures_bytes", "metadata_bytes"}
+    }
+    fields.update(
+        format=ANNOTATION_BATCH_PROVENANCE_FORMAT, assertion_refs=None, validation_failures=None, metadata=None
+    )
+    columns = {
+        "assertion_refs": ("assertion_refs_json", "refs_bytes"),
+        "validation_failures": ("validation_failures_json", "failures_bytes"),
+        "metadata": ("metadata_json", "metadata_bytes"),
+    }
+    digest = hashlib.sha256()
+    digest.update(b"{")
+    for ordinal, key in enumerate(sorted(fields)):
+        check_compute_cancelled()
+        if ordinal:
+            digest.update(b",")
+        digest.update(canonical_bytes(key, REFERENCE) + b":")
+        if key in columns:
+            column, length_key = columns[key]
+            with (
+                owner.readonly_blob("annotation_batches", column, int(row["rowid"])) as blob,
+                closing(stream_literal_blob(blob, int(row[length_key]), check_compute_cancelled)) as chunks,
+            ):
+                for chunk in chunks:
+                    digest.update(chunk)
+        else:
+            digest.update(canonical_bytes(fields[key], REFERENCE))
+    digest.update(b"}")
+    return digest.hexdigest()
+
+
+def persist_spilled_annotation_batch(conn: sqlite3.Connection, batch: AnnotationImportSpill) -> None:
+    """Publish sealed exact batch evidence in its existing atomic User write."""
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.literal_cells import write_literal_text
+
+    expected = batch.provenance_digest()
+    existing = annotation_batch_provenance_digest(conn, str(batch.header["batch_id"]))
+    if existing is not None:
+        if existing != expected:
+            raise AnnotationBatchError(
+                f"annotation batch {batch.batch_ref!r} already exists with incompatible provenance"
+            )
+        return
+    schema = read_durable_annotation_schema(
+        conn, str(batch.header["schema_id"]), int(cast(int, batch.header["schema_version"]))
+    )
+    if schema is None or not schema.schema.accepts_target_kind(str(batch.header["target_ref"])):
+        raise AnnotationBatchError("annotation batch schema or target is not admitted")
+    fields = (
+        "batch_id",
+        "schema_id",
+        "schema_version",
+        "target_ref",
+        "source_result_ref",
+        "actor_ref",
+        "model_ref",
+        "prompt_ref",
+        "total_count",
+        "valid_count",
+        "invalid_count",
+        "abstained_count",
+        "created_at_ms",
+    )
+    cursor = conn.execute(
+        """INSERT INTO annotation_batches (
+               batch_id, schema_id, schema_version, target_ref, source_result_ref,
+               actor_ref, model_ref, prompt_ref, total_count, valid_count,
+               invalid_count, abstained_count, created_at_ms,
+               assertion_refs_json, validation_failures_json, metadata_json
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', '{}')""",
+        tuple(batch.header[key] for key in fields),
+    )
+    rowid = cursor.lastrowid
+    cursor.close()
+    assert rowid is not None
+    for column in ("assertion_refs_json", "validation_failures_json", "metadata_json"):
+        with closing(batch.column_chunks(column)) as chunks:
+            length = sum(len(chunk) for chunk in chunks)
+        write_literal_text(
+            conn,
+            "annotation_batches",
+            column,
+            rowid,
+            byte_length=length,
+            chunks=lambda column=column: batch.column_chunks(column),
+        )
+    if annotation_batch_provenance_digest(conn, str(batch.header["batch_id"])) != expected:
+        raise AnnotationBatchError("annotation batch changed during durable publication")
 
 
 @dataclass(frozen=True, slots=True)

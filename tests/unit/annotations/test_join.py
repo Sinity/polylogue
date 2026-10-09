@@ -464,6 +464,66 @@ def test_join_rejects_active_plus_accepted_lifecycle_union() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_structural_join_keeps_null_distinct_from_literal_unknown_repository(
+    workspace_env: dict[str, Path],
+) -> None:
+    archive_root = workspace_env["archive_root"]
+
+    def seed() -> list[str]:
+        with ArchiveStore(archive_root) as archive:
+            return [
+                write_index_session(
+                    archive,
+                    ParsedSession(
+                        source_name=Provider.CODEX,
+                        provider_session_id=f"null-group-{index}",
+                        git_repository_url=repository,
+                        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                    ),
+                )
+                for index, repository in enumerate((None, "unknown"))
+            ]
+
+    session_ids = run_off_event_loop(seed)
+    schema = AnnotationSchema(
+        schema_id="test.null-group",
+        version=1,
+        title="Null grouping",
+        fields=(AnnotationField(name="score", value_type="number", minimum=0, maximum=1),),
+        target_ref_kinds=("session",),
+        evidence_policy="required",
+        status="active",
+    )
+    registry = AnnotationSchemaRegistry()
+    registry.register(schema)
+    with connect_user_db(archive_root / "user.db") as conn:
+        persist_annotation_schema(conn, schema, registered_at_ms=1)
+        for index, session_id in enumerate(session_ids):
+            _accept(
+                conn,
+                registry=registry,
+                schema=schema,
+                target_ref=f"session:{session_id}",
+                evidence_ref=session_id,
+                row_key=f"row-{index}",
+                author_ref="agent:labeler",
+                value={"score": 0.8},
+                now_ms=10 + index * 2,
+            )
+        conn.commit()
+    async with Polylogue(archive_root=archive_root) as poly:
+        result = await poly.join_typed_annotations(
+            schema_id=schema.schema_id,
+            schema_version=1,
+            statuses=(AssertionStatus.ACTIVE,),
+            group_by=("repo",),
+        )
+    assert result.joined_count == 2
+    assert {group.dimensions["repo"] for group in result.groups} == {None, "unknown"}
+    assert [(group.label_count, group.distinct_target_count) for group in result.groups] == [(1, 1), (1, 1)]
+
+
 @pytest.mark.parametrize(
     ("decision", "terminal_status"),
     (
