@@ -497,10 +497,28 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
         return KeysView(self)
 
     def values(self) -> Any:
-        return ValuesView(self)
+        return _SpilledValuesView(self)
 
     def items(self) -> Any:
         return _SpilledItemsView(self)
+
+
+class _SpilledValuesView(ValuesView[JSONValue]):
+    def __init__(self, mapping: SpilledObject) -> None:
+        super().__init__(mapping)
+        self._spill_mapping = mapping
+
+    def __iter__(self) -> Iterator[JSONValue]:
+        mapping = self._spill_mapping
+        with closing(
+            _read_rows(
+                mapping._connection,
+                "SELECT child_id FROM json_object_members WHERE parent_id = ? ORDER BY ordinal",
+                (mapping._node_id,),
+            )
+        ) as cursor:
+            for (child_id,) in cursor:
+                yield _load_node(mapping._connection, int(child_id))
 
 
 class _SpilledItemsView(ItemsView[str, JSONValue]):

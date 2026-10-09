@@ -315,7 +315,7 @@ def _looks_like_antigravity_markdown_record(payload: object) -> bool:
 
 def _looks_like_codex_record(payload: object) -> bool:
     record = _payload_record(payload)
-    return record is not None and codex.looks_like([dict(record)])
+    return record is not None and codex.looks_like([record])
 
 
 def _looks_like_codex_stream(payload: object) -> bool:
@@ -324,7 +324,7 @@ def _looks_like_codex_stream(payload: object) -> bool:
 
 def _looks_like_claude_code_record(payload: object) -> bool:
     record = _payload_record(payload)
-    return record is not None and claude.looks_like_code([dict(record)])
+    return record is not None and claude.looks_like_code([record])
 
 
 def _looks_like_claude_code_stream(payload: object) -> bool:

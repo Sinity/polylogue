@@ -240,19 +240,26 @@ def _unknown_wire_type(value: object) -> str | None:
     the parser-specific lowering remains authoritative for known shapes. It
     does not descend into user data (:data:`_USER_DATA_KEYS`).
     """
+    from polylogue.schemas.observation_spill import SpilledArray, SpilledObject
+
     if isinstance(value, dict):
         for key in ("type", "content_type", "kind", "record_type"):
             candidate = value.get(key)
             if _is_unknown_sentinel(candidate):
                 return cast(str, candidate)
-        for key, child in value.items():
+        entries = (
+            ((key.small_name, child) for key, child in value.structure_key_items())
+            if isinstance(value, SpilledObject)
+            else value.items()
+        )
+        for key, child in entries:
             if key in _USER_DATA_KEYS:
                 continue
             found = _unknown_wire_type(child)
             if found is not None:
                 return found
     elif isinstance(value, list):
-        for child in value:
+        for child in value.structure_values() if isinstance(value, SpilledArray) else value:
             found = _unknown_wire_type(child)
             if found is not None:
                 return found

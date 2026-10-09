@@ -303,8 +303,14 @@ frames stream to the existing sink, with each callback acknowledged before the
 reader advances. A failed callback or final binding check leaves an unfinished
 operation: the blob writer discards its private staging file, digest callers
 raise, and a staged backup is not published. Transport memory is bounded by
-chunks; the existing canonical emitter still allocates an individual row and
-its encoded cells. No whole-export transport buffer or input limit is added.
+chunks. Canonical individual raw payloads stream keys and string tokens into
+private sealed files; grouped JSONL uses the retained record tape. The raw
+carrier retains its preparation directory through physical worker completion.
+Creator pickup verifies the inode and digest, copies into the existing blob
+preparation queue, then releases the worker file. Only writer admission
+publishes queued blobs. Staged paths stay out of serialized raw metadata;
+failed pages and cancellation release unconsumed files. Selected numeric
+normalization remains an explicit decoded-value demand. No input limit is added.
 
 Ordinary byte acquisition lends one isolated reader to the caller's existing
 bounded input page. Each sequential request transfers its original source and

@@ -7,6 +7,7 @@ import os
 import tempfile
 import zipfile
 from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -42,6 +43,7 @@ from polylogue.sources.decoders import (
     _iter_json_stream,
     _zip_entry_provider_hint,
     _ZipEntryValidator,
+    owned_json_records,
 )
 from polylogue.sources.dispatch import (
     _TITLE_EVIDENCE_PRECEDENCE,
@@ -492,7 +494,11 @@ def test_iter_source_sessions_with_raw_capture_contract(
     assert all(str(session.source_name) == generated["provider"] for _, session in items)
     if capture_raw:
         assert all(raw_data is not None for raw_data, _ in items)
-        assert all(raw_data.raw_bytes or raw_data.blob_hash for raw_data, _ in items if raw_data is not None)
+        assert all(
+            raw_data.raw_bytes or raw_data.blob_hash or raw_data.staged_payload
+            for raw_data, _ in items
+            if raw_data is not None
+        )
         assert all(raw_data.file_mtime is not None for raw_data, _ in items if raw_data is not None)
     else:
         assert all(raw_data is None for raw_data, _ in items)
@@ -710,6 +716,8 @@ def test_iter_source_sessions_with_raw_preserves_grouped_bytes_contract(
     else:
         assert raw_data.source_index is None
     raw_bytes = raw_data.raw_bytes
+    if raw_data.staged_payload is not None:
+        raw_bytes = raw_data.staged_payload.path.read_bytes()
     if not raw_bytes and raw_data.blob_hash is not None:
         raw_bytes = get_blob_store().read_all(raw_data.blob_hash)
     assert needle in raw_bytes
@@ -1318,7 +1326,6 @@ def _parse_context(
         "ctx",
         "filename",
         "raw",
-        "pre_read_bytes",
         "expected_ids",
         "expected_provider_hint",
         "expected_source_name",
@@ -1336,7 +1343,6 @@ def _parse_context(
                     {"id": "conv-2", "messages": [{"id": "m2", "role": "assistant", "text": "second"}]},
                 ]
             ).encode("utf-8"),
-            None,
             ["conv-1", "conv-2"],
             Provider.DRIVE,
             Provider.DRIVE,
@@ -1362,7 +1368,6 @@ def _parse_context(
                 ]
             ).encode("utf-8"),
             None,
-            None,
             Provider.CHATGPT,
             Provider.CHATGPT,
             [0],
@@ -1376,7 +1381,6 @@ def _parse_context(
                 b'{"role":"user","content":[{"type":"input_text","text":"hello"}]}\n'
                 b'{"role":"assistant","content":[{"type":"output_text","text":"hi"}]}\n'
             ),
-            None,
             None,
             Provider.CODEX,
             Provider.CODEX,
@@ -1401,7 +1405,6 @@ def _parse_context(
                     },
                 ]
             ).encode("utf-8"),
-            "use-raw",
             None,
             Provider.CODEX,
             Provider.CODEX,
@@ -1416,20 +1419,13 @@ def test_session_emitter_contract_matrix(
     ctx: _ParseContext,
     filename: str,
     raw: bytes,
-    pre_read_bytes: str | None,
     expected_ids: list[str] | None,
     expected_provider_hint: str,
     expected_source_name: str,
     expected_indexes: list[int | None],
     expected_message_count: int | None,
 ) -> None:
-    emitted = list(
-        _SessionEmitter(ctx).emit(
-            BytesIO(raw),
-            filename,
-            pre_read_bytes=raw if pre_read_bytes is not None else None,
-        )
-    )
+    emitted = list(_SessionEmitter(ctx).emit(BytesIO(raw), filename))
 
     assert emitted
     assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == expected_indexes
@@ -1441,7 +1437,11 @@ def test_session_emitter_contract_matrix(
     if expected_message_count is not None:
         assert len(emitted[0][1].messages) == expected_message_count
     if label.startswith("grouped"):
-        assert emitted[0][0] is not None and emitted[0][0].raw_bytes == raw
+        assert (
+            emitted[0][0] is not None
+            and emitted[0][0].staged_payload is not None
+            and emitted[0][0].staged_payload.path.read_bytes() == raw
+        )
 
 
 def test_session_emitter_resolves_schema_for_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1514,24 +1514,30 @@ def test_session_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
         b'{"role":"assistant","content":[{"type":"output_text","text":"hi"}]}\n'
     )
     parse_calls = 0
-    original_iter_json_stream = _iter_json_stream
+    original_records = owned_json_records
 
-    def tracking_iter_json_stream(
+    @contextmanager
+    def tracking_owned_records(
         handle: IO[bytes],
         path_name: str,
         unpack_lists: bool = True,
-    ) -> Iterable[object]:
+    ) -> Iterator[Iterable[object]]:
         nonlocal parse_calls
         parse_calls += 1
-        yield from original_iter_json_stream(handle, path_name, unpack_lists=unpack_lists)
+        with original_records(handle, path_name, unpack_lists=unpack_lists) as records:
+            yield records
 
-    monkeypatch.setattr("polylogue.sources.emitter._iter_json_stream", tracking_iter_json_stream)
+    monkeypatch.setattr("polylogue.sources.emitter.owned_json_records", tracking_owned_records)
 
     emitted = list(_SessionEmitter(ctx).emit(BytesIO(raw), "session.jsonl"))
 
     assert emitted
     assert parse_calls == 1
-    assert emitted[0][0] is not None and emitted[0][0].raw_bytes == raw
+    assert (
+        emitted[0][0] is not None
+        and emitted[0][0].staged_payload is not None
+        and emitted[0][0].staged_payload.path.read_bytes() == raw
+    )
     assert emitted[0][1].source_name == Provider.CODEX
     assert len(emitted[0][1].messages) == 2
 
@@ -2009,18 +2015,20 @@ def test_session_emitter_reuses_jsonl_sniff_payloads_for_individual_detection(
         b'{"mapping":{"r1":{"message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["second"]}}}}}\n'
     )
     parse_calls = 0
-    original_iter_json_stream = _iter_json_stream
+    original_records = owned_json_records
 
-    def tracking_iter_json_stream(
+    @contextmanager
+    def tracking_owned_records(
         handle: IO[bytes],
         path_name: str,
         unpack_lists: bool = True,
-    ) -> Iterable[object]:
+    ) -> Iterator[Iterable[object]]:
         nonlocal parse_calls
         parse_calls += 1
-        yield from original_iter_json_stream(handle, path_name, unpack_lists=unpack_lists)
+        with original_records(handle, path_name, unpack_lists=unpack_lists) as records:
+            yield records
 
-    monkeypatch.setattr("polylogue.sources.emitter._iter_json_stream", tracking_iter_json_stream)
+    monkeypatch.setattr("polylogue.sources.emitter.owned_json_records", tracking_owned_records)
 
     emitted = list(_SessionEmitter(ctx).emit(NoWholeReadBytesIO(raw), "session.jsonl"))
 

@@ -44,6 +44,7 @@ from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAd
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.core.types import AttachmentDirection, AttachmentUploadOrigin
+from polylogue.sources.staged_raw_payload import StagedRawPayload
 
 
 def _require_string_mapping_keys(value: object, *, field: str) -> object:
@@ -1008,14 +1009,16 @@ class ParsedSession(BaseModel):
 
 
 class RawSessionData(BaseModel):
-    """Container for raw session bytes with metadata.
+    """One raw representation with captured acquisition metadata.
 
-    When ``blob_hash`` is set, the content has been written to the blob
-    store and ``raw_bytes`` may be empty (only a detection prefix was
-    needed). Consumers should load from the blob store using ``blob_hash``.
+    Preparation passes a private sealed file to the creator; publication
+    replaces it with the blob hash. Already retained blobs carry no byte copy.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     raw_bytes: bytes = b""
+    staged_payload: StagedRawPayload | None = Field(default=None, exclude=True, repr=False)
     source_path: str
     # Frozen by acquisition; publication never resolves a mutable source alias.
     canonical_source_path: str | None = None
@@ -1039,6 +1042,12 @@ class RawSessionData(BaseModel):
     blob_publication_receipt_id: str | None = Field(default=None, exclude=True)
     # Captured during acquisition; never rediscovered from source_path.
     sidecar_snapshot: dict[str, object] | None = Field(default=None, exclude=True)
+
+    @model_validator(mode="after")
+    def exclusive_raw_representation(self) -> RawSessionData:
+        if sum((bool(self.raw_bytes), self.staged_payload is not None, self.blob_hash is not None)) != 1:
+            raise ValueError("raw payload bytes, staged file and published blob are mutually exclusive")
+        return self
 
     @field_validator("provider_hint", mode="before")
     @classmethod
