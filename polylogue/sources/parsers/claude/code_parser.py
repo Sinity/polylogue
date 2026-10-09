@@ -27,6 +27,7 @@ from polylogue.core.enums import (
 from polylogue.core.hashing import hash_text
 from polylogue.core.timestamps import format_timestamp, parse_timestamp
 from polylogue.logging import WARNING, emit, get_logger
+from polylogue.pipeline.ids import block_content_identities
 from polylogue.pipeline.semantic_capture import detect_context_compaction, detect_micro_compaction
 from polylogue.sources import value_bounds
 from polylogue.sources.providers.claude_code_models import ClaudeCodeBackgroundTaskNotification
@@ -1985,7 +1986,7 @@ def _workflow_invocation_events(
     """
 
     events: list[ParsedSessionEvent] = []
-    for block in content_blocks:
+    for block, identity in zip(content_blocks, block_content_identities(content_blocks), strict=True):
         if block.type is not BlockType.TOOL_USE or block.tool_name != "Workflow":
             continue
         tool_input = block.tool_input or {}
@@ -2008,6 +2009,11 @@ def _workflow_invocation_events(
                 "phases",
             }
         }
+        payload.update(
+            tool_use_id=block.tool_id,
+            source_block_identity=identity.content_identity,
+            source_block_occurrence=identity.content_occurrence,
+        )
         events.append(
             ParsedSessionEvent(
                 event_type="claude_workflow_invocation",

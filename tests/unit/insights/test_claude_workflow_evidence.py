@@ -173,6 +173,8 @@ def test_claude_projection_uses_provider_references_not_child_topology() -> None
                 event_type="claude_workflow_invocation",
                 source_message_provider_id=f"invoke-{index}",
                 payload={
+                    "source_block_identity": f"{index:064x}",
+                    "source_block_occurrence": 0,
                     "runId": RUN_ID,
                     "taskId": "task-mandate-01",
                     "workflowName": "admission-proof",

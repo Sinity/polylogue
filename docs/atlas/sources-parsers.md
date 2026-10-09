@@ -15,6 +15,13 @@ remain counted in an accounting event and a degraded fidelity declaration.
 Antigravity markdown activity has no native message or call IDs; canonical
 semantic identity and identical-content occurrence bind those messages.
 
+Claude Workflow invocation events retain the tool block's exact native ID,
+Source semantic identity and occurrence among identical blocks in its message.
+The graph binds each invocation to its canonical message evidence and that
+block identity, so repeated calls in one message remain distinct. Journal
+metadata references and attempt keys admit sidecars whose optional run ID is
+absent; the materializer and graph projector share that membership selection.
+
 Codex event-message mirrors consume one matching response occurrence only
 when exact text and role also carry a shared native identity, timestamp instant,
 or unambiguous turn ID. Contradictory time or turn evidence prevents matching;

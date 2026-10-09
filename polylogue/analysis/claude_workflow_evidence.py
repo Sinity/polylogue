@@ -12,7 +12,7 @@ import hashlib
 import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 
 from polylogue.analysis.work_evidence import (
@@ -117,6 +117,37 @@ _PROVENANCE_FIELDS = (
 )
 
 
+def claude_workflow_artifacts_for_run(
+    run_id: str,
+    artifacts: Iterable[ClaudeOrchestrationArtifact],
+) -> tuple[ClaudeOrchestrationArtifact, ...]:
+    """Select run facts and sidecars associated by its journal's exact evidence."""
+    artifacts = tuple(artifacts)
+    journal_facts = [
+        fact
+        for artifact in artifacts
+        for fact in artifact.facts
+        if fact.run_id == run_id and fact.kind == "workflow_journal_entry"
+    ]
+    keys = {value for fact in journal_facts for value in (fact.attempt_id, fact.agent_id) if value is not None}
+    meta_paths = {_normalize_path(path) for fact in journal_facts if (path := fact.meta_path)}
+    selected = []
+    for artifact in artifacts:
+        referenced = artifact.kind == "agent_sidecar_meta" and (
+            _normalize_path(artifact.source_path) in meta_paths
+            or any(
+                value in keys
+                for fact in artifact.facts
+                for value in (fact.attempt_id, fact.agent_id)
+                if value is not None
+            )
+        )
+        facts = tuple(fact for fact in artifact.facts if fact.run_id == run_id or (referenced and fact.run_id is None))
+        if facts:
+            selected.append(replace(artifact, facts=facts))
+    return tuple(sorted(selected, key=lambda item: (_normalize_path(item.source_path), item.kind)))
+
+
 def project_claude_workflow_evidence(
     *,
     graph_id: str,
@@ -135,7 +166,7 @@ def project_claude_workflow_evidence(
     session topology is intentionally not an input to this function.
     """
 
-    artifacts = tuple(artifacts)
+    artifacts = claude_workflow_artifacts_for_run(run_id, artifacts)
     invocations = tuple(
         item
         for item in coordinator_invocations
@@ -332,7 +363,7 @@ def project_claude_workflow_evidence(
     for artifact in artifacts:
         normalized = _normalize_path(artifact.source_path)
         artifact_ref = artifact_refs[normalized]
-        relevant_facts = tuple(fact for fact in artifact.facts if fact.run_id == run_id)
+        relevant_facts = artifact.facts
         if not relevant_facts:
             continue
         add_edge(kind="mentioned", source_ref=run_ref, target_ref=artifact_ref, evidence_refs=(artifact_ref,))
@@ -375,11 +406,24 @@ def project_claude_workflow_evidence(
     previous_invocation: ObjectRef | None = None
     invocation_refs: list[ObjectRef] = []
     for ordinal, invocation in enumerate(invocations, start=1):
-        provider_id = invocation.event.source_message_provider_id or f"event-{ordinal}"
+        block_identity = invocation.event.payload.get("source_block_identity")
+        block_occurrence = invocation.event.payload.get("source_block_occurrence")
+        if (
+            not isinstance(block_identity, str)
+            or len(block_identity) != 64
+            or any(char not in "0123456789abcdef" for char in block_identity)
+            or type(block_occurrence) is not int
+            or block_occurrence < 0
+        ):
+            raise ValueError("Workflow invocation lacks exact Source block identity and occurrence")
+        invocation_seed = json.dumps(
+            (run_id, invocation.session_id, invocation.evidence_ref.format(), block_identity, block_occurrence),
+            separators=(",", ":"),
+        )
         invocation_ref = add_node(
             ref=ObjectRef(
                 kind="work-invocation",
-                object_id=f"claude-workflow:{run_id}:invocation:{invocation.session_id}:{provider_id}",
+                object_id=f"claude-workflow:{run_id}:invocation:{hashlib.sha256(invocation_seed.encode()).hexdigest()}",
             ),
             kind="invocation",
             label=f"Workflow invocation {ordinal}",
@@ -774,5 +818,6 @@ __all__ = [
     "ClaudeWorkflowCoordinatorInvocation",
     "ClaudeWorkflowPromptEvidence",
     "ClaudeWorkflowSessionEvidence",
+    "claude_workflow_artifacts_for_run",
     "project_claude_workflow_evidence",
 ]

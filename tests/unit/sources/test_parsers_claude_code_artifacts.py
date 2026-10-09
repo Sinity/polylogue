@@ -6,6 +6,7 @@ from pathlib import Path
 
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, MaterialOrigin, Role
+from polylogue.pipeline.ids import block_content_identity
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.sources.parsers.claude.common import normalize_timestamp
 from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestration_artifact
@@ -308,7 +309,15 @@ def test_claude_coordinator_workflow_tool_use_preserves_invocation_evidence() ->
         (
             "claude_workflow_invocation",
             "workflow-tool-use",
-            {"runId": "wf-54", "taskId": "task-7", "resumeFromRunId": "wf-53", "scriptHash": "abc"},
+            {
+                "runId": "wf-54",
+                "taskId": "task-7",
+                "resumeFromRunId": "wf-53",
+                "scriptHash": "abc",
+                "tool_use_id": "workflow-1",
+                "source_block_identity": block_content_identity(parsed.messages[0].blocks[0]),
+                "source_block_occurrence": 0,
+            },
         )
     ]
 
