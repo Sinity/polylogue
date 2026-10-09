@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -162,7 +163,13 @@ def test_claude_nested_result_media_survives_parse_accounting_and_stored_tree(
         assert [row[0] for row in rows] == ["tool_result", "image", "document", "document"]
         assert rows[2][1] == "Neutral document body"
         assert json.loads(rows[1][2])["metadata"]["source_digest"] == message.blocks[1].metadata["source_digest"]
-        assert conn.execute("SELECT COUNT(*) FROM attachments WHERE session_id=?", (session_id,)).fetchone() == (2,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM attachment_refs r JOIN messages m USING(message_id) WHERE m.session_id=?",
+            (session_id,),
+        ).fetchone() == (2,)
+        assert {
+            row[0] for row in conn.execute("SELECT blob_hash FROM attachments WHERE acquisition_status='acquired'")
+        } == {hashlib.sha256(attachment.inline_bytes).digest() for attachment in parsed.attachments}
 
 
 def test_streamed_claude_code_media_uses_attachment_sink(tmp_path: Path) -> None:
