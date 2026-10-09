@@ -118,29 +118,42 @@ def persist_spilled_annotation_batch(conn: sqlite3.Connection, batch: Annotation
         "abstained_count",
         "created_at_ms",
     )
-    cursor = conn.execute(
+    # The durable columns have JSON/count CHECKs. A zero-filled placeholder
+    # cannot satisfy them: fill disposable TEXT cells first, then publish all
+    # checked values in one INSERT. SQLite may materialize the native cells
+    # for its CHECK/record write; Python only transfers bounded chunks.
+    conn.execute("CREATE TEMP TABLE annotation_import_literals (refs TEXT, failures TEXT, metadata TEXT)")
+    cursor = conn.execute("INSERT INTO temp.annotation_import_literals VALUES ('', '', '')")
+    rowid = cursor.lastrowid
+    cursor.close()
+    assert rowid is not None
+    for column, destination in (
+        ("assertion_refs_json", "refs"),
+        ("validation_failures_json", "failures"),
+        ("metadata_json", "metadata"),
+    ):
+        with closing(batch.column_chunks(column)) as chunks:
+            length = sum(len(chunk) for chunk in chunks)
+        write_literal_text(
+            conn,
+            "annotation_import_literals",
+            destination,
+            rowid,
+            schema="temp",
+            byte_length=length,
+            chunks=lambda column=column: batch.column_chunks(column),
+        )
+    conn.execute(
         """INSERT INTO annotation_batches (
                batch_id, schema_id, schema_version, target_ref, source_result_ref,
                actor_ref, model_ref, prompt_ref, total_count, valid_count,
                invalid_count, abstained_count, created_at_ms,
                assertion_refs_json, validation_failures_json, metadata_json
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', '{}')""",
-        tuple(batch.header[key] for key in fields),
+           ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, refs, failures, metadata
+             FROM temp.annotation_import_literals WHERE rowid=?""",
+        (*tuple(batch.header[key] for key in fields), rowid),
     )
-    rowid = cursor.lastrowid
-    cursor.close()
-    assert rowid is not None
-    for column in ("assertion_refs_json", "validation_failures_json", "metadata_json"):
-        with closing(batch.column_chunks(column)) as chunks:
-            length = sum(len(chunk) for chunk in chunks)
-        write_literal_text(
-            conn,
-            "annotation_batches",
-            column,
-            rowid,
-            byte_length=length,
-            chunks=lambda column=column: batch.column_chunks(column),
-        )
+    conn.execute("DROP TABLE temp.annotation_import_literals")
     if annotation_batch_provenance_digest(conn, str(batch.header["batch_id"])) != expected:
         raise AnnotationBatchError("annotation batch changed during durable publication")
 

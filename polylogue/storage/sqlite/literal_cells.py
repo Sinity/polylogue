@@ -200,6 +200,7 @@ def write_literal_text(
     *,
     byte_length: int,
     chunks: Callable[[], Generator[bytes, None, None]],
+    schema: Literal["main", "temp"] = "main",
 ) -> None:
     """Write TEXT incrementally under the actual creator's native transaction."""
     from polylogue.core.compute_cancel import check_compute_cancelled
@@ -212,6 +213,8 @@ def write_literal_text(
     if owner is None or not connection.in_transaction:
         raise SQLiteLiteralWriteError("literal write requires its existing native transaction owner")
     owner.require_connection()
+    if schema not in {"main", "temp"}:
+        raise SQLiteLiteralWriteError("literal write has no declared schema")
     if byte_length > connection.getlimit(sqlite3.SQLITE_LIMIT_LENGTH):
         raise SQLiteLiteralWriteError("literal exceeds SQLite's physical value limit", physical_limit=True)
     from polylogue.storage.io_phase_metrics import connection_cursor
@@ -219,14 +222,14 @@ def write_literal_text(
     try:
         with connection_cursor(
             connection,
-            f"UPDATE {quote_identifier(table)} SET {quote_identifier(column)}=CAST(zeroblob(?) AS TEXT) WHERE rowid=?",
+            f"UPDATE {quote_identifier(schema)}.{quote_identifier(table)} SET {quote_identifier(column)}=CAST(zeroblob(?) AS TEXT) WHERE rowid=?",
             (byte_length, rowid),
         ) as cursor:
             if cursor.rowcount != 1:
                 raise SQLiteLiteralWriteError("literal write lost its original row")
     except sqlite3.DataError as error:
         raise SQLiteLiteralWriteError("literal exceeds SQLite's physical record limit", physical_limit=True) from error
-    blob = connection.blobopen(table, column, rowid)
+    blob = connection.blobopen(table, column, rowid, name=schema)
     owner.retain_incremental_blob(blob)
     primary: BaseException | None = None
     try:

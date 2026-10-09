@@ -133,6 +133,9 @@ def _persist_annotation_batch(args: AnnotationBatchImportArgs) -> None:
     batch = args.batch
     with connection_context(args.user_db_path, archive_root=args.user_db_path.parent) as conn:
         conn.row_factory = sqlite3.Row
+        # Complete JSON cells must satisfy durable CHECKs at INSERT. Their
+        # unconstrained staging relation belongs on disk, not in temp memory.
+        conn.execute("PRAGMA temp_store=FILE")
         conn.execute("BEGIN IMMEDIATE")
         persist_annotation_schema(conn, args.schema, registered_at_ms=int(cast(int, batch.header["created_at_ms"])))
         persist_spilled_annotation_batch(conn, batch)

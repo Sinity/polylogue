@@ -7,6 +7,11 @@
 # says why no permitted member fits -- those are findings, not pending work.
 package: polylogue
 runtime_tables:
+  - file: "polylogue/storage/sqlite/archive_tiers/user_annotations.py"
+    function: "persist_spilled_annotation_batch"
+    table: "annotation_import_literals"
+    disposition: disposable_scratch
+    reason: "A TEMP relation on the existing native User writer stages canonical batch TEXT cells without durable JSON CHECK placeholders. The import selects completed cells into the checked immutable User batch row in the same transaction, then drops the temporary relation; temp_store is FILE before BEGIN."
   - file: "polylogue/annotations/import_spill.py"
     function: "AnnotationImportSpill.__init__"
     table: "annotation_import_rows"
@@ -182,7 +187,7 @@ writes:
     kind: "update"
     tier: "unresolved"
     classification: guarded_producer_refinement
-    reason: "The shared incremental TEXT writer requires the exact retained original native connection owner and an active transaction. Audit retains its allowlist of operation_events.detail_json and audit_continuity_control.pending_payload_json and verified canonical literal chunks. The CaptureJob producer fills its same-transaction placeholders in capture_jobs.intent_json, capture_job_events.refs_json/payload_json, capture_job_native_acquisitions.header_json, capture_job_native_members.metadata_json, and capture_job_native_assets.outcome_json; duplicate/CAS/acquisition-state checks precede publication. These are current receiver registry cells, not archive tiers. The annotation importer also fills assertion_refs_json, validation_failures_json and metadata_json placeholders of a newly inserted annotation_batches User row inside its original atomic schema/batch/assertion transaction, after immutable existing-batch digest and schema checks; complete provenance is verified before commit. The helper fills the producer-selected row before commit, enforces physical SQLite length and exact streamed byte count, and retains failed Blob settlement with its creator. This moves the previous Audit placeholder refinement without permitting revisions of already published confident payloads."
+    reason: "The shared incremental TEXT writer requires the exact retained original native connection owner and an active transaction. Audit retains its allowlist of operation_events.detail_json and audit_continuity_control.pending_payload_json and verified canonical literal chunks. The CaptureJob producer fills its same-transaction placeholders in capture_jobs.intent_json, capture_job_events.refs_json/payload_json, capture_job_native_acquisitions.header_json, capture_job_native_members.metadata_json, and capture_job_native_assets.outcome_json; duplicate/CAS/acquisition-state checks precede publication. These are current receiver registry cells, not archive tiers. The annotation importer fills only refs/failures/metadata cells of temp.annotation_import_literals on the same native User connection. Its completed canonical values enter annotation_batches through one checked INSERT…SELECT inside the atomic schema/batch/assertion transaction, after immutable existing-batch digest and schema checks; complete provenance is verified before commit. No durable JSON CHECK is bypassed or temporarily weakened. The helper fills the producer-selected row before commit, enforces physical SQLite length and exact streamed byte count, and retains failed Blob settlement with its creator. This moves the previous Audit placeholder refinement without permitting revisions of already published confident payloads."
   - file: "polylogue/storage/sqlite/archive_tiers/user_write.py"
     function: "advance_session_marker_delivery"
     table: "session_marker_delivery"
