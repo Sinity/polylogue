@@ -106,6 +106,114 @@ def _raw_payload_receipts(archive_root: Path, source_path: Path) -> list[tuple[s
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["scan", "acquire"])
+@pytest.mark.parametrize("fault", ["permission", "bad_zip"])
+async def test_local_read_failure_is_reported_and_retryable(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    fault: str,
+) -> None:
+    """The actual local stream reports omitted files alongside successful ones.
+
+    Dropping cursor state hides the failure; counting after completion also
+    double-counts persistence faults. A new pass must still read the failed
+    file while skipping the successful file's committed cursor.
+    """
+    from polylogue.sources import source_acquisition
+
+    source_dir = workspace_env["data_root"] / "read-faults"
+    source_dir.mkdir(parents=True)
+    good = source_dir / "good.jsonl"
+    bad = source_dir / ("bad.zip" if fault == "bad_zip" else "bad.jsonl")
+    _write_session(good)
+    if fault == "bad_zip":
+        bad.write_bytes(b"invalid zip container")
+    else:
+        _write_session(bad)
+
+    def failing_read(context: SourceReadContext) -> RawSessionData:
+        if context.path == bad:
+            raise PermissionError(errno.EACCES, "synthetic read denied", str(bad))
+        return read_plain_source_file(context)
+
+    if fault == "permission":
+        monkeypatch.setattr(source_acquisition, "read_plain_source_file", failing_read)
+    sources = [Source(name="claude-code", path=good), Source(name="claude-code", path=bad)]
+    backend = SQLiteBackend(db_path=workspace_env["archive_root"] / "index.db")
+    try:
+        async with _admitted_acquisition(backend, workspace_env["archive_root"]) as service:
+            if route == "scan":
+                first = await service.visit_sources(sources)
+                assert first.counts == {"scanned": 1, "errors": 1}
+                failures = first.cursors["claude-code"]
+                assert failures["failed_count"] == 1
+                assert [failure["path"] for failure in failures["failed_files"]] == [str(bad)]
+            else:
+                first_acquire = await service.acquire_sources(sources)
+                assert (first_acquire.acquired, first_acquire.errors) == (1, 1)
+                assert len(_raw_payload_receipts(workspace_env["archive_root"], good)) == 1
+                assert _raw_payload_receipts(workspace_env["archive_root"], bad) == []
+        known = await SessionRepository(backend=backend).get_known_source_cursors()
+        assert str(good) in known
+        assert str(bad) not in known
+
+        # Replace the faulty input with a neutral valid session, then restart
+        # acquisition over the same archive to prove the file remains eligible.
+        monkeypatch.setattr(source_acquisition, "read_plain_source_file", read_plain_source_file)
+        if fault == "bad_zip":
+            import zipfile
+
+            with zipfile.ZipFile(bad, "w") as container:
+                container.writestr("session.jsonl", good.read_bytes())
+        else:
+            _write_session(bad)
+        async with _admitted_acquisition(backend, workspace_env["archive_root"]) as service:
+            second = await service.acquire_sources(sources)
+        assert (second.acquired, second.errors) == (1, 0)
+        known = await SessionRepository(backend=backend).get_known_source_cursors()
+        assert str(bad) in known
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_read_and_persistence_failures_each_count_once(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources import source_acquisition
+
+    source_dir = workspace_env["data_root"] / "mixed-faults"
+    project_dir = source_dir / "-neutral-project"
+    project_dir.mkdir(parents=True)
+    unreadable = project_dir / "unreadable.jsonl"
+    unstored = project_dir / "unstored.jsonl"
+    for path in (unreadable, unstored):
+        _write_session(path)
+
+    def failing_read(context: SourceReadContext) -> RawSessionData:
+        if context.path == unreadable:
+            raise PermissionError(errno.EACCES, "synthetic read denied", str(unreadable))
+        return read_plain_source_file(context)
+
+    async def failing_persist(self: SessionRepository, *args: Any, **kwargs: Any) -> Any:
+        raise OSError(errno.ENOSPC, "synthetic write denied")
+
+    monkeypatch.setattr(source_acquisition, "read_plain_source_file", failing_read)
+    monkeypatch.setattr(SessionRepository, "admit_raw", failing_persist)
+    backend = SQLiteBackend(db_path=workspace_env["archive_root"] / "index.db")
+    try:
+        async with _admitted_acquisition(backend, workspace_env["archive_root"]) as service:
+            result = await service.acquire_sources([Source(name="claude-code", path=source_dir)])
+        assert (result.acquired, result.errors) == (0, 2)
+        known = await SessionRepository(backend=backend).get_known_source_cursors()
+        assert str(unreadable) not in known
+        assert str(unstored) not in known
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
 async def test_acquisition_outcome_is_the_committed_raw_receipt(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
