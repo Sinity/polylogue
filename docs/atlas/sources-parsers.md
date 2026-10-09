@@ -152,6 +152,24 @@ and mutable SQLite inputs always reach acquisition. ZIP membership comes
 from the captured container, and committed WAL content participates in the
 SQLite logical revision even when the main file's stat tuple is unchanged.
 
+Cold-build baseline preparation maps contiguous ordinary-file runs through the
+shared bounded compute adapter from the source-observation coordinator.
+Workers classify and hash through the acquisition boundary and return only
+`SourceDecision`; discovery, alias decisions, ordered consumption, progress,
+and sealing remain on the creator. ZIP and SQLite bindings are prepared
+serially after the preceding ordinary run drains. The existing worker and
+byte envelope applies; oversized inputs reserve the full byte envelope.
+The creator captures the regular file's stat evidence used for byte admission;
+classification and the opened revision must still match its device, inode,
+size, mtime and ctime. EOF checks the opened descriptor and its named physical
+coordinate again. Replacement or mutation becomes a retryable observation
+fault, including equal-mtime changes; these observations never substitute for
+the complete byte hash or foreign-tail validation. Cancellation while awaiting
+work cancels and physically drains that map window before Source sealing.
+Failed native cleanup keeps its worker, admission and scratch with the shared
+owner until the creator can settle it (`live/production_baseline.py`,
+`core/compute.py`).
+
 `source_snapshot.py` publishes a declared root's complete member inventory or
 an unavailable result. Frontier member paths use the same captured root identity
 and kind as the observer. A declared database arriving after member discovery

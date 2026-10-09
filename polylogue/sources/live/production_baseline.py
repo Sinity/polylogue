@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import sqlite3
+import stat
 import zipfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
+from functools import partial
+from itertools import groupby
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from polylogue.config import Source
+from polylogue.core.compute import compute_adapter
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
 from polylogue.core.provider_identity import canonical_acquisition_provider
@@ -24,7 +30,12 @@ from polylogue.maintenance.receipt_fs import (
     maintenance_receipt_directory,
     read_optional_receipt,
 )
-from polylogue.sources.acquisition_boundary import open_bound_container, open_bound_path
+from polylogue.sources.acquisition_boundary import (
+    bound_source_observation,
+    captured_path_coordinate,
+    open_bound_container,
+    open_bound_path,
+)
 from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
 from polylogue.sources.live.batch_support import (
@@ -611,18 +622,24 @@ def _unchanged_member_revision(row: SourceDecision) -> bool:
         return False
 
 
+def _file_observation(observed: os.stat_result) -> tuple[int, int, int, int, int]:
+    return observed.st_dev, observed.st_ino, observed.st_size, observed.st_mtime_ns, observed.st_ctime_ns
+
+
 def _revision(
     path: Path,
     *,
     cancelled: Callable[[], bool] | None = None,
     location: Provider | None = None,
     source_binding: SourceInputBinding | None = None,
+    expected_observation: tuple[int, int, int, int, int] | None = None,
 ) -> tuple[str, int]:
     """Hash one file; with ``location``, through the boundary that validates the bytes it hashes.
 
     Validating a separate read would let a file that changes in between be
     baselined as accepted while live capture refuses its bytes.
     """
+    check_compute_cancelled()
     _check_observation_cancelled(cancelled)
     if is_sqlite_path(path):
         return sqlite_member_revision_and_size(path, source_binding=source_binding)
@@ -632,10 +649,21 @@ def _revision(
     # capture reads them, or the baseline would accept a file whose raw
     # revision live intake refuses.
     with open_bound_path(path, location) as stream:
+        coordinate, observation = bound_source_observation(stream)
+        if expected_observation is not None and observation != expected_observation:
+            raise OSError(errno.ESTALE, "source changed before revision observation", str(path))
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            check_compute_cancelled()
             _check_observation_cancelled(cancelled)
             digest.update(chunk)
             size += len(chunk)
+        coordinate, observation = bound_source_observation(stream)
+        current = os.fstat(stream.fileno())
+        if (
+            observation != (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns)
+            or captured_path_coordinate(path, stream.fileno()) != coordinate
+        ):
+            raise OSError(errno.ESTALE, "source changed during revision observation", str(path))
     return digest.hexdigest(), size
 
 
@@ -745,6 +773,90 @@ def _archive_members(
     return tuple(members)
 
 
+def _prepare_file_decision(
+    observation: tuple[str, Path, str, str],
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    source_binding: SourceInputBinding | None = None,
+    expected_observation: tuple[int, int, int, int, int] | None = None,
+) -> SourceDecision:
+    """Classify and hash one input, returning evidence without publishing it."""
+    source_name, path, disposition, reason = observation
+    retained_path = str(source_binding.source_path) if source_binding is not None else str(path)
+
+    def checkpoint() -> None:
+        check_compute_cancelled()
+        _check_observation_cancelled(cancelled)
+
+    checkpoint()
+    try:
+        observed = path.lstat()
+        if not stat.S_ISREG(observed.st_mode):
+            raise OSError(errno.ESTALE, "source is no longer a regular preparation input", str(path))
+        if expected_observation is not None and _file_observation(observed) != expected_observation:
+            raise OSError(errno.ESTALE, "source changed while preparation was queued", str(path))
+        provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        admission = classify_pre_acquisition(
+            path,
+            fallback_provider=provider,
+            source_only=False,
+            size_bytes=observed.st_size,
+            checkpoint=checkpoint,
+        )
+        if admission.excluded_reason is not None:
+            return SourceDecision(
+                source_name, retained_path, "excluded", f"intake_excluded:{admission.excluded_reason}"
+            )
+        try:
+            revision, material_bytes = _revision(
+                path,
+                cancelled=cancelled,
+                location=bound_location_provider(provider),
+                source_binding=source_binding,
+                expected_observation=expected_observation,
+            )
+        except ForeignOriginContentError as exc:
+            return SourceDecision(
+                source_name, retained_path, "excluded", f"intake_excluded:{foreign_origin_exclusion(exc)}"
+            )
+        return SourceDecision(source_name, retained_path, disposition, reason, revision, material_bytes=material_bytes)
+    except RetryableSourceReadError as exc:
+        return SourceDecision(source_name, retained_path, "fault", f"revision_io_unavailable:{exc.cause}")
+    except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
+        fault = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
+        return SourceDecision(source_name, retained_path, "fault", f"{fault}:{exc}")
+
+
+def _ordinary_preparation(observation: tuple[str, Path, str, str]) -> bool:
+    _source, path, disposition, _reason = observation
+    return (
+        disposition == "accepted"
+        and not path.is_symlink()
+        and path.suffix.lower() != ".zip"
+        and not is_sqlite_path(path)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _FilePreparation:
+    observation: tuple[str, Path, str, str]
+    accepted_stat: os.stat_result | OSError
+
+    @property
+    def input_bytes(self) -> int:
+        return self.accepted_stat.st_size if isinstance(self.accepted_stat, os.stat_result) else 0
+
+
+def _prepare_ordinary_file(job: _FilePreparation, *, cancelled: Callable[[], bool] | None) -> SourceDecision:
+    if isinstance(job.accepted_stat, OSError):
+        source, path, _disposition, _reason = job.observation
+        fault = "revision_io_unavailable" if retryable_read_fault(job.accepted_stat) else "revision_unreadable"
+        return SourceDecision(source, str(path), "fault", f"{fault}:{job.accepted_stat}")
+    return _prepare_file_decision(
+        job.observation, cancelled=cancelled, expected_observation=_file_observation(job.accepted_stat)
+    )
+
+
 def capture_production_source_baseline(
     sources: tuple[WatchSource, ...],
     *,
@@ -829,109 +941,101 @@ def capture_production_source_baseline(
         for source in sources
         if source.root.is_dir() and not source.root.is_symlink()
     }
-    for source_name, path, disposition, reason in observed:
-        with ExitStack() as stack:
-            source_binding = None
-            try:
-                if is_sqlite_path(path) and not path.is_symlink():
-                    source_binding = stack.enter_context(bind_source_input(path))
-            except OSError as exc:
-                reason = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
-                decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))
-                continue
-            _check_observation_cancelled(cancelled)
-            retained_path = str(source_binding.source_path) if source_binding is not None else str(path)
-            if path.is_symlink():
-                target = str(path.resolve())
-                independently_accepted = (
-                    target in accepted_real
-                    or any(candidate.startswith(target + os.sep) for candidate in accepted_real)
-                    or (
-                        path.is_dir()
-                        and any(
-                            other_name != source_name and Path(target).is_relative_to(root)
-                            for other_name, root in independent_roots
+    for ordinary, group in groupby(observed, _ordinary_preparation):
+        if ordinary:
+
+            def pending_files(
+                observations: Iterator[tuple[str, Path, str, str]] = group,
+            ) -> Iterator[_FilePreparation]:
+                for observation in observations:
+                    _check_observation_cancelled(cancelled)
+                    if progress is not None:
+                        progress("baseline_hash")
+                    try:
+                        accepted_stat: os.stat_result | OSError = observation[1].lstat()
+                    except OSError as exc:
+                        accepted_stat = exc
+                    yield _FilePreparation(observation, accepted_stat)
+
+            for decision in compute_adapter().map(
+                partial(_prepare_ordinary_file, cancelled=cancelled),
+                pending_files(),
+                admission_class="bulk-candidate",
+                estimated_bytes=lambda job: job.input_bytes,
+                checkpoint=lambda: _check_observation_cancelled(cancelled),
+            ):
+                decisions.append(decision)
+                if decision.disposition == "accepted" and progress is not None:
+                    progress("baseline_hash", revisions=1, hashed_bytes=decision.material_bytes)
+            continue
+        for source_name, path, disposition, reason in group:
+            with ExitStack() as stack:
+                source_binding = None
+                try:
+                    if is_sqlite_path(path) and not path.is_symlink():
+                        source_binding = stack.enter_context(bind_source_input(path))
+                except OSError as exc:
+                    reason = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
+                    decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))
+                    continue
+                _check_observation_cancelled(cancelled)
+                retained_path = str(source_binding.source_path) if source_binding is not None else str(path)
+                if path.is_symlink():
+                    target = str(path.resolve())
+                    independently_accepted = (
+                        target in accepted_real
+                        or any(candidate.startswith(target + os.sep) for candidate in accepted_real)
+                        or (
+                            path.is_dir()
+                            and any(
+                                other_name != source_name and Path(target).is_relative_to(root)
+                                for other_name, root in independent_roots
+                            )
                         )
+                    )
+                    if disposition in {"accepted", "alias"} or reason in {
+                        "escaping_symlink",
+                        "broken_symlink",
+                        "symlink_cycle",
+                    }:
+                        if independently_accepted:
+                            disposition, reason = "alias", "independently_accepted_target"
+                        else:
+                            disposition, reason = "fault", "alias_target_not_independently_accepted"
+                if disposition == "accepted":
+                    # Enter the hash phase before reading: one large file or ZIP can
+                    # take long enough that status must not still say ``baseline_walk``.
+                    if progress is not None:
+                        progress("baseline_hash")
+                    try:
+                        if path.suffix.lower() == ".zip":
+                            members = _archive_members(path, source_name, cancelled=cancelled, progress=progress)
+                            decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
+                            decisions.extend(members)
+                            continue
+                        decision = _prepare_file_decision(
+                            (source_name, path, disposition, reason), cancelled=cancelled, source_binding=source_binding
+                        )
+                        decisions.append(decision)
+                        if decision.disposition == "accepted" and progress is not None:
+                            progress("baseline_hash", revisions=1, hashed_bytes=decision.material_bytes)
+                        continue
+                    except RetryableSourceReadError as exc:
+                        decisions.append(
+                            SourceDecision(source_name, retained_path, "fault", f"revision_io_unavailable:{exc.cause}")
+                        )
+                        continue
+                    except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
+                        reason = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
+                        decisions.append(SourceDecision(source_name, retained_path, "fault", f"{reason}:{exc}"))
+                        continue
+                else:
+                    revision = None
+                    material_bytes = None
+                decisions.append(
+                    SourceDecision(
+                        source_name, retained_path, disposition, reason, revision, material_bytes=material_bytes
                     )
                 )
-                if disposition in {"accepted", "alias"} or reason in {
-                    "escaping_symlink",
-                    "broken_symlink",
-                    "symlink_cycle",
-                }:
-                    if independently_accepted:
-                        disposition, reason = "alias", "independently_accepted_target"
-                    else:
-                        disposition, reason = "fault", "alias_target_not_independently_accepted"
-            if disposition == "accepted":
-                # Enter the hash phase before reading: one large file or ZIP can
-                # take long enough that status must not still say ``baseline_walk``.
-                if progress is not None:
-                    progress("baseline_hash")
-                try:
-                    if path.suffix.lower() == ".zip":
-                        members = _archive_members(path, source_name, cancelled=cancelled, progress=progress)
-                        decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
-                        decisions.extend(members)
-                        continue
-                    # Intake's own pre-acquisition decision: a file it excludes
-                    # with a typed reason is never retained, so the baseline
-                    # records that exclusion instead of requiring a raw row. A
-                    # cold build writes derived tiers, so the ordinary route (not
-                    # the source-only acquisition route) is the one it runs.
-                    admission = classify_pre_acquisition(
-                        path,
-                        fallback_provider=Provider.from_string(
-                            canonical_acquisition_provider(source_name, source_name=source_name)
-                        ),
-                        source_only=False,
-                        size_bytes=path.stat().st_size,
-                        checkpoint=lambda: _check_observation_cancelled(cancelled),
-                    )
-                    if admission.excluded_reason is not None:
-                        # A retryable read fault of a database is raised by the
-                        # decision itself and stays a fault (handled below).
-                        decisions.append(
-                            SourceDecision(
-                                source_name, retained_path, "excluded", f"intake_excluded:{admission.excluded_reason}"
-                            )
-                        )
-                        continue
-                    # A file intake retains is captured through the acquisition
-                    # boundary; hashing it through the same boundary refuses
-                    # exactly the files that capture refuses, with intake's reason.
-                    location = bound_location_provider(
-                        Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
-                    )
-                    try:
-                        revision, material_bytes = _revision(
-                            path, cancelled=cancelled, location=location, source_binding=source_binding
-                        )
-                    except ForeignOriginContentError as exc:
-                        decisions.append(
-                            SourceDecision(
-                                source_name,
-                                retained_path,
-                                "excluded",
-                                f"intake_excluded:{foreign_origin_exclusion(exc)}",
-                            )
-                        )
-                        continue
-                    if progress is not None:
-                        progress("baseline_hash", revisions=1, hashed_bytes=material_bytes)
-                except RetryableSourceReadError as exc:
-                    decisions.append(
-                        SourceDecision(source_name, retained_path, "fault", f"revision_io_unavailable:{exc.cause}")
-                    )
-                    continue
-                except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
-                    reason = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
-                    decisions.append(SourceDecision(source_name, retained_path, "fault", f"{reason}:{exc}"))
-                    continue
-            else:
-                revision = None
-                material_bytes = None
-            decisions.append(
-                SourceDecision(source_name, retained_path, disposition, reason, revision, material_bytes=material_bytes)
-            )
+    _check_observation_cancelled(cancelled)
     return _seal(operation_id, signature, tuple(decisions))
