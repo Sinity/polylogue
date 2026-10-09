@@ -1986,9 +1986,10 @@ def _workflow_invocation_events(
     """
 
     events: list[ParsedSessionEvent] = []
-    for block, identity in zip(content_blocks, block_content_identities(content_blocks), strict=True):
-        if block.type is not BlockType.TOOL_USE or block.tool_name != "Workflow":
-            continue
+    workflow_blocks = [
+        block for block in content_blocks if block.type is BlockType.TOOL_USE and block.tool_name == "Workflow"
+    ]
+    for block, identity in zip(workflow_blocks, block_content_identities(workflow_blocks), strict=True):
         tool_input = block.tool_input or {}
         payload = {
             key: value
