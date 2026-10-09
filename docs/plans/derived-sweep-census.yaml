@@ -9,6 +9,13 @@
 # unclassified until a reviewer assigns a permitted classification.
 package: polylogue
 sites:
+  - file: "polylogue/sources/tool_outcomes.py"
+    function: "_normalize_message"
+    subject: "source_content_identity"
+    kind: "read_path_substitution"
+    scope: "writing_module"
+    classification: presentation_projection
+    reason: "Pure retained Source preparation captures the input block's exact semantic identity before cross-block outcome association. The immutable carrier is computed from the parser operand, never from an Index row, and no stored producer output is corrected or masked."
   - file: "polylogue/archive/query/archive_execution.py"
     function: "_session_search_relation"
     subject: "sort"
