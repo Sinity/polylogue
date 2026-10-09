@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.schemas.drift_sentinel import SchemaDriftObservation
+from polylogue.schemas.drift_sentinel import DriftSignature, SchemaDriftObservation
 from polylogue.schemas.drift_sentinel_sampling import record_schema_drift_observations_to_ops_sync
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.ops_write import list_schema_drift_samples
@@ -31,7 +31,7 @@ def test_writes_one_row_per_observation_to_sibling_ops_db(tmp_path: Path) -> Non
             origin="claude-code-session",
             element_kind="session_record",
             classification="new_field",
-            unseen_key_signature="metadata.newThing",
+            unseen_key_signature=DriftSignature.from_text("metadata.newThing", directory=tmp_path),
             native_id_example="raw-1",
             raw_id="raw-1",
         ),
@@ -39,7 +39,7 @@ def test_writes_one_row_per_observation_to_sibling_ops_db(tmp_path: Path) -> Non
             origin="codex-session",
             element_kind="session_record",
             classification="field_changed",
-            unseen_key_signature="",
+            unseen_key_signature=DriftSignature.from_text("", directory=tmp_path),
             native_id_example="raw-2",
             raw_id="raw-2",
         ),
@@ -66,7 +66,7 @@ def test_returns_zero_when_ops_tier_missing(tmp_path: Path) -> None:
             origin="claude-code-session",
             element_kind="session_record",
             classification="new_field",
-            unseen_key_signature="x",
+            unseen_key_signature=DriftSignature.from_text("x", directory=tmp_path),
             native_id_example="raw-1",
             raw_id="raw-1",
         ),
@@ -100,7 +100,7 @@ def test_known_field_unread_observation_is_written(tmp_path: Path) -> None:
             origin="claude-code-session",
             element_kind="session_record",
             classification="known_field_unread",
-            unseen_key_signature="",
+            unseen_key_signature=DriftSignature.from_text("", directory=tmp_path),
             native_id_example="raw-1",
             raw_id="raw-1",
         ),
@@ -139,7 +139,7 @@ def test_one_rejected_observation_does_not_swallow_the_rest_of_the_batch(tmp_pat
             origin="claude-code-session",
             element_kind="session_record",
             classification="new_field",
-            unseen_key_signature="",
+            unseen_key_signature=DriftSignature.from_text("", directory=tmp_path),
             native_id_example="raw-good-1",
             raw_id="raw-good-1",
         ),
@@ -147,7 +147,7 @@ def test_one_rejected_observation_does_not_swallow_the_rest_of_the_batch(tmp_pat
             origin="not-a-real-origin",
             element_kind="session_record",
             classification="new_field",
-            unseen_key_signature="",
+            unseen_key_signature=DriftSignature.from_text("", directory=tmp_path),
             native_id_example="raw-bad",
             raw_id="raw-bad",
         ),
@@ -155,7 +155,7 @@ def test_one_rejected_observation_does_not_swallow_the_rest_of_the_batch(tmp_pat
             origin="codex-session",
             element_kind="session_record",
             classification="field_changed",
-            unseen_key_signature="",
+            unseen_key_signature=DriftSignature.from_text("", directory=tmp_path),
             native_id_example="raw-good-2",
             raw_id="raw-good-2",
         ),

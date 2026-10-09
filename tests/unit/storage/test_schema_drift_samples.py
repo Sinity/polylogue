@@ -16,6 +16,11 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
+def _signature_kwargs(value: str) -> dict[str, object]:
+    payload = value.encode("utf-8", errors="surrogatepass")
+    return {"signature_chunks": (payload,), "signature_byte_count": len(payload)}
+
+
 def _ops_conn(tmp_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(tmp_path / "ops.db"))
     initialize_archive_tier(conn, ArchiveTier.OPS)
@@ -31,7 +36,7 @@ class TestSchemaDriftSamples:
                 origin="claude-code-session",
                 element_kind="session_record",
                 classification="new_field",
-                unseen_key_signature="metadata.newThing",
+                **_signature_kwargs("metadata.newThing"),
                 native_id_example="raw-1",
                 raw_id="raw-1",
                 observed_at_ms=1_000,
@@ -41,7 +46,7 @@ class TestSchemaDriftSamples:
                 origin="claude-code-session",
                 element_kind="session_record",
                 classification="field_changed",
-                unseen_key_signature="",
+                **_signature_kwargs(""),
                 native_id_example="raw-2",
                 raw_id="raw-2",
                 observed_at_ms=2_000,
@@ -63,7 +68,7 @@ class TestSchemaDriftSamples:
                 origin="codex-session",
                 element_kind="session_record",
                 classification="new_field",
-                unseen_key_signature="x",
+                **_signature_kwargs("x"),
                 native_id_example="raw-old",
                 raw_id="raw-old",
                 observed_at_ms=0,
@@ -75,7 +80,7 @@ class TestSchemaDriftSamples:
                 origin="codex-session",
                 element_kind="session_record",
                 classification="new_field",
-                unseen_key_signature="y",
+                **_signature_kwargs("y"),
                 native_id_example="raw-new",
                 raw_id="raw-new",
                 observed_at_ms=SCHEMA_DRIFT_SAMPLE_RETENTION_MS * 2,
@@ -95,7 +100,7 @@ class TestSchemaDriftSamples:
                 """
                 INSERT INTO schema_drift_samples (
                     sample_id, origin, element_kind, classification,
-                    unseen_key_signature, native_id_example, raw_id, observed_at_ms
+                    signature_byte_count, native_id_example, raw_id, observed_at_ms
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -104,7 +109,7 @@ class TestSchemaDriftSamples:
                         "codex-session",
                         "session_record",
                         "new_field",
-                        "x",
+                        0,
                         f"raw-{i}",
                         f"raw-{i}",
                         i,
@@ -118,7 +123,7 @@ class TestSchemaDriftSamples:
                     origin="codex-session",
                     element_kind="session_record",
                     classification="new_field",
-                    unseen_key_signature="x",
+                    **_signature_kwargs("x"),
                     native_id_example=f"raw-{i}",
                     raw_id=f"raw-{i}",
                     observed_at_ms=i,
@@ -147,7 +152,7 @@ class TestSchemaDriftSamples:
                     origin="claude-code-session",
                     element_kind="session_record",
                     classification=classification,
-                    unseen_key_signature="",
+                    **_signature_kwargs(""),
                     native_id_example=raw_id,
                     raw_id=raw_id,
                     observed_at_ms=10_000 + i,
@@ -158,7 +163,7 @@ class TestSchemaDriftSamples:
                 origin="claude-code-session",
                 element_kind="session_record",
                 classification="field_changed",
-                unseen_key_signature="",
+                **_signature_kwargs(""),
                 native_id_example="raw-stale",
                 raw_id="raw-stale",
                 observed_at_ms=1,
@@ -184,7 +189,7 @@ class TestSchemaDriftSamples:
                 origin="chatgpt-export",
                 element_kind="conversation",
                 classification="new_field",
-                unseen_key_signature="",
+                **_signature_kwargs(""),
                 native_id_example="raw-1",
                 raw_id="raw-1",
                 observed_at_ms=1,
@@ -203,7 +208,7 @@ class TestSchemaDriftSamples:
                     origin="not-a-real-origin",
                     element_kind="session_record",
                     classification="new_field",
-                    unseen_key_signature="",
+                    **_signature_kwargs(""),
                     native_id_example="raw-1",
                     raw_id="raw-1",
                     observed_at_ms=1,
@@ -229,7 +234,7 @@ class TestSchemaDriftSamples:
                 origin="claude-code-session",
                 element_kind="session_record",
                 classification="known_field_unread",
-                unseen_key_signature="",
+                **_signature_kwargs(""),
                 native_id_example="raw-1",
                 raw_id="raw-1",
                 observed_at_ms=1,
@@ -249,7 +254,7 @@ def test_reinitializing_ops_tier_keeps_drift_samples(tmp_path: Path) -> None:
             origin="claude-code-session",
             element_kind="session_record",
             classification="new_field",
-            unseen_key_signature="",
+            **_signature_kwargs(""),
             native_id_example="raw-1",
             raw_id="raw-1",
             observed_at_ms=1,

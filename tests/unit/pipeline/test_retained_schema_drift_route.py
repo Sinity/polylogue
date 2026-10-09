@@ -14,6 +14,7 @@ from polylogue.schemas.drift_sentinel import SchemaDriftObservation
 from polylogue.schemas.packages import SchemaResolution, SchemaResolutionReason
 from polylogue.schemas.retained_validation import RetainedValidationVerdict
 from polylogue.schemas.validator_resolution import canonical_provider
+from polylogue.storage.sqlite.archive_tiers.ops_write import iter_schema_drift_signature
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
@@ -178,19 +179,22 @@ def test_retained_schema_drift_telemetry_follows_replay_and_never_changes_outcom
         with sqlite3.connect(archive_root / "ops.db") as conn:
             count = conn.execute("SELECT COUNT(*) FROM schema_drift_samples").fetchone()[0]
             row = conn.execute(
-                """SELECT origin, element_kind, classification, unseen_key_signature,
+                """SELECT sample_id, origin, element_kind, classification, signature_byte_count,
                           native_id_example, raw_id
                    FROM schema_drift_samples"""
             ).fetchone()
         assert count == 1
         assert row == (
+            row[0],
             "codex-session",
             observations[0].element_kind,
             observations[0].classification,
-            observations[0].unseen_key_signature,
+            observations[0].unseen_key_signature.byte_count,
             observations[0].native_id_example,
             observations[0].raw_id,
         )
+        signature = b"".join(iter_schema_drift_signature(conn, row[0]))
+        assert signature == b"".join(observations[0].unseen_key_signature.iter_utf8_chunks())
         assert "private-value" not in repr(row)
         persisted = observations
     # Only the classified signature and stable IDs leave the verdict; the

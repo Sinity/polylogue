@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 from polylogue.core.enums import (
@@ -415,7 +416,7 @@ class ArchiveSchemaDriftSample:
     origin: str
     element_kind: str
     classification: str
-    unseen_key_signature: str
+    signature_byte_count: int
     native_id_example: str
     raw_id: str
     observed_at_ms: int
@@ -443,13 +444,14 @@ def record_schema_drift_sample(
     origin: str,
     element_kind: str,
     classification: str,
-    unseen_key_signature: str,
+    signature_chunks: Iterable[bytes],
+    signature_byte_count: int,
     native_id_example: str,
     raw_id: str,
     observed_at_ms: int,
     sample_id: str | None = None,
 ) -> str:
-    """Record one format-drift sample and return its id.
+    """Record one format-drift sample and its exact bounded signature chunks.
 
     Best-effort telemetry like ``record_fts_drift_sample``: a plain direct
     INSERT, pruned by both time (``SCHEMA_DRIFT_SAMPLE_RETENTION_MS``) and
@@ -458,12 +460,14 @@ def record_schema_drift_sample(
     """
     if sample_id is None:
         sample_id = str(uuid.uuid4())
+    if signature_byte_count < 0:
+        raise ValueError("signature_byte_count must be non-negative")
     with conn:
         conn.execute(
             """
             INSERT INTO schema_drift_samples (
                 sample_id, origin, element_kind, classification,
-                unseen_key_signature, native_id_example, raw_id, observed_at_ms
+                signature_byte_count, native_id_example, raw_id, observed_at_ms
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -471,12 +475,42 @@ def record_schema_drift_sample(
                 origin,
                 element_kind,
                 classification,
-                unseen_key_signature,
+                signature_byte_count,
                 native_id_example,
                 raw_id,
                 observed_at_ms,
             ),
         )
+        pending = bytearray()
+        written_bytes = 0
+        ordinal = 0
+        for incoming in signature_chunks:
+            if not isinstance(incoming, bytes):
+                raise TypeError("signature chunks must be bytes")
+            written_bytes += len(incoming)
+            view = memoryview(incoming)
+            offset = 0
+            while offset < len(view):
+                take = min(4096 - len(pending), len(view) - offset)
+                pending.extend(view[offset : offset + take])
+                offset += take
+                if len(pending) == 4096:
+                    payload = bytes(pending)
+                    pending.clear()
+                    conn.execute(
+                        "INSERT INTO schema_drift_signature_chunks(sample_id, chunk_ordinal, chunk_bytes) VALUES (?, ?, ?)",
+                        (sample_id, ordinal, payload),
+                    )
+                    ordinal += 1
+        if pending:
+            conn.execute(
+                "INSERT INTO schema_drift_signature_chunks(sample_id, chunk_ordinal, chunk_bytes) VALUES (?, ?, ?)",
+                (sample_id, ordinal, bytes(pending)),
+            )
+        if written_bytes != signature_byte_count:
+            raise ValueError(
+                f"signature byte count mismatch: declared {signature_byte_count}, received {written_bytes}"
+            )
         conn.execute(
             "DELETE FROM schema_drift_samples WHERE observed_at_ms < ?",
             (observed_at_ms - SCHEMA_DRIFT_SAMPLE_RETENTION_MS,),
@@ -506,7 +540,7 @@ def list_schema_drift_samples(
     """Return schema-drift samples newest-first, optionally filtered."""
     query = """
         SELECT sample_id, origin, element_kind, classification,
-               unseen_key_signature, native_id_example, raw_id, observed_at_ms
+               signature_byte_count, native_id_example, raw_id, observed_at_ms
         FROM schema_drift_samples
     """
     clauses: list[str] = []
@@ -530,11 +564,48 @@ def _schema_drift_sample_from_row(row: sqlite3.Row | tuple[object, ...]) -> Arch
         origin=str(row[1]),
         element_kind=str(row[2]),
         classification=str(row[3]),
-        unseen_key_signature=str(row[4]),
+        signature_byte_count=_int_value(row[4]),
         native_id_example=str(row[5]),
         raw_id=str(row[6]),
         observed_at_ms=_int_value(row[7]),
     )
+
+
+def iter_schema_drift_signature(
+    conn: sqlite3.Connection,
+    sample_id: str,
+    *,
+    schema: str = "main",
+) -> Iterator[bytes]:
+    """Yield exact stored signature bytes while borrowing the caller's connection."""
+    if schema not in {"main", "ops_tier"}:
+        raise ValueError(f"unsupported schema-drift reader schema: {schema!r}")
+    table = f"{schema}.schema_drift_samples"
+    chunks_table = f"{schema}.schema_drift_signature_chunks"
+    row = conn.execute(f"SELECT signature_byte_count FROM {table} WHERE sample_id = ?", (sample_id,)).fetchone()
+    if row is None:
+        raise KeyError(sample_id)
+    expected_bytes = _int_value(row[0])
+    cursor = conn.execute(
+        f"SELECT chunk_ordinal, chunk_bytes FROM {chunks_table} WHERE sample_id = ? ORDER BY chunk_ordinal",
+        (sample_id,),
+    )
+    seen_bytes = 0
+    expected_ordinal = 0
+    try:
+        for ordinal, payload in cursor:
+            if _int_value(ordinal) != expected_ordinal:
+                raise ValueError(f"schema-drift signature chunk sequence is incomplete for {sample_id}")
+            chunk = bytes(payload)
+            if len(chunk) > 4096:
+                raise ValueError(f"schema-drift signature chunk exceeds storage size for {sample_id}")
+            seen_bytes += len(chunk)
+            expected_ordinal += 1
+            yield chunk
+    finally:
+        cursor.close()
+    if seen_bytes != expected_bytes:
+        raise ValueError(f"schema-drift signature byte count mismatch for {sample_id}")
 
 
 def summarize_schema_drift_since(
@@ -1603,6 +1674,7 @@ __all__ = [
     "list_cursor_lag_samples",
     "list_fts_drift_samples",
     "list_schema_drift_samples",
+    "iter_schema_drift_signature",
     "latest_daemon_lifecycle",
     "latest_daemon_termination_receipt",
     "list_daemon_stage_events",

@@ -69,6 +69,13 @@ SQL anti-join instead of collecting both corpora in Python. Every artifact in
 the cohort must remain raw-only and free of terminal support, decode, malformed-line, or validation evidence for that fast
 classification to apply.
 
+Schema-drift samples keep their signature byte count in `schema_drift_samples`
+and exact UTF-8 `surrogatepass` bytes in ordered 4 KiB
+`schema_drift_signature_chunks` rows. Metadata list and rate readers omit
+signature content; an explicit iterator reads chunks through the caller-owned
+Ops connection. The sampler rechunks larger carrier reads before SQLite sees
+them, and pruning a sample cascades its signature chunks.
+
 Prepared frontier inspection uses the resident preparation owner and the same
 original Source, Index and Ops inputs through publication. Source migration
 005 and the derived-tier DDL journal changes to the dependencies of accepted
