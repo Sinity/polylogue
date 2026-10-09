@@ -184,7 +184,7 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
                 and agrees_with_index_descriptor(attachment)
                 for attachment in attachments
             )
-        except (KeyError, ValueError, sqlite3.Error):
+        except (KeyError, ValueError):
             return False
         finally:
             artifact.discard()

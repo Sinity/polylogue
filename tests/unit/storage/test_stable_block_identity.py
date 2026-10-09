@@ -3,6 +3,7 @@
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -13,6 +14,10 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.live_ingest import write_index_session
+
+if TYPE_CHECKING:
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.sources.revision_backfill import RetainedSessionRead
 
 
 def _export(texts: list[str]) -> JSONDocument:
@@ -158,6 +163,92 @@ def test_stable_mark_can_be_retracted_after_block_disappears(tmp_path: Path) -> 
                 assert actuator.apply(plan, args).affected_count == 1
                 archive.commit()
                 assert not list(archive.list_marks(target_type="block", target_id=block_id))
+
+
+@pytest.mark.parametrize("supplier_state", ["available", "missing-latest", "cancel"])
+def test_source_binding_checks_older_union_supplier_and_settles_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, supplier_state: str
+) -> None:
+    import json
+    from dataclasses import replace
+
+    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+    from polylogue.core.enums import Provider
+    from polylogue.operations import source_target_read
+    from polylogue.operations.operation_context import open_operation_read
+    from tests.infra.index_writer import fixture_index_connection, write_fixture_retained_session
+
+    session_id = "claude-ai-export:stable-blocks"
+    raw_ids: list[str] = []
+    with write_lease("test.source-union-suppliers", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            for generation, texts in enumerate((["A", "B"], ["X", "A"])):
+                raw_ids.append(
+                    archive.write_raw_payload(
+                        provider=Provider.CLAUDE_AI,
+                        payload=json.dumps(_export(texts)).encode(),
+                        source_path="stable-blocks.txt",
+                        canonical_source_path="stable-blocks.txt",
+                        acquired_at_ms=generation + 1,
+                        revision=RawRevisionEnvelope(
+                            logical_source_key=session_id,
+                            kind=RawRevisionKind.FULL,
+                            source_revision=f"union-{generation}",
+                            acquisition_generation=generation,
+                            authority=RawRevisionAuthority.BYTE_PROVEN,
+                        ),
+                    )
+                )
+            archive.commit()
+    with fixture_index_connection(tmp_path / "index.db") as index:
+        write_fixture_retained_session(index, _session(["A", "B"]), raw_id=raw_ids[0])
+        write_fixture_retained_session(index, _session(["X", "A"]), raw_id=raw_ids[1])
+        block_id = str(index.execute("SELECT block_id FROM blocks WHERE text='B'").fetchone()[0])
+        assert (
+            index.execute("SELECT raw_id FROM sessions WHERE session_id=?", (session_id,)).fetchone()[0] == raw_ids[1]
+        )
+
+    if supplier_state == "missing-latest":
+        from polylogue.storage.blob_store import BlobStore
+
+        with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            _provider, blob_hash, _path, _kind, _size = archive.raw_revision_descriptor(raw_ids[1])
+            BlobStore(tmp_path / "blob").blob_path(blob_hash).unlink()
+    prepared_paths: list[Path] = []
+    prepare = source_target_read._prepare_source_target_artifact
+
+    def capture(retained: RetainedSessionRead, raw_id: str, *, directory: Path) -> PreparedJsonl:
+        artifact = prepare(retained, raw_id, directory=directory)
+        prepared_paths.append(directory)
+        return artifact
+
+    class CancelledError(Exception):
+        pass
+
+    def checkpoint() -> None:
+        if supplier_state == "cancel" and prepared_paths:
+            raise CancelledError
+
+    monkeypatch.setattr(source_target_read, "_prepare_source_target_artifact", capture)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        before_source = tuple(source.execute("SELECT * FROM raw_sessions ORDER BY raw_id"))
+    before_blobs = {path.relative_to(tmp_path / "blob") for path in (tmp_path / "blob").rglob("*")}
+    with open_operation_read(tmp_path) as original:
+        snapshot = replace(original, checkpoint=checkpoint)
+        if supplier_state == "cancel":
+            with pytest.raises(CancelledError):
+                source_target_read.bind_source_block(snapshot, session_id=session_id, block_id=block_id)
+            assert not snapshot.source_block_reads
+        else:
+            source_target_read.bind_source_block(snapshot, session_id=session_id, block_id=block_id)
+            supplier = snapshot.source_block_reads[(session_id, block_id)]
+            assert supplier.raw_id == raw_ids[0]
+            assert len(prepared_paths) == (1 if supplier_state == "missing-latest" else 2)
+    assert prepared_paths and all(not path.exists() for path in prepared_paths)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert tuple(source.execute("SELECT * FROM raw_sessions ORDER BY raw_id")) == before_source
+    assert {path.relative_to(tmp_path / "blob") for path in (tmp_path / "blob").rglob("*")} == before_blobs
 
 
 @pytest.mark.parametrize("source_change", [None, "replace", "delete"])

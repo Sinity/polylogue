@@ -124,7 +124,7 @@ def _source_guard(
         bind_source_block(snapshot, session_id=session_id, block_id=target_id)
         return lambda: revalidate_source_block(snapshot, archive, session_id=session_id, block_id=target_id)
     if target_type == TARGET_ATTACHMENT:
-        from polylogue.api.user_state_resolver import bind_attachment_source_guard
+        from polylogue.operations.attachment_target_read import bind_attachment_source_guard
 
         return bind_attachment_source_guard(
             snapshot,

@@ -224,7 +224,9 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
                 continue
             provider, blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(str(raw_id))
             if not BlobStore(archive.archive_root / "blob").verify(blob_hash):
-                raise SourceTargetUnavailableError("retained block supplier bytes are unavailable")
+                # Another accepted acquisition can supply a union member. An
+                # unreadable candidate proves nothing about this target.
+                continue
             with TemporaryDirectory(prefix="polylogue-source-target-") as directory:
                 try:
                     artifact = _prepare_source_target_artifact(retained, str(raw_id), directory=Path(directory))
