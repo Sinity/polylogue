@@ -6570,13 +6570,21 @@ class ArchiveStore:
             if self._read_only or self._inactive_candidate_durable_read_only
             else str(self.user_db_path)
         )
+        from polylogue.storage.sqlite.connection_profile import StaleContinuationError, _generation_token
+
         try:
+            generation = _generation_token(self.user_db_path)
             if self._read_only:
                 attach_readonly_database(self._conn, self.user_db_path, alias="user_tier")
             else:
                 self._conn.execute("ATTACH DATABASE ? AS user_tier", (user_db_uri,))
+            if _generation_token(self.user_db_path) != generation:
+                raise StaleContinuationError("selected User generation changed while attaching the reader")
+        except StaleContinuationError:
+            raise
         except Exception as exc:
             raise self._user_tier_unavailable(reason=f"cannot open SQLite database ({exc})") from exc
+        self.user_generation = generation
         self._user_tier_attached = True
         self._tags_relation = _all_session_tags_sql()
 

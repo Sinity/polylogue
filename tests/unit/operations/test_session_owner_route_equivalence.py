@@ -677,11 +677,9 @@ async def test_root_only_facade_follows_active_index_and_explicit_shadow_stays_s
     selected = root / ".index-generations" / "selected" / "index.db"
     selected.parent.mkdir(parents=True)
     shutil.copyfile(root / "index.db", selected)
-    # Keep a valid conventional shadow with distinct retained content.
-    import sqlite3
-
-    with sqlite3.connect(root / "index.db") as conn:
-        conn.execute("UPDATE sessions SET title='Shadow selection', display_label='Shadow selection'")
+    # Distinct populations prove the selected Index, independent of title rendering.
+    with ArchiveStore.open_existing(root, read_only=False) as shadow:
+        shadow.delete_sessions(tuple(seeded[1:]))
     (root / ".index-active-pointer").write_text(str(selected), encoding="utf-8")
     async with Polylogue(archive_root=root) as api:
         assert api.backend.db_path == selected
@@ -690,6 +688,8 @@ async def test_root_only_facade_follows_active_index_and_explicit_shadow_stays_s
     async with Polylogue(archive_root=root, db_path=root / "index.db") as api:
         assert api.backend.db_path == root / "index.db"
         explicit = await execute_session_operation(api, SessionList(limit=1))
-    assert page.items[0].title != "Shadow selection"
-    assert explicit.items[0].title == "Shadow selection"
+    assert page.total == len(seeded)
+    assert page.items[0].id == seeded[-1]
+    assert explicit.total == 1
+    assert explicit.items[0].id == seeded[0]
     assert transcript.items

@@ -129,7 +129,7 @@ def _read_archive_frame(archive: ArchiveStore) -> ArchiveFrame:
         raise sqlite3.OperationalError(
             f"query_unit_frame_state is missing rows for tracked relations: {', '.join(missing)}"
         )
-    binding = (archive.archive_generation, archive.index_generation)
+    binding = (archive.archive_generation, archive.index_generation, archive.user_generation)
     physical_binding = hashlib.sha256(repr(binding).encode("ascii")).hexdigest()
     return ArchiveFrame(
         physical_binding=physical_binding, index_version=index_version, user_version=user_version, epochs=epochs
