@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.sources.live.cursor import CursorStore
@@ -334,7 +335,7 @@ def test_new_subject_failure_survives_between_publication_and_ledger(
     cursor = CursorStore(archive / "index.db", initialize=False)
     [old] = cursor.list_convergence_debt()
     newer = []
-    original_admit = daemon_cli.admit_stage_write
+    original_admit = admit_stage_write
 
     def admit(actor: str, work: Any) -> Any:
         if actor == "maintenance.convergence_debt.ledger":

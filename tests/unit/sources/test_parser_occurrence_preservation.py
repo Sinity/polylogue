@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -77,7 +78,7 @@ def test_claude_extrema_compare_instants_and_retain_wire_offsets(streamed: bool)
     assert [m.timestamp for m in session.messages] == [session.created_at, session.updated_at]
 
 
-def test_codex_native_reasoning_event_links_to_persisted_message(workspace_env) -> None:
+def test_codex_native_reasoning_event_links_to_persisted_message(workspace_env: Mapping[str, Path]) -> None:
     session = parse(_records("codex", "occurrence-preservation.jsonl"), "neutral")
     with open_connection(db_setup(workspace_env)) as conn:
         write_fixture_index_session(conn, session, content_hash=session_content_hash(session))

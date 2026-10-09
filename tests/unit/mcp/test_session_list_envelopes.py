@@ -47,7 +47,7 @@ async def test_session_list_routes_obey_query_envelope(monkeypatch: pytest.Monke
     archive.count_sessions.return_value = count
     transaction = SimpleNamespace(run=AsyncMock(side_effect=lambda read: read(archive)))
     monkeypatch.setattr("polylogue.archive.query.transaction.QueryTransaction", lambda *a, **k: transaction)
-    owner = SessionPage(
+    owner = SessionPage[Any](
         items=[],
         total=count,
         limit=10,
@@ -68,7 +68,7 @@ async def test_session_list_routes_obey_query_envelope(monkeypatch: pytest.Monke
         server = MCPServer("neutral")
         register_resources(server, hooks)
         if route == "sessions-resource":
-            raw = await server._resource_manager._resources["polylogue://sessions"].fn()
+            raw = await server._resource_manager._resources["polylogue://sessions"].read()
         else:
             raw = await server._resource_manager._templates["polylogue://origin/{name}/recent"].fn(name="codex-session")
     else:
@@ -88,7 +88,9 @@ async def test_session_list_routes_obey_query_envelope(monkeypatch: pytest.Monke
             min_words=None,
         )
     body = json.loads(raw)
-    kind, required = declaration_for_tool("query").contract_kind
+    contract = declaration_for_tool("query").contract_kind
+    assert isinstance(contract, tuple)
+    kind, required = contract
     assert kind == "envelope"
     assert required <= body.keys()
     assert body["unit"] == "sessions"
