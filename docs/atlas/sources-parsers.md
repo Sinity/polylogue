@@ -165,6 +165,8 @@ Detached artifacts contain no enrichment state (`storage/derived/raw.py`;
 
 ## Source observation and SQLite reads
 
+Source visits explicitly close and physically drain their owned acquisition
+stream before returning, including when a record callback cancels.
 Configured local acquisition carries each read failure through its async stream
 into scan and acquire error counts. Failed paths withhold their stat cursors;
 successfully committed files retain their cursors. Persistence failures are

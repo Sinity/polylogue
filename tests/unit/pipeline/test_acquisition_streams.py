@@ -232,3 +232,77 @@ async def test_ordinary_zip_reobservation_proves_exact_membership_without_clock_
                 ]
     finally:
         await backend.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["normal", "operation_cancelled", "task_cancelled"])
+async def test_visit_sources_settles_zip_capture_before_returning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    """Callback cancellation must close the real suspended acquisition carrier."""
+    import json
+    import zipfile
+    from contextlib import contextmanager
+    from typing import IO
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.pipeline.services.acquisition import AcquisitionService
+    from polylogue.sources import source_acquisition
+    from polylogue.sources.acquisition_boundary import BoundContainerCapture
+    from polylogue.sources.source_staging import SourceInputBinding
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.runtime import RawSessionRecord
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    archive_root = tmp_path / "archive"
+    await asyncio.to_thread(bootstrap_archive_root, archive_root)
+    bundle = tmp_path / "neutral.zip"
+    # More records than one acquisition batch keep the ZIP carrier suspended.
+    with zipfile.ZipFile(bundle, "w") as container:
+        for ordinal in range(200):
+            container.writestr(
+                f"session-{ordinal}.jsonl",
+                json.dumps({"type": "session_meta", "payload": {"id": f"neutral-{ordinal}"}}) + "\n",
+            )
+    streams: list[IO[bytes]] = []
+    original_open = source_acquisition.open_bound_container
+
+    @contextmanager
+    def tracked_open(blob_store: BlobStore, source_binding: SourceInputBinding) -> Iterator[BoundContainerCapture]:
+        with original_open(blob_store, source_binding) as capture:
+            streams.append(capture.stream)
+            yield capture
+
+    monkeypatch.setattr(source_acquisition, "open_bound_container", tracked_open)
+    received = 0
+
+    async def receive(record: RawSessionRecord) -> None:
+        nonlocal received
+        assert record.blob_hash is not None
+        received += 1
+        if outcome == "operation_cancelled":
+            raise DaemonOperationCancelled("neutral callback cancellation")
+        if outcome == "task_cancelled":
+            raise asyncio.CancelledError
+
+    backend = SQLiteBackend(db_path=archive_root / "source.db")
+    try:
+        service = AcquisitionService(backend)
+        if outcome == "normal":
+            result = await service.visit_sources(
+                [Source(name="codex", path=bundle)], on_record=receive, persist_cursors=False
+            )
+            assert result.counts == {"scanned": 200, "errors": 0}
+        else:
+            cancellation = DaemonOperationCancelled if outcome == "operation_cancelled" else asyncio.CancelledError
+            with pytest.raises(cancellation):
+                await service.visit_sources(
+                    [Source(name="codex", path=bundle)], on_record=receive, persist_cursors=False
+                )
+        assert received == (200 if outcome == "normal" else 1)
+        assert streams and all(stream.closed for stream in streams)
+    finally:
+        await backend.close()
