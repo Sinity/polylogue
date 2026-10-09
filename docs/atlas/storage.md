@@ -564,3 +564,11 @@ source availability. A present original with absent retained bytes is blocking
 An absent original with retained bytes remains nonblocking `source_missing`.
 These checks inspect CAS existence, while retained-byte validation owns full
 body fidelity.
+
+Drive attachment convergence pages byte and supplier-attribution obligations.
+A shared acquired attachment still owes each reference's exact retained raw,
+acquisition coordinate and blob hash in Source. References beyond the current
+window and references added after acquisition bind verified retained bytes
+without another provider request. Attachment readiness includes these pending
+attributions in its `allowed_unfetched` count; global acquired status alone
+does not discharge them (`operations/attachment_convergence.py`).

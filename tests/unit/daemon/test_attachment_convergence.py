@@ -331,6 +331,118 @@ def test_shared_attachment_fetches_once_but_records_each_raw_ref(tmp_path: Path)
     source.close()
 
 
+def test_shared_attachment_attribution_survives_window_restart_and_new_reference(tmp_path: Path) -> None:
+    """The shared byte status cannot discharge a supplier outside the window.
+
+    Mutation: select only unfetched global attachment rows. The first window
+    hides raw 26 and the later new raw, despite neither having a Source ref.
+    """
+    from polylogue.operations.attachment_convergence import inspect_attachment_readiness
+
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    raw_ids = [f"shared-raw-{i:02d}" for i in range(26)]
+    for i, raw_id in enumerate(raw_ids):
+        write_fixture_index_session(index, _session(f"shared-session-{i:02d}", file_id="shared-file"), raw_id=raw_id)
+    index.commit()
+    source = sqlite3.connect(tmp_path / "source.db")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, *raw_ids)
+    calls: list[str] = []
+
+    def fetch(file_id: str) -> bytes:
+        calls.append(file_id)
+        return b"shared attachment bytes"
+
+    first = _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
+    assert first.inspected == 25
+    assert first.transport_pending and not first.complete
+    assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type='attachment'").fetchone()[0] == 25
+    assert inspect_attachment_readiness(index, source)["allowed_unfetched"] == 1
+    index.close()
+    source.close()
+
+    # No process-local fetch cache survives. The retained shared hash is enough.
+    index = _open_index(tmp_path / "index.db")
+    source = sqlite3.connect(tmp_path / "source.db")
+    second = _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
+    assert second.inspected == 1 and second.acquired == 1 and second.complete
+    assert {row[0] for row in source.execute("SELECT ref_id FROM blob_refs WHERE ref_type='attachment'")} == set(
+        raw_ids
+    )
+    assert inspect_attachment_readiness(index, source)["allowed_unfetched"] == 0
+    assert calls == ["shared-file"]
+
+    write_fixture_index_session(index, _session("late-session", file_id="shared-file"), raw_id="late-raw")
+    index.commit()
+    _retain_raws(source, "late-raw")
+    assert inspect_attachment_readiness(index, source)["allowed_unfetched"] == 1
+    late = _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
+    assert late.inspected == 1 and late.acquired == 1 and late.complete
+    assert (
+        source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type='attachment' AND ref_id='late-raw'").fetchone()[0]
+        == 1
+    )
+    assert calls == ["shared-file"]
+    index.close()
+    source.close()
+
+
+def test_shared_attribution_cancellation_retries_without_downloading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancel the publication of a new supplier and retry the same owed ref."""
+    import asyncio
+
+    import polylogue.operations.attachment_convergence as convergence
+
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    write_fixture_index_session(index, _session("first", file_id="shared-file"), raw_id="first-raw")
+    index.commit()
+    source = sqlite3.connect(tmp_path / "source.db")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "first-raw")
+    calls: list[str] = []
+
+    def fetch(file_id: str) -> bytes:
+        calls.append(file_id)
+        return b"shared attachment bytes"
+
+    assert _converge(index, source, archive_root=tmp_path, download_into=_into(fetch)).complete
+    write_fixture_index_session(index, _session("later", file_id="shared-file"), raw_id="later-raw")
+    index.commit()
+    _retain_raws(source, "later-raw")
+    admission = convergence.admit_stage_write
+
+    def cancel(*args: object) -> None:
+        raise asyncio.CancelledError
+
+    with monkeypatch.context() as patch:
+        patch.setattr(convergence, "admit_stage_write", cancel)
+        with pytest.raises(asyncio.CancelledError):
+            _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
+    assert convergence.admit_stage_write is admission
+    assert (
+        source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type='attachment' AND ref_id='later-raw'").fetchone()[
+            0
+        ]
+        == 0
+    )
+    assert convergence.inspect_attachment_readiness(index, source)["allowed_unfetched"] == 1
+    retry = _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
+    assert retry.complete and retry.acquired == 1
+    assert (
+        source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type='attachment' AND ref_id='later-raw'").fetchone()[
+            0
+        ]
+        == 1
+    )
+    assert calls == ["shared-file"]
+    index.close()
+    source.close()
+
+
 def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
