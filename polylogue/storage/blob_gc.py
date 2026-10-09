@@ -59,7 +59,6 @@ from uuid import uuid4
 from polylogue.core.errors import SchemaSkewError
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import ERROR, WARNING, emit
-from polylogue.storage.blob_gc_index_watermark import index_liveness_authority_blocker
 from polylogue.storage.blob_liveness import (
     BlobLiveness,
     LivenessState,
@@ -742,7 +741,6 @@ def _inspect_gc_protection(
     blob_hash: str,
     *,
     final_recheck: bool,
-    index_authority_blocker: str | None = None,
 ) -> _GCProtection:
     """Project canonical liveness and reservation from one caller-owned lock state."""
     if final_recheck:
@@ -751,18 +749,12 @@ def _inspect_gc_protection(
             index_conn,
             blob_hash,
         )
-        if liveness.state is LivenessState.UNREFERENCED and index_authority_blocker is not None:
-            # The seam keeps its historical signature so fault-injection doubles
-            # stay valid; the per-candidate index-authority decision is applied
-            # to its answer here, on the one route every GC path shares.
-            liveness = BlobLiveness(LivenessState.BLOCKED, blockers=(index_authority_blocker,))
     else:
         liveness = inspect_blob_liveness(
             source_conn,
             blob_hash,
             index_conn=index_conn,
             require_index=True,
-            index_authority_blocker=index_authority_blocker,
         )
         reservation = inspect_blob_reservation(source_conn, blob_hash)
     return _GCProtection(liveness, reservation)
@@ -822,11 +814,6 @@ def _execute_gc_generation_members(
                 report.blocked_reason, phase="execute", deleted=deleted_now, reclaimed_bytes=reclaimed_bytes_now
             )
             return deleted_now, reclaimed_bytes_now
-        index_authority_blocker = index_liveness_authority_blocker(
-            blob_root=blob_root,
-            index_path=sibling_index_db,
-            index_conn=recheck_index,
-        )
         try:
             with _open_blob_namespace(blob_root, namespace_identity=namespace_identity) as namespace:
                 for blob_hash in members:
@@ -837,7 +824,6 @@ def _execute_gc_generation_members(
                         recheck_index,
                         blob_hash,
                         final_recheck=True,
-                        index_authority_blocker=index_authority_blocker,
                     )
                     if protection.blockers:
                         report.blocked_reason = "; ".join(protection.blockers)
@@ -1103,11 +1089,6 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
                         evidence.requested_reclaimed_bytes,
                         (*resumed_errors, *preflight.blockers),
                     )
-                index_authority_blocker = index_liveness_authority_blocker(
-                    blob_root=blob_root,
-                    index_path=index_db_path,
-                    index_conn=index_conn,
-                )
                 for blob_hash in sorted(blob_hashes):
                     size_bytes, namespace_blockers = _read_blob_object(
                         blob_root, blob_hash, namespace_identity=namespace_identity
@@ -1126,7 +1107,6 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
                     protection = _inspect_gc_protection(
                         source_conn,
                         index_conn=index_conn,
-                        index_authority_blocker=index_authority_blocker,
                         blob_hash=blob_hash,
                         final_recheck=False,
                     )
@@ -1278,12 +1258,9 @@ def _run_blob_gc_pass(
     # considered. Proceeding without one silently converts "cannot tell" into
     # "not referenced" for every blob only that tier knows about.
     #
-    # The index tier carries ``attachments.blob_hash``: on the live archive
-    # 1,240 distinct attachment payloads (~425 MB) are reachable through it and
-    # nowhere else. It is *rebuildable* and reached through a symlink into a
-    # generations directory, so a reset or an interrupted generation promotion
-    # leaves the path absent. This is the same fail-closed rule the
-    # per-ref-type join already applies to a missing referent table or column.
+    # Source acquisition references retain attachment bytes independently of
+    # this rebuildable tier. Its current attachment rows still withhold
+    # deletion, so an unavailable Index is a blocker rather than an empty set.
     required_tiers: dict[str, Path] = {"index": sibling_index_db}
     if db_path_obj.name == "index.db":
         # A split file set names its durable source tier explicitly; a
@@ -1385,12 +1362,6 @@ def _run_blob_gc_pass(
             report.blocked_reason = "; ".join(preflight.blockers)
             _emit_gc_refusal(report.blocked_reason, phase="preflight")
             return report
-        planning_index_authority_blocker = index_liveness_authority_blocker(
-            blob_root=blob_path,
-            index_path=sibling_index_db,
-            index_conn=planning_index,
-            record=not dry_run,
-        )
         for blob_hash, mtime in candidates:
             if len(shortlist) >= max_batch:
                 break
@@ -1398,7 +1369,6 @@ def _run_blob_gc_pass(
             protection = _inspect_gc_protection(
                 planning_source,
                 index_conn=planning_index,
-                index_authority_blocker=planning_index_authority_blocker,
                 blob_hash=blob_hash,
                 final_recheck=False,
             )
@@ -1497,7 +1467,6 @@ def _run_blob_gc_pass(
             protection = _inspect_gc_protection(
                 conn,
                 index_conn=recheck_index,
-                index_authority_blocker=planning_index_authority_blocker,
                 blob_hash=blob_hash,
                 final_recheck=False,
             )

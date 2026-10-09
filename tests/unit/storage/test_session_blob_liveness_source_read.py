@@ -93,8 +93,7 @@ class FiniteSourceRead:
         return values
 
 
-@pytest.mark.parametrize("authority_blocker", [None, "original Index authority unavailable"])
-def test_finite_source_read_matches_actual_owner_ledger_and_index_relations(authority_blocker: str | None) -> None:
+def test_finite_source_read_matches_actual_owner_ledger_and_index_relations() -> None:
     """Wrong owner/typed referent, census inclusion, exclusion or chunking turns red."""
     hashes = tuple(value.to_bytes(32, "big") for value in range(1, 503))
     with closing(sqlite3.connect(":memory:")) as source, closing(sqlite3.connect(":memory:")) as index:
@@ -126,7 +125,6 @@ def test_finite_source_read_matches_actual_owner_ledger_and_index_relations(auth
                 (*hashes, hashes[0]),
                 index_conn=index,
                 excluding_session_ids=frozenset({"excised"}),
-                index_authority_blocker=authority_blocker,
             )
 
         actual = classify(ConnectionSessionBlobLivenessRead(source))
@@ -147,10 +145,8 @@ def test_finite_source_read_matches_actual_owner_ledger_and_index_relations(auth
         for ordinal, blob_hash in enumerate(hashes):
             if ordinal in expected:
                 assert actual[blob_hash] == BlobLiveness(LivenessState.LIVE, expected[ordinal])
-            elif authority_blocker is None:
-                assert actual[blob_hash] == BlobLiveness(LivenessState.UNREFERENCED)
             else:
-                assert actual[blob_hash] == BlobLiveness(LivenessState.BLOCKED, blockers=(authority_blocker,))
+                assert actual[blob_hash] == BlobLiveness(LivenessState.UNREFERENCED)
         assert {len(chunk) for chunk in finite.chunks} == {500, 2}
         assert any(hashes[500] in chunk for chunk in finite.chunks)
         assert any(hashes[500] in values for values in finite.served)

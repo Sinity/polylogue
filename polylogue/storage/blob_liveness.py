@@ -230,45 +230,18 @@ def _direct_surfaces(conn: sqlite3.Connection, blob_bytes: bytes, *, tier: str, 
     return surfaces
 
 
-def index_tier_blob_population(index_conn: sqlite3.Connection) -> int:
-    """Return how many distinct blob hashes the index tier's owners hold.
-
-    Descriptor-driven from :data:`BLOB_OWNERS` so a new index-tier owner is
-    counted without editing this function. Missing tables count as zero: an
-    index tier that lacks its owner tables is refused by ``_schema_blockers``
-    long before any population question is asked.
-    """
-
-    hashes: set[bytes] = set()
-    for owner in _owners(tier="index", ledger=False):
-        assert owner.blob_column is not None
-        if not _table_exists(index_conn, owner.table):
-            continue
-        for row in index_conn.execute(
-            f"SELECT DISTINCT {owner.blob_column} FROM {owner.table} WHERE {owner.blob_column} IS NOT NULL"
-        ):
-            if isinstance(row[0], bytes):
-                hashes.add(row[0])
-    return len(hashes)
-
-
 def inspect_blob_liveness(
     source_conn: sqlite3.Connection,
     blob_hash: str,
     *,
     index_conn: sqlite3.Connection | None = None,
     require_index: bool = False,
-    index_authority_blocker: str | None = None,
 ) -> BlobLiveness:
     """Return ``live``, ``unreferenced``, or typed ``blocked`` for one hash.
 
-    ``index_authority_blocker`` names a reason the index tier cannot currently
-    prove absence (see :mod:`polylogue.storage.blob_gc_index_watermark`). It is
-    applied *per candidate*, after the surfaces are gathered: a hash the source
-    tier still claims is ``live`` exactly as before, and only a hash whose sole
-    possible referent was the index is blocked rather than reported
-    unreferenced. That keeps GC collecting source-decidable bytes while the
-    index is unmaterialized, which a pass-level refusal would not.
+    Durable Source owners retain acquired bytes independently of Index
+    reconstruction. The current Index can withhold collection for an existing
+    reference; its historical population cannot authorize or block collection.
     """
     blockers = _source_global_blockers(source_conn)
     if index_conn is None:
@@ -290,8 +263,6 @@ def inspect_blob_liveness(
         return BlobLiveness(LivenessState.BLOCKED, blockers=(f"blob liveness query is unreadable: {exc}",))
     if surfaces:
         return BlobLiveness(LivenessState.LIVE, tuple(surfaces))
-    if index_authority_blocker is not None:
-        return BlobLiveness(LivenessState.BLOCKED, blockers=(index_authority_blocker,))
     return BlobLiveness(LivenessState.UNREFERENCED)
 
 
@@ -371,7 +342,6 @@ def inspect_session_blob_references(
     *,
     index_conn: sqlite3.Connection | None,
     excluding_session_ids: Set[str],
-    index_authority_blocker: str | None = None,
 ) -> dict[bytes, BlobLiveness]:
     """Whether a session outside ``excluding_session_ids`` still references each blob.
 
@@ -390,10 +360,7 @@ def inspect_session_blob_references(
 
     ``blocked`` means the answer cannot be decided (an unknown ``blob_refs``
     type, a missing owner table), and the caller must refuse rather than
-    guess in either direction. ``index_authority_blocker`` names why the
-    index cannot currently prove absence (see
-    :mod:`polylogue.storage.blob_gc_index_watermark`); as in
-    :func:`inspect_blob_liveness`, it blocks only a hash no surface claims.
+    guess in either direction.
 
     Each owner is queried once per chunk of hashes, not once per hash: an
     owner without a ``blob_hash`` index is scanned per query. A query that
@@ -438,8 +405,6 @@ def inspect_session_blob_references(
     for blob_hash, found_surfaces in surfaces.items():
         if found_surfaces:
             decisions[blob_hash] = BlobLiveness(LivenessState.LIVE, tuple(dict.fromkeys(found_surfaces)))
-        elif index_authority_blocker is not None:
-            decisions[blob_hash] = BlobLiveness(LivenessState.BLOCKED, blockers=(index_authority_blocker,))
         else:
             decisions[blob_hash] = BlobLiveness(LivenessState.UNREFERENCED)
     return decisions
@@ -538,7 +503,6 @@ __all__ = [
     "BlobLivenessProjection",
     "LivenessState",
     "blob_hash_bytes",
-    "index_tier_blob_population",
     "inspect_blob_liveness",
     "inspect_blob_reservation",
     "inspect_session_blob_references",
