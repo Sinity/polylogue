@@ -930,6 +930,7 @@ class ArchiveStore:
         # an ordinary live write.
         self._durable_writer = durable_writer
         self._inactive_candidate_durable_read_only = owned_inactive_generation is not None and not durable_writer
+        authoritative_generation: IndexGeneration | None = None
         # An inactive candidate is physically rooted below the generation
         # lifecycle directory, but its read-through durable members belong to
         # the configured archive.  Bind the write lease to that authoritative
@@ -1068,9 +1069,10 @@ class ArchiveStore:
             if preserve_secondary_index_layout:
                 from polylogue.storage.sqlite.schema import assert_readable_archive_layout
 
+                assert authoritative_generation is not None
                 assert_readable_archive_layout(
                     self._conn,
-                    generation_id=generation_id,
+                    generation_id=authoritative_generation.generation_id,
                     owned_inactive_generation=authoritative_generation,
                 )
             if not read_only and not source_tier_acquisition:
