@@ -123,13 +123,13 @@ def write_context_delivery(
     digest = context_image_sha256(image)
     for ref in image.object_refs:
         normalize_durable_object_ref_text(ref.format())
-    for ref in image.evidence_refs:
-        normalize_durable_public_ref_text(ref.format())
+    for evidence_ref in image.evidence_refs:
+        normalize_durable_public_ref_text(evidence_ref.format())
     for segment in image.segments:
         for ref in segment.object_refs:
             normalize_durable_object_ref_text(ref.format())
-        for ref in segment.evidence_refs:
-            normalize_durable_public_ref_text(ref.format())
+        for evidence_ref in segment.evidence_refs:
+            normalize_durable_public_ref_text(evidence_ref.format())
     if record.metadata.get("context_image_sha256") != digest:
         raise ValueError("context snapshot record digest does not match the delivered image")
     segment_refs = tuple(segment.segment_id for segment in image.segments)

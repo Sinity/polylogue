@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 from builtins import BaseExceptionGroup
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, TypeVar
@@ -98,7 +98,7 @@ def _index_db_path(archive_root: Path) -> Evidence[Path]:
     return Measured(candidate) if row is not None else Empty()
 
 
-def _existence(evidence: Evidence[_T], *, subject: str) -> _T:
+def _existence(evidence: Evidence[_T], *, subject: str, empty: Callable[[], _T]) -> _T:
     """Consume an existence probe; an unreadable tier refuses, never denies."""
 
     def _refuse(case: Unavailable) -> _T:
@@ -107,7 +107,7 @@ def _existence(evidence: Evidence[_T], *, subject: str) -> _T:
     return resolve(
         evidence,
         measured=lambda value: value,
-        empty=lambda: False,
+        empty=empty,
         unavailable=_refuse,
         degraded=lambda case: case.value,
     )
@@ -124,7 +124,7 @@ async def _row_exists(archive_root: Path, sql: str, params: tuple[object, ...]) 
     nothing is materialized, so the row does not exist; an unreadable one
     means the question was not answered."""
 
-    def read() -> Evidence[tuple[str, str] | None]:
+    def read() -> Evidence[bool]:
         located = _index_db_path(archive_root)
         if not isinstance(located, Measured):
             return located if isinstance(located, Unavailable) else Empty()
@@ -262,6 +262,7 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
     from polylogue.operations.source_target_read import _PinnedRetainedRead
     from polylogue.pipeline.ids import attachment_message_owner_key
     from polylogue.sources.dispatch import is_jsonl_source_path
+    from polylogue.sources.parsers.base_models import ParsedAttachment, ParsedMessage
     from polylogue.sources.prepared_message_sink import SqliteMessageSink, normalize_active_branch
     from polylogue.sources.revision_backfill import (
         prepare_retained_jsonl_artifact,
@@ -311,13 +312,15 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
                 )
                 if session is None:
                     return False
-                messages = session.messages
+                raw_messages = session.messages
                 origin = origin_from_provider(session.source_name)
-                if isinstance(messages, SqliteMessageSink):
-                    messages = messages.normalized_messages(session.session_events, origin=origin)
+                if isinstance(raw_messages, SqliteMessageSink):
+                    messages: Sequence[ParsedMessage] = raw_messages.normalized_messages(
+                        session.session_events, origin=origin
+                    )
                 else:
                     messages = derive_tool_outcomes(
-                        normalize_active_branch(messages), session.session_events, origin=origin
+                        normalize_active_branch(raw_messages), session.session_events, origin=origin
                     )
                 attachments = tuple(session.attachments)
                 wanted_owner_keys = {
@@ -332,7 +335,7 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
                     owner_resolution=rows.owner_resolution,
                     wanted_owner_keys=wanted_owner_keys,
                 )
-                attachments_by_message: dict[str, list[object]] = {}
+                attachments_by_message: dict[str, list[ParsedAttachment]] = {}
                 for attachment in attachments:
                     owner_key = attachment_message_owner_key(attachment, rows.owner_resolution)
                     message_id = by_owner_key.get(owner_key) if owner_key is not None else None
@@ -344,7 +347,7 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
                 for key, position in _attachment_reference_positions(message_attachments).items()
             }
 
-            def agrees_with_index_descriptor(attachment: object) -> bool:
+            def agrees_with_index_descriptor(attachment: ParsedAttachment) -> bool:
                 row = archive._conn.execute(
                     "SELECT a.attachment_id,a.display_name,a.media_type,a.byte_count "
                     "FROM attachment_refs r JOIN attachments a ON a.attachment_id=r.attachment_id "
@@ -531,7 +534,7 @@ async def _resolve_block(
     message_id: str | None,
 ) -> Evidence[tuple[str, str] | None]:
 
-    def read() -> Evidence[bool]:
+    def read() -> Evidence[tuple[str, str] | None]:
         located = _index_db_path(archive_root)
         if not isinstance(located, Measured):
             return located if isinstance(located, Unavailable) else Empty()
@@ -602,6 +605,7 @@ async def resolve_insight_target(
         if not _existence(
             await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_SESSION], (session_id,)),
             subject=f"session profile for session {session_id!r}",
+            empty=lambda: False,
         ):
             raise ValueError(f"session profile for session {session_id!r} is not materialized")
         return {
@@ -622,6 +626,7 @@ async def resolve_insight_target(
         if not _existence(
             await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_THREAD], (target_id,)),
             subject=f"thread {target_id!r}",
+            empty=lambda: False,
         ):
             raise ValueError(f"thread {target_id!r} is not a materialized thread root")
         return {
@@ -655,6 +660,7 @@ async def resolve_insight_target(
                     message_id=message_id,
                 ),
                 subject=f"block {target_id!r}",
+                empty=lambda: None,
             )
         if resolved_block is None:
             raise ValueError(f"block {target_id!r} is not present in session {session_id!r}")

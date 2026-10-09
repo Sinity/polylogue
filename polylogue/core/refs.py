@@ -202,7 +202,7 @@ class ObjectRef:
             qualifiers: tuple[str, ...] = ()
         elif kind in {"block", "action"} and ":" in tail:
             object_id, qualifier = tail.rsplit(":", 1)
-            qualifiers: tuple[str, ...] = (qualifier,)
+            qualifiers = (qualifier,)
         else:
             object_id = tail
             qualifiers = ()
@@ -252,8 +252,8 @@ class EvidenceRef:
             encoded = value.removeprefix("evidence-block:").split(":")
             if len(encoded) != 3:
                 raise ValueError("stable evidence ref must encode session, message, and block id")
-            session_id, message_id, block_id = (_decode_evidence_segment(part) for part in encoded)
-            return cls(session_id=session_id, message_id=message_id, block_id=block_id)
+            stable_session_id, stable_message_id, stable_block_id = (_decode_evidence_segment(part) for part in encoded)
+            return cls(session_id=stable_session_id, message_id=stable_message_id, block_id=stable_block_id)
 
         parts = value.split("::")
         if not 1 <= len(parts) <= 4:
