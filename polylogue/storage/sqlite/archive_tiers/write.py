@@ -67,6 +67,7 @@ from polylogue.core.enums import (
     admitted_session_kind,
 )
 from polylogue.core.hook_payload import payload_key_spellings
+from polylogue.core.identity_law import attachment_payload_id
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
@@ -7281,6 +7282,11 @@ def _write_attachments(
     ``INHERITED_OWNER_UNREFERENCED``, never an orphaned metadata row.
     """
     attachments = tuple(attachments)
+
+    def identity(attachment: ParsedAttachment) -> str:
+        acquired = (preacquired_blobs or {}).get(attachment.acquisition_key)
+        return _attachment_id(session_id, attachment, blob_hash=acquired[0] if acquired is not None else None)
+
     if not attachments:
         refresh_and_sweep_attachment_rows(conn, refresh_attachment_ids or ())
         if replace_owner_gaps:
@@ -7316,7 +7322,7 @@ def _write_attachments(
         except MessageOwnerAmbiguityError:
             # The attachment remains represented by the session hash and raw
             # evidence, but no message owner is safe to guess.
-            unresolved[_attachment_id(session_id, attachment)] = AttachmentOwnerResolutionReason.OWNER_AMBIGUOUS
+            unresolved[identity(attachment)] = AttachmentOwnerResolutionReason.OWNER_AMBIGUOUS
             continue
         message_id = by_owner_key.get(owner_key) if owner_key is not None else None
         if message_id is not None:
@@ -7326,7 +7332,7 @@ def _write_attachments(
             tail_unowned.append(attachment)
             # A named owner that no written message carries is a lost owner;
             # an attachment the provider never linked has no owner to lose.
-            unresolved[_attachment_id(session_id, attachment)] = (
+            unresolved[identity(attachment)] = (
                 AttachmentOwnerResolutionReason.PROVIDER_NEVER_LINKED
                 if owner_key is None
                 else AttachmentOwnerResolutionReason.MESSAGE_MISSING
@@ -7341,7 +7347,7 @@ def _write_attachments(
             prefix_ambiguous,
         ):
             for attachment in tail_unowned:
-                attachment_id = _attachment_id(session_id, attachment)
+                attachment_id = identity(attachment)
                 if attachment.acquisition_key in prefix_ambiguous:
                     unresolved[attachment_id] = AttachmentOwnerResolutionReason.OWNER_AMBIGUOUS
                     continue
@@ -7355,7 +7361,7 @@ def _write_attachments(
                     inherited_unreferenced.add(attachment.acquisition_key)
                     unresolved[attachment_id] = AttachmentOwnerResolutionReason.INHERITED_OWNER_UNREFERENCED
     for message_id, message_group in attachments_by_message.items():
-        current_ids = {_attachment_id(session_id, attachment) for attachment in message_group}
+        current_ids = {identity(attachment) for attachment in message_group}
         occupied = (
             {
                 int(row[0])
@@ -7369,10 +7375,14 @@ def _write_attachments(
             if current_ids
             else set()
         )
-        attachment_positions.update(_attachment_reference_positions(message_group, occupied_positions=occupied))
+        attachment_positions.update(
+            _attachment_reference_positions(
+                message_group, occupied_positions=occupied, preacquired_blobs=preacquired_blobs
+            )
+        )
     touched_attachment_ids: set[str] = set()
     for attachment in attachments:
-        attachment_id = _attachment_id(session_id, attachment)
+        attachment_id = identity(attachment)
         message_id = resolved_message_ids.get(attachment.acquisition_key)
         if message_id is None and attachment.acquisition_key in inherited_owned:
             # The inherited parent row references this attachment; the child
@@ -7470,7 +7480,7 @@ def _write_attachments(
         session_id,
         gaps,
         replace_session=replace_owner_gaps,
-        written_attachment_ids={_attachment_id(session_id, attachment) for attachment in attachments},
+        written_attachment_ids={identity(attachment) for attachment in attachments},
     )
     return gaps
 
@@ -17339,8 +17349,14 @@ def repo_identity_key(origin_url: str, root_path: str) -> str:
     return f"dir:{root_path}"
 
 
-def _attachment_id(_session_id: str, attachment: ParsedAttachment) -> str:
-    return _hash_bytes(
+def _attachment_id(_session_id: str, attachment: ParsedAttachment, *, blob_hash: bytes | None = None) -> str:
+    """Separate a descriptor from each measured content revision.
+
+    Metadata-only records never borrow acquired bytes from another capture
+    merely because a native file id, name and size agree. Acquired rows share
+    only when their descriptor and exact payload hash agree.
+    """
+    descriptor_id = _hash_bytes(
         "attachment",
         attachment.provider_attachment_id,
         attachment.provider_file_id or "",
@@ -17350,6 +17366,12 @@ def _attachment_id(_session_id: str, attachment: ParsedAttachment) -> str:
         attachment.mime_type or "",
         str(attachment.size_bytes or 0),
     ).hex()
+    if blob_hash is None:
+        if attachment.inline_bytes is not None:
+            blob_hash = hashlib.sha256(attachment.inline_bytes).digest()
+        elif attachment.precomputed_blob is not None:
+            blob_hash = bytes.fromhex(attachment.precomputed_blob[0])
+    return descriptor_id if blob_hash is None else attachment_payload_id(descriptor_id, blob_hash)
 
 
 def _attachment_position(attachment: ParsedAttachment) -> int:
@@ -17362,6 +17384,7 @@ def _attachment_reference_positions(
     attachments: Iterable[ParsedAttachment],
     *,
     occupied_positions: Iterable[int] = (),
+    preacquired_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
 ) -> dict[object, int]:
     """Return stable per-object reference positions without silent collisions.
 
@@ -17375,7 +17398,9 @@ def _attachment_reference_positions(
     """
     attachments_by_identity: dict[str, list[ParsedAttachment]] = {}
     for attachment in attachments:
-        attachments_by_identity.setdefault(_attachment_id("", attachment), []).append(attachment)
+        acquired = (preacquired_blobs or {}).get(attachment.acquisition_key)
+        attachment_id = _attachment_id("", attachment, blob_hash=acquired[0] if acquired is not None else None)
+        attachments_by_identity.setdefault(attachment_id, []).append(attachment)
 
     groups: dict[int, list[tuple[str, list[ParsedAttachment]]]] = defaultdict(list)
     for attachment_id, equivalent_attachments in attachments_by_identity.items():

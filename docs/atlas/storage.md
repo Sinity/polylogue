@@ -588,12 +588,19 @@ These checks inspect CAS existence, while retained-byte validation owns full
 body fidelity.
 
 Drive attachment convergence pages byte and supplier-attribution obligations.
-A shared acquired attachment still owes each reference's exact retained raw,
-acquisition coordinate and blob hash in Source. References beyond the current
-window and references added after acquisition bind verified retained bytes
-without another provider request. Attachment readiness includes these pending
-attributions in its `allowed_unfetched` count; global acquired status alone
-does not discharge them (`operations/attachment_convergence.py`).
+Acquired attachment identity binds the descriptor and actual payload hash, so
+equal-size revisions with the same native file identity cannot replace older
+captured bytes. Metadata-only references remain unfetched until their exact
+supplier and acquisition coordinate have retained Source bytes or a current
+provider observation acquires them. One bounded window can share one provider
+observation; a later window cannot infer unchanged content from a native file
+ID. Publication relinks only the measured reference to its payload-version
+row and sweeps unreferenced descriptor rows. Existing readers and GC continue
+to follow `attachment_refs` and `attachments.blob_hash`; Source evidence is
+never rewritten to match an Index observation. A persisted Ops keyset position
+advances only after window publication, wraps over retryable debt, and resumes
+after restart. Attachment readiness includes pending attribution in its
+`allowed_unfetched` count (`operations/attachment_convergence.py`).
 
 ## Derived session records and FTS discovery
 

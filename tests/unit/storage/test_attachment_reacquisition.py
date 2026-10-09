@@ -3,13 +3,13 @@
 An upload-only claude.ai ``files`` reference records a name and a size but no
 bytes, so its first ingest is honestly ``unfetched``. When a later revision of
 the same capture carries the payload as ``extracted_content``, the bytes must
-land as an ``acquired`` blob under the *same* attachment identity — a second
-identity would strand the original reference and double-count the attachment.
+land as an ``acquired`` payload version under the same message reference.
+The unfetched descriptor row is swept, so no original reference is stranded.
 
 Anti-vacuity: drop ``extracted_content`` from the ``files`` branch of
 ``attachment_from_meta`` and the second revision stays ``unfetched``; fold
-acquisition state into ``_attachment_id`` and the two revisions mint different
-identities, growing the reference count.
+payload-version publication without relinking and sweeping the metadata row
+would grow the row count or strand the original reference.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def _ref_count(conn: sqlite3.Connection) -> int:
     return int(conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0])
 
 
-def test_upload_only_reference_gains_bytes_at_a_stable_identity(
+def test_upload_only_reference_gains_bytes_at_a_stable_reference(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = BlobStore(tmp_path / "blob")
@@ -106,13 +106,16 @@ def test_upload_only_reference_gains_bytes_at_a_stable_identity(
     assert unfetched["blob_hash"] is None
     assert unfetched["byte_count"] == len(PAYLOAD_BYTES)
     identity = str(unfetched["attachment_id"])
+    reference = conn.execute("SELECT ref_id FROM attachment_refs").fetchone()[0]
     assert _ref_count(conn) == 1
 
     after = parse_ai(_capture(extracted_content=PAYLOAD), "fallback")
     write_fixture_index_session(conn, after, preacquired_attachment_blobs=_preacquired(store, after))
 
     acquired = _attachment_state(conn)
-    assert str(acquired["attachment_id"]) == identity
+    assert str(acquired["attachment_id"]) != identity
+    assert conn.execute("SELECT ref_id FROM attachment_refs").fetchone()[0] == reference
+    assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 1
     assert acquired["acquisition_status"] == "acquired"
     assert bytes(acquired["blob_hash"]) == hashlib.sha256(PAYLOAD_BYTES).digest()
     assert acquired["byte_count"] == len(PAYLOAD_BYTES)
@@ -136,7 +139,7 @@ def test_replaying_the_acquired_revision_changes_nothing(tmp_path: Path, monkeyp
 
 
 @pytest.mark.parametrize("metadata_first", [False, True])
-def test_metadata_replay_keeps_acquired_attachment_size(
+def test_metadata_replay_does_not_borrow_another_captures_acquired_size(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, metadata_first: bool
 ) -> None:
     store = BlobStore(tmp_path / "blob")
@@ -158,9 +161,18 @@ def test_metadata_replay_keeps_acquired_attachment_size(
     try:
         for session in (first, second, metadata, metadata):
             write_fixture_index_session(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
-        retained = _attachment_state(conn)
+        retained = conn.execute(
+            "SELECT a.byte_count,a.blob_hash,a.acquisition_status FROM attachments a "
+            "JOIN attachment_refs r ON r.attachment_id=a.attachment_id WHERE r.session_id='claude-ai-export:reacquisition-session'"
+        ).fetchone()
+        unmeasured = conn.execute(
+            "SELECT a.byte_count,a.blob_hash,a.acquisition_status FROM attachments a "
+            "JOIN attachment_refs r ON r.attachment_id=a.attachment_id WHERE r.session_id='claude-ai-export:metadata-session'"
+        ).fetchone()
         digest = hashlib.sha256(PAYLOAD_BYTES).digest()
-        assert conn.execute("SELECT count(*) FROM attachments").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM attachments").fetchone()[0] == 2
+        assert unmeasured is not None
+        assert tuple(unmeasured) == (10_000_000, None, "unfetched")
         assert retained["byte_count"] == len(PAYLOAD_BYTES)
         assert bytes(retained["blob_hash"]) == digest
         assert retained["acquisition_status"] == "acquired"

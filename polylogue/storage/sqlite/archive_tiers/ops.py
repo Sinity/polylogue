@@ -45,6 +45,9 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
     "ingest_cursor": OpsTableDisposition("live ingest", "one cursor per source path", True, "retain"),
     "ingest_attempts": OpsTableDisposition("ingest", "one row per ingest attempt", True, "retain"),
     "convergence_debt": OpsTableDisposition("daemon converger", "one retryable debt row per target", True, "retain"),
+    "attachment_convergence_cursor": OpsTableDisposition(
+        "attachment convergence", "one fair archive sweep position", True, "retain"
+    ),
     "cursor_lag_samples": OpsTableDisposition(
         "daemon diagnostics", "one bounded lag sample", False, "retain pending map"
     ),
@@ -259,6 +262,12 @@ CREATE TABLE IF NOT EXISTS convergence_debt (
 
 CREATE INDEX IF NOT EXISTS idx_convergence_debt_stage
 ON convergence_debt(stage, priority DESC, updated_at_ms);
+
+CREATE TABLE IF NOT EXISTS attachment_convergence_cursor (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    attachment_id TEXT NOT NULL,
+    ref_id TEXT NOT NULL
+) STRICT;
 
 CREATE TABLE IF NOT EXISTS cursor_lag_samples (
     sample_id        TEXT PRIMARY KEY,

@@ -7,6 +7,8 @@ uses this module as the test oracle and for pre-DDL contract checks.
 
 from __future__ import annotations
 
+import hashlib
+
 
 def _required_origin(value: str) -> str:
     candidate = value.strip()
@@ -145,3 +147,10 @@ def attachment_acquisition_coordinate(provider_file_id: str | None, provider_att
     if provider_file_id:
         return f"attachment:{provider_file_id}"
     return f"attachment-ref:{provider_attachment_id}"
+
+
+def attachment_payload_id(descriptor_id: str, blob_hash: bytes) -> str:
+    """Bind one attachment descriptor to the exact acquired payload revision."""
+    if len(blob_hash) != 32:
+        raise ValueError("attachment payload identity requires SHA-256")
+    return hashlib.sha256(bytes.fromhex(descriptor_id) + blob_hash).hexdigest()

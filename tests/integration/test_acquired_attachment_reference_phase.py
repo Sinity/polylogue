@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from contextlib import ExitStack
@@ -23,6 +24,76 @@ from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.live_ingest import prepared_live_convergence_owner
 from tests.infra.live_provider_proof import native_proof_artifact
+
+
+@pytest.mark.asyncio
+async def test_same_size_captured_attachment_revisions_keep_each_suppliers_actual_bytes(tmp_path: Path) -> None:
+    """Replacing descriptor-only identity with payload identity turns this law green."""
+    root = tmp_path / "archive"
+    template, _, _ = native_proof_artifact(tmp_path, "native-inline-attachment-v1.json", Provider.GROK)
+    payloads: list[bytes] = []
+    for native_id, content in (("capture-a", b"AA"), ("capture-b", b"BB")):
+        envelope = json.loads(json.dumps(template))
+        envelope["session"]["provider_session_id"] = native_id
+        envelope["raw_provider_payload"]["conversation"]["conversationId"] = native_id
+        for attachment in envelope["session"]["attachments"]:
+            attachment["size_bytes"] = len(content)
+            attachment["content_base64"] = base64.b64encode(content).decode()
+            attachment["provider_meta"]["content_sha256"] = hashlib.sha256(content).hexdigest()
+        payloads.append(json.dumps(envelope).encode())
+
+    def acquire() -> tuple[str, ...]:
+        bootstrap_archive_root(root)
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            return tuple(
+                archive.write_raw_payload(
+                    provider=Provider.GROK,
+                    payload=payload,
+                    source_path=f"capture-{i}.json",
+                    canonical_source_path=f"capture-{i}.json",
+                    acquired_at_ms=i + 1,
+                )
+                for i, payload in enumerate(payloads)
+            )
+
+    raw_ids = await run_archive_fixture_write(root, acquire)
+    async with prepared_live_convergence_owner(root) as owner:
+        (await owner.replay_retained_raw_ids(raw_ids)).require_complete()
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        source = archive.source_connection
+        assert source is not None
+        original_refs = tuple(
+            source.execute(
+                "SELECT ref_id,source_path,blob_hash FROM blob_refs WHERE ref_type='attachment' ORDER BY ref_id,source_path"
+            )
+        )
+        for raw_id, content in zip(raw_ids, (b"AA", b"BB"), strict=True):
+            hashes = {bytes(row[2]) for row in original_refs if row[0] == raw_id}
+            assert hashes == {hashlib.sha256(content).digest()}
+            rows = archive._conn.execute(
+                "SELECT a.attachment_id,a.blob_hash FROM attachments a JOIN attachment_refs r "
+                "ON r.attachment_id=a.attachment_id WHERE r.supplying_raw_id=?",
+                (raw_id,),
+            ).fetchall()
+            assert rows and {bytes(row[1]) for row in rows} == hashes
+        assert {bytes(row[0]) for row in archive._conn.execute("SELECT DISTINCT blob_hash FROM attachments")} == {
+            hashlib.sha256(b"AA").digest(),
+            hashlib.sha256(b"BB").digest(),
+        }
+    # Replay the original acquired evidence again, without downloading or
+    # changing Source attribution to match a newer Index observation.
+    async with prepared_live_convergence_owner(root) as owner:
+        (await owner.replay_retained_raw_ids(raw_ids)).require_complete()
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        assert archive.source_connection is not None
+        assert (
+            tuple(
+                archive.source_connection.execute(
+                    "SELECT ref_id,source_path,blob_hash FROM blob_refs WHERE ref_type='attachment' ORDER BY ref_id,source_path"
+                )
+            )
+            == original_refs
+        )
 
 
 @pytest.mark.asyncio
