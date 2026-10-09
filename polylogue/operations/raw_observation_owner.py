@@ -25,6 +25,7 @@ from polylogue.core.raw_failure_evidence import (
     RetainedRawDecodeRefusalError,
     RetainedRawDependencyRefusalError,
 )
+from polylogue.logging import WARNING, emit
 from polylogue.operations.raw_observation_derivation import (
     make_raw_observation_derivation,
     publish_raw_observation_once,
@@ -107,6 +108,18 @@ def _isolates_as_raw_failure(failure: Exception) -> bool:
     ):
         return False
     return storage_fault_kind(failure) is None
+
+
+def _preparation_failure_operation(failure: Exception) -> str:
+    """Public producer code identity, without traceback paths or operand text."""
+    operation = "raw_preparation"
+    traceback = failure.__traceback__
+    while traceback is not None:
+        module = traceback.tb_frame.f_globals.get("__name__")
+        if isinstance(module, str) and module.startswith("polylogue."):
+            operation = traceback.tb_frame.f_code.co_qualname
+        traceback = traceback.tb_next
+    return operation
 
 
 class RawObservationArchiveWork:
@@ -433,7 +446,19 @@ class RawObservationArchiveWork:
                         # propagating; nothing of this attempt is retained.
                         if not _isolates_as_raw_failure(failure):
                             raise
-                        if not isolated and frame_scope != (raw_id,):
+                        retry_single = not isolated and frame_scope != (raw_id,)
+                        emit(
+                            "storage.raw_observation.preparation_isolated",
+                            level=WARNING,
+                            outcome="degraded",
+                            reason="page_scope_failed" if retry_single else "raw_preparation_failed",
+                            error_type=type(failure).__name__,
+                            operation=_preparation_failure_operation(failure),
+                            phase="source_preparation",
+                            productive_id=raw_id,
+                            raws=len(frame_scope),
+                        )
+                        if retry_single:
                             # A census of the page's opaque siblings may have
                             # failed on one of them: prepare this raw alone.
                             isolated = True

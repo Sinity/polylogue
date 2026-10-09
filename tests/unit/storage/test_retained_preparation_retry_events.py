@@ -98,6 +98,7 @@ def test_actual_preparation_retry_reports_stable_metadata(
             "ReferenceSealStaleError" if changed == "reference" else "_CarryInvalidatedError"
         )
         assert event["attempts"] == 1 and event["phase"] == "source_preparation"
+        assert event["raws"] == 0
         assert private_path not in json.dumps(event) and "neutral prose" not in json.dumps(event)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1

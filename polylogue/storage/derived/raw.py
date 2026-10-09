@@ -1381,7 +1381,7 @@ class RawObservationDerivation(RawObservationInspection):
                     error_type=type(error).__name__,
                     phase="source_preparation",
                     productive_id=key,
-                    count=len(scope.raw_ids),
+                    raws=len(scope.raw_ids),
                     attempts=retry_attempts,
                 )
                 carry = _PreparationCarry(

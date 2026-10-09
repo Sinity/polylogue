@@ -27,7 +27,7 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.core.compute import BoundedComputeAdapter
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, ValidationMode
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
@@ -485,8 +485,9 @@ def _contains_fault(failure: BaseException, message: str) -> bool:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("identified", [False, True], ids=["identity-opaque", "native-identified"])
+@pytest.mark.parametrize("failure_kind", ["runtime", "prepared_file"])
 async def test_one_raw_preparation_failure_does_not_block_its_replay_page_siblings(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, identified: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, identified: bool, failure_kind: str
 ) -> None:
     """A retryable preparation failure in one raw leaves its page's other raws published.
 
@@ -503,7 +504,15 @@ async def test_one_raw_preparation_failure_does_not_block_its_replay_page_siblin
     single-raw frame scope of the failed census and the opaque seeds' census
     keeps pulling ``broken`` in, so nothing publishes.
     """
+    from polylogue.core.prepared_file import PreparedFileSeal
+    from polylogue.logging import capture
     from polylogue.sources import revision_backfill
+
+    private_file = tmp_path / "private-prepared-operand"
+    private_file.write_bytes(b"neutral prepared bytes")
+    seal = PreparedFileSeal.capture(private_file)
+    private_file.unlink()
+    private_file.write_bytes(b"replacement prepared bytes")
 
     await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
     acquired: dict[str, str] = {}
@@ -523,21 +532,51 @@ async def test_one_raw_preparation_failure_does_not_block_its_replay_page_siblin
         )
     original = revision_backfill.prepare_retained_jsonl_artifact
 
-    def failing(evidence_reader: Any, raw_id: str, *, directory: Path) -> Any:
+    def failing(
+        evidence_reader: Any,
+        raw_id: str,
+        *,
+        directory: Path,
+        allow_generic_object_alias: bool = False,
+        validation_mode: ValidationMode = ValidationMode.ADVISORY,
+    ) -> Any:
         if raw_id == acquired["broken"]:
+            if failure_kind == "prepared_file":
+                seal.verify(private_file, full=False)
             raise RuntimeError("synthetic preparation fault")
-        return original(evidence_reader, raw_id, directory=directory)
+        return original(
+            evidence_reader,
+            raw_id,
+            directory=directory,
+            allow_generic_object_alias=allow_generic_object_alias,
+            validation_mode=validation_mode,
+        )
 
     monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", failing)
-    async with prepared_live_convergence_owner(tmp_path) as owner:
-        outcome = await owner.replay_retained_raw_ids(tuple(acquired.values()))
+    with capture() as events:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+            outcome = await owner.replay_retained_raw_ids(tuple(acquired.values()))
+    retries = [e for e in events if e.get("event") == "storage.raw_observation.preparation_isolated"]
+    assert retries
+    assert {e["reason"] for e in retries} == {"page_scope_failed", "raw_preparation_failed"}
+    for event in retries:
+        assert event["outcome"] == "degraded" and event["phase"] == "source_preparation"
+        assert event["productive_id"] in acquired.values()
+        assert event["raws"] in {1, 2, 3}
+        assert event["error_type"] == ("ValueError" if failure_kind == "prepared_file" else "RuntimeError"), retries
+        if failure_kind == "prepared_file":
+            assert event["operation"] == "PreparedFileSeal.verify"
+        assert str(private_file) not in json.dumps(event) and "synthetic preparation fault" not in json.dumps(event)
     assert [failure.raw_id for failure in outcome.failures] == [acquired["broken"]], outcome
-    assert _contains_fault(outcome.failures[0].error, "synthetic preparation fault"), outcome.failures
+    expected_error = ValueError if failure_kind == "prepared_file" else RuntimeError
+    assert isinstance(outcome.failures[0].error, expected_error), outcome.failures
+    if failure_kind == "runtime":
+        assert _contains_fault(outcome.failures[0].error, "synthetic preparation fault"), outcome.failures
     published = {str(native_id) for (native_id,) in _rows(tmp_path / "index.db", "SELECT native_id FROM sessions")}
     assert published == {"page-before", "page-after"}, published
     receipt_sessions = {sid for receipt in outcome.receipts for sid in receipt.written_session_ids}
     assert len(receipt_sessions) == 2, outcome.receipts
-    with pytest.raises(RuntimeError, match="synthetic preparation fault"):
+    with pytest.raises(expected_error):
         outcome.require_complete()
 
 

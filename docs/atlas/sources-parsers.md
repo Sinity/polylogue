@@ -475,9 +475,19 @@ has physically drained its worker.
 Retained preparation emits `storage.raw_observation.preparation_retry` when
 its existing internal retry catches a changed carry or a stale reference seal.
 The degraded event records the exception class, attempt count, seed Raw work
-identity and declared frame scope size (zero for an implicit single-key scope,
+identity and declared frame scope size in `raws` (zero for an implicit single-key scope,
 excluding later widening or membership expansion). Carry reasons distinguish `selection_changed`,
 `parser_operands_changed` and `carried_membership_changed`; reference retries
 use `reference_seal_stale`, with the affected tier unobserved. Events omit
 paths, payloads and arbitrary exception text. They report retries, not accepted
 Source progress or completed replay, and do not change the retry guards.
+
+The outer replay owner emits `storage.raw_observation.preparation_isolated`
+when its existing per-Raw failure boundary catches a preparation exception.
+`page_scope_failed` retries the seed alone; `raw_preparation_failed` returns
+that seed's retryable failure and advances to its siblings. The degraded event
+records the exception class, public producer function in `operation`, seed Raw
+identity and declared frame scope size in `raws`,
+without exception text or paths. Fatal storage, cancellation and settlement
+failures retain their existing propagation and do not emit this event. Neither
+isolation event proves Source progress or completed output.
