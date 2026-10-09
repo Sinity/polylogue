@@ -47,6 +47,7 @@ async def test_session_list_routes_obey_query_envelope(monkeypatch: pytest.Monke
     archive.count_sessions.return_value = count
     transaction = SimpleNamespace(run=AsyncMock(side_effect=lambda read: read(archive)))
     monkeypatch.setattr("polylogue.archive.query.transaction.QueryTransaction", lambda *a, **k: transaction)
+    monkeypatch.setattr("polylogue.archive.query.transaction.archive_snapshot_epoch", lambda archive: "synthetic-frame")
     owner = SessionPage[Any](
         items=[],
         total=count,

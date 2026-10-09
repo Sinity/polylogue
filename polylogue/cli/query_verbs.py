@@ -751,7 +751,7 @@ def _build_read_projection_spec(
 ) -> QueryProjectionSpec:
     """Build the typed selection/projection/render contract for read options."""
 
-    from polylogue.surfaces.projection_spec import projection_from_views
+    from polylogue.surfaces.projection_spec import QueryProjectionSpec, SelectionSpec
     from polylogue.surfaces.read_contract import ReadRequest
 
     primary_view = views[0] if views else "summary"
@@ -770,14 +770,7 @@ def _build_read_projection_spec(
         if len(query_spec.repo_names) == 1
         else None
     )
-    selection_projection = projection_from_views(
-        views,
-        format=effective_format,
-        destination=destination,
-        layout=render_layout,
-        timestamps=timestamp_policy,
-        max_tokens=max_tokens,
-        out=out_path,
+    presentation_selection = SelectionSpec(
         query=selection_query if selection_query is not None else _read_query_text(request),
         origin=selection_origin if selection_origin is not None else origin,
         since=selection_since if selection_since is not None else query_spec.since,
@@ -785,19 +778,6 @@ def _build_read_projection_spec(
         project_path=project_path,
         project_repo=project_repo,
         limit=selection_limit,
-        edge_limit=edge_limit,
-        body_limit=body_limit,
-        body_offset=body_offset,
-        neighbor_limit=neighbor_limit,
-        neighbor_window_hours=neighbor_window_hours,
-        context_related_limit=context_related_limit,
-        context_max_sessions=context_max_sessions,
-        correlation_repo_path=correlation_repo_path,
-        correlation_since_hours=correlation_since_hours,
-        correlation_confidence_threshold=correlation_confidence_threshold,
-        correlation_github_api=correlation_github_api,
-        redact_paths=redact_paths,
-        include_assertions=include_assertions,
     )
     normalized_request = ReadRequest.normalize(
         {
@@ -838,8 +818,10 @@ def _build_read_projection_spec(
         preset=primary_view,
         selection=query_spec,
     )
-    return selection_projection.model_copy(
-        update={"projection": normalized_request.projection, "render": normalized_request.render}
+    return QueryProjectionSpec(
+        selection=presentation_selection,
+        projection=normalized_request.projection,
+        render=normalized_request.render,
     )
 
 

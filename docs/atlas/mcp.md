@@ -156,7 +156,15 @@ exact total, original lineage evidence and owner outcome. Follow the returned re
 then JSON-decode once. `fragment_offset` is accepted only with a bound messages
 continuation. A retry repeats the same fragment; the last fragment advances one
 row. Fragments never masquerade as complete messages or successful empty pages.
+
 The registered signature supplies its input schema; the typed payload owns the
 fragment result schema. Session-operation errors retain their contract and log
 their canonical error code as failed calls. Blackboard query pages count and
 select active notes in one User snapshot rather than enumerate a finite prefix.
+
+Advanced session queries retain the pinned Index/User frame when MCP byte
+paging shortens a deterministic list or ranked page. Their returned query
+descriptor resumes the original selection, resolved date bounds and ordering;
+changing the scope or widening its window refuses the continuation. Random
+session ordering retains its offset-only behavior and cannot resume a framed
+query.

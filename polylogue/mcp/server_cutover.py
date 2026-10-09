@@ -393,6 +393,27 @@ async def _query_sessions(
     # ``total`` -- while the CLI clamped the same input and answered.
     bounded_limit = hooks.clamp_limit(limit if limit is not None else DEFAULT_SESSION_LIST_LIMIT)
 
+    if continuation is not None:
+        from polylogue.archive.query.transaction import QueryContinuation
+
+        if QueryContinuation.decode(continuation).request.operation == "query":
+            return await _query_advanced_sessions(
+                hooks,
+                expression=expression,
+                limit=limit,
+                offset=offset,
+                origin=origin,
+                tag=tag,
+                repo=repo,
+                since=since,
+                until=until,
+                sort=sort,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                continuation=continuation,
+            )
+
     cls: type[SessionList] | type[SessionSearch] = SessionList
     if continuation is None:
         probe = (
@@ -529,6 +550,7 @@ async def _query_advanced_sessions(
     min_messages: int | None,
     max_messages: int | None,
     min_words: int | None,
+    continuation: str | None = None,
 ) -> str:
     """Session-level rows for ``query(projection="sessions", ...)``.
 
@@ -539,7 +561,16 @@ async def _query_advanced_sessions(
     ``list_sessions`` tools used, since ``query_units`` (the DSL path)
     explicitly rejects ``sessions`` as a terminal unit source.
     """
-    from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+    from dataclasses import replace
+
+    from polylogue.archive.query.transaction import (
+        QueryContinuation,
+        QueryContinuationInvalidError,
+        QueryTransaction,
+        QueryTransactionRequest,
+        archive_snapshot_epoch,
+        validate_continuation_epoch,
+    )
     from polylogue.mcp.archive_support import archive_search_payload, archive_session_list_payload, mcp_archive_root
     from polylogue.mcp.query_contracts import build_session_query_request
 
@@ -557,9 +588,60 @@ async def _query_advanced_sessions(
         max_messages=max_messages,
         min_words=min_words,
     )
+    resumed = None
+    if continuation is not None:
+        decoded = QueryContinuation.decode(continuation)
+        resumed = decoded.request
+        if (
+            resumed.operation != "query"
+            or resumed.projection not in {"search-envelope", "session-summary"}
+            or decoded.result_ref != resumed.result_ref
+        ):
+            raise QueryContinuationInvalidError("continuation belongs to another query projection")
+        original = {key: value for key, value in resumed.arguments.items() if key != "resolved_dates"}
+        supplied = {
+            "query": expression,
+            "origin": origin,
+            "tag": tag,
+            "repo": repo,
+            "since": since,
+            "until": until,
+            "sort": sort,
+            "min_messages": min_messages,
+            "max_messages": max_messages,
+            "min_words": min_words,
+        }
+        for key, value in supplied.items():
+            if value is not None and value != original.get(key):
+                raise QueryContinuationInvalidError(f"continuation conflicts with {key}")
+        if offset is not None and offset != resumed.offset:
+            raise QueryContinuationInvalidError("continuation conflicts with offset")
+        if limit is not None and hooks.clamp_limit(limit) > resumed.page_size:
+            raise QueryContinuationInvalidError("continuation cannot widen its bound window")
+        request = build_session_query_request(
+            **{
+                **original,
+                "limit": hooks.clamp_limit(limit) if limit is not None else resumed.page_size,
+                "offset": resumed.offset,
+            }
+        )
+        if request.sort == "random":
+            raise QueryContinuationInvalidError("random ordering cannot resume a framed query")
     clamped_limit = hooks.clamp_limit(request.limit)
     spec = request.build_spec(hooks.clamp_limit)
     effective_offset = max(0, spec.offset)
+    plan = spec.to_plan()
+    resolved_dates = (
+        resumed.arguments["resolved_dates"]
+        if resumed is not None
+        else {
+            "since": plan.since.isoformat() if plan.since else None,
+            "until": plan.until.isoformat() if plan.until else None,
+        }
+    )
+    if not isinstance(resolved_dates, dict) or set(resolved_dates) != {"since", "until"}:
+        raise QueryContinuationInvalidError("continuation has invalid resolved date bounds")
+    spec = replace(spec, since=resolved_dates["since"], until=resolved_dates["until"])
     config = hooks.get_config()
     archive_root = mcp_archive_root(config)
 
@@ -584,52 +666,47 @@ async def _query_advanced_sessions(
             tool="query",
         )
 
-    if searching:
-        transaction = QueryTransaction(
-            archive_root,
-            QueryTransactionRequest(
-                operation="query",
-                arguments=request.response_arguments(),
-                page_size=clamped_limit,
-                offset=effective_offset,
-                projection="search-envelope",
-                stable_order=request.sort or "date",
-            ),
-        )
-        with hooks.response_context("query", request.response_arguments()):
-            return hooks.json_payload(
-                await transaction.run(
-                    lambda archive: archive_search_payload(
-                        archive,
-                        spec,
-                        query=request.query or "",
-                        limit=clamped_limit,
-                        offset=effective_offset,
-                        sort=request.sort,
-                        config=config,
-                        archive_root=archive_root,
-                        include_affordances=False,
-                    )
-                )
-            )
-
-    transaction = QueryTransaction(
-        archive_root,
-        QueryTransactionRequest(
+    tx = (
+        replace(resumed, page_size=clamped_limit)
+        if resumed is not None
+        else QueryTransactionRequest(
             operation="query",
-            arguments=request.response_arguments(),
+            arguments={**request.response_arguments(), "resolved_dates": resolved_dates},
             page_size=clamped_limit,
             offset=effective_offset,
-            projection="session-summary",
+            projection="search-envelope" if searching else "session-summary",
             stable_order=request.sort or "date",
-        ),
-    )
-    with hooks.response_context("query", request.response_arguments()):
-        return hooks.json_payload(
-            await transaction.run(
-                lambda archive: archive_session_list_payload(archive, spec, config=config, archive_root=archive_root)
-            )
         )
+    )
+
+    def read(archive: Any) -> MCPRootPayload[dict[str, object]]:
+        epoch = (
+            validate_continuation_epoch(tx, archive=archive) if tx.archive_epoch else archive_snapshot_epoch(archive)
+        )
+        framed = tx.with_archive_epoch(epoch)
+        payload = (
+            archive_search_payload(
+                archive,
+                spec,
+                query=request.query or "",
+                limit=clamped_limit,
+                offset=effective_offset,
+                sort=spec.sort,
+                config=config,
+                archive_root=archive_root,
+                include_affordances=False,
+            )
+            if searching
+            else archive_session_list_payload(archive, spec, config=config, archive_root=archive_root)
+        )
+        # Retain the answering frame even when the transport cuts this page.
+        result = MCPRootPayload(root=payload.model_dump(mode="json"))
+        if spec.sort != "random":
+            result._transaction_request = framed
+        return result
+
+    with hooks.response_context("query", {"projection": "sessions", **request.response_arguments()}):
+        return hooks.json_payload(await QueryTransaction(archive_root, tx).run(read))
 
 
 #: ``query(projection=..., ...)`` reports the MCP dispatcher compiles itself

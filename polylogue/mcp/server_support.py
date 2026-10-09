@@ -367,6 +367,8 @@ def _bounded_root_dict_page(
                 candidate_root["next_offset"] = offset + count
             if "continuation" in root:
                 candidate_root["continuation"] = None
+            if item_field == "hits" and "next_cursor" in root:
+                candidate_root["next_cursor"] = None
             coverage = root.get("coverage")
             if isinstance(coverage, dict) and "complete" in coverage:
                 candidate_root["coverage"] = {**coverage, "complete": False}
