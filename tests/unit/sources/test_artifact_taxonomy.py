@@ -120,6 +120,29 @@ def test_jsonl_grammar_probe_restores_borrowed_stream(payload: bytes, expected: 
     assert not stream.closed
 
 
+def test_jsonl_grammar_probe_memory_does_not_track_wide_first_value() -> None:
+    import io
+    import tracemalloc
+
+    from polylogue.core.json_envelope import jsonl_has_record_successor
+
+    measurements: list[tuple[int, int]] = []
+    for count in (2500, 5000):
+        payload = b"[" + (b'{"n":"' + b"x" * 3000 + b'"},') * count + b'{"n":0}]\n{"after":1}\n'
+        stream = io.BytesIO(payload)
+        tracemalloc.start()
+        try:
+            assert jsonl_has_record_successor(stream)
+            measurements.append((len(payload), tracemalloc.get_traced_memory()[1]))
+        finally:
+            tracemalloc.stop()
+        assert stream.tell() == 0
+        assert not stream.closed
+    (small_bytes, small_peak), (large_bytes, large_peak) = measurements
+    # Removing LexemeAlignedReader lets the Python lexer keep consumed chunks.
+    assert large_peak - small_peak < (large_bytes - small_bytes) // 4, measurements
+
+
 def test_jsonl_grammar_probe_preserves_callback_failure_and_stream_position() -> None:
     import io
 

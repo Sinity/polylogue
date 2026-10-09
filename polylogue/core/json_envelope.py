@@ -658,7 +658,9 @@ def jsonl_has_record_successor(handle: IO[bytes], *, check_stop: Callable[[], No
             observed = ObservedLine(line)
             try:
                 events = iter(
-                    exact_backend.basic_parse(_PrefixStringReader(observed, syntax_only=True), use_float=True)
+                    exact_backend.basic_parse(
+                        LexemeAlignedReader(_PrefixStringReader(observed, syntax_only=True)), use_float=True
+                    )
                 )
                 first = next(events, None)
                 for _event in events:
