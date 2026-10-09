@@ -258,6 +258,11 @@ class AcquisitionService:
             if witness is not None:
                 # Download/blob failures are not raised by the per-file stream.
                 result.counts["errors"] += witness.acquisition_failure_count
+            if not source.is_drive:
+                # Local reads record per-path failures instead of raising them.
+                # Count before completion adds persistence failures, which the
+                # persistence owner already counts in AcquireResult.
+                result.counts["errors"] += cursor_state.get("failed_count", 0)
             if on_source_complete is not None:
                 # The callback may record per-path persistence failures into
                 # this source's cursor state before its cursors are saved.

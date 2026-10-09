@@ -98,6 +98,11 @@ Detached artifacts contain no enrichment state (`storage/derived/raw.py`;
 
 ## Source observation and SQLite reads
 
+Configured local acquisition carries each read failure through its async stream
+into scan and acquire error counts. Failed paths withhold their stat cursors;
+successfully committed files retain their cursors. Persistence failures are
+counted by the writer once, before source completion withholds their cursors.
+
 `source_snapshot.py` publishes a declared root's complete member inventory or
 an unavailable result. Frontier member paths use the same captured root identity
 and kind as the observer. A declared database arriving after member discovery
