@@ -659,6 +659,23 @@ def _classify_seekable_artifact_stream(
                 check_stop=checkpoint,
             )
 
+    # A complete first physical value followed by later line bytes cannot be
+    # one document. Prove that grammar without decoding a potentially huge
+    # single document, then fold the existing strict projected record stream.
+    if wire_format == "jsonl" and encoding in {"utf-8", "utf-8-sig"}:
+        from polylogue.core.json_envelope import jsonl_has_record_successor
+
+        if jsonl_has_record_successor(handle, check_stop=checkpoint):
+            try:
+                return measure(
+                    iter_projected_jsonl_records(handle, record_candidacy_projection(), check_stop=checkpoint)
+                )
+            except (ijson.JSONError, UnicodeError, json.JSONDecodeError):
+                if callback_failure is not None:
+                    raise callback_failure from None
+                handle.seek(position)
+                sequence = True
+
     # A physical JSONL file can contain one complete document/array. Preserve
     # that grammar before treating physical lines as separate record inputs.
     try:
