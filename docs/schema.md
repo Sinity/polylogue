@@ -212,7 +212,8 @@ opaque UUIDs (see the `GENERATED ALWAYS AS (...) STORED` columns in `index.py`):
 - `sessions.session_id` = `origin || ':' || native_id`
 - `messages.message_id` = `session_id || ':' || CASE WHEN native_id IS NULL THEN 'c:' || content_identity || '.' || content_occurrence ELSE 'n:' || native_id END`
   (`messages.identity_source` records which branch produced it: `native` or `content`)
-- `blocks.block_id` = `message_id || ':' || position`
+- `blocks.block_id` = `message_id || ':b:' || content_identity || ':' || content_occurrence`
+  (`content_identity` binds exact Source semantics before tool association; position states display order)
 
 `origin` is a closed vocabulary (`Origin` enum in `polylogue/core/enums.py`,
 e.g. `claude-code-session`, `claude-ai-export`, `chatgpt-export`,

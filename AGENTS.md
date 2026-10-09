@@ -39,8 +39,10 @@ Before a storage, daemon, MCP, source, or query change, read its
   from source identity. A message uses its provider-native ID when present;
   otherwise a digest of its declared semantic fields plus an occurrence
   counter, never its position, so an export that gains a message cannot
-  re-point a durable `user.db` reference. Formulas and the field partition are
-  in `pipeline/ids.py` and `docs/atlas/storage.md`.
+  re-point a durable `user.db` reference. Blocks use their exact semantic
+  digest and occurrence among identical blocks; position states order only.
+  Formulas and the field partition are in `pipeline/ids.py` and
+  `docs/atlas/storage.md`.
 - `messages.material_origin` records who authored the content, independent of
   role. `blocks.tool_outcome` is the structural outcome; a deliberate
   `unknown` is never success.
