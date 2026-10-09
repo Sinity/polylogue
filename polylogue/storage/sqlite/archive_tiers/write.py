@@ -16970,12 +16970,15 @@ def _stored_message_native_id(message: ParsedMessage, duplicate_native_ids: froz
 
 def _stored_native_id_exists(conn: sqlite3.Connection, session_id: str, native_id: object) -> bool:
     """Whether a normalized incoming ID already has a row in this session."""
+    # Every writer, including prefix materialization, stores this generated
+    # identity. Seek its unique key rather than scanning the session's native
+    # IDs. Keep exact stored bytes and the original equality predicates.
     return (
         isinstance(native_id, str)
         and bool(native_id)
         and conn.execute(
-            "SELECT 1 FROM messages WHERE session_id = ? AND native_id = ? LIMIT 1",
-            (session_id, native_id),
+            "SELECT 1 FROM messages WHERE message_id = ? AND session_id = ? AND native_id = ? LIMIT 1",
+            (f"{session_id}:n:{native_id}", session_id, native_id),
         ).fetchone()
         is not None
     )

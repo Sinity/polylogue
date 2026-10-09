@@ -4478,6 +4478,40 @@ def test_a_materialized_child_keeps_its_ids_when_prefix_and_tail_share_a_native_
     assert replayed == materialized
 
 
+def test_append_skips_materialized_native_prefix_after_parent_edge_retires(tmp_path: Path) -> None:
+    """Copied native rows obey the same generated identity as ordinary appends."""
+    parent = [_msg("m0", Role.USER, "hello", 0), _msg("m1:é", Role.ASSISTANT, "answer", 1)]
+    child = [*parent, _msg("tail", Role.USER, "child tail", 2)]
+    _inheriting, materialized, replayed = _materialize_then_replay(tmp_path, parent, child, parent[:1])
+    assert replayed == materialized
+    conn = _connect(tmp_path / "index.db")
+    try:
+        child_id = "codex-session:child"
+        parentless = ParsedSession(source_name=Provider.CODEX, provider_session_id="child", messages=child)
+        write_fixture_index_session(conn, parentless, force_replace=True)
+        assert conn.execute("SELECT 1 FROM session_links WHERE src_session_id=?", (child_id,)).fetchone() is None
+        before = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT * FROM messages WHERE session_id=? ORDER BY position,variant_index", (child_id,)
+            )
+        ]
+        copied = conn.execute(
+            "SELECT message_id FROM messages WHERE session_id=? AND native_id=?", (child_id, "m1:é")
+        ).fetchone()
+        assert copied is not None and copied[0] == f"{child_id}:n:m1:é"
+        write_fixture_index_session(conn, parentless.model_copy(update={"messages": [parent[1]]}), merge_append=True)
+        after = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT * FROM messages WHERE session_id=? ORDER BY position,variant_index", (child_id,)
+            )
+        ]
+        assert after == before
+    finally:
+        close_fixture_index_connection(conn)
+
+
 def test_a_materialized_child_keeps_its_ids_for_id_less_duplicates(tmp_path: Path) -> None:
     """ID-less duplicates across prefix and tail keep their content occurrences.
 
