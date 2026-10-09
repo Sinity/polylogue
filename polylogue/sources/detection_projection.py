@@ -450,7 +450,16 @@ def _project_object(
         matching_key = False
         refused = False
         values_scalarish = True
-        for key, child in value.items():
+        # Decoded values are already structurally validated. Without a
+        # whole-mapping predicate or metadata fold, ignored values contribute
+        # nothing; visit only the declared fields (including explicit nulls).
+        selected_fields_only = (
+            scalarish_depth is None and rule.mapping_predicate is None and rule.mapping_key_predicate is None
+        )
+        entries = (
+            ((key, value[key]) for key in rule.fields or {} if key in value) if selected_fields_only else value.items()
+        )
+        for key, child in entries:
             child_rule = rule.item if rule.mapping_predicate is not None else (rule.fields or {}).get(key)
             item, scalarish = _project_object(child, child_rule, scalarish_depth=child_depth)
             values_scalarish &= scalarish
