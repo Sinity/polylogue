@@ -161,9 +161,12 @@ def test_stable_mark_can_be_retracted_after_block_disappears(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("source_change", [None, "replace", "delete"])
+@pytest.mark.parametrize("source_path", ["stable-blocks.json", "stable-blocks.txt"])
 def test_native_message_block_reference_survives_retained_rebuild_and_promotion(
     tmp_path: Path,
     source_change: str | None,
+    source_path: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import json
 
@@ -184,8 +187,8 @@ def test_native_message_block_reference_survives_retained_rebuild_and_promotion(
             raw_id = archive.write_raw_payload(
                 provider=Provider.CLAUDE_AI,
                 payload=json.dumps(_export(["X", "A", "B"])).encode(),
-                source_path="stable-blocks.json",
-                canonical_source_path="stable-blocks.json",
+                source_path=source_path,
+                canonical_source_path=source_path,
                 acquired_at_ms=1,
                 revision=RawRevisionEnvelope(
                     logical_source_key="claude-ai-export:stable-blocks",
@@ -274,6 +277,10 @@ def test_native_message_block_reference_survives_retained_rebuild_and_promotion(
     )
     from polylogue.operations.user_overlay_mutations import _source_guard, _target
 
+    monkeypatch.setattr(
+        "polylogue.sources.revision_backfill.parse_retained_raw_sessions",
+        lambda *_args: pytest.fail("Source selectors must use bounded artifact preparation"),
+    )
     with open_operation_read(tmp_path) as snapshot:
         message_id = str(
             snapshot.archive._conn.execute("SELECT message_id FROM blocks WHERE block_id=?", (block_id,)).fetchone()[0]
@@ -309,7 +316,9 @@ def test_native_message_block_reference_survives_retained_rebuild_and_promotion(
                     receipt = actuator.apply(plan, args)
                     assert receipt.affected_count == 1
                     archive.commit()
-                    assert archive.get_annotation("new-source-note")["target_id"] == block_id
+                    stored = archive.get_annotation("new-source-note")
+                    assert stored is not None
+                    assert stored["target_id"] == block_id
                 else:
                     with pytest.raises(SourceTargetChangedError):
                         actuator.apply(plan, args)

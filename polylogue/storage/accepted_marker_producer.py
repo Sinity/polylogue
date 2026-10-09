@@ -85,10 +85,13 @@ def marker_candidates_for_prepared_write_stream(prepared: PreparedSessionWrite) 
                 if not isinstance(text, str):
                     continue
                 message_id = str(row["message_id"])
+                occurrence = row["content_occurrence"]
+                if type(occurrence) is not int:
+                    raise AcceptedMarkerInputRefusedError("accepted block identity has an invalid occurrence")
                 block_id = archive_block_id(
                     message_id,
                     content_identity=str(row["content_identity"]),
-                    content_occurrence=int(row["content_occurrence"]),
+                    content_occurrence=occurrence,
                 )
                 for candidate in iter_candidates_for_block(message_id, block_id, text):
                     assertion_id = assertion_id_for_marker(candidate)

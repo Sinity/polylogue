@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from polylogue.archive.query.spec import SessionQuerySpec
@@ -113,7 +114,9 @@ def _target(
     return str(resolved["target_type"]), str(resolved["target_id"]), session_id, resolved.get("message_id")
 
 
-def _source_guard(snapshot: PinnedOperationRead, archive: ArchiveStore, target: tuple[str, str, str, str | None]):
+def _source_guard(
+    snapshot: PinnedOperationRead, archive: ArchiveStore, target: tuple[str, str, str, str | None]
+) -> Callable[[], None] | None:
     target_type, target_id, session_id, _message_id = target
     if target_type == TARGET_BLOCK:
         from polylogue.operations.source_target_read import bind_source_block, revalidate_source_block
