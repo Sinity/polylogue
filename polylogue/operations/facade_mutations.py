@@ -68,10 +68,6 @@ def _normalize_product_fields(product: str, fields: dict[str, Any]) -> dict[str,
             raise ValueError("bulk_tag_sessions requires at least one session_id")
         if not tags:
             raise ValueError("bulk_tag_sessions requires at least one tag")
-        if len(session_ids) > 100:
-            raise ValueError("bulk_tag_sessions supports at most 100 session_ids")
-        if len(tags) > 20:
-            raise ValueError("bulk_tag_sessions supports at most 20 tags")
         fields["session_ids"] = tuple(session_ids)
         fields["tags"] = tuple(tags)
     elif product in {"record_correction", "delete_correction"}:
