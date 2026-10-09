@@ -187,21 +187,29 @@ class CompiledDetectorRegistry:
             if array_input
             else (DetectionMode.RECORD,)
         )
-        root_value = [value] if sequence else value
         for mode in modes:
             for compiled in self.by_mode.get(mode, ()):
                 binding = compiled.binding
                 rule = _stream_projection(binding)
+                payload: object
 
-                def array_predicate(item: object, predicate: Predicate = compiled.predicate) -> bool:
-                    return predicate([item])
+                if sequence:
+                    # ``sequence`` wraps one decoded value as a singleton
+                    # document sequence. Its any-fold can only return that
+                    # value, whether the predicate accepts it or not, and
+                    # currently evaluates the predicate twice. Preserve the
+                    # wrapper seen by the detector while projecting directly.
+                    payload = [project_detection_root(value, rule)]
+                else:
+                    if array_input:
 
-                root_rule = (
-                    DetectorProjection(item=rule, array_fold="any", array_predicate=array_predicate)
-                    if array_input
-                    else rule
-                )
-                payload = project_detection_root(root_value, root_rule)
+                        def array_predicate(item: object, predicate: Predicate = compiled.predicate) -> bool:
+                            return predicate([item])
+
+                        root_rule = DetectorProjection(item=rule, array_fold="any", array_predicate=array_predicate)
+                    else:
+                        root_rule = rule
+                    payload = project_detection_root(value, root_rule)
                 if not compiled.predicate(payload):
                     continue
                 resolved_provider: object = (
