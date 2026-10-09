@@ -398,3 +398,5 @@ request custody before admission. Shutdown, active-operation capacity, terminal
 transfer, missing execution owner and compute refusals retain that reference
 and forbid a fresh-request retry. Durable-request handlers still reconstruct
 their declared products; this lookup does not replace their replay route.
+
+Browser-capture policy in rich and minimal daemon status comes from the bound receiver server through the process runtime component owner. It reports the resolved bearer requirement, allowed origins and remote policy without storing token values in status. Before bind or after shutdown, policy is unobserved (`auth_required` and `allow_remote` are null, `spool_ready` is null, `active` is false). `polylogued browser-capture status` reads the peer-verified live daemon status; it does not construct receiver policy from default configuration.

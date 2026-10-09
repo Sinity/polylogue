@@ -2228,7 +2228,7 @@ async def _run_daemon_services_under_active_writer_lease(
     """
     from polylogue.daemon import process_start as _process_start
     from polylogue.daemon.intake_adapters import ColdBuildGeneration
-    from polylogue.daemon.status_snapshot import configure_runtime_components
+    from polylogue.daemon.status_snapshot import configure_browser_capture_status, configure_runtime_components
     from polylogue.paths import archive_root
 
     global _daemon_lifecycle, _pidfile_path
@@ -2803,6 +2803,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 api_auth_token=api_auth_token,
                 api_allow_no_auth=api_allow_no_auth,
             )
+            configure_browser_capture_status(server.config)
             server_task = supervisor.start(
                 "browser_capture_server",
                 lambda: _serve_until_complete(server, label="browser-capture"),
@@ -3853,6 +3854,7 @@ async def _run_daemon_services_under_active_writer_lease(
 
             set_cold_build_progress_provider(None)
             set_cold_build_settlement_provider(None)
+            configure_browser_capture_status(None)
             if server is not None:
                 with contextlib.suppress(Exception):
                     server.server_close()

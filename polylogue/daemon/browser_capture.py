@@ -41,7 +41,6 @@ from polylogue.browser_capture.receiver import (
 )
 from polylogue.browser_capture.server import make_server
 from polylogue.core.json import dumps
-from polylogue.daemon.status import browser_capture_status_payload
 
 
 @click.group("browser-capture")
@@ -52,8 +51,16 @@ def browser_capture_command() -> None:
 @browser_capture_command.command("status")
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 def status_command(output_format: str | None) -> None:
-    """Show receiver configuration and capture-spool target."""
-    payload = browser_capture_status_payload(include_spool_path=True)
+    """Show the running receiver's observed policy through the daemon."""
+    from polylogue.daemon.commands import _live_daemon_status_payload
+
+    status = _live_daemon_status_payload()
+    observed = status.get("browser_capture")
+    payload = (
+        observed
+        if isinstance(observed, dict)
+        else {"active": False, "state": "unavailable", "reason": "receiver_not_observed"}
+    )
     if output_format == "json":
         click.echo(dumps(payload))
         return
@@ -103,11 +110,15 @@ def serve_command(host: str, port: int, auth_token: str | None, allow_no_auth: b
         click.echo("WARNING: no bearer token configured -- any local process can read/post to this receiver")
     else:
         click.echo("Auth: bearer token required (run `polylogued browser-capture token show` to view/pair it)")
+    from polylogue.daemon.status_snapshot import configure_browser_capture_status
+
+    configure_browser_capture_status(server.config)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         click.echo("Stopping browser capture receiver")
     finally:
+        configure_browser_capture_status(None)
         server.server_close()
 
 

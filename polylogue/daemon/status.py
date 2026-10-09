@@ -14,7 +14,6 @@ from typing import Any, Literal, cast, get_args
 
 from pydantic import BaseModel, Field, StrictInt, ValidationInfo, field_validator
 
-from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.config import Config
 from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.core.json import JSONDocument, json_document
@@ -711,7 +710,9 @@ def live_source_status_payload(sources: tuple[WatchSource, ...]) -> JSONDocument
 
 def browser_capture_status_payload(*, include_spool_path: bool = False) -> JSONDocument:
     """Return safe status for the browser-capture receiver component."""
-    payload = receiver_status_payload(BrowserCaptureReceiverConfig.default())
+    from polylogue.daemon.status_snapshot import browser_capture_runtime_status
+
+    payload = browser_capture_runtime_status()
     if not include_spool_path:
         payload.pop("spool_path", None)
         payload.pop("artifact_path", None)
@@ -2591,9 +2592,13 @@ def build_daemon_status(
     -recompute contract.
     """
     watch_sources = sources if sources is not None else default_sources()
-    # Unknown means a status read outside the daemon, which serves the
-    # receiver by default.
-    browser_capture_active = browser_capture_enabled if browser_capture_enabled is not None else True
+    # An enabled switch alone cannot prove that the receiver bound. Outside
+    # the runtime owner, its actual policy and liveness remain unobserved.
+    browser_capture_active = (
+        browser_capture_enabled
+        if browser_capture_enabled is not None
+        else browser_capture_status_payload().get("active") is True
+    )
     active_db = _active_status_db_path()
 
     # Status observes the configured health schedule. This keeps MEDIUM

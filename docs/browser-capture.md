@@ -93,10 +93,12 @@ relative `artifact_ref`. It must not expose absolute paths. Deployment smoke
 uses this endpoint as an invariant check: a receiver that says `captured: true`
 without raw/index/message evidence is considered broken, not merely stale.
 
-Inspect the receiver target directly with `polylogued browser-capture status`,
-include it in the daemon component summary with `polylogued status`, or include
-the same component status in archive health output with `polylogue ops doctor
---daemon`.
+Inspect the running receiver's observed policy through the daemon with
+`polylogued browser-capture status`, `polylogued status`, or `polylogue ops
+doctor --daemon`. These routes report the bound server's resolved authentication,
+allowed origins and remote policy. Before bind or after shutdown, policy remains
+unknown rather than being inferred from defaults. Status never includes bearer
+token values.
 
 ## Control-plane browser boundary
 

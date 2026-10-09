@@ -28,6 +28,7 @@ from polylogue.daemon.status import (
 )
 from polylogue.daemon.status_snapshot import (
     STATUS_SNAPSHOT_STATE_FAMILY,
+    configure_browser_capture_status,
     configure_runtime_components,
     get_status_snapshot_payload,
     refresh_status_snapshot,
@@ -498,6 +499,9 @@ def test_status_snapshot_uses_runtime_browser_capture_state(
         watcher_roots=("/watch/a", "/watch/b"),
         browser_capture_enabled=True,
     )
+    configure_browser_capture_status(
+        BrowserCaptureReceiverConfig(spool_path=tmp_path / "capture", auth_token="neutral")
+    )
 
     snapshot = refresh_status_snapshot(rich=False)
 
@@ -642,16 +646,9 @@ def test_build_daemon_status_uses_one_lifecycle_snapshot(tmp_path: Path) -> None
     assert status.daemon_lifecycle == fresh
 
 
-def test_daemon_status_redacts_default_browser_capture_spool(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
+def test_daemon_status_redacts_observed_browser_capture_spool(tmp_path: Path) -> None:
     expected_spool = tmp_path / "browser-capture"
-    monkeypatch.setattr(
-        BrowserCaptureReceiverConfig,
-        "default",
-        classmethod(lambda cls: BrowserCaptureReceiverConfig(spool_path=expected_spool)),
-    )
+    configure_browser_capture_status(BrowserCaptureReceiverConfig(spool_path=expected_spool, auth_token="neutral"))
 
     payload = daemon_status_payload(sources=())
 
@@ -659,22 +656,16 @@ def test_daemon_status_redacts_default_browser_capture_spool(
     browser_capture = payload["browser_capture"]
     assert isinstance(browser_capture, dict)
     assert browser_capture["spool_ready"] is True
+    assert browser_capture["auth_required"] is True
     assert "spool_path" not in browser_capture
     component_state = payload["component_state"]
     assert isinstance(component_state, dict)
     assert component_state["browser_capture"] == "running"
 
 
-def test_browser_capture_status_payload_can_include_spool_path(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
+def test_browser_capture_status_payload_can_include_observed_spool_path(tmp_path: Path) -> None:
     expected_spool = tmp_path / "browser-capture"
-    monkeypatch.setattr(
-        BrowserCaptureReceiverConfig,
-        "default",
-        classmethod(lambda cls: BrowserCaptureReceiverConfig(spool_path=expected_spool)),
-    )
+    configure_browser_capture_status(BrowserCaptureReceiverConfig(spool_path=expected_spool))
 
     payload = browser_capture_status_payload(include_spool_path=True)
 

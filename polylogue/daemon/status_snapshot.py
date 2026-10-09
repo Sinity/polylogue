@@ -6,11 +6,13 @@ import os
 import threading
 import time
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.core.evidence_families import STATUS_SNAPSHOT_STATE_FAMILY
 from polylogue.core.evidence_value import (
     EvidenceValue,
@@ -47,6 +49,7 @@ class RuntimeComponentState:
     watcher_enabled: bool | None = None
     watcher_roots: tuple[str, ...] = ()
     browser_capture_enabled: bool | None = None
+    browser_capture_status: JSONDocument | None = None
 
 
 _RUNTIME_COMPONENT_STATE = RuntimeComponentState()
@@ -244,6 +247,31 @@ def configure_runtime_components(
         )
 
 
+def configure_browser_capture_status(config: BrowserCaptureReceiverConfig | None) -> None:
+    """Publish only the bound receiver's public fields, or clear them at shutdown."""
+    global _RUNTIME_COMPONENT_STATE
+    payload = json_document(receiver_status_payload(config)) if config is not None else None
+    with _RUNTIME_COMPONENT_LOCK:
+        _RUNTIME_COMPONENT_STATE = replace(_RUNTIME_COMPONENT_STATE, browser_capture_status=payload)
+
+
+def browser_capture_runtime_status() -> JSONDocument:
+    """Read observed receiver policy without guessing it from configuration defaults."""
+    with _RUNTIME_COMPONENT_LOCK:
+        payload = _RUNTIME_COMPONENT_STATE.browser_capture_status
+        if payload is not None:
+            return deepcopy(payload)
+    return {
+        "active": False,
+        "auth_required": None,
+        "allow_remote": None,
+        "allowed_origins": [],
+        "spool_ready": None,
+        "state": "unavailable",
+        "reason": "receiver_not_observed",
+    }
+
+
 def _runtime_component_state() -> RuntimeComponentState:
     with _RUNTIME_COMPONENT_LOCK:
         return _RUNTIME_COMPONENT_STATE
@@ -298,8 +326,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
     now = datetime.now(UTC).isoformat()
     runtime = _runtime_component_state()
     browser_capture = dict(browser_capture_status_public_payload())
-    browser_capture_enabled = runtime.browser_capture_enabled is True
-    browser_capture["active"] = browser_capture_enabled
+    browser_capture_enabled = browser_capture.get("active") is True
     frontier_reason = refresh_error or "rich status snapshot unavailable"
     payload: dict[str, object] = {
         "ok": False,
@@ -622,6 +649,8 @@ def snapshot_state_for_metrics() -> dict[str, Any]:
 __all__ = [
     "STATUS_SNAPSHOT_STATE_FAMILY",
     "configure_runtime_components",
+    "configure_browser_capture_status",
+    "browser_capture_runtime_status",
     "get_status_snapshot_payload",
     "refresh_status_snapshot",
     "reset_status_snapshot",
