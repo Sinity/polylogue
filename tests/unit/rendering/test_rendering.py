@@ -6,7 +6,7 @@ MERGED: test_branch_rendering.py + test_none_guards.py
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
 import pytest
@@ -16,6 +16,7 @@ from hypothesis import strategies as st
 from polylogue.archive.models import Message, Session, SessionSummary
 from polylogue.cli.query_output import format_summary_list
 from polylogue.core.enums import BlockType, Origin, Provider
+from polylogue.core.json import JSONDocument
 from polylogue.core.types import SessionId
 from polylogue.rendering.block_models import RenderableBlock
 from polylogue.rendering.blocks import (
@@ -776,10 +777,10 @@ def test_markdown_uses_remote_attachment_urls_without_a_local_path() -> None:
 
 
 @pytest.mark.parametrize("renderer", [render_blocks_markdown, render_blocks_html, render_blocks_plaintext])
-def test_full_tool_arguments_survive_transcript_rendering(renderer) -> None:
+def test_full_tool_arguments_survive_transcript_rendering(renderer: Callable[[Sequence[RenderableBlock]], str]) -> None:
     from html import unescape
 
-    arguments = {
+    arguments: JSONDocument = {
         "path": "/workspace/neutral.txt",
         "command": "echo " + "x" * 100 + " suffix",
         "query": "unicode Żółć " * 20,

@@ -38,7 +38,9 @@ def test_facade_saved_view_authorizes_the_normalized_name_collision(tmp_path: Pa
     audit = AuditRepository.for_archive_root(root)
     with write_lease("test.saved-view.scope", archive_root=root):
         result = facade_save_view(request, context, audit, None)
-    operation_id = result["receipt_ref"].split(":", 1)[1]
+    receipt_ref = result["receipt_ref"]
+    assert isinstance(receipt_ref, str)
+    operation_id = receipt_ref.split(":", 1)[1]
     with audit.settled_machine_read():
         plan = audit.operation_plan(operation_id)
     assert plan.target_refs == ("saved_view:new", "saved_view:existing")
@@ -46,7 +48,9 @@ def test_facade_saved_view_authorizes_the_normalized_name_collision(tmp_path: Pa
     assert plan.context["collision_view_id"] == "existing"
     with ArchiveStore.open_existing(root, read_only=True) as archive:
         assert archive.get_view("existing") is None
-        assert archive.get_view("new")["name"] == "Shared"
+        view = archive.get_view("new")
+        assert view is not None
+        assert view["name"] == "Shared"
 
 
 @pytest.mark.parametrize("crash", ("before-apply", "after-apply"))
@@ -76,7 +80,9 @@ def test_saved_view_padded_name_recovery_preserves_the_committed_effect(
             "SELECT status, terminal_reason FROM operation_runs WHERE operation_id=?", (operation_id,)
         ).fetchone() == ("completed", "recovered_complete")
     with ArchiveStore.open_existing(root, read_only=True) as archive:
-        assert archive.get_view("new")["name"] == "Shared"
+        view = archive.get_view("new")
+        assert view is not None
+        assert view["name"] == "Shared"
         assert archive.get_view("existing") is None
     if crash == "after-apply":
         with sqlite3.connect(root / "user.db") as conn:

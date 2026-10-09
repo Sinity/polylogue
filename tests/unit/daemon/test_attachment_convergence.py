@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from polylogue.core.enums import Provider, Role
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.core.types import AttachmentUploadOrigin
 from polylogue.operations.attachment_convergence import AttachmentConvergenceResult, converge_drive_attachments
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
@@ -413,7 +414,7 @@ def test_shared_attribution_cancellation_retries_without_downloading(
     write_fixture_index_session(index, _session("later", file_id="shared-file"), raw_id="later-raw")
     index.commit()
     _retain_raws(source, "later-raw")
-    admission = convergence.admit_stage_write
+    admission = admit_stage_write
 
     def cancel(*args: object) -> None:
         raise asyncio.CancelledError
@@ -422,7 +423,7 @@ def test_shared_attribution_cancellation_retries_without_downloading(
         patch.setattr(convergence, "admit_stage_write", cancel)
         with pytest.raises(asyncio.CancelledError):
             _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
-    assert convergence.admit_stage_write is admission
+    assert vars(convergence)["admit_stage_write"] is admission
     assert (
         source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type='attachment' AND ref_id='later-raw'").fetchone()[
             0

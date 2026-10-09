@@ -1993,7 +1993,7 @@ paths:
         response_contract: MutationResultPayload
         auth_policy: bearer_if_configured_and_same_origin
         owner_path: polylogue/daemon/http.py
-        migration_reason: This compatibility route still calls the safe session-delete API directly; maintenance.reset owns
+        migration_reason: This route submits the safe session-delete facade to the resident daemon; maintenance.reset owns
           archive-file reset.
   /api/ingest:
     post:
@@ -7536,8 +7536,8 @@ x-polylogue-route-contracts:
   stability: stable
   auth_policy: bearer_if_configured_and_same_origin
   response_contract: MutationResultPayload
-  notes: declaration=daemon.maintenance.reset; request=ResetSessionRequest; operation-migration=This compatibility route still
-    calls the safe session-delete API directly; maintenance.reset owns archive-file reset.
+  notes: declaration=daemon.maintenance.reset; request=ResetSessionRequest; operation-migration=This route submits the safe
+    session-delete facade to the resident daemon; maintenance.reset owns archive-file reset.
 - method: POST
   pattern: /api/ingest
   kind: maintenance

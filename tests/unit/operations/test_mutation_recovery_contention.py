@@ -15,6 +15,7 @@ from polylogue.operations import mutation_actuators
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.mutation_transaction import OperationExecutor
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.operation_recovery import recover_on_admitted_owner
 from tests.unit.operations.test_mutation_actuators import _seed_archive_session
@@ -23,7 +24,7 @@ from tests.unit.operations.test_mutation_crash_recovery import _SCENARIOS, _cras
 
 @contextmanager
 def _native_user_contention(root: Path) -> Iterator[list[sqlite3.Connection]]:
-    original = mutation_actuators.open_connection
+    original = open_connection
     calls: list[sqlite3.Connection] = []
     # Keep the fault owner on this test thread through compute-worker cleanup.
     # Its transaction is used sequentially on the admitted worker, then retired
