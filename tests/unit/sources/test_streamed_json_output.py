@@ -167,7 +167,7 @@ def test_replace_failure_removes_private_output_and_retains_destination(
     def refuse_replace(*_args: object) -> None:
         raise OSError("neutral storage failure")
 
-    monkeypatch.setattr(streamed_json_output.os, "replace", refuse_replace)
+    monkeypatch.setattr("polylogue.sources.streamed_json_output.os.replace", refuse_replace)
     with pytest.raises(OSError):
         write_streamed_json({"complete": "replacement"}, target)
     assert target.read_bytes() == b"previous complete output"
