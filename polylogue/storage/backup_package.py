@@ -1693,8 +1693,10 @@ def _receipt_tier_artifacts(
             "source_fingerprint": source_fingerprint,
         }
         snapshot = source_fingerprint.get("snapshot") if isinstance(source_fingerprint, dict) else None
-        if not isinstance(snapshot, dict) or any(
-            artifact[field] != snapshot.get(field) for field in ("size_bytes", "sha256", "user_version")
+        if (
+            not isinstance(source_fingerprint, dict)
+            or not isinstance(snapshot, dict)
+            or any(artifact[field] != snapshot.get(field) for field in ("size_bytes", "sha256", "user_version"))
         ):
             raise RuntimeError(f"{filename} backup artifact does not match its pinned snapshot fingerprint")
         source_path_value = source_fingerprint.get("path")

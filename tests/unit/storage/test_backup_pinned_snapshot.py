@@ -20,6 +20,7 @@ from polylogue.storage import backup_package as backup
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
     NativeConnectionSettlementError,
+    open_scratch_connection,
     retained_native_sql_owners_on_current_thread,
 )
 from polylogue.storage.sqlite.migration_runner import MigrationError, validate_migration_backup_manifest
@@ -110,7 +111,7 @@ def test_public_backup_cancellation_settles_both_snapshot_handles_before_publica
     readers: list[sqlite3.Connection] = []
     destinations: list[sqlite3.Connection] = []
     original_open = backup._open_backup_readonly_connection
-    original_destination = backup.open_scratch_connection
+    original_destination = open_scratch_connection
 
     def open_snapshot(path: Path, **kwargs: Any) -> sqlite3.Connection:
         conn = original_open(path, **kwargs)
@@ -155,7 +156,7 @@ def test_public_backup_failed_destination_close_retains_its_exact_creator_custod
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_setup(workspace_env)
-    original_destination = backup.open_scratch_connection
+    original_destination = open_scratch_connection
     original_error = OSError("synthetic backup destination close failure")
     reached = []
 
