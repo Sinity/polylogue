@@ -93,7 +93,7 @@ def _single_row_batch(
             source_result_ref=f"result-set:{batch_id}",
             actor_ref=author_ref,
             model_ref="agent:gpt-5.6-terra",
-            prompt_ref=f"block:{batch_id}:0",
+            prompt_ref=f"block:{batch_id}:b:{'a' * 64}:0",
             total_count=1,
             valid_count=1,
             invalid_count=0,
@@ -111,6 +111,17 @@ def test_batch_id_must_form_a_round_trippable_public_ref() -> None:
 
     with pytest.raises(AnnotationBatchError, match="batch_id.*round-trippable annotation-batch ObjectRef"):
         replace(batch, batch_id="run:")
+
+
+def test_new_batch_write_rejects_positional_prompt_block_reference(
+    workspace_env: dict[str, Path],
+) -> None:
+    batch, _ = _single_row_batch(batch_id="positional-prompt-ref")
+    legacy_input = replace(batch, prompt_ref="block:prompt-message:0")
+
+    with ArchiveStore(workspace_env["archive_root"]) as archive:
+        with pytest.raises(AnnotationBatchError, match="stable block identities"):
+            archive.save_annotation_batch(legacy_input)
 
 
 def test_schema_definition_is_durable_canonical_and_fails_closed_on_reuse(
@@ -219,7 +230,7 @@ def test_two_batches_for_same_schema_target_remain_distinct_and_scope_assertions
         source_result_ref="result-set:delegation-sample-a",
         actor_ref=author_ref,
         model_ref="agent:gpt-5.6-terra",
-        prompt_ref="block:prompt-a:0",
+        prompt_ref="block:prompt-a:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
         total_count=2,
         valid_count=1,
         invalid_count=1,
@@ -237,7 +248,7 @@ def test_two_batches_for_same_schema_target_remain_distinct_and_scope_assertions
         source_result_ref="result-set:delegation-sample-b",
         actor_ref=author_ref,
         model_ref="agent:gpt-5.6-terra",
-        prompt_ref="block:prompt-b:0",
+        prompt_ref="block:prompt-b:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
         total_count=1,
         valid_count=1,
         invalid_count=0,
@@ -345,7 +356,7 @@ def test_batch_requires_registered_schema_and_consistent_counts(workspace_env: d
             source_result_ref="result-set:x",
             actor_ref="agent:x",
             model_ref="agent:model",
-            prompt_ref="block:prompt:0",
+            prompt_ref="block:prompt:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
             total_count=2,
             valid_count=1,
             invalid_count=0,
@@ -361,7 +372,7 @@ def test_batch_requires_registered_schema_and_consistent_counts(workspace_env: d
         source_result_ref="result-set:x",
         actor_ref="agent:x",
         model_ref="agent:model",
-        prompt_ref="block:prompt:0",
+        prompt_ref="block:prompt:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
         total_count=0,
         valid_count=0,
         invalid_count=0,
@@ -433,7 +444,7 @@ def test_batch_exact_retry_compares_canonical_provenance_not_python_equality(
             source_result_ref="result-set:canonical-retry",
             actor_ref="agent:labeler",
             model_ref="agent:model",
-            prompt_ref="block:canonical-retry:0",
+            prompt_ref="block:canonical-retry:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
             total_count=len(failures),
             valid_count=0,
             invalid_count=len(failures),
@@ -463,7 +474,7 @@ def test_batch_canonical_nfc_retry_returns_existing_durable_provenance(workspace
         source_result_ref="result-set:nfc-retry",
         actor_ref="agent:labeler",
         model_ref="agent:model",
-        prompt_ref="block:nfc-retry:0",
+        prompt_ref="block:nfc-retry:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
         total_count=0,
         valid_count=0,
         invalid_count=0,
@@ -496,7 +507,7 @@ def test_batch_opaque_refs_preserve_decomposed_bytes_across_retry_and_cold_read(
         source_result_ref=f"result-set:{decomposed}",
         actor_ref=f"agent:{decomposed}",
         model_ref=f"agent:model-{decomposed}",
-        prompt_ref=f"block:{decomposed}:0",
+        prompt_ref=f"block:{decomposed}:b:{'a' * 64}:0",
         total_count=1,
         valid_count=1,
         invalid_count=0,
@@ -521,7 +532,7 @@ def test_batch_opaque_refs_preserve_decomposed_bytes_across_retry_and_cold_read(
         assert cold.source_result_ref == f"result-set:{decomposed}"
         assert cold.actor_ref == f"agent:{decomposed}"
         assert cold.model_ref == f"agent:model-{decomposed}"
-        assert cold.prompt_ref == f"block:{decomposed}:0"
+        assert cold.prompt_ref == f"block:{decomposed}:b:{'a' * 64}:0"
         assert cold.assertion_refs == (f"assertion:{decomposed}",)
         assert cold.canonical_provenance_bytes() == original.canonical_provenance_bytes()
 
@@ -552,7 +563,7 @@ def test_batch_rejects_nfc_normalized_key_collisions_at_every_depth(
             source_result_ref="result-set:nfc-key-collision",
             actor_ref="agent:labeler",
             model_ref="agent:model",
-            prompt_ref="block:nfc-key-collision:0",
+            prompt_ref="block:nfc-key-collision:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
             total_count=len(validation_failures),
             valid_count=0,
             invalid_count=len(validation_failures),
@@ -578,7 +589,7 @@ def test_batch_provenance_snapshot_detaches_nested_aliases_through_cold_storage(
         source_result_ref="result-set:detached-provenance",
         actor_ref="agent:labeler",
         model_ref="agent:model",
-        prompt_ref="block:detached-provenance:0",
+        prompt_ref="block:detached-provenance:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
         total_count=1,
         valid_count=0,
         invalid_count=1,
@@ -645,7 +656,7 @@ def test_batch_readback_rejects_duplicate_refs_and_non_finite_nested_json(worksp
         source_result_ref="result-set:corrupt-non-finite",
         actor_ref="agent:labeler",
         model_ref="agent:model",
-        prompt_ref="block:corrupt-non-finite:0",
+        prompt_ref="block:corrupt-non-finite:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
         total_count=0,
         valid_count=0,
         invalid_count=0,

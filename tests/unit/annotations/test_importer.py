@@ -59,7 +59,7 @@ def _request(batch_id: str) -> AnnotationBatchImportRequest:
         source_result_ref="result-set:annotation-evidence",
         actor_ref="agent:labeler",
         model_ref="agent:model",
-        prompt_ref="block:prompt:0",
+        prompt_ref="block:prompt:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
         created_at_ms=1_000,
     )
 

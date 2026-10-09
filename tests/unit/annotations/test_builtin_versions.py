@@ -216,7 +216,7 @@ async def test_actual_facade_daemon_import_records_current_versions_for_all_five
                     source_result_ref="result-set:current-evidence",
                     actor_ref="agent:current-labeler",
                     model_ref="agent:current-model",
-                    prompt_ref="block:current-prompt:0",
+                    prompt_ref="block:current-prompt:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
                     created_at_ms=789,
                 )
                 result = await api.import_annotation_batch(request, input=request_input)
@@ -235,7 +235,7 @@ async def test_actual_facade_daemon_import_records_current_versions_for_all_five
                     source_result_ref="result-set:current-evidence",
                     actor_ref="agent:current-labeler",
                     model_ref="agent:current-model",
-                    prompt_ref="block:current-prompt:0",
+                    prompt_ref="block:current-prompt:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
                     created_at_ms=790,
                 )
                 with pytest.raises(DaemonOperationRejectedError):
@@ -268,7 +268,7 @@ def test_provenance_decoding_still_refuses_unknown_or_malformed_targets(kind: st
             source_result_ref="result-set:evidence",
             actor_ref="agent:labeler",
             model_ref="agent:model",
-            prompt_ref="block:prompt:0",
+            prompt_ref="block:prompt:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
             total_count=0,
             valid_count=0,
             invalid_count=0,

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
@@ -31,7 +32,12 @@ from typing import TYPE_CHECKING, ClassVar, Literal, cast
 
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.protocols import ProgressCallback
-from polylogue.core.refs import ObjectRef, normalize_object_ref_text, parse_public_ref
+from polylogue.core.refs import (
+    ObjectRef,
+    normalize_durable_object_ref_text,
+    normalize_object_ref_text,
+    parse_public_ref,
+)
 from polylogue.operations.mutation_transaction import (
     ConfirmationStrength,
     ConvergentReplay,
@@ -1426,6 +1432,56 @@ class MarkArgs:
     target_id: str
     mark_type: str
     owner_session_id: str | None = None
+    source_guard: Callable[[], None] | None = field(default=None, repr=False, compare=False)
+
+
+def _bind_stable_block_target(
+    archive: ArchiveStore, target_type: str, target_id: str, *, require_present: bool
+) -> None:
+    """Validate a block target's durable identity and, when needed, its current row."""
+
+    if target_type != "block":
+        return
+    stable_id = ObjectRef.parse(normalize_durable_object_ref_text(f"block:{target_id}")).object_id
+    if (
+        require_present
+        and archive._conn.execute("SELECT 1 FROM blocks WHERE block_id=?", (stable_id,)).fetchone() is None
+    ):
+        raise ValueError("stable block target is no longer present in the admitted Index")
+
+
+def _bind_stable_attachment_target(
+    archive: ArchiveStore,
+    target_type: str,
+    target_id: str,
+    owner_session_id: str | None,
+    *,
+    require_present: bool,
+) -> None:
+    if target_type != "attachment":
+        return
+    message_id, separator, position = target_id.rpartition(":attachment:")
+    if not separator or not message_id or re.fullmatch(r"(?:0|[1-9][0-9]*)", position) is None:
+        raise ValueError("attachment targets must use a stable attachment reference_id")
+    if require_present:
+        row = archive._conn.execute(
+            "SELECT session_id, supplying_raw_id FROM attachment_refs WHERE ref_id=?",
+            (target_id,),
+        ).fetchone()
+        if row is None or owner_session_id is None or str(row[0]) != owner_session_id or row[1] is None:
+            raise ValueError("stable attachment reference is no longer present with its Source supplier")
+
+
+def _bind_user_state_target(
+    archive: ArchiveStore,
+    target_type: str,
+    target_id: str,
+    owner_session_id: str | None,
+    *,
+    require_present: bool,
+) -> None:
+    _bind_stable_block_target(archive, target_type, target_id, require_present=require_present)
+    _bind_stable_attachment_target(archive, target_type, target_id, owner_session_id, require_present=require_present)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1443,6 +1499,15 @@ class MarkAddActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: MarkArgs) -> MutationPlan:
+        _bind_user_state_target(
+            args.archive,
+            args.target_type,
+            args.target_id,
+            args.owner_session_id,
+            require_present=True,
+        )
+        if args.source_guard is not None:
+            args.source_guard()
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
@@ -1458,6 +1523,8 @@ class MarkAddActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: MarkArgs) -> MutationReceipt:
+        if args.source_guard is not None:
+            args.source_guard()
         added = args.archive.add_mark(
             args.target_type,
             args.target_id,
@@ -1511,6 +1578,13 @@ class MarkRemoveActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: MarkArgs) -> MutationPlan:
+        _bind_user_state_target(
+            args.archive,
+            args.target_type,
+            args.target_id,
+            args.owner_session_id,
+            require_present=False,
+        )
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
@@ -1944,6 +2018,7 @@ class AnnotationSaveArgs:
     target_id: str
     note_text: str
     owner_session_id: str | None = None
+    source_guard: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1965,6 +2040,15 @@ class AnnotationSaveActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: AnnotationSaveArgs) -> MutationPlan:
+        _bind_user_state_target(
+            args.archive,
+            args.target_type,
+            args.target_id,
+            args.owner_session_id,
+            require_present=True,
+        )
+        if args.source_guard is not None:
+            args.source_guard()
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
@@ -1981,6 +2065,8 @@ class AnnotationSaveActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: AnnotationSaveArgs) -> MutationReceipt:
+        if args.source_guard is not None:
+            args.source_guard()
         annotation_id = str(plan.context["annotation_id"])
         target_type = str(plan.context["target_type"])
         target_id = str(plan.context["target_id"])

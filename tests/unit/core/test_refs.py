@@ -62,6 +62,7 @@ def test_execution_context_requires_observed_shape_for_new_ids_and_marks_legacy_
         ("message:codex-session:demo:message-1", "message", "codex-session:demo:message-1", ()),
         ("block:m1:2", "block", "m1", ("2",)),
         ("block:codex-session:demo:message-1:2", "block", "codex-session:demo:message-1", ("2",)),
+        ("block:message:b:provider-native-id:2", "block", "message:b:provider-native-id", ("2",)),
         ("attachment:sha256:abc", "attachment", "sha256:abc", ()),
         ("paste_span:codex-session:demo:m1:0:4", "paste_span", "codex-session:demo:m1:0:4", ()),
         ("thread:codex-session:demo", "thread", "codex-session:demo", ()),

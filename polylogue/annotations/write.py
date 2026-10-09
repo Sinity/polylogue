@@ -40,7 +40,11 @@ from polylogue.annotations.schema import (
 from polylogue.core.digest import RECEIPT, canonical_bytes
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
-from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
+from polylogue.core.refs import (
+    ObjectRef,
+    normalize_durable_object_ref_text,
+    normalize_durable_public_ref_text,
+)
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ArchiveAssertionEnvelope,
     ArchiveAssertionJudgmentEnvelope,
@@ -92,7 +96,9 @@ class OntologyViewProposal:
         if not math.isfinite(self.confidence) or not 0.0 <= self.confidence <= 1.0:
             raise ValueError("ontology view confidence must be finite and between zero and one")
         object.__setattr__(self, "label", normalized_label)
-        normalized_evidence_refs = tuple(dict.fromkeys(normalize_public_ref_text(ref) for ref in self.evidence_refs))
+        normalized_evidence_refs = tuple(
+            dict.fromkeys(normalize_durable_public_ref_text(ref) for ref in self.evidence_refs)
+        )
         if not normalized_evidence_refs:
             raise ValueError("ontology view proposal requires at least one evidence ref")
         object.__setattr__(self, "evidence_refs", normalized_evidence_refs)
@@ -151,12 +157,12 @@ class OntologyCandidateNomination:
             raise ValueError("ontology candidate bootstrap views must be unique")
         object.__setattr__(self, "view_proposals", proposals)
 
-        object.__setattr__(self, "target_ref", normalize_object_ref_text(self.target_ref))
-        object.__setattr__(self, "classifier_ref", normalize_object_ref_text(self.classifier_ref))
-        object.__setattr__(self, "frame_ref", normalize_object_ref_text(self.frame_ref))
-        object.__setattr__(self, "epoch_ref", normalize_object_ref_text(self.epoch_ref))
-        object.__setattr__(self, "privacy_policy_ref", normalize_object_ref_text(self.privacy_policy_ref))
-        object.__setattr__(self, "author_ref", normalize_object_ref_text(self.author_ref))
+        object.__setattr__(self, "target_ref", normalize_durable_object_ref_text(self.target_ref))
+        object.__setattr__(self, "classifier_ref", normalize_durable_object_ref_text(self.classifier_ref))
+        object.__setattr__(self, "frame_ref", normalize_durable_object_ref_text(self.frame_ref))
+        object.__setattr__(self, "epoch_ref", normalize_durable_object_ref_text(self.epoch_ref))
+        object.__setattr__(self, "privacy_policy_ref", normalize_durable_object_ref_text(self.privacy_policy_ref))
+        object.__setattr__(self, "author_ref", normalize_durable_object_ref_text(self.author_ref))
         if ObjectRef.parse(self.author_ref).kind != "agent":
             raise ValueError("ontology candidate author_ref must identify an agent")
         object.__setattr__(
@@ -180,7 +186,7 @@ class OntologyCandidateNomination:
             object.__setattr__(
                 self,
                 field_name,
-                tuple(dict.fromkeys(normalize_public_ref_text(ref) for ref in refs)),
+                tuple(dict.fromkeys(normalize_durable_public_ref_text(ref) for ref in refs)),
             )
         object.__setattr__(self, "_canonical_nomination", _canonical_json_bytes(self._document_from_fields()))
 
@@ -227,13 +233,13 @@ class OntologyCandidateGovernance:
     active_schemas: tuple[AnnotationSchema, ...] = ()
 
     def __post_init__(self) -> None:
-        parsed = ObjectRef.parse(normalize_object_ref_text(self.candidate_ref))
+        parsed = ObjectRef.parse(normalize_durable_object_ref_text(self.candidate_ref))
         if parsed.kind != "assertion" or parsed.qualifiers:
             raise ValueError("ontology governance candidate_ref must be an assertion ref")
         if self.decision not in {"accept", "rename", "split", "reject"}:
             raise ValueError(f"unsupported ontology governance decision: {self.decision!r}")
         object.__setattr__(self, "candidate_ref", parsed.format())
-        object.__setattr__(self, "actor_ref", normalize_object_ref_text(self.actor_ref))
+        object.__setattr__(self, "actor_ref", normalize_durable_object_ref_text(self.actor_ref))
         if ObjectRef.parse(self.actor_ref).kind != "user":
             raise ValueError("ontology governance actor_ref must identify an operator user")
         if self.reason is not None and not self.reason.strip():
@@ -352,7 +358,7 @@ def assertion_id_for_schema_annotation(
     digest = hashlib.sha256()
     identity_parts = [schema_qualified_id, target_ref, author_ref, row_key]
     if batch_ref is not None:
-        identity_parts.append(normalize_object_ref_text(batch_ref))
+        identity_parts.append(normalize_durable_object_ref_text(batch_ref))
     for part in identity_parts:
         digest.update(part.encode("utf-8", errors="surrogatepass"))
         digest.update(b"\0")
@@ -459,7 +465,7 @@ def assertion_id_for_ontology_governance(
     """Return a deterministic receipt id for one candidate decision/output set."""
 
     identity = {
-        "candidate_ref": normalize_object_ref_text(candidate_ref),
+        "candidate_ref": normalize_durable_object_ref_text(candidate_ref),
         "decision": decision,
         "active_schema_fingerprints": [schema.definition_fingerprint for schema in active_schemas],
     }
@@ -675,9 +681,9 @@ def upsert_annotation_assertion(
             errors=errors,
         )
 
-    normalized_target_ref = normalize_object_ref_text(target_ref)
-    normalized_author_ref = normalize_object_ref_text(author_ref)
-    normalized_evidence_refs = tuple(normalize_public_ref_text(ref) for ref in evidence_refs)
+    normalized_target_ref = normalize_durable_object_ref_text(target_ref)
+    normalized_author_ref = normalize_durable_object_ref_text(author_ref)
+    normalized_evidence_refs = tuple(normalize_durable_public_ref_text(ref) for ref in evidence_refs)
     try:
         normalized_confidence = _normalized_annotation_confidence(confidence)
     except ValueError as exc:
@@ -697,7 +703,7 @@ def upsert_annotation_assertion(
 
         batch_errors: list[str] = []
         try:
-            normalized_batch_ref = normalize_object_ref_text(batch_ref)
+            normalized_batch_ref = normalize_durable_object_ref_text(batch_ref)
             parsed_batch_ref = ObjectRef.parse(normalized_batch_ref)
         except ValueError:
             parsed_batch_ref = None

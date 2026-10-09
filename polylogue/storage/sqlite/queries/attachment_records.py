@@ -98,6 +98,8 @@ def _build_attachment_record(row: aiosqlite.Row, *, session_id: str) -> Attachme
         upload_origin=(value if isinstance((value := _row_value(row, "upload_origin")), str) else None),
         direction=(value if isinstance((value := _row_value(row, "direction")), str) else None),
         producer_ref=(value if isinstance((value := _row_value(row, "producer_ref")), str) else None),
+        reference_id=(value if isinstance((value := _row_value(row, "reference_id")), str) else None),
+        supplying_raw_id=(value if isinstance((value := _row_value(row, "supplying_raw_id")), str) else None),
         blob_hash=(bytes(value) if isinstance((value := _row_value(row, "blob_hash")), (bytes, bytearray)) else None),
         acquisition_status=(value if isinstance((value := _row_value(row, "acquisition_status")), str) else None),
         generation_id=(value if isinstance((value := _row_value(row, "generation_id")), str) else None),
@@ -125,6 +127,8 @@ async def get_attachments(
             r.upload_origin,
             r.direction,
             r.producer_ref,
+            r.ref_id AS reference_id,
+            r.supplying_raw_id,
 {_NATIVE_ID_COLUMNS}
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
@@ -165,6 +169,8 @@ async def get_message_attachments(
             r.upload_origin,
             r.direction,
             r.producer_ref,
+            r.ref_id AS reference_id,
+            r.supplying_raw_id,
 {_NATIVE_ID_COLUMNS}
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
@@ -206,6 +212,8 @@ async def get_attachments_batch(
             r.upload_origin,
             r.direction,
             r.producer_ref,
+            r.ref_id AS reference_id,
+            r.supplying_raw_id,
 {_NATIVE_ID_COLUMNS}
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
@@ -277,6 +285,7 @@ def attachment_library_page_sql(
                NULL AS path, a.blob_hash, a.acquisition_status, a.display_name,
                r.source_url, r.caption, r.message_id, r.session_id,
                r.upload_origin, r.direction, r.producer_ref,
+               r.ref_id AS reference_id, r.supplying_raw_id,
                s.title, s.origin,
                {_NATIVE_ID_COLUMNS}
         {relation}

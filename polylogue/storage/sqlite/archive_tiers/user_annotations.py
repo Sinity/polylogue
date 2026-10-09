@@ -20,7 +20,7 @@ from polylogue.annotations.schema import (
 )
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.json import loads as json_loads
-from polylogue.core.refs import ObjectRef, normalize_object_ref_text
+from polylogue.core.refs import ObjectRef, normalize_durable_object_ref_text, normalize_object_ref_text
 
 if TYPE_CHECKING:
     from polylogue.annotations.import_spill import AnnotationImportSpill
@@ -517,6 +517,29 @@ def read_annotation_batch(conn: sqlite3.Connection, batch_id: str) -> Annotation
 
 def persist_annotation_batch(conn: sqlite3.Connection, batch: AnnotationBatch) -> AnnotationBatch:
     """Persist write-once batch provenance; incompatible id reuse fails closed."""
+
+    # AnnotationBatch is also used to decode historical provenance, so its
+    # constructor keeps the retired positional grammar readable. Enforce the
+    # durable rule only at this write boundary: new batches may retain a
+    # positional block selector only after its creator bound it to a stable
+    # block ID under the source read that authorized the write.
+    durable_refs = (
+        batch.target_ref,
+        batch.source_result_ref,
+        batch.actor_ref,
+        batch.model_ref,
+        batch.prompt_ref,
+        *batch.assertion_refs,
+    )
+    for ref in durable_refs:
+        if ref.startswith(("phase:", "work_event:")):
+            continue
+        try:
+            normalized = normalize_durable_object_ref_text(ref)
+        except ValueError as exc:
+            raise AnnotationBatchError("annotation batch refs must use stable block identities") from exc
+        if normalized != ref:
+            raise AnnotationBatchError("annotation batch refs must be normalized before durable storage")
 
     candidate_provenance = batch.canonical_provenance_bytes()
     provenance = batch.provenance_document()

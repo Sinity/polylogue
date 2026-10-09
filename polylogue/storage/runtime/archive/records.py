@@ -269,6 +269,8 @@ class LineageCompleteness(BaseModel):
 
 class AttachmentRecord(BaseModel):
     attachment_id: AttachmentId
+    reference_id: str | None = None
+    supplying_raw_id: str | None = None
     session_id: SessionId
     message_id: MessageId | None = None
     mime_type: str | None = None

@@ -9,6 +9,7 @@ from polylogue.archive.attachment.availability import AttachmentAvailability
 
 class Attachment(BaseModel):
     id: str
+    reference_id: str | None = None
     name: str | None = None
     mime_type: str | None = None
     size_bytes: int | None = None

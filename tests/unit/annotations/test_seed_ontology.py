@@ -539,7 +539,7 @@ def test_accept_then_durable_batch_import_requires_label_judgment_for_active_que
         source_result_ref="result-set:ontology-bootstrap-frame",
         actor_ref="agent:ontology-labeler",
         model_ref="agent:model-v1",
-        prompt_ref="block:prompt-session:0",
+        prompt_ref="block:prompt-session:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
         metadata={"ontology_governance_ref": f"assertion:{governance.governance_receipt.assertion_id}"},
         created_at_ms=120,
     )
