@@ -26,16 +26,29 @@ def _resolve_attachment_in_connections(
     the Source row that first contributed it and survives carry-forward.
     """
 
+    message_id, separator, native_identity = reference_id.rpartition(":attachment:n:")
+    if not separator or not message_id:
+        return None
+    from polylogue.core.identity_law import attachment_reference_id
+
+    try:
+        if attachment_reference_id(message_id, native_identity) != reference_id:
+            return None
+    except ValueError:
+        return None
+
     row = index_conn.execute(
-        "SELECT r.ref_id, r.message_id, r.supplying_raw_id, a.blob_hash, a.byte_count "
+        "SELECT r.ref_id, r.message_id, r.native_identity, r.supplying_raw_id, a.blob_hash, a.byte_count "
         "FROM attachment_refs r JOIN attachments a ON a.attachment_id=r.attachment_id "
         "JOIN messages m ON m.message_id=r.message_id AND m.session_id=r.session_id "
         "WHERE r.session_id=? AND r.ref_id=?",
         (session_id, reference_id),
     ).fetchone()
-    if row is None or row[2] is None:
+    if row is None or row[3] is None:
         return None
-    supplying_raw_id = str(row[2])
+    if str(row[1]) != message_id or str(row[2]) != native_identity:
+        return None
+    supplying_raw_id = str(row[3])
     source_raw = source_conn.execute(
         "SELECT blob_hash FROM raw_sessions WHERE raw_id=?",
         (supplying_raw_id,),
@@ -43,7 +56,7 @@ def _resolve_attachment_in_connections(
     if source_raw is None:
         return None
 
-    blob_hash = bytes(row[3]) if row[3] is not None else None
+    blob_hash = bytes(row[4]) if row[4] is not None else None
     if blob_hash is not None:
         native_rows = index_conn.execute(
             "SELECT id_kind, native_id FROM attachment_native_ids "
@@ -64,7 +77,7 @@ def _resolve_attachment_in_connections(
             or source_conn.execute(
                 "SELECT 1 FROM blob_refs WHERE ref_id=? AND ref_type='attachment' AND source_path=? "
                 "AND blob_hash=? AND size_bytes=? LIMIT 1",
-                (supplying_raw_id, coordinate, blob_hash, int(row[4])),
+                (supplying_raw_id, coordinate, blob_hash, int(row[5])),
             ).fetchone()
             is None
         ):
@@ -77,7 +90,13 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
     from contextlib import closing
     from tempfile import TemporaryDirectory
 
-    from polylogue.core.identity_law import session_id as archive_session_id
+    from polylogue.core.identity_law import (
+        attachment_native_identity,
+        attachment_reference_id,
+    )
+    from polylogue.core.identity_law import (
+        session_id as archive_session_id,
+    )
     from polylogue.core.sources import origin_from_provider
     from polylogue.operations.source_target_read import _PinnedRetainedRead, _prepare_source_target_artifact
     from polylogue.pipeline.ids import attachment_message_owner_key
@@ -89,7 +108,6 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
         _attachment_id,
         _attachment_message_id_maps,
         _attachment_native_id_values,
-        _attachment_reference_positions,
         prepared_session_rows_from_shard,
     )
 
@@ -140,21 +158,12 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
                     owner_resolution=rows.owner_resolution,
                     wanted_owner_keys=wanted_owner_keys,
                 )
-                attachments_by_message: dict[str, list[ParsedAttachment]] = {}
-                for attachment in attachments:
-                    owner_key = attachment_message_owner_key(attachment, rows.owner_resolution)
-                    message_id = by_owner_key.get(owner_key) if owner_key is not None else None
-                    if message_id is not None:
-                        attachments_by_message.setdefault(message_id, []).append(attachment)
-            positions = {
-                key: position
-                for message_attachments in attachments_by_message.values()
-                for key, position in _attachment_reference_positions(message_attachments).items()
-            }
 
-            def agrees_with_index_descriptor(attachment: ParsedAttachment) -> bool:
+            def agrees_with_index_descriptor(
+                attachment: ParsedAttachment, message_id: str, expected_identity: str
+            ) -> bool:
                 row = archive._conn.execute(
-                    "SELECT a.attachment_id,a.display_name,a.media_type,a.byte_count "
+                    "SELECT r.native_identity,a.attachment_id,a.display_name,a.media_type,a.byte_count "
                     "FROM attachment_refs r JOIN attachments a ON a.attachment_id=r.attachment_id "
                     "WHERE r.session_id=? AND r.ref_id=?",
                     (session_id, ref_id),
@@ -170,20 +179,30 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
                     )
                 }
                 return (
-                    str(row[0]) == _attachment_id("", attachment, blob_hash=None)
-                    and row[1] == attachment.name
-                    and row[2] == attachment.mime_type
-                    and int(row[3]) == int(attachment.size_bytes or 0)
+                    str(row[0]) == expected_identity
+                    and attachment_reference_id(message_id, expected_identity) == ref_id
+                    and str(row[1]) == _attachment_id("", attachment, blob_hash=None)
+                    and row[2] == attachment.name
+                    and row[3] == attachment.mime_type
+                    and int(row[4]) == int(attachment.size_bytes or 0)
                     and actual_native == expected_native
                 )
 
-            return any(
-                (owner_key := attachment_message_owner_key(attachment, rows.owner_resolution)) is not None
-                and by_owner_key.get(owner_key) is not None
-                and f"{by_owner_key[owner_key]}:attachment:{positions.get(attachment.acquisition_key)}" == ref_id
-                and agrees_with_index_descriptor(attachment)
-                for attachment in attachments
-            )
+            for attachment in attachments:
+                owner_key = attachment_message_owner_key(attachment, rows.owner_resolution)
+                message_id = by_owner_key.get(owner_key) if owner_key is not None else None
+                if message_id is None:
+                    continue
+                try:
+                    expected_identity = attachment_native_identity(attachment.provider_attachment_id)
+                    expected_ref_id = attachment_reference_id(message_id, expected_identity)
+                except ValueError:
+                    continue
+                if expected_ref_id == ref_id and agrees_with_index_descriptor(
+                    attachment, message_id, expected_identity
+                ):
+                    return True
+            return False
         except (KeyError, ValueError):
             return False
         finally:

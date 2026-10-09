@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
@@ -1460,15 +1459,27 @@ def _bind_stable_attachment_target(
 ) -> None:
     if target_type != "attachment":
         return
-    message_id, separator, position = target_id.rpartition(":attachment:")
-    if not separator or not message_id or re.fullmatch(r"(?:0|[1-9][0-9]*)", position) is None:
+    from polylogue.core.identity_law import attachment_reference_id
+
+    message_id, separator, native_identity = target_id.rpartition(":attachment:n:")
+    try:
+        canonical_id = attachment_reference_id(message_id, native_identity) if separator else None
+    except ValueError:
+        canonical_id = None
+    if not separator or not message_id or canonical_id != target_id:
         raise ValueError("attachment targets must use a stable attachment reference_id")
     if require_present:
         row = archive._conn.execute(
-            "SELECT session_id, supplying_raw_id FROM attachment_refs WHERE ref_id=?",
+            "SELECT session_id, supplying_raw_id, message_id, native_identity FROM attachment_refs WHERE ref_id=?",
             (target_id,),
         ).fetchone()
-        if row is None or owner_session_id is None or str(row[0]) != owner_session_id or row[1] is None:
+        if (
+            row is None
+            or owner_session_id is None
+            or str(row[0]) != owner_session_id
+            or row[1] is None
+            or attachment_reference_id(str(row[2]), str(row[3])) != target_id
+        ):
             raise ValueError("stable attachment reference is no longer present with its Source supplier")
 
 

@@ -1235,6 +1235,31 @@ class TestMetadataDeleteActuator:
 
 
 class TestMarkActuators:
+    def test_attachment_retraction_accepts_only_stable_native_reference(self, tmp_path: Path) -> None:
+        from polylogue.core.identity_law import attachment_native_identity, attachment_reference_id
+        from polylogue.operations.mutation_actuators import _bind_stable_attachment_target
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        builder = SessionBuilder(archive_root / "index.db", "stable-attachment-mark")
+        builder.provider("codex").add_message("message-1", role="user", text="hello").save()
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            stable_ref = attachment_reference_id("message-1", attachment_native_identity("native-attachment"))
+            # Retraction can outlive the Index row, but still accepts only the
+            # canonical stable reference grammar.
+            _bind_stable_attachment_target(
+                archive, "attachment", stable_ref, builder.native_session_id(), require_present=False
+            )
+            with pytest.raises(ValueError, match="stable attachment reference_id"):
+                _bind_stable_attachment_target(
+                    archive,
+                    "attachment",
+                    "message-1:attachment:0",
+                    builder.native_session_id(),
+                    require_present=False,
+                )
+
     def test_block_target_is_stored_and_revalidated_by_stable_id(self, tmp_path: Path) -> None:
         from tests.infra.storage_records import SessionBuilder
 
