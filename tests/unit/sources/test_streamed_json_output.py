@@ -155,4 +155,20 @@ def test_prepared_jsonl_bundle_uses_complete_streamed_member(tmp_path: Path, mon
     (actual,) = artifact.iter_sessions()
     assert actual.content_hash == expected_hash
     assert observed == [json.dumps(value, ensure_ascii=True).encode()]
-    artifact.close()
+    artifact.discard()
+
+
+def test_replace_failure_removes_private_output_and_retains_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "output.json"
+    target.write_bytes(b"previous complete output")
+
+    def refuse_replace(*_args: object) -> None:
+        raise OSError("neutral storage failure")
+
+    monkeypatch.setattr(streamed_json_output.os, "replace", refuse_replace)
+    with pytest.raises(OSError):
+        write_streamed_json({"complete": "replacement"}, target)
+    assert target.read_bytes() == b"previous complete output"
+    assert list(tmp_path.iterdir()) == [target]
