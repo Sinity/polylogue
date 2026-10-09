@@ -17,7 +17,7 @@ import sqlite3
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, ItemsView, Iterable, Iterator, KeysView, Mapping, Sequence, ValuesView
 from contextlib import AbstractContextManager, ExitStack, closing, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from types import TracebackType
@@ -73,6 +73,20 @@ class SpilledKey:
 
     connection: sqlite3.Connection
     token: int
+    _owner: _ScalarTokenStore | None = field(default=None, repr=False, compare=False)
+
+    def startswith(self, prefix: str) -> bool:
+        expected = prefix.encode("utf-8", "surrogatepass")
+        offset = 0
+        with closing(self.iter_utf8_chunks()) as chunks:
+            for chunk in chunks:
+                shared = min(len(chunk), len(expected) - offset)
+                if chunk[:shared] != expected[offset : offset + shared]:
+                    return False
+                offset += shared
+                if offset == len(expected):
+                    return True
+        return offset == len(expected)
 
     def iter_utf8_chunks(self) -> Generator[bytes, None, None]:
         with closing(
@@ -639,6 +653,7 @@ class _ScalarTokenStore:
         self.key_digest = hashlib.sha256()
         self.failure: ValueError | UnicodeError | None = None
         self.failure_token: tuple[str, int] | None = None
+        self.projection_scope = 0
 
     def string(self, ordinal: int, content: bytes, final: bool) -> None:
         from polylogue.core.json_envelope import _prefix_cut

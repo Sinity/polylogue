@@ -258,10 +258,12 @@ class _RecordEvidence:
         self._tokens = tokens
 
     def _write(self, event: str, value: object) -> None:
-        from polylogue.schemas.observation_spill import _ScalarTokenReference
+        from polylogue.schemas.observation_spill import SpilledKey, _ScalarTokenReference
 
         kind = None
-        if isinstance(value, _ScalarTokenReference):
+        if isinstance(value, SpilledKey):
+            kind, value = "key", value.token
+        elif isinstance(value, _ScalarTokenReference):
             kind, value = value.kind, value.ordinal
         self._file.write(json.dumps((event, value, kind), ensure_ascii=True).encode("ascii") + b"\n")
 
@@ -283,9 +285,13 @@ class _RecordEvidence:
         for line in self._file:
             event, value, kind = json.loads(line)
             if kind is not None:
-                from polylogue.schemas.observation_spill import _ScalarTokenReference
+                from polylogue.schemas.observation_spill import SpilledKey, _ScalarTokenReference
 
-                value = _ScalarTokenReference(self._tokens, kind, value)
+                value = (
+                    SpilledKey(self._tokens.connection, value, self._tokens)
+                    if kind == "key"
+                    else _ScalarTokenReference(self._tokens, kind, value)
+                )
             yield event, value
         # A syntax fault retains only fields whose values completed. Closing
         # the observed containers reproduces the existing partial-evidence
@@ -349,7 +355,7 @@ class _DocumentValidator:
             transported = self._transport.feed(self._utf8.decode(chunk).encode("utf-8"))
             if transported:
                 self._parser.send(transported)
-        except (ijson.JSONError, UnicodeError):
+        except (ijson.JSONError, json.JSONDecodeError, UnicodeError):
             self._failed = True
         self._drain()
         if self._failed:
@@ -364,20 +370,24 @@ class _DocumentValidator:
             if transported:
                 self._parser.send(transported)
             self._parser.close()
-        except (ijson.JSONError, UnicodeError):
+        except (ijson.JSONError, json.JSONDecodeError, UnicodeError):
             self._failed = True
         self._drain()
         if self._failed or self._depth:
             self._validate_partial()
 
     def _drain(self) -> None:
-        from polylogue.schemas.observation_spill import _ScalarTokenReference
+        from polylogue.schemas.observation_spill import SpilledKey, _ScalarTokenReference
 
         for event, value in self._events:
             if event in ("map_key", "string"):
                 self._strings += 1
                 reference = _ScalarTokenReference(self._tokens, "string", self._strings)
-                value = reference.read() if event == "map_key" else reference
+                value = (
+                    SpilledKey(self._tokens.connection, self._strings, self._tokens)
+                    if event == "map_key"
+                    else reference
+                )
             elif event == "number":
                 self._numbers += 1
                 value = _ScalarTokenReference(self._tokens, "number", self._numbers)

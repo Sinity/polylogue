@@ -10,20 +10,22 @@ from __future__ import annotations
 
 import codecs
 import io
-import sqlite3
 from collections.abc import Callable, Generator, Iterator, Mapping
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from decimal import Decimal
 from json import JSONDecodeError
-from typing import IO, Literal, Protocol, cast
+from typing import IO, TYPE_CHECKING, Literal, Protocol, cast
 
 import ijson
 
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.content_identity import JSON_TEXT_ENCODINGS
 from polylogue.core.json import JSONDocument, json_document_or_none
-from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+from polylogue.schemas.observation_spill import SpilledKey, StreamedJSONDocument, _literal_key
+
+if TYPE_CHECKING:
+    from polylogue.schemas.observation_spill import _ScalarTokenStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +36,7 @@ class DetectorProjection:
     array_predicate: Callable[[object], bool] | None = None
     mapping_predicate: Callable[[object], bool] | None = None
     mapping_witness: object = None
-    mapping_key_predicate: Callable[[str], bool] | None = None
+    mapping_key_prefix: str | None = None
     preserve_mapping_size: bool = False
     capture_metadata_values: bool = False
 
@@ -197,6 +199,77 @@ def _project(
     )[0]
 
 
+class _ProjectionKeys:
+    """Exact duplicate folds over the scalar owner, with bounded key references."""
+
+    def __init__(self, stack: ExitStack) -> None:
+        self.stack = stack
+        self.owner: _ScalarTokenStore | None = None
+        self.scope = 0
+
+    def observe(self, key: str | SpilledKey, *, accepted: bool = True, scalarish: bool = True) -> None:
+        from polylogue.schemas.observation_spill import _ScalarTokenStore
+
+        if self.owner is None:
+            if isinstance(key, SpilledKey):
+                if key._owner is None:
+                    raise ValueError("detector event key has no scalar owner")
+                self.owner = key._owner
+            else:
+                document = StreamedJSONDocument(None)
+                self.stack.enter_context(document)
+                self.owner = _ScalarTokenStore(document.connection)
+            connection = self.owner.connection
+            if not self.owner.projection_scope:
+                connection.execute(
+                    "CREATE TABLE projection_keys(scope INTEGER,token INTEGER,digest BLOB,"
+                    "accepted INTEGER NOT NULL,scalarish INTEGER NOT NULL,PRIMARY KEY(scope,token)) WITHOUT ROWID"
+                )
+                connection.execute("CREATE INDEX projection_key_digest ON projection_keys(scope,digest)")
+            self.owner.projection_scope += 1
+            self.scope = self.owner.projection_scope
+            self.stack.callback(connection.execute, "DELETE FROM projection_keys WHERE scope=?", (self.scope,))
+        connection = self.owner.connection
+        reference = _literal_key(connection, key) if isinstance(key, str) else key
+        if reference.connection is not connection:
+            raise ValueError("detector event keys have different owners")
+        canonical = reference.token
+        digest = reference.digest
+        with closing(
+            connection.execute("SELECT token FROM projection_keys WHERE scope=? AND digest=?", (self.scope, digest))
+        ) as rows:
+            for (token,) in rows:
+                if reference.compare(SpilledKey(connection, token)) == 0:
+                    canonical = token
+                    break
+        connection.execute(
+            "INSERT INTO projection_keys VALUES (?,?,?,?,?) ON CONFLICT(scope,token) DO UPDATE SET "
+            "accepted=excluded.accepted,scalarish=excluded.scalarish",
+            (self.scope, canonical, digest, int(accepted), int(scalarish)),
+        )
+
+    def totals(self) -> tuple[int, int, int]:
+        if self.owner is None:
+            return 0, 0, 0
+        row = self.owner.connection.execute(
+            "SELECT COUNT(*),COALESCE(SUM(accepted=0),0),COALESCE(SUM(scalarish=0),0) "
+            "FROM projection_keys WHERE scope=?",
+            (self.scope,),
+        ).fetchone()
+        return int(row[0]), int(row[1]), int(row[2])
+
+
+def _selected_key(key: str | SpilledKey, fields: Mapping[str, object]) -> str | None:
+    if not fields:
+        return None
+    if isinstance(key, str):
+        return key if key in fields else None
+    small = key.small_name
+    if small is not None:
+        return small if small in fields else None
+    return next((name for name in fields if key.matches(name)), None)
+
+
 def _consume_scalarish(events: Iterator[tuple[str, object]], event: str, depth: int) -> bool:
     """Fold the taxonomy's scalarish predicate without retaining unknown values."""
     if event not in {"start_map", "start_array"}:
@@ -213,24 +286,18 @@ def _consume_scalarish(events: Iterator[tuple[str, object]], event: str, depth: 
                 return count <= 32 and accepted
             count += 1
             accepted = _consume_scalarish(events, following, depth + 1) and accepted
-    with scratch_connection_context(prefix="polylogue-taxonomy-values-", filename="keys.db") as keys:
-        keys.execute("PRAGMA journal_mode=DELETE")
-        keys.execute("PRAGMA temp_store=FILE")
-        keys.execute("BEGIN")
-        keys.execute("CREATE TABLE keys(name BLOB PRIMARY KEY, accepted INTEGER NOT NULL) WITHOUT ROWID")
+    with ExitStack() as stack:
+        keys = _ProjectionKeys(stack)
         while True:
             following, key = next(events)
             if following == "end_map":
-                count, refused = keys.execute("SELECT COUNT(*), COALESCE(SUM(accepted=0),0) FROM keys").fetchone()
+                count, refused, _ = keys.totals()
                 return count <= 8 and not refused
-            if following != "map_key" or not isinstance(key, str):
+            if following != "map_key" or not isinstance(key, str | SpilledKey):
                 raise ijson.JSONError("invalid taxonomy object event")
             following, _value = next(events)
             accepted = _consume_scalarish(events, following, depth + 1)
-            keys.execute(
-                "INSERT INTO keys VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET accepted=excluded.accepted",
-                (key.encode("utf-8", "surrogatepass"), int(accepted)),
-            )
+            keys.observe(key, accepted=accepted)
 
 
 def _project_value(
@@ -253,67 +320,47 @@ def _project_value(
         with ExitStack() as mapping_stack:
             fields: dict[str, object] = {}
             matching_key = False
-            database: sqlite3.Connection | None = None
-            if rule.mapping_predicate is not None or rule.preserve_mapping_size or scalarish_depth is not None:
-                database = mapping_stack.enter_context(
-                    scratch_connection_context(prefix="polylogue-detector-", filename="keys.db")
-                )
-                # Duplicate keys update this complete key set. Keep their
-                # rollback journal on the same private disk as the rows.
-                database.execute("PRAGMA journal_mode=DELETE")
-                database.execute("PRAGMA temp_store=FILE")
-                database.execute("BEGIN")
-                database.execute(
-                    "CREATE TABLE keys (name BLOB PRIMARY KEY, accepted INTEGER NOT NULL, scalarish INTEGER) WITHOUT ROWID"
-                )
+            keys = (
+                _ProjectionKeys(mapping_stack)
+                if (rule.mapping_predicate is not None or rule.preserve_mapping_size or scalarish_depth is not None)
+                else None
+            )
             while True:
                 event, key = next(events)
                 if event == "end_map":
                     break
-                if event != "map_key" or not isinstance(key, str):
+                if event != "map_key" or not isinstance(key, str | SpilledKey):
                     raise ValueError("invalid detector object event")
                 event, value = next(events)
                 child_depth = None if scalarish_depth is None or scalarish_depth >= 2 else scalarish_depth + 1
-                child_rule = rule.item if rule.mapping_predicate is not None else (rule.fields or {}).get(key)
+                name = _selected_key(key, rule.fields or {})
+                child_rule = (
+                    rule.item
+                    if rule.mapping_predicate is not None
+                    else (rule.fields or {}).get(name)
+                    if name is not None
+                    else None
+                )
                 item, scalarish = _project_value(events, event, value, child_rule, stack, scalarish_depth=child_depth)
-                if rule.mapping_predicate is not None:
-                    assert database is not None
-                    assert rule.mapping_predicate is not None
-                    database.execute(
-                        "INSERT INTO keys(name,accepted) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET accepted=excluded.accepted",
-                        (key.encode("utf-8", "surrogatepass"), int(rule.mapping_predicate(item))),
-                    )
-                elif rule.mapping_key_predicate is not None:
-                    matching_key |= rule.mapping_key_predicate(key)
-                elif rule.fields is not None and key in rule.fields:
-                    fields[key] = item
-                if (rule.preserve_mapping_size or scalarish_depth is not None) and rule.mapping_predicate is None:
-                    assert database is not None
-                    database.execute(
-                        "INSERT INTO keys(name,accepted) VALUES (?, 1) ON CONFLICT(name) DO NOTHING",
-                        (key.encode("utf-8", "surrogatepass"),),
-                    )
-                if scalarish_depth is not None:
-                    assert database is not None
-                    database.execute(
-                        "UPDATE keys SET scalarish=? WHERE name=?",
-                        (int(scalarish), key.encode("utf-8", "surrogatepass")),
-                    )
+                accepted = rule.mapping_predicate(item) if rule.mapping_predicate is not None else True
+                if keys is not None:
+                    keys.observe(key, accepted=accepted, scalarish=scalarish)
+                if rule.mapping_predicate is None:
+                    if rule.mapping_key_prefix is not None:
+                        matching_key |= key.startswith(rule.mapping_key_prefix)
+                    elif name is not None:
+                        fields[name] = item
+            count, refused, scalarish_refused = keys.totals() if keys is not None else (0, 0, 0)
             scalarish = True
             metadata_values = None
             if scalarish_depth is not None:
-                assert database is not None
-                count, refused = database.execute("SELECT COUNT(*), COALESCE(SUM(scalarish=0),0) FROM keys").fetchone()
-                metadata_values = not refused
+                metadata_values = not scalarish_refused
                 scalarish = scalarish_depth < 2 and count <= 8 and metadata_values
-            if database is not None and rule.mapping_predicate is not None:
-                count, refused = database.execute("SELECT COUNT(*), SUM(accepted=0) FROM keys").fetchone()
+            if rule.mapping_predicate is not None:
                 return ({} if not count else {"node": None if refused else rule.mapping_witness}), scalarish
-            if rule.mapping_key_predicate is not None:
+            if rule.mapping_key_prefix is not None:
                 return (rule.mapping_witness if matching_key else {}), scalarish
             if rule.preserve_mapping_size:
-                assert database is not None
-                count = int(database.execute("SELECT COUNT(*) FROM keys").fetchone()[0])
                 return _ProjectedMapping(fields, count, metadata_values), scalarish
             return fields, scalarish
     if event == "start_array":
@@ -483,7 +530,9 @@ def _object_scalarish(value: object, depth: int) -> bool:
         return depth < 2 and len(value) <= 32 and all(_object_scalarish(item, depth + 1) for item in children)
     if isinstance(value, dict):
         children = (
-            (child for _key, child in value.structure_items()) if hasattr(value, "structure_items") else value.values()
+            (child for _key, child in value.structure_key_items())
+            if hasattr(value, "structure_key_items")
+            else value.values()
         )
         return depth < 2 and len(value) <= 8 and all(_object_scalarish(item, depth + 1) for item in children)
     return True
@@ -510,28 +559,35 @@ def _project_object(
         # whole-mapping predicate or metadata fold, ignored values contribute
         # nothing; visit only the declared fields (including explicit nulls).
         selected_fields_only = (
-            scalarish_depth is None and rule.mapping_predicate is None and rule.mapping_key_predicate is None
+            scalarish_depth is None and rule.mapping_predicate is None and rule.mapping_key_prefix is None
         )
         structural_entries = not selected_fields_only and isinstance(value, SpilledObject)
         entries = (
             ((key, value[key]) for key in rule.fields or {} if key in value)
             if selected_fields_only
-            else value.structure_items()
+            else value.structure_key_items()
             if isinstance(value, SpilledObject) and structural_entries
             else value.items()
         )
         for key, child in entries:
-            child_rule = rule.item if rule.mapping_predicate is not None else (rule.fields or {}).get(key)
-            if structural_entries and child_rule is not None:
-                child = value[key]
+            name = _selected_key(key, rule.fields or {})
+            child_rule = (
+                rule.item
+                if rule.mapping_predicate is not None
+                else (rule.fields or {}).get(name)
+                if name is not None
+                else None
+            )
+            if isinstance(value, SpilledObject) and isinstance(key, SpilledKey) and child_rule is not None:
+                child = value.value_for_key(key)
             item, scalarish = _project_object(child, child_rule, scalarish_depth=child_depth)
             values_scalarish &= scalarish
             if rule.mapping_predicate is not None:
                 refused |= not rule.mapping_predicate(item)
-            elif rule.mapping_key_predicate is not None:
-                matching_key |= rule.mapping_key_predicate(key)
-            elif rule.fields is not None and key in rule.fields:
-                fields[key] = item
+            elif rule.mapping_key_prefix is not None:
+                matching_key |= key.startswith(rule.mapping_key_prefix)
+            elif name is not None:
+                fields[name] = item
         count = len(value)
         mapping_scalarish = True
         metadata_values = None
@@ -540,7 +596,7 @@ def _project_object(
             mapping_scalarish = scalarish_depth < 2 and count <= 8 and metadata_values
         if rule.mapping_predicate is not None:
             return ({} if not count else {"node": None if refused else rule.mapping_witness}), mapping_scalarish
-        if rule.mapping_key_predicate is not None:
+        if rule.mapping_key_prefix is not None:
             return (rule.mapping_witness if matching_key else {}), mapping_scalarish
         if rule.preserve_mapping_size:
             return _ProjectedMapping(fields, count, metadata_values), mapping_scalarish

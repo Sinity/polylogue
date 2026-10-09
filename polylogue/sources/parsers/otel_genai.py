@@ -1151,7 +1151,7 @@ def detection_projection() -> DetectorProjection:
             and item["key"].startswith("gen_ai.")
             and "value" in item
         ),
-        mapping_key_predicate=lambda key: key.startswith("gen_ai."),
+        mapping_key_prefix="gen_ai.",
         mapping_witness={"gen_ai.fold": None},
     )
     span = DetectorProjection(

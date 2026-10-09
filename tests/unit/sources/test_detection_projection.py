@@ -3,6 +3,7 @@
 import io
 import json
 from decimal import Decimal
+from pathlib import Path
 from typing import Literal
 
 import pytest
@@ -103,7 +104,7 @@ def test_decoded_type_and_first_arrays_keep_predicates_and_metadata_folds(fold: 
         DetectorProjection(fields={"selected": DetectorProjection()}, preserve_mapping_size=True),
         DetectorProjection(fields={"selected": DetectorProjection()}, capture_metadata_values=True),
         DetectorProjection(mapping_predicate=lambda item: item is None, mapping_witness="accepted"),
-        DetectorProjection(mapping_key_predicate=lambda key: key == "unknown", mapping_witness={"match": True}),
+        DetectorProjection(mapping_key_prefix="unknown", mapping_witness={"match": True}),
     ],
 )
 def test_decoded_projection_matches_event_route_in_each_mapping_branch(rule: DetectorProjection) -> None:
@@ -146,3 +147,88 @@ def test_projection_read_view_validates_json_once(
         assert first is not None
         assert len(first) == (2 if preserve_size else 1)
         assert first["selected"] == (2.5 if isinstance(scalar, Decimal) else scalar)
+
+
+@pytest.mark.parametrize("duplicate_accepted_last", [False, True])
+def test_acquisition_key_folds_keep_exact_duplicates_without_key_materialization(
+    duplicate_accepted_last: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import ExitStack
+
+    from polylogue.schemas.observation_spill import SpilledKey
+    from polylogue.sources.acquisition_boundary import _DocumentValidator, _RecordEvidence
+
+    key = "giant" * (16 * 1024)
+    first, last = (b"null", b"[[[]]]") if not duplicate_accepted_last else (b"[[[]]]", b"null")
+    raw = b'{"' + key.encode() + b'":' + first + b',"' + key.encode() + b'":' + last + b',"selected":"yes"}'
+    rules = [
+        DetectorProjection(fields={"selected": DetectorProjection()}, preserve_mapping_size=True),
+        DetectorProjection(
+            fields={"selected": DetectorProjection()}, capture_metadata_values=True, preserve_mapping_size=True
+        ),
+        DetectorProjection(mapping_predicate=lambda value: value is None, mapping_witness="accepted"),
+        DetectorProjection(mapping_key_prefix="giant", mapping_witness={"match": True}),
+    ]
+    expected = [project_detection_root(json.loads(raw), rule) for rule in rules]
+    observed: list[object] = []
+
+    def unselected_key(self: SpilledKey) -> str:
+        raise AssertionError("projection reconstructed an unselected key")
+
+    def validate(self: _RecordEvidence, _bound: object, *, record: bool) -> None:
+        try:
+            for rule in rules:
+                with ExitStack() as stack:
+                    events = self.events()
+                    event, value = next(events)
+                    observed.append(detection_projection._project(events, event, value, rule, stack))
+        finally:
+            self.close()
+
+    monkeypatch.setattr(SpilledKey, "read", unselected_key)
+    monkeypatch.setattr(_RecordEvidence, "validate", validate)
+    validator = _DocumentValidator(None, records=True)
+    try:
+        for start in range(0, len(raw), 4096):
+            validator.feed(raw[start : start + 4096])
+        validator.finish()
+        assert observed == expected
+        assert [len(value) for value in observed] == [len(value) for value in expected]  # type: ignore[arg-type]
+        assert getattr(observed[1], "metadata_values_scalarish", None) == getattr(
+            expected[1], "metadata_values_scalarish", None
+        )
+        assert validator._tokens.connection.execute("SELECT COUNT(*) FROM projection_keys").fetchone()[0] == 0
+    finally:
+        validator.close()
+
+
+def test_completed_tree_mapping_folds_do_not_read_original_giant_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.schemas.observation_spill import SpilledKey, StreamedJSONDocument
+
+    key = "gen_ai." + "k" * (128 * 1024)
+    document = {key: [[[]]], "selected": "yes"}
+    path = tmp_path / "neutral.json"
+    path.write_bytes(json.dumps(document).encode())
+    rules = [
+        DetectorProjection(fields={"selected": DetectorProjection()}, preserve_mapping_size=True),
+        DetectorProjection(
+            fields={"selected": DetectorProjection()}, capture_metadata_values=True, preserve_mapping_size=True
+        ),
+        DetectorProjection(mapping_key_prefix="gen_ai.", mapping_witness={"match": True}),
+        DetectorProjection(mapping_predicate=lambda item: item is None, mapping_witness="accepted"),
+    ]
+    expected = [project_detection_root(document, rule) for rule in rules]
+
+    def unselected_key(self: SpilledKey) -> str:
+        raise AssertionError("decoded projection reconstructed an unknown key")
+
+    with StreamedJSONDocument(path) as retained:
+        monkeypatch.setattr(SpilledKey, "read", unselected_key)
+        actual = [project_detection_root(retained, rule) for rule in rules]
+        assert actual == expected
+        assert [len(value) for value in actual] == [len(value) for value in expected]  # type: ignore[arg-type]
+        assert getattr(actual[1], "metadata_values_scalarish", None) == getattr(
+            expected[1], "metadata_values_scalarish", None
+        )

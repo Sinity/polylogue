@@ -311,6 +311,8 @@ def test_acquisition_scalar_transport_preserves_completed_prefix_at_each_split(s
     from polylogue.sources.acquisition_boundary import _DocumentValidator
     from polylogue.sources.dispatch import ForeignOriginContentError
 
+    # The backend reports malformed escapes as stdlib JSONDecodeError; both
+    # spellings are syntax faults and retain events completed before the fault.
     class PreviousRawParser(_DocumentValidator):
         def feed(self, chunk: bytes) -> None:
             if self._failed:
@@ -318,7 +320,7 @@ def test_acquisition_scalar_transport_preserves_completed_prefix_at_each_split(s
             self._seen |= bool(chunk.strip())
             try:
                 self._parser.send(chunk)
-            except ijson.JSONError:
+            except (ijson.JSONError, json.JSONDecodeError):
                 self._failed = True
             self._drain()
             if self._failed:
@@ -334,7 +336,7 @@ def test_acquisition_scalar_transport_preserves_completed_prefix_at_each_split(s
                 return
             try:
                 self._parser.close()
-            except ijson.JSONError:
+            except (ijson.JSONError, json.JSONDecodeError):
                 self._failed = True
             self._drain()
             if self._failed or self._depth:
@@ -393,5 +395,41 @@ def test_bound_acquisition_does_not_select_large_unknown_scalar(monkeypatch: pyt
             validator.feed(b"x" * (64 * 1024))
         validator.feed(b'"}\n')
         validator.finish()
+    finally:
+        validator.close()
+
+
+@pytest.mark.parametrize("suffix", [b'"complete"}\n', b'"broken\\q"}\n'])
+def test_bound_acquisition_retains_giant_key_and_completed_foreign_prefix(
+    suffix: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.schemas.observation_spill import SpilledKey
+    from polylogue.sources.acquisition_boundary import BoundRecordValidator
+    from polylogue.sources.dispatch import ForeignOriginContentError
+
+    original_scratch = scratch_connection_context
+
+    @contextlib.contextmanager
+    def small_cells(**kwargs: Any) -> Generator[sqlite3.Connection, None, None]:
+        with original_scratch(**kwargs) as connection:
+            connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 32768)
+            yield connection
+
+    monkeypatch.setattr(observation_spill, "scratch_connection_context", small_cells)
+
+    def unselected_key(self: SpilledKey) -> str:
+        raise AssertionError("acquisition selected an undeclared original key")
+
+    monkeypatch.setattr(SpilledKey, "read", unselected_key)
+    validator = BoundRecordValidator("neutral.jsonl", Provider.CLAUDE_CODE)
+    try:
+        validator.feed(b'{"type":"session_meta","payload":{"id":"neutral"},"')
+        for _ in range(64):
+            validator.feed(b"k" * (64 * 1024))
+        with pytest.raises(ForeignOriginContentError) as failure:
+            validator.feed(b'":' + suffix)
+            validator.finish()
+        assert failure.value.found == Provider.CODEX
     finally:
         validator.close()
