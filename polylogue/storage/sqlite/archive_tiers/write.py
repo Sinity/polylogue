@@ -13298,7 +13298,7 @@ def _assert_unique_message_coordinates(
                     try:
                         index.execute(
                             "INSERT INTO coordinate VALUES (?, ?, ?)",
-                            (position, variant_index, native_id),
+                            (position, variant_index, source_native_id_json(native_id)),
                         )
                     except sqlite3.IntegrityError:
                         previous = index.execute(
@@ -13308,7 +13308,7 @@ def _assert_unique_message_coordinates(
                         raise ValueError(
                             f"duplicate message coordinates in session {session_id!r}: "
                             f"(position={position}, variant_index={variant_index}) <- "
-                            f"{[previous[0], native_id]!r}. A parser assigned the same "
+                            f"{[source_native_id_from_json(previous[0]), native_id]!r}. A parser assigned the same "
                             "(position, variant_index) pair to distinct native message ids; "
                             "writing this batch would silently drop one message."
                         ) from None

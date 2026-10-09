@@ -22,7 +22,7 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
 )
 from polylogue.sources.prepared_message_sink import ScratchSessionSpill, SqliteMessageStore
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
+from polylogue.storage.sqlite.archive_tiers.write import _assert_unique_message_coordinates, prepare_session_shard
 from tests.infra.index_writer import write_fixture_index_session
 from tests.unit.sinex.test_material_adapter import _decoded_publication
 from tests.unit.storage.test_archive_tiers_write import _connect
@@ -157,3 +157,18 @@ def test_shard_owner_lookup_preserves_exact_native_keys_and_ambiguities(tmp_path
     assert "unknown" not in restored.ambiguous_provider_ids
     assert "" not in restored.ambiguous_provider_ids
     assert restored.unique_provider_keys.get("") is None
+
+
+def test_coordinate_collision_reports_exact_source_native_names(tmp_path: Path) -> None:
+    store = SqliteMessageStore(tmp_path / "coordinates.db")
+    try:
+        sink = store.new_sink()
+        names = _NAMES[1:3]
+        sink.extend(
+            ParsedMessage(provider_message_id=native, position=0, role=Role.USER, text="same") for native in names
+        )
+        with pytest.raises(ValueError) as refusal:
+            _assert_unique_message_coordinates("native-coordinate-law", sink)
+        assert all(repr(native) in str(refusal.value) for native in names)
+    finally:
+        store.close()
