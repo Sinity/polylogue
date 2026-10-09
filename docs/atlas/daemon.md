@@ -344,6 +344,11 @@ if a missing session has appeared since authorization. Correction recovery
 checks the exact kind, payload, note and normalized author before replay;
 an already committed matching effect preserves its creation and update times.
 
+Saved-view preparation strips the requested name before resolving collisions
+and recording its plan. Apply and recovery consume that admitted name, so a
+padded Python API name cannot retire a view absent from the authorized targets
+or restamp an already committed view during recovery.
+
 Long source preparation emits `daemon.work.progress` through the structured field registry. `unit_id` identifies an invocation and `productive_id` identifies the retry-stable source recipe; both are registered opaque identifiers. The fresh-build observer counts only counter advances above that recipe’s high-water. Repeated or reset retry counters do not prove progress, while advancing preparation remains observable before durable publication.
 
 Cold-build generation events retain stable lifecycle reason tokens: `explicit_cold_build` for an explicit request, `empty_active_index_generation` for ordinary empty-index admission, and `interrupted_promotion` for promotion recovery. They use the existing registered `reason` field and token validation.

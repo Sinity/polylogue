@@ -2251,7 +2251,12 @@ class SavedViewSaveActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: SavedViewSaveArgs) -> MutationPlan:
-        collision = args.archive.get_view_by_name(args.name)
+        name = args.name.strip()
+        if not name:
+            raise ValueError("name must not be empty")
+        # Storage binds and retires names after stripping whitespace. Resolve
+        # that same name before authorization so every replaced view is named.
+        collision = args.archive.get_view_by_name(name)
         collision_view_id = (
             collision["view_id"] if collision is not None and collision["view_id"] != args.view_id else None
         )
@@ -2278,7 +2283,7 @@ class SavedViewSaveActuator(ConvergentReplay):
             reversible=True,
             context={
                 "view_id": args.view_id,
-                "name": args.name,
+                "name": name,
                 "query_json": args.query_json,
                 "collision_view_id": collision_view_id,
                 "watch": args.watch,
