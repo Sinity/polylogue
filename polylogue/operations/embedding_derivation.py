@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from pathlib import Path
 
 from polylogue.daemon.derivation import DerivationFrame
@@ -43,7 +44,9 @@ def select_embedding_session_window(
     """Resolve one bounded pending-session window for a daemon operation."""
     from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
 
-    with open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False) as conn:
+    with closing(
+        open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False)
+    ) as conn:
         embeddings_path = archive_root / "embeddings.db"
         if embeddings_path.exists():
             attach_readonly_database(conn, embeddings_path, alias="embedding_tier")
@@ -98,7 +101,9 @@ def embedding_session_ids_for_paths(
     normalized = tuple(dict.fromkeys(Path(path) for path in paths))
     if not normalized:
         return ()
-    with open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False) as conn:
+    with closing(
+        open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False)
+    ) as conn:
         by_path = session_ids_for_source_paths(conn, normalized, source_db=archive_root / "source.db")
     return tuple(dict.fromkeys(session_id for path in normalized for session_id in by_path.get(path, ())))
 
@@ -152,10 +157,12 @@ def make_embedding_derivation(
             session_id: str | None = None
             try:
                 index_path = resolve_active_index_path(archive_root).resolve()
-                with open_readonly_connection(
-                    index_path,
-                    timeout_class="background-read",
-                    validate_schema=False,
+                with closing(
+                    open_readonly_connection(
+                        index_path,
+                        timeout_class="background-read",
+                        validate_schema=False,
+                    )
                 ) as conn:
                     row = conn.execute(
                         "SELECT session_id FROM messages WHERE message_id = ?",

@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -1114,7 +1115,7 @@ def _check_secret_scan_sweep_medium() -> HealthAlert:
         from polylogue.daemon.secret_scan_sweep import SECRET_SCAN_SWEEP_STAGE
         from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-        with open_readonly_connection(ops_db) as conn:
+        with closing(open_readonly_connection(ops_db)) as conn:
             row = conn.execute(
                 "SELECT status FROM daemon_stage_events "
                 "WHERE stage = ? ORDER BY observed_at_ms DESC, rowid DESC LIMIT 1",

@@ -22,6 +22,7 @@ Synthetic-only: no real archive paths, no user data. Fixtures are scoped to
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -838,6 +839,72 @@ def test_secret_scan_sweep_reports_recorded_failure(
     assert alert.severity == HealthSeverity.ERROR
     assert alert.check_name == "secret_scan_sweep"
     assert "retry" in alert.message
+
+
+def test_secret_scan_sweep_closes_readers_on_success_and_query_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operation owns and closes each reader, including its error path."""
+    from contextlib import closing
+
+    from polylogue.daemon.secret_scan_sweep import SECRET_SCAN_SWEEP_STAGE
+    from polylogue.storage.sqlite import connection_profile
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event
+
+    success_root = tmp_path / "success"
+    success_root.mkdir()
+    success_db = success_root / "ops.db"
+    initialize_archive_database(success_db, ArchiveTier.OPS)
+    with closing(sqlite3.connect(success_db)) as conn:
+        record_daemon_stage_event(
+            conn,
+            stage=SECRET_SCAN_SWEEP_STAGE,
+            status="complete",
+            observed_at_ms=1_770_000_000_000,
+            payload={},
+        )
+        conn.commit()
+
+    error_root = tmp_path / "query-error"
+    error_root.mkdir()
+    error_db = error_root / "ops.db"
+    initialize_archive_database(error_db, ArchiveTier.OPS)
+    with closing(sqlite3.connect(error_db)) as conn:
+        conn.execute("DROP TABLE daemon_stage_events")
+        conn.commit()
+
+    opened: list[sqlite3.Connection] = []
+    real_open = connection_profile.open_readonly_connection
+
+    def tracked_open(path: str | Path) -> sqlite3.Connection:
+        conn = real_open(path)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(connection_profile, "open_readonly_connection", tracked_open)
+    monkeypatch.setattr(health_module, "archive_root", lambda: success_root)
+
+    def fd_count() -> int:
+        return len(os.listdir("/proc/self/fd"))
+
+    observe_fds = Path("/proc/self/fd").is_dir()
+    # Warm lazy imports and filesystem metadata before taking the descriptor baseline.
+    assert _check_secret_scan_sweep_medium().severity == HealthSeverity.OK
+    before = fd_count() if observe_fds else 0
+    for index in range(40):
+        monkeypatch.setattr(
+            health_module,
+            "archive_root",
+            lambda root=(success_root if index % 2 == 0 else error_root): root,
+        )
+        alert = _check_secret_scan_sweep_medium()
+        assert alert.severity == (HealthSeverity.OK if index % 2 == 0 else HealthSeverity.ERROR)
+        # Keep strong references: closure cannot be an incidental GC effect.
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            opened[-1].execute("SELECT 1")
+        if observe_fds:
+            assert fd_count() <= before + 1
+    assert len(opened) == 41
 
 
 def test_repeated_stage_failures_error_when_many_recent_failures(
