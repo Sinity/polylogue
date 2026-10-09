@@ -3829,6 +3829,8 @@ class SessionDetailResponse(SurfacePayloadModel):
 class SessionMessagesResponsePayload(SurfacePayloadModel):
     """Finite `read --view messages --format json` response."""
 
+    _transaction_request: object | None = PrivateAttr(default=None)
+
     session_id: str
     messages: tuple[SessionMessageRowPayload, ...]
     total: int

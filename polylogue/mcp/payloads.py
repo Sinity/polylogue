@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
-from pydantic import Field, RootModel
+from pydantic import Field, PrivateAttr, RootModel
 from typing_extensions import TypedDict
 
 from polylogue.archive.context_models import ContextImage
@@ -72,8 +72,26 @@ TRoot = TypeVar("TRoot")
 class MCPRootPayload(RootModel[TRoot], Generic[TRoot]):
     """Root-model variant for list/map payloads."""
 
+    _transaction_request: object | None = PrivateAttr(default=None)
+
     def to_json(self, *, exclude_none: bool = False) -> str:
         return self.model_dump_json(indent=2, exclude_none=exclude_none)
+
+
+class MCPMessageFragmentPayload(SurfacePayloadModel):
+    """Lossless ASCII JSON row bytes; concatenate by offset then JSON-decode once."""
+
+    status: Literal["message_fragment"] = "message_fragment"
+    message_id: str
+    session_ref: str
+    result_ref: str
+    row_offset: int = Field(ge=0)
+    encoding: Literal["ascii-json"] = "ascii-json"
+    offset: int = Field(ge=0)
+    total_bytes: int = Field(ge=1)
+    json_fragment: str
+    next_fragment_offset: int | None
+    continuation: dict[str, object] | None
 
 
 class MCPErrorPayload(SurfacePayloadModel):

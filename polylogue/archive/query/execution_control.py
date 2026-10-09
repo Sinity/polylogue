@@ -533,6 +533,10 @@ class InterruptibleSQLiteRead:
             else:
                 self._store = target
         remove_listener = ctx.add_cancel_listener(self.interrupt)
+        from polylogue.core.compute import current_cancellation
+
+        cancellation = current_cancellation()
+        remove_parent = cancellation.add_listener(ctx.cancel) if cancellation is not None else None
         try:
             if isinstance(target, sqlite3.Connection):
                 target.set_progress_handler(guard, opcodes)
@@ -553,6 +557,8 @@ class InterruptibleSQLiteRead:
                 ctx.receipt.state = "completed"
         finally:
             remove_listener()
+            if remove_parent is not None:
+                remove_parent()
             ctx.receipt.run_s = time.monotonic() - started
             with self._store_lock:
                 self._connection = None

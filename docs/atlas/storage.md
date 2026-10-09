@@ -622,3 +622,8 @@ a second run projection to obtain unused counters. Unscoped FTS discovery merges
 the ordered session and block-membership indexes with one distinct session-key
 page, retaining empty sessions and blocks-only keys without collecting the
 remaining archive for every page (`storage/fts/derivation.py`, `required_page`).
+
+Blackboard paging counts and selects active NOTE assertions in one User read
+snapshot, ordered by updated_at_ms descending then assertion_id. Structured
+kind/repo/unresolved filters use the canonical body decoder before pagination.
+Only the selected page is hydrated; the MCP no longer reads a million-note prefix.

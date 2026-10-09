@@ -1204,16 +1204,49 @@ def list_archive_blackboard_note_envelopes(
     limit: int | None = None,
 ) -> list[ArchiveBlackboardNoteEnvelope]:
     """List blackboard notes from note assertions, newest first."""
-    envelopes = [
-        _blackboard_envelope_from_assertion(assertion)
-        for assertion in list_assertions_by_kind(conn, AssertionKind.NOTE)
-        # Candidate notes are deliberately visible only through the judgment
-        # queue.  The blackboard is the active, operator-approved read model.
-        if assertion.status == AssertionStatus.ACTIVE
-    ]
-    if limit is not None and limit > 0:
-        return envelopes[:limit]
-    return envelopes
+    return read_archive_blackboard_page(conn, limit=limit)[0]
+
+
+def read_archive_blackboard_page(
+    conn: sqlite3.Connection,
+    *,
+    limit: int | None,
+    offset: int = 0,
+    kind: str | None = None,
+    scope_repo: str | None = None,
+    unresolved: bool = False,
+) -> tuple[list[ArchiveBlackboardNoteEnvelope], int]:
+    """Count and select approved notes in one snapshot, filtering before paging."""
+    from polylogue.archive.blackboard import UNRESOLVED_KINDS, parse_blackboard_body
+
+    if not _table_exists(conn, "assertions"):
+        return [], 0
+
+    def selected(body: str | None) -> int:
+        parsed = parse_blackboard_body(body or "")
+        return int(
+            (kind is None or parsed.kind == kind)
+            and (scope_repo is None or parsed.scope_repo == scope_repo)
+            and (not unresolved or parsed.kind in UNRESOLVED_KINDS)
+        )
+
+    filtered = kind is not None or scope_repo is not None or unresolved
+    where = "kind = ? AND status = ?"
+    if filtered:
+        conn.create_function("blackboard_selected", 1, selected, deterministic=True)
+        where += " AND blackboard_selected(body_text) = 1"
+    try:
+        parameters = (AssertionKind.NOTE.value, AssertionStatus.ACTIVE.value)
+        total = int(conn.execute(f"SELECT COUNT(*) FROM assertions WHERE {where}", parameters).fetchone()[0])
+        rows = conn.execute(
+            f"SELECT {_ASSERTION_COLUMNS} FROM assertions WHERE {where} "
+            "ORDER BY updated_at_ms DESC, assertion_id LIMIT ? OFFSET ?",
+            (*parameters, limit if limit is not None and limit > 0 else -1, offset),
+        ).fetchall()
+        return [_blackboard_envelope_from_assertion(_assertion_row_to_envelope(row)) for row in rows], total
+    finally:
+        if filtered:
+            conn.create_function("blackboard_selected", 1, None)
 
 
 def prepare_assertion_row(

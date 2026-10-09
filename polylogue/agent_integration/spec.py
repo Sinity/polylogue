@@ -409,7 +409,13 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 False,
                 "Raw message ID (not a message: ref); only with view=messages and without offset or continuation.",
             ),
-            _arg("continuation", "string", False, "Opaque token from the preceding read response; send alone."),
+            _arg("continuation", "string", False, "Opaque bound token; preserve the returned ref and view."),
+            _arg(
+                "fragment_offset",
+                "integer",
+                False,
+                "Byte offset in an oversized message's ASCII JSON; copy only from its bound continuation descriptor.",
+            ),
         ),
         examples=(
             _example(

@@ -104,7 +104,7 @@ def _page(
         QueryContinuation(tx.next(offset=next_offset), tx.result_ref).encode() if next_offset is not None else None
     )
     gaps = gaps or []
-    return SessionPage(
+    page = SessionPage(
         items=items,
         total=total,
         limit=tx.page_size,
@@ -116,6 +116,8 @@ def _page(
         ),
         outcome="degraded" if gaps else "ok" if items else "empty",
     )
+    page._transaction_request = tx
+    return page
 
 
 async def session_query(

@@ -27,7 +27,7 @@ Anti-vacuity — what turns these red:
   which the concatenation check catches even when each page looks plausible
   alone.
 * ``test_mcp_messages_continuation_resumes_the_window`` — remove the
-  ``message-offset:`` continuation branch and MCP refuses with
+  opaque transcript continuation branch and MCP refuses with
   ``invalid_continuation`` instead of returning the second page.
 * ``test_transcript_window_rank_and_provenance_are_identical_across_surfaces``
   — rank (``position``) and provenance (``identity_source``,
@@ -316,7 +316,7 @@ async def test_mcp_messages_continuation_resumes_the_window(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MCP continues a transcript window by the shared decimal-offset vocabulary."""
+    """MCP continues a transcript window under its original snapshot-bound token."""
 
     archive_root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
@@ -330,19 +330,26 @@ async def test_mcp_messages_continuation_resumes_the_window(
         patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
         patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
     ):
+        initial = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["read"].fn,
+                ref=f"session:{session_id}",
+                view="messages",
+                limit=half,
+            )
+        )
         raw = await invoke_surface_async(
             mcp_server._tool_manager._tools["read"].fn,
             ref=f"session:{session_id}",
             view="messages",
-            limit=half,
-            continuation=f"message-offset:{half}",
+            continuation=initial["continuation"],
         )
         bad = json.loads(
             await invoke_surface_async(
                 mcp_server._tool_manager._tools["read"].fn,
                 ref=f"session:{session_id}",
                 view="messages",
-                continuation="message-offset:not-a-number",
+                continuation="not-a-continuation",
             )
         )
 

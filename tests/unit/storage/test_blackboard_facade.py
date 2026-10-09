@@ -152,3 +152,29 @@ async def test_list_on_fresh_archive_is_empty(workspace_env: dict[str, Path]) ->
     async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             assert await poly.list_blackboard_notes() == []
+
+
+@pytest.mark.asyncio
+async def test_blackboard_page_counts_filtered_notes_before_window(workspace_env: dict[str, Path]) -> None:
+    db_path = db_setup(workspace_env)
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            for index in range(7):
+                await poly.post_blackboard_note(
+                    kind="blocker" if index % 2 else "finding",
+                    title=str(index),
+                    content="neutral",
+                    scope_repo="scope",
+                    author_kind="user",
+                )
+            first = await poly.read_blackboard_page(kind="blocker", scope_repo="scope", limit=1)
+            second = await poly.read_blackboard_page(
+                kind="blocker", scope_repo="scope", limit=1, offset=first.next_offset
+            )
+            last = await poly.read_blackboard_page(
+                kind="blocker", scope_repo="scope", limit=1, offset=second.next_offset
+            )
+            assert first.total == second.total == last.total == 3
+            assert len({page.items[0].note_id for page in (first, second, last)}) == 3
+            assert last.next_offset is None
+            assert (await poly.read_blackboard_page(kind="blocker", limit=1, offset=3)).items == ()

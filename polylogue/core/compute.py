@@ -243,14 +243,22 @@ class CancellationHandle:
         with self._lock:
             self._connections.pop(id(connection), None)
 
-    def add_listener(self, listener: Callable[[], None]) -> None:
+    def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Run ``listener`` when cancellation fires, or immediately if it already has."""
 
         with self._lock:
-            if not self.cancelled:
+            already_cancelled = self.cancelled
+            if not already_cancelled:
                 self._listeners.append(listener)
-                return
-        listener()
+        if already_cancelled:
+            listener()
+
+        def remove() -> None:
+            with self._lock:
+                if listener in self._listeners:
+                    self._listeners.remove(listener)
+
+        return remove
 
     def cancel(self) -> None:
         self._cancelled.set()

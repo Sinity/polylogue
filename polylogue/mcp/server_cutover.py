@@ -333,6 +333,12 @@ async def _cost_outlook_payload(hooks: ServerCallbacks, *, plan_name: str, metho
     return hooks.json_payload(outlook, exclude_none=True)
 
 
+def _framed_root_payload(source: Any, *, root: dict[str, object]) -> MCPRootPayload:
+    payload = MCPRootPayload(root=root)
+    payload._transaction_request = source._transaction_request
+    return payload
+
+
 async def _query_sessions(
     hooks: ServerCallbacks,
     *,
@@ -476,18 +482,20 @@ async def _query_sessions(
         # This typed owner carries a framed continuation rather than a search cursor.
         envelope = envelope.model_copy(update={"next_offset": payload.next_offset})
         return hooks.json_payload(
-            MCPRootPayload(
+            _framed_root_payload(
+                payload,
                 root={
                     **envelope.model_dump(mode="json"),
                     "continuation": payload.continuation,
                     "coverage": payload.coverage.model_dump(mode="json"),
-                }
+                },
             )
         )
     from polylogue.surfaces.outcome import OutcomeEnvelope
 
     return hooks.json_payload(
-        MCPRootPayload(
+        _framed_root_payload(
+            payload,
             root={
                 **payload.model_dump(mode="json"),
                 "unit": "sessions",
@@ -496,7 +504,7 @@ async def _query_sessions(
                     reason=payload.coverage.gaps[0] if payload.coverage.gaps else None,
                     detail={"gaps": payload.coverage.gaps} if payload.coverage.gaps else {},
                 ).to_dict(),
-            }
+            },
         )
     )
 
@@ -920,10 +928,9 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
             )
 
         assert projection == "blackboard", f"unhandled personal-state projection: {projection}"
-        notes = await poly.list_blackboard_notes(limit=1_000_000)
-        note_page, note_total, note_offset, note_next_offset = page_items(
-            tuple(blackboard_note_payload(note) for note in notes), limit=clamped_limit, offset=offset
-        )
+        notes = await poly.read_blackboard_page(limit=clamped_limit, offset=offset)
+        note_page = tuple(blackboard_note_payload(note) for note in notes.items)
+        note_total, note_offset, note_next_offset = notes.total, notes.offset, notes.next_offset
         return hooks.json_payload(
             MCPBlackboardNoteListPayload(
                 items=note_page,
@@ -1485,7 +1492,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     exc.corrected_expression = propose_field_correction(expression, exc)
                 raise
 
-        return await hooks.async_safe_call("query", run_with_refinement)
+        return await hooks.async_safe_call("query", run_with_refinement, arguments={"projection": projection})
 
     async def read(
         ref: str,
@@ -1494,17 +1501,17 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         offset: int | None = None,
         continuation: str | None = None,
         around: str | None = None,
+        fragment_offset: int | None = None,
     ) -> str:
         """Read a stable URI or public ref through an explicitly named view.
 
         ``offset`` windows the row-bearing views (``messages``) exactly as the
         CLI ``--offset`` and the HTTP ``?offset=`` parameter do, so the same
-        transcript window is expressible on every public surface rather than
-        only the first page here.  The ``messages`` view continues by decimal
-        offset (``continuation="message-offset:<n>"``), matching the
-        ``topology`` view's existing ``node-offset:`` form; the surfaces share
-        one offset vocabulary rather than one surface inventing a token the
-        others cannot mint.
+        transcript window is expressible on every public surface. The messages
+        view returns opaque snapshot-bound continuations. Oversized rows return
+        lossless ASCII JSON fragments; copy the continuation descriptor's ref,
+        view, token and fragment_offset. Concatenate contiguous json_fragment
+        bytes and JSON-decode only after total_bytes has been reached.
 
         ``around`` names a message whose window is wanted instead of a
         coordinate naming it (polylogue-idrej).  It is sugar over ``offset``:
@@ -1516,6 +1523,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         the CLI: ``limit``/``offset`` bound the page, and the payload's
         opaque ``continuation`` resumes it until ``complete``.
         """
+        if fragment_offset is not None and (view != "messages" or fragment_offset < 0 or continuation is None):
+            return hooks.error_json(
+                "fragment_offset requires a bound messages continuation", code="invalid_argument", tool="read"
+            )
         started_at = monotonic()
         from polylogue.core.refs import parse_delegation_subtree_object_id
 
@@ -1578,21 +1589,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 )
 
                 window_offset = offset or 0
-                window_continuation: str | None = None
-                if continuation is not None:
-                    # Two accepted forms, one issued form. ``message-offset:<n>``
-                    # is the plain decimal coordinate the ``topology`` view also
-                    # speaks; anything else is the opaque snapshot-bound token
-                    # this route now mints and every other surface can read.
-                    if continuation.startswith("message-offset:"):
-                        token = continuation.removeprefix("message-offset:")
-                        if not token.isdecimal():
-                            return hooks.error_json(
-                                "invalid messages continuation", code="invalid_continuation", tool="read"
-                            )
-                        window_offset = int(token)
-                    else:
-                        window_continuation = continuation
+                window_continuation = continuation
                 from polylogue.archive.query.transaction import (
                     QueryContinuationInvalidError,
                     QueryContinuationStaleError,
@@ -1624,31 +1621,32 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     return hooks.error_json(str(exc), code=exc.code, tool="read")
                 messages = window.rows
                 total = window.total
-                return hooks.json_payload(
-                    SessionMessagesResponsePayload(
-                        session_id=target,
-                        messages=tuple(
-                            message_row_envelope_from_domain(message, session_id=target) for message in messages
-                        ),
-                        total=total,
-                        limit=window.limit,
-                        offset=window.offset,
-                        next_offset=window.next_offset,
-                        continuation=window.continuation,
-                        lineage_complete=window.lineage_complete,
-                        lineage_truncation_reason=window.lineage_truncation_reason,
-                        authority=authority_for_config(
-                            hooks.get_polylogue().config,
-                            server_identity="direct",
-                            started_at=started_at,
-                        ),
-                        outcome=lineage_page_outcome(
-                            matched=len(messages),
-                            complete=window.lineage_complete,
-                            truncation_reason=window.lineage_truncation_reason,
-                        ),
-                    )
+                payload = SessionMessagesResponsePayload(
+                    session_id=target,
+                    messages=tuple(
+                        message_row_envelope_from_domain(message, session_id=target) for message in messages
+                    ),
+                    total=total,
+                    limit=window.limit,
+                    offset=window.offset,
+                    next_offset=window.next_offset,
+                    continuation=window.continuation,
+                    lineage_complete=window.lineage_complete,
+                    lineage_truncation_reason=window.lineage_truncation_reason,
+                    authority=authority_for_config(
+                        hooks.get_polylogue().config,
+                        server_identity="direct",
+                        started_at=started_at,
+                    ),
+                    outcome=lineage_page_outcome(
+                        matched=len(messages),
+                        complete=window.lineage_complete,
+                        truncation_reason=window.lineage_truncation_reason,
+                    ),
                 )
+                payload._transaction_request = window.transaction
+                return hooks.json_payload(payload)
+
             list_projection = SESSION_LIST_PROJECTIONS.get(view) if view is not None else None
             if list_projection is not None:
                 if session_id is None:
@@ -1678,7 +1676,20 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 return hooks.error_json(str(exc), code=exc.code, tool="read")
             return hooks.json_payload(payload)
 
-        return await hooks.async_safe_call("read", run, session_id=session_id)
+        return await hooks.async_safe_call(
+            "read",
+            run,
+            session_id=session_id,
+            arguments={
+                "ref": ref,
+                "view": view,
+                "limit": limit,
+                "offset": offset,
+                "continuation": continuation,
+                "around": around,
+                "fragment_offset": fragment_offset,
+            },
+        )
 
     async def get(ref: str, projection: MCPGetProjection = None) -> str:
         """Resolve one exact stable object or evidence identity.

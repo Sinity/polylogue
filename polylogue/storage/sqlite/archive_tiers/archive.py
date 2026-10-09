@@ -6443,6 +6443,28 @@ class ArchiveStore:
         finally:
             self._close_user_connection(user_conn)
 
+    def read_blackboard_page(
+        self,
+        *,
+        limit: int,
+        offset: int = 0,
+        kind: str | None = None,
+        scope_repo: str | None = None,
+        unresolved: bool = False,
+    ) -> tuple[list[ArchiveBlackboardNoteEnvelope], int]:
+        from polylogue.storage.sqlite.archive_tiers.user_write import read_archive_blackboard_page
+
+        if not self.user_db_path.exists():
+            return [], 0
+        user_conn = self._open_read_connection(self.user_db_path)
+        try:
+            user_conn.execute("BEGIN")
+            return read_archive_blackboard_page(
+                user_conn, limit=limit, offset=offset, kind=kind, scope_repo=scope_repo, unresolved=unresolved
+            )
+        finally:
+            self._close_user_connection(user_conn)
+
     @_archive_mutator
     def delete_sessions(
         self,

@@ -461,3 +461,9 @@ Configured receivers pin the current owner-only persisted token for each HTTP op
 Authenticated status first obtains `/v1/receiver/status-challenge`, a receiver-issued nonce owned by that kept-alive connection. `/v1/receiver/status-attest` consumes it once before checking the signed request. The client prohibits reconnecting before attestation; recorded requests cannot authorize another connection or a restarted receiver. Local native SQL settlement failures produce `receiver_observation_storage_failed` and retain the original cleanup owner.
 
 Pairing-code redemption validates and consumes the code, then returns the receiver’s pinned token; it does not consult or mint an unrelated default credential. A receiver with authentication disabled refuses redemption with `receiver_auth_disabled`. The local `browser-capture action` command enqueues through its spool owner and has no receiver authentication options or credential publication side effect. Lazy JSON read failures are classified at the SQLite view producer; renderer and output exceptions retain their original identity.
+
+HTTP query-unit and transcript reads bind the existing event-driven socket EOF
+observer to their exact query execution context. Scheduled reads bind it to the
+original compute cancellation handle; controlled SQL inherits that signal and
+removes the listener at settlement. Peer cancellation retains read admission
+and creator cleanup until physical SQL completion.

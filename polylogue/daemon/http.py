@@ -1710,6 +1710,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return _MUTATION_WAIT_TIMEOUT_S
         return declared_s
 
+    @contextlib.contextmanager
+    def _observe_read_peer(self, cancel: Callable[[], None]) -> Iterator[None]:
+        from polylogue.daemon.operation_disconnect import observe_peer_disconnect
+
+        with observe_peer_disconnect(self.connection) as disconnected:
+            remove = disconnected.add_listener(cancel)
+            try:
+                yield
+            finally:
+                remove()
+
     def _sync_run(self, handler: Callable) -> object:  # type: ignore[type-arg]
         """Run reads on compute workers and admitted writes on writer workers."""
         mutating = getattr(self, "_write_gate_depth", 0) > 0
@@ -1761,18 +1772,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     cancellation=cancellation,
                 )
                 try:
-                    try:
+                    with self._observe_read_peer(cancellation.cancel):
                         result = submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
-                    except FutureTimeoutError as error:
-                        cancellation.cancel()
-                        submitted.future.cancel()
-                        route_span.set(
-                            reason="archive_query_timeout", timeout_ms=round(_ARCHIVE_QUERY_TIMEOUT_S * 1000, 3)
-                        )
-                        raise TimeoutError(
-                            f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
-                            "the daemon may be busy with catch-up ingestion/embedding"
-                        ) from error
+                except FutureTimeoutError as error:
+                    cancellation.cancel()
+                    submitted.future.cancel()
+                    route_span.set(reason="archive_query_timeout", timeout_ms=round(_ARCHIVE_QUERY_TIMEOUT_S * 1000, 3))
+                    raise TimeoutError(
+                        f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
+                        "the daemon may be busy with catch-up ingestion/embedding"
+                    ) from error
+                else:
                     route_span.ok()
                     return result
                 finally:
@@ -4129,14 +4139,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "session_filters": request.session_filters or {},
                 }
             )
-            payload = transaction.run_sync(
-                lambda archive: _query_units_payload(
-                    operation_params,
-                    archive=archive,
-                    serving_identity="daemon",
-                    execution_context=transaction.context,
+            with self._observe_read_peer(transaction.context.cancel):
+                payload = transaction.run_sync(
+                    lambda archive: _query_units_payload(
+                        operation_params,
+                        archive=archive,
+                        serving_identity="daemon",
+                        execution_context=transaction.context,
+                    )
                 )
-            )
         except QueryTimeoutError:
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "query_deadline_exceeded")
             return
@@ -4590,23 +4601,32 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         continuation: str | None = None,
         around: str | None = None,
     ) -> object | None:
-        with archive_read_context(
+        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+
+        transaction = QueryTransaction(
             archive_root,
-            operation="http.archive.read",
-            arguments={"path": getattr(self, "path", "")},
-            projection="http-read",
-        ) as archive:
-            return execute_http_session_messages(
-                {
-                    "session_id": conv_id,
-                    "limit": limit,
-                    "offset": offset,
-                    "continuation": continuation,
-                    "around": around,
-                },
-                archive=archive,
-                adapters=_http_session_projection_adapters(),
-                server_identity="daemon",
+            QueryTransactionRequest(
+                operation="http.archive.read",
+                arguments={"path": getattr(self, "path", "")},
+                projection="http-read",
+                page_size=limit,
+                offset=offset,
+            ),
+        )
+        with self._observe_read_peer(transaction.context.cancel):
+            return transaction.run_sync(
+                lambda archive: execute_http_session_messages(
+                    {
+                        "session_id": conv_id,
+                        "limit": limit,
+                        "offset": offset,
+                        "continuation": continuation,
+                        "around": around,
+                    },
+                    archive=archive,
+                    adapters=_http_session_projection_adapters(),
+                    server_identity="daemon",
+                )
             )
 
     # ------------------------------------------------------------------

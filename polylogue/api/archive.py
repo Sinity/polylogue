@@ -23,7 +23,7 @@ from polylogue.analysis.insight_reads import read_insight_page
 from polylogue.api.archive_reads import ArchiveReadCapability
 from polylogue.api.facade_client import submit_facade_product
 from polylogue.archive.actions.actions import Action
-from polylogue.archive.blackboard import BlackboardNote
+from polylogue.archive.blackboard import BlackboardNote, BlackboardPage
 from polylogue.archive.context_models import (
     DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
@@ -6754,45 +6754,54 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         unresolved: bool = False,
         limit: int = 20,
     ) -> list[BlackboardNote]:
-        """List blackboard notes, newest first, with optional filters (#1697).
-
-        ``unresolved`` narrows to open-work kinds (:data:`UNRESOLVED_KINDS`).
-        Filtering runs on decoded notes, then the result is capped at ``limit``.
-        """
-        from polylogue.archive.blackboard import (
-            UNRESOLVED_KINDS,
-            decode_blackboard_note,
+        """Return the requested prefix of the canonical filtered blackboard page."""
+        return list(
+            (
+                await self.read_blackboard_page(kind=kind, scope_repo=scope_repo, unresolved=unresolved, limit=limit)
+            ).items
         )
 
-        envelopes = await run_archive_read(
+    async def read_blackboard_page(
+        self,
+        *,
+        kind: str | None = None,
+        scope_repo: str | None = None,
+        unresolved: bool = False,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> BlackboardPage:
+        from polylogue.archive.blackboard import BlackboardPage, decode_blackboard_note
+
+        if limit <= 0 or offset < 0:
+            raise ValueError("blackboard page requires a positive limit and nonnegative offset")
+        envelopes, total = await run_archive_read(
             _active_archive_root(self.config),
             operation="user_state.blackboard.list",
             arguments={"kind": kind, "scope_repo": scope_repo, "unresolved": unresolved},
-            work=lambda archive: archive.list_blackboard_notes(),
+            work=lambda archive: archive.read_blackboard_page(
+                kind=kind, scope_repo=scope_repo, unresolved=unresolved, limit=limit, offset=offset
+            ),
             page_size=limit,
+            offset=offset,
             projection="blackboard-notes",
             stable_order="updated_at:desc,note_id",
         )
-        notes: list[BlackboardNote] = []
-        for envelope in envelopes:
-            note = decode_blackboard_note(
-                note_id=envelope.note_id,
-                body=envelope.body,
-                target_type=envelope.target_type,
-                target_id=envelope.target_id,
-                created_at_ms=envelope.created_at_ms,
-                updated_at_ms=envelope.updated_at_ms,
-            )
-            if kind is not None and note.kind != kind:
-                continue
-            if scope_repo is not None and note.scope_repo != scope_repo:
-                continue
-            if unresolved and note.kind not in UNRESOLVED_KINDS:
-                continue
-            notes.append(note)
-            if limit > 0 and len(notes) >= limit:
-                break
-        return notes
+        return BlackboardPage(
+            items=tuple(
+                decode_blackboard_note(
+                    note_id=envelope.note_id,
+                    body=envelope.body,
+                    target_type=envelope.target_type,
+                    target_id=envelope.target_id,
+                    created_at_ms=envelope.created_at_ms,
+                    updated_at_ms=envelope.updated_at_ms,
+                )
+                for envelope in envelopes
+            ),
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
 
     async def get_setting(self, setting_key: str) -> ArchiveUserSettingEnvelope | None:
         """Read one durable ``user_settings`` row, or ``None`` when unset (polylogue-at44).

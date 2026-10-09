@@ -298,7 +298,7 @@ def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseM
     best: tuple[BaseModel, int] | None = None
     while low <= high:
         count = (low + high) // 2
-        updates: dict[str, object] = {item_field: items[:count]}
+        updates: dict[str, object] = {item_field: list(items[:count]) if isinstance(raw_items, list) else items[:count]}
         if hasattr(payload, "next_offset"):
             offset = getattr(payload, "offset", 0)
             updates["next_offset"] = offset + count
@@ -389,7 +389,10 @@ def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: b
     # transaction; ``_narrow_continuation`` already advanced their offset.
     if (
         context is not None
-        and context.tool in {"query", "query_units"}
+        and (
+            context.tool in {"query", "query_units"}
+            or (context.tool == "read" and context.arguments.get("view") == "messages")
+        )
         and page is not None
         and context.arguments.get("projection") not in PERSONAL_STATE_PROJECTIONS | registry_projections
     ):
@@ -403,11 +406,21 @@ def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: b
             if not isinstance(request, QueryTransactionRequest):
                 raise ValueError("query payload did not retain its transaction request")
             narrowed = request.next(offset=request.offset + page[1])
+            token = QueryContinuation(request=narrowed, result_ref=request.result_ref).encode()
+            arguments: dict[str, object] = {"continuation": token}
+            projection = context.arguments.get("projection")
+            if projection == "session-operations":
+                operation = {"operation": request.operation, "continuation": token}
+                if "ref" in request.arguments:
+                    operation["ref"] = request.arguments["ref"]
+                arguments = {"projection": projection, "session_operation": operation}
+            elif context.tool == "read":
+                arguments.update(ref=context.arguments["ref"], view=context.arguments.get("view"))
+            elif projection is not None:
+                arguments["projection"] = projection
             continuation = {
                 "tool": context.tool,
-                "arguments": {
-                    "continuation": QueryContinuation(request=narrowed, result_ref=request.result_ref).encode()
-                },
+                "arguments": arguments,
                 "reason": "The original query page exceeded the MCP response budget; continue from the returned prefix.",
             }
         except ValueError:
@@ -437,11 +450,88 @@ def _json_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
     """Serialize typed MCP output, replacing oversized bodies with a safe envelope."""
     result = _serialize_payload(payload, exclude_none=exclude_none)
     original_bytes = len(result.encode("utf-8"))
+    context = _response_context_var.get()
+    if (
+        context is not None
+        and context.tool == "read"
+        and context.arguments.get("view") == "messages"
+        and (
+            context.arguments.get("fragment_offset") is not None
+            or (
+                original_bytes > MCP_RESPONSE_BUDGET_BYTES
+                and _bounded_item_page(payload, exclude_none=exclude_none) is None
+            )
+        )
+    ):
+        return _message_fragment(payload, context)
     return (
         result
         if original_bytes <= MCP_RESPONSE_BUDGET_BYTES
         else _budget_envelope(payload, original_bytes=original_bytes, exclude_none=exclude_none)
     )
+
+
+def _message_fragment(payload: BaseModel, context: _ResponseContext) -> str:
+    """Page one canonical row's ASCII JSON bytes under its existing archive frame."""
+    from dataclasses import replace
+
+    from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
+    from polylogue.mcp.payloads import MCPMessageFragmentPayload
+
+    request = getattr(payload, "_transaction_request", None)
+    rows = getattr(payload, "messages", ())
+    if not isinstance(request, QueryTransactionRequest) or not rows:
+        raise ValueError("message fragments require a nonempty snapshot-bound transcript window")
+    row = rows[0].model_dump(mode="json")
+    encoded = json.dumps(row, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    offset = context.arguments.get("fragment_offset") or 0
+    if not isinstance(offset, int) or isinstance(offset, bool) or not 0 <= offset < len(encoded):
+        raise ValueError("fragment_offset is outside the message JSON bytes")
+    framed = replace(request, page_size=1)
+    ref = str(context.arguments["ref"])
+
+    def fragment(end: int) -> str:
+        next_fragment = end if end < len(encoded) else None
+        next_row = request.offset + 1
+        continuation = None
+        if next_fragment is not None or next_row < payload.total:
+            resumed = framed if next_fragment is not None else framed.next(offset=next_row)
+            arguments: dict[str, object] = {
+                "ref": ref,
+                "view": "messages",
+                "continuation": QueryContinuation(resumed, resumed.result_ref).encode(),
+            }
+            if next_fragment is not None:
+                arguments["fragment_offset"] = next_fragment
+            continuation = {"tool": "read", "arguments": arguments}
+        return _serialize_payload(
+            MCPMessageFragmentPayload(
+                message_id=str(row["id"]),
+                session_ref=ref,
+                result_ref=framed.result_ref,
+                row_offset=framed.offset,
+                offset=offset,
+                total_bytes=len(encoded),
+                json_fragment=encoded[offset:end],
+                next_fragment_offset=next_fragment,
+                continuation=continuation,
+            ),
+            exclude_none=False,
+        )
+
+    low, high = offset + 1, min(len(encoded), offset + MCP_RESPONSE_BUDGET_BYTES)
+    best = None
+    while low <= high:
+        end = (low + high) // 2
+        candidate = fragment(end)
+        if len(candidate.encode("utf-8")) <= MCP_RESPONSE_BUDGET_BYTES:
+            best = candidate
+            low = end + 1
+        else:
+            high = end - 1
+    if best is None:
+        raise ValueError("message fragment identity exceeds the response budget")
+    return best
 
 
 def _clamp_limit(limit: int | object) -> int:
@@ -682,6 +772,15 @@ def _mcp_error_detail(result: object) -> str | None:
         return None
     if not isinstance(payload, dict):
         return None
+    if payload.get("outcome") == "error":
+        from pydantic import ValidationError
+
+        from polylogue.operations.session_contracts import SessionOperationError
+
+        try:
+            return SessionOperationError.model_validate(payload).code
+        except ValidationError:
+            return None
     if payload.get("ok") is not False or payload.get("status") != "error":
         return None
     error = payload.get("error")
