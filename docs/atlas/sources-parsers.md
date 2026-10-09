@@ -48,8 +48,11 @@ is inferred from missing chronological evidence.
 Retained Codex state material preparation records its complete Source statements
 under the original preparation parent before the writer accepts them.
 Interruption during preparation accepts no material rows; replay publishes the
-complete material set without duplicates. Row and text pages bound work while
-preserving all content.
+complete material set without duplicates. A committed material census retires
+its prepared goals and memories carriers because their publication claims were
+consumed. A later Source census prepares fresh claims through the same owner.
+Unrelated transcript carriers remain reusable. Row and text pages bound work
+while preserving all content.
 
 The resolved runtime source set declares `codex-state` at `~/.codex/`, matching
 the daemon watcher and cold-build baseline for its database members,

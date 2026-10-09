@@ -15,7 +15,12 @@ from tests.infra.retained_replay import publish_retained_payload
 
 
 def make_populated_stale_index(
-    root: Path, source: Path, *, multi_session: bool = False, include_history: bool = False
+    root: Path,
+    source: Path,
+    *,
+    multi_session: bool = False,
+    include_history: bool = False,
+    include_codex_materials: bool = False,
 ) -> tuple[Path, str, tuple[str, ...]]:
     old = make_empty_managed_index(root, stale=False)
     source.parent.mkdir()
@@ -105,6 +110,13 @@ def make_populated_stale_index(
             embedded_at_ms=0,
             vector_derivation_hash=b"\0" * 32,
         )
+    if include_codex_materials:
+        admit_retained_codex_materials(root, source.parent / "codex-state")
+        mutate_fixture_database(
+            root / "source.db",
+            "UPDATE raw_sessions SET revision_authority='asserted',validation_mode=NULL WHERE raw_id=?",
+            (raw_id,),
+        )
     if include_history:
         history_id = admit_retained_history(root, source.parent / ".claude" / "history.jsonl")
         # A previous preparation refreshed the authority census without
@@ -150,3 +162,78 @@ def logical_rows(path: Path) -> tuple[str, ...]:
             loaded, error = try_load_sqlite_vec(conn)
             assert loaded, error
         return tuple(conn.iterdump())
+
+
+def admit_retained_codex_materials(root: Path, directory: Path) -> None:
+    """Acquire real logical state exports, then remove the external originals."""
+    from types import SimpleNamespace
+
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
+    from polylogue.sources.source_layout import export_drop_layout
+    from tests.infra.raw_owner_routes import run_ingest_files
+
+    directory.mkdir()
+    goals = directory / "goals_1.sqlite"
+    memories = directory / "memories_1.sqlite"
+    with closing(sqlite3.connect(goals)) as conn, conn:
+        conn.executescript(
+            "CREATE TABLE thread_goals(thread_id TEXT PRIMARY KEY,goal_id TEXT NOT NULL,"
+            "objective TEXT NOT NULL,status TEXT NOT NULL,token_budget INTEGER,tokens_used INTEGER NOT NULL,"
+            "time_used_seconds INTEGER NOT NULL,created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL);"
+            "CREATE TABLE thread_goal_continuation_deferrals(thread_id TEXT,deferred_until_ms INTEGER);"
+        )
+        conn.executemany(
+            "INSERT INTO thread_goals VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                (
+                    "retained-reconvergence" if i == 0 else f"neutral-thread-{i}",
+                    f"neutral-goal-{i}",
+                    "neutral objective",
+                    "active",
+                    10,
+                    1,
+                    1,
+                    0,
+                    0,
+                )
+                for i in range(1)
+            ),
+        )
+    with closing(sqlite3.connect(memories)) as conn, conn:
+        conn.executescript(
+            "CREATE TABLE stage1_outputs(thread_id TEXT PRIMARY KEY,source_updated_at INTEGER NOT NULL,"
+            "raw_memory TEXT NOT NULL,rollout_summary TEXT NOT NULL,rollout_slug TEXT,generated_at INTEGER NOT NULL,"
+            "usage_count INTEGER,last_usage INTEGER,selected_for_phase2 INTEGER NOT NULL DEFAULT 0,"
+            "selected_for_phase2_source_updated_at INTEGER);"
+            "CREATE TABLE jobs(id TEXT PRIMARY KEY,state TEXT);"
+        )
+        conn.executemany(
+            "INSERT INTO stage1_outputs VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                (
+                    "retained-reconvergence" if i == 0 else f"neutral-thread-{i}",
+                    0,
+                    "neutral memory",
+                    "neutral summary",
+                    "neutral",
+                    0,
+                    1,
+                    0,
+                    1,
+                    None,
+                )
+                for i in range(1)
+            ),
+        )
+    processor = LiveBatchProcessor(
+        SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db")),
+        (WatchSource("codex-state", directory, layout=export_drop_layout((".sqlite", ".db"))),),
+        cursor=CursorStore(root / "ops.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+    )
+    metrics = run_ingest_files(processor, [goals, memories], emit_event=False)
+    assert metrics.failed_file_count == 0
+    goals.unlink()
+    memories.unlink()
