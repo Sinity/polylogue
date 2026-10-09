@@ -116,9 +116,11 @@ def test_markdown_activity_ids_survive_unrelated_insertion_and_keep_identical_oc
         session_id = write_index_session(archive, before)
 
         def edit_ids() -> list[str]:
+            connection = archive.index_connection
+            assert connection is not None
             return [
                 row[0]
-                for row in archive.index_connection.execute(
+                for row in connection.execute(
                     "SELECT m.message_id FROM messages m JOIN blocks b ON b.message_id=m.message_id "
                     "WHERE m.session_id=? AND b.tool_name=? ORDER BY m.position",
                     (session_id, tool_name),

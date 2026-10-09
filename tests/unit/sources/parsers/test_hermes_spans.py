@@ -96,7 +96,7 @@ def test_dispatch_detects_and_parses_atif_trace_through_the_real_pipeline() -> N
 
 @pytest.mark.parametrize("parallel_calls", [1, 3])
 def test_atif_tool_step_keeps_invocation_and_usage_once(parallel_calls: int) -> None:
-    step = {
+    step: JSONDocument = {
         "step_id": "step-1",
         "source": "agent",
         "tool_calls": [{"tool_call_id": f"call-{i}", "function_name": "terminal"} for i in range(parallel_calls)],

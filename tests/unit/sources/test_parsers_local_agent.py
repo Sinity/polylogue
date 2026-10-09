@@ -1995,9 +1995,10 @@ def test_gemini_usage_event_does_not_assign_total_only_count_to_output() -> None
 def test_total_only_usage_does_not_fabricate_message_output(
     provider: str, total: int, input_tokens: int | None
 ) -> None:
-    wire = {"id": "answer", "role": "assistant", "type": "gemini", "content": "done", "usage": {"total_tokens": total}}
+    usage: JSONDocument = {"total_tokens": total}
+    wire: JSONDocument = {"id": "answer", "role": "assistant", "type": "gemini", "content": "done", "usage": usage}
     if input_tokens is not None:
-        wire["usage"]["input_tokens"] = input_tokens
+        usage["input_tokens"] = input_tokens
     if provider == "gemini-cli":
         payload = {"sessionId": "neutral-total", "kind": "main", "messages": [wire]}
     else:

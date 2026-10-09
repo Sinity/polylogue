@@ -1699,14 +1699,15 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
             detail="Steps matching none of the documented shapes (tool_calls/message/observation) are "
             "retained as generic evidence, never dropped.",
         )
-    malformed_counts = {
-        field: sum(
-            int(event.payload.get(field, 0))
-            for event in session.session_events
-            if event.event_type == "hermes_atif_parse_accounting"
-        )
-        for field in ("malformed_steps", "malformed_tool_calls", "malformed_subagents")
-    }
+    malformed_counts = dict.fromkeys(("malformed_steps", "malformed_tool_calls", "malformed_subagents"), 0)
+    for event in session.session_events:
+        if event.event_type != "hermes_atif_parse_accounting":
+            continue
+        for field in malformed_counts:
+            count = event.payload.get(field, 0)
+            if type(count) is not int or count < 0:
+                raise ValueError(f"Hermes ATIF accounting requires a nonnegative integer for {field}")
+            malformed_counts[field] += count
     malformed_parts = sum(malformed_counts.values())
     if malformed_parts:
         capabilities["malformed_parts"] = HermesFidelityCapability(

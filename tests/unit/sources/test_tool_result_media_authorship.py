@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role
+from polylogue.core.json import JSONValue
 from polylogue.sources.dispatch import iter_parsed_stream, parse_payload
 from polylogue.sources.parsers.base import AdmissionUnit
 from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
@@ -69,7 +70,8 @@ def test_declared_tool_author_pairs_chained_replies_without_changing_role(tmp_pa
 def test_claude_nested_result_media_survives_parse_accounting_and_stored_tree(
     tmp_path: Path, provider: Provider
 ) -> None:
-    content = [
+    image_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    content: list[JSONValue] = [
         {
             "type": "tool_result",
             "tool_use_id": "neutral-call",
@@ -81,7 +83,7 @@ def test_claude_nested_result_media_survives_parse_accounting_and_stored_tree(
                     "source": {
                         "type": "base64",
                         "media_type": "image/png",
-                        "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+                        "data": image_data,
                     },
                 },
                 {
@@ -131,7 +133,7 @@ def test_claude_nested_result_media_survives_parse_accounting_and_stored_tree(
     assert message.blocks[0].text == "Neutral result"
     assert message.blocks[2].text == "Neutral document body"
     assert [attachment.inline_bytes for attachment in parsed.attachments] == [
-        base64.b64decode(content[0]["content"][1]["source"]["data"]),
+        base64.b64decode(image_data),
         b"Neutral document body",
     ]
     assert parsed.unit_accounting is not None
@@ -162,14 +164,21 @@ def test_claude_nested_result_media_survives_parse_accounting_and_stored_tree(
         ).fetchall()
         assert [row[0] for row in rows] == ["tool_result", "image", "document", "document"]
         assert rows[2][1] == "Neutral document body"
-        assert json.loads(rows[1][2])["metadata"]["source_digest"] == message.blocks[1].metadata["source_digest"]
+        metadata = message.blocks[1].metadata
+        assert metadata is not None
+        assert json.loads(rows[1][2])["metadata"]["source_digest"] == metadata["source_digest"]
         assert conn.execute(
             "SELECT COUNT(*) FROM attachment_refs r JOIN messages m USING(message_id) WHERE m.session_id=?",
             (session_id,),
         ).fetchone() == (2,)
+        attachment_digests: set[bytes] = set()
+        for attachment in parsed.attachments:
+            inline_bytes = attachment.inline_bytes
+            assert inline_bytes is not None
+            attachment_digests.add(hashlib.sha256(inline_bytes).digest())
         assert {
             row[0] for row in conn.execute("SELECT blob_hash FROM attachments WHERE acquisition_status='acquired'")
-        } == {hashlib.sha256(attachment.inline_bytes).digest() for attachment in parsed.attachments}
+        } == attachment_digests
 
 
 def test_streamed_claude_code_media_uses_attachment_sink(tmp_path: Path) -> None:
