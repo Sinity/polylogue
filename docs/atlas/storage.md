@@ -427,9 +427,21 @@ The existing generation owner creates and atomically promotes fresh empty DDL
 before tier handles open; the predecessor remains recoverable under normal
 promotion and retention, including its normal WAL checkpoint. Durable and
 purchased tier schemas and bindings must remain supported and current.
-Ineligible archives retain schema-blocked preflight; populated Index identity
-changes still require their declared rebuild route. Purchased embeddings and
-durable tiers are never replaced by this transition or ops startup.
+A populated managed Index with canonical physical DDL and a stale fingerprint
+is reconstructed at startup from retained Source, before ordinary preflight.
+The existing Raw owner performs bounded canonical census, classification and
+replay into an owned inactive generation; external originals are unnecessary.
+The acquisition snapshot binds raw identities, captured coordinates, verified
+payload bytes, blob claims and capture observations to the current Index recipe.
+Origin and revision interpretation may refine only through those original
+Source phases. ColdBuild retains its separate full revision-authority digest.
+Readiness, full replay completion, current Source/User/Audit observers and
+previously resolving purchased message references must all pass before the
+normal reference-checked promotion. No durable or purchased tier is replaced.
+Interrupted MEMORY candidates are discarded through their owner and rebuilt;
+a published successor completes its existing promotion tail and idempotent
+Source acknowledgement on restart. Unsupported physical DDL, durable schemas,
+changed custody or missing reference coverage remain explicit refusals.
 
 ## Tool-result association
 

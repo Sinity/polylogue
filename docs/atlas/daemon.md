@@ -2,6 +2,18 @@
 
 ## Runtime ownership
 
+Before persistent tier handles and schema preflight open, exclusive startup
+ownership can reconstruct a fingerprint-stale populated managed Index from
+retained Source. The startup compute kernel prepares work off the writer gate;
+its existing writer bridge publishes canonical Raw phases, readiness and the
+reference-checked generation promotion. Progress remains degraded until the
+successor is ready. Cancellation physically settles the original work and leaves
+the predecessor authoritative until promotion; restart discards interrupted
+inactive candidates and replays retained bytes without re-acquiring originals.
+Normal services start only after successful preflight. A current successor is
+not rebuilt again. The verified-empty bootstrap transition remains separate,
+and its successful promotion skips populated reconstruction in that startup.
+
 Python child processes for Source readers, the optional browser host and demo
 commands retain the parent's exact interpreter and runtime import paths.
 Installed console entry points can inject dependency paths only in memory;

@@ -1433,20 +1433,20 @@ class IndexGenerationStore:
             with suppress(OSError):
                 self._rollback_pointer_proof_path(generation_id).unlink(missing_ok=True)
 
-    def discard_unpublished_cold_promotion(self, generation: IndexGeneration) -> bool:
-        """Reclaim an interrupted pre-swap cold candidate, never a published one."""
+    def discard_unpublished_promotion(self, generation: IndexGeneration) -> bool:
+        """Reclaim an owned interrupted pre-swap candidate, never a published one."""
         self._require_write_lease(
-            f"IndexGenerationStore.discard_unpublished_cold_promotion(generation={generation.generation_id})"
+            f"IndexGenerationStore.discard_unpublished_promotion(generation={generation.generation_id})"
         )
         with self._lifecycle_lock():
             current = self.load(generation.generation_id)
-            if current.owner_id != generation.owner_id or not current.owner_id.startswith("cold-build:"):
-                raise UnpublishedPromotionRecoveryError("cold promotion ownership changed")
+            if current.owner_id != generation.owner_id:
+                raise UnpublishedPromotionRecoveryError("promotion ownership changed")
             if current.state != "promoting":
                 return False
             pointer = self.active_pointer
             if pointer.resolve(strict=False) == Path(current.index_path).resolve(strict=False):
-                raise UnpublishedPromotionRecoveryError("pointer-swapped cold promotion needs activation recovery")
+                raise UnpublishedPromotionRecoveryError("pointer-swapped promotion needs activation recovery")
             metadata = pointer.lstat() if pointer.exists() or pointer.is_symlink() else None
             identity = (metadata.st_dev, metadata.st_ino) if metadata is not None else None
             rollback = self._metadata_path(current.generation_id).with_name("generation.rollback.json")
@@ -1458,7 +1458,7 @@ class IndexGenerationStore:
                 proof = _read_json_nofollow(proof_path, label="prior pointer proof")
                 self._validate_generation(original, current.generation_id)
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                raise UnpublishedPromotionRecoveryError("cold promotion rollback proof is unavailable") from exc
+                raise UnpublishedPromotionRecoveryError("promotion rollback proof is unavailable") from exc
             expected = IndexGeneration(
                 **{
                     **asdict(original),
@@ -1469,12 +1469,12 @@ class IndexGenerationStore:
             raw_sidecars = proof.get("sidecars")
             retired_name = proof.get("retired_marker")
             if not isinstance(raw_sidecars, list) or not isinstance(retired_name, str):
-                raise UnpublishedPromotionRecoveryError("cold promotion rollback proof has invalid custody")
+                raise UnpublishedPromotionRecoveryError("promotion rollback proof has invalid custody")
             sidecars = tuple(cast(list[object], raw_sidecars))
             if sidecars != tuple(suffix for suffix in ("-wal", "-shm") if suffix in sidecars):
-                raise UnpublishedPromotionRecoveryError("cold promotion rollback sidecars are invalid")
+                raise UnpublishedPromotionRecoveryError("promotion rollback sidecars are invalid")
             if not re.fullmatch(r"retired-\d+-[0-9a-f]{8}", retired_name):
-                raise UnpublishedPromotionRecoveryError("cold promotion rollback marker is invalid")
+                raise UnpublishedPromotionRecoveryError("promotion rollback marker is invalid")
             if (
                 original.state != "inactive"
                 or original.owner_id != current.owner_id
@@ -1482,7 +1482,7 @@ class IndexGenerationStore:
                 or proof
                 != self._rollback_pointer_proof(original, identity, cast(tuple[str, ...], sidecars), retired_name)
             ):
-                raise UnpublishedPromotionRecoveryError("cold promotion rollback proof does not match active pointer")
+                raise UnpublishedPromotionRecoveryError("promotion rollback proof does not match active pointer")
             self._restore_pre_swap_predecessor(
                 self.generations_root / retired_name,
                 identity,
@@ -2029,6 +2029,20 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
     use the same ordered evidence below, so a resumable pass cannot cross a
     changed revision authority boundary.
     """
+    return _rebuild_source_snapshot(archive_root, include_revision_authority=True)
+
+
+def rebuild_source_acquisition_snapshot(archive_root: Path) -> str:
+    """Bind acquired bytes and coordinates across canonical retained interpretation.
+
+    The retained replay owner may refine revision authority from those same
+    bytes. Its original Source seals prove each such phase; this digest binds
+    custody without mistaking that interpretation for a new acquisition.
+    """
+    return _rebuild_source_snapshot(archive_root, include_revision_authority=False)
+
+
+def _rebuild_source_snapshot(archive_root: Path, *, include_revision_authority: bool) -> str:
     import hashlib
 
     from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
@@ -2036,22 +2050,19 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
 
     digest = hashlib.sha256()
     with _open_source_snapshot(archive_root) as conn:
-        rows = conn.execute(
-            """
-            SELECT raw_id, origin, capture_mode, native_id, source_path,
-                   source_index, blob_hash, blob_size, acquired_at_ms,
-                   file_mtime_ms, logical_source_key, revision_kind,
-                   source_revision, predecessor_source_revision,
-                   predecessor_raw_id, baseline_raw_id, append_start_offset,
-                   append_end_offset, acquisition_generation,
-                   revision_authority, revision_authority_evidence
-            FROM raw_sessions
-            ORDER BY raw_id
-            """
-        )
+        columns = """raw_id, capture_mode, native_id, source_path,
+                     source_index, blob_hash, blob_size, acquired_at_ms, file_mtime_ms"""
+        if include_revision_authority:
+            columns = "raw_id, origin," + columns.removeprefix("raw_id,")
+            columns += """, logical_source_key, revision_kind, source_revision,
+                          predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+                          append_start_offset, append_end_offset, acquisition_generation,
+                          revision_authority, revision_authority_evidence"""
+        rows = conn.execute(f"SELECT {columns} FROM raw_sessions ORDER BY raw_id")
         origins: set[str] = set()
         for row in rows:
-            origins.add(str(row[1]))
+            if include_revision_authority:
+                origins.add(str(row[1]))
             for value in row:
                 if value is None:
                     encoded = b"n"
@@ -2063,18 +2074,26 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
                     encoded = b"i" + str(value).encode()
                 digest.update(len(encoded).to_bytes(8, "big"))
                 digest.update(encoded)
-        sorted_origins = sorted(origins)
-        digest.update(b"parser-lowering-semantic-fingerprints\0")
-        digest.update(b"lowering\0")
-        lowering = lowering_fingerprint()
-        digest.update(len(lowering).to_bytes(8, "big"))
-        digest.update(lowering.encode())
-        for origin in sorted_origins:
-            parser = parser_fingerprint_for_origin(origin)
-            for value in (origin, parser):
-                encoded = value.encode()
-                digest.update(len(encoded).to_bytes(8, "big"))
-                digest.update(encoded)
+        if include_revision_authority:
+            sorted_origins = sorted(origins)
+            digest.update(b"parser-lowering-semantic-fingerprints\0")
+            digest.update(b"lowering\0")
+            lowering = lowering_fingerprint()
+            digest.update(len(lowering).to_bytes(8, "big"))
+            digest.update(lowering.encode())
+            for origin in sorted_origins:
+                parser = parser_fingerprint_for_origin(origin)
+                for value in (origin, parser):
+                    encoded = value.encode()
+                    digest.update(len(encoded).to_bytes(8, "big"))
+                    digest.update(encoded)
+        else:
+            from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, derived_schema_identity
+
+            digest.update(b"retained-acquisition-index-recipe\0")
+            recipe = derived_schema_identity(DerivedTier.INDEX).encode()
+            digest.update(len(recipe).to_bytes(8, "big"))
+            digest.update(recipe)
         raw_blob_hashes = {
             bytes(row[0]).hex() if isinstance(row[0], (bytes, bytearray, memoryview)) else str(row[0])
             for row in conn.execute("SELECT DISTINCT blob_hash FROM raw_sessions ORDER BY blob_hash")
@@ -2241,5 +2260,6 @@ __all__ = [
     "RebuildLeaseUnavailableError",
     "rebuild_lease_status",
     "rebuild_source_evidence_snapshot",
+    "rebuild_source_acquisition_snapshot",
     "source_revision_snapshot",
 ]
