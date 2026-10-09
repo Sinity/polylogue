@@ -270,7 +270,6 @@ class DaemonClient:
         expected_generation_id: str | None = None,
         request_id: str | None = None,
         deadline_ms: int | None = None,
-        cancellation_token: str | None = None,
         input: BinaryReader | None = None,
         _input_body: BinaryIO | None = None,
     ) -> dict[str, Any] | None:
@@ -300,7 +299,6 @@ class DaemonClient:
                     expected_generation_id=expected_generation_id,
                     request_id=request_id,
                     deadline_ms=deadline_ms,
-                    cancellation_token=cancellation_token,
                     _input_body=staged,
                 )
         spec = daemon_operation_spec(operation)
@@ -317,7 +315,6 @@ class DaemonClient:
             expected_generation_id=expected_generation_id,
             request_id=request_id or uuid.uuid4().hex,
             deadline_ms=deadline_ms if deadline_ms is not None else declared_deadline_ms,
-            cancellation_token=cancellation_token,
         )
         request = DaemonOperationRequest.from_dict(request.to_dict())
         # A write never gives up the way a read does: once the request is on

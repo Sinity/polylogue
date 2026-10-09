@@ -3598,8 +3598,6 @@ class DaemonOperationRequest:
     expected_generation_id: str | None = None
     request_id: str | None = None
     deadline_ms: int | None = None
-    idempotency_key: str | None = None
-    cancellation_token: str | None = None
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, object]) -> DaemonOperationRequest:
@@ -3616,8 +3614,6 @@ class DaemonOperationRequest:
             "expected_generation_id",
             "request_id",
             "deadline_ms",
-            "idempotency_key",
-            "cancellation_token",
         }
         if set(raw) - allowed:
             raise ValueError("unexpected operation request fields")
@@ -3651,8 +3647,6 @@ class DaemonOperationRequest:
         expected_generation_id = raw.get("expected_generation_id")
         request_id = raw.get("request_id")
         deadline_ms = raw.get("deadline_ms")
-        idempotency_key = raw.get("idempotency_key")
-        cancellation_token = raw.get("cancellation_token")
         if archive_root is not None and not isinstance(archive_root, str):
             raise ValueError("archive_root must be a string")
         for name in (
@@ -3660,8 +3654,6 @@ class DaemonOperationRequest:
             "daemon_version",
             "expected_archive_identity",
             "expected_generation_id",
-            "idempotency_key",
-            "cancellation_token",
         ):
             value = raw.get(name)
             if isinstance(value, str) and len(value) > 4096:
@@ -3686,12 +3678,6 @@ class DaemonOperationRequest:
             not isinstance(deadline_ms, int) or isinstance(deadline_ms, bool) or deadline_ms <= 0
         ):
             raise ValueError("deadline_ms must be a positive integer")
-        if idempotency_key is not None and (not isinstance(idempotency_key, str) or not idempotency_key.strip()):
-            raise ValueError("idempotency_key must be a non-empty string")
-        if cancellation_token is not None and (
-            not isinstance(cancellation_token, str) or not cancellation_token.strip()
-        ):
-            raise ValueError("cancellation_token must be a non-empty string")
         return cls(
             operation.strip(),
             validated_payload,
@@ -3702,8 +3688,6 @@ class DaemonOperationRequest:
             expected_generation_id,
             request_id,
             deadline_ms,
-            idempotency_key,
-            cancellation_token,
         )
 
     @property
@@ -3724,7 +3708,7 @@ class DaemonOperationRequest:
         return hashlib.sha256(encoded).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
-        result: dict[str, object] = {
+        return {
             "protocol": DAEMON_OPERATION_PROTOCOL,
             "operation": self.operation,
             "payload": self.payload,
@@ -3736,11 +3720,6 @@ class DaemonOperationRequest:
             "request_id": self.request_id,
             "deadline_ms": self.deadline_ms,
         }
-        if self.idempotency_key is not None:
-            result["idempotency_key"] = self.idempotency_key
-        if self.cancellation_token is not None:
-            result["cancellation_token"] = self.cancellation_token
-        return result
 
 
 @dataclass(frozen=True, slots=True)

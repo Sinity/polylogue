@@ -373,7 +373,6 @@ def test_bench_daemon_cancellation(
                     "cli.query",
                     {"params": {"limit": 20}},
                     request_id=request_id,
-                    cancellation_token=request_id,
                 )
                 assert isinstance(result, dict)
                 response.append(result)

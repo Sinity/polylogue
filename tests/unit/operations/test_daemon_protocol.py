@@ -55,6 +55,22 @@ def test_operation_request_requires_a_declared_operation_and_exchange_identity()
         DaemonOperationRequest.from_dict({**request, "deadline_ms": True})
 
 
+@pytest.mark.parametrize("field", ["idempotency_key", "cancellation_token"])
+@pytest.mark.parametrize("value", [None, "synthetic-control"])
+def test_operation_request_refuses_removed_generic_controls(field: str, value: str | None) -> None:
+    """Admitting a removed key would silently promise a control the daemon never consumed."""
+    with pytest.raises(ValueError, match="unexpected operation request fields"):
+        DaemonOperationRequest.from_dict(
+            {
+                "protocol": DAEMON_OPERATION_PROTOCOL,
+                "operation": "status",
+                "payload": {},
+                "request_id": "synthetic-request",
+                field: value,
+            }
+        )
+
+
 def test_operation_specs_bind_concrete_payload_models() -> None:
     """A string label alone cannot be the machine contract."""
 
