@@ -61,8 +61,11 @@ publishes the current receipt before replay; a schema exemption cannot skip it.
 The bounded daemon status projection reuses this durable receipt and identity
 check without opening raw blobs. It keeps the raw/index join count visible
 while excluding only receipt-backed non-session raws from its unchecked-gap
-count. Every artifact in the cohort must remain raw-only and free of terminal
-support, decode, malformed-line, or validation evidence for that fast
+count. Exact raw readiness consumes the same materialization assessment, so
+complete parser receipts cannot erase replay debt or authority blockers.
+Missing Source reference counts and samples use the pinned Source attachment's
+SQL anti-join instead of collecting both corpora in Python. Every artifact in
+the cohort must remain raw-only and free of terminal support, decode, malformed-line, or validation evidence for that fast
 classification to apply.
 
 Prepared frontier inspection uses the resident preparation owner and the same

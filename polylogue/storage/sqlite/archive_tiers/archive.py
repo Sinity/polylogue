@@ -1853,6 +1853,7 @@ class ArchiveStore:
         self._require_writable("run a generation readiness pass")
         if self._owned_inactive_generation is None:
             raise RuntimeError("a readiness pass is only meaningful for an owned inactive generation")
+        from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel_requested
         from polylogue.storage.fts.fts_lifecycle import (
             rebuild_fts_index_sync,
         )
@@ -1860,22 +1861,34 @@ class ArchiveStore:
         from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
         from polylogue.storage.sqlite.runtime_indexes import restore_deferred_secondary_indexes_sync
 
-        restore_deferred_secondary_indexes_sync(self._conn)
-        self._deferred_secondary_indexes = ()
-        self._conn.commit()
-        # These are stored read models. Bulk writes defer their maintenance;
-        # delegation facts consume the canonical action associations.
-        with self._conn:
-            rebuild_all_action_pairs_sync(self._conn)
-            rebuild_all_delegation_facts_sync(self._conn)
-        rebuild_fts_index_sync(self._conn)
-        self._conn.commit()
-        violations = self._conn.execute("PRAGMA foreign_key_check").fetchmany(8)
-        if violations:
-            raise RuntimeError(
-                "cold-build generation left dangling references; it is not publishable: "
-                f"{[tuple(row) for row in violations]}"
-            )
+        self.set_read_progress_guard(lambda: int(compute_cancel_requested()), check_cancelled=check_compute_cancelled)
+        try:
+            check_compute_cancelled()
+            restore_deferred_secondary_indexes_sync(self._conn)
+            self._deferred_secondary_indexes = ()
+            self._conn.commit()
+            # Delegation facts consume the canonical action associations.
+            with self._conn:
+                check_compute_cancelled()
+                rebuild_all_action_pairs_sync(self._conn)
+                check_compute_cancelled()
+                rebuild_all_delegation_facts_sync(self._conn)
+            check_compute_cancelled()
+            rebuild_fts_index_sync(self._conn)
+            check_compute_cancelled()
+            self._conn.commit()
+            violations = self._conn.execute("PRAGMA foreign_key_check").fetchmany(8)
+            if violations:
+                raise RuntimeError(
+                    "cold-build generation left dangling references; it is not publishable: "
+                    f"{[tuple(row) for row in violations]}"
+                )
+        except sqlite3.OperationalError:
+            check_compute_cancelled()
+            raise
+        finally:
+            # Cleanup uses the original creator without a cancellation guard.
+            self.clear_read_progress_guard()
 
     @staticmethod
     def _needs_tier_bootstrap(archive_root: Path) -> bool:

@@ -302,7 +302,7 @@ class ColdBuildGeneration:
     _promoted: bool = False
     _discarded: bool = False
     _receipt_cleared: bool = False
-    _promotion_candidate_ready: bool = field(default=False, init=False, repr=False)
+    _promotion_candidate_identity: tuple[int, int, int, int] | None = field(default=None, init=False, repr=False)
     settlement_state: str = "building"
     settlement_reason: str | None = None
     settlement_last_error: str | None = None
@@ -1039,6 +1039,7 @@ class ColdBuildGeneration:
             return
         if self._discarded:
             raise RuntimeError(f"cold-build generation {self.generation_id} is already settled")
+        self._promotion_candidate_identity = None
         import json
 
         from polylogue.sources.live.production_baseline import (
@@ -1058,13 +1059,25 @@ class ColdBuildGeneration:
         # ``final_candidate_allocated_bytes == 0`` and ``calibrated_index_ratio``
         # returns its unmeasured default forever.
         self._store.observe_candidate_capacity(operation_id=self.operation_id, generation_id=self.generation_id)
-        self._promotion_candidate_ready = True
+        # Inactive bulk commits update this main file (MEMORY rollback
+        # journal). Capture the existing promotion identity after its writer
+        # has physically closed, so an intervening canonical replay cannot
+        # borrow readiness for the preceding candidate contents.
+        metadata = Path(self.generation.index_path).stat()
+        self._promotion_candidate_identity = (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
 
     def prepare_promotion_proof(self) -> PreparedIndexPromotion:
         """Build the full retained reference/coverage proof outside writer custody."""
-        if not self._promotion_candidate_ready:
+        if self._promotion_candidate_identity is None:
             raise RuntimeError("cold-build candidate must finish readiness before promotion proof")
-        return self._store.prepare_promotion(self.generation)
+        prepared = self._store.prepare_promotion(self.generation)
+        if prepared.candidate_identity != self._promotion_candidate_identity:
+            from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+            self._promotion_candidate_identity = None
+            with prepared:
+                raise ReferenceSealStaleError("cold-build candidate changed after its readiness pass")
+        return prepared
 
     def promote_prepared(self, prepared: PreparedIndexPromotion) -> IndexGeneration:
         """Settle a previously prepared promotion while holding writer custody."""
@@ -1072,8 +1085,12 @@ class ColdBuildGeneration:
             return self.reconcile_promoted()
         if self._discarded:
             raise RuntimeError(f"cold-build generation {self.generation_id} is already settled")
-        if not self._promotion_candidate_ready:
+        if self._promotion_candidate_identity is None:
             raise RuntimeError("cold-build candidate readiness was not published")
+        if prepared.candidate_identity != self._promotion_candidate_identity:
+            from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+            raise ReferenceSealStaleError("cold-build proof differs from its ready candidate")
         try:
             promoted = self._store.promote(self.generation, prepared)
         except Exception as exc:

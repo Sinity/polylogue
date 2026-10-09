@@ -19,6 +19,12 @@ defers per-session FTS, action-pair and delegation-fact maintenance. Readiness
 restores reader indexes, rebuilds the stored action pairs and delegation facts
 through their canonical materializers, then repopulates FTS before promotion.
 Session summaries and lineage still settle during the ordinary writer route.
+Cold promotion binds its completed readiness to the settled candidate file
+identity used by the retained promotion seal. A canonical publication between
+readiness and proof preparation requires another readiness pass; publication
+after preparation still fails the seal's currency checks. Readiness observes
+compute cancellation inside native SQLite work and between FTS pages, then
+removes its progress guard before original-owner cleanup.
 The verified-empty bootstrap transition remains separate,
 and its successful promotion skips populated reconstruction in that startup.
 

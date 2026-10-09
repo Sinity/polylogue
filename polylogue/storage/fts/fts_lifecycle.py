@@ -13,6 +13,7 @@ from typing import TypeAlias, cast
 
 import aiosqlite
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.errors import SearchIndexUnavailableError
 from polylogue.core.sqlite_introspection import table_exists as _table_exists_sync
 from polylogue.core.sqlite_introspection import table_exists_async as _table_exists_async
@@ -309,6 +310,7 @@ def rebuild_fts_index_sync(
     settle before a page is reported; the caller retains its transaction.
     The separately owned resumable bulk generation keeps its chunk commits.
     """
+    check_compute_cancelled()
     ensure_fts_index_sync(conn)
     if resume_from_empty_message_index:
         insert_missing_message_rows_batched_sync(conn)
@@ -323,6 +325,7 @@ def rebuild_fts_index_sync(
         primary: BaseException | None = None
         try:
             while rows := cursor.fetchmany(FTS_REBUILD_SESSION_PAGE_SIZE):
+                check_compute_cancelled()
                 session_ids = tuple(str(row[0]) for row in rows)
                 conn.execute(insert_session_rows_sql(len(session_ids)), session_ids)
                 conn.execute(insert_session_identity_rows_sql(len(session_ids)), session_ids)
@@ -343,6 +346,7 @@ def rebuild_fts_index_sync(
                 ) from None
         if progress_callback is not None and not total:
             progress_callback(0, 0, 0)
+        check_compute_cancelled()
 
 
 def reset_message_fts_index_sync(conn: sqlite3.Connection) -> None:
@@ -393,6 +397,7 @@ def insert_missing_message_rows_batched_sync(
     identity_sql = repair_message_identity_rows_range_sql()
     lower = 0
     while lower < max_rowid:
+        check_compute_cancelled()
         upper = min(lower + batch_rows, max_rowid)
         changes_before = conn.total_changes
         conn.execute(sql, (lower, upper))
@@ -406,6 +411,7 @@ def insert_missing_message_rows_batched_sync(
             progress_callback(lower, upper, max(0, inserted))
         lower = upper
 
+    check_compute_cancelled()
     if not measure_counts:
         return 0
     after = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0)

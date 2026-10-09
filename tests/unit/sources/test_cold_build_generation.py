@@ -894,6 +894,47 @@ def test_canonical_write_after_readiness_requires_another_readiness_pass(
         )
 
 
+def test_readiness_cancellation_interrupts_native_sql_and_preserves_retry(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation inside actual readiness SQL settles on its original writer."""
+    import threading
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _ingest(tmp_path, root, "one.jsonl", "native-cancel")
+    cancelled = threading.Event()
+    original = ArchiveStore.set_read_progress_guard
+    entered_action_sql = []
+
+    def guard(self: ArchiveStore, callback: Any, **kwargs: Any) -> None:
+        original(self, callback, n_opcodes=1, check_cancelled=kwargs["check_cancelled"])
+
+        def cancel_inside_sql(sql: str) -> None:
+            if "INSERT INTO action_pairs" in sql:
+                entered_action_sql.append(sql)
+                cancelled.set()
+
+        self._conn.set_trace_callback(cancel_inside_sql)
+
+    with monkeypatch.context() as control:
+        control.setattr(ArchiveStore, "set_read_progress_guard", guard)
+        token = compute_cancel.set(cancelled)
+        try:
+            with pytest.raises(DaemonOperationCancelled):
+                cold_build.prepare_promotion_candidate()
+        finally:
+            compute_cancel.reset(token)
+    assert entered_action_sql
+    assert _active_session_count(tmp_path) == 0
+    assert cold_build._promotion_candidate_identity is None
+    cold_build.promote()
+    assert _active_session_count(tmp_path) == 1
+
+
 @pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
 def test_late_readiness_failure_preserves_restored_layout_for_next_canonical_preparation(
     tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException]
@@ -913,7 +954,7 @@ def test_late_readiness_failure_preserves_restored_layout_for_next_canonical_pre
         control.setattr(fts_lifecycle, "rebuild_fts_index_sync", fail_after_read_models)
         with pytest.raises(failure):
             cold_build.prepare_promotion_candidate()
-    assert not cold_build._promotion_candidate_ready
+    assert cold_build._promotion_candidate_identity is None
     assert _active_session_count(tmp_path) == 0
     assert "idx_messages_role" in _candidate_index_names(cold_build)
     # This is actual acquisition, Source preparation and sealed Index replay,

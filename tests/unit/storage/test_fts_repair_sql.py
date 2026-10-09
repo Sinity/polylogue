@@ -755,6 +755,40 @@ def test_full_fts_rebuild_pages_preserve_pairing_and_caller_transaction(
     assert test_conn.execute("SELECT DISTINCT title FROM sessions").fetchone()[0] == "Message repair"
 
 
+def test_full_fts_rebuild_observes_cancellation_between_actual_pages(
+    test_conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    monkeypatch.setattr(fts_lifecycle, "FTS_REBUILD_SESSION_PAGE_SIZE", 1)
+    for index in range(3):
+        _seed_text_block(test_conn, native_session_id=f"cancel-{index}", native_message_id="m", text="canonical needle")
+    test_conn.commit()
+    cancelled = threading.Event()
+    events = []
+
+    def cancel_after_first_page(amount: int, processed: int, total: int) -> None:
+        events.append((amount, processed, total))
+        if processed == 1:
+            cancelled.set()
+
+    token = compute_cancel.set(cancelled)
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            rebuild_fts_index_sync(test_conn, progress_callback=cancel_after_first_page)
+    finally:
+        compute_cancel.reset(token)
+    assert events == [(0, 0, 3), (1, 1, 3)]
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0] == 1
+    assert not live_connection_cursors(test_conn)
+    test_conn.rollback()
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 3
+
+
 def test_empty_full_fts_rebuild_reports_completion_after_both_orphan_resets(test_conn: sqlite3.Connection) -> None:
     test_conn.execute("INSERT INTO messages_fts(rowid, text) VALUES (-100, 'orphan needle')")
     test_conn.execute(

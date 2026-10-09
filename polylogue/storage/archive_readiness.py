@@ -1181,12 +1181,12 @@ def _missing_source_raw_session_samples(
     ).fetchall()
     return [
         {
-            "session_id": str(row["session_id"]),
-            "origin": str(row["origin"]),
-            "native_id": str(row["native_id"]),
-            "missing_raw_id": str(row["raw_id"]),
-            "message_count": int(row["message_count"] or 0),
-            "updated_at_ms": None if row["updated_at_ms"] is None else int(row["updated_at_ms"]),
+            "session_id": str(row[0]),
+            "origin": str(row[1]),
+            "native_id": str(row[2]),
+            "missing_raw_id": str(row[3]),
+            "message_count": int(row[4] or 0),
+            "updated_at_ms": None if row[5] is None else int(row[5]),
             "evidence_status": "lost_source_evidence",
             "loss_reason": "index_raw_id_missing_from_source_tier",
             "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
@@ -1637,38 +1637,10 @@ def _archive_readiness_counts(
     missing_raw_session_count = 0
     missing_raw_session_samples: list[dict[str, Any]] = []
     if source_check_available and source_conn is not None and _table_exists(conn, "sessions"):
-        raw_ids = {
-            str(row[0])
-            for row in source_conn.execute("SELECT raw_id FROM raw_sessions").fetchall()
-            if row[0] is not None
-        }
-        missing_rows = [
-            row
-            for row in conn.execute(
-                """
-                SELECT session_id, origin, native_id, raw_id, message_count, updated_at_ms
-                FROM sessions
-                WHERE raw_id IS NOT NULL
-                ORDER BY updated_at_ms DESC, session_id
-                """
-            ).fetchall()
-            if str(row[3]) not in raw_ids
-        ]
-        missing_raw_session_count = len(missing_rows)
-        missing_raw_session_samples = [
-            {
-                "session_id": str(row[0]),
-                "origin": str(row[1]),
-                "native_id": str(row[2]),
-                "missing_raw_id": str(row[3]),
-                "message_count": int(row[4] or 0),
-                "updated_at_ms": None if row[5] is None else int(row[5]),
-                "evidence_status": "lost_source_evidence",
-                "loss_reason": "index_raw_id_missing_from_source_tier",
-                "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
-            }
-            for row in missing_rows[:10]
-        ]
+        if not _table_exists(conn, "raw_sessions", schema="source_tier"):
+            raise sqlite3.OperationalError("exact readiness requires the pinned source_tier attachment")
+        missing_raw_session_count = _missing_source_raw_session_count(conn, source_schema="source_tier")
+        missing_raw_session_samples = _missing_source_raw_session_samples(conn, source_schema="source_tier")
     insight_status = session_insight_status_sync(conn, verify_freshness=True)
     return {
         # Relation presence is the evidence that separates a measured empty
@@ -1718,24 +1690,31 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
         return [blocker] if count(actual_key) != expected else []
 
     parser_census = counts.get("raw_authority_parser_census")
-    parser_census_available = isinstance(parser_census, Mapping) and parser_census.get("available") is True
     parser_census_incomplete_count = count("raw_authority_parser_census_incomplete_count")
+    assessment = assess_raw_materialization(
+        {
+            **counts,
+            "available": source_check_available and counts.get("available", True) is True,
+            "lost_source_evidence_count": count("missing_raw_session_count"),
+        }
+    )
     raw_blockers: list[str] = []
     raw_ready: bool | None
     if not source_check_available:
         raw_ready = None
         raw_blockers.append("source_tier_unavailable")
-    elif not parser_census_available:
-        raw_ready = False
-        raw_blockers.append("parser_census_unavailable")
-    elif parser_census_incomplete_count:
-        raw_ready = False
-        raw_blockers.append("parser_census_incomplete")
-    elif count("missing_raw_session_count"):
-        raw_ready = False
-        raw_blockers.append("missing_source_raw_sessions")
     else:
-        raw_ready = True
+        raw_ready = None if assessment.state is RawMaterializationAssessmentState.UNMEASURED else assessment.ready
+        for key, value in assessment.blocking_counts:
+            if value:
+                raw_blockers.append(
+                    {
+                        "raw_authority_parser_census_incomplete_count": "parser_census_incomplete",
+                        "lost_source_evidence_count": "missing_source_raw_sessions",
+                    }.get(key, key)
+                )
+        if not raw_blockers and not assessment.ready:
+            raw_blockers.append(assessment.reason)
 
     # The sessions surface published a literal ``ready=True`` whatever the
     # counts said, so a missing sessions/messages relation -- which yields a
@@ -1792,6 +1771,7 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
                 "lost_source_evidence_samples": list(counts.get("lost_source_evidence_samples") or []),
                 "parser_census": dict(parser_census) if isinstance(parser_census, Mapping) else None,
                 "parser_census_incomplete_count": parser_census_incomplete_count,
+                "materialization": assessment.to_dict(),
             },
         ),
         "search": surface(
@@ -1900,8 +1880,8 @@ def archive_readiness_status_from_connections(
 ) -> dict[str, Any]:
     """Build archive readiness from an operation's pinned tier readers.
 
-    Shares the path twin's failure contract: a degraded-but-readable tier
-    resolves to ``{"checked": False, "reason": ...}`` rather than raising, so
+    The Index reader retains its source_tier attachment for the same pinned
+    Source snapshot. Like the path twin, a degraded-but-readable tier resolves to ``{"checked": False, "reason": ...}`` rather than raising, so
     a status poll reports the degradation instead of failing.
     """
 
@@ -1936,15 +1916,7 @@ def _archive_readiness_status_from_connections(
         source_check_available=source_check_available,
     )
     if isinstance(raw_materialization_readiness, Mapping):
-        parser_census = raw_materialization_readiness.get("raw_authority_parser_census")
-        counts.update(
-            {
-                "raw_authority_parser_census": parser_census,
-                "raw_authority_parser_census_incomplete_count": _safe_int(
-                    raw_materialization_readiness.get("raw_authority_parser_census_incomplete_count")
-                ),
-            }
-        )
+        counts.update(raw_materialization_readiness)
 
     surfaces = _archive_status_surfaces(counts, source_check_available=source_check_available)
     ready_count = sum(1 for info in surfaces.values() if info["ready"] is True)
