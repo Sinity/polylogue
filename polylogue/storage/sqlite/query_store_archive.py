@@ -85,6 +85,28 @@ class SQLiteQueryStoreArchiveMixin:
     if TYPE_CHECKING:
         _connection_factory: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]]
 
+    async def get_session_tags_batch(self, session_ids: list[str]) -> dict[str, tuple[str, ...]]:
+        """Read tags through the same connection owner as dependent metadata."""
+        if not session_ids:
+            return {}
+        result: dict[str, list[str]] = {session_id: [] for session_id in session_ids}
+        async with self._connection_factory() as conn:
+            for table in ("session_tags", "tags"):
+                async with conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table,)
+                ) as cursor:
+                    if await cursor.fetchone() is None:
+                        return dict.fromkeys(session_ids, ())
+            placeholders = ",".join("?" for _ in session_ids)
+            async with conn.execute(
+                f"SELECT ct.session_id,t.name FROM session_tags ct JOIN tags t ON t.id=ct.tag_id "
+                f"WHERE ct.session_id IN ({placeholders}) ORDER BY t.name",
+                session_ids,
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    result[str(row[0])].append(str(row[1]))
+        return {session_id: tuple(names) for session_id, names in result.items()}
+
     async def get_session(self, session_id: str) -> SessionRecord | None:
         async with self._connection_factory() as conn:
             return await sessions_q.get_session(conn, session_id)

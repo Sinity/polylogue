@@ -61,9 +61,8 @@ def test_dry_run_reports_json_summary_without_persisting(workspace_env: dict[str
 
     A writable open is refused outright beside a resident daemon, so a read
     that opened one could not run at all while ``polylogued`` serves the
-    archive. Anti-vacuity: read session tags through the backend's writable
-    ``connection()`` again (``_fetch_tags_by_session``) and ``opened`` is not
-    empty.
+    archive. Anti-vacuity: reading session tags through the backend's writable
+    ``connection()`` would make ``opened`` nonempty.
     """
     from polylogue.maintenance.offline_guard import refuse_writable_tier_opens
 

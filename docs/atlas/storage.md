@@ -205,6 +205,12 @@ may interrupt from another thread. Independent read frames do not acquire writer
 custody; readers inside an admitted async write operation retain that operation's
 existing grant until actual SQL close and original worker exit.
 
+Composed async repository reads own one query-store snapshot for selection,
+metadata, counts, profiles, messages, events and tags. Each overlapping operation
+retains its own read connection; hydration does not borrow a backend-global pool.
+The scoped query store refuses another task or use after its operation ends.
+Cancellation and failed native close retain the existing backend cleanup owner.
+
 Per-operation `sqlite3` readers use `contextlib.closing` or an explicit `finally`
 to end the connection lifetime. SQLite's connection context manager commits or
 rolls back but does not close. A reader scope consumes its cursors before close;

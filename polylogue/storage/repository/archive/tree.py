@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.analysis.topology import SessionTopology
 from polylogue.archive.session.domain_models import Session
 from polylogue.storage.runtime import SessionRecord
 
@@ -31,24 +30,24 @@ class RepositoryArchiveTreeMixin:
             session_records: list[SessionRecord],
             *,
             ordered_ids: list[str] | None = None,
+            queries: SQLiteQueryStore,
         ) -> list[Session]: ...
 
-    async def _topology(self, session_id: str) -> SessionTopology | None:
-        return await self.queries.get_session_topology(session_id)
-
     async def get_session_tree(self, session_id: str) -> list[Session]:
-        topology = await self._topology(session_id)
-        if topology is None:
-            return []
-        records: list[SessionRecord] = []
-        for node in topology.nodes:
-            record = await self.queries.get_session(str(node.session_id))
-            if record is not None:
-                records.append(record)
-        return await self._hydrate_sessions(
-            records,
-            ordered_ids=[record.session_id for record in records],
-        )
+        async with self.queries.read_snapshot() as queries:
+            topology = await queries.get_session_topology(session_id)
+            if topology is None:
+                return []
+            records: list[SessionRecord] = []
+            for node in topology.nodes:
+                record = await queries.get_session(str(node.session_id))
+                if record is not None:
+                    records.append(record)
+            return await self._hydrate_sessions(
+                records,
+                ordered_ids=[record.session_id for record in records],
+                queries=queries,
+            )
 
 
 __all__ = ["RepositoryArchiveTreeMixin"]

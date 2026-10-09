@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
@@ -37,6 +38,30 @@ class SQLiteQueryStore(
         connection_factory: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]],
     ) -> None:
         self._connection_factory = connection_factory
+
+    @asynccontextmanager
+    async def read_snapshot(self) -> AsyncIterator[SQLiteQueryStore]:
+        """Own one connection and snapshot for a composed repository read.
+
+        The returned store belongs to this operation's task and lifetime.
+        An existing caller transaction remains its caller's responsibility.
+        """
+        from polylogue.storage.sqlite.query_store_archive import _message_snapshot
+
+        owner = asyncio.current_task()
+        active = True
+        async with self._connection_factory() as conn, _message_snapshot(conn):
+
+            @asynccontextmanager
+            async def pinned_connection() -> AsyncIterator[aiosqlite.Connection]:
+                if not active or asyncio.current_task() is not owner:
+                    raise RuntimeError("snapshot queries require their active operation owner")
+                yield conn
+
+            try:
+                yield SQLiteQueryStore(connection_factory=pinned_connection)
+            finally:
+                active = False
 
     async def get_session_topology(
         self,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import TYPE_CHECKING
@@ -27,7 +26,6 @@ from polylogue.storage.runtime import (
     LineageCompleteness,
     MessageRecord,
     SessionCommitRecord,
-    SessionProfileRecord,
     SessionRecord,
     SessionRefRecord,
     WebContentConstructRecord,
@@ -65,12 +63,9 @@ class RepositoryArchiveSessionMixin:
         _read_blob_store: BlobStore
         queries: SQLiteQueryStore
 
-        # Provided by RepositoryInsightProfileReadMixin in the composed repository.
-        async def get_session_profile_records_batch(
-            self, session_ids: list[str]
-        ) -> dict[str, SessionProfileRecord]: ...
-
-    async def _current_profiles(self, session_ids: list[str]) -> dict[str, SessionProfile]:
+    async def _current_profiles(
+        self, session_ids: list[str], *, queries: SQLiteQueryStore
+    ) -> dict[str, SessionProfile]:
         """Profiles still bound to their session's current input.
 
         An ingest that changes a session clears the profile's
@@ -79,45 +74,13 @@ class RepositoryArchiveSessionMixin:
         """
         if not session_ids:
             return {}
-        records = await self.get_session_profile_records_batch(session_ids)
+        records = await queries.get_session_profiles_batch(session_ids)
         return {
             session_id: hydrate_session_profile(record)
             for session_id, record in records.items()
             if record.input_content_hash is not None
             and record.materializer_version == SESSION_INSIGHT_MATERIALIZER_VERSION
         }
-
-    async def _fetch_tags_by_session(self, session_ids: list[str]) -> dict[str, tuple[str, ...]]:
-        """#1240: batch-fetch M2M tags for hydration of Session/SessionSummary."""
-        if not session_ids:
-            return {}
-        result: dict[str, list[str]] = {cid: [] for cid in session_ids}
-        async with self._backend.read_connection() as conn:
-            for table in ("session_tags", "tags"):
-                table_cursor = await conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-                    (table,),
-                )
-                if await table_cursor.fetchone() is None:
-                    return dict.fromkeys(session_ids, ())
-            placeholders = ",".join("?" for _ in session_ids)
-            cursor = await conn.execute(
-                f"""
-                SELECT ct.session_id AS cid, t.name AS name
-                FROM session_tags ct
-                JOIN tags t ON t.id = ct.tag_id
-                WHERE ct.session_id IN ({placeholders})
-                ORDER BY t.name
-                """,
-                session_ids,
-            )
-            rows = await cursor.fetchall()
-            for row in rows:
-                cid = row["cid"]
-                name = row["name"]
-                if cid in result:
-                    result[cid].append(name)
-        return {cid: tuple(names) for cid, names in result.items()}
 
     async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> SessionId | None:
         resolved = await self.queries.resolve_id(id_prefix, strict=strict)
@@ -126,24 +89,23 @@ class RepositoryArchiveSessionMixin:
         return SessionId(resolved) if resolved else None
 
     async def get(self, session_id: str) -> Session | None:
-        conv_record = await self.queries.get_session(session_id)
-        if not conv_record:
-            return None
-        resolved_session_id = str(conv_record.session_id)
+        async with self.queries.read_snapshot() as queries:
+            conv_record = await queries.get_session(session_id)
+            if not conv_record:
+                return None
+            resolved_session_id = str(conv_record.session_id)
 
-        msg_records, session_event_records = await asyncio.gather(
-            self.queries.get_messages(resolved_session_id),
-            self.queries.get_session_events(resolved_session_id),
-        )
-        tags_by_id = await self._fetch_tags_by_session([resolved_session_id])
-        return session_from_records(
-            conv_record,
-            msg_records,
-            [attachment for message in msg_records for attachment in message.attachments],
-            session_event_records,
-            tags=tags_by_id.get(resolved_session_id, ()),
-            blob_store=self._read_blob_store,
-        )
+            msg_records = await queries.get_messages(resolved_session_id)
+            session_event_records = await queries.get_session_events(resolved_session_id)
+            tags_by_id = await queries.get_session_tags_batch([resolved_session_id])
+            return session_from_records(
+                conv_record,
+                msg_records,
+                [attachment for message in msg_records for attachment in message.attachments],
+                session_event_records,
+                tags=tags_by_id.get(resolved_session_id, ()),
+                blob_store=self._read_blob_store,
+            )
 
     async def view(self, session_id: str) -> Session | None:
         full_id = await self.resolve_id(session_id) or session_id
@@ -318,6 +280,7 @@ class RepositoryArchiveSessionMixin:
         session_records: list[SessionRecord],
         *,
         ordered_ids: list[str] | None = None,
+        queries: SQLiteQueryStore,
     ) -> list[Session]:
         if not session_records:
             return []
@@ -328,12 +291,9 @@ class RepositoryArchiveSessionMixin:
         if not present_ids:
             return []
 
-        async with self._backend.read_pool(size=2):
-            msgs_by_id, session_events_by_id = await asyncio.gather(
-                self.queries.get_messages_batch(present_ids),
-                self.queries.get_session_events_batch(present_ids),
-            )
-        tags_by_id = await self._fetch_tags_by_session(present_ids)
+        msgs_by_id = await queries.get_messages_batch(present_ids)
+        session_events_by_id = await queries.get_session_events_batch(present_ids)
+        tags_by_id = await queries.get_session_tags_batch(present_ids)
         return [
             session_from_records(
                 by_id[session_id],
@@ -347,55 +307,59 @@ class RepositoryArchiveSessionMixin:
         ]
 
     async def get_summary(self, session_id: str) -> SessionSummary | None:
-        conv_record = await self.queries.get_session(session_id)
-        if not conv_record:
-            return None
-        tags_by_id = await self._fetch_tags_by_session([session_id])
-        # Hydrate message_count from the current sessions aggregate.
-        counts_by_id = await self.queries.get_message_counts_batch([session_id])
-        profiles_by_id = await self._current_profiles([session_id])
-        return _with_profile(
-            session_summary_from_record(
-                conv_record,
-                tags=tags_by_id.get(session_id, ()),
-                message_count=counts_by_id.get(session_id),
-            ),
-            profiles_by_id.get(session_id),
-        )
+        async with self.queries.read_snapshot() as queries:
+            conv_record = await queries.get_session(session_id)
+            if not conv_record:
+                return None
+            tags_by_id = await queries.get_session_tags_batch([session_id])
+            # Hydrate message_count from the current sessions aggregate.
+            counts_by_id = await queries.get_message_counts_batch([session_id])
+            profiles_by_id = await self._current_profiles([session_id], queries=queries)
+            return _with_profile(
+                session_summary_from_record(
+                    conv_record,
+                    tags=tags_by_id.get(session_id, ()),
+                    message_count=counts_by_id.get(session_id),
+                ),
+                profiles_by_id.get(session_id),
+            )
 
     async def list_summaries_by_query(
         self,
         query: SessionRecordQuery,
     ) -> list[SessionSummary]:
-        conv_records = await self.queries.list_session_summaries(query)
-        ids = [str(record.session_id) for record in conv_records]
-        tags_by_id = await self._fetch_tags_by_session(ids)
-        # Hydrate message_count from the current sessions aggregate.
-        counts_by_id = await self.queries.get_message_counts_batch(ids) if ids else {}
-        profiles_by_id = await self._current_profiles(ids)
-        summaries: list[SessionSummary] = []
-        for record in conv_records:
-            session_id = str(record.session_id)
-            summary = session_summary_from_record(
-                record,
-                tags=tags_by_id.get(session_id, ()),
-                message_count=counts_by_id.get(session_id),
-            )
-            summaries.append(_with_profile(summary, profiles_by_id.get(session_id)))
-        return summaries
+        async with self.queries.read_snapshot() as queries:
+            conv_records = await queries.list_session_summaries(query)
+            ids = [str(record.session_id) for record in conv_records]
+            tags_by_id = await queries.get_session_tags_batch(ids)
+            # Hydrate message_count from the current sessions aggregate.
+            counts_by_id = await queries.get_message_counts_batch(ids) if ids else {}
+            profiles_by_id = await self._current_profiles(ids, queries=queries)
+            summaries: list[SessionSummary] = []
+            for record in conv_records:
+                session_id = str(record.session_id)
+                summary = session_summary_from_record(
+                    record,
+                    tags=tags_by_id.get(session_id, ()),
+                    message_count=counts_by_id.get(session_id),
+                )
+                summaries.append(_with_profile(summary, profiles_by_id.get(session_id)))
+            return summaries
 
     async def list_by_query(
         self,
         query: SessionRecordQuery,
     ) -> list[Session]:
-        conv_records = await self.queries.list_sessions(query)
-        return await self._hydrate_sessions(conv_records)
+        async with self.queries.read_snapshot() as queries:
+            conv_records = await queries.list_sessions(query)
+            return await self._hydrate_sessions(conv_records, queries=queries)
 
     async def get_many(self, session_ids: list[str]) -> list[Session]:
         if not session_ids:
             return []
-        records = await self.queries.get_sessions_batch(session_ids)
-        return await self._hydrate_sessions(records, ordered_ids=session_ids)
+        async with self.queries.read_snapshot() as queries:
+            records = await queries.get_sessions_batch(session_ids)
+            return await self._hydrate_sessions(records, ordered_ids=session_ids, queries=queries)
 
     async def iter_messages(
         self,

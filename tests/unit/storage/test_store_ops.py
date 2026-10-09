@@ -12,6 +12,7 @@ import sqlite3
 import tempfile
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Never, TypeVar, cast
 from unittest.mock import AsyncMock
@@ -469,20 +470,26 @@ async def test_list_summaries_by_query_hydrates_session_profile_slice(monkeypatc
     queries = SimpleNamespace(
         list_session_summaries=AsyncMock(return_value=records),
         get_message_counts_batch=AsyncMock(return_value=dict.fromkeys(ids, 4)),
+        get_session_tags_batch=AsyncMock(return_value={}),
+        get_session_profiles_batch=AsyncMock(return_value=profile_records),
     )
+
+    @asynccontextmanager
+    async def snapshot():
+        yield queries
+
+    queries.read_snapshot = snapshot
 
     class _Repo(RepositoryArchiveSessionMixin):
         def __init__(self) -> None:
             self.queries = cast(Any, queries)
-            setattr(self, "_fetch_tags_by_session", AsyncMock(return_value={}))  # noqa: B010
-            setattr(self, "get_session_profile_records_batch", AsyncMock(return_value=profile_records))  # noqa: B010
 
     repo = _Repo()
     known, unknown, stale = await repo.list_summaries_by_query(_record_query(origin="codex-session", limit=3))
     assert (known.terminal_state, known.total_cost_usd, known.cost_provenance) == ("refused", 1.75, "provider_reported")
     assert (unknown.terminal_state, unknown.total_cost_usd, unknown.cost_provenance) == ("completed", None, None)
     assert (stale.terminal_state, stale.total_cost_usd, stale.cost_provenance) == (None, None, None)
-    cast(AsyncMock, repo.get_session_profile_records_batch).assert_awaited_once_with(ids)
+    queries.get_session_profiles_batch.assert_awaited_once_with(ids)
 
 
 def test_actions_view_uses_blocks_without_session_payload_bloat(workspace_env: dict[str, Path]) -> None:

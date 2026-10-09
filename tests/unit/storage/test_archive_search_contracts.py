@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,6 +47,10 @@ def _session_record(session_id: str, *, title: str, source_name: str = "chatgpt"
 
 @dataclass
 class _FakeQueries(SQLiteQueryStore):
+    @asynccontextmanager
+    async def read_snapshot(self):
+        yield self
+
     hits: SessionSearchResult
     records_by_id: dict[str, SessionRecord]
     attachment_hits: list[SessionSearchEvidenceRow] | None = None
@@ -123,6 +128,7 @@ class _FakeRepo(RepositoryArchiveSearchMixin):
         session_records: list[SessionRecord],
         *,
         ordered_ids: list[str] | None = None,
+        queries: SQLiteQueryStore,
     ) -> list[Session]:
         self.ordered_ids_seen = ordered_ids
         return [
