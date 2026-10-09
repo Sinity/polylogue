@@ -155,9 +155,7 @@ def test_locked_source_scope_propagates_native_busy_and_retries_without_empty_su
         original = open_readonly_connection
 
         def no_wait(path: Path, **kwargs: object) -> sqlite3.Connection:
-            connection = original(path, timeout_class="background-read", validate_schema=False)
-            connection.execute("PRAGMA busy_timeout=0")
-            return connection
+            return original(path, timeout_class="background-read", validate_schema=False, timeout=0)
 
         with monkeypatch.context() as scope:
             scope.setattr(embedding_derivation, "open_readonly_connection", no_wait)
