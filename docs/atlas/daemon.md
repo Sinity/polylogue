@@ -150,6 +150,8 @@ The stage walk itself runs off the writer lease. Each stage declares how it reac
 
 `convergence_debt` remains disposable retry state for those surviving stage callers. The generic drain selects its registered executable stage names and supported subjects before the page limit, retaining acquisition-owned and unavailable debt for their owners and status. It excludes domain-owned stages through `_OWNED_DEBT_STAGES` (`polylogue/daemon/cli.py:143-151`) and filters them before retry (`polylogue/daemon/cli.py:1728-1734`). FTS, embeddings, raw parsing and session profiles therefore do not use the generic stage rows as publication authority. Raw retention has its own live-ingest retry owner (`polylogue/daemon/cli.py:137-142`).
 
+A narrowed live pass records `NOT_RUN` as an unexecuted debt observation. It creates a missing obligation, but preserves an existing subject/stage row's retry eligibility, attempt count and failure diagnostic, even after its deadline becomes due or the input changes again. Only an evaluated attempt can change that existing outcome or backoff (`sources/live/convergence_debt.py`; `convergence_outcome.py`; `CursorStore.apply_convergence_debt_batch`).
+
 The generic retry ledger settles or re-records a subject only while its debt predates that stage's run. A failure recorded in the run's start millisecond or later survives the older pass, including the gap between publication and the ledger's writer admission (`DaemonConverger`; `CursorStore.convergence_debt_recorded_before`; `daemon.cli._record_convergence_debt_retries`). Archive-wide settlement uses the same strict cutoff.
 
 ## Cadence loops

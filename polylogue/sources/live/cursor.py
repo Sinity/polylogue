@@ -188,6 +188,7 @@ class ConvergenceDebtWrite:
     error: str | None
     deferred: bool = False
     materializer_version: str | None = None
+    attempted: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -809,6 +810,7 @@ class CursorStore:
                     materializer_version=materializer_version,
                     now=now,
                     deferred=deferred,
+                    attempted=True,
                 )
 
         if not best_effort_cursor_write("archive ops convergence debt sync", write):
@@ -830,6 +832,7 @@ class CursorStore:
         materializer_version: str | None,
         now: str,
         deferred: bool,
+        attempted: bool,
     ) -> None:
         """Apply one debt transition inside the caller's locked transaction."""
         now_ms = _required_epoch_ms(now)
@@ -842,6 +845,12 @@ class CursorStore:
             (stage, subject_type, subject_id),
         ).fetchone()
         existing_attempts = int(row[0]) if row is not None else 0
+        expected_status = "deferred" if deferred else "failed"
+        if not attempted and row is not None:
+            # A narrowed pass did not run this stage. Its existing obligation
+            # keeps its original eligibility, including when already due,
+            # and any failure diagnostic remains unmeasured by this pass.
+            return
         retry_at = convergence_debt_retry_at(
             conn,
             failure_count=max(existing_attempts, 1),
@@ -860,7 +869,6 @@ class CursorStore:
             retry_at=retry_at,
         ):
             return
-        expected_status = "deferred" if deferred else "failed"
         status_only_transition = row is not None and row[2] == error and row[3] != expected_status
         attempts_delta = (
             0
@@ -930,6 +938,7 @@ class CursorStore:
                             materializer_version=debt_write.materializer_version,
                             now=now,
                             deferred=debt_write.deferred,
+                            attempted=debt_write.attempted,
                         )
 
         if not best_effort_cursor_write("archive ops convergence debt batch", write):
