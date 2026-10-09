@@ -2853,6 +2853,7 @@ class RawObservationDerivation(RawObservationInspection):
                                         jsonl=is_jsonl_source_path(path),
                                         captured_zip_coordinate=carry.zip_coordinates[raw_id],
                                         registry=self._schema_registry,
+                                        signature_directory=scratch,
                                     )
                             else:
                                 prepared_artifacts[artifact_key] = artifact
