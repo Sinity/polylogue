@@ -198,7 +198,7 @@ writes:
     kind: "update"
     tier: "audit"
     classification: lifecycle_transition
-    reason: "audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
+    reason: "The insight seal binds each staged immutable preview page to its active authorization for the same authenticated actor and surface. The UPDATE requires authorization_ref and operation_id to remain NULL, then requires the affected count to equal the sealed page count; a mismatch raises MachineRequestConflictError before publication."
   - file: "polylogue/operations/audit.py"
     function: "AuditRepository._bind_machine_batch"
     table: "machine_requests"
@@ -212,7 +212,7 @@ writes:
     kind: "update"
     tier: "audit"
     classification: lifecycle_transition
-    reason: "The insight seal advances only the staged insight-preview-pages request with its exact immutable part count; every page remains unexecuted and unbound until its active authorization is verified. audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
+    reason: "The insight seal advances only the authenticated insight-preview-pages request whose immutable part_count equals the completed page chain. It binds the first authorization and accepted deadline, requires exactly one affected request, and raises MachineRequestConflictError on stale or different custody."
   - file: "polylogue/operations/audit.py"
     function: "AuditRepository._bind_machine_result"
     table: "machine_request_parts"
