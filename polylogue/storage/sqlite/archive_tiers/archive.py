@@ -1274,14 +1274,36 @@ class ArchiveStore:
             # refusal: it names the generation and the lifecycle action the
             # operator must take. The generic open-time check would preempt it
             # with a message carrying neither.
+            from polylogue.storage.sqlite.connection_profile import (
+                GenerationToken,
+                StaleContinuationError,
+                _generation_token,
+            )
+
             try:
+                self.archive_generation = _generation_token(archive_root)
+                selected_path = self.index_db_path.resolve(strict=opened_index_fd is None)
+                if opened_index_fd is None:
+                    self.index_generation = _generation_token(selected_path)
+                else:
+                    selected = os.fstat(opened_index_fd)
+                    self.index_generation = GenerationToken(selected.st_dev, selected.st_ino)
                 self._conn = open_readonly_connection(
-                    self.index_db_path,
+                    selected_path,
                     timeout=read_timeout,
                     opened_main_fd=opened_index_fd,
                     validate_schema=False,
                     profile=replace(READ_CONNECTION_PROFILE, temp_store="FILE"),
                 )
+                if opened_index_fd is None and _generation_token(selected_path) != self.index_generation:
+                    raise StaleContinuationError("selected archive generation changed while opening the reader")
+            except FileNotFoundError as exc:
+                raise ArchiveTierUnavailableError(
+                    tier="index",
+                    path=str(self.index_db_path),
+                    reason="database file not found",
+                    guidance=FIRST_RUN_INDEX_GUIDANCE,
+                ) from exc
             except sqlite3.OperationalError as exc:
                 # A read-only open of an index tier that is not there is the
                 # ordinary first-run condition, not a driver fault. SQLite's
@@ -1333,6 +1355,11 @@ class ArchiveStore:
 
                 write_profile = COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE
             pragma_statements = write_connection_pragma_statements(write_profile)
+        from polylogue.storage.sqlite.connection_profile import _generation_token
+
+        if not read_only:
+            self.index_generation = _generation_token(self.index_db_path)
+            self.archive_generation = _generation_token(archive_root)
         self._conn.row_factory = sqlite3.Row
         # One comparator belongs to this actual frame. SQLite retires
         # its callback when this owner's connection closes, after its cursors.
@@ -1376,6 +1403,8 @@ class ArchiveStore:
             )
             self._blob_publisher = publisher_type(self.source_db_path, self.archive_root / "blob")
         self._attach_user_tier_if_present()
+        if read_only and _generation_token(archive_root) != self.archive_generation:
+            raise StaleContinuationError("selected archive root changed while opening the reader")
 
     def _require_sql_owner(self, *, cleanup: bool = False) -> None:
         if self._writer_owner_pid != os.getpid():

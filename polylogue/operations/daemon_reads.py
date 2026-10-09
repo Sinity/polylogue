@@ -181,12 +181,12 @@ def execute_read_operation(
     if name == "cli.query":
         from polylogue.archive.query.transaction import archive_snapshot_epoch
 
-        snapshot_epoch = f"{archive.index_db_path.resolve()}:{archive_snapshot_epoch(archive)}"
+        snapshot_epoch = archive_snapshot_epoch(archive)
     selected_epoch = payload.get("selection_epoch")
     if selected_epoch is not None:
         from polylogue.archive.query.transaction import QueryContinuationStaleError, archive_snapshot_epoch
 
-        current_epoch = f"{archive.index_db_path.resolve()}:{archive_snapshot_epoch(archive)}"
+        current_epoch = archive_snapshot_epoch(archive)
         if selected_epoch != current_epoch:
             raise QueryContinuationStaleError(issued_epoch=str(selected_epoch), current_epoch=current_epoch)
     cacheable = _cacheable_read(name, payload)

@@ -516,3 +516,142 @@ async def test_missing_and_ambiguous_scopes_keep_the_generic_outcome(tmp_path: P
     async with Polylogue(archive_root=root) as api:
         with pytest.raises(ValueError, match="ambiguous"):
             await execute_session_operation(api, SessionRead(ref="session:codex-session:equivalence-"))
+
+
+@pytest.mark.asyncio
+async def test_every_typed_indexed_page_keeps_the_explicit_index(tmp_path: Path) -> None:
+    from polylogue.operations.session_contracts import SessionTimeline
+
+    root = tmp_path / "archive"
+    seeded = run_off_event_loop(lambda: _seed(root))
+    selected = root / ".index-generations" / "selected" / "index.db"
+    selected.parent.mkdir(parents=True)
+    (root / "index.db").rename(selected)
+    async with Polylogue(archive_root=root, db_path=selected) as api:
+        for request in (SessionList(limit=1), SessionSearch(expression="needle", limit=1), SessionTimeline(limit=1)):
+            first = await execute_session_operation(api, request)
+            assert first.items and first.continuation
+            second = await execute_session_operation(api, type(request)(continuation=first.continuation))
+            assert second.offset == 1
+            assert second.total == first.total
+        assert first.total == len(seeded)
+    assert not (root / "index.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_latest_expression_bounds_both_typed_selection_and_window(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    seeded = run_off_event_loop(lambda: _seed(root))
+    async with Polylogue(archive_root=root) as api:
+        listed = await execute_session_operation(api, SessionList(expression='{"latest":true}'))
+        searched = await execute_session_operation(api, SessionSearch(expression='{"query":"needle","latest":true}'))
+        window = await execute_session_operation(api, SessionList(expression='{"limit":2,"offset":1}'))
+        assert window.continuation
+        resumed = await execute_session_operation(api, SessionList(continuation=window.continuation, limit=1))
+    generic = _generic_list(root, query='{"latest":true}')
+    assert [item.id for item in listed.items] == generic[0] == [seeded[-1]]
+    assert [item.session.id for item in searched.items] == [seeded[-1]]
+    for page in (listed, searched):
+        assert page.total == page.limit == 1
+        assert page.continuation is None
+    assert (window.limit, window.offset, window.next_offset) == (2, 1, 3)
+    assert (resumed.limit, resumed.offset) == (1, 3)
+    assert resumed.items[0].id == seeded[1]
+
+
+@pytest.mark.asyncio
+async def test_typed_continuation_refuses_an_equal_counter_other_archive(tmp_path: Path) -> None:
+    from polylogue.archive.query.transaction import QueryContinuationStaleError
+
+    roots = (tmp_path / "first", tmp_path / "second")
+    for index, root in enumerate(roots):
+        run_off_event_loop(lambda root=root, index=index: _seed(root, native_suffix=str(index)))
+    async with Polylogue(archive_root=roots[0]) as api:
+        first = await execute_session_operation(api, SessionList(limit=1))
+    assert first.continuation
+    async with Polylogue(archive_root=roots[1]) as api:
+        with pytest.raises(QueryContinuationStaleError):
+            await execute_session_operation(api, SessionList(continuation=first.continuation))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_missing_date_actions_sort_last_on_both_read_routes(tmp_path: Path, reverse: bool) -> None:
+    import json
+
+    root = tmp_path / "archive"
+
+    def seed() -> list[str]:
+        with ArchiveStore(root) as archive:
+            return [
+                write_index_session(
+                    archive,
+                    ParsedSession(
+                        source_name=Provider.CODEX,
+                        provider_session_id=name,
+                        messages=[
+                            ParsedMessage(
+                                provider_message_id="m",
+                                role=Role.ASSISTANT,
+                                timestamp=timestamp,
+                                blocks=[
+                                    ParsedContentBlock(
+                                        type=BlockType.TOOL_USE,
+                                        tool_id="call",
+                                        tool_name="run",
+                                        tool_input={"command": "needle"},
+                                    )
+                                ],
+                            )
+                        ],
+                    ),
+                )
+                for name, timestamp in (("missing", None), ("dated", "2026-02-01T12:00:00Z"))
+            ]
+
+    missing, dated = run_off_event_loop(seed)
+    expression = json.dumps({"query": "needle", "retrieval_lane": "actions", "sort": "date", "reverse": reverse})
+    async with Polylogue(archive_root=root) as api:
+        owner = await execute_session_operation(api, SessionSearch(expression=expression, limit=1))
+    with open_operation_read(root) as pinned:
+        generic = execute_read_operation(
+            "cli.query",
+            {"params": {"query": expression, "limit": 1}},
+            archive=pinned.archive,
+            serving_identity="direct",
+        )
+    assert [item.session.id for item in owner.items] == [dated]
+    assert [hit["session"]["id"] for hit in generic["hits"]] == [dated]
+    assert dated != missing
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_outcome", "exit_code"),
+    [
+        ({"operation": "sessions.list", "expression": "id:session:missing"}, "empty", 2),
+        ({"operation": "sessions.timeline"}, "degraded", 1),
+    ],
+)
+def test_machine_session_cli_returns_the_declared_terminal_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    payload: dict[str, str],
+    expected_outcome: str,
+    exit_code: int,
+) -> None:
+    import io
+    import json
+    import sys
+
+    import polylogue.api
+    from polylogue.cli.session_operations import main
+
+    root = tmp_path / "archive"
+    _seed(root, count=2)  # The second session has a message with no recorded event time.
+    facade = Polylogue
+    monkeypatch.setattr(polylogue.api, "Polylogue", lambda: facade(archive_root=root))
+    monkeypatch.setattr(sys, "argv", ["session_operations", "execute"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(payload).encode())))
+    assert main() == exit_code
+    assert json.loads(capsys.readouterr().out)["outcome"] == expected_outcome

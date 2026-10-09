@@ -332,11 +332,7 @@ async def message_transcript_window(
     # The repository's explicit index path is authoritative for compatibility
     # facades constructed with a split configured root and active database.
     active_db = Path(api.repository.backend.db_path)
-    active_root = active_db.parent
-    if active_root.name == ".index-generations":
-        active_root = active_root.parent
-    elif active_root.parent.name == ".index-generations":
-        active_root = active_root.parent.parent
+    active_root = Path(api.archive_root)
     if around is not None:
         if request.continuation is not None or request.offset:
             raise ValueError("around and an explicit window coordinate name two different windows")

@@ -118,7 +118,9 @@ def _page(
     )
 
 
-async def session_query(archive_root: Path, request: SessionList | SessionSearch) -> SessionPage[Any]:
+async def session_query(
+    archive_root: Path, request: SessionList | SessionSearch, *, index_path: Path
+) -> SessionPage[Any]:
     from polylogue.archive.hydration import archive_summary_to_domain
     from polylogue.archive.query.expression import compile_expression_into
     from polylogue.archive.query.filter_kwargs import plan_filter_kwargs
@@ -163,6 +165,18 @@ async def session_query(archive_root: Path, request: SessionList | SessionSearch
                 },
             },
         )
+    if plan.sample is not None or plan.sort == "random":
+        raise ValueError("session owner continuations require deterministic ordering; use the sampled query operation")
+    if plan.limit is not None and plan.limit < 1:
+        raise ValueError("session page limit must be positive")
+    if not tx.archive_epoch:
+        tx = replace(
+            tx,
+            page_size=plan.limit if plan.limit is not None else request.limit,
+            offset=plan.offset,
+            stable_order=plan.sort or "date,identity",
+        )
+    request = request.model_copy(update={"limit": tx.page_size, "offset": tx.offset})
     text = " ".join((*spec.query_terms, *spec.contains_terms)).strip()
 
     if isinstance(request, SessionSearch) and not text:
@@ -184,6 +198,8 @@ async def session_query(archive_root: Path, request: SessionList | SessionSearch
             )
 
             total = archive.count_search_sessions(text, actions_only=spec.retrieval_lane == "actions", **filters)
+            if plan.latest:
+                total = min(total, 1)
             distinct: dict[str, Any] = {}
             raw_offset = 0
             while len(distinct) < min(total, request.offset + request.limit):
@@ -191,8 +207,8 @@ async def session_query(archive_root: Path, request: SessionList | SessionSearch
                     text,
                     limit=250,
                     offset=raw_offset,
-                    sort=spec.sort,
-                    reverse=spec.reverse,
+                    sort=plan.sort,
+                    reverse=plan.reverse,
                     actions_only=spec.retrieval_lane == "actions",
                     **filters,
                 )
@@ -230,9 +246,11 @@ async def session_query(archive_root: Path, request: SessionList | SessionSearch
 
         else:
             summaries = archive.list_summaries(
-                limit=request.limit, offset=request.offset, sort=spec.sort, reverse=spec.reverse, **filters
+                limit=request.limit, offset=request.offset, sort=plan.sort, reverse=plan.reverse, **filters
             )
             total = archive.count_sessions(**filters)
+            if plan.latest:
+                total = min(total, 1)
         items = [
             session_summary_envelope_from_summary(
                 archive_summary_to_domain(summary), message_count=summary.message_count
@@ -241,7 +259,7 @@ async def session_query(archive_root: Path, request: SessionList | SessionSearch
         ]
         return _page(items, total, framed)
 
-    result: SessionPage[Any] = await QueryTransaction(archive_root, tx).run(read)
+    result: SessionPage[Any] = await QueryTransaction(archive_root, tx).run(read, index_path=index_path)
     return result
 
 
@@ -254,7 +272,9 @@ def _time_ms(value: str | None) -> int | None:
     return int(parsed.timestamp() * 1000)
 
 
-async def session_timeline(archive_root: Path, request: SessionTimeline) -> SessionPage[TimelineEvent]:
+async def session_timeline(
+    archive_root: Path, request: SessionTimeline, *, index_path: Path
+) -> SessionPage[TimelineEvent]:
     request, tx = _transaction(request)
     since, until = _time_ms(request.since), _time_ms(request.until)
     if since is not None and until is not None and since > until:
@@ -330,7 +350,7 @@ async def session_timeline(archive_root: Path, request: SessionTimeline) -> Sess
             time_basis="event-timestamp",
         )
 
-    result: SessionPage[Any] = await QueryTransaction(archive_root, tx).run(read)
+    result: SessionPage[Any] = await QueryTransaction(archive_root, tx).run(read, index_path=index_path)
     return result
 
 
@@ -564,9 +584,9 @@ async def execute_session_operation(api: Any, request: SessionOperation, *, raw_
             return await asyncio.to_thread(raw_operation, request, sources=raw_sources)
         return await asyncio.to_thread(raw_operation, request, sources=raw_sources)
     if isinstance(request, (SessionList, SessionSearch)):
-        return await session_query(api.archive_root, request)
+        return await session_query(api.archive_root, request, index_path=Path(api.repository.backend.db_path))
     if isinstance(request, SessionTimeline):
-        return await session_timeline(api.archive_root, request)
+        return await session_timeline(api.archive_root, request, index_path=Path(api.repository.backend.db_path))
     if isinstance(request, SessionOrchestration):
         from polylogue.analysis.orchestration_evidence import SessionOrchestrationEvidence
 

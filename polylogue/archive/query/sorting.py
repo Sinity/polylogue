@@ -87,7 +87,7 @@ def _session_measured_tokens(session: Session) -> tuple[bool, int]:
 
 
 # SQLite stores these values without losing integer counters. The first key
-# always places unmeasured tokens last; the remaining keys share direction.
+# always places missing measurements or dates last; the remaining keys share direction.
 SessionOrderValues: TypeAlias = tuple[bool, int | float, int, str]
 
 
@@ -117,7 +117,8 @@ def session_order_values(plan: QuerySortPlan, session: Session) -> SessionOrderV
         return False, max((message.word_count for message in session.messages), default=0), *ties
     if plan.sort == "random":
         return False, random.random(), 0, ""
-    return False, _time_value(session.updated_at), 0, ""
+    date = session.updated_at or session.created_at
+    return date is None, _time_value(date), 0, str(session.id)
 
 
 def summary_order_values(
@@ -140,24 +141,29 @@ def summary_order_values(
             return False, longest, *ties
         if plan.sort == "tokens":
             return not measured_tokens, tokens, *ties
-    return False, _time_value(summary.updated_at or summary.created_at), 0, ""
+    date = summary.updated_at or summary.created_at
+    return date is None, _time_value(date), 0, str(summary.id)
 
 
 def sort_sessions(plan: QuerySortPlan, sessions: list[Session]) -> list[Session]:
     if plan.sort == "random":
         return sort_generic(plan, sessions, lambda session: 0)
-    if plan.sort != "tokens":
-        return sorted(sessions, key=lambda session: session_order_values(plan, session)[1:], reverse=not plan.reverse)
-    scored = [(session, session_order_values(plan, session)) for session in sessions]
+    return _sort_measured(plan, sessions, lambda session: session_order_values(plan, session))
+
+
+def _sort_measured(plan: QuerySortPlan, items: list[_T], key: Callable[[_T], SessionOrderValues]) -> list[_T]:
+    scored = [(item, key(item)) for item in items]
     measured = sorted(
         (pair for pair in scored if not pair[1][0]), key=lambda pair: pair[1][1:], reverse=not plan.reverse
     )
-    unmeasured = sorted((pair for pair in scored if pair[1][0]), key=lambda pair: pair[1][1:], reverse=not plan.reverse)
-    return [session for session, _values in measured] + [session for session, _values in unmeasured]
+    missing = sorted((pair for pair in scored if pair[1][0]), key=lambda pair: pair[1][1:], reverse=not plan.reverse)
+    return [item for item, _values in measured] + [item for item, _values in missing]
 
 
 def sort_summaries(plan: QuerySortPlan, summaries: list[SessionSummary]) -> list[SessionSummary]:
-    return sort_generic(plan, summaries, lambda summary: summary_order_values(plan, summary)[1:])
+    if plan.sort == "random":
+        return sort_generic(plan, summaries, lambda summary: 0)
+    return _sort_measured(plan, summaries, lambda summary: summary_order_values(plan, summary))
 
 
 class SessionReservoir(Generic[_T]):

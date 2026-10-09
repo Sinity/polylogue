@@ -1781,7 +1781,7 @@ def _prepare_mutation_selection(
             vector_failure=pinned.vector_failure or dependencies.vector_failure,
             raise_if_aborted=checkpoint,
         )
-        frame = f"{pinned.archive.index_db_path.resolve()}:{archive_snapshot_epoch(pinned.archive)}"
+        frame = archive_snapshot_epoch(pinned.archive)
         sample: list[str] = []
         count = 0
         with (
@@ -1980,7 +1980,7 @@ def _prepare_identity_reset_selection(
         _validate_identity(request, context, pinned)
         runtime.observe_snapshot(request, pinned)
         authority = OperationControlRead(pinned.identity, dict(pinned.schema_versions), pinned.degraded_components)
-        frame = f"{pinned.archive.index_db_path.resolve()}:{archive_snapshot_epoch(pinned.archive)}"
+        frame = archive_snapshot_epoch(pinned.archive)
         session = request.payload.get("session")
         selected = (
             iter(_resolve_session_prefixes(pinned.archive, [session]))
@@ -2051,7 +2051,7 @@ async def execute_selected_preview_operation(request: DaemonOperationRequest, co
                 # existing read scope without submitting a nested gate owner.
                 with open_operation_read(context.archive_root) as pinned:
                     _validate_identity(request, context, pinned)
-                    current = f"{pinned.archive.index_db_path.resolve()}:{archive_snapshot_epoch(pinned.archive)}"
+                    current = archive_snapshot_epoch(pinned.archive)
                     if current != selection.frame:
                         raise MutationSelectionError(
                             "selection_frame_changed", "The deletion selection changed before acceptance."
@@ -2233,7 +2233,7 @@ async def execute_session_mark_operation(request: DaemonOperationRequest, contex
                 # hold would inherit the active lease into another task.
                 with open_operation_read(context.archive_root) as pinned:
                     _validate_identity(request, context, pinned)
-                    current = f"{pinned.archive.index_db_path.resolve()}:{archive_snapshot_epoch(pinned.archive)}"
+                    current = archive_snapshot_epoch(pinned.archive)
                     if current != selection.frame:
                         raise MutationSelectionError(
                             "selection_frame_changed", "The mutation selection changed before acceptance."
