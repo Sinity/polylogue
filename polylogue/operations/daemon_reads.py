@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from polylogue.core.errors import SessionNotFoundError
 from polylogue.operations.authority import authority_for_reader
 from polylogue.operations.query_lowering import cli_query_spec, cli_read_request, lower_cli_query_params
+from polylogue.operations.query_scope import resolved_scope_spec
 from polylogue.operations.session_evidence import (
     SESSION_EVIDENCE_PAGE_READERS,
     read_agent_policies_evidence,
@@ -504,7 +505,7 @@ def _query_payload(
     # exact-ID predicate yields no rows on this pinned snapshot, while normal
     # validation and ranked-lane failures remain visible.
     with suppress(SessionNotFoundError):
-        spec = _resolved_scope_spec(spec, archive=archive)
+        spec = resolved_scope_spec(spec, archive=archive)
 
     searching = bool(
         spec.query_terms
@@ -567,29 +568,6 @@ def _query_payload(
         # its absence read as "complete" after one page.
         "next_offset": page_next_offset(offset=offset, returned=len(summaries), total=total, limit=limit),
     }
-
-
-def _resolved_scope_spec(spec: SessionQuerySpec, *, archive: ArchiveStore) -> SessionQuerySpec:
-    """Resolve an explicit session scope to a full session id before filtering.
-
-    ``--id`` accepts any reference spelling the archive can resolve — a native
-    id, a prefix, a full ``origin:native`` id, or its outer ``session:`` namespace.
-    The SQL filters compare against
-    the full ``session_id``, so an unresolved spelling silently scopes the page
-    to nothing and reports an empty result instead of the session the operator
-    named.  Resolution failure is stated, never rendered as "no rows".
-    """
-
-    from dataclasses import replace as dataclass_replace
-
-    scope = spec.session_id
-    if not scope:
-        return spec
-    try:
-        resolved = archive.resolve_session_id(scope.removeprefix("session:"))
-    except KeyError as exc:
-        raise SessionNotFoundError(f"session not found: {scope}") from exc
-    return spec if resolved == scope else dataclass_replace(spec, session_id=resolved)
 
 
 #: The row vocabulary ``cli.query`` reports, declared here because this is
@@ -1254,7 +1232,7 @@ def _aggregate_payload(payload: Mapping[str, object], *, archive: ArchiveStore) 
     spec = _cli_query_spec({str(key): value for key, value in raw_params.items()})
     if spec.similar_text or spec.similar_session_id or spec.retrieval_lane == "hybrid":
         raise ValueError("aggregates are computed over lexical and structural selection only")
-    spec = _resolved_scope_spec(spec, archive=archive)
+    spec = resolved_scope_spec(spec, archive=archive)
     if spec.exclude_text_terms and mode != "count":
         raise ValueError(
             "stats cannot aggregate a content-excluded selection; use --count or remove --exclude-text and retry"
