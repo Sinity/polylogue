@@ -24,15 +24,18 @@ Two entry points:
 
 from __future__ import annotations
 
+from polylogue.core.enums import Origin
 from polylogue.core.hashing import hash_bytes
+from polylogue.core.identity_law import block_id, message_local_id, split_message_local_id
 from polylogue.core.json import JSONValue
 from polylogue.material_protocol.v1.canonical import canonical_bytes, parse_json_value
 from polylogue.material_protocol.v1.constants import HEAD_SEGMENT_INDEX
-from polylogue.material_protocol.v1.encode import HEAD_KINDS, TRANSCRIPT_KINDS
+from polylogue.material_protocol.v1.encode import HEAD_KINDS, SEQUENCE_RULE, TRANSCRIPT_KINDS
 from polylogue.material_protocol.v1.errors import (
     AnchorMismatchError,
     AnchorNotFoundError,
     DigestMismatchError,
+    MaterialManifestError,
     RecordCountMismatchError,
     SegmentMissingError,
     SemanticClosureError,
@@ -55,6 +58,7 @@ def resolve_anchor(manifest: RevisionManifest, segment_bytes: dict[int, bytes], 
     prove the line is intact, never that this reader understands its shape.
     """
     require_current_semantics(manifest)
+    check_origin_vocabulary(manifest.origin_vocabulary_version, manifest.origin_vocabulary_digest)
     anchor = manifest.anchors.get(record_id)
     if anchor is None:
         raise AnchorNotFoundError(f"no anchor for record_id={record_id!r}")
@@ -70,7 +74,7 @@ def resolve_anchor(manifest: RevisionManifest, segment_bytes: dict[int, bytes], 
     if raw is None:
         raise SegmentMissingError(f"segment {anchor.segment_index} ({descriptor.filename}) not supplied")
 
-    lines = [line for line in raw.split(b"\n") if line]
+    lines = _check_segment(descriptor, raw)
     if anchor.line_index < 0 or anchor.line_index >= len(lines):
         raise AnchorMismatchError(
             f"anchor for {record_id!r} names line_index={anchor.line_index}, segment has {len(lines)} lines"
@@ -90,7 +94,7 @@ def resolve_anchor(manifest: RevisionManifest, segment_bytes: dict[int, bytes], 
         raise AnchorMismatchError(
             f"anchor for {record_id!r} resolved to a record with record_id={parsed.get('record_id')!r}"
         )
-    if int(parsed.get("seq", -1)) != anchor.seq:  # type: ignore[arg-type]
+    if type(parsed.get("seq")) is not int or parsed.get("seq") != anchor.seq or parsed.get("kind") != anchor.kind:
         raise AnchorMismatchError(
             f"anchor seq mismatch for {record_id!r}: manifest={anchor.seq}, actual={parsed.get('seq')!r}"
         )
@@ -99,6 +103,7 @@ def resolve_anchor(manifest: RevisionManifest, segment_bytes: dict[int, bytes], 
 
 
 def _check_segment(descriptor: SegmentDescriptor, raw: bytes) -> list[bytes]:
+    descriptor.require_valid()
     actual_sha = hash_bytes(raw)
     if actual_sha != descriptor.sha256:
         raise DigestMismatchError(
@@ -132,12 +137,16 @@ def _walk_records(
         if not isinstance(parsed, dict):
             raise SequenceOrderError(f"segment {descriptor.index} line {line_index} is not a JSON object")
         seq = parsed.get("seq")
-        if seq != expected_seq:
+        if type(seq) is not int or seq != expected_seq:
             raise SequenceOrderError(
                 f"expected {space} seq={expected_seq} at segment {descriptor.index} line {line_index}, got {seq!r}"
             )
-        record_id = str(parsed.get("record_id"))
-        kind = str(parsed.get("kind"))
+        record_id = parsed.get("record_id")
+        kind = parsed.get("kind")
+        if not isinstance(record_id, str) or not record_id or not isinstance(kind, str):
+            raise SemanticClosureError("material record kind and identity must be nonempty text")
+        if record_id in anchors:
+            raise SemanticClosureError(f"duplicate material record_id {record_id!r}")
         if kind not in allowed_kinds:
             raise SemanticClosureError(f"record kind {kind!r} is not allowed in the {space} (record_id={record_id!r})")
         kind_counts[kind] = kind_counts.get(kind, 0) + 1
@@ -150,6 +159,8 @@ def _walk_records(
         )
         parsed_records.append(parsed)
         expected_seq += 1
+    if lines and (descriptor.first_seq != parsed_records[0]["seq"] or descriptor.last_seq != parsed_records[-1]["seq"]):
+        raise SequenceOrderError("segment sequence declaration does not match its records")
     return expected_seq, parsed_records
 
 
@@ -162,14 +173,80 @@ def _check_semantic_closure(
     if len(session_records) != 1:
         raise SemanticClosureError(f"expected exactly 1 session record in the head, found {len(session_records)}")
     session = session_records[0]
-    if str(session.get("record_id")) != manifest.session_id:
+    if (
+        session.get("record_id") != manifest.session_id
+        or session.get("session_id") != manifest.session_id
+        or session.get("origin") != manifest.origin
+        or session.get("native_id") != manifest.native_id
+        or manifest.session_id != f"{manifest.origin}:{manifest.native_id}"
+        or manifest.revision_id != manifest.content_digest.polylogue_sha256
+    ):
         raise SemanticClosureError(
             f"session record_id {session.get('record_id')!r} does not match manifest session_id {manifest.session_id!r}"
         )
 
     message_records = [record for record in transcript_records if record.get("kind") == "message"]
+    messages_by_id: dict[str, dict[str, JSONValue]] = {}
+    message_coordinates: set[tuple[int, int]] = set()
+    for message in message_records:
+        message_id = message.get("message_id")
+        if not isinstance(message_id, str) or message.get("record_id") != message_id or message_id in messages_by_id:
+            raise SemanticClosureError("message identity is inconsistent or duplicated")
+        messages_by_id[message_id] = message
+        position, variant = message.get("position"), message.get("variant_index")
+        if type(position) is not int or type(variant) is not int or position < 0 or variant < 0:
+            raise SemanticClosureError("invalid message ordinal")
+        coordinate = (position, variant)
+        if coordinate in message_coordinates:
+            raise SemanticClosureError("duplicate message ordinal")
+        message_coordinates.add(coordinate)
+        native_id = message.get("native_id")
+        try:
+            if native_id is not None and not isinstance(native_id, str):
+                raise ValueError("native message id is not text")
+            if native_id:
+                local_id = message_local_id(native_id)
+            else:
+                stored_native, identity, occurrence = split_message_local_id(message_id)
+                if stored_native is not None:
+                    raise ValueError("idless message claims native identity")
+                local_id = message_local_id(None, content_identity=identity, content_occurrence=occurrence)
+            if message_id != f"{manifest.session_id}:{local_id}":
+                raise ValueError("message identity disagrees with its owner or native declaration")
+        except ValueError as exc:
+            raise SemanticClosureError("invalid message identity") from exc
+    for record in (*head_records, *transcript_records):
+        kind = record.get("kind")
+        if kind == "lineage":
+            if record.get("src_session_id") != manifest.session_id:
+                raise SemanticClosureError("lineage source belongs to a different session")
+        elif record.get("session_id") != manifest.session_id:
+            raise SemanticClosureError("material record belongs to a different session")
+        if kind in {"block", "attachment"}:
+            owner = record.get("message_id")
+        elif kind == "session_event":
+            owner = record.get("source_message_id")
+            if owner is None:
+                continue
+        else:
+            continue
+        if not isinstance(owner, str) or owner not in messages_by_id:
+            raise SemanticClosureError(f"{kind} names an absent message owner")
+        if record["seq"] <= messages_by_id[owner]["seq"]:  # type: ignore[operator]
+            raise SemanticClosureError(f"{kind} precedes its message owner")
+        if kind == "block":
+            identity = record.get("content_identity")
+            occurrence = record.get("content_occurrence")
+            try:
+                if not isinstance(identity, str) or type(occurrence) is not int:
+                    raise ValueError("invalid block content coordinates")
+                expected_id = block_id(owner, content_identity=identity, content_occurrence=occurrence)
+                if record.get("record_id") != expected_id or record.get("block_id") != expected_id:
+                    raise ValueError("block identity disagrees with its content coordinates")
+            except ValueError as exc:
+                raise SemanticClosureError("invalid block identity") from exc
     declared_message_count = session.get("message_count")
-    if declared_message_count != len(message_records):
+    if type(declared_message_count) is not int or declared_message_count != len(message_records):
         raise SemanticClosureError(
             f"session record declares message_count={declared_message_count!r} but the transcript "
             f"contains {len(message_records)} message records"
@@ -185,7 +262,7 @@ def _check_semantic_closure(
         message_id = str(message.get("message_id"))
         declared_blocks = message.get("block_count")
         actual_blocks = blocks_by_message.get(message_id, 0)
-        if declared_blocks != actual_blocks:
+        if type(declared_blocks) is not int or declared_blocks != actual_blocks:
             raise SemanticClosureError(
                 f"message {message_id!r} declares block_count={declared_blocks!r} but the transcript "
                 f"contains {actual_blocks} block records for it"
@@ -196,6 +273,21 @@ def verify_revision(manifest: RevisionManifest, segment_bytes: dict[int, bytes])
     """Full compatibility + semantic-closure pass. Raises a MaterialProtocolError subclass on any mismatch."""
     require_current_semantics(manifest)
     check_origin_vocabulary(manifest.origin_vocabulary_version, manifest.origin_vocabulary_digest)
+    if manifest.completeness != "complete" or manifest.sequence_rule != SEQUENCE_RULE:
+        raise MaterialManifestError("unsupported material completeness or sequence rule")
+    try:
+        Origin(manifest.origin)
+    except ValueError as exc:
+        raise MaterialManifestError("unknown material origin") from exc
+    if any(type(count) is not int or count < 0 for count in manifest.expected_record_counts.values()):
+        raise MaterialManifestError("record counts must be nonnegative exact integers")
+    for anchor in manifest.anchors.values():
+        if any(type(value) is not int for value in (anchor.segment_index, anchor.line_index, anchor.seq)):
+            raise MaterialManifestError("anchor coordinates must be exact integers")
+    if [descriptor.index for descriptor in sorted(manifest.segments, key=lambda d: d.index)] != list(
+        range(len(manifest.segments))
+    ):
+        raise MaterialManifestError("transcript segment indexes must be unique and contiguous from zero")
 
     if manifest.head_segment.index != HEAD_SEGMENT_INDEX:
         raise SemanticClosureError(

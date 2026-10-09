@@ -8,7 +8,8 @@ once it has settled the full ordered record list for a revision (see
 
 from __future__ import annotations
 
-from polylogue.core.identity_law import message_local_id
+from polylogue.core.digest import nfc
+from polylogue.core.identity_law import block_id, message_local_id
 from polylogue.core.json import JSONValue
 from polylogue.material_protocol.v1.input_model import (
     AttachmentInput,
@@ -35,7 +36,7 @@ def message_id_for(session_id: str, message: MessageInput) -> str:
 
 
 def block_id_for(message_id: str, block: BlockInput) -> str:
-    return f"{message_id}:{block.position}"
+    return block_id(message_id, content_identity=block.content_identity, content_occurrence=block.content_occurrence)
 
 
 def event_id_for(session_id: str, position: int) -> str:
@@ -56,13 +57,17 @@ def usage_record_id_for(session_id: str, usage: UsageInput) -> str:
 
 def session_record(material: SessionMaterial) -> dict[str, JSONValue]:
     session_id = material.session_id
+    metadata = dict(material.metadata)
+    instructions = metadata.get("instructions_text")
+    if isinstance(instructions, str):
+        metadata["instructions_text"] = nfc(instructions)
     return {
         "kind": "session",
         "record_id": session_id,
         "session_id": session_id,
         "origin": material.origin.value,
         "native_id": material.native_id,
-        "title": material.title,
+        "title": nfc(material.title) if material.title is not None else None,
         "session_kind": material.session_kind.value,
         "created_at_ms": material.created_at_ms,
         "updated_at_ms": material.updated_at_ms,
@@ -70,7 +75,7 @@ def session_record(material: SessionMaterial) -> dict[str, JSONValue]:
         "git_repository_url": material.git_repository_url,
         "provider_project_ref": material.provider_project_ref,
         "working_directories": list(material.working_directories),
-        "metadata": dict(material.metadata),
+        "metadata": metadata,
         "tags": list(material.tags),
         "message_count": len(material.messages),
     }
@@ -128,7 +133,7 @@ def message_record(session_id: str, message: MessageInput) -> dict[str, JSONValu
         "role": message.role.value,
         "message_type": message.message_type.value,
         "material_origin": message.material_origin.value,
-        "text": message.text,
+        "text": nfc(message.text) if message.text is not None else None,
         "occurred_at_ms": message.occurred_at_ms,
         "model_name": message.model_name,
         "parent_message_id": parent_message_id,
@@ -152,8 +157,10 @@ def block_record(session_id: str, message_id: str, block: BlockInput) -> dict[st
         "message_id": message_id,
         "block_id": block_id,
         "position": block.position,
+        "content_identity": block.content_identity,
+        "content_occurrence": block.content_occurrence,
         "block_type": block.block_type.value,
-        "text": block.text,
+        "text": nfc(block.text) if block.text is not None else None,
         "tool_name": block.tool_name,
         "tool_id": block.tool_id,
         "tool_input": block.tool_input,

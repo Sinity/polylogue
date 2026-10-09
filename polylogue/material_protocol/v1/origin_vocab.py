@@ -68,7 +68,7 @@ def resolve_current_origin_vocabulary() -> tuple[int, str]:
 
 def check_origin_vocabulary(version: int, digest: str) -> None:
     """Raise UnknownOriginVocabularyError unless (version, digest) is a known pair."""
-    expected = KNOWN_ORIGIN_VOCABULARIES.get(version)
+    expected = KNOWN_ORIGIN_VOCABULARIES.get(version) if type(version) is int else None
     if expected is None:
         raise UnknownOriginVocabularyError(f"unknown origin vocabulary version {version!r}")
     if expected != digest:

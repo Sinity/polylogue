@@ -42,10 +42,11 @@ sequence of canonical JSON objects, one per line (`\n`-terminated), UTF-8.
 ## Canonical framing (byte-stability)
 
 Every JSON value in this protocol — each record and the manifest — is
-serialized with exactly one rule: recursively NFC-normalize every string,
-then serialize with **sorted object keys** and no incidental whitespace
+serialized with **sorted object keys** and no incidental whitespace. Only
+session title and instructions, message text, and block text fold in NFC.
+Identifiers, paths, tool arguments, metadata and all mapping keys stay exact
 (`polylogue/material_protocol/v1/canonical.py`, backed by
-`orjson.OPT_SORT_KEYS`). Key order therefore never carries meaning. This is
+the shared exact-value JSON framing profile). Key order therefore never carries meaning. This is
 what makes "decode, then re-encode" byte-identical to the original, and what
 lets two independent encoders (Polylogue, Sinex) produce identical bytes for
 identical input.
@@ -59,7 +60,7 @@ Every record is a JSON object with at least `kind`, `record_id`, and `seq`
 - `session`: `record_id = session_id = "{origin}:{native_id}"`
 - `message`: `record_id = message_id = "{session_id}:n:{native_id}"`, or
   `"{session_id}:c:{content_identity}.{content_occurrence}"` when the provider carried no id
-- `block`: `record_id = block_id = "{message_id}:{position}"`
+- `block`: `record_id = block_id = "{message_id}:b:{content_identity}:{content_occurrence}"`
 - `attachment`: `record_id = "{message_id}:attachment:{position}"`
 - `lineage`: `record_id = "{session_id}:lineage:{dst_origin}:{dst_native_id}:{link_type}"`
 - `usage`: `record_id = "{session_id}:usage:{model_name}"`
@@ -67,7 +68,7 @@ Every record is a JSON object with at least `kind`, `record_id`, and `seq`
   other typed fact the archive records): `record_id = "{session_id}:{position}"`
 
 Records live in one of two **spaces** with different mutability contracts
-(semantics v5), each with its own strictly increasing `seq` starting at 0 —
+(semantics v6), each with its own strictly increasing `seq` starting at 0 —
 together this **is** the manifest's `sequence_rule`:
 
 **Head** (`head.ndjson`, reserved segment index `-1`) — the revision-mutable

@@ -12,6 +12,7 @@ from pathlib import Path
 from polylogue.material_protocol.v1.canonical import canonical_bytes, parse_json_value
 from polylogue.material_protocol.v1.constants import MANIFEST_FILENAME
 from polylogue.material_protocol.v1.encode import EncodedRevision
+from polylogue.material_protocol.v1.errors import MaterialManifestError
 from polylogue.material_protocol.v1.manifest import RevisionManifest
 
 
@@ -30,12 +31,15 @@ def write_revision(encoded: EncodedRevision, base_dir: Path) -> None:
 
 def read_manifest(base_dir: Path) -> RevisionManifest:
     payload = parse_json_value((base_dir / MANIFEST_FILENAME).read_bytes())
-    assert isinstance(payload, dict)
+    if not isinstance(payload, dict):
+        raise MaterialManifestError("revision manifest must be an object")
     return RevisionManifest.from_dict(payload)
 
 
 def read_segments(base_dir: Path, manifest: RevisionManifest) -> dict[int, bytes]:
     segments_dir = base_dir / "segments"
+    for descriptor in (*manifest.segments, manifest.head_segment):
+        descriptor.require_valid()
     segments = {descriptor.index: (segments_dir / descriptor.filename).read_bytes() for descriptor in manifest.segments}
     head = manifest.head_segment
     segments[head.index] = (segments_dir / head.filename).read_bytes()

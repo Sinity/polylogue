@@ -51,7 +51,7 @@ from polylogue.material_protocol.v1.constants import (
     SEGMENT_MEDIA_TYPE,
     SEMANTICS_VERSION,
 )
-from polylogue.material_protocol.v1.errors import NotAnAppendError
+from polylogue.material_protocol.v1.errors import NotAnAppendError, SemanticClosureError
 from polylogue.material_protocol.v1.input_model import SessionEventInput, SessionMaterial
 from polylogue.material_protocol.v1.manifest import (
     AnchorEntry,
@@ -173,6 +173,8 @@ def _pack_segments(
             buffer.extend(line_bytes)
             record_id = str(record["record_id"])
             kind = str(record["kind"])
+            if record_id in anchors:
+                raise SemanticClosureError(f"duplicate material record_id {record_id!r}")
             anchors[record_id] = AnchorEntry(
                 segment_index=segment_index,
                 line_index=line_index,
@@ -212,6 +214,8 @@ def _pack_head(
         buffer.extend(canonical_line(record_with_seq))
         record_id = str(record["record_id"])
         kind = str(record["kind"])
+        if record_id in anchors:
+            raise SemanticClosureError(f"duplicate material record_id {record_id!r}")
         anchors[record_id] = AnchorEntry(
             segment_index=HEAD_SEGMENT_INDEX,
             line_index=line_index,
@@ -341,6 +345,9 @@ def encode_appended_revision(
     linked only via ``superseded_revision_id``) instead of claiming
     append-anchor-stability.
     """
+    from polylogue.material_protocol.v1.verify import verify_revision
+
+    verify_revision(prior_manifest, prior_segments)
     # Session identity must match the prior revision explicitly: with the
     # session record living in the (never-compared) head, an empty-transcript
     # prior would otherwise accept a completely different session as an

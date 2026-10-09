@@ -13,8 +13,44 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from polylogue.core.json import JSONValue
-from polylogue.material_protocol.v1.constants import PROTOCOL_VERSION, SEGMENT_MEDIA_TYPE, SEMANTICS_VERSION
-from polylogue.material_protocol.v1.errors import UnsupportedSemanticsVersionError
+from polylogue.material_protocol.v1.constants import (
+    CANONICALIZER_VERSION,
+    HEAD_FILENAME,
+    HEAD_SEGMENT_INDEX,
+    PROTOCOL_VERSION,
+    SEGMENT_FILENAME_TEMPLATE,
+    SEGMENT_MEDIA_TYPE,
+    SEMANTICS_VERSION,
+)
+from polylogue.material_protocol.v1.errors import (
+    MaterialManifestError,
+    MaterialProtocolError,
+    UnsupportedSemanticsVersionError,
+)
+
+
+def _text(raw: JSONValue) -> str:
+    if not isinstance(raw, str):
+        raise MaterialManifestError("manifest text declaration must be a string")
+    return raw
+
+
+def _integer(raw: JSONValue) -> int:
+    if type(raw) is not int:
+        raise MaterialManifestError("manifest integer declaration must be an exact integer")
+    return raw
+
+
+def _object(raw: JSONValue) -> dict[str, JSONValue]:
+    if not isinstance(raw, dict):
+        raise MaterialManifestError("manifest object declaration must be an object")
+    return raw
+
+
+def _array(raw: JSONValue) -> list[JSONValue]:
+    if not isinstance(raw, list):
+        raise MaterialManifestError("manifest array declaration must be an array")
+    return raw
 
 
 def _declared_semantics_version(raw: JSONValue) -> int:
@@ -41,6 +77,25 @@ class SegmentDescriptor:
     first_seq: int
     last_seq: int
 
+    def require_valid(self) -> None:
+        if any(
+            type(value) is not int
+            for value in (self.index, self.size_bytes, self.record_count, self.first_seq, self.last_seq)
+        ):
+            raise MaterialManifestError("segment coordinates must be exact integers")
+        expected_filename = (
+            HEAD_FILENAME if self.index == HEAD_SEGMENT_INDEX else SEGMENT_FILENAME_TEMPLATE.format(index=self.index)
+        )
+        if (
+            self.index < HEAD_SEGMENT_INDEX
+            or self.filename != expected_filename
+            or self.size_bytes < 0
+            or self.record_count <= 0
+            or self.first_seq < 0
+            or self.last_seq != self.first_seq + self.record_count - 1
+        ):
+            raise MaterialManifestError("invalid material segment descriptor")
+
     def to_dict(self) -> dict[str, JSONValue]:
         return {
             "index": self.index,
@@ -55,13 +110,13 @@ class SegmentDescriptor:
     @staticmethod
     def from_dict(payload: dict[str, JSONValue]) -> SegmentDescriptor:
         return SegmentDescriptor(
-            index=int(payload["index"]),  # type: ignore[arg-type]
-            filename=str(payload["filename"]),
-            sha256=str(payload["sha256"]),
-            size_bytes=int(payload["size_bytes"]),  # type: ignore[arg-type]
-            record_count=int(payload["record_count"]),  # type: ignore[arg-type]
-            first_seq=int(payload["first_seq"]),  # type: ignore[arg-type]
-            last_seq=int(payload["last_seq"]),  # type: ignore[arg-type]
+            index=_integer(payload["index"]),  # type: ignore[arg-type]
+            filename=_text(payload["filename"]),
+            sha256=_text(payload["sha256"]),
+            size_bytes=_integer(payload["size_bytes"]),  # type: ignore[arg-type]
+            record_count=_integer(payload["record_count"]),  # type: ignore[arg-type]
+            first_seq=_integer(payload["first_seq"]),  # type: ignore[arg-type]
+            last_seq=_integer(payload["last_seq"]),  # type: ignore[arg-type]
         )
 
 
@@ -89,14 +144,14 @@ class ContentDigest:
     @staticmethod
     def from_dict(payload: dict[str, JSONValue]) -> ContentDigest:
         return ContentDigest(
-            polylogue_sha256=str(payload["polylogue_sha256"]),
-            canonicalizer_version=int(payload["canonicalizer_version"]),  # type: ignore[arg-type]
-            size_bytes=int(payload["size_bytes"]),  # type: ignore[arg-type]
-            media_type=str(payload.get("media_type", SEGMENT_MEDIA_TYPE)),
+            polylogue_sha256=_text(payload["polylogue_sha256"]),
+            canonicalizer_version=_integer(payload["canonicalizer_version"]),  # type: ignore[arg-type]
+            size_bytes=_integer(payload["size_bytes"]),  # type: ignore[arg-type]
+            media_type=_text(payload.get("media_type", SEGMENT_MEDIA_TYPE)),
             sinex_cas_digest=(
-                str(payload["sinex_cas_digest"]) if payload.get("sinex_cas_digest") is not None else None
+                _text(payload["sinex_cas_digest"]) if payload.get("sinex_cas_digest") is not None else None
             ),
-            provider_digest=(str(payload["provider_digest"]) if payload.get("provider_digest") is not None else None),
+            provider_digest=(_text(payload["provider_digest"]) if payload.get("provider_digest") is not None else None),
         )
 
 
@@ -122,11 +177,11 @@ class AnchorEntry:
     @staticmethod
     def from_dict(payload: dict[str, JSONValue]) -> AnchorEntry:
         return AnchorEntry(
-            segment_index=int(payload["segment_index"]),  # type: ignore[arg-type]
-            line_index=int(payload["line_index"]),  # type: ignore[arg-type]
-            seq=int(payload["seq"]),  # type: ignore[arg-type]
-            kind=str(payload["kind"]),
-            sha256=str(payload["sha256"]),
+            segment_index=_integer(payload["segment_index"]),  # type: ignore[arg-type]
+            line_index=_integer(payload["line_index"]),  # type: ignore[arg-type]
+            seq=_integer(payload["seq"]),  # type: ignore[arg-type]
+            kind=_text(payload["kind"]),
+            sha256=_text(payload["sha256"]),
         )
 
 
@@ -143,10 +198,10 @@ class FidelityGap:
     @staticmethod
     def from_dict(payload: dict[str, JSONValue]) -> FidelityGap:
         return FidelityGap(
-            scope=str(payload["scope"]),
-            record_id=str(payload["record_id"]),
-            gap_kind=str(payload["gap_kind"]),
-            detail=str(payload.get("detail", "")),
+            scope=_text(payload["scope"]),
+            record_id=_text(payload["record_id"]),
+            gap_kind=_text(payload["gap_kind"]),
+            detail=_text(payload.get("detail", "")),
         )
 
 
@@ -195,38 +250,41 @@ class RevisionManifest:
 
     @staticmethod
     def from_dict(payload: dict[str, JSONValue]) -> RevisionManifest:
-        segments_payload = payload["segments"]
-        assert isinstance(segments_payload, list)
-        anchors_payload = payload["anchors"]
-        assert isinstance(anchors_payload, dict)
-        fidelity_payload = payload.get("fidelity_gaps", [])
-        assert isinstance(fidelity_payload, list)
-        expected_counts_payload = payload["expected_record_counts"]
-        assert isinstance(expected_counts_payload, dict)
-        return RevisionManifest(
-            protocol_version=str(payload["protocol_version"]),
-            semantics_version=_declared_semantics_version(payload["semantics_version"]),
-            origin_vocabulary_version=int(payload["origin_vocabulary_version"]),  # type: ignore[arg-type]
-            origin_vocabulary_digest=str(payload["origin_vocabulary_digest"]),
-            session_id=str(payload["session_id"]),
-            origin=str(payload["origin"]),
-            native_id=str(payload["native_id"]),
-            revision_id=str(payload["revision_id"]),
-            superseded_revision_id=(
-                str(payload["superseded_revision_id"]) if payload.get("superseded_revision_id") is not None else None
-            ),
-            content_digest=ContentDigest.from_dict(payload["content_digest"]),  # type: ignore[arg-type]
-            head_segment=SegmentDescriptor.from_dict(payload["head_segment"]),  # type: ignore[arg-type]
-            segments=tuple(SegmentDescriptor.from_dict(item) for item in segments_payload),  # type: ignore[arg-type]
-            expected_record_counts={str(k): int(v) for k, v in expected_counts_payload.items()},  # type: ignore[arg-type]
-            anchors={str(k): AnchorEntry.from_dict(v) for k, v in anchors_payload.items()},  # type: ignore[arg-type]
-            sequence_rule=str(payload["sequence_rule"]),
-            completeness=str(payload["completeness"]),
-            fidelity_gaps=tuple(FidelityGap.from_dict(item) for item in fidelity_payload),  # type: ignore[arg-type]
-            revision_created_at=(
-                str(payload["revision_created_at"]) if payload.get("revision_created_at") is not None else None
-            ),
-        )
+        try:
+            segments_payload = _array(payload["segments"])
+            anchors_payload = _object(payload["anchors"])
+            fidelity_payload = _array(payload.get("fidelity_gaps", []))
+            expected_counts_payload = _object(payload["expected_record_counts"])
+            return RevisionManifest(
+                protocol_version=_text(payload["protocol_version"]),
+                semantics_version=_declared_semantics_version(payload["semantics_version"]),
+                origin_vocabulary_version=_integer(payload["origin_vocabulary_version"]),  # type: ignore[arg-type]
+                origin_vocabulary_digest=_text(payload["origin_vocabulary_digest"]),
+                session_id=_text(payload["session_id"]),
+                origin=_text(payload["origin"]),
+                native_id=_text(payload["native_id"]),
+                revision_id=_text(payload["revision_id"]),
+                superseded_revision_id=(
+                    _text(payload["superseded_revision_id"])
+                    if payload.get("superseded_revision_id") is not None
+                    else None
+                ),
+                content_digest=ContentDigest.from_dict(_object(payload["content_digest"])),  # type: ignore[arg-type]
+                head_segment=SegmentDescriptor.from_dict(_object(payload["head_segment"])),  # type: ignore[arg-type]
+                segments=tuple(SegmentDescriptor.from_dict(_object(item)) for item in segments_payload),  # type: ignore[arg-type]
+                expected_record_counts={_text(k): _integer(v) for k, v in expected_counts_payload.items()},  # type: ignore[arg-type]
+                anchors={_text(k): AnchorEntry.from_dict(_object(v)) for k, v in anchors_payload.items()},  # type: ignore[arg-type]
+                sequence_rule=_text(payload["sequence_rule"]),
+                completeness=_text(payload["completeness"]),
+                fidelity_gaps=tuple(FidelityGap.from_dict(_object(item)) for item in fidelity_payload),  # type: ignore[arg-type]
+                revision_created_at=(
+                    _text(payload["revision_created_at"]) if payload.get("revision_created_at") is not None else None
+                ),
+            )
+        except MaterialProtocolError:
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise MaterialManifestError("invalid revision manifest declaration") from exc
 
 
 def new_manifest_scaffold() -> tuple[str, int]:
@@ -236,11 +294,19 @@ def new_manifest_scaffold() -> tuple[str, int]:
 
 def require_current_semantics(manifest: RevisionManifest) -> None:
     """Reject revisions whose bytes use semantics not implemented by this reader."""
-    if manifest.semantics_version != SEMANTICS_VERSION:
+    if type(manifest.semantics_version) is not int or manifest.semantics_version != SEMANTICS_VERSION:
         raise UnsupportedSemanticsVersionError(
             f"unsupported material semantics version {manifest.semantics_version}; "
             f"current version is {SEMANTICS_VERSION}"
         )
+    if manifest.protocol_version != PROTOCOL_VERSION:
+        raise MaterialManifestError(f"unsupported material protocol {manifest.protocol_version!r}")
+    if (
+        type(manifest.content_digest.canonicalizer_version) is not int
+        or manifest.content_digest.canonicalizer_version != CANONICALIZER_VERSION
+        or manifest.content_digest.media_type != SEGMENT_MEDIA_TYPE
+    ):
+        raise MaterialManifestError("unsupported material canonicalizer or media type")
 
 
 __all__ = [

@@ -10,6 +10,7 @@ import tempfile
 import uuid
 from collections.abc import Awaitable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 import ijson
@@ -93,7 +94,7 @@ class VerifiedAcceptedMarkerPayload:
     def iter_items(self, prefix: str) -> Iterator[object]:
         self.payload_file.seek(0)
         try:
-            yield from ijson.items(self.payload_file, prefix, use_float=True)
+            yield from _iter_json_items(self.payload_file, prefix)
         except (ijson.JSONError, UnicodeError, ValueError) as exc:
             raise AcceptedMarkerInputRefusedError("invalid accepted marker carrier") from exc
 
@@ -236,9 +237,26 @@ def stage_accepted_marker_input(seal: PreparedIndexMutation, carrier: PreparedAc
 def _iter_json_items(payload: BinaryIO, prefix: str) -> Iterator[object]:
     payload.seek(0)
     try:
-        yield from ijson.items(payload, prefix, use_float=True)
+        for value in ijson.items(payload, prefix, use_float=False):
+            yield _marker_json_numbers(value)
     except (ijson.JSONError, UnicodeError, ValueError) as exc:
         raise AcceptedMarkerInputRefusedError("invalid accepted marker carrier") from exc
+
+
+def _marker_json_numbers(value: object) -> object:
+    """Restore producer JSON floats while keeping arbitrary integer tokens exact.
+
+    The producer emits Python floats with stdlib JSON. ijson's decimal mode
+    preserves the integer domain; decimal tokens are those original floats,
+    including integral floats such as 1.0 that must not reserialize as 1.
+    """
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, list):
+        return [_marker_json_numbers(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _marker_json_numbers(item) for key, item in value.items()}
+    return value
 
 
 def _one_json_item(payload: BinaryIO, prefix: str) -> object:
@@ -382,7 +400,8 @@ def _validate_marker_payload(payload: BinaryIO, reference: AcceptedMarkerInputRe
 def _iter_json_events(payload: BinaryIO) -> Iterator[tuple[str, str, object]]:
     payload.seek(0)
     try:
-        yield from ijson.parse(payload, use_float=True)
+        for prefix, event, value in ijson.parse(payload, use_float=False):
+            yield prefix, event, _marker_json_numbers(value)
     except (ijson.JSONError, UnicodeError, ValueError) as exc:
         raise AcceptedMarkerInputRefusedError("invalid accepted marker carrier") from exc
     finally:

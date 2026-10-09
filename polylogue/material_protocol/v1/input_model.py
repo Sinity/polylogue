@@ -38,6 +38,8 @@ from polylogue.core.json import JSONValue
 class BlockInput:
     position: int
     block_type: BlockType
+    content_identity: str
+    content_occurrence: int = 0
     text: str | None = None
     tool_name: str | None = None
     tool_id: str | None = None

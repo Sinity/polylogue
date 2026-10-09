@@ -149,7 +149,8 @@ def test_fidelity_gaps_are_declared_in_the_manifest() -> None:
 
 def test_resolve_anchor_reads_one_record_without_a_full_scan() -> None:
     _material, encoded = _encode_small()
-    record = resolve_anchor(encoded.manifest, encoded.segments, "claude-code-session:demo-session-1:n:msg-2:0")
+    record_id = next(key for key, anchor in encoded.manifest.anchors.items() if anchor.kind == "block")
+    record = resolve_anchor(encoded.manifest, encoded.segments, record_id)
     assert record["kind"] == "block"
     assert record["tool_id"] == "tool-ok-1"
 

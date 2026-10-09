@@ -17031,11 +17031,9 @@ class _DiskDuplicateNativeIds(frozenset[str]):
 
 
 def _normalized_message_native_id(message: ParsedMessage) -> str | None:
-    native_id = _sqlite_text(message.provider_message_id)
-    if native_id is None:
-        return None
-    stripped = native_id.strip()
-    return stripped or None
+    from polylogue.core.message_native_identity import normalized_message_native_id
+
+    return normalized_message_native_id(message.provider_message_id)
 
 
 def _effective_message_native_id(message: ParsedMessage, duplicate_native_ids: frozenset[str]) -> str | None:
@@ -17045,10 +17043,9 @@ def _effective_message_native_id(message: ParsedMessage, duplicate_native_ids: f
     by the same stripped, surrogate-substituted form computed here, so
     membership is always compared apples-to-apples.
     """
-    native_id = _normalized_message_native_id(message)
-    if native_id in duplicate_native_ids:
-        return None
-    return native_id
+    from polylogue.core.message_native_identity import stored_message_native_id
+
+    return stored_message_native_id(message.provider_message_id, duplicate_native_ids)
 
 
 def _stored_session_native_id(native_id: str) -> str:
