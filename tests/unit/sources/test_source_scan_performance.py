@@ -177,3 +177,21 @@ def test_malformed_zip_member_inspection_finishes_crc_before_reuse(
                 assert admission.entry_provider_hint(entries[0], entry_ordinal=0) is Provider.UNKNOWN
                 assert admission.entry_provider_hint(entries[0], entry_ordinal=0) is Provider.UNKNOWN
         assert inspections == 1
+
+
+def test_zip_explain_keeps_its_independent_diagnostic_container_hint(tmp_path: Path) -> None:
+    from polylogue.sources.import_explain import explain_import_path
+
+    bundle = tmp_path / "diagnostic.zip"
+    raw_only = {
+        "id": "neutral",
+        "mapping": {
+            "n1": {"message": {"author": {"role": "user"}, "content": {"content_type": "text", "parts": ["x" * 1000]}}}
+        },
+    }
+    session = {"uuid": "neutral-claude", "name": "Neutral", "chat_messages": [{"sender": "human", "text": "hi"}]}
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("history.jsonl", json.dumps(raw_only))
+        archive.writestr("conversations.json", json.dumps(session))
+    payload = explain_import_path(bundle)
+    assert payload.entries[0].detected_provider == Provider.CHATGPT.value

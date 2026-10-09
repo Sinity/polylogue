@@ -41,6 +41,7 @@ from polylogue.sources.parsers import hermes_spans, hermes_state
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_acquisition_components import (
     captured_zip_member_coordinate,
+    sniff_zip_provider,
     zip_acquisition_fingerprint,
     zip_member_admission,
 )
@@ -589,18 +590,22 @@ def _explain_zip(
         ):
             central_directory = archive.infolist()
             entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
-            with zip_member_admission(
-                archive, path, central_directory, provider_hint, container_blob_hash=physical.blob_hash
-            ) as admission:
-                if container_provider is Provider.UNKNOWN and admission.provider_hint is not Provider.UNKNOWN:
-                    container_provider = admission.provider_hint
+            if container_provider is Provider.UNKNOWN:
+                # Diagnostic container identity inspects all JSON members;
+                # admission's material hint excludes declared raw-only paths.
+                sniffed = sniff_zip_provider(archive, central_directory)
+                if sniffed is not None and sniffed is not Provider.UNKNOWN:
+                    container_provider = sniffed
                     detector_evidence.append(
                         _evidence(
                             "zip.member_dominance",
                             matched=True,
-                            reason=f"dominant member provider: {container_provider.value}",
+                            reason=f"dominant member provider: {sniffed.value}",
                         )
                     )
+            with zip_member_admission(
+                archive, path, central_directory, provider_hint, container_blob_hash=physical.blob_hash
+            ) as admission:
                 validator = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=path)
 
                 for info in validator.filter_entries(central_directory, allowed_path=admission.allowed_path):

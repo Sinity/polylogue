@@ -229,3 +229,37 @@ def test_cancelled_drive_download_releases_private_stage(tmp_path: Path) -> None
         )
     assert not list(tmp_path.rglob(".blob.*"))
     assert not list((tmp_path / "cache").rglob("*.json"))
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_drive_private_stage_refuses_foreign_tail_before_publication(tmp_path: Path, cached: bool) -> None:
+    """Both staging routes validate EOF before publishing any acquired raw."""
+    payload = json.dumps(
+        [
+            {"chunkedPrompt": {"chunks": [{"role": "user", "text": "neutral"}]}},
+            {"type": "session_meta", "payload": {"id": "neutral-codex"}},
+        ]
+    ).encode()
+    revision = "2026-01-01T00:00:00Z"
+    client = _DriveSessionClient(
+        files=[DriveFile("file-1", "neutral.json", "application/json", revision, len(payload))],
+        payload_bytes={"file-1": payload},
+    )
+    source = Source(name="gemini", folder="neutral", path=tmp_path / "cache")
+    assert source.path is not None
+    cache = drive_cache_file_path(drive_cache_directory(source.path, "folder:neutral"), "file-1")
+    if cached:
+        cache.parent.mkdir(parents=True)
+        cache.write_bytes(payload)
+        cache.with_name(cache.name + ".revision").write_text(revision)
+    store = BlobStore(tmp_path / "blob")
+    state = _empty_cursor_state()
+    assert list(iter_drive_raw_data(source=source, client=client, blob_store=store, cursor_state=state)) == []
+    assert state["error_count"] == 1
+    assert client.download_into_calls == ([] if cached else ["file-1"])
+    assert not store.blob_path(hashlib.sha256(payload).hexdigest()).exists()
+    assert not list(tmp_path.rglob(".blob.*"))
+    if cached:
+        assert cache.read_bytes() == payload
+    else:
+        assert not cache.exists()

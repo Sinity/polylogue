@@ -550,6 +550,9 @@ Drive raw acquisition downloads through `download_into` into its caller-owned
 prepared CAS file. Metadata before and after the transfer must match the
 listing before cache replacement or CAS publication. Cache validation reads
 every JSON event; admitted cache files are stream-hashed into prepared CAS
-files. Cache copies use bounded reads of those exact staged bytes, and every
+files. Both download and cache stages are completely read through the
+acquisition boundary at their native JSON coordinate before cache or CAS
+publication, refusing foreign records even after an own-provider prefix.
+Cache copies use bounded reads of those exact staged bytes, and every
 cancelled or refused transfer discards its private stage. Raw identity and
 publication receipts describe the unmodified provider bytes.
