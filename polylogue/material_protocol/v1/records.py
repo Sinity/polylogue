@@ -121,7 +121,7 @@ def message_record(session_id: str, message: MessageInput) -> dict[str, JSONValu
     message_id = message_id_for(session_id, message)
     parent_message_id = (
         f"{session_id}:{message_local_id(message.parent_native_id)}"
-        if message.parent_native_id is not None and message.parent_native_id.strip()
+        if message.parent_native_id is not None and message.parent_native_id != ""
         else None
     )
     return {

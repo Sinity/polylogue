@@ -4206,9 +4206,7 @@ def _iter_message_rows(
             "session_id": session_id,
             "native_id": _stored_message_native_id(message, duplicate_native_ids),
             "source_native_id_json": (
-                json.dumps(message.provider_message_id.strip(), ensure_ascii=True)
-                if message.provider_message_id.strip()
-                else None
+                json.dumps(message.provider_message_id, ensure_ascii=True) if message.provider_message_id else None
             ),
             "position": position,
             "role": _enum_value(message.role),
@@ -7696,7 +7694,7 @@ class _StoredSessionParents(Mapping[str, str]):
         inherited = self._inherited.get(key)
         if inherited is not None:
             return inherited
-        native_id = _sqlite_text(key.strip())
+        native_id = _sqlite_text(key)
         if not native_id or native_id in self._duplicates:
             raise KeyError(key)
         candidate = archive_message_id(self._session_id, native_id)
@@ -12006,8 +12004,8 @@ def _write_session_events(
                     and source_message_provider_id
                     and event.event_type not in _TYPED_USAGE_EVENT_TYPES
                     and (
-                        source_message_provider_id.strip() in duplicate_native_ids
-                        or source_message_provider_id.strip() in ambiguous_source_provider_ids
+                        source_message_provider_id in duplicate_native_ids
+                        or source_message_provider_id in ambiguous_source_provider_ids
                     )
                 ):
                     raise MessageOwnerAmbiguityError("event native message ID requires exact occurrence evidence")
@@ -12099,7 +12097,7 @@ def _write_session_events(
                 # record it with its declared provider id and a typed statement of
                 # what the attribution actually is.
                 declared_provider_id = _sqlite_text(event.source_message_provider_id)
-                declared_provider_id = declared_provider_id.strip() if declared_provider_id else None
+                declared_provider_id = declared_provider_id or None
                 resolution = _provider_usage_source_resolution(
                     declared_provider_id,
                     source_message_id=source_message_id,
@@ -16910,13 +16908,9 @@ def _message_id(
 def _duplicate_message_native_ids(messages: Iterable[ParsedMessage]) -> frozenset[str]:
     """Native ids that collide after the same normalization ``messages.native_id`` stores.
 
-    Counts by the stripped, surrogate-substituted (``_sqlite_text``) form,
-    not the raw provider string, so whitespace variants and two distinct raw
-    ids that collapse onto the same U+FFFD-substituted text are treated as
-    ambiguous too. Otherwise the ``messages`` UNIQUE generated ``message_id``
-    column would silently resolve the collision via ``INSERT OR REPLACE`` (one
-    message vanishes) while Python-side code still believed both had distinct
-    identities.
+    Counts by the SQLite-storable form, preserving all whitespace. Exact
+    duplicates use semantic identity and occurrence instead of overwriting
+    another message through the generated unique identity.
     """
     source = messages.messages if isinstance(messages, _MessageTail) else messages
     if isinstance(source, SqliteMessageSink):
@@ -17045,7 +17039,7 @@ def _effective_message_native_id(message: ParsedMessage, duplicate_native_ids: f
     """Return the storage-normalized native id, or ``None`` if ambiguous.
 
     ``duplicate_native_ids`` (from ``_duplicate_message_native_ids``) is keyed
-    by the same stripped, surrogate-substituted form computed here, so
+    by the same exact, surrogate-substituted form computed here, so
     membership is always compared apples-to-apples.
     """
     from polylogue.core.message_native_identity import stored_message_native_id
@@ -17093,23 +17087,10 @@ def _stored_message_native_id(message: ParsedMessage, duplicate_native_ids: froz
     and a later ``blocks`` insert can reference a ``message_id`` that was
     never written.
 
-    Beyond duplicate suppression and surrogate substitution
-    (``_effective_message_native_id``), this maps an empty or
-    whitespace-only native id to ``None`` -- matching
-    ``identity_law.message_local_id``'s ``native_id.strip()`` truthiness
-    check, which falls back to the ``position.variant_index`` component --
-    and strips a non-empty native id, matching
-    ``identity_law._required_text``'s own ``.strip()``. Without this, a
-    provider-native id of ``"  "`` stores truthy in SQLite (survives the bare
-    ``or None`` the DB write used before this helper existed) while
-    ``identity_law`` strips it to falsy and falls back to the position/variant
-    id -- producing two different message ids for the same message.
+    Native IDs are opaque. Only literal empty is absent; duplicate exact
+    IDs use content identity and occurrence. Whitespace stays significant.
     """
-    native_id = _effective_message_native_id(message, duplicate_native_ids)
-    if native_id is None:
-        return None
-    stripped = native_id.strip()
-    return stripped or None
+    return _effective_message_native_id(message, duplicate_native_ids)
 
 
 def _stored_native_id_exists(conn: sqlite3.Connection, session_id: str, native_id: object) -> bool:

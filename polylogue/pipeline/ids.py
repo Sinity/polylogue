@@ -1637,7 +1637,7 @@ def _message_revision_match_id(message: ParsedMessage) -> str:
     output) is qualified by the record's declared side before it becomes a
     ``provider_message_id``, so a native id names exactly one message.
     """
-    native_id = message.provider_message_id.strip()
+    native_id = message.provider_message_id
     if native_id:
         return native_id
     payload: dict[str, JSONValue] = {
@@ -1798,7 +1798,7 @@ def disk_message_owner_resolution(messages: Sequence[ParsedMessage]) -> Iterator
                     coordinate = _message_owner_coordinate(message, ordinal)
                     stable = coordinate.stable_key
                     physical = coordinate.physical_key
-                    provider = message.provider_message_id.strip() or None
+                    provider = message.provider_message_id or None
                     yield (
                         ordinal,
                         revision,
@@ -1958,11 +1958,9 @@ def message_owner_resolution(messages: list[ParsedMessage]) -> MessageOwnerResol
         )
     }
     provider_keys: dict[str, str] = {}
-    provider_counts = Counter(
-        message.provider_message_id.strip() for message in messages if message.provider_message_id
-    )
+    provider_counts = Counter(message.provider_message_id for message in messages if message.provider_message_id)
     for message, key in zip(messages, keys, strict=True):
-        provider_id = message.provider_message_id.strip()
+        provider_id = message.provider_message_id
         if provider_id and provider_counts[provider_id] == 1:
             provider_keys[provider_id] = key
     return MessageOwnerResolution(
@@ -2019,7 +2017,7 @@ def message_owner_key(
     if coordinate.stable_key in resolution.ambiguous_stable_keys:
         raise MessageOwnerAmbiguityError(f"message owner evidence is duplicated: {coordinate.stable_key!r}")
     if provider_message_id:
-        provider_id = provider_message_id.strip()
+        provider_id = provider_message_id
         if provider_id in resolution.ambiguous_provider_ids:
             raise MessageOwnerAmbiguityError(
                 f"message provider message id is duplicated without a private coordinate: {provider_id!r}"
@@ -2588,7 +2586,7 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
                 "DO UPDATE SET multiplicity = multiplicity + 1",
                 (identity, content),
             )
-            if not message.provider_message_id.strip() and message.timestamp is not None:
+            if not message.provider_message_id and message.timestamp is not None:
                 conn.execute("INSERT OR IGNORE INTO mutable_message VALUES (?)", (identity,))
 
         if convo.attachments:
@@ -2698,7 +2696,7 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         message_native_id = payload["id"]
         assert isinstance(message_native_id, str)  # built as str above, never anything else
         identity = message_identity_hash(id=message_native_id)
-        if not message.provider_message_id.strip() and message.timestamp is not None:
+        if not message.provider_message_id and message.timestamp is not None:
             mutable_message_identities.add(identity)
         content = bytes.fromhex(hash_item_payload(payload))
         message_content_counts[(identity, content)] += 1

@@ -68,7 +68,7 @@ Every record is a JSON object with at least `kind`, `record_id`, and `seq`
   other typed fact the archive records): `record_id = "{session_id}:{position}"`
 
 Records live in one of two **spaces** with different mutability contracts
-(semantics v6), each with its own strictly increasing `seq` starting at 0 —
+(semantics v8), each with its own strictly increasing `seq` starting at 0 —
 together this **is** the manifest's `sequence_rule`:
 
 **Head** (`head.ndjson`, reserved segment index `-1`) — the revision-mutable
@@ -274,3 +274,9 @@ the original Source occurrence name (semantics version 7). This evidence is
 independent of `native_id`, which remains null when duplicate names require
 content-derived identity. Decoding restores the exact Source name, including
 lone surrogate escapes. It does not promote content IDs into native evidence.
+
+Semantics version 8 preserves each nonempty native message name exactly,
+including whitespace and Unicode normalization form. Only literal empty is
+absent. Exact duplicate names use content identity and occurrence; distinct
+spellings never become duplicate names through whitespace normalization.
+Parent message names and the message part of block IDs use the same law.

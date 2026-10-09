@@ -47,7 +47,7 @@ def _decoded_publication(session: ParsedSession) -> tuple[PublicationPayload, De
 
 
 @pytest.mark.parametrize("natives", [("m", "m"), (" m ", "m")])
-def test_publication_preserves_messages_with_repeated_normalized_native_ids(natives: tuple[str, str]) -> None:
+def test_publication_preserves_exact_duplicate_and_distinct_opaque_native_ids(natives: tuple[str, str]) -> None:
     parsed = ParsedSession(
         source_name=Provider.CLAUDE_CODE,
         provider_session_id="s1",
@@ -59,7 +59,13 @@ def test_publication_preserves_messages_with_repeated_normalized_native_ids(nati
     _payload, decoded = _decoded_publication(parsed)
     assert [message.text for message in decoded.messages] == ["first", "second"]
     assert len({message.message_id for message in decoded.messages}) == 2
-    assert all(":c:" in message.message_id for message in decoded.messages)
+    if natives[0] == natives[1]:
+        assert all(":c:" in message.message_id for message in decoded.messages)
+    else:
+        assert [message.native_id for message in decoded.messages] == list(natives)
+        assert [message.message_id for message in decoded.messages] == [
+            f"claude-code-session:s1:n:{native}" for native in natives
+        ]
 
 
 def test_operational_unicode_changes_remain_distinct_publication_revisions() -> None:

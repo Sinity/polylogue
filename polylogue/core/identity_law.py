@@ -58,8 +58,10 @@ def message_local_id(
     semantics are byte-identical; it counts only within one digest, so an
     unrelated insertion never moves it.
     """
-    if native_id is not None and native_id.strip():
-        return f"n:{_required_text('message native_id', native_id)}"
+    if native_id is not None and not isinstance(native_id, str):
+        raise ValueError("message native_id must be text or None")
+    if native_id is not None and native_id != "":
+        return f"n:{native_id}"
     identity = _required_text("content_identity", content_identity or "")
     return f"c:{identity}.{_required_non_negative('content_occurrence', content_occurrence)}"
 
@@ -105,8 +107,14 @@ def split_message_local_id(stored_message_id: str) -> tuple[str | None, str | No
 
 def block_id(parent_message_id: str, *, content_identity: str, content_occurrence: int = 0) -> str:
     """Return the immutable Source-content ID beneath its owning message."""
-    message = _required_text("message_id", parent_message_id)
-    if len(content_identity) != 64 or any(char not in "0123456789abcdef" for char in content_identity):
+    if not isinstance(parent_message_id, str) or parent_message_id == "":
+        raise ValueError("message_id cannot be empty and must be text")
+    message = parent_message_id
+    if (
+        type(content_identity) is not str
+        or len(content_identity) != 64
+        or any(char not in "0123456789abcdef" for char in content_identity)
+    ):
         raise ValueError("block content_identity must be lowercase SHA-256 hexadecimal text")
     occurrence = _required_non_negative("content_occurrence", content_occurrence)
     return f"{message}:b:{content_identity}:{occurrence}"

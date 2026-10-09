@@ -159,7 +159,7 @@ def provider_usage_event_identity(row: Mapping[str, object]) -> tuple[str, str, 
     them with an explicit bounded rule (or retain them as ambiguous evidence)
     rather than silently adding duplicate observations.
     """
-    provider_message_id = str(_projection_value(row, "source_message_provider_id") or "").strip()
+    provider_message_id = str(_projection_value(row, "source_message_provider_id") or "")
     if not provider_message_id:
         return None
     event_type = str(_projection_value(row, "provider_event_type") or "")

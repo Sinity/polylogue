@@ -650,3 +650,8 @@ Blackboard paging counts and selects active NOTE assertions in one User read
 snapshot, ordered by updated_at_ms descending then assertion_id. Structured
 kind/repo/unresolved filters use the canonical body decoder before pagination.
 Only the selected page is hydrated; the MCP no longer reads a million-note prefix.
+
+Native message names are opaque: only literal empty is absent. Whitespace
+and Unicode normalization form remain significant in native identity,
+message ownership, and Source revision hashing. Exact repeated names use
+semantic content identity plus occurrence rather than replacing a row.

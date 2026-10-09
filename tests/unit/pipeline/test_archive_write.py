@@ -653,17 +653,8 @@ async def test_preserves_empty_and_explicit_native_message_ids(async_backend: SQ
     assert "msg-explicit" in native_ids
 
 
-async def test_whitespace_only_native_message_id_falls_back_and_writes_blocks(async_backend: SQLiteBackend) -> None:
-    """Regression for the v42 rebuild FK crash (operation ab5bad1f).
-
-    A whitespace-only provider-native id stores truthy under a bare
-    ``or None`` (so the old code path kept it), but ``identity_law``'s
-    ``native_id.strip()`` check falls back to the position/variant id. The
-    two disagreeing meant ``blocks`` referenced a ``message_id`` that
-    ``messages`` never stored -- a FOREIGN KEY constraint failure. This
-    write must now succeed, store ``native_id`` as NULL, and use the
-    position/variant fallback for both the DB row and any dependent block.
-    """
+async def test_whitespace_only_native_message_id_is_opaque_and_writes_blocks(async_backend: SQLiteBackend) -> None:
+    """Whitespace is an opaque native identity shared by messages and blocks."""
     session = ParsedSession(
         source_name=Provider.UNKNOWN,
         provider_session_id="conv-whitespace",
@@ -690,8 +681,8 @@ async def test_whitespace_only_native_message_id_falls_back_and_writes_blocks(as
             async_backend, "SELECT COUNT(*) FROM blocks WHERE message_id = ?", message_row["message_id"]
         )
 
-    assert message_row["native_id"] is None
-    assert str(message_row["message_id"]).startswith(f"{session_id}:c:")
+    assert message_row["native_id"] == "   "
+    assert message_row["message_id"] == f"{session_id}:n:   "
     assert block_count == 1
 
 

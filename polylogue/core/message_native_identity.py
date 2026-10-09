@@ -9,10 +9,12 @@ _SURROGATES = re.compile(r"[\ud800-\udfff]")
 
 
 def normalized_message_native_id(value: str | None) -> str | None:
-    """Keep SQLite-storable opaque text, stripping the native identity boundary."""
+    """Keep opaque nonempty text; normalize only SQLite-unrepresentable surrogates."""
     if value is None:
         return None
-    return _SURROGATES.sub("\ufffd", value).strip() or None
+    if not isinstance(value, str):
+        raise ValueError("message native_id must be text or None")
+    return _SURROGATES.sub("\ufffd", value) or None
 
 
 def stored_message_native_id(value: str | None, duplicate_native_ids: Set[str]) -> str | None:

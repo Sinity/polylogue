@@ -94,3 +94,19 @@ def test_identity_law_rejects_invalid_inputs(fn: object, args: tuple[object, ...
     callable_fn = cast(Callable[..., object], fn)
     with pytest.raises(ValueError):
         callable_fn(*args, **kwargs)
+
+
+@pytest.mark.parametrize("native_id", [" a ", "   ", "e\u0301", "é"])
+def test_message_native_identity_preserves_exact_nonempty_text(native_id: str) -> None:
+    assert message_local_id(native_id) == f"n:{native_id}"
+    assert message_id("session", native_id) == f"session:n:{native_id}"
+
+
+@pytest.mark.parametrize("native_id", [1, False, [], {}])
+def test_message_native_identity_refuses_nontext(native_id: object) -> None:
+    with pytest.raises(ValueError):
+        message_local_id(cast(str, native_id), content_identity="abc")
+
+
+def test_block_identity_preserves_opaque_parent_message_id() -> None:
+    assert block_id("session:n: a ", content_identity="a" * 64) == f"session:n: a :b:{'a' * 64}:0"

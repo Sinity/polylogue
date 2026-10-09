@@ -75,6 +75,7 @@ def test_disk_duplicate_native_ids_cross_thread_lookup_and_cleanup(tmp_path: Pat
         [
             ParsedMessage(provider_message_id="dup", role=Role.USER, text="first"),
             ParsedMessage(provider_message_id=" dup ", role=Role.USER, text="second"),
+            ParsedMessage(provider_message_id="dup", role=Role.USER, text="fourth"),
             ParsedMessage(provider_message_id="unique", role=Role.USER, text="third"),
         ]
     )
