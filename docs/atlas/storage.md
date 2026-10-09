@@ -572,3 +572,13 @@ window and references added after acquisition bind verified retained bytes
 without another provider request. Attachment readiness includes these pending
 attributions in its `allowed_unfetched` count; global acquired status alone
 does not discharge them (`operations/attachment_convergence.py`).
+
+## Derived session records and FTS discovery
+
+Session profile materialization publishes profile, latency and repository
+observations. Run, observed-event and context-snapshot products are derived on
+read through `run_projection_relations.py`; profile preparation does not compile
+a second run projection to obtain unused counters. Unscoped FTS discovery merges
+the ordered session and block-membership indexes with one distinct session-key
+page, retaining empty sessions and blocks-only keys without collecting the
+remaining archive for every page (`storage/fts/derivation.py`, `required_page`).
