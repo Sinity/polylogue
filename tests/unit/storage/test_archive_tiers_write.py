@@ -6836,3 +6836,32 @@ def test_parent_links_cross_the_update_batch_boundary(tmp_path: Path, monkeypatc
     ).fetchall()
     assert rows[0]["parent_message_id"] is None
     assert [row["parent_message_id"] for row in rows[1:]] == [row["message_id"] for row in rows[:-1]]
+
+
+def test_writer_keeps_opaque_native_whitespace_and_exact_parent_links(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="opaque-native-parent",
+        messages=[
+            ParsedMessage(provider_message_id="dup", position=0, role=Role.USER, text="same"),
+            ParsedMessage(provider_message_id=" dup ", position=1, role=Role.USER, text="same"),
+            ParsedMessage(
+                provider_message_id="child",
+                position=2,
+                role=Role.ASSISTANT,
+                text="answer",
+                parent_message_provider_id=" dup ",
+            ),
+        ],
+    )
+    sid = write_fixture_index_session(conn, session)
+    rows = conn.execute(
+        "SELECT native_id, message_id, parent_message_id, source_native_id_json FROM messages "
+        "WHERE session_id = ? ORDER BY position",
+        (sid,),
+    ).fetchall()
+    assert [row["native_id"] for row in rows] == ["dup", " dup ", "child"]
+    assert [row["message_id"] for row in rows] == [f"{sid}:n:{native}" for native in ("dup", " dup ", "child")]
+    assert rows[2]["parent_message_id"] == rows[1]["message_id"]
+    assert json.loads(rows[1]["source_native_id_json"]) == " dup "
