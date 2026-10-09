@@ -482,7 +482,21 @@ async def _query_sessions(
                 }
             )
         )
-    return hooks.json_payload(payload)
+    from polylogue.surfaces.outcome import OutcomeEnvelope
+
+    return hooks.json_payload(
+        MCPRootPayload(
+            root={
+                **payload.model_dump(mode="json"),
+                "unit": "sessions",
+                "outcome": OutcomeEnvelope(
+                    state=payload.outcome,
+                    reason=payload.coverage.gaps[0] if payload.coverage.gaps else None,
+                    detail={"gaps": payload.coverage.gaps} if payload.coverage.gaps else {},
+                ).to_dict(),
+            }
+        )
+    )
 
 
 async def _query_advanced_sessions(

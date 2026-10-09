@@ -331,6 +331,13 @@ def archive_session_list_payload(
             limit=limit,
             offset=offset,
             next_offset=next_offset,
+            outcome=decide_outcome(
+                matched=len(page),
+                degraded=(
+                    *(f"lane_failed:{failure.lane}" for failure in result.execution.failed_lanes),
+                    *(f"lane_unavailable:{lane}" for lane in result.execution.unavailable_lanes),
+                ),
+            ),
         )
     filters = archive_query_filters(spec)
     text_query = _archive_text_query(spec)
@@ -386,6 +393,7 @@ def archive_session_list_payload(
         limit=limit,
         offset=offset,
         next_offset=next_offset,
+        outcome=decide_outcome(matched=len(page)),
     )
 
 
