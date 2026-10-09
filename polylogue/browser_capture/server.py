@@ -290,7 +290,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
     def _request_id(self) -> str:
         existing = getattr(self, "_polylogue_request_id", None)
-        if isinstance(existing, str):
+        if isinstance(existing, str) and existing:
             return existing
         header = self.headers.get("X-Request-ID", "").strip()
         request_id = "".join(ch for ch in header if ch.isalnum() or ch in "-_")[:80] if header else uuid4().hex[:16]
