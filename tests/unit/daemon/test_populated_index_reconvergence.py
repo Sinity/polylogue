@@ -14,14 +14,30 @@ from polylogue.storage.sqlite.connection_profile import assert_tier_schema_suppo
 from tests.infra.populated_managed_index import logical_rows, make_populated_stale_index
 
 
-@pytest.mark.parametrize(("multi_session", "include_history"), [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize(
+    ("multi_session", "include_history", "include_codex_materials"),
+    [
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (False, True, True),
+    ],
+)
 def test_actual_startup_replays_populated_source_after_original_disappears(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, multi_session: bool, include_history: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    multi_session: bool,
+    include_history: bool,
+    include_codex_materials: bool,
 ) -> None:
     root = tmp_path / "archive"
     source = tmp_path / "external" / ("bundle.json" if multi_session else "session.jsonl")
     old, raw_id, session_ids = make_populated_stale_index(
-        root, source, multi_session=multi_session, include_history=include_history
+        root,
+        source,
+        multi_session=multi_session,
+        include_history=include_history,
+        include_codex_materials=include_codex_materials,
     )
     assert raw_id and len(session_ids) == (2 if multi_session else 1)
     if include_history:
@@ -32,7 +48,9 @@ def test_actual_startup_replays_populated_source_after_original_disappears(
 
         with closing(open_readonly_connection(root / "source.db")) as conn:
             history_id = str(
-                conn.execute("SELECT raw_id FROM raw_sessions WHERE validation_mode IS NULL").fetchone()[0]
+                conn.execute(
+                    "SELECT raw_id FROM raw_sessions WHERE source_path LIKE '%/.claude/history.jsonl'"
+                ).fetchone()[0]
             )
             history_binding = tuple(
                 conn.execute(
@@ -46,6 +64,53 @@ def test_actual_startup_replays_populated_source_after_original_disappears(
                 read = PreparedSessionSourceRead(seal, blob_store=BlobStore(root / "blob"))
                 assert prepared_parser_census_is_current(seal, history_id)
                 assert not read.raw_parser_confirmed_non_session(history_id)
+    if include_codex_materials:
+        with closing(open_readonly_connection(root / "source.db")) as conn:
+            materials_before = tuple(
+                conn.execute("SELECT material_id,blob_hash FROM material_observations ORDER BY material_id")
+            )
+            assert len(materials_before) == 2
+    continued_material_counts: list[tuple[int, int]] = []
+    if include_codex_materials:
+        from polylogue.storage.derived.raw import (
+            RawFrame,
+            RawObservationDerivation,
+            RawObservationReplacement,
+            _PreparationCarry,
+        )
+        from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+
+        original_continue = RawObservationDerivation._continue_after_phase
+
+        def observe_continue(
+            self: RawObservationDerivation,
+            frame: RawFrame,
+            replacement: RawObservationReplacement,
+            carry: _PreparationCarry,
+        ) -> _PreparationCarry | BaseException | None:
+            # The production handoff advertises these captured carriers for
+            # reuse. Every carried claim must remain consumable on its seal.
+            before_count = sum(a.codex_state_kind in {"goals", "memories"} for a in carry.artifacts.values())
+            result = original_continue(self, frame, replacement, carry)
+            if result is carry and replacement.needs_source_census:
+                state_carriers = [a for a in carry.artifacts.values() if a.codex_state_kind in {"goals", "memories"}]
+                continued_material_counts.append((before_count, len(state_carriers)))
+                seal = replacement.reference_seal
+                assert seal is not None
+                with seal.original_read_snapshot(), seal.source_producer():
+                    for artifact in state_carriers:
+                        publisher = artifact.publication_publisher
+                        assert publisher is not None
+                        read = PreparedSessionSourceRead(seal, blob_store=publisher)
+                        for *_coordinate, material in artifact.iter_codex_state_material():
+                            if material is not None:
+                                assert material.publication_claim is not None
+                                publisher.validate_published_claim(
+                                    read, material.publication_claim, source_path=material.source_uri
+                                )
+            return result
+
+        monkeypatch.setattr(RawObservationDerivation, "_continue_after_phase", observe_continue)
     before = {tier: logical_rows(root / f"{tier}.db") for tier in ("user", "audit", "embeddings")}
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
 
@@ -70,7 +135,7 @@ def test_actual_startup_replays_populated_source_after_original_disappears(
             with closing(open_readonly_connection(root / "source.db")) as conn:
                 assert conn.execute(
                     "SELECT c.status,c.parser_fingerprint,r.validation_mode FROM raw_membership_census c "
-                    "JOIN raw_sessions r USING(raw_id) WHERE r.validation_mode IS NULL"
+                    "JOIN raw_sessions r USING(raw_id) WHERE r.source_path LIKE '%/.claude/history.jsonl'"
                 ).fetchall() == [("non_session", raw_authority_parser_fingerprint(), None)]
                 assert (
                     tuple(
@@ -81,6 +146,12 @@ def test_actual_startup_replays_populated_source_after_original_disappears(
                         ).fetchone()
                     )
                     == history_binding
+                )
+        if include_codex_materials:
+            with closing(open_readonly_connection(root / "source.db")) as conn:
+                assert (
+                    tuple(conn.execute("SELECT material_id,blob_hash FROM material_observations ORDER BY material_id"))
+                    == materials_before
                 )
         raise PreflightReachedError
 
@@ -95,6 +166,21 @@ def test_actual_startup_replays_populated_source_after_original_disappears(
                 browser_capture_port=8765,
             )
         )
+
+    if include_codex_materials:
+        assert (2, 0) in continued_material_counts
+        source_before_restart = logical_rows(root / "source.db")
+        with pytest.raises(PreflightReachedError):
+            asyncio.run(
+                daemon_cli.run_daemon_services(
+                    sources=(),
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                )
+            )
+        assert logical_rows(root / "source.db") == source_before_restart
 
 
 @pytest.mark.parametrize("phase", ["replay", "readiness"])

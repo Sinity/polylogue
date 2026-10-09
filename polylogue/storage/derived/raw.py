@@ -1499,6 +1499,15 @@ class RawObservationDerivation(RawObservationInspection):
         moved.update(
             id(artifact) for artifact in carry.artifacts.values() if artifact.codex_state_kind == "thread_state"
         )
+        if replacement.needs_source_census:
+            # The census consumes these carriers' single-use material claims.
+            # A later census must prepare fresh claims, even when its parser
+            # and enrichment inputs have not changed.
+            moved.update(
+                id(artifact)
+                for artifact in carry.artifacts.values()
+                if artifact.codex_state_kind in {"goals", "memories"}
+            )
         if moved:
             # The committed tape moved evidence these artifacts were parsed
             # against: this seal prepares them again.
