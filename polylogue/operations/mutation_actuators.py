@@ -1129,6 +1129,8 @@ class BulkTagActuator(ConvergentReplay):
                 "requested_session_count": len(args.session_ids),
                 "requested_session_ids": list(args.session_ids),
                 "unresolved_session_ids": list(unresolved),
+                "author_ref": args.author_ref,
+                "author_kind": args.author_kind,
             },
         )
 
@@ -1143,7 +1145,10 @@ class BulkTagActuator(ConvergentReplay):
         assertions = 0
         for session_id in session_ids:
             changed = args.archive.add_user_tags(
-                (session_id,), tags, author_ref=args.author_ref, author_kind=args.author_kind
+                (session_id,),
+                tags,
+                author_ref=cast("str | None", plan.context["author_ref"]),
+                author_kind=cast("str | None", plan.context["author_kind"]),
             )
             assertions += changed
             if changed > 0:
@@ -1175,12 +1180,12 @@ class BulkTagActuator(ConvergentReplay):
         )
 
     def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> BulkTagArgs:
-        # The machine plan context is closed (``machine_plan_context``) and
-        # carries no author: production bulk tagging never sets one.
         return BulkTagArgs(
             archive=handles.archive,
             session_ids=tuple(cast("list[str]", plan.context["requested_session_ids"])),
             tags=tuple(cast("list[str]", plan.context["tags"])),
+            author_ref=cast("str | None", plan.context["author_ref"]),
+            author_kind=cast("str | None", plan.context["author_kind"]),
         )
 
 

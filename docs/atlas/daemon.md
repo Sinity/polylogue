@@ -47,6 +47,10 @@ the request principal, while automated startup uses `daemon:recovery`. The
 continuity command retains this identity for crash replay; the original
 `operation_runs.actor_ref` remains the actor who began the operation.
 
+Bulk-tag plans retain the requested assertion author independently of the
+operation actor. Both machine-part reconstruction and startup replay publish
+the remaining tags with that same author, including after a partial apply.
+
 The daemon holds writer/rebuild exclusion for its lifetime. `DaemonWriteCoordinator` serializes publication and retains ownership until a cancelled operation actually terminates. `DaemonAPIHTTPServer.execution_kernel` is passed to the UDS server and to daemon derivation owners; their `DaemonWriteThreadBridge` instances use the same coordinator (`polylogue/daemon/cli.py:2653-2658`; `polylogue/daemon/cli.py:2725-2750`; `polylogue/daemon/http.py:5697-5734`; `polylogue/daemon/write_coordinator.py:772-790`).
 
 `run_daemon_services` is the service composition entry point (`polylogue/daemon/cli.py:1953`). Its composition state declares `session_profile_callback` and `embedding_callback` (`polylogue/daemon/cli.py:2595-2596`), and constructs the `FtsConvergenceOwner` for startup work (`polylogue/daemon/cli.py:2823-2840`). FTS runs at startup and periodically; session profiles run after admitted ingest and during the periodic sweep; embeddings use watcher scopes and the periodic backlog owner. `run_daemon_services` hands both callbacks to the live watcher (`polylogue/daemon/cli.py:2988-3003`); after an admitted batch `FileIntakeAdapter.admit_page` calls the watcher's lease-free embedding and profile convergence (`polylogue/operations/intake_adapters.py:1068-1077`; `polylogue/sources/live/watcher.py:1334-1356`); the periodic sweep and backlog services are registered in `periodic_services` (`polylogue/daemon/cli.py:2888-2943`). These are source-route facts, not live deployment evidence.
