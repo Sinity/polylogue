@@ -1426,6 +1426,8 @@ def _message_identity_payload(
     scalar_fields = _message_scalar_fields(_HASHED_FIELDS["ParsedMessage"])
     for field in _sorted_hash_fields(scalar_fields):
         value = getattr(message, field)
+        if field == "parent_message_provider_id":
+            value = message_native_key(value)
         payload[field] = _identity_normalize_value(
             value,
             path=(("field", field),),

@@ -231,6 +231,18 @@ def _check_semantic_closure(
     for record in (*head_records, *transcript_records):
         kind = record.get("kind")
         if kind == "lineage":
+            branch = record.get("branch_point_message_native_id")
+            carrier = record.get("branch_point_source_native_id_json")
+            try:
+                if branch is not None and not isinstance(branch, str):
+                    raise ValueError("branch native ID is not text")
+                if carrier is not None and not isinstance(carrier, str):
+                    raise ValueError("branch Source carrier is not JSON text")
+                if isinstance(carrier, str):
+                    source_native_id_from_json(carrier)
+                native_id_from_storage(branch, carrier)
+            except ValueError as exc:
+                raise SemanticClosureError("invalid branch native identity") from exc
             if record.get("src_session_id") != manifest.session_id:
                 raise SemanticClosureError("lineage source belongs to a different session")
         elif record.get("session_id") != manifest.session_id:

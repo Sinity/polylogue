@@ -91,7 +91,12 @@ def lineage_record(session_id: str, lineage: LineageInput) -> dict[str, JSONValu
         "dst_origin": lineage.dst_origin.value,
         "dst_native_id": lineage.dst_native_id,
         "link_type": lineage.link_type.value,
-        "branch_point_message_native_id": lineage.branch_point_message_native_id,
+        "branch_point_message_native_id": sqlite_message_native_id(lineage.branch_point_message_native_id),
+        "branch_point_source_native_id_json": (
+            source_native_id_json(lineage.branch_point_message_native_id)
+            if (message_native_key(lineage.branch_point_message_native_id) or "").startswith("s:")
+            else None
+        ),
         "inheritance": lineage.inheritance,
         "status": lineage.status,
         "confidence": lineage.confidence,

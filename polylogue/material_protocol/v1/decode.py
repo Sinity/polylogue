@@ -104,6 +104,11 @@ def _decode_session_revision(manifest: RevisionManifest, segment_bytes: dict[int
         if kind == "session":
             continue
         if kind == "lineage":
+            branch = record.get("branch_point_message_native_id")
+            carrier = record.get("branch_point_source_native_id_json")
+            record["branch_point_message_native_id"] = native_id_from_storage(
+                branch if isinstance(branch, str) else None, carrier if isinstance(carrier, str) else None
+            )
             decoded.lineage.append(record)
         elif kind == "usage":
             decoded.usage.append(record)

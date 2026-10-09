@@ -14,8 +14,14 @@ from polylogue.core.message_native_identity import (
     source_native_id_json,
 )
 from polylogue.pipeline.ids import disk_message_owner_resolution, session_content_hash
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.sources.prepared_message_sink import SqliteMessageStore
+from polylogue.sources.parsers.base import (
+    ParsedAttachment,
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+    ParsedSessionEvent,
+)
+from polylogue.sources.prepared_message_sink import ScratchSessionSpill, SqliteMessageStore
 from tests.infra.index_writer import write_fixture_index_session
 from tests.unit.sinex.test_material_adapter import _decoded_publication
 from tests.unit.storage.test_archive_tiers_write import _connect
@@ -91,3 +97,36 @@ def test_native_keys_are_injective_and_independent_of_mutable_content() -> None:
     scalar = pair.model_copy(deep=True)
     scalar.messages[0].provider_message_id = "\U00010000"
     assert session_content_hash(pair) != session_content_hash(scalar)
+
+
+@pytest.mark.parametrize("native", ["\ud800\udc00", "\U00010000"])
+def test_asserted_branch_publication_restores_exact_source_native_name(native: str) -> None:
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="child",
+        parent_session_provider_id="parent",
+        branch_point_provider_message_id=native,
+        messages=[ParsedMessage(provider_message_id="child-message", role=Role.USER, text="tail")],
+    )
+    _payload, decoded = _decoded_publication(session)
+    assert decoded.lineage[0]["branch_point_message_native_id"] == native
+
+
+def test_prepared_reference_and_chatgpt_owner_collections_keep_exact_names(tmp_path: Path) -> None:
+    store = SqliteMessageStore(tmp_path / "prepared-reference.db")
+    attachments = store.new_attachment_sink()
+    events = store.new_event_sink()
+    entries = ScratchSessionSpill(store).entries()
+    for index, native in enumerate(_NAMES):
+        attachments.append(ParsedAttachment(provider_attachment_id="file", message_provider_id=native, name="neutral"))
+        events.append(ParsedSessionEvent(event_type="neutral", source_message_provider_id=native, payload={}))
+        entries.add(
+            None, index, native, ParsedMessage(provider_message_id=native, position=index, role=Role.USER, text="same")
+        )
+        assert entries.provider_for_node(native) == native
+        assert native in entries.emitted_provider_ids()
+    assert [attachment.message_provider_id for attachment in attachments] == list(_NAMES)
+    assert [event.source_message_provider_id for event in events] == list(_NAMES)
+    assert [message.provider_message_id for message in entries.ordered()] == list(_NAMES)
+    assert entries.last_emitted_among(frozenset(_NAMES)) == _NAMES[-1]
+    store.close()

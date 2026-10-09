@@ -2052,7 +2052,7 @@ class _ScratchChatGPTEntries:
         self.conn = conn
         conn.execute(
             "CREATE TABLE chatgpt_entry (node_key TEXT PRIMARY KEY, idx INTEGER NOT NULL, timestamp REAL, "
-            "position INTEGER NOT NULL, provider_id TEXT NOT NULL, message_json TEXT NOT NULL)"
+            "position INTEGER NOT NULL, provider_id TEXT, message_json TEXT NOT NULL)"
         )
         conn.execute("CREATE INDEX chatgpt_entry_provider ON chatgpt_entry(provider_id)")
         conn.execute(f"CREATE INDEX chatgpt_entry_order ON chatgpt_entry({self._ORDER})")
@@ -2061,7 +2061,14 @@ class _ScratchChatGPTEntries:
         _write_row(
             self.conn,
             "INSERT INTO chatgpt_entry VALUES (?, ?, ?, ?, ?, ?)",
-            (node_id, idx, timestamp, message.position, message.provider_message_id, _message_json(message)),
+            (
+                message_native_key(node_id),
+                idx,
+                timestamp,
+                message.position,
+                message_native_key(message.provider_message_id),
+                _message_json(message),
+            ),
             kind="normalized message row",
         )
 
@@ -2078,11 +2085,15 @@ class _ScratchChatGPTEntries:
             cursor.close()
 
     def provider_for_node(self, node_id: str) -> str | None:
-        row = self.conn.execute("SELECT provider_id FROM chatgpt_entry WHERE node_key = ?", (node_id,)).fetchone()
-        return str(row[0]) if row is not None else None
+        row = self.conn.execute(
+            "SELECT provider_id FROM chatgpt_entry WHERE node_key = ?", (message_native_key(node_id),)
+        ).fetchone()
+        return native_id_from_key(str(row[0])) if row is not None and row[0] is not None else None
 
     def position_for_node(self, node_id: str) -> int | None:
-        row = self.conn.execute("SELECT position FROM chatgpt_entry WHERE node_key = ?", (node_id,)).fetchone()
+        row = self.conn.execute(
+            "SELECT position FROM chatgpt_entry WHERE node_key = ?", (message_native_key(node_id),)
+        ).fetchone()
         return int(row[0]) if row is not None else None
 
     def emitted_provider_ids(self) -> Container[str]:
@@ -2090,7 +2101,7 @@ class _ScratchChatGPTEntries:
 
     def last_emitted_among(self, provider_ids: frozenset[str]) -> str | None:
         best: tuple[int, float, int, str] | None = None
-        ordered_ids = sorted(provider_ids)
+        ordered_ids = sorted(key for value in provider_ids if (key := message_native_key(value)) is not None)
         for start in range(0, len(ordered_ids), 500):
             chunk = ordered_ids[start : start + 500]
             placeholders = ",".join("?" for _ in chunk)
@@ -2104,7 +2115,7 @@ class _ScratchChatGPTEntries:
                 candidate = (int(row[0]), float(row[1]), int(row[2]), str(row[3]))
                 if best is None or candidate[:3] > best[:3]:
                     best = candidate
-        return best[3] if best is not None else None
+        return native_id_from_key(best[3]) if best is not None else None
 
 
 class _ScratchProviderIds(Container[str]):
@@ -2114,7 +2125,9 @@ class _ScratchProviderIds(Container[str]):
     def __contains__(self, value: object) -> bool:
         return (
             isinstance(value, str)
-            and self.conn.execute("SELECT 1 FROM chatgpt_entry WHERE provider_id = ? LIMIT 1", (value,)).fetchone()
+            and self.conn.execute(
+                "SELECT 1 FROM chatgpt_entry WHERE provider_id = ? LIMIT 1", (message_native_key(value),)
+            ).fetchone()
             is not None
         )
 

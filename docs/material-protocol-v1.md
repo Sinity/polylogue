@@ -288,3 +288,7 @@ Its wire `native_id` is the hex value, and `source_native_id_json` holds
 `n:{name}` and a JSON string carrier. This tagged union preserves exact
 surrogate code units, including a pair distinct from a Unicode scalar.
 Duplicate and owner scratch keys use the complete `n:` or `s:` key.
+
+Lineage's `branch_point_message_native_id` uses the same SQLite-safe hex
+value for a surrogate name, with `branch_point_source_native_id_json`
+carrying the tagged original. Its decoded value restores the exact name.
