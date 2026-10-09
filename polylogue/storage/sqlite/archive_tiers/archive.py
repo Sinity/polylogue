@@ -7919,6 +7919,7 @@ class ArchiveStore:
         *,
         group_by: Sequence[str] = (),
         metrics: Sequence[ArchiveAggMetricSpec],
+        sort_direction: Literal["asc", "desc"] = "asc",
         limit: int = 50,
         offset: int = 0,
         session_filters: Mapping[str, object] | None = None,
@@ -7929,6 +7930,7 @@ class ArchiveStore:
             predicate,
             group_by=group_by,
             metrics=metrics,
+            sort_direction=sort_direction,
             limit=limit,
             offset=offset,
             session_filters=session_filters,
@@ -9500,7 +9502,7 @@ def _stats_by_sql(group_by: str, where: str, *, tags_relation: str = "session_ta
     if group_by in {"day", "month", "year"}:
         formats = {"day": "%Y-%m-%d", "month": "%Y-%m", "year": "%Y"}
         return f"""
-            SELECT strftime('{formats[group_by]}', s.sort_key_ms / 1000, 'unixepoch') AS group_key,
+            SELECT strftime('{formats[group_by]}', s.sort_key_ms / 1000.0, 'unixepoch') AS group_key,
                    COUNT(DISTINCT s.session_id) AS count
             FROM sessions s
             {where}

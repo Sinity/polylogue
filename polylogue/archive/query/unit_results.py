@@ -477,7 +477,7 @@ def _aggregate_pipeline_payload(
     denominator: int,
     missing_counts: Mapping[str, int],
     unknown_counts: Mapping[str, int],
-    groups: Sequence[tuple[tuple[str, ...], int]],
+    groups: Sequence[tuple[tuple[str | None, ...], int]],
 ) -> dict[str, object]:
     payload = pipeline.to_payload()
     if len(group_fields) <= 1:
@@ -668,6 +668,7 @@ def _execute_agg_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnvel
         ctx.source.unit,
         pipeline.predicate,
         group_by=group_fields,
+        sort_direction=pipeline.sort.direction if pipeline.sort is not None else "asc",
         metrics=tuple(
             ArchiveAggMetricSpec(label=metric.label, fn=metric.fn, field=metric.field) for metric in agg_metrics
         ),

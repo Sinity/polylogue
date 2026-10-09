@@ -1182,6 +1182,7 @@ def _aggregate_payload(payload: Mapping[str, object], *, archive: ArchiveStore) 
             "stats cannot aggregate a content-excluded selection; use --count or remove --exclude-text and retry"
         )
 
+    plan = spec.to_plan()
     filter_kwargs = spec_session_filter_kwargs(spec)
     query = " ".join((*spec.query_terms, *spec.contains_terms)).strip()
     scope_id = spec.session_id
@@ -1199,9 +1200,9 @@ def _aggregate_payload(payload: Mapping[str, object], *, archive: ArchiveStore) 
         actions_only=spec.retrieval_lane == "actions",
         group_by=group_by or None,
         session_id=scope_id,
-        limit=spec.sample if spec.sample is not None else spec.limit,
+        limit=plan.sample if plan.sample is not None else plan.limit,
         offset=spec.offset,
-        sort=spec.sort,
+        sort=plan.sort,
         reverse=spec.reverse,
         sample=spec.sample is not None,
         **cast("Any", filter_kwargs),

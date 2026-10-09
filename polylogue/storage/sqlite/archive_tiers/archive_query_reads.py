@@ -704,7 +704,7 @@ class ArchiveQueryUnitMultiAggregateRow:
 
     unit: str
     group_by: tuple[str, ...]
-    group_values: tuple[str, ...]
+    group_values: tuple[str | None, ...]
     count: int
 
 
@@ -727,7 +727,7 @@ class ArchiveAggMetricSpec:
 class ArchiveQueryUnitAggMetricRow:
     """One group of a named-metric aggregate page."""
 
-    group_values: tuple[str, ...]
+    group_values: tuple[str | None, ...]
     count: int
     metrics: dict[str, float | int | None]
 
@@ -1271,21 +1271,8 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
         # made a bounded page an archive-wide materialization request.
         components = ", ".join(f"'{field}', {_query_unit_group_expression(unit, row_alias, field)}" for field in fields)
         return f"json_object({components})"
-    normalized = group_by.removeprefix("session.")
-    session_fields = {
-        "origin": "COALESCE(NULLIF(s.origin, ''), 'unknown')",
-        "repo": "COALESCE(NULLIF(s.git_repository_url, ''), 'unknown')",
-    }
-    if group_by.startswith("session.") or group_by in {"origin", "repo"}:
-        try:
-            return session_fields[normalized]
-        except KeyError as exc:
-            raise ValueError(f"unsupported {unit} aggregate group field: {group_by}") from exc
-    if unit == "delegation" and group_by == "basis":
-        return _delegation_basis_sql(row_alias)
-    column = _query_unit_row_column(unit, row_alias, group_by, context="aggregate group")
-    default = _ASSERTION_GROUP_DEFAULTS.get(group_by, "unknown") if unit == "assertion" else "unknown"
-    return f"COALESCE(NULLIF(CAST({column} AS TEXT), ''), {_sql_string_literal(default)})"
+    field = f"session.{group_by}" if group_by in {"origin", "repo"} else group_by
+    return _query_unit_multi_group_field_sql(unit, row_alias, field).value
 
 
 @dataclass(frozen=True, slots=True)
@@ -1300,11 +1287,9 @@ class _MultiAggregateFieldSQL:
 def _query_unit_multi_group_field_sql(unit: str, row_alias: str, field: str) -> _MultiAggregateFieldSQL:
     """Return lossless value and quality expressions for one group field.
 
-    Multi-field aggregation historically converted terminal rows back into
-    Python objects, where ``None`` became ``[missing]`` and literal ``unknown``
-    values remained distinguishable. Keep that contract while moving the work
-    into SQLite; do not conflate an empty string, a missing value, and an
-    explicit unknown token.
+    SQL NULL stays NULL through grouping and payload projection. A display
+    sentinel would collide with a valid literal value such as ``[missing]``.
+    Empty strings and explicit unknown tokens remain separate values.
     """
 
     if unit == "delegation" and field == "basis":
@@ -1320,7 +1305,7 @@ def _query_unit_multi_group_field_sql(unit: str, row_alias: str, field: str) -> 
         value = f"CAST(COALESCE(NULLIF({raw}, ''), {_sql_string_literal(_ASSERTION_GROUP_DEFAULTS[field])}) AS TEXT)"
         missing = "0"
     else:
-        value = f"CASE WHEN {raw} IS NULL THEN '[missing]' ELSE CAST({raw} AS TEXT) END"
+        value = f"CAST({raw} AS TEXT)"
         missing = f"CASE WHEN {raw} IS NULL THEN 1 ELSE 0 END"
     unknown = f"CASE WHEN {raw} IS NOT NULL AND LOWER(CAST({raw} AS TEXT)) = 'unknown' THEN 1 ELSE 0 END"
     return _MultiAggregateFieldSQL(value=value, missing=missing, unknown=unknown)
@@ -1490,7 +1475,7 @@ def _field_predicate_clause(
             _field_predicate_clause(table_alias, replace(predicate, values=(value,)), tags_relation=tags_relation)
             for value in values
         ]
-        return " OR ".join(f"({clause})" for clause, _ in alternatives), [
+        return "(" + " OR ".join(f"({clause})" for clause, _ in alternatives) + ")", [
             parameter for _, parameters in alternatives for parameter in parameters
         ]
     kwargs: dict[str, Any] = {}
@@ -2222,7 +2207,7 @@ def _structural_predicate_clause(
         if not child_clauses:
             return "", merged_params
         joiner = " OR " if predicate.op == "or" else " AND "
-        return joiner.join(child_clauses), merged_params
+        return "(" + joiner.join(child_clauses) + ")", merged_params
     if isinstance(
         predicate, QueryTextPredicate | QueryExistsPredicate | QuerySequencePredicate | QueryLineagePredicate
     ):
@@ -2482,7 +2467,7 @@ def _boolean_predicate_clause(
         if not child_clauses:
             return "", merged_params
         joiner = " OR " if predicate.op == "or" else " AND "
-        return joiner.join(child_clauses), merged_params
+        return "(" + joiner.join(child_clauses) + ")", merged_params
     raise TypeError(f"unsupported Boolean query predicate: {predicate!r}")
 
 
@@ -3781,7 +3766,10 @@ def query_unit_multi_counts(
         ArchiveQueryUnitMultiAggregateRow(
             unit=unit,
             group_by=fields,
-            group_values=tuple(str(row[f"group_{index}"]) for index in range(len(fields))),
+            group_values=tuple(
+                str(row[f"group_{index}"]) if row[f"group_{index}"] is not None else None
+                for index in range(len(fields))
+            ),
             count=int(row["count"]),
         )
         for row in rows
@@ -3802,6 +3790,7 @@ def query_unit_agg_metrics(
     *,
     group_by: Sequence[str] = (),
     metrics: Sequence[ArchiveAggMetricSpec],
+    sort_direction: Literal["asc", "desc"] = "asc",
     limit: int = 50,
     offset: int = 0,
     session_filters: Mapping[str, object] | None = None,
@@ -3811,8 +3800,8 @@ def query_unit_agg_metrics(
     Every reducer is evaluated by SQLite over the complete predicate-matching
     relation. Python retains only the requested aggregate page, so the answer
     does not change regime with the size of the match set. Grouping reproduces
-    the multi-field count lowerer's lossless value contract (``[missing]`` for
-    NULL, otherwise the value cast to text), and percentiles use exact-integer
+    the multi-field count lowerer's lossless value contract (NULL remains
+    NULL, otherwise the value is cast to text), and percentiles use exact-integer
     nearest rank -- ``ceil(rank * n / 100)`` computed in integer arithmetic.
     """
 
@@ -3909,7 +3898,7 @@ def query_unit_agg_metrics(
     percentile_joins: list[str] = []
     result_column_by_label: dict[str, str] = {}
     partition_clause = f"PARTITION BY {', '.join(group_columns)}" if group_columns else ""
-    join_condition = " AND ".join(f"grouped.{column} = pct_{{index}}.{column}" for column in group_columns) or "1 = 1"
+    join_condition = " AND ".join(f"grouped.{column} IS pct_{{index}}.{column}" for column in group_columns) or "1 = 1"
     for index, spec in enumerate(metric_specs):
         column = f"agg_{index}"
         if spec.fn == "count" or spec.field is None:
@@ -3962,7 +3951,8 @@ def query_unit_agg_metrics(
             GROUP BY {", ".join(group_columns) if group_columns else "NULL"}
         )
     """
-    order_clause = ", ".join(f"grouped.{column} ASC" for column in group_columns)
+    direction = _query_unit_order_direction(sort_direction)
+    order_clause = ", ".join(f"grouped.{column} {direction}" for column in group_columns)
     ranked_selection = column_separator.join(
         (
             *(f"grouped.{column}" for column in group_columns),
@@ -4004,7 +3994,7 @@ def query_unit_agg_metrics(
     return ArchiveQueryUnitAggMetricPage(
         rows=tuple(
             ArchiveQueryUnitAggMetricRow(
-                group_values=tuple(str(row[column]) for column in group_columns),
+                group_values=tuple(str(row[column]) if row[column] is not None else None for column in group_columns),
                 count=int(row["row_count"]),
                 metrics={
                     spec.label: _agg_metric_value(spec, row[f"result_{label_index}"], row["row_count"])
