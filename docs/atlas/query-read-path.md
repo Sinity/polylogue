@@ -395,3 +395,15 @@ Typed session list and search scopes share the generic read's explicit-reference
 Python profile histograms and workflow distributions use the same profile-existence and session scope predicates as profile insight rows on one controlled read snapshot. Histograms group native workflow, terminal-state and origin columns without profile payload hydration, provenance lookups or usage-cost reads. Week distributions stream the native canonical date; project distributions extract only the declared cwd array. Abandoned-session reads count the complete severity-filtered scope before selecting the requested evidence page, preserving date, recency and identity ordering and Python slice limits. Exact profile-record reads retain their cost projection.
 
 Tool usage applies an exact session ID predicate before entry aggregation and pagination. Its coverage map remains exhaustive across origins. Bidirectional work-evidence neighborhoods union separate source and target index seeks before the final edge order and limit; edges selected by both branches are deduplicated, and distinct parallel edges retain their identities. Typed edge validation remains unchanged. This does not depend on graph planner statistics.
+
+## Digest tool evidence
+
+Session digests and incident run projections lower hydrated message/block
+occurrences to the same causal association SQL used by action reads and parser
+outcome normalization. Reused provider tool IDs do not identify an invocation.
+Summaries and subagent reports retain the admitted replies' original refs;
+ambiguous replies remain unavailable, and parent-proved fanout preserves all
+reply evidence. Canonical unknown outcomes stay unknown. Structured outcome
+events retain each use occurrence even when two commands and outcomes match.
+The temporary association relation uses native scratch custody and never
+opens an archive tier (`analysis/transforms.py`, `core/tool_association.py`).

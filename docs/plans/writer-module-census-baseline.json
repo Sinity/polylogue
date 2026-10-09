@@ -28,6 +28,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/analysis/transforms.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/api/archive.py",
     "tiers": [],
     "authority": "scratch"

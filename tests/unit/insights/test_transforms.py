@@ -1024,3 +1024,157 @@ def test_run_projection_refs_round_trip() -> None:
     assert refs
     for ref in refs:
         assert ObjectRef.parse(ref.format()) == ref
+
+
+@pytest.mark.parametrize("command", ["first", "same"])
+def test_digest_reused_tool_id_retains_each_occurrence_outcome_and_reply(command: str) -> None:
+    """A tool-ID-wide last-result lookup misattributes the first successful use."""
+    messages = []
+    for index, (name, exit_code) in enumerate([(command, 0), ("same", 1)]):
+        messages.extend(
+            [
+                Message(
+                    id=f"use-{index}",
+                    role=Role.ASSISTANT,
+                    blocks=[
+                        {"type": "tool_use", "id": "reused", "name": "Bash", "tool_input": {"command": name}},
+                    ],
+                ),
+                Message(
+                    id=f"reply-{index}",
+                    role=Role.USER,
+                    blocks=[
+                        {
+                            "type": "tool_result",
+                            "tool_id": "reused",
+                            "text": f"output-{index}",
+                            "tool_result_exit_code": exit_code,
+                        },
+                    ],
+                ),
+            ]
+        )
+    session = _session().model_copy(update={"messages": MessageCollection(messages=messages)})
+    digest = compile_session_digest(session)
+    assert [(tool.command, tool.status, tool.output_preview) for tool in digest.tool_summaries] == [
+        (command, "ok", "output-0"),
+        ("same", "failed", "output-1"),
+    ]
+    assert [[ref.message_id for ref in tool.raw_refs] for tool in digest.tool_summaries] == [
+        ["use-0", "reply-0"],
+        ["use-1", "reply-1"],
+    ]
+    assert [(event.command, event.status) for event in digest.events] == [(command, "ok"), ("same", "failed")]
+    assert [event.raw_refs[0].message_id for event in digest.events] == ["use-0", "use-1"]
+    assert compile_session_run_projection(session) == digest.run_projection
+
+
+@pytest.mark.parametrize("parent_proved", [False, True])
+def test_digest_multiple_replies_use_canonical_ambiguity_and_parent_fanout(parent_proved: bool) -> None:
+    """A last-reply lookup loses ambiguity, fanout output and original refs."""
+    use = Message(
+        id="use",
+        role=Role.ASSISTANT,
+        blocks=[
+            {"type": "tool_use", "id": "tool", "name": "Bash", "tool_input": {"command": "same"}},
+        ],
+    )
+    replies = [
+        Message(
+            id=f"reply-{index}",
+            role=Role.USER,
+            parent_id="use" if parent_proved else None,
+            blocks=[
+                {
+                    "type": "tool_result",
+                    "tool_id": "tool",
+                    "text": f"output-{index}",
+                    "tool_result_exit_code": exit_code,
+                },
+            ],
+        )
+        for index, exit_code in enumerate([1, 0])
+    ]
+    session = _session().model_copy(update={"messages": MessageCollection(messages=[use, *replies])})
+    digest = compile_session_digest(session)
+    [tool] = digest.tool_summaries
+    assert tool.status == ("failed" if parent_proved else "unknown")
+    assert [ref.message_id for ref in tool.raw_refs] == (["use", "reply-0", "reply-1"] if parent_proved else ["use"])
+    assert tool.output_preview == ("output-0 output-1" if parent_proved else "")
+    assert [event.status for event in digest.events] == (["failed"] if parent_proved else [])
+
+
+def test_digest_preserves_canonical_unknown_result_and_distinct_identical_events() -> None:
+    messages = []
+    for index in range(3):
+        messages.extend(
+            [
+                Message(
+                    id=f"use-{index}",
+                    role=Role.ASSISTANT,
+                    blocks=[
+                        {"type": "tool_use", "id": f"tool-{index}", "name": "Bash", "tool_input": {"command": "same"}},
+                    ],
+                ),
+                Message(
+                    id=f"reply-{index}",
+                    role=Role.USER,
+                    blocks=[
+                        {
+                            "type": "tool_result",
+                            "tool_id": f"tool-{index}",
+                            "tool_result_exit_code": 0,
+                            **({"tool_outcome": "unknown"} if index == 0 else {}),
+                        },
+                    ],
+                ),
+            ]
+        )
+    session = _session().model_copy(update={"messages": MessageCollection(messages=messages)})
+    digest = compile_session_digest(session)
+    assert [tool.status for tool in digest.tool_summaries] == ["unknown", "ok", "ok"]
+    assert [(event.command, event.status) for event in digest.events] == [("same", "ok"), ("same", "ok")]
+    assert [event.raw_refs[0].message_id for event in digest.events] == ["use-1", "use-2"]
+
+
+def test_digest_reused_subagent_tool_id_keeps_original_report_refs() -> None:
+    messages = []
+    for index in range(2):
+        messages.extend(
+            [
+                Message(
+                    id=f"dispatch-{index}",
+                    role=Role.ASSISTANT,
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "id": "reused-task",
+                            "name": "Task",
+                            "tool_input": {"prompt": f"task-{index}", "subagent_type": "worker"},
+                        },
+                    ],
+                ),
+                Message(
+                    id=f"report-{index}",
+                    role=Role.USER,
+                    blocks=[
+                        {
+                            "type": "tool_result",
+                            "tool_id": "reused-task",
+                            "text": f"report-{index}",
+                            "tool_result_exit_code": 0,
+                        },
+                    ],
+                ),
+            ]
+        )
+    session = _session().model_copy(update={"messages": MessageCollection(messages=messages)})
+    digest = compile_session_digest(session)
+    assert [(report.prompt, report.final_report_preview) for report in digest.subagent_reports] == [
+        ("task-0", "report-0"),
+        ("task-1", "report-1"),
+    ]
+    assert [[ref.message_id for ref in report.raw_refs] for report in digest.subagent_reports] == [
+        ["dispatch-0", "report-0"],
+        ["dispatch-1", "report-1"],
+    ]

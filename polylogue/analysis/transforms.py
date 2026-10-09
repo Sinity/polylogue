@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import closing
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Literal, TypeVar, cast, get_args
@@ -21,10 +23,11 @@ from pydantic import Field, field_validator, model_validator
 
 from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.analysis.run_projection import RunProjection, build_run_projection
-from polylogue.archive.actions.parsing import tool_result_outcome
+from polylogue.archive.actions.parsing import tool_result_block_outcome
 from polylogue.archive.message.models import Message
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.refs import EvidenceRef, ObjectRef
+from polylogue.core.tool_association import tool_association_ctes_sql
 from polylogue.surfaces.action_affordances import (
     ActionAffordancePayload,
     assertion_candidate_review_affordances,
@@ -549,12 +552,13 @@ def compile_session_digest(
         ref_kind="session",
         preview=session.display_title,
     )
-    tool_summaries = tuple(_extract_tool_summaries(session, messages))
+    associations = _digest_tool_associations(messages)
+    tool_summaries = tuple(_extract_tool_summaries(session, messages, associations))
     subagent_reports = _enrich_subagent_reports_with_links(
-        tuple(_extract_subagent_reports(session, messages)),
+        tuple(_extract_subagent_reports(session, messages, associations)),
         session_links,
     )
-    events = tuple(_extract_events(session, messages))
+    events = tuple(_extract_events(session, messages, associations))
     # These fields were previously mined from message prose. They are model
     # judgments, not archive structure, so new digests leave them empty.
     run_state = None
@@ -654,12 +658,13 @@ def compile_session_run_projection(
         ref_kind="session",
         preview=session.display_title,
     )
-    tool_summaries = tuple(_extract_tool_summaries(session, messages))
+    associations = _digest_tool_associations(messages)
+    tool_summaries = tuple(_extract_tool_summaries(session, messages, associations))
     subagent_reports = _enrich_subagent_reports_with_links(
-        tuple(_extract_subagent_reports(session, messages)),
+        tuple(_extract_subagent_reports(session, messages, associations)),
         session_links,
     )
-    events = tuple(_extract_events(session, messages))
+    events = tuple(_extract_events(session, messages, associations))
     return build_run_projection(
         session_id=str(session.id),
         source_origin=str(session.origin),
@@ -1721,32 +1726,112 @@ def _present_field_names(**named_values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(name for name, values in named_values.items() if values)
 
 
-def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> Iterable[ToolSummary]:
-    result_by_tool_id: dict[str, tuple[dict[str, object], TransformRawRef]] = {}
-    for message in messages:
-        for index, block in enumerate(message.blocks):
-            if str(block.get("type") or "") != "tool_result":
-                continue
-            tool_id = _optional_text(block.get("tool_id") or block.get("id"))
-            if tool_id:
-                result_by_tool_id[tool_id] = (block, _block_ref(session, message, index, block))
+@dataclass(frozen=True)
+class _DigestToolAssociation:
+    status: Literal["ok", "failed", "unknown"]
+    results: tuple[tuple[int, int], ...] = ()
 
-    for message in messages:
+
+def _digest_tool_associations(messages: Sequence[Message]) -> dict[tuple[int, int], _DigestToolAssociation]:
+    """Lower hydrated occurrences to the shared causal association owner.
+
+    Local ordinals locate blocks in this composed transcript; public evidence
+    refs retain their original message IDs and block coordinates. A private
+    scratch relation keeps the SQL owner, including ambiguity and fanout,
+    authoritative without reopening the archive.
+    """
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+    if not any(str(block.get("type") or "") == "tool_use" for message in messages for block in message.blocks):
+        return {}
+    results: dict[tuple[int, int], list[tuple[int, int]]] = defaultdict(list)
+    statuses: dict[tuple[int, int], Literal["ok", "failed", "unknown"]] = {}
+    with scratch_connection_context(prefix="digest-association-", filename="evidence.sqlite3") as conn:
+        conn.executescript("""
+            CREATE TABLE association_messages (
+                session_key INTEGER,message_key BLOB PRIMARY KEY,parent_key BLOB,
+                role TEXT,message_position INTEGER,variant_index INTEGER
+            );
+            CREATE TABLE association_blocks (
+                session_key INTEGER,block_key TEXT PRIMARY KEY,message_key BLOB,
+                tool_id BLOB,is_use INTEGER,outcome TEXT,unknown_reason TEXT,block_position INTEGER
+            );
+        """)
+        conn.executemany(
+            "INSERT INTO association_messages VALUES (0,?,?,?,?,?)",
+            (
+                (
+                    message.id.encode("utf-8", "surrogatepass"),
+                    None if message.parent_id is None else message.parent_id.encode("utf-8", "surrogatepass"),
+                    _role_value(message),
+                    ordinal,
+                    message.branch_index,
+                )
+                for ordinal, message in enumerate(messages)
+            ),
+        )
+        for ordinal, message in enumerate(messages):
+            for index, block in enumerate(message.blocks):
+                kind = str(block.get("type") or "")
+                if kind not in {"tool_use", "tool_result"}:
+                    continue
+                # Provider tool IDs are exact join facts, never display text.
+                tool_id = block.get("tool_id") or block.get("id")
+                if not isinstance(tool_id, str) or not tool_id:
+                    continue
+                outcome = tool_result_block_outcome(block) if kind == "tool_result" else "unknown"
+                conn.execute(
+                    "INSERT INTO association_blocks VALUES (0,?,?,?,?,?,?,?)",
+                    (
+                        f"{ordinal}:{index}",
+                        message.id.encode("utf-8", "surrogatepass"),
+                        tool_id.encode("utf-8", "surrogatepass"),
+                        int(kind == "tool_use"),
+                        "error" if outcome == "failed" else outcome,
+                        block.get("tool_result_outcome_unknown_reason"),
+                        index,
+                    ),
+                )
+        sql = (
+            "WITH RECURSIVE "
+            + tool_association_ctes_sql()
+            + """
+            SELECT a.use_key,a.verdict,r.block_key
+            FROM tool_associations a JOIN association_uses u ON u.block_key=a.use_key
+            LEFT JOIN association_results r
+              ON r.session_key=a.session_key AND r.assigned_use_key=a.use_key AND a.ambiguous=0
+            ORDER BY u.message_position,u.block_position,r.message_position,r.block_position,r.block_key
+        """
+        )
+        with closing(conn.execute(sql)) as rows:
+            for use_key, verdict, result_key in rows:
+                use = tuple(map(int, str(use_key).split(":")))
+                coordinate = (use[0], use[1])
+                statuses[coordinate] = "failed" if verdict == "error" else "ok" if verdict == "ok" else "unknown"
+                if result_key is not None:
+                    result = tuple(map(int, str(result_key).split(":")))
+                    results[coordinate].append((result[0], result[1]))
+    return {key: _DigestToolAssociation(status, tuple(results[key])) for key, status in statuses.items()}
+
+
+def _association_result_text(messages: Sequence[Message], association: _DigestToolAssociation) -> str:
+    return "\n".join(_block_text(messages[ordinal].blocks[index]) for ordinal, index in association.results)
+
+
+def _extract_tool_summaries(
+    session: Session, messages: Sequence[Message], associations: Mapping[tuple[int, int], _DigestToolAssociation]
+) -> Iterable[ToolSummary]:
+    for ordinal, message in enumerate(messages):
         for index, block in enumerate(message.blocks):
             if str(block.get("type") or "") != "tool_use":
                 continue
             if _is_subagent_tool(block):
                 continue
             tool_id = _optional_text(block.get("tool_id") or block.get("id"))
-            result_block: dict[str, object] | None = None
-            result_ref: TransformRawRef | None = None
-            if tool_id and tool_id in result_by_tool_id:
-                result_block, result_ref = result_by_tool_id[tool_id]
+            association = associations.get((ordinal, index), _DigestToolAssociation("unknown"))
             refs = [_block_ref(session, message, index, block)]
-            if result_ref is not None:
-                refs.append(result_ref)
-            output_text = _block_text(result_block or {})
-            is_error, exit_code = _block_outcome(result_block or {})
+            refs.extend(_block_ref(session, messages[o], i, messages[o].blocks[i]) for o, i in association.results)
+            output_text = _association_result_text(messages, association)
             tool_name = _tool_name(block)
             command = _tool_command(block)
             pr_refs = tuple(_number_refs(_PR_RE, output_text))
@@ -1766,7 +1851,7 @@ def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> It
                 tool_id=tool_id,
                 command=command,
                 handler_kind=_tool_handler_kind(tool_name=tool_name, command=command, output_text=output_text),
-                status=_tool_status(is_error, exit_code),
+                status=association.status,
                 line_count=_line_count(output_text),
                 output_preview=_preview(output_text),
                 pr_refs=pr_refs,
@@ -1780,31 +1865,20 @@ def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> It
             )
 
 
-def _extract_subagent_reports(session: Session, messages: Sequence[Message]) -> Iterable[SubagentReport]:
-    result_by_tool_id: dict[str, tuple[dict[str, object], TransformRawRef]] = {}
-    for message in messages:
-        for index, block in enumerate(message.blocks):
-            if str(block.get("type") or "") != "tool_result":
-                continue
-            tool_id = _optional_text(block.get("tool_id") or block.get("id"))
-            if tool_id:
-                result_by_tool_id[tool_id] = (block, _block_ref(session, message, index, block))
-
-    for message in messages:
+def _extract_subagent_reports(
+    session: Session, messages: Sequence[Message], associations: Mapping[tuple[int, int], _DigestToolAssociation]
+) -> Iterable[SubagentReport]:
+    for ordinal, message in enumerate(messages):
         for index, block in enumerate(message.blocks):
             if str(block.get("type") or "") != "tool_use":
                 continue
             if not _is_subagent_tool(block):
                 continue
             tool_id = _optional_text(block.get("tool_id") or block.get("id"))
-            result_block: dict[str, object] | None = None
-            result_ref: TransformRawRef | None = None
-            if tool_id and tool_id in result_by_tool_id:
-                result_block, result_ref = result_by_tool_id[tool_id]
+            association = associations.get((ordinal, index), _DigestToolAssociation("unknown"))
             refs = [_block_ref(session, message, index, block)]
-            if result_ref is not None:
-                refs.append(result_ref)
-            result_text = _block_text(result_block or {})
+            refs.extend(_block_ref(session, messages[o], i, messages[o].blocks[i]) for o, i in association.results)
+            result_text = _association_result_text(messages, association)
             pr_refs = tuple(_number_refs(_PR_RE, result_text))
             issue_refs = tuple(_number_refs(_ISSUE_RE, result_text))
             test_evidence = tuple(_test_evidence(result_text))
@@ -1879,14 +1953,14 @@ def _session_link_child_keys(link: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(keys)
 
 
-def _extract_events(session: Session, messages: Sequence[Message]) -> Iterable[SessionDigestEvent]:
+def _extract_events(
+    session: Session, messages: Sequence[Message], associations: Mapping[tuple[int, int], _DigestToolAssociation]
+) -> Iterable[SessionDigestEvent]:
     """Structured in-session outcome events from paired tool-result blocks.
 
-    Success/failure is read from the keystone tool-result fields
-    (``tool_result_exit_code`` / ``tool_result_is_error``) on a tool_use's
-    paired tool_result block — never regex-guessed from prose. A tool whose
-    result carries no structured outcome yields no event (NULL = unknown,
-    never a fabricated positive).
+    The shared association owner supplies the original occurrence verdict,
+    including canonical unknowns and parent-proved result fanout. A tool with
+    no known structured outcome yields no event; prose never decides status.
     """
     for session_event in sorted(session.session_events, key=lambda item: item.event_index):
         if session_event.event_type not in {"tool_run", "subagent_spawn", "decision", "artifact_change"}:
@@ -1907,34 +1981,27 @@ def _extract_events(session: Session, messages: Sequence[Message]) -> Iterable[S
             status=_optional_text(payload.get("status")),
         )
 
-    result_by_tool_id: dict[str, Mapping[str, object]] = {}
-    for message in messages:
-        for block in message.blocks:
-            if str(block.get("type") or "") != "tool_result":
-                continue
-            tool_id = _optional_text(block.get("tool_id") or block.get("id"))
-            if tool_id:
-                result_by_tool_id[tool_id] = block
-
-    seen: set[tuple[str, str]] = set()
-    for message in messages:
+    for ordinal, message in enumerate(messages):
         for index, block in enumerate(message.blocks):
             if str(block.get("type") or "") != "tool_use":
                 continue
             if _is_subagent_tool(block):
                 continue
             tool_id = _optional_text(block.get("tool_id") or block.get("id"))
-            result_block = result_by_tool_id.get(tool_id) if tool_id else None
-            if result_block is None:
-                continue
-            is_error, exit_code = _block_outcome(result_block)
-            status = _tool_status(is_error, exit_code)
+            association = associations.get((ordinal, index), _DigestToolAssociation("unknown"))
+            status = association.status
             if status == "unknown":
                 continue
+            # An aggregate fanout verdict has no single physical exit code.
+            exit_code = (
+                _block_outcome(messages[association.results[0][0]].blocks[association.results[0][1]])[1]
+                if len(association.results) == 1
+                else None
+            )
             tool_name = _tool_name(block)
             command = _tool_command(block)
             handler_kind = _tool_handler_kind(
-                tool_name=tool_name, command=command, output_text=_block_text(result_block)
+                tool_name=tool_name, command=command, output_text=_association_result_text(messages, association)
             )
             event = _outcome_event(
                 handler_kind=handler_kind,
@@ -1945,10 +2012,6 @@ def _extract_events(session: Session, messages: Sequence[Message]) -> Iterable[S
                 exit_code=exit_code,
                 ref=_block_ref(session, message, index, block),
             )
-            key = (event.kind, event.summary)
-            if key in seen:
-                continue
-            seen.add(key)
             yield event
 
 
@@ -2179,19 +2242,6 @@ def _caveats(text: str) -> Iterable[str]:
         lowered = line.lower()
         if "caveat" in lowered or "blocker" in lowered or "not included" in lowered:
             yield _preview(line, limit=180)
-
-
-def _tool_status(is_error: int | None, exit_code: int | None) -> Literal["ok", "failed", "unknown"]:
-    """Tool outcome from the structured keystone result fields.
-
-    Exit code is authoritative when present; otherwise the boolean is_error
-    flag decides. NULL on both means unknown — never a fabricated positive
-    inferred from output text (#2482). Delegates to
-    :func:`polylogue.archive.actions.parsing.tool_result_outcome`, the
-    canonical implementation (polylogue-b0b), so this precedence rule has a
-    single source of truth instead of two copies that can drift.
-    """
-    return tool_result_outcome(is_error, exit_code)
 
 
 def _tool_handler_kind(
