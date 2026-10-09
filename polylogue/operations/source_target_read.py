@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, closing
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -105,7 +105,8 @@ class _BlockSupplier:
     marker: tuple[object, ...] | None
     raw: tuple[object, ...]
     membership: tuple[object, ...] | None
-    parser_sidecars: str
+    provider_session_id: str
+    dependencies: str
 
 
 def _checkpoint(snapshot: PinnedOperationRead) -> None:
@@ -139,7 +140,7 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
         return
     from polylogue.sources.dispatch import is_jsonl_source_path
     from polylogue.sources.revision_backfill import (
-        _retained_parser_sidecar_digest,
+        enrichment_dependency_digest,
         prepare_retained_jsonl_artifact,
         prepare_retained_non_json_artifact,
     )
@@ -150,7 +151,10 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
     )
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC
-    from polylogue.storage.sqlite.archive_tiers.write import prepared_session_rows_from_shard
+    from polylogue.storage.sqlite.archive_tiers.write import (
+        PreparedSessionWriteRefusedError,
+        prepared_session_rows_from_shard,
+    )
 
     archive = snapshot.archive
     retained = _PinnedRetainedRead(archive)
@@ -182,7 +186,6 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
         provider, blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(str(raw_id))
         if not BlobStore(archive.archive_root / "blob").verify(blob_hash):
             raise SourceTargetUnavailableError("retained block supplier bytes are unavailable")
-        sidecars = _retained_parser_sidecar_digest(source, provider=provider, source_path=source_path)
         with TemporaryDirectory(prefix="polylogue-source-target-") as directory:
             prepare = (
                 prepare_retained_jsonl_artifact
@@ -202,7 +205,7 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
                 artifact.verify_files(full=True)
                 try:
                     rows = prepared_session_rows_from_shard(artifact.shard_path, session_id)
-                except KeyError:
+                except PreparedSessionWriteRefusedError:
                     continue
                 for values in rows.block_rows:
                     _checkpoint(snapshot)
@@ -213,12 +216,35 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
                         content_occurrence=int(row["content_occurrence"]),
                     )
                     if source_id == block_id:
+                        from polylogue.core.identity_law import session_id as archive_session_id
+                        from polylogue.core.sources import origin_from_provider
+
+                        with closing(artifact.iter_sessions()) as sessions:
+                            provider_session_id = next(
+                                value.provider_session_id
+                                for value in sessions
+                                if archive_session_id(
+                                    origin_from_provider(value.source_name).value, value.provider_session_id
+                                )
+                                == session_id
+                            )
+                        dependencies = enrichment_dependency_digest(
+                            provider=provider,
+                            source_path=source_path,
+                            captured_zip_coordinate=archive.raw_captured_zip_coordinate(str(raw_id)),
+                            provider_session_ids=(provider_session_id,),
+                            index_conn=archive._conn,
+                            source_conn=source,
+                            blob_root=archive.archive_root / "blob",
+                            parser_sidecars=True,
+                        )
                         snapshot.source_block_reads[key] = _BlockSupplier(
                             str(raw_id),
                             marker,
                             tuple(raw_row),
                             tuple(membership_row) if membership_row is not None else None,
-                            sidecars,
+                            provider_session_id,
+                            dependencies,
                         )
                         return
             finally:
@@ -261,13 +287,22 @@ def revalidate_source_block(
         or (tuple(membership) if membership is not None else None) != supplier.membership
     ):
         raise SourceTargetChangedError("retained block supplier changed before durable apply")
-    from polylogue.sources.revision_backfill import _retained_parser_sidecar_digest
+    from polylogue.sources.revision_backfill import enrichment_dependency_digest
     from polylogue.storage.blob_store import BlobStore
 
     provider, blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(supplier.raw_id)
     if (
         not BlobStore(archive.archive_root / "blob").verify(blob_hash)
-        or _retained_parser_sidecar_digest(source, provider=provider, source_path=source_path)
-        != supplier.parser_sidecars
+        or enrichment_dependency_digest(
+            provider=provider,
+            source_path=source_path,
+            captured_zip_coordinate=archive.raw_captured_zip_coordinate(supplier.raw_id),
+            provider_session_ids=(supplier.provider_session_id,),
+            index_conn=archive._conn,
+            source_conn=source,
+            blob_root=archive.archive_root / "blob",
+            parser_sidecars=True,
+        )
+        != supplier.dependencies
     ):
         raise SourceTargetChangedError("retained block supplier bytes or parser evidence changed before durable apply")

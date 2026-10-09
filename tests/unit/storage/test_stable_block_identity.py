@@ -204,6 +204,7 @@ def test_native_message_block_reference_survives_retained_rebuild_and_promotion(
         )
     with closing(sqlite3.connect(tmp_path / "user.db")) as user:
         assert tuple(user.execute("SELECT * FROM assertions").fetchone()) == before_user
+    from polylogue.operations.mutation_actuators import AnnotationSaveActuator, AnnotationSaveArgs
     from polylogue.operations.operation_context import open_operation_read
     from polylogue.operations.source_target_read import (
         SourceTargetChangedError,
@@ -213,20 +214,43 @@ def test_native_message_block_reference_survives_retained_rebuild_and_promotion(
 
     with open_operation_read(tmp_path) as snapshot:
         bind_source_block(snapshot, session_id=session_id, block_id=block_id)
-        if source_change is not None:
-            # Sabotage only this synthetic fixture after the actual reader pin.
-            with closing(sqlite3.connect(tmp_path / "source.db")) as source:
-                if source_change == "replace":
-                    source.execute("UPDATE raw_sessions SET blob_hash=? WHERE raw_id=?", (bytes(32), raw_id))
-                else:
-                    source.execute("DELETE FROM raw_sessions WHERE raw_id=?", (raw_id,))
-                source.commit()
         with write_lease("test.source-target-current", archive_root=tmp_path):
             with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+                actuator = AnnotationSaveActuator()
+                args = AnnotationSaveArgs(
+                    archive,
+                    "new-source-note",
+                    "block",
+                    block_id,
+                    "Still B",
+                    session_id,
+                    source_guard=lambda: revalidate_source_block(
+                        snapshot,
+                        archive,
+                        session_id=session_id,
+                        block_id=block_id,
+                    ),
+                )
+                plan = actuator.prepare(args)
+                if source_change is not None:
+                    # Sabotage only this synthetic fixture after real PREPARE.
+                    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+                        if source_change == "replace":
+                            source.execute("UPDATE raw_sessions SET blob_hash=? WHERE raw_id=?", (bytes(32), raw_id))
+                        else:
+                            source.execute("DELETE FROM raw_sessions WHERE raw_id=?", (raw_id,))
+                        source.commit()
                 if source_change is None:
-                    revalidate_source_block(snapshot, archive, session_id=session_id, block_id=block_id)
+                    receipt = actuator.apply(plan, args)
+                    assert receipt.affected_count == 1
+                    archive.commit()
+                    assert archive.get_annotation("new-source-note")["target_id"] == block_id
                 else:
                     with pytest.raises(SourceTargetChangedError):
-                        revalidate_source_block(snapshot, archive, session_id=session_id, block_id=block_id)
+                        actuator.apply(plan, args)
+                    assert archive.get_annotation("new-source-note") is None
     with closing(sqlite3.connect(tmp_path / "user.db")) as user:
-        assert tuple(user.execute("SELECT * FROM assertions").fetchone()) == before_user
+        assert (
+            tuple(user.execute("SELECT * FROM assertions WHERE assertion_id=?", (before_user[0],)).fetchone())
+            == before_user
+        )
