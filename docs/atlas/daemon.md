@@ -353,6 +353,11 @@ and recording its plan. Apply and recovery consume that admitted name, so a
 padded Python API name cannot retire a view absent from the authorized targets
 or restamp an already committed view during recovery.
 
+Startup mutation recovery retains the original interrupted run and target
+barrier when replay encounters typed SQLite contention, including contention
+wrapped by an actuator. A later healthy startup retries the recorded intent.
+Deterministic replay refusals keep their terminal failure classification.
+
 Long source preparation emits `daemon.work.progress` through the structured field registry. `unit_id` identifies an invocation and `productive_id` identifies the retry-stable source recipe; both are registered opaque identifiers. The fresh-build observer counts only counter advances above that recipe’s high-water. Repeated or reset retry counters do not prove progress, while advancing preparation remains observable before durable publication.
 
 Cold-build generation events retain stable lifecycle reason tokens: `explicit_cold_build` for an explicit request, `empty_active_index_generation` for ordinary empty-index admission, and `interrupted_promotion` for promotion recovery. They use the existing registered `reason` field and token validation.
