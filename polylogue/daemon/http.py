@@ -4854,6 +4854,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_daemon_operation(self) -> None:
         """Authenticate transport, then invoke the same canonical machine runtime."""
         from polylogue.operations.daemon_protocol import (
+            MAX_DECLARED_OPERATION_BODY_BYTES,
             daemon_operation_spec,
         )
 
@@ -4875,13 +4876,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if length <= 0:
             self._reject_operation(HTTPStatus.BAD_REQUEST, "invalid_content_length")
             return
+        from polylogue.operations.request_body_transport import UPLOAD_MEDIA_TYPE
+
+        media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if media_type not in {"application/json", UPLOAD_MEDIA_TYPE}:
+            self._reject_operation(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type")
+            return
+        if media_type == "application/json" and length > MAX_DECLARED_OPERATION_BODY_BYTES:
+            self._reject_operation(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
+            return
         try:
             from polylogue.operations.request_body_transport import read_operation_body
 
             request, input_body, control_bytes = read_operation_body(
                 self.rfile,
                 length,
-                self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower(),
+                media_type,
                 spool_root=self.server.archive_root / "operation-inputs",
             )
         except BodyStorageExhaustedError as exc:

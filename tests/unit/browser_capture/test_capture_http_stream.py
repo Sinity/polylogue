@@ -89,6 +89,9 @@ def test_capture_job_http_streams_arbitrary_nested_request_and_response_collecti
         handler.wfile = cast(Any, RecordingWriter(handler.wfile))
 
     class Registry:
+        def close_maintenance(self) -> None:
+            pass
+
         @contextmanager
         def result_scope(self) -> Iterator[None]:
             yield
@@ -132,6 +135,9 @@ def test_get_capture_job_event_encodes_lazy_response_inside_registry_scope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class Registry:
+        def close_maintenance(self) -> None:
+            pass
+
         scope_active = False
 
         @contextmanager
@@ -186,6 +192,9 @@ def test_late_json_scope_value_error_preserves_single_response_and_closes_connec
             raise ValueError("late streamed document cleanup failure")
 
     class Registry:
+        def close_maintenance(self) -> None:
+            pass
+
         @contextmanager
         def result_scope(self) -> Iterator[None]:
             yield
@@ -291,6 +300,9 @@ def test_capture_job_http_discards_staged_body_after_parse_or_disconnect_failure
     expected_error: str,
 ) -> None:
     class Registry:
+        def close_maintenance(self) -> None:
+            pass
+
         @contextmanager
         def result_scope(self) -> Iterator[None]:
             yield

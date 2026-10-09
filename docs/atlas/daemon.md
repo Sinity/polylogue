@@ -467,3 +467,26 @@ observer to their exact query execution context. Scheduled reads bind it to the
 original compute cancellation handle; controlled SQL inherits that signal and
 removes the listener at settlement. Peer cancellation retains read admission
 and creator cleanup until physical SQL completion.
+
+### Annotation input custody
+
+`mutation.annotation.import_batch` uses `/api/operation` on both HTTP and UDS
+with `application/vnd.polylogue.operation-input`. Its finite body begins with
+an eight-byte unsigned big-endian control length, then that many UTF-8 JSON
+operation-control bytes, followed by the exact UTF-8 JSONL input. The control
+payload's `input` descriptor contains its SHA-256 and byte length; both must
+match the observed body before dispatch. The request fingerprint binds that
+descriptor and all batch controls. The client encodes controls and copies
+binary input through private scratch, so it can send an exact Content-Length
+without a whole-batch scalar. Authentication precedes server staging.
+
+The daemon's locked input file belongs to the operation worker after admission.
+A replay or pre-dispatch refusal retires the new input, and a worker's terminal
+future retires its file. A returned or disconnected exchange does not retire
+an active worker's custody. Startup reaps abandoned unlocked input stages.
+Compute admission accounts for control bytes; the input body resides on disk.
+The CLI and MCP process open their input files locally, and the Python facade
+accepts `input: BinaryIO`. The daemon opens only its staged coordinate. Batch
+input and controls have no outcome size ceiling; filesystem exhaustion is a
+typed retryable pre-dispatch refusal. Product control values and individual
+JSONL rows still contribute their own memory allocations.

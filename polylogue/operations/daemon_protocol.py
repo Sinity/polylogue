@@ -3634,7 +3634,12 @@ class DaemonOperationRequest:
         spec = daemon_operation_spec(operation)
         if spec is None:
             raise ValueError(f"operation is not declared: {operation}")
-        if len(json.dumps(dict(raw), separators=(",", ":"), allow_nan=False).encode()) > spec.max_body_bytes:
+        if spec.request_model is AnnotationBatchImportOperationRequest:
+            # Validate the finite JSON control without allocating another whole
+            # envelope or imposing a batch outcome ceiling on its metadata.
+            for _fragment in json.JSONEncoder(separators=(",", ":"), allow_nan=False).iterencode(dict(raw)):
+                pass
+        elif len(json.dumps(dict(raw), separators=(",", ":"), allow_nan=False).encode()) > spec.max_body_bytes:
             raise ValueError("request_too_large")
         try:
             validated_payload = spec.request_model.model_validate(payload).model_dump(mode="json")

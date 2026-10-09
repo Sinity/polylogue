@@ -278,6 +278,8 @@ intentional absence and its reason, is generated in
 still matches the live facade.
 
 ```python
+from typing import BinaryIO
+
 from polylogue import Polylogue
 from polylogue.annotations.importer import AnnotationBatchImportRequest
 

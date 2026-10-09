@@ -21,6 +21,7 @@ from polylogue.daemon.socket_path import daemon_socket_path, ensure_private_sock
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_PROTOCOL,
     DAEMON_PRINCIPAL_CAPABILITIES,
+    MAX_DECLARED_OPERATION_BODY_BYTES,
     daemon_operation_spec,
 )
 from polylogue.operations.mutation_transaction import MutationPrincipal
@@ -161,6 +162,15 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._reject(400, "invalid_framing", str(exc))
             return
+        from polylogue.operations.request_body_transport import UPLOAD_MEDIA_TYPE
+
+        media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if media_type not in {"application/json", UPLOAD_MEDIA_TYPE}:
+            self._reject(415, "unsupported_media_type", "unsupported operation media type")
+            return
+        if media_type == "application/json" and length > MAX_DECLARED_OPERATION_BODY_BYTES:
+            self._reject(413, "request_too_large", "operation body exceeds the declared bound")
+            return
         try:
             principal = _peer_principal(self.connection, token)
         except PermissionError as exc:
@@ -172,7 +182,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
             request, input_body, control_bytes = read_operation_body(
                 self.rfile,
                 length,
-                self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower(),
+                media_type,
                 spool_root=self.server.operation_runtime.archive_root / "operation-inputs",
             )
         except BodyStorageExhaustedError as exc:
