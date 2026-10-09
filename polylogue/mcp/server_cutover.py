@@ -473,6 +473,8 @@ async def _query_sessions(
             retrieval_lane="dialogue",
             sort=envelope_request.sort,
         )
+        # This typed owner carries a framed continuation rather than a search cursor.
+        envelope = envelope.model_copy(update={"next_offset": payload.next_offset})
         return hooks.json_payload(
             MCPRootPayload(
                 root={

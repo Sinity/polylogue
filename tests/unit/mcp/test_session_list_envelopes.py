@@ -154,3 +154,54 @@ def test_retained_ranked_list_preserves_zero_row_lane_gap(monkeypatch: pytest.Mo
         "reason": "lane_unavailable:vector",
         "detail": {"gaps": ["lane_unavailable:vector"]},
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("total", [1, 2])
+async def test_typed_session_search_projects_owner_pagination(monkeypatch: pytest.MonkeyPatch, total: int) -> None:
+    """The adapter preserves the typed owner's page boundary and framed token."""
+    from polylogue.archive.query.search_hits import SessionSearchHit
+    from polylogue.archive.query.transaction import QueryTransactionRequest
+    from polylogue.archive.session.domain_models import SessionSummary
+    from polylogue.core.enums import Origin
+    from polylogue.core.types import SessionId
+    from polylogue.operations.session_reads import _page
+    from polylogue.surfaces.payloads import SessionSearchHitPayload
+
+    item = SessionSearchHitPayload.from_search_hit(
+        SessionSearchHit(
+            summary=SessionSummary(id=SessionId("codex-session:neutral"), origin=Origin.CODEX_SESSION, title="Neutral"),
+            rank=1,
+            retrieval_lane="dialogue",
+            match_surface="title",
+        )
+    )
+    owner = _page(
+        [item],
+        total,
+        QueryTransactionRequest("sessions.search", {"expression": "neutral"}, page_size=1, archive_epoch="neutral"),
+    )
+    monkeypatch.setattr("polylogue.operations.session_reads.execute_session_operation", AsyncMock(return_value=owner))
+    hooks = MagicMock(spec=list(ServerCallbacks.__annotations__))
+    hooks.clamp_limit.side_effect = lambda value: value
+    hooks.json_payload.side_effect = _json_payload
+    raw = await _query_sessions(
+        hooks,
+        expression="neutral",
+        limit=1,
+        offset=0,
+        origin=None,
+        tag=None,
+        repo=None,
+        since=None,
+        until=None,
+        sort=None,
+        min_messages=None,
+        max_messages=None,
+        min_words=None,
+    )
+    body = json.loads(raw)
+    assert body["next_offset"] == owner.next_offset
+    assert body["continuation"] == owner.continuation
+    assert body["next_cursor"] is None
+    assert (owner.continuation is not None) == (total == 2)
