@@ -471,3 +471,13 @@ The postlisting resolves the configured folder again and compares every page;
 an alias that now resolves elsewhere leaves the pass pending. Escaped acquisition
 or cancellation releases the private relation after the existing execution owner
 has physically drained its worker.
+
+Retained preparation emits `storage.raw_observation.preparation_retry` when
+its existing internal retry catches a changed carry or a stale reference seal.
+The degraded event records the exception class, attempt count, seed Raw work
+identity and declared frame scope size (zero for an implicit single-key scope,
+excluding later widening or membership expansion). Carry reasons distinguish `selection_changed`,
+`parser_operands_changed` and `carried_membership_changed`; reference retries
+use `reference_seal_stale`, with the affected tier unobserved. Events omit
+paths, payloads and arbitrary exception text. They report retries, not accepted
+Source progress or completed replay, and do not change the retry guards.
