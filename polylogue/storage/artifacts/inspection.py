@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -240,18 +240,26 @@ def _inspect_payload_envelope(
             provider, ArtifactKind.UNKNOWN, False, False, 0, "no complete retained artifact evidence"
         )
     if wire_format == "json" and artifact.parse_as_session:
-        observations, cohort_id = _SCHEMA_REGISTRY.observe_stream(
-            provider,
-            blob_path,
-            source_path=record.source_path,
-            cohort=artifact.cohort,
-        )
+        observation_owner = ExitStack()
+        try:
+            observations, cohort_id = observation_owner.enter_context(
+                _SCHEMA_REGISTRY.observe_stream(
+                    provider,
+                    blob_path,
+                    source_path=record.source_path,
+                    cohort=artifact.cohort,
+                )
+            )
+        except BaseException:
+            observation_owner.close()
+            raise
         return (
             RawPayloadEnvelope(
                 payload=[],
                 provider=provider,
                 wire_format=wire_format,
                 artifact=replace(artifact, schema_eligible=bool(observations)),
+                _owner=observation_owner,
             ),
             observations,
             cohort_id,

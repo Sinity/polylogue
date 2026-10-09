@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from contextlib import closing
+from contextlib import ExitStack, closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, BinaryIO, Literal, TypeAlias, cast
@@ -81,12 +81,12 @@ class RawPayloadEnvelope:
     artifact: ArtifactClassification
     malformed_jsonl_lines: int = 0
     malformed_jsonl_detail: str | None = None
-    _owner: DecodedRecordSequence | None = field(default=None, repr=False, compare=False)
+    _owner: DecodedRecordSequence | ExitStack | None = field(default=None, repr=False, compare=False)
 
     def close(self) -> None:
         """Release decoded records after every borrowed sample has been consumed."""
         owner = self._owner if self._owner is not None else self.payload
-        if isinstance(owner, DecodedRecordSequence):
+        if isinstance(owner, DecodedRecordSequence | ExitStack):
             owner.close()
 
     def __enter__(self) -> RawPayloadEnvelope:

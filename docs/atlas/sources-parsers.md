@@ -577,6 +577,8 @@ records use a bounded memory buffer; larger records keep exact scalar chunks
 and lazy containers on disk. The envelope owns that tape until classification,
 schema observation, and all borrowed samples finish. Its archival BOM, Unicode
 whitespace, and provider-surrogate policy remains separate from source repair.
+Complete streamed schema observations are also an owned context: inspection
+retains their JSON tree until exact profile tokens and package resolution finish.
 
 Live intake and retained census share `terminal_decode_evidence`: a known-provider
 JSON document or complete JSONL record that cannot decode settles as

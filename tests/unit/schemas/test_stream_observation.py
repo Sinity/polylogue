@@ -74,31 +74,31 @@ def test_streamed_resolution_preserves_witness_aliases_and_precedence(
     monkeypatch.setattr(registry, "load_package_catalog", lambda _provider: catalog)
     path = tmp_path / "neutral.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
-    observations, cohort = registry.observe_stream("claude-ai", path, source_path="neutral.json")
-    assert list(observations) == registry._observed_payloads("claude-ai", payload, source_path="neutral.json")
-    assert cohort == fingerprint_hash(("session_document", _structure_fingerprint(payload)))
-    spill = StreamedJSONDocument(path)
-    with spill as lazy_payload:
-        shared_context = registry.observe_payload(
-            "claude-ai",
-            lazy_payload,
-            source_path="neutral.json",
-            schema_store=spill.store_schema,
+    with registry.observe_stream("claude-ai", path, source_path="neutral.json") as (observations, cohort):
+        assert list(observations) == registry._observed_payloads("claude-ai", payload, source_path="neutral.json")
+        assert cohort == fingerprint_hash(("session_document", _structure_fingerprint(payload)))
+        spill = StreamedJSONDocument(path)
+        with spill as lazy_payload:
+            shared_context = registry.observe_payload(
+                "claude-ai",
+                lazy_payload,
+                source_path="neutral.json",
+                schema_store=spill.store_schema,
+            )
+            assert spill.connection.execute("SELECT COUNT(*) FROM json_nodes").fetchone()[0] > 0
+        assert shared_context == (observations, cohort)
+        with pytest.raises(RuntimeError, match="schema spill is closed"):
+            _ = spill.connection
+        decoded = registry.resolve_payload("claude-ai", payload, source_path="neutral.json")
+        streamed = registry.resolve_observation("claude-ai", observations, source_path="neutral.json")
+        assert streamed == decoded
+        assert streamed is not None
+        assert streamed.package_version == "v2"
+        assert streamed.reason == {"bundle": "bundle_scope", "profile": "profile_family"}.get(
+            witness_kind, "exact_structure"
         )
-        assert spill.connection.execute("SELECT COUNT(*) FROM json_nodes").fetchone()[0] > 0
-    assert shared_context == (observations, cohort)
-    with pytest.raises(RuntimeError, match="schema spill is closed"):
-        _ = spill.connection
-    decoded = registry.resolve_payload("claude-ai", payload, source_path="neutral.json")
-    streamed = registry.resolve_observation("claude-ai", observations, source_path="neutral.json")
-    assert streamed == decoded
-    assert streamed is not None
-    assert streamed.package_version == "v2"
-    assert streamed.reason == {"bundle": "bundle_scope", "profile": "profile_family"}.get(
-        witness_kind, "exact_structure"
-    )
-    if witness:
-        assert streamed.exact_structure_id == witness
+        if witness:
+            assert streamed.exact_structure_id == witness
 
 
 @pytest.mark.parametrize(
@@ -114,9 +114,9 @@ def test_streamed_observation_preserves_duplicate_keys_and_document_shapes(tmp_p
     path = tmp_path / "neutral.json"
     path.write_text(text, encoding="utf-8")
     payload = json.loads(text)
-    observations, cohort = registry.observe_stream("claude-ai", path, source_path="neutral.json")
-    assert list(observations) == registry._observed_payloads("claude-ai", payload, source_path="neutral.json")
-    assert cohort == fingerprint_hash(("session_document", _structure_fingerprint(payload)))
+    with registry.observe_stream("claude-ai", path, source_path="neutral.json") as (observations, cohort):
+        assert list(observations) == registry._observed_payloads("claude-ai", payload, source_path="neutral.json")
+        assert cohort == fingerprint_hash(("session_document", _structure_fingerprint(payload)))
 
 
 def test_jsonl_stream_exposes_all_roots_as_one_lazy_sequence(tmp_path: Path) -> None:
@@ -183,8 +183,8 @@ def test_streamed_dynamic_keys_and_growing_nested_variants_do_not_accumulate_in_
         gc.collect()
         tracemalloc.start()
         try:
-            observations, _cohort = registry.observe_stream("claude-ai", path)
-            peaks.append(tracemalloc.get_traced_memory()[1])
+            with registry.observe_stream("claude-ai", path) as (observations, _cohort):
+                peaks.append(tracemalloc.get_traced_memory()[1])
         finally:
             tracemalloc.stop()
         assert observations[0].source_witnesses

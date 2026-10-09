@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from functools import cmp_to_key
 from itertools import islice
 from tempfile import TemporaryFile
@@ -116,14 +116,25 @@ def fingerprint_parts(value: object, *, depth: int = 0) -> Iterator[str]:
     elif isinstance(value, dict):
         yield "('object', ("
         count = 0
-        for key in ordered_keys(value):
-            if count:
-                yield ", "
-            yield "(" + repr("*" if is_dynamic_key(key) else key) + ", "
-            child = value.structure_value(key) if isinstance(value, SpilledObject) else value[key]
-            yield from fingerprint_parts(child, depth=depth + 1)
-            yield ")"
-            count += 1
+
+        def entries() -> Iterator[tuple[str, object]]:
+            if isinstance(value, SpilledObject):
+                with closing(value.structure_key_items(sorted_keys=True)) as children:
+                    for key, child in children:
+                        name = key.small_name
+                        yield "*" if name is None or is_dynamic_key(name) else name, child
+            else:
+                for key in ordered_keys(value):
+                    yield "*" if is_dynamic_key(key) else key, value[key]
+
+        with closing(entries()) as children:
+            for name, child in children:
+                if count:
+                    yield ", "
+                yield "(" + repr(name) + ", "
+                yield from fingerprint_parts(child, depth=depth + 1)
+                yield ")"
+                count += 1
         if count == 1:
             yield ","
         yield "))"

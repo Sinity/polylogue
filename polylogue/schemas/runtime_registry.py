@@ -1264,6 +1264,7 @@ class SchemaRegistry:
         observations = self._observed_payloads(_provider_token(provider), payload, source_path=source_path)
         return self.resolve_observation(provider, observations, source_path=source_path)
 
+    @contextmanager
     def observe_stream(
         self,
         provider: str,
@@ -1271,17 +1272,17 @@ class SchemaRegistry:
         *,
         source_path: str | None = None,
         cohort: str = "session_document",
-    ) -> tuple[tuple[SchemaObservation, ...], str]:
-        """Measure an exhausted JSON document with private disk-backed shape state.
+    ) -> Iterator[tuple[tuple[SchemaObservation, ...], str]]:
+        """Own complete streamed observations through their resolution and use.
 
-        One decoded scalar remains subject to the existing SQLite value bound;
-        record count, property count and schema tree size do not bound support.
+        Profile tokens may borrow exact scalar chunks from this context's tree.
+        The caller must finish consuming observations before leaving it.
         """
         from polylogue.schemas.observation_spill import StreamedJSONDocument
 
         payload_store = StreamedJSONDocument(path)
         with payload_store as payload:
-            return self.observe_payload(
+            yield self.observe_payload(
                 provider,
                 payload,
                 source_path=source_path,

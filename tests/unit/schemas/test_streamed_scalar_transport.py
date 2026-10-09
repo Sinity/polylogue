@@ -368,3 +368,28 @@ def test_key_tokens_preserve_exact_identity_order_without_whole_key_cells(
         assert sorted_entries[-1][0].small_name == "selected"
         assert sorted_entries[1][0].token == entries[1][0].token
         assert sum(map(len, entries[1][0].iter_utf8_chunks())) == key_chars
+
+
+def test_structural_consumers_keep_giant_original_key_order_without_reading_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.schemas.generation.dynamic_keys import observed_structure_schema
+    from polylogue.schemas.shape_fingerprint import fingerprint_parts
+
+    _small_sqlite_cells(monkeypatch)
+    giant = "é" * 70000
+    value = {giant + "z": {"selected": 1}, "a": [True], giant: "text"}
+    path = tmp_path / "keys.json"
+    path.write_text(json.dumps(value))
+    expected_schema = observed_structure_schema(value)
+    expected_fingerprint = "".join(fingerprint_parts(value))
+    original = observation_spill.SpilledKey.read
+
+    def selected_only(key: observation_spill.SpilledKey) -> str:
+        assert key.small_name is not None, "structural consumer reconstructed a content-sized key"
+        return original(key)
+
+    monkeypatch.setattr(observation_spill.SpilledKey, "read", selected_only)
+    with StreamedJSONDocument(path) as document:
+        assert observed_structure_schema(document) == expected_schema
+        assert "".join(fingerprint_parts(document)) == expected_fingerprint

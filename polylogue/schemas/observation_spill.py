@@ -220,6 +220,30 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
             raise KeyError(key)
         return _load_structure_node(self._connection, child)
 
+    def structure_key_items(self, *, sorted_keys: bool = False) -> Iterator[tuple[SpilledKey, JSONValue]]:
+        """Keep original key tokens while reading only each child's structural kind."""
+        with closing(self.key_entries(sorted_keys=sorted_keys)) as entries:
+            for key, child in entries:
+                yield key, _load_structure_node(self._connection, child)
+
+    def collapse_observed_keys(self) -> bool:
+        """Apply the existing key policy without reconstructing content-sized names."""
+        from polylogue.schemas.field_stats.detection import (
+            _HIGH_CARDINALITY_KEY_THRESHOLD,
+            should_collapse_observed_keys,
+        )
+
+        if len(self) >= _HIGH_CARDINALITY_KEY_THRESHOLD:
+            return True
+        names: list[str] = []
+        with closing(self.key_entries()) as entries:
+            for key, _child in entries:
+                name = key.small_name
+                if name is None:
+                    return True
+                names.append(name)
+        return should_collapse_observed_keys(names)
+
     def structure_items(self) -> Iterator[tuple[str, JSONValue]]:
         with closing(self.key_entries()) as entries:
             for key, child in entries:
