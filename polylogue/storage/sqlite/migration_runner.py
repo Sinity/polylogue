@@ -43,6 +43,7 @@ from polylogue.storage.sqlite.literal_cells import (
     stream_literal_blob,
     stream_literal_cell,
 )
+from polylogue.storage.sqlite.physical_file import physical_file_sha256
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 DURABLE_MIGRATION_TIERS: frozenset[ArchiveTier] = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
@@ -945,11 +946,19 @@ def _validate_live_source_fingerprint(conn: sqlite3.Connection, artifact: dict[s
         raise MigrationError(
             f"migration backup receipt was recorded for {recorded_path}, not the live tier {live_path}"
         )
-    if _json_int(fingerprint.get("size_bytes")) != live_path.stat().st_size:
+    selected_path = live_path.resolve(strict=True)
+    selected_metadata = selected_path.stat(follow_symlinks=False)
+    physical = physical_file_sha256(
+        selected_path,
+        expected_device=selected_metadata.st_dev,
+        expected_inode=selected_metadata.st_ino,
+    )
+    if _json_int(fingerprint.get("size_bytes")) != physical.size_bytes:
         raise MigrationError("migration backup receipt live tier size mismatch")
-    if str(fingerprint.get("sha256")) != _sha256_file(live_path):
+    if str(fingerprint.get("sha256")) != physical.sha256:
         raise MigrationError("migration backup receipt live tier hash mismatch")
-    if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path):
+    user_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+    if _json_int(fingerprint.get("user_version")) != user_version:
         raise MigrationError("migration backup receipt live tier user_version mismatch")
 
 
