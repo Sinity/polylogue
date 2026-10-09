@@ -10,6 +10,7 @@ from polylogue.core.json import JSONDocument, json_document_or_none
 from polylogue.sources import detection_projection
 from polylogue.sources.detection_projection import (
     DetectorProjection,
+    detection_read_view,
     iter_projected_document_records,
     project_detection_root,
 )
@@ -70,7 +71,7 @@ def test_projection_read_view_validates_json_once(
 
     monkeypatch.setattr(detection_projection, "json_document_or_none", observe)
     rule = DetectorProjection(fields={"selected": DetectorProjection()}, preserve_mapping_size=preserve_size)
-    projected = project_detection_root({"selected": scalar, "unselected": None}, rule)
+    projected = detection_read_view(project_detection_root({"selected": scalar, "unselected": None}, rule))
     first = _payload_record(projected)
     assert _payload_record(projected) is first
     assert len(calls) == 1

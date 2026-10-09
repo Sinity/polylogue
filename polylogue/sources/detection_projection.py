@@ -53,7 +53,12 @@ class DetectionReadMapping(dict[str, object]):
 
     def __init__(self, fields: dict[str, object]) -> None:
         super().__init__(fields)
+        self.original_size = len(fields)
+        self.metadata_values_scalarish = getattr(fields, "metadata_values_scalarish", None)
         self._json_record: object = _UNREAD_RECORD
+
+    def __len__(self) -> int:
+        return self.original_size
 
     def json_record(self) -> JSONDocument | None:
         if self._json_record is _UNREAD_RECORD:
@@ -65,7 +70,7 @@ class DetectionReadMapping(dict[str, object]):
         return cast(JSONDocument | None, self._json_record)
 
 
-class _ProjectedMapping(DetectionReadMapping):
+class _ProjectedMapping(dict[str, object]):
     """Selected predicate fields carrying the original unique-key count."""
 
     def __init__(
@@ -79,7 +84,7 @@ class _ProjectedMapping(DetectionReadMapping):
         return self.original_size
 
 
-def _detection_read_view(value: object) -> object:
+def detection_read_view(value: object) -> object:
     """Attach conversion reuse only to the root records a detector will read."""
     if isinstance(value, dict) and not isinstance(value, DetectionReadMapping):
         return DetectionReadMapping(value)
@@ -182,16 +187,14 @@ def _project(
     rule: DetectorProjection | None,
     stack: ExitStack,
 ) -> object:
-    return _detection_read_view(
-        _project_value(
-            events,
-            event,
-            value,
-            rule,
-            stack,
-            scalarish_depth=-1 if rule is not None and rule.capture_metadata_values else None,
-        )[0]
-    )
+    return _project_value(
+        events,
+        event,
+        value,
+        rule,
+        stack,
+        scalarish_depth=-1 if rule is not None and rule.capture_metadata_values else None,
+    )[0]
 
 
 def _consume_scalarish(events: Iterator[tuple[str, object]], event: str, depth: int) -> bool:
@@ -466,9 +469,7 @@ def project_detection_value(value: object, rule: DetectorProjection) -> object:
 
 def project_detection_root(value: object, root_rule: DetectorProjection) -> object:
     """Project a decoded value under an already chosen root rule, as :func:`_project` does."""
-    return _detection_read_view(
-        _project_object(value, root_rule, scalarish_depth=-1 if root_rule.capture_metadata_values else None)[0]
-    )
+    return _project_object(value, root_rule, scalarish_depth=-1 if root_rule.capture_metadata_values else None)[0]
 
 
 def _object_scalarish(value: object, depth: int) -> bool:

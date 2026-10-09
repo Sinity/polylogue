@@ -181,7 +181,11 @@ class CompiledDetectorRegistry:
         iterator closes. Predicates and resolvers must only read those views.
         Actual root arrays retain each binding's own complete any-fold.
         """
-        from polylogue.sources.detection_projection import DetectorProjection, project_detection_root
+        from polylogue.sources.detection_projection import (
+            DetectorProjection,
+            detection_read_view,
+            project_detection_root,
+        )
 
         projections: dict[str, object] = {}
         for sequence in (False, True):
@@ -205,7 +209,7 @@ class CompiledDetectorRegistry:
                             return predicate([item])
 
                         root_rule = DetectorProjection(item=rule, array_fold="any", array_predicate=array_predicate)
-                        payload = project_detection_root(value, root_rule)
+                        payload = detection_read_view(project_detection_root(value, root_rule))
                     else:
                         # A singleton sequence uses exactly the record rule;
                         # its outer any-fold has one possible witness. Cache by
@@ -217,7 +221,9 @@ class CompiledDetectorRegistry:
                                 f"{binding.binding_id}: complete stream projection is undeclared"
                             )
                         if path not in projections:
-                            projections[path] = project_detection_root(value, _stream_projection(binding))
+                            projections[path] = detection_read_view(
+                                project_detection_root(value, _stream_projection(binding))
+                            )
                         projected = projections[path]
                         payload = [projected] if sequence else projected
                     if not compiled.predicate(payload):
