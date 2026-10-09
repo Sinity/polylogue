@@ -68,6 +68,7 @@ from polylogue.core.enums import (
 )
 from polylogue.core.hook_payload import payload_key_spellings
 from polylogue.core.identity_law import attachment_payload_id
+from polylogue.core.identity_law import block_id as archive_block_id
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
@@ -94,6 +95,7 @@ from polylogue.pipeline.ids import (
     MessageContentIdentity,
     MessageOwnerResolution,
     attachment_message_owner_key,
+    block_content_identities,
     bound_session_content_hash,
     disk_message_content_identities,
     disk_message_owner_resolution,
@@ -269,6 +271,8 @@ class ArchiveBlockRow:
     message_id: str
     block_type: str
     text: str | None
+    content_identity: str
+    content_occurrence: int
     content_hash: str | None = None
     tool_name: str | None = None
     tool_id: str | None = None
@@ -4678,7 +4682,7 @@ def _iter_block_rows(
             duplicate_native_ids=duplicate_native_ids,
         )
         blocks = _message_blocks(message)
-        for position, block in enumerate(blocks):
+        for position, (block, identity) in enumerate(zip(blocks, block_content_identities(blocks), strict=True)):
             block_type = _block_type(block)
             tool_input_json = _json_dumps(block.tool_input) if block.tool_input is not None else None
             semantic_type = _semantic_type(block)
@@ -4693,6 +4697,8 @@ def _iter_block_rows(
                 "message_id": message_id,
                 "session_id": session_id,
                 "position": position,
+                "content_identity": identity.content_identity,
+                "content_occurrence": identity.content_occurrence,
                 "block_type": block_type.value,
                 "text": _sqlite_text(block.text),
                 "tool_name": _sqlite_text(block.tool_name),
@@ -4859,9 +4865,14 @@ def _iter_file_edit_rows(
                 content_identities=content_identities,
                 duplicate_native_ids=duplicate_native_ids,
             )
-            for position, block in enumerate(_message_blocks(message)):
+            blocks = _message_blocks(message)
+            for block, identity in zip(blocks, block_content_identities(blocks), strict=True):
                 if _block_type(block) is BlockType.TOOL_USE and block.tool_id:
-                    tool_use_block_id_by_tool_id[block.tool_id] = f"{message_id}:{position}"
+                    tool_use_block_id_by_tool_id[block.tool_id] = archive_block_id(
+                        message_id,
+                        content_identity=identity.content_identity,
+                        content_occurrence=identity.content_occurrence,
+                    )
         if disk_index is not None:
             disk_index.finish()
 
@@ -5029,8 +5040,12 @@ def _write_web_constructs(
             duplicate_native_ids=duplicate_native_ids,
         )
         blocks = _message_blocks(message)
-        for block_position, block in enumerate(blocks):
-            block_id = f"{message_id}:{block_position}"
+        for block, identity in zip(blocks, block_content_identities(blocks), strict=True):
+            block_id = archive_block_id(
+                message_id,
+                content_identity=identity.content_identity,
+                content_occurrence=identity.content_occurrence,
+            )
             if not replace_session and prior_rows:
                 block_ids.append(block_id)
             for construct_position, construct in enumerate(block.web_constructs):
@@ -5139,33 +5154,14 @@ def _splice_merge_keys(old_keys: list[object], new_keys: list[object]) -> list[t
     return result
 
 
-def _block_structural_keys(rows: list[tuple[object, ...]], b_idx: dict[str, int]) -> list[object]:
-    """Content-addressed identity for a message's block sequence, NOT position.
+def _block_identity_key(row: tuple[object, ...], b_idx: dict[str, int]) -> tuple[object, object]:
+    """The immutable Source identity used by both reconciliation implementations."""
+    return row[b_idx["content_identity"]], row[b_idx["content_occurrence"]]
 
-    polylogue-geop PR review: position shifts when a non-trailing block is
-    dropped (``[text, code, text]`` -> ``[text, text]`` shifts the trailing
-    text from position 2 to position 1), so matching by raw position treats
-    the shifted survivor as the omitted block's old occupant and corrupts
-    both. ``svfj`` (the block evidence hash) already excludes position and
-    ``tool_id`` from a single block's identity for the same reason a block
-    can shift -- this extends that to sequence-level matching: prefer
-    ``tool_id`` (a provider-assigned id, stable across independent export
-    downloads of the same conversation) when present, else fall back to
-    "the Nth block of this type seen so far in this message", which is
-    exactly what distinguishes the two ``text`` blocks in the example above.
-    """
-    keys: list[object] = []
-    occurrence: dict[object, int] = {}
-    for row in rows:
-        block_type = row[b_idx["block_type"]]
-        tool_id = row[b_idx["tool_id"]]
-        if tool_id:
-            keys.append(("tool_id", block_type, tool_id))
-        else:
-            n = occurrence.get(block_type, 0)
-            occurrence[block_type] = n + 1
-            keys.append(("occurrence", block_type, n))
-    return keys
+
+def _block_identity_keys(rows: list[tuple[object, ...]], b_idx: dict[str, int]) -> list[object]:
+    """Match the same Source content, never a type occurrence or display slot."""
+    return [_block_identity_key(row, b_idx) for row in rows]
 
 
 #: One tool result's outcome, spread across a canonical column and its legacy
@@ -5267,7 +5263,6 @@ class _CapturedProjections:
 @dataclass(frozen=True, slots=True)
 class _ProjectionCarryForward:
     captured: _CapturedProjections
-    block_id_remap: Mapping[str, str]
     live_message_ids: Set[str]
     message_id_remap: Mapping[str, str | None]
     scratch: _UnionScratch | None = None
@@ -5299,7 +5294,6 @@ class _UnionScratch:
                 self.conn.execute(f"CREATE INDEX {name}_key ON {name}(key)")
                 self.conn.execute(f"CREATE INDEX {name}_owner ON {name}(owner, position)")
             self.conn.execute("CREATE TABLE live_message (message_id TEXT PRIMARY KEY) WITHOUT ROWID")
-            self.conn.execute("CREATE TABLE block_remap (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL) WITHOUT ROWID")
             self.conn.execute("CREATE TABLE message_remap (old_id TEXT PRIMARY KEY, new_id TEXT) WITHOUT ROWID")
             self.conn.execute(
                 "CREATE TABLE native_message (native_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
@@ -5695,15 +5689,12 @@ def _restore_captured_projection_rows(
     owning message survived the merge (``live_message_ids``) are eligible --
     a message the field-path union deliberately did not reinject (the
     prefix-sharing-parent guard) must not have its sidecar evidence restored
-    either. ``block_id`` references are remapped through
-    ``block_id_remap`` when the owning block's position shifted during
-    reconciliation (``block_id`` embeds position); ``attachment_refs``/
-    ``paste_spans`` need no remap -- their own PK ``position`` column is an
-    independent per-message ordinal, not the message's transcript position.
+    either. Block references keep immutable Source identities when display
+    positions change. Attachment and paste-span positions are independent
+    per-message ordinals, unrelated to transcript order.
     """
     captured = carry_forward.captured
     live_message_ids = carry_forward.live_message_ids
-    block_id_remap = carry_forward.block_id_remap
 
     restored_attachment_ref_ids: set[str] = set()
     scratch = carry_forward.scratch
@@ -5765,27 +5756,25 @@ def _restore_captured_projection_rows(
         message_id = cast(str, row[2])
         if message_id not in live_message_ids:
             continue
-        old_block_id = cast(str, row[0])
-        new_block_id = block_id_remap.get(old_block_id, old_block_id)
-        exists = conn.execute("SELECT 1 FROM file_edits WHERE tool_use_block_id = ?", (new_block_id,)).fetchone()
+        block_id = cast(str, row[0])
+        exists = conn.execute("SELECT 1 FROM file_edits WHERE tool_use_block_id = ?", (block_id,)).fetchone()
         if exists is None:
             conn.execute(
                 "INSERT OR IGNORE INTO file_edits "
                 "(tool_use_block_id, session_id, message_id, file_path, structured_patch_json, "
                 "original_file, old_string, new_string, replace_all, user_modified, observed_at_ms) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (new_block_id, *row[1:]),
+                (block_id, *row[1:]),
             )
 
     for row in captured.web_content_constructs:
         message_id = cast(str, row[1])
         if message_id not in live_message_ids:
             continue
-        old_block_id = cast(str, row[2])
-        new_block_id = block_id_remap.get(old_block_id, old_block_id)
+        block_id = cast(str, row[2])
         position = row[3]
         exists = conn.execute(
-            "SELECT 1 FROM web_content_constructs WHERE block_id = ? AND position = ?", (new_block_id, position)
+            "SELECT 1 FROM web_content_constructs WHERE block_id = ? AND position = ?", (block_id, position)
         ).fetchone()
         if exists is None:
             conn.execute(
@@ -5794,7 +5783,7 @@ def _restore_captured_projection_rows(
                 "title, url, text, source_id, group_id, group_title, query, asset_pointer, mime_type, status, "
                 "task_id, task_type, rank, start_index, end_index"
                 ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (row[0], message_id, new_block_id, *row[3:]),
+                (row[0], message_id, block_id, *row[3:]),
             )
 
 
@@ -6200,7 +6189,7 @@ def _union_with_existing_rows(
          the incoming maximum would silently reorder the conversation
          (worse than dropping it, since it's invisible).
       2. Blocks are matched by content-addressed structural identity
-         (``_block_structural_keys`` -- ``tool_id`` or "Nth block of this
+         (``_block_identity_keys`` -- ``tool_id`` or "Nth block of this
          type"), not raw position, since dropping a non-trailing block
          shifts everything after it.
       3. Sidecar projection rows (``attachment_refs``/``paste_spans``/
@@ -6332,7 +6321,7 @@ def _union_with_existing_rows(
     # --- Block-level reconciliation, per still-live message ---
     # (PR review P1 write.py:2383) Matching by raw position mismatches once a
     # non-trailing block is dropped -- match by content-addressed structural
-    # identity instead (`_block_structural_keys`), then splice-merge exactly
+    # identity instead (`_block_identity_keys`), then splice-merge exactly
     # like messages above.
     incoming_blocks_by_message: dict[str, list[tuple[object, ...]]] = {}
     for row in block_rows:
@@ -6342,7 +6331,6 @@ def _union_with_existing_rows(
 
     matched_message_ids = incoming_blocks_by_message.keys() & existing_blocks_by_message.keys()
     merged_block_rows: list[tuple[object, ...]] = []
-    block_id_remap: dict[str, str] = {}
     final_blocks_by_message: dict[str, list[tuple[object, ...]]] = {}
 
     for message_id, new_rows in incoming_blocks_by_message.items():
@@ -6351,11 +6339,10 @@ def _union_with_existing_rows(
             final_blocks_by_message[message_id] = new_rows
             continue
         old_rows = existing_blocks_by_message[message_id]
-        new_keys = _block_structural_keys(new_rows, b_idx)
-        old_keys = _block_structural_keys(old_rows, b_idx)
+        new_keys = _block_identity_keys(new_rows, b_idx)
+        old_keys = _block_identity_keys(old_rows, b_idx)
         new_row_by_key = dict(zip(new_keys, new_rows, strict=True))
         old_row_by_key = dict(zip(old_keys, old_rows, strict=True))
-        old_position_by_key = {k: cast(int, r[block_position_idx]) for k, r in zip(old_keys, old_rows, strict=True)}
 
         final_rows: list[tuple[object, ...]] = []
         for new_block_pos, (source, key) in enumerate(_splice_merge_keys(old_keys, new_keys)):
@@ -6365,18 +6352,14 @@ def _union_with_existing_rows(
                     row = _coalesce_block_row(
                         row, old_row_by_key[key], b_idx, message_id=message_id, position=new_block_pos
                     )
-                old_pos = old_position_by_key.get(key)
             else:
                 row = old_row_by_key[key]
-                old_pos = old_position_by_key[key]
                 logger.info(
                     "field-path union (polylogue-geop): reinjecting block message_id=%s "
                     "dropped by newer acquisition, restored at relative position %s",
                     message_id,
                     new_block_pos,
                 )
-            if old_pos is not None and old_pos != new_block_pos:
-                block_id_remap[f"{message_id}:{old_pos}"] = f"{message_id}:{new_block_pos}"
             row_list = list(row)
             row_list[block_position_idx] = new_block_pos
             final_rows.append(tuple(row_list))
@@ -6431,7 +6414,6 @@ def _union_with_existing_rows(
         message_id_remap[old_message_id] = merged_message_ids.get(nid)
     carry_forward = _ProjectionCarryForward(
         captured=_capture_session_projection_rows(conn, session_id),
-        block_id_remap=block_id_remap,
         live_message_ids=live_message_ids,
         message_id_remap=message_id_remap,
     )
@@ -6632,19 +6614,11 @@ def _prepare_cross_acquisition_union(
         scratch.conn.execute("CREATE INDEX old_block_only_anchor ON old_block_only(anchor, ordinal)")
 
         def indexed_block_keys(side: str, owner: str) -> None:
-            occurrence: dict[str, int] = {}
             for ordinal, position, blob in scratch.conn.execute(
                 f"SELECT ordinal, position, row_blob FROM {side}_block WHERE owner = ? ORDER BY position", (owner,)
             ):
                 row = pickle.loads(blob)
-                block_type = cast(str, row[bi["block_type"]])
-                tool_id = row[bi["tool_id"]]
-                if tool_id:
-                    key: tuple[object, ...] = ("tool_id", block_type, tool_id)
-                else:
-                    count = occurrence.get(block_type, 0)
-                    occurrence[block_type] = count + 1
-                    key = ("occurrence", block_type, count)
+                key = _block_identity_key(row, bi)
                 scratch.conn.execute(
                     f"INSERT INTO {side}_block_structural VALUES (?, ?, ?)",
                     (ordinal, pickle.dumps(key, protocol=5), position),
@@ -6694,12 +6668,7 @@ def _prepare_cross_acquisition_union(
                     ).fetchone()[0]
                     previous_row = keyed_block("old", old_key)
                     assert previous_row is not None
-                    row, previous = previous_row
-                    if previous != block_position:
-                        scratch.conn.execute(
-                            "INSERT OR REPLACE INTO block_remap VALUES (?, ?)",
-                            (f"{owner}:{previous}", f"{owner}:{block_position}"),
-                        )
+                    row, _previous = previous_row
                     values = list(row)
                     values[bi["position"]] = block_position
                     add_block(tuple(values))
@@ -6711,14 +6680,8 @@ def _prepare_cross_acquisition_union(
                 assert new_pair is not None
                 row = new_pair[0]
                 old_pair = keyed_block("old", key)
-                previous = old_pair[1] if old_pair is not None else None
                 if old_pair is not None:
                     row = _coalesce_block_row(row, old_pair[0], bi, message_id=message_id, position=block_position)
-                if previous is not None and previous != block_position:
-                    scratch.conn.execute(
-                        "INSERT OR REPLACE INTO block_remap VALUES (?, ?)",
-                        (f"{message_id}:{previous}", f"{message_id}:{block_position}"),
-                    )
                 values = list(row)
                 values[bi["position"]] = block_position
                 add_block(tuple(values))
@@ -6789,7 +6752,6 @@ def _prepare_cross_acquisition_union(
         )
         carry = _ProjectionCarryForward(
             captured,
-            cast(Mapping[str, str], _UnionMap(scratch, "block_remap", "old_id", "new_id")),
             _UnionSet(scratch, "live_message", "message_id"),
             _UnionMap(scratch, "message_remap", "old_id", "new_id"),
             scratch,

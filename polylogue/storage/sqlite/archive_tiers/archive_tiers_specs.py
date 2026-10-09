@@ -573,7 +573,7 @@ BLOCKS_SPEC = _make_table_spec(
     (
         _raw_column(
             "block_id",
-            "block_id TEXT GENERATED ALWAYS AS (message_id || ':' || position) STORED UNIQUE",
+            "block_id TEXT GENERATED ALWAYS AS (message_id || ':b:' || content_identity || ':' || content_occurrence) STORED UNIQUE",
             record_name="block_id",
             domain_name="id",
         ),
@@ -587,6 +587,18 @@ BLOCKS_SPEC = _make_table_spec(
             "session_id",
             "session_id TEXT NOT NULL",
             record_name="session_id",
+        ),
+        _raw_column(
+            "content_identity",
+            "content_identity TEXT NOT NULL CHECK(length(content_identity) = 64 AND content_identity NOT GLOB '*[^0-9a-f]*')",
+            record_name="content_identity",
+            domain_name="content_identity",
+        ),
+        _raw_column(
+            "content_occurrence",
+            "content_occurrence INTEGER NOT NULL CHECK(content_occurrence >= 0)",
+            record_name="content_occurrence",
+            domain_name="content_occurrence",
         ),
         _raw_column("position", "position INTEGER NOT NULL CHECK(position >= 0)", record_name="block_index"),
         _raw_column(
@@ -683,6 +695,7 @@ BLOCKS_SPEC = _make_table_spec(
     record_only_columns=(_derived_column("metadata", "NULL"),),
     table_constraints=(
         "PRIMARY KEY(message_id, position)",
+        "UNIQUE(message_id, content_identity, content_occurrence)",
         _MESSAGE_OWNER_FK,
         # An unknown structural outcome is only honest with a reason for it.
         # The reason describes a tool_result's missing outcome, so it may
