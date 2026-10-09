@@ -2653,17 +2653,63 @@ def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_
     from polylogue.operations.raw_observation_derivation import raw_observation_frame
     from polylogue.sources.revision_backfill import record_session_enrichment_binding, session_enrichment_evidence_key
     from polylogue.storage.derived.raw import RawObservationDerivation
+    from tests.infra.replay_lineage import codex_lineage_payload
+    from tests.infra.retained_replay import replay_retained_components
 
+    capture_payload = codex_lineage_payload("session", ["zero", "capture flavour"])
+    export_payload = codex_lineage_payload("session", ["zero", "export flavour"])
     bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        capture_session = _parsed_session(("m0", "zero"), ("m1", "capture flavour"))
-        capture = _write_quarantined_member(archive, "capture", capture_session)
+        capture_session = _parse_codex_jsonl(capture_payload)
+        capture = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=capture_payload,
+            source_path="capture.jsonl",
+            canonical_source_path="capture.jsonl",
+            acquired_at_ms=1,
+        )
+        publish_membership_census(
+            archive,
+            capture,
+            [capture_session],
+            parser_fingerprint="test-parser",
+            censused_at_ms=1,
+            revision_authority=None,
+        )
+        replay_retained_components(tmp_path, selected_raw_ids=(capture,))
         _apply_membership_head(archive, capture, capture_session)
         assert _head_row(archive) == (capture, "semantic", 2)
 
-        export_session = _parsed_session(("m0", "zero"), ("m1", "export flavour"))
-        export = _write_chain_full(archive, "export", 2)
-        plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 2, size=len("export"))])
+        export_session = _parse_codex_jsonl(export_payload)
+        export = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=export_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=2,
+            revision=RawRevisionEnvelope(
+                "codex-session:session",
+                RawRevisionKind.FULL,
+                "revision-export",
+                2,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.commit()
+
+        def prepare_export(compute: Any) -> None:
+            adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
+            replacement = adapter.compute(raw_observation_frame(tmp_path), export, replay_current=True)
+            try:
+                assert "census" in {phase for phase, _receipt in replacement.committed_phase_receipts}
+            finally:
+                replacement.close()
+
+        # Preparation publishes the canonical Source parser receipt before
+        # the supplied replay law decides this equal-frontier head collision.
+        run_on_convergence_owner(tmp_path, "test.revision.export-source", prepare_export)
+        assert _head_row(archive) == (capture, "semantic", 2)
+        plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 2, size=len(export_payload))])
         session_id, applied = apply_prepared_revision_replay(archive, plan, {export: export_session}, acquired_at_ms=0)
 
         assert applied == (export,)
@@ -2677,7 +2723,7 @@ def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_
         # derived again. This direct replay stands in for that writer.
         current_key = session_enrichment_evidence_key(
             provider=Provider.CODEX,
-            source_path="session.json",
+            source_path="session.jsonl",
             native_id="session",
             index_conn=archive._conn,
             source_conn=archive._ensure_source_conn(),
@@ -2687,6 +2733,12 @@ def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_
             archive._conn, session_id=session_id, carried_key=current_key, current_key=current_key
         )
         archive.commit()
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        assert _head_row(archive) == (export, "semantic", 2)
+        assert (
+            archive._conn.execute("SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+            == stored
+        )
     assert (
         run_on_convergence_owner(
             tmp_path,

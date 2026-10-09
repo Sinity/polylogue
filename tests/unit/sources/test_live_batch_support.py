@@ -901,7 +901,9 @@ def test_live_append_acquires_with_unreadable_active_pointer(
     )
 
 
-def test_source_only_file_history_append_binds_before_artifact_classification(tmp_path: Path) -> None:
+def test_source_only_file_history_append_binds_before_artifact_classification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
     native_id = "source-only-history"
@@ -913,6 +915,16 @@ def test_source_only_file_history_append_binds_before_artifact_classification(tm
         tmp_path,
         native_id=native_id,
         append=append,
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        baseline_artifacts = conn.execute(
+            "SELECT raw_id, artifact_kind, support_status, parse_as_session, schema_eligible "
+            "FROM raw_artifacts ORDER BY artifact_id"
+        ).fetchall()
+    assert [row[1:] for row in baseline_artifacts] == [("session_record_stream", "supported_parseable", 1, 1)]
+    monkeypatch.setattr(
+        "polylogue.sources.dispatch.parse_stream_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("source-only append must not parse")),
     )
     assert plan.native_id_hint == native_id
     assert plan.acquisition_native_id_hint is None
@@ -941,7 +953,17 @@ def test_source_only_file_history_append_binds_before_artifact_classification(tm
             WHERE source_index = -1
             """
         ).fetchone()
-        artifact_count = conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()
+        artifacts = conn.execute(
+            "SELECT raw_id, artifact_kind, support_status, parse_as_session, schema_eligible "
+            "FROM raw_artifacts ORDER BY artifact_id"
+        ).fetchall()
+        append_parse_state = conn.execute(
+            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE source_index = -1"
+        ).fetchone()
+        append_parser_receipt = conn.execute(
+            "SELECT 1 FROM raw_authority_parser_census AS c "
+            "JOIN raw_sessions AS r ON r.raw_id = c.raw_id WHERE r.source_index = -1"
+        ).fetchone()
     assert append_row is not None
     assert append_row[:2] == (f"claude-code-session:{native_id}", "append")
     assert append_row[2] is not None
@@ -952,7 +974,11 @@ def test_source_only_file_history_append_binds_before_artifact_classification(tm
         "byte_proven",
         None,
     )
-    assert artifact_count == (0,)
+    # The full baseline already has its positive grammar observation; the
+    # source-only delta must not gain an artifact or terminal parser verdict.
+    assert artifacts == baseline_artifacts
+    assert append_parse_state == (None, None)
+    assert append_parser_receipt is None
 
 
 def test_source_only_quarantined_append_is_deferred(tmp_path: Path) -> None:
