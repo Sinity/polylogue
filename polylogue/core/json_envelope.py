@@ -15,7 +15,7 @@ import codecs
 import re
 import sqlite3
 import sys
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from functools import cache
 from typing import IO, Protocol, cast
 
@@ -613,6 +613,76 @@ class _Line:
     def drain(self) -> None:
         while self.read(_READ_BYTES):
             pass
+
+
+def jsonl_has_record_successor(handle: IO[bytes], *, check_stop: Callable[[], None] | None = None) -> bool:
+    """Prove a complete first physical value has later nonblank line bytes.
+
+    This chooses a grammar attempt, never admission. Syntax-only tokenization
+    retains no record values; a single or multiline document stays on its
+    existing document route. The borrowed stream's position is restored.
+    """
+    import ijson
+    from ijson.backends import python as exact_backend
+
+    from polylogue.core.compute_cancel import check_compute_cancelled
+
+    position = handle.tell()
+    callback_failure: BaseException | None = None
+
+    class ObservedLine:
+        def __init__(self, line: _Line) -> None:
+            self.line = line
+            self.nonblank = False
+
+        def read(self, size: int = -1) -> bytes:
+            nonlocal callback_failure
+            check_compute_cancelled()
+            if check_stop is not None:
+                try:
+                    check_stop()
+                except BaseException as exc:
+                    callback_failure = exc
+                    raise
+            data = self.line.read(size)
+            self.nonblank |= bool(data.strip(b" \t\r\n"))
+            return data
+
+    try:
+        lines = _LineSource(handle)
+        while True:
+            lines.strip_leading_byte_order_marks()
+            line = lines.next_line()
+            if line is None:
+                return False
+            observed = ObservedLine(line)
+            try:
+                events = iter(
+                    exact_backend.basic_parse(
+                        LexemeAlignedReader(_PrefixStringReader(observed, syntax_only=True)), use_float=True
+                    )
+                )
+                first = next(events, None)
+                for _event in events:
+                    pass
+            except (UnicodeError, ijson.JSONError, ValueError):
+                if callback_failure is not None:
+                    raise callback_failure from None
+                if observed.nonblank:
+                    return False
+                continue
+            if first is not None:
+                break
+        if not line.decodable:
+            return False
+        while (line := lines.next_line()) is not None:
+            observed = ObservedLine(line)
+            while observed.read(_READ_BYTES):
+                if observed.nonblank:
+                    return True
+        return False
+    finally:
+        handle.seek(position)
 
 
 #: Set in an envelope whose object had root keys outside the declared fields,

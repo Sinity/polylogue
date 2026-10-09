@@ -11,6 +11,11 @@ Decoded detector projections visit only declared fields when no metadata or
 whole-mapping predicate needs the other values. Event projections still consume
 and validate the complete input; acquisition retains every origin check.
 
+The artifact classifier proves a complete first physical JSONL value has a
+later nonblank line before trying the existing record fold first. The syntax
+probe retains no record values. Single values, multiline documents and failed
+record attempts keep the complete-document grammar and malformed-evidence path.
+
 Sources acquire bytes and identify their material source. Detection chooses a
 provider parser by input shape. `RawObservationConvergenceOwner` coordinates
 retained preparation through `RawObservationDerivation`; JSONL and non-JSON

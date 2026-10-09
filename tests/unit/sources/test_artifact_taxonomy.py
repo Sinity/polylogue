@@ -4,7 +4,7 @@ import json
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 
@@ -18,6 +18,161 @@ from polylogue.sources.live.batch_support import _parse_path_as_session_artifact
 from polylogue.sources.source_parsing import parse_one_source_path
 from polylogue.sources.source_walk import census_source_root
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+
+def test_multiple_jsonl_records_do_not_try_document_grammar(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+    from polylogue.sources import detection_projection
+
+    original = detection_projection.iter_projected_document_records
+    document_calls = 0
+
+    def observed(*args: Any, **kwargs: Any) -> Any:
+        nonlocal document_calls
+        document_calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(detection_projection, "iter_projected_document_records", observed)
+    result = classify_artifact_stream(
+        io.BytesIO(
+            b'{"type":"user","uuid":"one","message":{"role":"user","content":"hello"}}\n'
+            b'{"type":"assistant","uuid":"two","message":{"role":"assistant","content":"world"}}\n'
+        ),
+        provider=Provider.CLAUDE_CODE,
+        wire_format="jsonl",
+    )
+    assert result.record_count == 2
+    assert result.classification.parse_as_session
+    assert document_calls == 0
+
+
+@pytest.mark.parametrize(
+    "payload,count,proved",
+    [
+        (b'{"neutral":1}\n', 1, True),
+        (b'[{"neutral":1},{"neutral":2}]\n', 2, True),
+        (b'{\n  "neutral": 1\n}\n', 1, True),
+        (b"\n\t \r\n", 0, False),
+        (b"1\n", 1, True),
+    ],
+)
+def test_single_document_grammar_does_not_decode_physical_records(
+    monkeypatch: pytest.MonkeyPatch, payload: bytes, count: int, proved: bool
+) -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+    from polylogue.sources import detection_projection
+
+    def refuse_decoding(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("document route decoded physical records")
+
+    # Empty input keeps the existing document failure and empty JSONL fold.
+    if payload.strip():
+        monkeypatch.setattr(detection_projection, "iter_decoded_jsonl_records", refuse_decoding)
+    result = classify_artifact_stream(io.BytesIO(payload), provider=Provider.UNKNOWN, wire_format="jsonl")
+    assert result.record_count == count
+    assert result.proved_non_session is proved
+
+
+@pytest.mark.parametrize("pretty", [False, True])
+def test_large_single_document_keeps_streaming_projection(monkeypatch: pytest.MonkeyPatch, pretty: bool) -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+    from polylogue.sources import detection_projection
+
+    payload = json.dumps({"neutral": {"large": "x" * 2_000_000}})
+    if pretty:
+        payload = payload[:-1] + "\n}"
+
+    def refuse_decoding(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("large document decoded as physical records")
+
+    monkeypatch.setattr(detection_projection, "iter_decoded_jsonl_records", refuse_decoding)
+    result = classify_artifact_stream(io.BytesIO(payload.encode()), provider=Provider.UNKNOWN, wire_format="jsonl")
+    assert result.record_count == 1
+    assert result.proved_non_session
+
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [
+        (b'{"one":1}\n{"two":2}\n', True),
+        (b'\xef\xbb\xbf{ "one":1 }\r\n\t \r\n{ "two":2 }\n', True),
+        (b'{"one":1}\n  \t\n', False),
+        (b'{"one":1} {"two":2}\n', False),
+        (b'{\n"one":1\n}\n', False),
+        (b'[{"one":1}]\n', False),
+    ],
+)
+def test_jsonl_grammar_probe_restores_borrowed_stream(payload: bytes, expected: bool) -> None:
+    import io
+
+    from polylogue.core.json_envelope import jsonl_has_record_successor
+
+    stream = io.BytesIO(b"prefix" + payload)
+    stream.seek(6)
+    assert jsonl_has_record_successor(stream) is expected
+    assert stream.tell() == 6
+    assert not stream.closed
+
+
+@pytest.mark.parametrize("number", ["1e400", "-1e400", "1e-400"])
+def test_jsonl_first_grammar_preserves_float_overflow_and_underflow(number: str) -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    payload = ('{"n":' + number + '}\n{"n":0}\n').encode()
+    result = classify_artifact_stream(io.BytesIO(payload), provider=Provider.UNKNOWN, wire_format="jsonl")
+    assert result.record_count == 2
+    assert result.classification.kind is ArtifactKind.METADATA_DOCUMENT
+    assert result.proved_non_session
+
+
+def test_jsonl_grammar_probe_memory_does_not_track_wide_first_value() -> None:
+    import io
+    import tracemalloc
+
+    from polylogue.core.json_envelope import jsonl_has_record_successor
+
+    measurements: list[tuple[int, int]] = []
+    for count in (2500, 5000):
+        payload = b"[" + (b'{"n":"' + b"x" * 3000 + b'"},') * count + b'{"n":0}]\n{"after":1}\n'
+        stream = io.BytesIO(payload)
+        tracemalloc.start()
+        try:
+            assert jsonl_has_record_successor(stream)
+            measurements.append((len(payload), tracemalloc.get_traced_memory()[1]))
+        finally:
+            tracemalloc.stop()
+        assert stream.tell() == 0
+        assert not stream.closed
+    (small_bytes, small_peak), (large_bytes, large_peak) = measurements
+    # Removing LexemeAlignedReader lets the Python lexer keep consumed chunks.
+    assert large_peak - small_peak < (large_bytes - small_bytes) // 4, measurements
+
+
+@pytest.mark.parametrize("failure_type", [ValueError, OverflowError])
+def test_jsonl_grammar_probe_preserves_callback_failure_and_stream_position(failure_type: type[Exception]) -> None:
+    import io
+
+    from polylogue.core.json_envelope import jsonl_has_record_successor
+
+    stream = io.BytesIO(b'{"one":1}\n{"two":2}\n')
+    failure = failure_type("cancelled callback")
+
+    def cancelled() -> None:
+        raise failure
+
+    with pytest.raises(failure_type) as observed:
+        jsonl_has_record_successor(stream, check_stop=cancelled)
+    assert observed.value is failure
+    assert stream.tell() == 0
+    assert not stream.closed
 
 
 @pytest.mark.parametrize("wire_format", ["json", "jsonl"])
