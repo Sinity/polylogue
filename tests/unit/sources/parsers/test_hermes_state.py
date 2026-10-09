@@ -318,7 +318,7 @@ def test_state_db_replay_preserves_native_session_key_binding(
     live = parse_state_db(live_path)
     retained = parse_state_db(export_path)
 
-    def observed(sessions: list[ParsedSession]) -> list[tuple[str, list[tuple[str, int, str | None]]]]:
+    def observed(sessions: list[ParsedSession]) -> list[tuple[str, list[tuple[str, int | None, str | None]]]]:
         return [
             (
                 session.provider_session_id,
