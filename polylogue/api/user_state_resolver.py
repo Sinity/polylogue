@@ -272,6 +272,7 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
     from polylogue.storage.sqlite.archive_tiers.write import (
         _attachment_id,
         _attachment_message_id_maps,
+        _attachment_native_id_values,
         _attachment_reference_positions,
         prepared_session_rows_from_shard,
     )
@@ -308,52 +309,71 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
                     ),
                     None,
                 )
-            if session is None:
-                return False
-            messages = session.messages
-            origin = origin_from_provider(session.source_name)
-            if isinstance(messages, SqliteMessageSink):
-                messages = messages.normalized_messages(session.session_events, origin=origin)
-            else:
-                messages = derive_tool_outcomes(
-                    normalize_active_branch(messages), session.session_events, origin=origin
+                if session is None:
+                    return False
+                messages = session.messages
+                origin = origin_from_provider(session.source_name)
+                if isinstance(messages, SqliteMessageSink):
+                    messages = messages.normalized_messages(session.session_events, origin=origin)
+                else:
+                    messages = derive_tool_outcomes(
+                        normalize_active_branch(messages), session.session_events, origin=origin
+                    )
+                attachments = tuple(session.attachments)
+                wanted_owner_keys = {
+                    key
+                    for attachment in attachments
+                    if (key := attachment_message_owner_key(attachment, rows.owner_resolution))
+                }
+                _resolution, by_owner_key, _owning_messages = _attachment_message_id_maps(
+                    session_id,
+                    messages,
+                    content_identities=rows.content_identities,
+                    owner_resolution=rows.owner_resolution,
+                    wanted_owner_keys=wanted_owner_keys,
                 )
-            attachments = tuple(session.attachments)
-            wanted_owner_keys = {
-                key
-                for attachment in attachments
-                if (key := attachment_message_owner_key(attachment, rows.owner_resolution))
-            }
-            _resolution, by_owner_key, _owning_messages = _attachment_message_id_maps(
-                session_id,
-                messages,
-                content_identities=rows.content_identities,
-                owner_resolution=rows.owner_resolution,
-                wanted_owner_keys=wanted_owner_keys,
-            )
-            attachments_by_message: dict[str, list[object]] = {}
-            for attachment in attachments:
-                owner_key = attachment_message_owner_key(attachment, rows.owner_resolution)
-                message_id = by_owner_key.get(owner_key) if owner_key is not None else None
-                if message_id is not None:
-                    attachments_by_message.setdefault(message_id, []).append(attachment)
+                attachments_by_message: dict[str, list[object]] = {}
+                for attachment in attachments:
+                    owner_key = attachment_message_owner_key(attachment, rows.owner_resolution)
+                    message_id = by_owner_key.get(owner_key) if owner_key is not None else None
+                    if message_id is not None:
+                        attachments_by_message.setdefault(message_id, []).append(attachment)
             positions = {
                 key: position
                 for message_attachments in attachments_by_message.values()
                 for key, position in _attachment_reference_positions(message_attachments).items()
             }
+
+            def agrees_with_index_descriptor(attachment: object) -> bool:
+                row = archive._conn.execute(
+                    "SELECT a.attachment_id,a.display_name,a.media_type,a.byte_count "
+                    "FROM attachment_refs r JOIN attachments a ON a.attachment_id=r.attachment_id "
+                    "WHERE r.session_id=? AND r.ref_id=?",
+                    (session_id, ref_id),
+                ).fetchone()
+                if row is None:
+                    return False
+                expected_native = set(_attachment_native_id_values(attachment))
+                actual_native = {
+                    (str(native[0]), str(native[1]))
+                    for native in archive._conn.execute(
+                        "SELECT id_kind,native_id FROM attachment_native_ids WHERE ref_id=?",
+                        (ref_id,),
+                    )
+                }
+                return (
+                    str(row[0]) == _attachment_id("", attachment, blob_hash=None)
+                    and row[1] == attachment.name
+                    and row[2] == attachment.mime_type
+                    and int(row[3]) == int(attachment.size_bytes or 0)
+                    and actual_native == expected_native
+                )
+
             return any(
                 (owner_key := attachment_message_owner_key(attachment, rows.owner_resolution)) is not None
                 and by_owner_key.get(owner_key) is not None
                 and f"{by_owner_key[owner_key]}:attachment:{positions.get(attachment.acquisition_key)}" == ref_id
-                and _attachment_id("", attachment)
-                == str(
-                    archive._conn.execute(
-                        "SELECT a.attachment_id FROM attachment_refs r JOIN attachments a "
-                        "ON a.attachment_id=r.attachment_id WHERE r.session_id=? AND r.ref_id=?",
-                        (session_id, ref_id),
-                    ).fetchone()[0]
-                )
+                and agrees_with_index_descriptor(attachment)
                 for attachment in attachments
             )
         except (KeyError, ValueError, sqlite3.Error):
@@ -413,9 +433,12 @@ def bind_attachment_source_guard(
             "SELECT * FROM attachment_refs WHERE session_id=? AND ref_id=?", (session_id, ref_id)
         ).fetchone()
     )
-    attachment_id = str(captured_ref[index_ref_columns.index("attachment_id")])
     captured_attachment = tuple(
-        index_connection.execute("SELECT * FROM attachments WHERE attachment_id=?", (attachment_id,)).fetchone()
+        index_connection.execute(
+            "SELECT a.* FROM attachment_refs r JOIN attachments a ON a.attachment_id=r.attachment_id "
+            "WHERE r.session_id=? AND r.ref_id=?",
+            (session_id, ref_id),
+        ).fetchone()
     )
     captured_native_ids = tuple(
         tuple(row)
@@ -434,6 +457,10 @@ def bind_attachment_source_guard(
     captured_raw = tuple(raw)
 
     def revalidate() -> None:
+        from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+
+        if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(archive.archive_root)) != snapshot.identity:
+            raise ValueError(f"attachment Source archive {ref_id!r} changed before durable apply")
         current = _resolve_attachment_in_connections(
             current_index_connection,
             current_source_connection,
@@ -456,16 +483,13 @@ def bind_attachment_source_guard(
             "SELECT * FROM attachment_refs WHERE session_id=? AND ref_id=?", (session_id, ref_id)
         ).fetchone()
         now_ref = tuple(now_ref_row) if now_ref_row is not None else None
-        now_attachment_id = (
-            str(now_ref[index_ref_columns.index("attachment_id")])
-            if now_ref is not None and "attachment_id" in index_ref_columns
-            else None
-        )
         now_attachment_row = (
             current_index_connection.execute(
-                "SELECT * FROM attachments WHERE attachment_id=?", (now_attachment_id,)
+                "SELECT a.* FROM attachment_refs r JOIN attachments a ON a.attachment_id=r.attachment_id "
+                "WHERE r.session_id=? AND r.ref_id=?",
+                (session_id, ref_id),
             ).fetchone()
-            if now_attachment_id is not None
+            if now_ref is not None
             else None
         )
         now_attachment = tuple(now_attachment_row) if now_attachment_row is not None else None

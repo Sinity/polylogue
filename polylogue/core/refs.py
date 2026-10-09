@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Final, Literal, TypeAlias
+from urllib.parse import quote_from_bytes, unquote_to_bytes
 
 ObjectRefKind: TypeAlias = Literal[
     "session",
@@ -242,9 +243,17 @@ class EvidenceRef:
     def parse(cls, value: str) -> EvidenceRef:
         """Parse the archive evidence id format.
 
-        ``::`` is used because session ids themselves are often colon-bearing
-        origin-prefixed strings such as ``codex-session:demo``.
+        Positional input keeps its historical ``::`` form. Stable block
+        evidence uses a tagged, percent-encoded form because opaque session and
+        message ids may themselves contain the legacy separator.
         """
+
+        if value.startswith("evidence-block:"):
+            encoded = value.removeprefix("evidence-block:").split(":")
+            if len(encoded) != 3:
+                raise ValueError("stable evidence ref must encode session, message, and block id")
+            session_id, message_id, block_id = (_decode_evidence_segment(part) for part in encoded)
+            return cls(session_id=session_id, message_id=message_id, block_id=block_id)
 
         parts = value.split("::")
         if not 1 <= len(parts) <= 4:
@@ -254,11 +263,7 @@ class EvidenceRef:
 
         block_index: int | None = None
         block_id: str | None = None
-        if len(parts) == 3 and parts[2].startswith("block:"):
-            block_id = parts[2][len("block:") :]
-            if not _is_stable_block_id(block_id):
-                raise ValueError("stable evidence block_id must contain a SHA-256 identity and canonical occurrence")
-        elif len(parts) == 3:
+        if len(parts) == 3:
             try:
                 block_index = int(parts[2])
             except ValueError as exc:
@@ -266,7 +271,7 @@ class EvidenceRef:
             if block_index < 0:
                 raise ValueError("evidence ref block_index cannot be negative")
         elif len(parts) > 2:
-            raise ValueError("stable evidence ref must use session_id::message_id::block:<block_id> form")
+            raise ValueError("evidence ref must use session_id[::message_id[::block_index]] form")
 
         return cls(
             session_id=parts[0],
@@ -294,7 +299,9 @@ class EvidenceRef:
         if self.message_id is not None:
             parts.append(self.message_id)
         if self.block_id is not None:
-            parts.append(f"block:{self.block_id}")
+            return "evidence-block:" + ":".join(
+                _encode_evidence_segment(part) for part in (self.session_id, self.message_id or "", self.block_id)
+            )
         elif self.block_index is not None:
             parts.append(str(self.block_index))
         return "::".join(parts)
@@ -476,6 +483,12 @@ def normalize_durable_public_ref_text(value: str) -> str:
         raise ValueError("positional block evidence must be resolved to a stable block_id before durable storage")
     if isinstance(parsed, ObjectRef) and parsed.kind in {"block", "action"} and parsed.qualifiers:
         raise ValueError("positional block object ref must be resolved to a stable block_id before durable storage")
+    if (
+        isinstance(parsed, ObjectRef)
+        and parsed.kind in {"block", "action"}
+        and not _is_stable_block_id(parsed.object_id)
+    ):
+        raise ValueError("block/action object ref must use a generated stable block_id before durable storage")
     return parsed.format()
 
 
@@ -485,7 +498,20 @@ def normalize_durable_object_ref_text(value: str) -> str:
     parsed = ObjectRef.parse(value)
     if parsed.kind in {"block", "action"} and parsed.qualifiers:
         raise ValueError("positional block object ref must be resolved to a stable block_id before durable storage")
+    if parsed.kind in {"block", "action"} and not _is_stable_block_id(parsed.object_id):
+        raise ValueError("block/action object ref must use a generated stable block_id before durable storage")
     return parsed.format()
+
+
+def _encode_evidence_segment(value: str) -> str:
+    return quote_from_bytes(value.encode("utf-8", errors="surrogatepass"), safe="")
+
+
+def _decode_evidence_segment(value: str) -> str:
+    decoded = unquote_to_bytes(value).decode("utf-8", errors="surrogatepass")
+    if not decoded or _encode_evidence_segment(decoded) != value:
+        raise ValueError("stable evidence ref segment is not canonically percent-encoded")
+    return decoded
 
 
 def _parse_object_ref_kind(value: str) -> ObjectRefKind:

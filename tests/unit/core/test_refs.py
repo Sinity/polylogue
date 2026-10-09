@@ -9,6 +9,7 @@ from polylogue.core.refs import (
     ObjectRef,
     WorkerProfileRef,
     delegation_edge_object_id,
+    normalize_durable_object_ref_text,
     normalize_durable_public_ref_text,
     normalize_object_ref_text,
     normalize_public_ref_text,
@@ -180,15 +181,32 @@ def test_public_ref_parser_prefers_object_refs_and_accepts_recovery_evidence_ref
 def test_stable_block_refs_keep_the_complete_id_including_occurrence_suffix() -> None:
     block_id = f"origin:session:n:message:b:{'0' * 64}:3"
     object_ref = ObjectRef.parse(f"block:{block_id}")
-    evidence_ref = EvidenceRef.parse(f"origin:session::origin:session:n:message::block:{block_id}")
+    evidence = EvidenceRef(session_id="origin:session", message_id="origin:session:n:message", block_id=block_id)
+    evidence_wire = evidence.format()
+    evidence_ref = EvidenceRef.parse(evidence_wire)
 
     assert object_ref.object_id == block_id
     assert object_ref.qualifiers == ()
     assert object_ref.format() == f"block:{block_id}"
     assert evidence_ref.block_id == block_id
     assert evidence_ref.block_index is None
-    assert evidence_ref.format() == f"origin:session::origin:session:n:message::block:{block_id}"
+    assert evidence_wire.startswith("evidence-block:")
+    assert evidence_ref.format() == evidence_wire
     assert evidence_ref.to_object_ref() == object_ref
+
+
+def test_stable_evidence_wire_roundtrips_opaque_separator_and_percent_characters() -> None:
+    block_id = f"provider::session%25:n:message::part:b:{'a' * 64}:0"
+    ref = EvidenceRef(session_id="provider::session%25", message_id="message::part%25", block_id=block_id)
+
+    encoded = ref.format()
+    parsed = EvidenceRef.parse(encoded)
+
+    assert encoded.startswith("evidence-block:")
+    assert parsed == ref
+    assert parsed.format() == encoded
+    with pytest.raises(ValueError):
+        EvidenceRef.parse(f"{ref.session_id}::{ref.message_id}::block:{block_id}")
 
 
 def test_positional_evidence_ref_remains_input_shape_without_becoming_stable() -> None:
@@ -209,10 +227,16 @@ def test_durable_ref_normalizer_accepts_stable_block_ids() -> None:
     stable = f"origin:session:n:message:b:{'0' * 64}:2"
 
     assert normalize_durable_public_ref_text(f"block:{stable}") == f"block:{stable}"
-    assert (
-        normalize_durable_public_ref_text(f"origin:session::origin:session:n:message::block:{stable}")
-        == f"origin:session::origin:session:n:message::block:{stable}"
-    )
+    evidence = EvidenceRef(session_id="origin:session", message_id="origin:session:n:message", block_id=stable)
+    assert normalize_durable_public_ref_text(evidence.format()) == evidence.format()
+
+
+@pytest.mark.parametrize("raw", ["block:opaque", "action:opaque"])
+def test_durable_normalizers_reject_non_generated_block_and_action_ids(raw: str) -> None:
+    with pytest.raises(ValueError, match="generated stable block_id"):
+        normalize_durable_public_ref_text(raw)
+    with pytest.raises(ValueError, match="generated stable block_id"):
+        normalize_durable_object_ref_text(raw)
 
 
 def test_object_ref_normalizer_rejects_unscoped_raw_strings() -> None:

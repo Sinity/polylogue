@@ -171,6 +171,32 @@ def test_native_message_block_reference_survives_retained_rebuild_and_promotion(
                 ).fetchone()[0]
             )
             archive.save_annotation("retained-stable-note", "block", block_id, "Keep B", owner_session_id=session_id)
+            with closing(archive._open_user_write_connection(initialize=True)) as user:
+                assertion_count = int(user.execute("SELECT COUNT(*) FROM assertions").fetchone()[0])
+            with pytest.raises(ValueError, match="generated stable block_id"):
+                archive.save_annotation(
+                    "new-opaque-block-ref", "block", "legacy-opaque", "Must not persist", owner_session_id=session_id
+                )
+            with closing(archive._open_user_write_connection(initialize=True)) as user:
+                assert int(user.execute("SELECT COUNT(*) FROM assertions").fetchone()[0]) == assertion_count
+                user.execute(
+                    "INSERT INTO assertions(assertion_id,target_ref,kind,body_text,created_at_ms,updated_at_ms) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (
+                        "historical-positional-assertion",
+                        "block:historical-opaque-token",
+                        "annotation",
+                        "Retain historical bytes without rebound",
+                        1,
+                        1,
+                    ),
+                )
+                historical_assertion = tuple(
+                    user.execute(
+                        "SELECT * FROM assertions WHERE assertion_id='historical-positional-assertion'"
+                    ).fetchone()
+                )
+                user.commit()
             archive.commit()
     with closing(sqlite3.connect(tmp_path / "user.db")) as user:
         before_user = tuple(user.execute("SELECT * FROM assertions").fetchone())
@@ -204,6 +230,12 @@ def test_native_message_block_reference_survives_retained_rebuild_and_promotion(
         )
     with closing(sqlite3.connect(tmp_path / "user.db")) as user:
         assert tuple(user.execute("SELECT * FROM assertions").fetchone()) == before_user
+        assert (
+            tuple(
+                user.execute("SELECT * FROM assertions WHERE assertion_id='historical-positional-assertion'").fetchone()
+            )
+            == historical_assertion
+        )
     from polylogue.operations.mutation_actuators import AnnotationSaveActuator, AnnotationSaveArgs
     from polylogue.operations.operation_context import open_operation_read
     from polylogue.operations.source_target_read import (

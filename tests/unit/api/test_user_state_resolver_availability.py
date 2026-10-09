@@ -14,13 +14,11 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from polylogue.api.user_state_resolver import (
     _resolve_attachment_in_connections,
-    bind_attachment_source_guard,
     resolve_insight_target,
 )
 from polylogue.core.user_state_targets import TARGET_SESSION
@@ -193,15 +191,6 @@ def test_attachment_target_uses_stable_reference_and_source_supplier() -> None:
         assert resolved["target_id"] == "message-a:attachment:0"
         assert resolved["message_id"] == "message-a"
 
-        guard = bind_attachment_source_guard(
-            SimpleNamespace(archive=SimpleNamespace(_conn=index, source_connection=source)),
-            session_id="session-a",
-            ref_id="message-a:attachment:0",
-            current_index_connection=index,
-            current_source_connection=source,
-        )
-        guard()
-
         # Acquisition can replace the content-addressed attachment row while
         # preserving the stable message reference used by new user state.
         index.execute("UPDATE attachments SET attachment_id='content-version-2'")
@@ -224,11 +213,6 @@ def test_attachment_target_uses_stable_reference_and_source_supplier() -> None:
             )
             is None
         )
-
-        # A guard bound before the supplier's Source evidence moves refuses at
-        # the durable-apply boundary.
-        with pytest.raises(ValueError, match="changed before durable apply"):
-            guard()
 
         source.execute("DELETE FROM raw_sessions WHERE raw_id='raw-a'")
         assert (
