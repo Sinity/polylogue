@@ -1315,15 +1315,7 @@ def test_byte_proof_refuses_a_head_between_forks(monkeypatch: pytest.MonkeyPatch
             )
         }
 
-    original = revision_backfill.prepare_retained_jsonl_artifact
-    parsed: list[str] = []
-
-    def counted(evidence_reader: Any, raw_id: str, *, directory: Path, **kwargs: Any) -> Any:
-        parsed.append(raw_id)
-        return original(evidence_reader, raw_id, directory=directory, **kwargs)
-
-    monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", counted)
-
+    parsed = _observe_retained_jsonl_parse_calls(monkeypatch, tmp_path)
     replay_retained_components(tmp_path)
 
     # Every member is opened: nothing inherits an identity byte proof cannot
