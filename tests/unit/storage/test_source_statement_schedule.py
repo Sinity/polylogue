@@ -249,6 +249,85 @@ def test_source_input_reuse_keeps_failed_first_load_and_cancellation_visible(
                 compute_cancel.reset(token)
 
 
+@pytest.mark.parametrize("operation", ["scalar", "stream", "expression"])
+def test_owned_literal_operation_verifies_namespace_once(
+    source_statement_root: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    with PreparedIndexMutation.source_only(archive_root=source_statement_root) as seal:
+        cell = seal.retain_literal_scalar("synthetic literal")
+        verify = seal._assert_configured_namespace
+        walks = 0
+
+        def counted_verify() -> None:
+            nonlocal walks
+            walks += 1
+            verify()
+
+        monkeypatch.setattr(seal, "_assert_configured_namespace", counted_verify)
+        if operation == "scalar":
+            seal.retain_literal_scalar(b"synthetic literal")
+        elif operation == "stream":
+            seal.retain_literal_stream("blob", 4, (b"ab", b"cd"))
+        else:
+            seal.source_literal_expression(cell)
+        assert walks == 1
+
+
+def test_literal_expression_namespace_change_refuses_next_entry_and_publication(
+    source_statement_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = source_statement_root
+    with PreparedIndexMutation.source_only(archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            _stage_raw(seal, "pending-publication")
+            cell = seal.retain_literal_scalar("synthetic literal")
+        metadata = seal._literal_cell_metadata
+        original_path = root / "source.db"
+        retained_path = root / "retained-original-source.db"
+
+        def replace_namespace(current: KnownTierCell) -> tuple[str, int, bytes | None]:
+            original_path.rename(retained_path)
+            original_path.write_bytes(b"synthetic replacement")
+            return metadata(current)
+
+        monkeypatch.setattr(seal, "_literal_cell_metadata", replace_namespace)
+        try:
+            # The expression reads its already-owned private slot. Namespace
+            # replacement cannot make it reread a different original path.
+            expression, parameters = seal.source_literal_expression(cell)
+            assert expression.startswith("CAST(") and parameters == (cell._cell_id,)
+            monkeypatch.setattr(seal, "_literal_cell_metadata", metadata)
+            with pytest.raises(ReferenceSealError, match="namespace"):
+                seal.source_literal_expression(cell)
+            with pytest.raises(ReferenceSealError, match="namespace"):
+                seal.prepare_source_mutation()
+        finally:
+            original_path.rename(root / "replaced-source.db")
+            retained_path.rename(original_path)
+
+
+def test_owned_literal_stream_still_checks_cancellation_between_chunks(source_statement_root: Path) -> None:
+    import threading
+
+    from polylogue.core.compute_cancel import compute_cancel
+
+    with PreparedIndexMutation.source_only(archive_root=source_statement_root) as seal:
+        cancelled = threading.Event()
+        token = compute_cancel.set(cancelled)
+
+        def chunks() -> Iterator[bytes]:
+            yield b"ab"
+            cancelled.set()
+            yield b"cd"
+
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                seal.retain_literal_stream("blob", 4, chunks())
+        finally:
+            cancelled.clear()
+            compute_cancel.reset(token)
+
+
 def test_source_rollback_publishes_no_captured_row_or_commit_receipt(source_statement_root: Path) -> None:
     root = source_statement_root
     with PreparedIndexMutation.source_only(archive_root=root) as seal:

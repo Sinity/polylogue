@@ -2085,10 +2085,10 @@ _Method = TypeVar("_Method", bound=Callable[..., Any])
 
 
 def _namespace_verified_per_row(method: _Method) -> _Method:
-    """Verify the configured namespace once at a row operation's entry.
+    """Verify the configured namespace once at an owned operation's entry.
 
-    One row load or insert passes through several nested work gates (one per
-    cell, producer and witness), and each repeated the whole namespace walk:
+    One row or literal passes through several nested work gates (one per
+    cell, chunk and witness), and each repeated the whole namespace walk:
     a stat per path and a realpath per tier, per cell. Nested gates inside the
     verified row skip only that walk; every acceptance and direct namespace
     check still verifies, so a change cannot reach a commit unseen.
@@ -3002,6 +3002,7 @@ class PreparedIndexMutation:
                 raise ReferenceSealError("retained literal does not match its exact declared byte length")
         return KnownTierCell(self, cell_id)
 
+    @_namespace_verified_per_row
     def retain_literal_stream(
         self, storage_class: Literal["text", "blob"], byte_length: int, chunks: Iterable[bytes]
     ) -> KnownTierCell:
@@ -3021,6 +3022,7 @@ class PreparedIndexMutation:
 
         return self._retain_variable_cell(metadata, bounded_chunks())
 
+    @_namespace_verified_per_row
     def retain_literal_scalar(self, value: None | int | float | str | bytes) -> KnownTierCell:
         """Retain an already-owned scalar; native large-cell producers use their literal stream."""
         self._require_new_work()
@@ -5307,6 +5309,7 @@ class PreparedIndexMutation:
         with owner.readonly_blob("known_tier_literals", "literal", cell._cell_id, settlement=settlement) as blob:
             yield from stream_literal_blob(blob, size, check)
 
+    @_namespace_verified_per_row
     def source_literal_expression(self, cell: KnownTierCell) -> tuple[str, tuple[object, ...]]:
         """Read the same native slot in prepared and live canonical SQL."""
         self._require_new_work()
@@ -9368,12 +9371,13 @@ class PreparedIndexMutation:
 
     @contextmanager
     def verified_namespace(self) -> Iterator[None]:
-        """Verify the configured namespace once for one row's seal operations.
+        """Verify the configured namespace once for one owned operation.
 
         A caller hydrating many rows wraps each row in this scope: the row's
         lookups, retains and loads then share one namespace walk instead of
-        repeating it at every nested gate. Acceptance gates verify directly
-        and are unaffected.
+        repeating it at every nested gate. Owned literal operations use the
+        same scope for their private metadata and chunks. Acceptance gates
+        verify directly and are unaffected.
         """
         if self._namespace_verified_depth:
             yield
