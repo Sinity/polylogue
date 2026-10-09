@@ -415,7 +415,14 @@ def _neutral_jsonl_candidate(provider: Provider, source_path: str) -> bool:
 
 
 class _CarryInvalidatedError(Exception):
-    """The carried unit's selection changed; prepare again from a new seal."""
+    """The carried inputs changed; prepare again from a new seal."""
+
+    def __init__(
+        self,
+        reason: Literal["selection_changed", "parser_operands_changed", "carried_membership_changed"],
+    ) -> None:
+        self.reason = reason
+        super().__init__(reason)
 
 
 @dataclass(frozen=True, slots=True)
@@ -721,23 +728,18 @@ class RawObservationInspection:
             return "stale"
         validation_mode = self.inspection_validation_mode
         if validation_mode is not None and raw["validation_mode"] != validation_mode.value:
-            # Typed non-session carriers are outside the schema-validation
-            # policy. Their current parser census is still required, so a
-            # NULL stamp is accepted only when both pieces of evidence agree.
-            typed_non_session = (
+            # Captured native grammar and non-session classifications can
+            # exclude JSON schema policy. Their current parser census and
+            # exact session reachability are still required below.
+            typed_schema_ineligible = (
                 conn.execute(
                     "SELECT 1 WHERE EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=?) "
                     "AND NOT EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=? "
-                    "AND (parse_as_session IS NOT 0 OR schema_eligible IS NOT 0))",
-                    (key, key),
-                ).fetchone()
-                is not None
-            )
-            parser_non_session = (
-                conn.execute(
-                    "SELECT 1 FROM raw_membership_census WHERE raw_id=? AND status='non_session' "
-                    "AND parser_fingerprint=? LIMIT 1",
-                    (key, parser_fingerprint),
+                    "AND schema_eligible IS NOT 0) "
+                    "AND (EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=? AND parse_as_session=1) "
+                    "OR EXISTS (SELECT 1 FROM raw_membership_census WHERE raw_id=? AND status='non_session' "
+                    "AND parser_fingerprint=?))",
+                    (key, key, key, key, parser_fingerprint),
                 ).fetchone()
                 is not None
             )
@@ -745,8 +747,7 @@ class RawObservationInspection:
                 raw["validation_mode"] is None
                 and census is not None
                 and census["status"] == "complete"
-                and typed_non_session
-                and parser_non_session
+                and typed_schema_ineligible
             ):
                 return "stale"
         if (
@@ -1345,6 +1346,7 @@ class RawObservationDerivation(RawObservationInspection):
         carry = _PreparationCarry()
         census_first: list[str] = []
         first = True
+        retry_attempts = 0
         while True:
             selection = select_retained_raw_ids
             if widened:
@@ -1361,16 +1363,21 @@ class RawObservationDerivation(RawObservationInspection):
                 replacement = self._compute_once(
                     frame, key, replay_current=replay_current, selection=selection, carry=carry
                 )
-            except _CarryInvalidatedError:
-                carry = _PreparationCarry(
-                    scratch_owner=carry.scratch_owner,
-                    neutral_artifacts=carry.neutral_artifacts,
-                    committed=carry.committed,
-                )
-                continue
-            except ReferenceSealStaleError:
-                if not carry.neutral_artifacts:
+            except (_CarryInvalidatedError, ReferenceSealStaleError) as error:
+                if isinstance(error, ReferenceSealStaleError) and not carry.neutral_artifacts:
                     raise
+                retry_attempts += 1
+                emit(
+                    "storage.raw_observation.preparation_retry",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason=error.reason if isinstance(error, _CarryInvalidatedError) else "reference_seal_stale",
+                    error_type=type(error).__name__,
+                    phase="source_preparation",
+                    productive_id=key,
+                    raws=len(scope.raw_ids),
+                    attempts=retry_attempts,
+                )
                 carry = _PreparationCarry(
                     scratch_owner=carry.scratch_owner,
                     neutral_artifacts=carry.neutral_artifacts,
@@ -2120,12 +2127,10 @@ class RawObservationDerivation(RawObservationInspection):
                             ),
                             sidecar_signature=fresh_scope_signature,
                         )
-                if (
-                    (fresh_raw_ids, fresh_logical_keys) != original_selection
-                    or fresh_eligible_raw_ids != eligible_raw_ids
-                    or fresh_operands != operands
-                ):
-                    raise _CarryInvalidatedError
+                if (fresh_raw_ids, fresh_logical_keys) != original_selection:
+                    raise _CarryInvalidatedError("selection_changed")
+                if fresh_eligible_raw_ids != eligible_raw_ids or fresh_operands != operands:
+                    raise _CarryInvalidatedError("parser_operands_changed")
 
                 from polylogue.core.timestamp_authority import normalize_session_timestamps
                 from polylogue.sources.prepared_jsonl import PreparedSessionSequence, _finalize_prepared_cohort
@@ -2236,7 +2241,7 @@ class RawObservationDerivation(RawObservationInspection):
                 if carry.raw_ids and carry.raw_ids != raw_ids:
                     # The committed phase changed this unit's membership; its
                     # carried artifacts describe another unit.
-                    raise _CarryInvalidatedError
+                    raise _CarryInvalidatedError("carried_membership_changed")
                 for selected_raw_id in raw_ids:
                     refusal = selection_read.raw_terminal_decode_refusal(selected_raw_id)
                     if refusal is not None:
@@ -2324,9 +2329,9 @@ class RawObservationDerivation(RawObservationInspection):
                                 raw_id
                             )
                             declared_non_session = path_declaration_refuses_session(provider, source_path)
-                        if (
-                            not schema_eligible or declared_non_session
-                        ) and census_read.raw_parser_confirmed_non_session(raw_id):
+                        if not schema_eligible or (
+                            declared_non_session and census_read.raw_parser_confirmed_non_session(raw_id)
+                        ):
                             complete_census.add(raw_id)
                 # Every retained raw needs its actual parser authority before
                 # replay can select a session. A singleton can still refine an

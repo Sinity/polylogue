@@ -4622,13 +4622,11 @@ def test_read_archive_session_page_composes_bounded_sql_work_regardless_of_sessi
 ) -> None:
     """A page's SQL statement count stays bounded as the session grows.
 
-    ``read_archive_session_envelope`` issues one blocks query per message (a
-    pre-existing N+1 pattern), so a full read's statement count scales with
-    the session size. ``read_archive_session_page`` must not: its statement
-    count for a fixed page size is independent of the total message count,
-    the concrete property this bead (polylogue-07g6) asks for. Counting
-    statements via ``set_trace_callback`` is deterministic, unlike a
-    wall-clock timing budget.
+    ``read_archive_session_page`` must keep its statement count for a fixed
+    page size independent of the total message count, the concrete property
+    this bead (polylogue-07g6) asks for. Whole-session hydration is separately
+    checked to batch block reads. Counting statements via ``set_trace_callback``
+    is deterministic, unlike a wall-clock timing budget.
     """
     conn = _connect(tmp_path / "index.db")
     small_id = write_fixture_index_session(conn, _large_ordinary_session(20))
@@ -4657,9 +4655,84 @@ def test_read_archive_session_page_composes_bounded_sql_work_regardless_of_sessi
 
     # Sanity bound: a handful of fixed queries (header, working dirs, count,
     # message window, blocks batch, attachments batch, orphan attachments),
-    # not "one per message" -- the regression this test guards against would
-    # blow this bound open at 2000 messages.
+    # independent of the 2,000-message total.
     assert large_statements < 15
+
+
+def test_session_page_hydration_chunks_at_the_connection_bind_limit(tmp_path: Path) -> None:
+    """Page and full reads hydrate rows even when the page exceeds SQLite's bind limit."""
+    conn = _connect(tmp_path / "index.db")
+    messages = [
+        ParsedMessage(
+            provider_message_id=f"m{index}",
+            role=Role.USER if index % 2 == 0 else Role.ASSISTANT,
+            text=None if index == 4 else f"message {index}",
+            position=index,
+            blocks=[] if index == 4 else [ParsedContentBlock(type=BlockType.TEXT, text=f"message {index}")],
+        )
+        for index in range(9)
+    ]
+    session_id = write_fixture_index_session(
+        conn,
+        ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="bind-safe-message-hydration",
+            messages=messages,
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="first",
+                    message_provider_id="m1",
+                    name="first.txt",
+                    mime_type="text/plain",
+                    direction="user_input",
+                ),
+                ParsedAttachment(
+                    provider_attachment_id="last",
+                    message_provider_id="m8",
+                    name="last.txt",
+                    mime_type="text/plain",
+                    direction="user_input",
+                ),
+            ],
+        ),
+    )
+    previous_limit = conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 8)
+    try:
+        full = read_archive_session_envelope(conn, session_id)
+        page = read_archive_session_page(conn, session_id, limit=9, offset=0)
+    finally:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous_limit)
+
+    assert page.messages == full.messages
+    assert page.total_message_count == 9
+    assert page.messages[4].blocks == ()
+    assert [attachment.display_name for attachment in page.messages[1].attachments] == ["first.txt"]
+    assert [attachment.display_name for attachment in page.messages[8].attachments] == ["last.txt"]
+    assert [message.position for message in page.messages] == list(range(9))
+
+
+def test_full_session_block_hydration_queries_by_bind_safe_batches(tmp_path: Path) -> None:
+    """Full reads issue one block query per bind-safe batch, not per message."""
+    conn = _connect(tmp_path / "index.db")
+    session_id = write_fixture_index_session(conn, _large_ordinary_session(20))
+    previous_limit = conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 8)
+    block_queries = 0
+
+    def count_block_query(statement: str) -> None:
+        nonlocal block_queries
+        normalized = statement.upper()
+        if "FROM BLOCKS" in normalized and "WHERE MESSAGE_ID IN (" in normalized:
+            block_queries += 1
+
+    conn.set_trace_callback(count_block_query)
+    try:
+        envelope = read_archive_session_envelope(conn, session_id)
+    finally:
+        conn.set_trace_callback(None)
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous_limit)
+
+    assert len(envelope.messages) == 20
+    assert block_queries == 3
 
 
 def _lineage_chain(
@@ -4791,8 +4864,8 @@ def test_read_archive_session_page_bounds_sql_work_for_a_lineage_child(tmp_path:
     The anti-vacuity condition is the shape of the growth, not a wall clock:
     restore the composed-then-sliced branch and the statement count stops
     being independent of the per-link message count -- it becomes the composed
-    transcript length, because the full read issues one blocks query per
-    composed message.
+    transcript length. A fallback still materializes every composed message
+    and its blocks; the bounded page reads only its requested window.
     """
 
     def _chain(name: str, *, links: int, per_link: int) -> tuple[sqlite3.Connection, str, int]:
@@ -4823,8 +4896,7 @@ def test_read_archive_session_page_bounds_sql_work_for_a_lineage_child(tmp_path:
     assert deep_large_statements <= 8 * 16
 
     # The sampled VM-step budget stays a small multiple of the composed
-    # length rather than the per-message row/blocks/attachment hydration the
-    # full composition pays. ``total_message_count`` is contractually the true
+    # length. ``total_message_count`` is contractually the true
     # composed length, so an index-only count per ancestor is inherent.
     assert deep_large_steps < 25 * deep_large_total
 
@@ -4893,8 +4965,8 @@ def test_locate_bounds_sql_work_for_a_lineage_child(tmp_path: Path) -> None:
 
     Anti-vacuity is the shape of the growth, not a wall clock: restore the
     composed-then-scanned branch and the statement count stops being
-    independent of the per-link message count, because the full read issues
-    one blocks query per composed message.
+    independent of the per-link message count, because the full reader still
+    materializes every composed message before it can count positions.
     """
 
     def _chain(name: str, *, links: int, per_link: int) -> tuple[sqlite3.Connection, str, int]:

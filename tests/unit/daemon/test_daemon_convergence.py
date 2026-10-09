@@ -372,6 +372,49 @@ def test_converger_batches_session_execution() -> None:
     assert converger._session_states == {}
 
 
+def test_session_batch_check_failure_retains_its_cause(monkeypatch: pytest.MonkeyPatch) -> None:
+    problem = LookupError("neutral missing prerequisite")
+    events: list[tuple[str, dict[str, object]]] = []
+    executed: list[tuple[str, ...]] = []
+
+    def check_sessions(_session_ids: Sequence[str]) -> set[str]:
+        raise problem
+
+    def execute_sessions(session_ids: Sequence[str]) -> bool:
+        executed.append(tuple(session_ids))
+        return True
+
+    def record_event(event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    monkeypatch.setattr("polylogue.daemon.convergence.emit", record_event)
+    converger = DaemonConverger(
+        [
+            ConvergenceStage(
+                name="derived",
+                description="neutral prerequisite failure",
+                check=lambda _candidate: False,
+                execute=lambda _candidate: False,
+                check_sessions=check_sessions,
+                execute_sessions=execute_sessions,
+            )
+        ]
+    )
+    states, _timings = converger.converge_sessions(["conv-a", "conv-b"])
+
+    assert executed == []
+    assert set(converger._session_states) == {"conv-a", "conv-b"}
+    for state in states.values():
+        assert not state.converged
+        assert state.stages["derived"] is StageState.FAILED
+        assert state.error_count == 1
+        assert state.last_error == str(problem)
+    failed = [fields for event, fields in events if event == "daemon.stage.check_failed"]
+    assert len(failed) == 1
+    assert failed[0]["reason"] == "session_batch_check_raised"
+    assert failed[0]["error_type"] == type(problem).__name__
+
+
 def test_converger_propagates_nested_session_stage_timings() -> None:
     def check_sessions(session_ids: Sequence[str]) -> set[str]:
         return set(session_ids)

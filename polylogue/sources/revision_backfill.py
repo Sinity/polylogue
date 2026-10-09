@@ -111,7 +111,7 @@ from polylogue.sources.prepared_jsonl import (
 from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
 from polylogue.sources.retained_sqlite import collect_sqlite_sessions, iter_sqlite_sessions
 from polylogue.sources.sidecar_evidence import SidecarResolver
-from polylogue.sources.sqlite_export import looks_like_logical_source_bytes
+from polylogue.sources.sqlite_export import looks_like_logical_source_bytes, looks_like_logical_source_path
 from polylogue.sources.sqlite_snapshot import (
     is_declared_logical_export,
     is_sqlite_page_image,
@@ -3856,6 +3856,24 @@ def prepare_revision_source_census(
         prepared = prepared_inputs.get(raw_id)
         artifact = prepared.prepared_artifact if prepared is not None else None
         schema_validation_required = evidence_reader.raw_schema_eligible(raw_id)
+        stream = artifact.stream_classification() if artifact is not None else None
+        if (
+            source_index >= 0
+            and stream is not None
+            and stream.classification.parse_as_session
+            and not stream.classification.schema_eligible
+            and artifact is not None
+            and artifact.validation_verdict is None
+            and schema_validation_required
+        ):
+            # An old parser receipt omitted the native grammar's captured
+            # schema policy. Its retained SQLite format proves the native
+            # grammar; coarse JSON taxonomy cannot supply this exemption.
+            # Publish the actual prepared outcome and taxonomy together.
+            native_path = evidence_reader.raw_revision_blob_path(raw_id)
+            if native_path is not None and looks_like_logical_source_path(native_path):
+                apply_outcome(raw_id, source_index)
+                return True
         # A current non-session parser census alone is insufficient: an
         # eligible structured document may legitimately yield no sessions.
         # The provider's exact raw-only path declaration is the independent
@@ -4045,6 +4063,7 @@ def prepare_revision_source_census(
         prepared = prepared_inputs.get(raw_id)
         artifact = prepared.prepared_artifact if prepared is not None else None
         verdict = artifact.validation_verdict if artifact is not None else None
+        stream = artifact.stream_classification() if artifact is not None else None
         if verdict is not None and artifact is not None:
             if (
                 verdict.raw_id != raw_id
@@ -4110,6 +4129,13 @@ def prepare_revision_source_census(
                     source_index=source_index,
                     observed_at_ms=observed_at_ms,
                     manage_transaction=False,
+                    captured_classification=(
+                        dataclasses.replace(stream.classification, schema_eligible=True)
+                        if stream is not None and verdict is not None
+                        else stream.classification
+                        if stream is not None
+                        else None
+                    ),
                 )
             if provider is Provider.UNKNOWN:
                 prepare_raw_state_update(seal, raw_id, state=RawSessionStateUpdate(payload_provider=parsed_provider))
@@ -4127,6 +4153,27 @@ def prepare_revision_source_census(
                 # the placeholder and records only its detected provider.
                 refine_prepared_raw_origin(seal, raw_id, origin_from_provider(resolved_provider))
             stream_classification = artifact.stream_classification()
+            if (
+                stream_classification is not None
+                and stream_classification.classification.parse_as_session
+                and not stream_classification.classification.schema_eligible
+                and verdict is None
+            ):
+                native_path = evidence_reader.raw_revision_blob_path(raw_id)
+                if native_path is not None and looks_like_logical_source_path(native_path):
+                    # An empty native parse still owes its captured grammar's
+                    # schema policy; its independent non-session census stays
+                    # on the ordinary receipt path below.
+                    record_session_artifact_observation(
+                        producer,
+                        raw_id=raw_id,
+                        provider=resolved_provider,
+                        source_path=source_path,
+                        source_index=source_index,
+                        observed_at_ms=observed_at_ms,
+                        manage_transaction=False,
+                        captured_classification=stream_classification.classification,
+                    )
             if _retained_page_image_raw(evidence_reader, raw_id):
                 _persist_legacy_page_image_artifact(
                     producer,

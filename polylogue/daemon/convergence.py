@@ -1676,18 +1676,20 @@ class DaemonConverger:
                     batch_needs_work = set(stage.check_sessions(active_ids)).intersection(active_ids)
                 except DaemonOperationCancelled:
                     raise
-                except Exception:
+                except Exception as exc:
                     emit(
                         "daemon.stage.check_failed",
                         level=ERROR,
                         stage=stage_name,
                         outcome="error",
                         reason="session_batch_check_raised",
+                        error_type=type(exc).__name__,
                     )
                     for session_id in active_ids:
                         state = self._session_states[session_id]
                         state.stages[stage_name] = StageState.FAILED
                         state.error_count += 1
+                        state.last_error = str(exc)
                 else:
                     for session_id in active_ids:
                         if session_id not in batch_needs_work:

@@ -347,7 +347,8 @@ def iter_state_db_sessions(
             with closing(conn.execute(query)) as cursor:
                 for ordinal, row in enumerate(cursor):
                     check()
-                    raw_id = str(row["id"])
+                    raw_id_value = row["id"]
+                    raw_id = str(raw_id_value)
                     raw_parent = _row_value(row, "parent_session_id")
                     parent_raw_id = _optional_text(raw_parent)
                     parent = (
@@ -366,10 +367,13 @@ def iter_state_db_sessions(
                     leaf_columns = ["id", "session_id"]
                     if "platform_message_id" in message_columns:
                         leaf_columns.append("platform_message_id")
+                    # Keep the source cell's type for SQLite affinity in the
+                    # predicate. ``raw_id`` above is the separate text identity
+                    # used by the parser's grouping and public model.
                     with closing(
                         conn.execute(
                             f"SELECT {', '.join(leaf_columns)} FROM messages WHERE session_id = ? ORDER BY id",
-                            (raw_id,),
+                            (raw_id_value,),
                         )
                     ) as message_cursor:
                         for message_row in message_cursor:
@@ -1054,7 +1058,10 @@ def _parse_session_row(
     position_offset: int = 0,
     check_cancelled: Callable[[], None] | None = None,
 ) -> ParsedSession:
-    raw_session_id = str(row["id"])
+    # The public/archive identity is text, while SQLite predicates must receive
+    # the original storage class so live affinity and retained replay agree.
+    raw_session_id_value = row["id"]
+    raw_session_id = str(raw_session_id_value)
     profile_key = profile_identity if profile_identity is not None else _profile_key(profile_root)
     session_id = _qualified_session_id(raw_session_id, profile_key)
     materialized_messages: list[ParsedMessage] = []
@@ -1107,7 +1114,7 @@ def _parse_session_row(
             WHERE session_id = ?
             ORDER BY id
             """,
-        (raw_session_id,),
+        (raw_session_id_value,),
     ):
         if check_cancelled is not None:
             check_cancelled()

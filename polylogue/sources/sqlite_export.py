@@ -1322,10 +1322,11 @@ def _table_plan(conn: sqlite3.Connection, table: str, table_sql: str) -> tuple[l
     # A user column literally named ``rowid`` shadows the alias, so the
     # synthetic column would be a duplicate rather than the row's identity.
     # Export the rowid for every rowid table, including one whose INTEGER
-    # PRIMARY KEY already carries it: the reconstruction declares columns
-    # untyped, so nothing else would restore the row identity a parser reads
-    # through ``rowid``. A user column of that name shadows the alias, and
-    # then no rowid can be restored at all.
+    # PRIMARY KEY already carries it: reconstruction preserves column
+    # affinity but deliberately drops the primary-key constraint, so nothing
+    # else would restore the row identity a parser reads through ``rowid``. A
+    # user column of that name shadows the alias, and then no rowid can be
+    # restored at all.
     shadowed = "rowid" in column_names
     synthetic_rowid = not is_without_rowid and not shadowed
     selected = (["rowid"] if synthetic_rowid else []) + column_names
@@ -1634,26 +1635,86 @@ def _iter_export(path: Path) -> Iterator[tuple[LogicalExportHeader | dict[str, A
         yield from _iter_export_handle(handle)
 
 
-def _create_statement(table: str, columns: Sequence[str]) -> str:
-    """Recreate the table untyped so every stored value round-trips exactly.
+def _schema_column_metadata(
+    table: str, schema_sql: object, columns: Sequence[str]
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Inspect declared types and collations from one captured table DDL.
 
-    The original DDL is retained in the export as evidence, but replaying it
-    would recompute acquired generated values or refuse rows a CHECK owns. An
-    untyped table applies no affinity conversion, so an INTEGER stays an
-    INTEGER and a TEXT stays a TEXT.
+    Load captured SQL as schema text in an empty schema-only connection.
+    SQLite's metadata pragmas parse the declaration without executing its
+    constraints, generated expressions, functions, or collations. A
+    throwaway index created before loading the schema reports each declared
+    collation without parsing DDL text or requiring its comparator.
+    """
+    if not isinstance(schema_sql, str) or not schema_sql.lstrip().upper().startswith("CREATE TABLE"):
+        raise LogicalExportError(f"table {table!r} has no inspectable CREATE TABLE statement")
+    try:
+        with closing(sqlite3.connect(":memory:")) as schema:
+            quoted_table = '"' + table.replace('"', '""') + '"'
+            probe_index = "__polylogue_schema_probe__" + table
+            quoted_probe_index = '"' + probe_index.replace('"', '""') + '"'
+            quoted_columns = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
+            schema.execute(f"CREATE TABLE {quoted_table} ({quoted_columns})").close()
+            schema.execute(f"CREATE INDEX {quoted_probe_index} ON {quoted_table} ({quoted_columns})").close()
+            schema.execute("PRAGMA writable_schema=ON").close()
+            schema.execute(
+                "UPDATE sqlite_schema SET sql = ? WHERE type = 'table' AND name = ?", (schema_sql, table)
+            ).close()
+            version = int(schema.execute("PRAGMA schema_version").fetchone()[0])
+            schema.execute(f"PRAGMA schema_version = {version + 1}").close()
+            schema.execute("PRAGMA writable_schema=OFF").close()
+            created = schema.execute("SELECT type FROM sqlite_master WHERE name = ?", (table,)).fetchone()
+            if created != ("table",):
+                raise LogicalExportError(f"captured DDL did not create table {table!r}")
+            info = readable_table_info(schema, table)
+            if [_schema_text(row[1]) for row in info] != list(columns):
+                raise LogicalExportError(f"captured DDL columns differ for table {table!r}")
+            types = {_schema_text(row[1]): _schema_text(row[2]) for row in info}
+            table_info = schema.execute("PRAGMA table_list").fetchall()
+            strict = any(row[1] == table and row[5] == 1 for row in table_info)
+            if strict:
+                # STRICT ANY has no affinity, unlike ordinary ANY (NUMERIC).
+                # The reconstruction is intentionally non-STRICT, so an
+                # empty type preserves STRICT ANY's stored-cell behavior.
+                types = {
+                    name: ("" if declared_type.upper() == "ANY" else declared_type)
+                    for name, declared_type in types.items()
+                }
+            pragma_index = probe_index.replace('"', '""')
+            index_info = schema.execute(f'PRAGMA index_xinfo("{pragma_index}")').fetchall()
+            collations = {
+                _schema_text(row[2]): _schema_text(row[4]).upper()
+                for row in index_info
+                if row[5] == 1 and row[2] is not None
+            }
+            if set(collations) != set(columns):
+                raise LogicalExportError(f"captured DDL collation metadata differs for table {table!r}")
+            return types, collations
+    except sqlite3.Error as exc:
+        raise LogicalExportError(f"cannot inspect captured SQLite schema for table {table!r}") from exc
 
-    Declaring no column type also declares no column collation, so the
-    reconstruction compares every TEXT value with SQLite's default BINARY
-    sequence. A source column declared ``COLLATE NOCASE`` answers ``WHERE
-    name = 'ABC'`` with a row storing ``'abc'``; the same query against the
-    reconstruction answers with nothing. Exact values round-trip, comparison
-    rules do not: a parser that needs source collation must state it in its
-    own query (``... COLLATE NOCASE``) rather than inherit it from the
-    column. Restoring collation means replaying the declarations, which
-    forfeits the exact-value round trip this untyped table exists to give.
+
+def _create_statement(
+    table: str, columns: Sequence[str], column_types: dict[str, str], column_collations: dict[str, str]
+) -> str:
+    """Recreate readable columns with source affinity and built-in collation.
+
+    Reapplying the original declared affinity to a captured SQLite storage
+    class is idempotent for canonical stored values. The original DDL remains
+    evidence; replay never recomputes generated values or applies source
+    constraints. Built-in BINARY, NOCASE, and RTRIM collations are retained;
+    application collation implementations remain a parser-level decision.
     """
     quoted_table = '"' + table.replace('"', '""') + '"'
-    declared = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
+    declarations = []
+    for name in columns:
+        quoted_name = '"' + name.replace('"', '""') + '"'
+        declared_type = column_types.get(name, "")
+        quoted_type = '"' + declared_type.replace('"', '""') + '"' if declared_type else ""
+        collation = column_collations.get(name, "BINARY")
+        collate = f" COLLATE {collation}" if collation in {"BINARY", "NOCASE", "RTRIM"} else ""
+        declarations.append(f"{quoted_name} {quoted_type}{collate}".rstrip())
+    declared = ", ".join(declarations)
     return f"CREATE TABLE {quoted_table} ({declared})"
 
 
@@ -1718,7 +1779,8 @@ def _materialize_export_records(
                 columns = [str(name) for name in payload["columns"]]
                 synthetic_rowid = bool(payload.get("rowid", False))
                 declared_columns = columns[1:] if synthetic_rowid else columns
-                conn.execute(_create_statement(table, declared_columns))
+                column_types, column_collations = _schema_column_metadata(table, payload.get("sql"), declared_columns)
+                conn.execute(_create_statement(table, declared_columns, column_types, column_collations))
                 materialized[table] = frozenset(declared_columns)
                 # Naming ``rowid`` in the column list is what restores the
                 # original row identity, and it is only unambiguous when no
@@ -1764,8 +1826,8 @@ def logical_source_context(
     A private reconstruction keeps the owner-only mkstemp inode throughout
     materialization and reading. Failed native close retains both its creator
     and directory until verified settlement. Read-index hints apply only to
-    reconstruction; live sources remain read-only. Untyped reconstructed
-    columns preserve values but do not inherit source collations.
+    reconstruction; live sources remain read-only. Reconstructed columns keep
+    source affinity, captured values, and built-in column collations.
     """
     if not looks_like_logical_source_path(path):
         raise sqlite3.DatabaseError(f"not a SQLite database or logical export: {path}")

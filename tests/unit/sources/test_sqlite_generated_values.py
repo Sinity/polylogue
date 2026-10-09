@@ -1,4 +1,4 @@
-"""Readable generated values survive actual export and untyped reconstruction."""
+"""Readable generated values survive affinity and built-in collation replay."""
 
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ def test_selected_generated_codex_material_reaches_retained_parts(
 def test_generated_values_keep_native_storage_classes_bytes_and_row_identity(
     tmp_path: Path, storage: GeneratedStorage, without_rowid: bool
 ) -> None:
-    """Replaying source affinity or omitting evaluated columns loses typed bytes."""
+    """Replaying generated expressions or omitting acquired columns loses typed bytes."""
     source = tmp_path / "typed.sqlite"
     suffix = " WITHOUT ROWID" if without_rowid else ""
     with closing(sqlite3.connect(source)) as conn, conn:
@@ -110,7 +110,7 @@ def test_generated_values_keep_native_storage_classes_bytes_and_row_identity(
             conn.execute("SELECT key,typeof(acquired),CAST(acquired AS BLOB) FROM typed ORDER BY key").fetchall()
             == expected
         )
-        assert [row[2] for row in sqlite_export.readable_table_info(conn, "typed")] == [b"", b"", b""]
+        assert [row[2] for row in sqlite_export.readable_table_info(conn, "typed")] == [b"INTEGER", b"", b""]
         if not without_rowid:
             assert conn.execute("SELECT rowid FROM typed ORDER BY rowid").fetchall() == [
                 (7,),

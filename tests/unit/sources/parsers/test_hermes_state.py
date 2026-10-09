@@ -23,7 +23,7 @@ import polylogue.sources.parsers.hermes_state as hermes_state
 import polylogue.sources.sqlite_export as sqlite_export
 from polylogue.core.enums import BlockType, TitleSource
 from polylogue.core.json import JSONDocument
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.hermes_state import parse_state_db, parse_state_db_payload
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -253,6 +253,119 @@ def test_bound_state_preview_preserves_python_identity_grouping_and_native_colla
         f"session:{session.source_name.value}:{session.provider_session_id}" for session in sessions
     ]
     assert inspection.fidelity == hermes_state._logical_export_fidelity(sessions)
+
+
+@pytest.mark.parametrize(
+    ("session_type", "message_type", "session_id", "message_session_id"),
+    [
+        ("INTEGER", "INTEGER", 1, 1),
+        ("TEXT", "TEXT", "session-one", "session-one"),
+        ("INTEGER", "TEXT", 1, "1"),
+        ("TEXT", "INTEGER", "1", 1),
+    ],
+    ids=["integer-native-key", "text-native-key", "integer-to-text", "text-to-integer"],
+)
+def test_state_db_replay_preserves_native_session_key_binding(
+    tmp_path: Path, session_type: str, message_type: str, session_id: int | str, message_session_id: int | str
+) -> None:
+    """Retained rows must keep the key storage class used by native predicates.
+
+    The parser exposes a textual session identity, but joins messages through
+    an SQLite predicate. The retained table must preserve the message key's
+    declared affinity even when the session and message key columns differ.
+    """
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    live_path = root / "state.db"
+    export_path = root / "state.db.export"
+    with closing(sqlite3.connect(live_path)) as conn, conn:
+        conn.executescript(
+            f"""
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (16);
+            CREATE TABLE sessions (
+                id {session_type} PRIMARY KEY,
+                source TEXT,
+                model_config TEXT,
+                parent_session_id {session_type},
+                started_at INTEGER
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                session_id {message_type} NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp INTEGER NOT NULL,
+                tool_calls TEXT,
+                observed INTEGER DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                compacted INTEGER NOT NULL DEFAULT 0
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, source, model_config, parent_session_id, started_at) "
+            "VALUES (?, 'hermes', '{}', NULL, 1)",
+            (session_id,),
+        )
+        # Insert in reverse order so the public sequence also pins ORDER BY id.
+        conn.executemany(
+            "INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, ?, 'user', ?, ?)",
+            [(2, message_session_id, "second", 2), (1, message_session_id, "first", 1)],
+        )
+
+    export_path.write_bytes(sqlite_export.logical_export_bytes(live_path))
+    live = parse_state_db(live_path)
+    retained = parse_state_db(export_path)
+
+    def observed(sessions: list[ParsedSession]) -> list[tuple[str, list[tuple[str, int | None, str | None]]]]:
+        return [
+            (
+                session.provider_session_id,
+                [(message.provider_message_id, message.position, message.text) for message in session.messages],
+            )
+            for session in sessions
+        ]
+
+    assert len(live) == 1
+    assert observed(live) == observed(retained)
+    assert retained[0].provider_session_id == live[0].provider_session_id
+    assert retained[0].title == str(session_id)
+    assert [message[0] for message in observed(retained)[0][1]] == [
+        f"{session_id}:message:1",
+        f"{session_id}:message:2",
+    ]
+    assert [message[1] for message in observed(retained)[0][1]] == [0, 1]
+    assert [message[2] for message in observed(retained)[0][1]] == ["first", "second"]
+
+
+def test_state_db_replay_preserves_builtin_message_key_collation(tmp_path: Path) -> None:
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    live_path = root / "state.db"
+    export_path = root / "state.db.export"
+    with closing(sqlite3.connect(live_path)) as conn, conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (16);
+            CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, model_config TEXT,
+                parent_session_id TEXT, started_at INTEGER);
+            CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT COLLATE NOCASE NOT NULL,
+                role TEXT NOT NULL, content TEXT, timestamp INTEGER NOT NULL, tool_calls TEXT,
+                observed INTEGER DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, compacted INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO sessions (id, source, model_config, started_at) VALUES ('a', 'hermes', '{}', 1);
+            INSERT INTO messages (id, session_id, role, content, timestamp)
+                VALUES (1, 'A', 'user', 'case-folded match', 1);
+            """
+        )
+
+    export_path.write_bytes(sqlite_export.logical_export_bytes(live_path))
+    live = parse_state_db(live_path)
+    retained = parse_state_db(export_path)
+    assert len(live) == len(retained) == 1
+    assert [message.text for message in live[0].messages] == ["case-folded match"]
+    assert [message.text for message in retained[0].messages] == ["case-folded match"]
 
 
 def test_exit_code_zero_is_not_an_error(tmp_path: Path) -> None:
