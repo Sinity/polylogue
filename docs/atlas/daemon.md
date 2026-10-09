@@ -112,6 +112,8 @@ The typed kernel validates prerequisite names against the supplied ordered domai
 
 Raw observations use the same owner for admitted raw-to-logical membership. FTS retains canonical triggers, identity membership and the FTS refresh guard; per-session replacement joins exact canonical session membership. Its selected global orphan partition runs at low cadence and streams its binding, but still requires archive-wide scan and transaction work (`polylogue/daemon/raw_observation_owner.py:1`; `polylogue/storage/fts/derivation.py:660-690`; `polylogue/operations/fts_derivation.py:1`).
 
+Retained page isolation removes successfully published raws from later independent page offers. Canonical cohort expansion still includes any settled member required by the next unit; the scheduling filter never replaces its current Source preparation or custody proof (`operations/raw_observation_owner.py`).
+
 Embeddings replace one message reference atomically. Validity requires vector presence, full recipe identity and the exact message semantic hash. Provider work occurs outside publication admission. Attempt and cost receipts remain operation evidence (`polylogue/storage/embeddings/derivation.py:400-423`; `polylogue/daemon/embedding_owner.py:1`).
 
 Session counters share one thirteen-measure declaration. Canonical writes recompute from stored messages, and the session-summary adapter inspects and replaces the same partition (`polylogue/storage/derived/session/summary.py:91-105`). Session-profile publication uses its existing domain adapter and shared owner (`polylogue/daemon/session_profile_composition.py:37-66`; `polylogue/storage/derived/session/derivation.py:1`).

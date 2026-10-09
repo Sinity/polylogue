@@ -585,6 +585,117 @@ async def test_one_raw_preparation_failure_does_not_block_its_replay_page_siblin
 
 
 @pytest.mark.asyncio
+async def test_page_isolation_does_not_reoffer_settled_independent_raws(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A late failed page sibling cannot make later seeds reparse settled outputs."""
+    from polylogue.sources import revision_backfill
+
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
+    acquired: dict[str, str] = {}
+    for index, name in enumerate(("first", "second", "third")):
+        acquired[name] = await run_archive_fixture_write(
+            tmp_path,
+            partial(
+                _acquire,
+                tmp_path,
+                Provider.CHATGPT,
+                _chatgpt_export(_chatgpt_conversation(f"page-{name}", ("user", name))),
+                f"{name}.json",
+                index + 1,
+            ),
+        )
+    selected = tuple(sorted(acquired.values()))
+    broken = selected[-1]
+    original_prepare = revision_backfill.prepare_retained_jsonl_artifact
+    original_publish = RawObservationDerivation.publish
+    settled: set[str] = set()
+    repeated: list[str] = []
+
+    def prepare(evidence_reader: Any, raw_id: str, **kwargs: Any) -> Any:
+        if raw_id in settled:
+            repeated.append(raw_id)
+        if raw_id == broken:
+            raise RuntimeError("synthetic late preparation fault")
+        return original_prepare(evidence_reader, raw_id, **kwargs)
+
+    def publish(
+        self: RawObservationDerivation, frame: Any, replacement: RawObservationReplacement, **kwargs: Any
+    ) -> bool:
+        published = original_publish(self, frame, replacement, **kwargs)
+        if published:
+            settled.update(replacement.raw_ids)
+        return published
+
+    monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", prepare)
+    monkeypatch.setattr(RawObservationDerivation, "publish", publish)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        outcome = await owner.replay_retained_raw_ids(selected, select_retained_raw_ids=lambda _read: selected)
+    assert [failure.raw_id for failure in outcome.failures] == [broken]
+    assert {str(row[0]) for row in _rows(tmp_path / "index.db", "SELECT native_id FROM sessions")} == {
+        f"page-{name}" for name, raw_id in acquired.items() if raw_id != broken
+    }
+    assert settled == set(selected[:-1])
+    assert repeated == []
+
+
+@pytest.mark.asyncio
+async def test_settled_raw_remains_required_when_later_census_joins_its_cohort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Filtering page offers cannot remove a member required by current Source."""
+    from polylogue.sources import revision_backfill
+
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
+    conversations = (
+        _chatgpt_conversation("shared-page", ("user", "neutral prefix")),
+        _chatgpt_conversation("shared-page", ("user", "neutral prefix"), ("assistant", "neutral tail")),
+        _chatgpt_conversation("broken-page", ("user", "neutral fault input")),
+    )
+    selected: list[str] = []
+    for index, conversation in enumerate(conversations):
+        selected.append(
+            await run_archive_fixture_write(
+                tmp_path,
+                partial(
+                    _acquire, tmp_path, Provider.CHATGPT, _chatgpt_export(conversation), f"part-{index}.json", index
+                ),
+            )
+        )
+    original_prepare = revision_backfill.prepare_retained_jsonl_artifact
+    original_publish = RawObservationDerivation.publish
+    published_units: list[tuple[str, ...]] = []
+
+    def prepare(evidence_reader: Any, raw_id: str, **kwargs: Any) -> Any:
+        if raw_id == selected[-1]:
+            raise RuntimeError("synthetic independent preparation fault")
+        return original_prepare(evidence_reader, raw_id, **kwargs)
+
+    def publish(
+        self: RawObservationDerivation, frame: Any, replacement: RawObservationReplacement, **kwargs: Any
+    ) -> bool:
+        published = original_publish(self, frame, replacement, **kwargs)
+        if published:
+            published_units.append(replacement.raw_ids)
+        return published
+
+    monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", prepare)
+    monkeypatch.setattr(RawObservationDerivation, "publish", publish)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        outcome = await owner.replay_retained_raw_ids(
+            tuple(selected), select_retained_raw_ids=lambda _read: tuple(selected)
+        )
+    assert [failure.raw_id for failure in outcome.failures] == [selected[-1]]
+    assert published_units[0] == (selected[0],)
+    assert any(set(unit) == set(selected[:2]) for unit in published_units[1:])
+    assert _rows(tmp_path / "index.db", "SELECT native_id,message_count FROM sessions") == [("shared-page", 2)]
+    assert _rows(tmp_path / "index.db", "SELECT text FROM blocks ORDER BY position") == [
+        ("neutral prefix",),
+        ("neutral tail",),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_raw_owner_keeps_one_preparation_in_flight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Concurrent admissions and a multi-raw replay hold one preparation at a time.
 
