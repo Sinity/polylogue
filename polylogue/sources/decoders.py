@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator, Iterable, Iterator
 from contextlib import closing, contextmanager
-from typing import IO, BinaryIO
+from typing import IO, BinaryIO, cast
 
 import ijson
 
@@ -13,6 +13,7 @@ from polylogue.logging import get_logger
 from polylogue.sources.decoder_json import (
     DecodedRecordSequence,
     JsonlDecodeError,
+    JsonlReadable,
     JsonValue,
     decode_json_bytes_with,
     iter_json_stream_with,
@@ -29,7 +30,7 @@ logger = get_logger(__name__)
 
 @contextmanager
 def owned_json_records(
-    handle: BinaryIO | Iterable[bytes],
+    handle: JsonlReadable | Iterable[bytes],
     path_name: str,
     *,
     unpack_lists: bool = True,
@@ -47,7 +48,12 @@ def owned_json_records(
             yield records
     else:
         with closing(
-            _iter_json_stream(handle, path_name, unpack_lists, fail_on_decode_error=fail_on_decode_error)
+            _iter_json_stream(
+                cast(BinaryIO | Iterable[bytes], handle),
+                path_name,
+                unpack_lists,
+                fail_on_decode_error=fail_on_decode_error,
+            )
         ) as records:
             yield records
 

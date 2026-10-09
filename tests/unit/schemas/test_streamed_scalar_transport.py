@@ -8,23 +8,27 @@ import json
 import math
 import sqlite3
 import tracemalloc
+from collections.abc import Generator
 from pathlib import Path
+from typing import Any, BinaryIO
 
 import pytest
 from ijson import JSONError
 
 from polylogue.core.enums import Provider, ValidationMode
+from polylogue.core.json import JSONValue
 from polylogue.schemas import observation_spill
-from polylogue.schemas.observation_spill import StreamedJSONDocument, _ScalarTokenStore
+from polylogue.schemas.observation_spill import SpilledArray, SpilledObject, StreamedJSONDocument, _ScalarTokenStore
 from polylogue.schemas.retained_validation import _SampleValidationReducer, validate_retained_document
 from polylogue.schemas.runtime_registry import SchemaRegistry
+from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 
 def _small_sqlite_cells(monkeypatch: pytest.MonkeyPatch) -> None:
-    original = observation_spill.scratch_connection_context
+    original = scratch_connection_context
 
     @contextlib.contextmanager
-    def scratch(**kwargs: object):
+    def scratch(**kwargs: Any) -> Generator[sqlite3.Connection, None, None]:
         with original(**kwargs) as connection:
             # A real cell limit, restricted to this controlled scratch owner.
             connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 32768)
@@ -51,7 +55,7 @@ def test_actual_package_resolution_keeps_unused_four_mib_scalar_on_disk(
     target = tmp_path / "input.jsonl"
     original_read = _ScalarTokenStore.read
 
-    def selected_only(self: _ScalarTokenStore, kind: str, ordinal: int):
+    def selected_only(self: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
         row = self.connection.execute(
             "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
         ).fetchone()
@@ -88,10 +92,14 @@ def test_selected_scalar_values_match_stdlib_at_chunk_boundaries(
     text = json.dumps({"values": selected}, ensure_ascii=True)
     path.write_text(text)
     with StreamedJSONDocument(path) as document:
-        assert list(document["values"]) == json.loads(text)["values"]
+        assert isinstance(document, SpilledObject)
+        values = document["values"]
+        assert isinstance(values, list)
+        assert list(values) == json.loads(text)["values"]
     # Direct provider UTF-8 surrogate code units also survive the exact sink.
     path.write_bytes(b'{"value":"' + "\ud800".encode("utf-8", "surrogatepass") + b'"}')
     with StreamedJSONDocument(path) as document:
+        assert isinstance(document, SpilledObject)
         assert document["value"] == "\ud800"
 
 
@@ -101,7 +109,10 @@ def test_nonfinite_number_dialect_and_long_float_match_stdlib(tmp_path: Path) ->
     path.write_text(text)
     expected = json.loads(text)
     with StreamedJSONDocument(path) as document:
-        assert math.isnan(document[0])
+        assert isinstance(document, SpilledArray)
+        first = document[0]
+        assert isinstance(first, float)
+        assert math.isnan(first)
         assert list(document[1:]) == expected[1:]
 
 
@@ -119,6 +130,7 @@ def test_boolean_additional_and_drift_do_not_request_unknown_value(tmp_path: Pat
     path = tmp_path / "unknown.json"
     path.write_text('{"known":1,"unknown":"' + "x" * 100000 + '"}')
     with StreamedJSONDocument(path) as document:
+        assert isinstance(document, SpilledObject)
         for additional, invalid in ((True, 0), (False, 1)):
             schema = {
                 "type": "object",
@@ -144,6 +156,7 @@ def test_unused_scalar_decode_memory_does_not_follow_token_length(tmp_path: Path
         tracemalloc.start()
         try:
             with StreamedJSONDocument(path) as document:
+                assert isinstance(document, SpilledObject)
                 assert document.structure_value("unknown") == ""
             peaks.append(tracemalloc.get_traced_memory()[1])
         finally:
@@ -168,7 +181,7 @@ def test_codex_package_recognition_does_not_copy_unknown_payload_scalar(
             output.write(b'"' + after + b"\n")
     original = _ScalarTokenStore.read
 
-    def selected_only(self: _ScalarTokenStore, kind: str, ordinal: int):
+    def selected_only(self: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
         row = self.connection.execute(
             "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
         ).fetchone()
@@ -197,6 +210,7 @@ def test_selected_scalar_read_cancellation_closes_the_chunk_cursor(
     path.write_text('{"selected":"' + "x" * 100000 + '"}')
     owner = StreamedJSONDocument(path)
     with owner as document:
+        assert isinstance(document, SpilledObject)
 
         def cancelled() -> None:
             raise RuntimeError("neutral scalar cancellation")
@@ -206,7 +220,9 @@ def test_selected_scalar_read_cancellation_closes_the_chunk_cursor(
             with pytest.raises(RuntimeError, match="neutral scalar cancellation"):
                 document["selected"]
         assert owner.connection.execute("SELECT 1").fetchone()[0] == 1
-        assert len(document["selected"]) == 100000
+        selected = document["selected"]
+        assert isinstance(selected, str)
+        assert len(selected) == 100000
 
 
 def test_selected_scalar_transport_preserves_lowering_and_content_hash(
@@ -230,6 +246,7 @@ def test_selected_scalar_transport_preserves_lowering_and_content_hash(
     eager = json.loads(path.read_bytes())
     expected = parse_payload(Provider.HERMES, eager, "neutral-fallback")
     with StreamedJSONDocument(path) as document:
+        assert isinstance(document, SpilledObject)
         assert detect_provider_evidence(document) == detect_provider_evidence(eager)
         actual = parse_payload(Provider.HERMES, document, "neutral-fallback")
         assert [session_content_hash(session) for session in actual] == [
@@ -259,12 +276,12 @@ def test_mixed_surrogate_spellings_match_provider_decoder_at_every_byte_split(
     original = observation_spill._ExactJSONText
 
     class SplitInput:
-        def __init__(self, source, split):
+        def __init__(self, source: BinaryIO, split: int) -> None:
             self.source = source
             self.split = split
             self.first = True
 
-        def read(self, size):
+        def read(self, size: int = -1) -> bytes:
             if self.first:
                 self.first = False
                 return self.source.read(self.split)
@@ -277,6 +294,7 @@ def test_mixed_surrogate_spellings_match_provider_decoder_at_every_byte_split(
             lambda source, encoding, split=split, **kwargs: original(SplitInput(source, split), encoding, **kwargs),
         )
         with StreamedJSONDocument(path) as document:
+            assert isinstance(document, SpilledObject)
             assert document["value"] == expected
 
 
@@ -284,6 +302,7 @@ def test_shared_record_tree_rolls_back_failed_attempt_and_keeps_scalar_ordinals(
     path = tmp_path / "record.json"
     owner = StreamedJSONDocument(None)
     with owner as records:
+        assert isinstance(records, SpilledArray)
         path.write_text('{"same":"first"}')
         owner.append_document(path)
         node_count = owner.connection.execute("SELECT COUNT(*) FROM json_nodes").fetchone()[0]
@@ -296,4 +315,6 @@ def test_shared_record_tree_rolls_back_failed_attempt_and_keeps_scalar_ordinals(
         assert owner.connection.execute("SELECT COUNT(*) FROM json_scalar_chunks").fetchone()[0] == chunk_count
         path.write_text('{"same":"last","same":"replacement"}')
         owner.append_document(path)
-        assert [record["same"] for record in records] == ["first", "replacement"]
+        retained = list(records)
+        assert all(isinstance(record, dict) for record in retained)
+        assert [record.get("same") for record in retained if isinstance(record, dict)] == ["first", "replacement"]

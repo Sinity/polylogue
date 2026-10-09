@@ -245,10 +245,12 @@ class _PrefixStringReader:
         syntax_only: bool = False,
         string_sink: Callable[[int, bytes, bool], None] | None = None,
         number_sink: Callable[[int, bytes, bool], None] | None = None,
+        allow_nonfinite: bool = True,
     ) -> None:
         self._source = source
         self._string_sink = string_sink
         self._number_sink = number_sink
+        self._allow_nonfinite = allow_nonfinite
         self._number_ordinal = 0
         self._scalar_values = scalar_values
         self._syntax_only = syntax_only
@@ -292,16 +294,32 @@ class _PrefixStringReader:
         while not out and not self._eof:
             chunk = self._source.read(_READ_BYTES)
             if not chunk:
-                self._eof = True
-                if self._in_string and not self._skipping:
-                    out += self._string
-                else:
-                    if self._structure_carry:
-                        self._pass_structure(b"", out)
-                    if self._number_open:
-                        self._end_number(out)
+                out += self.finish()
                 break
-            self._consume(chunk, out)
+            out += self.feed(chunk)
+        return bytes(out)
+
+    def feed(self, chunk: bytes) -> bytes:
+        """Feed a push reader through the same bounded lexical transport."""
+        if self._eof:
+            raise RuntimeError("JSON lexical transport is finished")
+        out = bytearray()
+        self._consume(chunk, out)
+        return bytes(out)
+
+    def finish(self) -> bytes:
+        """Flush lexical EOF once, preserving incomplete-token failures."""
+        if self._eof:
+            return b""
+        self._eof = True
+        out = bytearray()
+        if self._in_string and not self._skipping:
+            out += self._string
+        else:
+            if self._structure_carry:
+                self._pass_structure(b"", out)
+            if self._number_open:
+                self._end_number(out)
         return bytes(out)
 
     def _pass_structure(self, segment: bytes, out: bytearray, *, chunk_end: bool = False) -> None:
@@ -401,7 +419,7 @@ class _PrefixStringReader:
             self._number_sink(self._number_ordinal, b"", True)
             nonfinite = bytes(self._number_view) in {b"NaN", b"Infinity", b"-Infinity"}
             if nonfinite:
-                out += b"0.0"
+                out += b"0.0" if self._allow_nonfinite else _INVALID_NUMBER_END
             elif self._number_state not in _NUMBER_ACCEPTING or (
                 self._number_is_integer and limit and self._number_digits > limit
             ):
@@ -581,7 +599,7 @@ class _PrefixStringReader:
 class _LineSource:
     """Physical lines of a byte stream, each readable as its own stream."""
 
-    def __init__(self, handle: IO[bytes]) -> None:
+    def __init__(self, handle: _Readable) -> None:
         self._handle = handle
         self._buffer = b""
         self._eof = False

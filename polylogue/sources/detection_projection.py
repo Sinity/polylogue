@@ -349,6 +349,10 @@ def _project_value(
         if rule.array_fold == "first":
             return ([first] if count == 1 else [first, None]), scalarish
         return [witness if matched else first], scalarish
+    from polylogue.schemas.observation_spill import _ScalarTokenReference
+
+    if isinstance(value, _ScalarTokenReference):
+        value = value.read()
     if isinstance(value, Decimal):
         return float(value), True
     return value, True
@@ -489,6 +493,8 @@ def _project_object(
     value: object, rule: DetectorProjection | None, *, scalarish_depth: int | None
 ) -> tuple[object, bool]:
     """:func:`_project_value` over a decoded value; keys are already unique (last value wins)."""
+    from polylogue.schemas.observation_spill import SpilledObject
+
     if rule is None:
         shape: dict[str, object] | list[object] | None = (
             {} if isinstance(value, dict) else [] if isinstance(value, list) else None
@@ -506,12 +512,12 @@ def _project_object(
         selected_fields_only = (
             scalarish_depth is None and rule.mapping_predicate is None and rule.mapping_key_predicate is None
         )
-        structural_entries = not selected_fields_only and hasattr(value, "structure_items")
+        structural_entries = not selected_fields_only and isinstance(value, SpilledObject)
         entries = (
             ((key, value[key]) for key in rule.fields or {} if key in value)
             if selected_fields_only
             else value.structure_items()
-            if structural_entries
+            if isinstance(value, SpilledObject) and structural_entries
             else value.items()
         )
         for key, child in entries:

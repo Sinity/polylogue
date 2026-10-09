@@ -6,15 +6,24 @@ import contextlib
 import io
 import json
 import sqlite3
+from collections.abc import Generator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+from polylogue.core.json import JSONValue
 from polylogue.schemas import observation_spill
 from polylogue.schemas.observation_spill import _ScalarTokenStore
 from polylogue.sources import decoder_json
 from polylogue.sources.decoder_json import DecodedRecordSequence, JsonlDecodeError, _iter_jsonl_stream
 from polylogue.sources.decoders import logger
+from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+
+def _record(value: object) -> dict[str, JSONValue]:
+    assert isinstance(value, dict)
+    return cast(dict[str, JSONValue], value)
 
 
 @pytest.mark.parametrize(
@@ -49,10 +58,10 @@ def test_disk_and_memory_strategies_preserve_legacy_decode_values(monkeypatch: p
 def test_large_jsonl_tape_owns_unknown_scalar_until_final_parser_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original_scratch = observation_spill.scratch_connection_context
+    original_scratch = scratch_connection_context
 
     @contextlib.contextmanager
-    def small_cells(**kwargs):
+    def small_cells(**kwargs: Any) -> Generator[sqlite3.Connection, None, None]:
         with original_scratch(**kwargs) as connection:
             connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 32768)
             yield connection
@@ -60,7 +69,7 @@ def test_large_jsonl_tape_owns_unknown_scalar_until_final_parser_output(
     monkeypatch.setattr(observation_spill, "scratch_connection_context", small_cells)
     original_read = _ScalarTokenStore.read
 
-    def selected(self, kind, ordinal):
+    def selected(self: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
         row = self.connection.execute(
             "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
         ).fetchone()
@@ -81,9 +90,9 @@ def test_large_jsonl_tape_owns_unknown_scalar_until_final_parser_output(
     ):
         # A parser may exhaust its input and only then finish its session.
         retained = list(tape)
-        assert [record["selected"] for record in retained] == [0, 1]
-        assert tape[1]["selected"] == 1
-        assert [record["selected"] for record in tape] == [0, 1]
+        assert [_record(record)["selected"] for record in retained] == [0, 1]
+        assert _record(tape[1])["selected"] == 1
+        assert [_record(record)["selected"] for record in tape] == [0, 1]
     with pytest.raises(RuntimeError, match="closed"):
         len(tape)
 
@@ -92,7 +101,7 @@ def test_record_retry_failure_preserves_physical_error_line(monkeypatch: pytest.
     monkeypatch.setattr(decoder_json, "_JSONL_MEMORY_BYTES", 1)
     raw = b'\n{"selected":1}\n\n{"broken":}\n{"selected":2}\n'
     with contextlib.closing(DecodedRecordSequence.from_jsonl(io.BytesIO(raw), "neutral.jsonl")) as tape:
-        assert [record["selected"] for record in tape] == [1, 2]
+        assert [_record(record)["selected"] for record in tape] == [1, 2]
     with pytest.raises(JsonlDecodeError) as failure:
         DecodedRecordSequence.from_jsonl(io.BytesIO(raw), "neutral.jsonl", fail_on_decode_error=True)
     assert failure.value.line_number == 4
@@ -105,10 +114,10 @@ def test_production_preparation_keeps_unselected_scalar_spilled_and_preserves_ha
 ) -> None:
     from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
 
-    original_scratch = observation_spill.scratch_connection_context
+    original_scratch = scratch_connection_context
 
     @contextlib.contextmanager
-    def small_cells(**kwargs):
+    def small_cells(**kwargs: Any) -> Generator[sqlite3.Connection, None, None]:
         with original_scratch(**kwargs) as connection:
             connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 32768)
             yield connection
@@ -116,7 +125,7 @@ def test_production_preparation_keeps_unselected_scalar_spilled_and_preserves_ha
     monkeypatch.setattr(observation_spill, "scratch_connection_context", small_cells)
     original_read = _ScalarTokenStore.read
 
-    def selected(self, kind, ordinal):
+    def selected(self: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
         row = self.connection.execute(
             "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
         ).fetchone()
@@ -173,7 +182,7 @@ def test_codex_replay_spool_borrows_lazy_nodes_without_reading_unknown_values(
 
 @pytest.mark.parametrize("content", [[1], [None], ["wrong"], [[{}]], [{"text": "neutral"}], [{"type": 1}]])
 def test_codex_recognition_preserves_content_union_acceptance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: list[JSONValue]
 ) -> None:
     from polylogue.sources.parsers.codex import _validate_record
 
@@ -192,7 +201,7 @@ def test_codex_direct_content_unknown_scalar_keeps_original_nested_mapping(
 
     original_read = _ScalarTokenStore.read
 
-    def selected(self, kind, ordinal):
+    def selected(self: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
         row = self.connection.execute(
             "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
         ).fetchone()
@@ -211,7 +220,9 @@ def test_codex_direct_content_unknown_scalar_keeps_original_nested_mapping(
         contextlib.closing(DecodedRecordSequence.from_jsonl(source, "direct.jsonl")) as tape,
     ):
         assert _validate_record(tape[0], index=1) is not None
-        assert tape[0]["content"][0]["text"] == "neutral"
+        content = _record(tape[0])["content"]
+        assert isinstance(content, list)
+        assert _record(content[0])["text"] == "neutral"
 
 
 @pytest.mark.parametrize(
@@ -233,7 +244,7 @@ def test_recognition_strategies_preserve_strict_decoder_contract(monkeypatch: py
     from polylogue.core.json import JSONDecodeError, decode_provider_utf8, loads
     from polylogue.sources.detection_projection import iter_decoded_jsonl_records
 
-    def refuse(_value: str):
+    def refuse(_value: str) -> object:
         raise ValueError("non-finite JSON constant")
 
     cleaned = raw.strip(b" \t\r\n")
@@ -251,7 +262,7 @@ def test_recognition_strategies_preserve_strict_decoder_contract(monkeypatch: py
                 refused_expected = True
     for threshold in (1, 64 * 1024):
         monkeypatch.setattr(decoder_json, "_JSONL_MEMORY_BYTES", threshold)
-        failures = []
+        failures: list[Exception] = []
         encoder = json.JSONEncoder()
         actual = [
             "".join(encoder.iterencode(record))
@@ -269,8 +280,118 @@ def test_recognition_exposes_valid_prefix_before_late_failure(monkeypatch: pytes
     monkeypatch.setattr(decoder_json, "_JSONL_MEMORY_BYTES", 1)
     records = iter_decoded_jsonl_records(io.BytesIO(b'{"selected":1}\n{"broken":}\n'))
     try:
-        assert next(records)["selected"] == 1
+        assert _record(next(records))["selected"] == 1
         with pytest.raises(ijson.JSONError, match="line 2"):
             next(records)
     finally:
         records.close()
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        b'"ok"}',
+        b'"broken\\q"}',
+        b'"broken',
+        b"NaN}",
+        b"Infinity}",
+        b"1e+}",
+        b"01}",
+        b"1e999}",
+        b"1" * 5000 + b"}",
+        b'"bad\xff"}',
+        b'"' + b"x" * (64 * 1024) + b'\\q"}',
+    ],
+)
+@pytest.mark.parametrize("leading", [b"", b'[0,"ignored",', b'[{"own":"previous"},'])
+def test_acquisition_scalar_transport_preserves_completed_prefix_at_each_split(suffix: bytes, leading: bytes) -> None:
+    import ijson
+
+    from polylogue.core.enums import Provider
+    from polylogue.sources.acquisition_boundary import _DocumentValidator
+    from polylogue.sources.dispatch import ForeignOriginContentError
+
+    class PreviousRawParser(_DocumentValidator):
+        def feed(self, chunk: bytes) -> None:
+            if self._failed:
+                return
+            self._seen |= bool(chunk.strip())
+            try:
+                self._parser.send(chunk)
+            except ijson.JSONError:
+                self._failed = True
+            self._drain()
+            if self._failed:
+                self._validate_partial()
+
+        def _drain(self) -> None:
+            for event, value in self._events:
+                self._event(event, value)
+            del self._events[:]
+
+        def finish(self) -> None:
+            if self._failed or not self._seen:
+                return
+            try:
+                self._parser.close()
+            except ijson.JSONError:
+                self._failed = True
+            self._drain()
+            if self._failed or self._depth:
+                self._validate_partial()
+
+    raw = leading + b'{"type":"session_meta","payload":{"id":"neutral"},"unknown":' + suffix
+
+    def observe(kind: type[_DocumentValidator], split: int) -> tuple[str, Provider | type[Exception] | None]:
+        validator = kind(Provider.CLAUDE_CODE, records=True)
+        try:
+            validator.feed(raw[:split])
+            validator.feed(raw[split:])
+            validator.finish()
+        except ForeignOriginContentError as failure:
+            return ("foreign", failure.found)
+        except Exception as failure:
+            return ("exception", type(failure))
+        finally:
+            validator.close()
+        return ("accepted", None)
+
+    splits = range(1, len(raw)) if len(raw) < 512 else (1, 58, 59, len(raw) // 2, len(raw) - 1)
+    for split in splits:
+        assert observe(_DocumentValidator, split) == observe(PreviousRawParser, split), split
+
+
+def test_bound_acquisition_does_not_select_large_unknown_scalar(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.sources.acquisition_boundary import BoundRecordValidator
+
+    original_scratch = scratch_connection_context
+
+    @contextlib.contextmanager
+    def small_cells(**kwargs: Any) -> Generator[sqlite3.Connection, None, None]:
+        with original_scratch(**kwargs) as connection:
+            connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 32768)
+            yield connection
+
+    monkeypatch.setattr(observation_spill, "scratch_connection_context", small_cells)
+    original_read = _ScalarTokenStore.read
+
+    def selected(self: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
+        row = self.connection.execute(
+            "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
+        ).fetchone()
+        assert row is None or row[0] < 4 * 1024 * 1024
+        return original_read(self, kind, ordinal)
+
+    monkeypatch.setattr(_ScalarTokenStore, "read", selected)
+    validator = BoundRecordValidator("neutral.jsonl", Provider.CLAUDE_CODE)
+    try:
+        validator.feed(
+            b'{"type":"user","sessionId":"neutral","message":{"role":"user","content":"selected"},"unknown":"'
+        )
+        for _ in range(64):
+            validator.feed(b"x" * (64 * 1024))
+        validator.feed(b'"}\n')
+        validator.finish()
+    finally:
+        validator.close()

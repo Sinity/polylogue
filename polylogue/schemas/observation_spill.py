@@ -382,6 +382,27 @@ class _ScalarToken:
     ordinal: int
 
 
+@dataclass(frozen=True)
+class _ScalarTokenReference:
+    """A completed event value borrowing its exact lexical token owner."""
+
+    store: _ScalarTokenStore
+    kind: str
+    ordinal: int
+
+    def read(self) -> JSONValue:
+        if (
+            _read_row(
+                self.store.connection,
+                "SELECT 1 FROM json_scalar_tokens WHERE kind=? AND token=?",
+                (self.kind, self.ordinal),
+            )
+            is None
+        ):
+            raise ValueError("incomplete JSON scalar token cannot supply record evidence")
+        return self.store.read(self.kind, self.ordinal)
+
+
 class _ScalarTokenStore:
     """Exact scalar chunks owned by the existing private JSON tree."""
 
@@ -393,6 +414,7 @@ class _ScalarTokenStore:
         self.decoded_bytes = 0
         self.number_integer = True
         self.failure: ValueError | UnicodeError | None = None
+        self.failure_token: tuple[str, int] | None = None
 
     def string(self, ordinal: int, content: bytes, final: bool) -> None:
         from polylogue.core.json_envelope import _prefix_cut
@@ -420,6 +442,8 @@ class _ScalarTokenStore:
             # Let it reject the stream through the tokenizer so its coroutine
             # chain closes normally; never expose a tree after a sink failure.
             self.failure = error
+            if self.failure_token is None:
+                self.failure_token = ("string", ordinal)
             return
         self._store("string", ordinal, decoded)
 
@@ -442,10 +466,11 @@ class _ScalarTokenStore:
         advance_work_progress(bytes=len(content))
 
     def _finish(self, kind: str, ordinal: int) -> None:
-        self.connection.execute(
-            "INSERT INTO json_scalar_tokens VALUES (?, ?, ?, ?)",
-            (kind, ordinal, self.decoded_bytes, "integer" if kind == "number" and self.number_integer else kind),
-        )
+        if self.failure_token != (kind, ordinal):
+            self.connection.execute(
+                "INSERT INTO json_scalar_tokens VALUES (?, ?, ?, ?)",
+                (kind, ordinal, self.decoded_bytes, "integer" if kind == "number" and self.number_integer else kind),
+            )
         self.chunk = 0
         self.decoded_bytes = 0
         self.number_integer = True

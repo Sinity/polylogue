@@ -12,8 +12,9 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
-from typing import IO, Protocol, TypeAlias, TypeGuard, TypeVar, cast, overload
+from typing import IO, TYPE_CHECKING, Protocol, TypeAlias, TypeGuard, TypeVar, cast, overload
 
 import ijson
 
@@ -29,10 +30,19 @@ from polylogue.sources.pickle_spool import PickleSpool
 
 logger = get_logger(__name__)
 
+if TYPE_CHECKING:
+    from polylogue.schemas.observation_spill import StreamedJSONDocument
+
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = dict[str, "JsonValue"] | list["JsonValue"] | JsonScalar
 JsonReadable: TypeAlias = IO[bytes]
+
+
+class JsonlReadable(Protocol):
+    """A borrowed physical-record input needs only bounded byte reads."""
+
+    def read(self, size: int = -1) -> bytes: ...
 
 
 def normalize_ijson_stdlib_numbers(value: object) -> object:
@@ -70,7 +80,7 @@ class DecodedRecordSequence(Sequence[JsonValue]):
 
     def __init__(self, records: Iterable[JsonValue]) -> None:
         self._spool: PickleSpool[JsonValue | _TreeRecordRef] = PickleSpool(indexed=True)
-        self._tree = None
+        self._tree: StreamedJSONDocument | None = None
         self._closed = False
         try:
             iterator = iter(records)
@@ -106,7 +116,7 @@ class DecodedRecordSequence(Sequence[JsonValue]):
     @classmethod
     def from_jsonl(
         cls,
-        handle: JsonReadable | Iterable[bytes],
+        handle: JsonlReadable | Iterable[bytes],
         path_name: str,
         *,
         logger_obj: LoggerLike | None = None,
@@ -153,7 +163,7 @@ class DecodedRecordSequence(Sequence[JsonValue]):
             from polylogue.schemas.observation_spill import _load_node
 
             assert self._tree is not None
-            return cast(JsonValue, _load_node(self._tree.connection, retained.node_id))
+            return _load_node(self._tree.connection, retained.node_id)
         return retained
 
     def __len__(self) -> int:
@@ -460,25 +470,29 @@ def _append_large_jsonl_record(tape: DecodedRecordSequence, source: Path, conver
 def _retain_jsonl_records(
     tape: DecodedRecordSequence,
     logger_obj: LoggerLike,
-    handle: JsonReadable | Iterable[bytes],
+    handle: JsonlReadable | Iterable[bytes],
     path_name: str,
     *,
     fail_on_decode_error: bool,
     repair: bool,
     on_decode_failure: Callable[[Exception], None] | None,
-) -> Iterator[JsonValue]:
+) -> Generator[JsonValue, None, None]:
     from polylogue.core.json_envelope import _LineSource
 
-    def physical_lines() -> Iterator[Iterable[bytes]]:
+    def line_chunks(physical_line: bytes) -> Iterator[bytes]:
+        for start in range(0, len(physical_line), 64 * 1024):
+            yield physical_line[start : start + 64 * 1024]
+
+    def physical_lines() -> Generator[Iterable[bytes], None, None]:
         if callable(getattr(handle, "read", None)):
-            source = _LineSource(cast(JsonReadable, handle))
+            source = _LineSource(cast(JsonlReadable, handle))
             while (line := source.next_line()) is not None:
-                yield iter(lambda: line.read(64 * 1024), b"")
+                yield iter(partial(line.read, 64 * 1024), b"")
         else:
-            iterator = iter(handle)
+            iterator = iter(cast(Iterable[bytes], handle))
             try:
-                for line in iterator:
-                    yield (line[start : start + 64 * 1024] for start in range(0, len(line), 64 * 1024))
+                for physical_line in iterator:
+                    yield line_chunks(physical_line)
             finally:
                 close = getattr(iterator, "close", None)
                 if close is not None:
@@ -496,6 +510,7 @@ def _retain_jsonl_records(
                 if raw == b"":
                     continue
                 previous_records = len(tape)
+                records: list[JsonValue] = []
                 if raw is not None:
                     if repair:
                         records, failed, _error_line = _yield_jsonl_pending(
