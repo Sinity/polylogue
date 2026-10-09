@@ -1534,7 +1534,7 @@ ATTACHMENT_REFS_SPEC = _make_table_spec(
     (
         _raw_column(
             "ref_id",
-            """ref_id                 TEXT GENERATED ALWAYS AS (message_id || ':attachment:' || position) STORED UNIQUE""",
+            """ref_id                 TEXT GENERATED ALWAYS AS (message_id || ':attachment:n:' || native_identity) STORED UNIQUE""",
         ),
         _raw_column(
             "attachment_id",
@@ -1543,6 +1543,10 @@ ATTACHMENT_REFS_SPEC = _make_table_spec(
         # Bare by design: the owning relation is ``_MESSAGE_OWNER_FK``.
         _raw_column("session_id", """session_id             TEXT NOT NULL"""),
         _raw_column("message_id", """message_id             TEXT NOT NULL"""),
+        _raw_column(
+            "native_identity",
+            """native_identity TEXT NOT NULL CHECK(length(native_identity) > 0 AND length(native_identity) % 2 = 0 AND native_identity NOT GLOB '*[^0-9a-f]*')""",
+        ),
         _raw_column("position", """position               INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column(
             "upload_origin",
@@ -1564,7 +1568,7 @@ ATTACHMENT_REFS_SPEC = _make_table_spec(
         # holds it. NULL when the writer had no raw identity.
         _raw_column("supplying_raw_id", """supplying_raw_id       TEXT"""),
     ),
-    table_constraints=("""PRIMARY KEY(message_id, position)""", _MESSAGE_OWNER_FK),
+    table_constraints=("""PRIMARY KEY(message_id, native_identity)""", _MESSAGE_OWNER_FK),
 )
 
 ATTACHMENT_NATIVE_IDS_SPEC = _make_table_spec(

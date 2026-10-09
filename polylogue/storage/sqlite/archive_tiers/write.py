@@ -67,7 +67,7 @@ from polylogue.core.enums import (
     admitted_session_kind,
 )
 from polylogue.core.hook_payload import payload_key_spellings
-from polylogue.core.identity_law import attachment_payload_id
+from polylogue.core.identity_law import attachment_content_id, attachment_native_identity, attachment_reference_id
 from polylogue.core.identity_law import block_id as archive_block_id
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
@@ -75,7 +75,6 @@ from polylogue.core.json import JSONValue
 from polylogue.core.json_envelope import top_level_envelopes
 from polylogue.core.message_native_identity import (
     message_native_key,
-    native_id_from_key,
     native_id_from_storage,
     normalized_message_native_id,
     source_native_id_from_json,
@@ -3031,20 +3030,9 @@ def write_parsed_session_to_archive(
                     # rebuild didn't recreate.
                     t0 = time.perf_counter()
                     _restore_captured_projection_rows(conn, projection_carry_forward)
-                    # The exemption above assumed every carried-forward attachment
-                    # would get its attachment_refs row back. The restore is
-                    # slot-gated, and the two identities disagree about what a slot
-                    # is: _attachment_position derives it from provider_attachment_id
-                    # alone, while _attachment_id also folds path, name, MIME type
-                    # and size. A second acquisition that keeps the provider id but
-                    # changes the metadata therefore takes the slot under a new
-                    # attachment_id, and the old row is never restored -- and was
-                    # excluded from the sweep, so it kept ref_count=1 with no refs.
-                    # Blob GC treats an attachments row bearing the hash as a live
-                    # reference, so the old bytes were pinned forever. Now that the
-                    # restore has run, the exempted ids are settled: the ones that
-                    # really were restored recount to their live refs, and the ones
-                    # the slot moved away from recount to zero and are swept.
+                    # Recount every previously retained row after native-reference
+                    # restoration; a replaced payload descriptor may have lost
+                    # its last reference while omitted native objects survive.
                     post_restore_attachment_ids: Iterable[str] = carried_forward_attachment_ids
                     if projection_carry_forward.scratch is not None:
                         post_restore_attachment_ids = _UnionSet(
@@ -5532,7 +5520,7 @@ class _UnionMap(Mapping[str, str | None]):
                 return
             after = str(rows[-1][0])
             first = False
-            yield from (native_id_from_key(str(row[0])) for row in rows)
+            yield from (str(row[0]) for row in rows)
 
     def __len__(self) -> int:
         with self.scratch.access() as conn:
@@ -5577,6 +5565,7 @@ def _capture_session_projection_rows(
                 "source_url",
                 "caption",
                 "supplying_raw_id",
+                "native_identity",
             ),
             "paste_spans": (
                 "message_id",
@@ -5635,12 +5624,12 @@ def _capture_session_projection_rows(
             "attachment_native_ids",
             ("ref_id", "id_kind", "native_id"),
             "SELECT ani.rowid FROM attachment_native_ids ani JOIN attachment_refs ar "
-            "ON ani.ref_id=ar.message_id || ':attachment:' || ar.position WHERE ar.session_id=?",
+            "ON ani.ref_id=ar.ref_id WHERE ar.session_id=?",
             (session_id,),
         )
     if scratch is not None:
         selections = {
-            "attachment_refs": "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption, supplying_raw_id FROM attachment_refs WHERE session_id = ?",
+            "attachment_refs": "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption, supplying_raw_id, native_identity FROM attachment_refs WHERE session_id = ?",
             "paste_spans": "SELECT message_id, session_id, position, start_offset, end_offset, boundary_state, source_event_id, source_marker, content_hash, observed_at_ms FROM paste_spans WHERE session_id = ?",
             "file_edits": "SELECT tool_use_block_id, session_id, message_id, file_path, structured_patch_json, original_file, old_string, new_string, replace_all, user_modified, observed_at_ms FROM file_edits WHERE session_id = ?",
             "web_content_constructs": "SELECT session_id, message_id, block_id, position, provider, construct_type, provider_key, title, url, text, source_id, group_id, group_title, query, asset_pointer, mime_type, status, task_id, task_type, rank, start_index, end_index FROM web_content_constructs WHERE session_id = ?",
@@ -5660,7 +5649,7 @@ def _capture_session_projection_rows(
         with connection_cursor(
             conn,
             "SELECT ani.ref_id, ani.id_kind, ani.native_id FROM attachment_native_ids ani "
-            "JOIN attachment_refs ar ON ani.ref_id = ar.message_id || ':attachment:' || ar.position "
+            "JOIN attachment_refs ar ON ani.ref_id = ar.ref_id "
             "WHERE ar.session_id = ?",
             (session_id,),
         ) as _input_cursor:
@@ -5685,11 +5674,11 @@ def _capture_session_projection_rows(
     with connection_cursor(
         conn,
         "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, "
-        "caption, supplying_raw_id FROM attachment_refs WHERE session_id = ?",
+        "caption, supplying_raw_id, native_identity FROM attachment_refs WHERE session_id = ?",
         (session_id,),
     ) as _input_cursor:
         attachment_refs = _input_cursor.fetchall()
-    ref_ids = [f"{row[2]}:attachment:{row[3]}" for row in attachment_refs]
+    ref_ids = [attachment_reference_id(str(row[2]), str(row[10])) for row in attachment_refs]
     attachment_native_ids: list[sqlite3.Row] = []
     if ref_ids:
         placeholders = ",".join("?" for _ in ref_ids)
@@ -5750,8 +5739,9 @@ def _restore_captured_projection_rows(
     a message the field-path union deliberately did not reinject (the
     prefix-sharing-parent guard) must not have its sidecar evidence restored
     either. Block references keep immutable Source identities when display
-    positions change. Attachment and paste-span positions are independent
-    per-message ordinals, unrelated to transcript order.
+    positions change. Attachment references retain exact native identity under
+    their owning message; display position is not identity. Paste-span positions
+    are independent per-message ordinals, unrelated to transcript order.
     """
     captured = carry_forward.captured
     live_message_ids = carry_forward.live_message_ids
@@ -5762,11 +5752,10 @@ def _restore_captured_projection_rows(
         scratch.conn.execute("DELETE FROM restored_attachment_ref")
     for row in captured.attachment_refs:
         message_id = cast(str, row[2])
-        position = row[3]
         if message_id not in live_message_ids:
             continue
         exists = conn.execute(
-            "SELECT 1 FROM attachment_refs WHERE message_id = ? AND position = ?", (message_id, position)
+            "SELECT 1 FROM attachment_refs WHERE message_id = ? AND native_identity = ?", (message_id, row[10])
         ).fetchone()
         if exists is None:
             # ``supplying_raw_id`` travels with the row: the reference comes
@@ -5774,11 +5763,11 @@ def _restore_captured_projection_rows(
             conn.execute(
                 "INSERT OR IGNORE INTO attachment_refs "
                 "(attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, "
-                "caption, supplying_raw_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "caption, supplying_raw_id, native_identity) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 row,
             )
-            ref_id = f"{message_id}:attachment:{position}"
+            ref_id = attachment_reference_id(message_id, str(row[10]))
             if scratch is None:
                 restored_attachment_ref_ids.add(ref_id)
             else:
@@ -7422,26 +7411,20 @@ def _write_attachments(
                 else:
                     inherited_unreferenced.add(attachment.acquisition_key)
                     unresolved[attachment_id] = AttachmentOwnerResolutionReason.INHERITED_OWNER_UNREFERENCED
-    for message_id, message_group in attachments_by_message.items():
-        current_ids = {identity(attachment) for attachment in message_group}
-        occupied = (
-            {
-                int(row[0])
-                for row in conn.execute(
-                    "SELECT position FROM attachment_refs WHERE message_id = ? AND attachment_id NOT IN ({})".format(
-                        ",".join("?" for _ in current_ids)
-                    ),
-                    (message_id, *sorted(current_ids)),
-                ).fetchall()
-            }
-            if current_ids
-            else set()
-        )
-        attachment_positions.update(
-            _attachment_reference_positions(
-                message_group, occupied_positions=occupied, preacquired_blobs=preacquired_blobs
-            )
-        )
+    for message_group in attachments_by_message.values():
+        versions: dict[str, str] = {}
+        for attachment in message_group:
+            native_identity = _attachment_reference_native_identity(attachment)
+            attachment_id = identity(attachment)
+            previous = versions.setdefault(native_identity, attachment_id)
+            if previous != attachment_id:
+                raise AttachmentReferenceAmbiguityError("one native attachment identity has competing objects")
+        native_identities = sorted({_attachment_reference_native_identity(item) for item in message_group})
+        positions = {native_identity: position for position, native_identity in enumerate(native_identities)}
+        for attachment in message_group:
+            attachment_positions[attachment.acquisition_key] = positions[
+                _attachment_reference_native_identity(attachment)
+            ]
     touched_attachment_ids: set[str] = set()
     for attachment in attachments:
         attachment_id = identity(attachment)
@@ -7476,29 +7459,27 @@ def _write_attachments(
         touched_attachment_ids.add(attachment_id)
         _write_attachment_row(conn, attachment_id, attachment, preacquired_blobs)
         ref_position = attachment_positions[attachment.acquisition_key]
-        ref_id = f"{message_id}:attachment:{ref_position}"
+        native_identity = _attachment_reference_native_identity(attachment)
+        ref_id = attachment_reference_id(message_id, native_identity)
         # Bulk rebuilds may suspend FK enforcement. Mirror REPLACE's cascade
         # explicitly so identifiers from an older projection cannot survive.
         existing_ref = conn.execute(
-            "SELECT attachment_id FROM attachment_refs WHERE message_id = ? AND position = ?",
-            (message_id, ref_position),
+            "SELECT attachment_id FROM attachment_refs WHERE message_id = ? AND native_identity = ?",
+            (message_id, native_identity),
         ).fetchone()
-        if existing_ref is not None and existing_ref[0] != attachment_id:
-            raise ValueError(
-                "distinct attachments resolved to one reference identity: "
-                f"message_id={message_id!r}, position={ref_position}, "
-                f"existing_attachment_id={existing_ref[0]!r}, incoming_attachment_id={attachment_id!r}"
-            )
+        if existing_ref is not None:
+            touched_attachment_ids.add(str(existing_ref[0]))
         conn.execute("DELETE FROM attachment_native_ids WHERE ref_id = ?", (ref_id,))
         conn.execute(
             """
             INSERT INTO attachment_refs (
                 attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url,
-                caption, supplying_raw_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(message_id, position) DO UPDATE SET
+                caption, supplying_raw_id, native_identity
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id, native_identity) DO UPDATE SET
                 attachment_id = excluded.attachment_id,
                 session_id = excluded.session_id,
+                position = excluded.position,
                 upload_origin = excluded.upload_origin,
                 direction = excluded.direction,
                 producer_ref = excluded.producer_ref,
@@ -7507,7 +7488,6 @@ def _write_attachments(
                 -- This acquisition holds the reference too. A write with no
                 -- raw identity keeps the supplier already known to hold it.
                 supplying_raw_id = COALESCE(excluded.supplying_raw_id, attachment_refs.supplying_raw_id)
-            WHERE attachment_refs.attachment_id = excluded.attachment_id
             """,
             (
                 attachment_id,
@@ -7520,6 +7500,7 @@ def _write_attachments(
                 _sqlite_text(_attachment_source_url(attachment)),
                 _sqlite_text(_attachment_caption(attachment)),
                 supplying_raw_id,
+                native_identity,
             ),
         )
         _write_attachment_native_ids(conn, ref_id, attachment)
@@ -17470,73 +17451,30 @@ def _attachment_id(_session_id: str, attachment: ParsedAttachment, *, blob_hash:
     merely because a native file id, name and size agree. Acquired rows share
     only when their descriptor and exact payload hash agree.
     """
-    descriptor_id = _hash_bytes(
-        "attachment",
-        attachment.provider_attachment_id,
-        attachment.provider_file_id or "",
-        attachment.provider_drive_id or "",
-        attachment.path or "",
-        attachment.name or "",
-        attachment.mime_type or "",
-        str(attachment.size_bytes or 0),
-    ).hex()
     if blob_hash is None:
         if attachment.inline_bytes is not None:
             blob_hash = hashlib.sha256(attachment.inline_bytes).digest()
         elif attachment.precomputed_blob is not None:
             blob_hash = bytes.fromhex(attachment.precomputed_blob[0])
-    return descriptor_id if blob_hash is None else attachment_payload_id(descriptor_id, blob_hash)
+    return attachment_content_id(
+        attachment.provider_attachment_id,
+        file_id=attachment.provider_file_id,
+        drive_id=attachment.provider_drive_id,
+        path=attachment.path,
+        name=attachment.name,
+        media_type=attachment.mime_type,
+        declared_size=attachment.size_bytes,
+        blob_hash=blob_hash,
+    )
 
 
-def _attachment_position(attachment: ParsedAttachment) -> int:
-    digest = hashlib.sha256()
-    digest.update(attachment.provider_attachment_id.encode("utf-8", errors="surrogatepass"))
-    return int.from_bytes(digest.digest()[:4], "big")
+class AttachmentReferenceAmbiguityError(ValueError):
+    """One acquisition declares competing objects under one native reference."""
 
 
-def _attachment_reference_positions(
-    attachments: Iterable[ParsedAttachment],
-    *,
-    occupied_positions: Iterable[int] = (),
-    preacquired_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
-) -> dict[object, int]:
-    """Return stable per-object reference positions without silent collisions.
-
-    The historical four-byte position remains the primary identity so ordinary
-    archives retain their existing reference ids. When distinct attachment
-    identities share that truncated value, the canonical attachment-id order
-    keeps the first identity at the historical position and assigns the rest a
-    deterministic full-identity-derived position with collision probing. The
-    result is independent of parser/list order and is shared by write and
-    closure relink routes.
-    """
-    attachments_by_identity: dict[str, list[ParsedAttachment]] = {}
-    for attachment in attachments:
-        acquired = (preacquired_blobs or {}).get(attachment.acquisition_key)
-        attachment_id = _attachment_id("", attachment, blob_hash=acquired[0] if acquired is not None else None)
-        attachments_by_identity.setdefault(attachment_id, []).append(attachment)
-
-    groups: dict[int, list[tuple[str, list[ParsedAttachment]]]] = defaultdict(list)
-    for attachment_id, equivalent_attachments in attachments_by_identity.items():
-        groups[_attachment_position(equivalent_attachments[0])].append((attachment_id, equivalent_attachments))
-
-    occupied = {int(position) for position in occupied_positions}
-    assigned: dict[object, int] = {}
-    for base_position, identity_group in sorted(groups.items()):
-        for collision_index, (attachment_id, equivalent_attachments) in enumerate(sorted(identity_group)):
-            if collision_index == 0 and base_position not in occupied:
-                position = base_position
-            else:
-                position = int.from_bytes(
-                    hashlib.sha256(f"attachment-reference:{attachment_id}".encode()).digest()[:8],
-                    "big",
-                ) & ((1 << 63) - 1)
-                while position in occupied:
-                    position = (position + 1) & ((1 << 63) - 1)
-            occupied.add(position)
-            for attachment in equivalent_attachments:
-                assigned[attachment.acquisition_key] = position
-    return assigned
+def _attachment_reference_native_identity(attachment: ParsedAttachment) -> str:
+    """Use the exact Source native ID; presentation and bytes do not rename it."""
+    return attachment_native_identity(attachment.provider_attachment_id)
 
 
 def _acquire_attachment_blob(

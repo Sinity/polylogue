@@ -6273,7 +6273,7 @@ def test_full_replace_preserves_distinct_attachments_with_colliding_positions(tm
     """A truncated positional hash must not let one attachment replace another.
 
     These are the certification witness ids: both produce the historical
-    four-byte ``_attachment_position`` value ``0xf5f6e7cd``.
+    four-byte native-ID hash value ``0xf5f6e7cd``.
     """
     conn = _connect(tmp_path / "index.db")
     try:

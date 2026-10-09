@@ -239,8 +239,8 @@ def _seed_two_sessions(conn: sqlite3.Connection) -> tuple[str, list[str]]:
 # contradictory insert can only fail for the reason under test.
 _OWNER_ROWS: dict[str, Callable[[str, list[str], str, int], tuple[str, tuple[object, ...]]]] = {
     "attachment_refs": lambda message_id, blocks, session_id, slot: (
-        "INSERT INTO attachment_refs (attachment_id, session_id, message_id, position) VALUES ('att-1', ?, ?, ?)",
-        (session_id, message_id, slot),
+        "INSERT INTO attachment_refs (attachment_id, session_id, message_id, position, native_identity) VALUES ('att-1', ?, ?, ?, ?)",
+        (session_id, message_id, slot, f"fixture-{slot}".encode().hex()),
     ),
     "paste_spans": lambda message_id, blocks, session_id, slot: (
         "INSERT INTO paste_spans (message_id, session_id, position, boundary_state, content_hash) "

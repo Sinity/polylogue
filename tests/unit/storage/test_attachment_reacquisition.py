@@ -181,3 +181,274 @@ def test_metadata_replay_does_not_borrow_another_captures_acquired_size(
         assert _ref_count(conn) == 2
     finally:
         conn.close()
+
+
+def test_colliding_native_attachment_insertion_keeps_the_existing_reference(tmp_path: Path) -> None:
+    from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
+    from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
+
+    attachments = [
+        ParsedAttachment(provider_attachment_id=native_id, message_provider_id="m", name=native_id)
+        for native_id in ("cert-collision-50449", "cert-collision-111329")
+    ]
+    inserted, original = sorted(attachments, key=lambda item: _attachment_id("", item))
+    session = ParsedSession(
+        source_name="chatgpt-export",
+        provider_session_id="stable-collision",
+        messages=[ParsedMessage(provider_message_id="m", role="user", text="files")],
+        attachments=[original],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        write_fixture_index_session(conn, session, raw_id="raw-original")
+
+        def reference(native_id: str) -> tuple[str, str]:
+            return tuple(
+                conn.execute(
+                    "SELECT r.ref_id, r.supplying_raw_id FROM attachment_refs r "
+                    "JOIN attachment_native_ids n ON n.ref_id=r.ref_id "
+                    "WHERE n.id_kind='attachment' AND n.native_id=?",
+                    (native_id,),
+                ).fetchone()
+            )
+
+        before = reference(original.provider_attachment_id)
+        write_fixture_index_session(
+            conn,
+            session.model_copy(update={"attachments": [original, inserted]}),
+            raw_id="raw-expanded",
+            force_replace=True,
+        )
+        after = reference(original.provider_attachment_id)
+        assert after[0] == before[0]
+        assert reference(inserted.provider_attachment_id)[0] != before[0]
+        assert after[1] == "raw-expanded"
+        write_fixture_index_session(
+            conn,
+            session.model_copy(update={"attachments": [inserted, original]}),
+            raw_id="raw-reordered",
+            force_replace=True,
+        )
+        assert reference(original.provider_attachment_id)[0] == before[0]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "native_ids",
+    [
+        (" ", "  "),
+        ("opaque:a", "opaque:b"),
+        ("\ud83d\ude00", "😀"),
+        ("\ud800", "\ufffd"),
+    ],
+)
+def test_source_native_identity_is_injective_in_the_actual_writer(tmp_path: Path, native_ids: tuple[str, str]) -> None:
+    from polylogue.core.identity_law import attachment_native_identity
+    from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
+
+    session = ParsedSession(
+        source_name="chatgpt-export",
+        provider_session_id="exact-native",
+        messages=[ParsedMessage(provider_message_id="m", role="user", text="files")],
+        attachments=[
+            ParsedAttachment(provider_attachment_id=native_id, message_provider_id="m", name="file")
+            for native_id in native_ids
+        ],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        write_fixture_index_session(conn, session, raw_id="raw-exact")
+        rows = conn.execute(
+            "SELECT ref_id,native_identity,supplying_raw_id FROM attachment_refs ORDER BY native_identity"
+        ).fetchall()
+        assert len(rows) == 2
+        assert len({row["ref_id"] for row in rows}) == 2
+        assert {row["native_identity"] for row in rows} == {
+            attachment_native_identity(native_id) for native_id in native_ids
+        }
+        assert {bytes.fromhex(row["native_identity"]).decode("utf-8", errors="surrogatepass") for row in rows} == set(
+            native_ids
+        )
+        assert {row["supplying_raw_id"] for row in rows} == {"raw-exact"}
+    finally:
+        conn.close()
+
+
+def test_optional_native_enrichment_does_not_rename_the_attachment_reference(tmp_path: Path) -> None:
+    from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
+
+    original = ParsedAttachment(provider_attachment_id="opaque-native", message_provider_id="m", name="before")
+    session = ParsedSession(
+        source_name="chatgpt-export",
+        provider_session_id="native-enrichment",
+        messages=[ParsedMessage(provider_message_id="m", role="user", text="file")],
+        attachments=[original],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        write_fixture_index_session(conn, session, raw_id="raw-before")
+        ref_id = conn.execute("SELECT ref_id FROM attachment_refs").fetchone()[0]
+        enriched = original.model_copy(
+            update={"provider_file_id": "file", "provider_drive_id": "drive", "name": "renamed"}
+        )
+        write_fixture_index_session(
+            conn, session.model_copy(update={"attachments": [enriched]}), raw_id="raw-enriched", force_replace=True
+        )
+        rows = conn.execute("SELECT ref_id,supplying_raw_id FROM attachment_refs").fetchall()
+        assert [tuple(row) for row in rows] == [(ref_id, "raw-enriched")]
+        assert conn.execute("SELECT display_name FROM attachments").fetchone()[0] == "renamed"
+    finally:
+        conn.close()
+
+
+def test_missing_native_attachment_identity_is_a_visible_refusal(tmp_path: Path) -> None:
+    from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
+
+    session = ParsedSession(
+        source_name="chatgpt-export",
+        provider_session_id="missing-native",
+        messages=[ParsedMessage(provider_message_id="m", role="user", text="file")],
+        attachments=[ParsedAttachment(provider_attachment_id="", message_provider_id="m")],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        with pytest.raises(ValueError, match="declared native identity"):
+            write_fixture_index_session(conn, session, raw_id="raw-missing")
+        assert conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("payload", [None, b"AA"])
+@pytest.mark.parametrize("native_ids", [("cert-collision-50449", "cert-collision-111329"), ("\ud83d\ude00", "😀")])
+def test_actual_attachment_publication_and_index_share_exact_native_references(
+    tmp_path: Path, native_ids: tuple[str, str], payload: bytes | None
+) -> None:
+    import json
+
+    from polylogue.material_protocol.v1 import RevisionManifest, decode_session_revision, verify_revision
+    from polylogue.sinex.material_adapter import encode_parsed_session_publication
+    from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
+
+    session = ParsedSession(
+        source_name="claude-code",
+        provider_session_id="s1",
+        messages=[ParsedMessage(provider_message_id="m", role="user", text="files")],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id=native_id,
+                message_provider_id="m",
+                name="file",
+                inline_bytes=payload,
+                provider_file_id="file",
+                provider_drive_id="drive",
+                size_bytes=999,
+            )
+            for native_id in native_ids
+        ],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session_id = write_fixture_index_session(
+            conn,
+            session,
+            raw_id="raw-wire",
+            preacquired_attachment_blobs=_preacquired(BlobStore(tmp_path / "blob"), session),
+        )
+        publication = encode_parsed_session_publication(session, session_id=session_id)
+        manifest = RevisionManifest.from_dict(json.loads(publication.manifest_bytes))
+        names = dict(publication.segments)
+        segments = {
+            descriptor.index: names[descriptor.filename] for descriptor in (*manifest.segments, manifest.head_segment)
+        }
+        verify_revision(manifest, segments)
+        decoded = decode_session_revision(manifest, segments)
+        wire_refs = {
+            (attachment["record_id"], attachment["native_identity"], attachment["attachment_id"])
+            for message in decoded.messages
+            for attachment in message.attachments
+        }
+        index_refs = {
+            tuple(row) for row in conn.execute("SELECT ref_id,native_identity,attachment_id FROM attachment_refs")
+        }
+        assert len(wire_refs) == 2
+        assert wire_refs == index_refs
+        assert manifest.semantics_version == 8
+        assert {gap.record_id for gap in manifest.fidelity_gaps if gap.scope == "attachment"} == {
+            row[0] for row in index_refs
+        }
+        assert {attachment["byte_count"] for message in decoded.messages for attachment in message.attachments} == {
+            len(payload) if payload is not None else 999
+        }
+    finally:
+        conn.close()
+
+
+def test_retained_source_union_preserves_an_omitted_colliding_native_reference(tmp_path: Path) -> None:
+    import json
+
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.index_writer import write_fixture_retained_session
+
+    with write_lease("test.native-attachment-capture", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    original_id, inserted_id = "cert-collision-50449", "cert-collision-111329"
+
+    def acquire(native_id: str, revision: int) -> tuple[ParsedSession, str]:
+        capture = _capture(extracted_content=None)
+        messages = capture["chat_messages"]
+        assert isinstance(messages, list)
+        messages[0]["files"][0].update({"file_uuid": native_id, "uuid": native_id, "file_name": native_id})
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CLAUDE_AI,
+                payload=json.dumps(capture).encode(),
+                source_path=f"native-capture-{revision}.json",
+                canonical_source_path=f"native-capture-{revision}.json",
+                acquired_at_ms=revision,
+            )
+            archive.commit()
+        return parse_ai(capture, "native-capture"), raw_id
+
+    try:
+        original, raw_original = acquire(original_id, 1)
+        write_fixture_retained_session(conn, original, raw_id=raw_original)
+        before = tuple(conn.execute("SELECT ref_id,supplying_raw_id FROM attachment_refs").fetchone())
+        inserted, raw_inserted = acquire(inserted_id, 2)
+        write_fixture_retained_session(conn, inserted, raw_id=raw_inserted)
+        rows = conn.execute("SELECT ref_id,native_identity,supplying_raw_id FROM attachment_refs").fetchall()
+        assert len(rows) == 2
+        old = next(row for row in rows if bytes.fromhex(row["native_identity"]).decode() == original_id)
+        new = next(row for row in rows if bytes.fromhex(row["native_identity"]).decode() == inserted_id)
+        assert (old["ref_id"], old["supplying_raw_id"]) == before
+        assert new["ref_id"] != before[0]
+        assert new["supplying_raw_id"] == raw_inserted
+    finally:
+        conn.close()
+
+
+def test_one_native_reference_cannot_choose_between_competing_objects(tmp_path: Path) -> None:
+    from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
+    from polylogue.storage.sqlite.archive_tiers.write import AttachmentReferenceAmbiguityError
+
+    session = ParsedSession(
+        source_name="chatgpt-export",
+        provider_session_id="competing-native",
+        messages=[ParsedMessage(provider_message_id="m", role="user", text="files")],
+        attachments=[
+            ParsedAttachment(provider_attachment_id="one-native", message_provider_id="m", provider_file_id=file_id)
+            for file_id in ("file-a", "file-b")
+        ],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        with pytest.raises(AttachmentReferenceAmbiguityError, match="competing objects"):
+            write_fixture_index_session(conn, session, raw_id="raw-contested")
+        assert conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 0
+    finally:
+        conn.close()

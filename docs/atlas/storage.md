@@ -636,7 +636,16 @@ supplier and acquisition coordinate have retained Source bytes or a current
 provider observation acquires them. One bounded window can share one provider
 observation; a later window cannot infer unchanged content from a native file
 ID. Publication relinks only the measured reference to its payload-version
-row and sweeps unreferenced descriptor rows. Existing readers and GC continue
+row and sweeps unreferenced descriptor rows. Attachment references use the
+owning message and the exact provider attachment native ID, encoded as UTF-8
+with surrogatepass and full lowercase hex in `attachment_refs.native_identity`.
+The generated reference is `{message_id}:attachment:n:{native_identity}`;
+position states display order only. Inserting a different native attachment,
+renaming presentation fields, acquiring a byte revision or enriching optional
+file/Drive identifiers does not rename this reference. One acquisition that
+declares competing objects under the same native ID is explicitly refused.
+Old positional User tokens remain untouched and unresolved; no alias or
+migration guesses their original object. Existing readers and GC continue
 to follow `attachment_refs` and `attachments.blob_hash`; Source evidence is
 never rewritten to match an Index observation. A persisted Ops keyset position
 advances only after window publication, wraps over retryable debt, and resumes

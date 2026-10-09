@@ -224,12 +224,15 @@ def _insert_attachment_row(
     conn.execute(
         """
         INSERT INTO attachment_refs (
-            attachment_id, session_id, message_id, position, upload_origin
-        ) VALUES (?, 'gemini-cli-session:session-1', 'gemini-cli-session:session-1:message-1', 0, ?)
+            native_identity, attachment_id, session_id, message_id, position, upload_origin
+        ) VALUES (?, ?, 'gemini-cli-session:session-1', 'gemini-cli-session:session-1:message-1', 0, ?)
         """,
-        (attachment_id, upload_origin),
+        ((provider_attachment_id or attachment_id).encode().hex(), attachment_id, upload_origin),
     )
-    ref_id = "gemini-cli-session:session-1:message-1:attachment:0"
+    ref_id = (
+        "gemini-cli-session:session-1:message-1:attachment:n:"
+        + (provider_attachment_id or attachment_id).encode().hex()
+    )
     native_rows = [
         ("attachment", provider_attachment_id),
         ("file", provider_file_id),
@@ -310,13 +313,13 @@ async def test_attachment_identity_lookup_uses_stored_columns(tmp_path: Path) ->
         )
         bootstrap.execute(
             """INSERT INTO attachment_refs (
-                attachment_id, session_id, message_id, position, upload_origin
-            ) VALUES (?, ?, ?, ?, ?)""",
+                native_identity, attachment_id, session_id, message_id, position, upload_origin
+            ) VALUES ('70726f762d6174742d31', ?, ?, ?, ?, ?)""",
             ("att-1", "gemini-cli-session:gemini-1", "gemini-cli-session:gemini-1:msg-1", 0, "drive"),
         )
         bootstrap.executemany(
             """INSERT INTO attachment_native_ids (ref_id, id_kind, native_id)
-            VALUES ('gemini-cli-session:gemini-1:msg-1:attachment:0', ?, ?)""",
+            VALUES ('gemini-cli-session:gemini-1:msg-1:attachment:n:70726f762d6174742d31', ?, ?)""",
             [("attachment", "prov-att-1"), ("file", "drive-file-1"), ("drive", "drive-root-1")],
         )
         bootstrap.commit()
@@ -396,7 +399,7 @@ async def test_contested_native_id_reads_as_unresolved_not_the_lexical_first(tmp
         )
         bootstrap.execute(
             "INSERT INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES (?, 'file', ?)",
-            ("gemini-cli-session:session-1:message-1:attachment:0", "drive-file-z"),
+            ("gemini-cli-session:session-1:message-1:attachment:n:70726f762d6174742d31", "drive-file-z"),
         )
         bootstrap.commit()
     finally:

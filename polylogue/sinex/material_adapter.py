@@ -29,7 +29,15 @@ from polylogue.core.enums import (
     SessionKind,
     ToolOutcome,
 )
-from polylogue.core.identity_law import split_message_local_id
+from polylogue.core.identity_law import (
+    attachment_content_id,
+    attachment_native_identity,
+    attachment_reference_id,
+    split_message_local_id,
+)
+from polylogue.core.identity_law import (
+    message_id as archive_message_id,
+)
 from polylogue.core.json import JSONValue
 from polylogue.core.message_native_identity import (
     message_native_key,
@@ -291,18 +299,38 @@ def _parsed_block_fidelity_gap(
 
 
 def _parsed_attachment_input(position: int, attachment: ParsedAttachment) -> AttachmentInput:
-    blob_sha = hashlib.sha256(attachment.inline_bytes).hexdigest() if attachment.inline_bytes is not None else None
-    byte_count = attachment.size_bytes
-    if byte_count is None and attachment.inline_bytes is not None:
-        byte_count = len(attachment.inline_bytes)
+    blob_sha = (
+        hashlib.sha256(attachment.inline_bytes).hexdigest()
+        if attachment.inline_bytes is not None
+        else attachment.precomputed_blob[0]
+        if attachment.precomputed_blob is not None
+        else None
+    )
+    byte_count = (
+        len(attachment.inline_bytes)
+        if attachment.inline_bytes is not None
+        else attachment.precomputed_blob[1]
+        if attachment.precomputed_blob is not None
+        else attachment.size_bytes or 0
+    )
     return AttachmentInput(
         position=position,
-        attachment_id=attachment.provider_attachment_id,
+        attachment_id=attachment_content_id(
+            attachment.provider_attachment_id,
+            file_id=attachment.provider_file_id,
+            drive_id=attachment.provider_drive_id,
+            path=attachment.path,
+            name=attachment.name,
+            media_type=attachment.mime_type,
+            declared_size=attachment.size_bytes,
+            blob_hash=bytes.fromhex(blob_sha) if blob_sha is not None else None,
+        ),
+        native_identity=attachment_native_identity(attachment.provider_attachment_id),
         display_name=attachment.name,
         media_type=attachment.mime_type,
         byte_count=max(0, byte_count or 0),
         blob_sha256=blob_sha,
-        acquisition_status="acquired" if attachment.inline_bytes is not None else "unfetched",
+        acquisition_status="acquired" if blob_sha is not None else "unfetched",
         upload_origin=attachment.upload_origin,
         direction=attachment.direction,
         producer_ref=attachment.producer_ref,
@@ -312,7 +340,7 @@ def _parsed_attachment_input(position: int, attachment: ParsedAttachment) -> Att
 
 
 def _parsed_attachment_fidelity_gap(
-    session_id: str,
+    message_id: str,
     attachment: ParsedAttachment,
 ) -> FidelityGapInput | None:
     unsupported = [
@@ -329,7 +357,7 @@ def _parsed_attachment_fidelity_gap(
         return None
     return FidelityGapInput(
         scope="attachment",
-        record_id=f"{session_id}:attachment:{attachment.provider_attachment_id}",
+        record_id=attachment_reference_id(message_id, attachment_native_identity(attachment.provider_attachment_id)),
         gap_kind="unsupported_normalized_fields",
         detail="material-protocol v1 has no field for: " + ", ".join(unsupported),
     )
@@ -561,7 +589,15 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
         attachment_inputs: list[AttachmentInput] = []
         for attachment_position, attachment in enumerate(anchored):
             attachment_inputs.append(_parsed_attachment_input(attachment_position, attachment))
-            gap = _parsed_attachment_fidelity_gap(session_id, attachment)
+            gap = _parsed_attachment_fidelity_gap(
+                archive_message_id(
+                    session_id,
+                    native_message_id,
+                    content_identity=content_identities[index][0],
+                    content_occurrence=content_identities[index][1],
+                ),
+                attachment,
+            )
             if gap is not None:
                 fidelity_gaps.append(gap)
         unsupported_message_fields = _unsupported_fields(message, _MESSAGE_FIELDS, frozenset({"active_leaf_fallback"}))
@@ -608,7 +644,7 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
         fidelity_gaps.append(
             FidelityGapInput(
                 scope="attachment",
-                record_id=f"{session_id}:attachment-anchor:native:{message_provider_id}",
+                record_id=f"{session_id}:attachment-anchor:{message_native_key(message_provider_id)}",
                 gap_kind="unresolved_anchor",
                 detail="attachment referenced an absent or ambiguous message anchor in the accepted session",
             )
@@ -619,7 +655,11 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
         fidelity_gaps.append(
             FidelityGapInput(
                 scope="attachment",
-                record_id=attachment.provider_attachment_id or f"{session_id}:attachment[{index}]",
+                record_id=(
+                    f"{session_id}:attachment-unbound:n:{attachment_native_identity(attachment.provider_attachment_id)}"
+                    if attachment.provider_attachment_id
+                    else f"{session_id}:attachment[{index}]"
+                ),
                 gap_kind="unresolved_anchor",
                 detail="material-protocol v1 requires a message anchor; source attachment had none",
             )

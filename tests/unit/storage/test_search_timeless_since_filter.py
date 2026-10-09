@@ -188,8 +188,8 @@ async def test_attachment_identity_search_since_filter_includes_timeless_session
         )
         bootstrap.execute(
             """INSERT INTO attachment_refs (
-                attachment_id, session_id, message_id, position, upload_origin
-            ) VALUES (?, ?, ?, ?, ?)""",
+                native_identity, attachment_id, session_id, message_id, position, upload_origin
+            ) VALUES ('70726f762d6174742d74696d656c657373', ?, ?, ?, ?, ?)""",
             (
                 "att-timeless",
                 "gemini-cli-session:timeless-attachment",
@@ -200,7 +200,7 @@ async def test_attachment_identity_search_since_filter_includes_timeless_session
         )
         bootstrap.execute(
             """INSERT INTO attachment_native_ids (ref_id, id_kind, native_id)
-            VALUES ('gemini-cli-session:timeless-attachment:msg-1:attachment:0', 'attachment', 'prov-att-timeless')"""
+            VALUES ('gemini-cli-session:timeless-attachment:msg-1:attachment:n:70726f762d6174742d74696d656c657373', 'attachment', 'prov-att-timeless')"""
         )
         bootstrap.commit()
     finally:

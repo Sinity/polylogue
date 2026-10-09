@@ -57,6 +57,7 @@ class BlockInput:
 class AttachmentInput:
     position: int
     attachment_id: str
+    native_identity: str
     display_name: str | None = None
     media_type: str | None = None
     byte_count: int = 0

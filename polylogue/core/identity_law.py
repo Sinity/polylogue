@@ -165,3 +165,53 @@ def attachment_payload_id(descriptor_id: str, blob_hash: bytes) -> str:
     if len(blob_hash) != 32:
         raise ValueError("attachment payload identity requires SHA-256")
     return hashlib.sha256(bytes.fromhex(descriptor_id) + blob_hash).hexdigest()
+
+
+def attachment_native_identity(native_id: str) -> str:
+    """Encode an opaque Source attachment ID injectively for SQLite text."""
+    if not native_id:
+        raise ValueError("attachment reference requires a declared native identity")
+    return native_id.encode("utf-8", errors="surrogatepass").hex()
+
+
+def attachment_reference_id(message_id: str, native_identity: str) -> str:
+    """Return the exact native attachment reference under its owning message."""
+    if not message_id or not native_identity:
+        raise ValueError("attachment reference requires message and native identity")
+    try:
+        native_id = bytes.fromhex(native_identity).decode("utf-8", errors="surrogatepass")
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError("attachment reference requires canonical native identity") from exc
+    if attachment_native_identity(native_id) != native_identity:
+        raise ValueError("attachment reference requires canonical native identity")
+    return f"{message_id}:attachment:n:{native_identity}"
+
+
+def attachment_content_id(
+    native_id: str,
+    *,
+    file_id: str | None = None,
+    drive_id: str | None = None,
+    path: str | None = None,
+    name: str | None = None,
+    media_type: str | None = None,
+    declared_size: int | None = None,
+    blob_hash: bytes | None = None,
+) -> str:
+    """Bind the declared attachment descriptor to its known payload, if any."""
+    digest = hashlib.sha256()
+    for part in (
+        "attachment",
+        native_id,
+        file_id or "",
+        drive_id or "",
+        path or "",
+        name or "",
+        media_type or "",
+        str(declared_size or 0),
+    ):
+        encoded = part.encode("utf-8", errors="surrogatepass")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    descriptor_id = digest.hexdigest()
+    return descriptor_id if blob_hash is None else attachment_payload_id(descriptor_id, blob_hash)

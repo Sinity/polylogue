@@ -113,3 +113,33 @@ def test_byte_reconciled_orphan_material_is_refused_by_verify_and_decode(kind: s
         verify_revision(manifest, segments)
     with pytest.raises(MaterialProtocolError):
         decode_session_revision(manifest, segments)
+
+
+@pytest.mark.parametrize("native_identity", ["", "AA", "6f746865722d6e6174697665"])
+def test_byte_reconciled_false_attachment_native_identity_is_refused(native_identity: str) -> None:
+    encoded = encode_session_revision(build_small_session_material(), revision_created_at="2026-01-01T00:00:00Z")
+    head = encoded.segments[-1]
+    records = [
+        r for r in iter_records(encoded.manifest, encoded.segments) if r["kind"] not in {"session", "usage", "lineage"}
+    ]
+    attachment = next(r for r in records if r["kind"] == "attachment")
+    attachment["native_identity"] = native_identity
+    descriptors, segments, anchors, _counts = _pack_segments(
+        [{k: v for k, v in r.items() if k != "seq"} for r in records],
+        start_seq=0,
+        start_segment_index=0,
+        max_records_per_segment=500,
+    )
+    segments[-1] = head
+    digest = _content_digest(head, [segments[0]])
+    manifest = dataclasses.replace(
+        encoded.manifest,
+        segments=tuple(descriptors),
+        content_digest=digest,
+        revision_id=digest.polylogue_sha256,
+        anchors={**{k: v for k, v in encoded.manifest.anchors.items() if v.segment_index == -1}, **anchors},
+    )
+    with pytest.raises(MaterialProtocolError, match="attachment reference identity"):
+        verify_revision(manifest, segments)
+    with pytest.raises(MaterialProtocolError, match="attachment reference identity"):
+        decode_session_revision(manifest, segments)

@@ -61,7 +61,7 @@ Every record is a JSON object with at least `kind`, `record_id`, and `seq`
 - `message`: `record_id = message_id = "{session_id}:n:{native_id}"`, or
   `"{session_id}:c:{content_identity}.{content_occurrence}"` when the provider carried no id
 - `block`: `record_id = block_id = "{message_id}:b:{content_identity}:{content_occurrence}"`
-- `attachment`: `record_id = "{message_id}:attachment:{position}"`
+- `attachment`: `record_id = "{message_id}:attachment:n:{native_identity}"`
 - `lineage`: `record_id = "{session_id}:lineage:{dst_origin}:{dst_native_id}:{link_type}"`
 - `usage`: `record_id = "{session_id}:usage:{model_name}"`
 - `session_event` (covers compaction, via `event_type="compaction"`, and any

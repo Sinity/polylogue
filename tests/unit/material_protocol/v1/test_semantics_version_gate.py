@@ -110,6 +110,7 @@ def test_attachment_record_fields_are_pinned_to_the_declared_semantics_version(
         "message_id",
         "position",
         "attachment_id",
+        "native_identity",
         "display_name",
         "media_type",
         "byte_count",

@@ -9,7 +9,7 @@ once it has settled the full ordered record list for a revision (see
 from __future__ import annotations
 
 from polylogue.core.digest import nfc
-from polylogue.core.identity_law import block_id, message_local_id
+from polylogue.core.identity_law import attachment_reference_id, block_id, message_local_id
 from polylogue.core.json import JSONValue
 from polylogue.core.message_native_identity import message_native_key, source_native_id_json, sqlite_message_native_id
 from polylogue.material_protocol.v1.input_model import (
@@ -45,7 +45,7 @@ def event_id_for(session_id: str, position: int) -> str:
 
 
 def attachment_ref_id_for(message_id: str, attachment: AttachmentInput) -> str:
-    return f"{message_id}:attachment:{attachment.position}"
+    return attachment_reference_id(message_id, attachment.native_identity)
 
 
 def lineage_record_id_for(session_id: str, lineage: LineageInput) -> str:
@@ -198,6 +198,7 @@ def attachment_record(session_id: str, message_id: str, attachment: AttachmentIn
         "message_id": message_id,
         "position": attachment.position,
         "attachment_id": attachment.attachment_id,
+        "native_identity": attachment.native_identity,
         "display_name": attachment.display_name,
         "media_type": attachment.media_type,
         "byte_count": attachment.byte_count,

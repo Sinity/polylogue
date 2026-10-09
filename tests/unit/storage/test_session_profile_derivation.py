@@ -656,8 +656,8 @@ def test_prepared_partition_refuses_related_input_that_moved_before_publish(
             conn.execute(
                 """
                 INSERT INTO attachment_refs
-                    (attachment_id, session_id, message_id, position, source_url, caption)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (native_identity, attachment_id, session_id, message_id, position, source_url, caption)
+                VALUES ('666978747572652d746573745f73657373696f6e5f70726f66696c655f64657269766174696f6e2d363536', ?, ?, ?, ?, ?, ?)
                 """,
                 ("related-input", session_id, message_id, 0, "file://before", "before"),
             )

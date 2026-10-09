@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from polylogue.core.enums import Origin
 from polylogue.core.hashing import hash_bytes
-from polylogue.core.identity_law import block_id, message_local_id, split_message_local_id
+from polylogue.core.identity_law import attachment_reference_id, block_id, message_local_id, split_message_local_id
 from polylogue.core.json import JSONValue
 from polylogue.core.message_native_identity import native_id_from_storage, source_native_id_from_json
 from polylogue.material_protocol.v1.canonical import canonical_bytes, parse_json_value
@@ -270,6 +270,16 @@ def _check_semantic_closure(
                     raise ValueError("block identity disagrees with its content coordinates")
             except ValueError as exc:
                 raise SemanticClosureError("invalid block identity") from exc
+        elif kind == "attachment":
+            native_identity = record.get("native_identity")
+            try:
+                if not isinstance(native_identity, str):
+                    raise ValueError("missing attachment native identity")
+                expected_id = attachment_reference_id(owner, native_identity)
+                if record.get("record_id") != expected_id:
+                    raise ValueError("attachment reference disagrees with its native identity")
+            except ValueError as exc:
+                raise SemanticClosureError("invalid attachment reference identity") from exc
     declared_message_count = session.get("message_count")
     if type(declared_message_count) is not int or declared_message_count != len(message_records):
         raise SemanticClosureError(

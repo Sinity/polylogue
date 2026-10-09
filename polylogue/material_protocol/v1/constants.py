@@ -28,6 +28,8 @@ PROTOCOL_VERSION = "polylogue.material-protocol/v1"
 #: Blocks carry semantic identities and occurrence coordinates.
 # v7: message records retain original Source occurrence names independently
 # of canonical unique native identity, with exact ASCII JSON spelling.
+# v8: native message names use exact Source carriers and n:/s: namespaces.
+# Attachment references carry exact encoded native identities, never position.
 SEMANTICS_VERSION = 8
 
 #: Version of the canonicalization algorithm (NFC + sorted-key JSON framing).

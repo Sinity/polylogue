@@ -35,7 +35,6 @@ from polylogue.storage.runtime import (
     MessageRecord,
     SessionRecord,
     _json_or_none,
-    _make_ref_id,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
@@ -199,14 +198,6 @@ def _attachment_record(
         size_bytes=size_bytes,
         display_name=display_name,
         attachment_native_id=attachment_id,
-    )
-
-
-def _ref_id(attachment_id: str, session_id: str, message_id: str | None) -> str:
-    return _make_ref_id(
-        _attachment_id(attachment_id),
-        _session_id(session_id),
-        None if message_id is None else _message_id(message_id),
     )
 
 
@@ -891,24 +882,6 @@ def test_json_or_none_contract() -> None:
         else:
             assert result is not None
             assert json.loads(result) == expected
-
-
-def test_make_ref_id_contract() -> None:
-    """Attachment ref IDs must be deterministic and sensitive to attachment, session, and message."""
-    same_1 = _ref_id("att1", "conv1", "msg1")
-    same_2 = _ref_id("att1", "conv1", "msg1")
-    different_attachment = _ref_id("att2", "conv1", "msg1")
-    different_session = _ref_id("att1", "conv2", "msg1")
-    none_message_1 = _ref_id("att1", "conv1", None)
-    none_message_2 = _ref_id("att1", "conv1", None)
-
-    assert same_1 == same_2
-    assert same_1 != different_attachment
-    assert same_1 != different_session
-    assert none_message_1 == none_message_2
-    assert none_message_1 != same_1
-    assert same_1.startswith("ref-")
-    assert len(same_1) == len("ref-") + 16
 
 
 @pytest.mark.slow

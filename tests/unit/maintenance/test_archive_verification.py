@@ -1759,8 +1759,8 @@ def test_hashless_acquired_attachment_is_blocking(tmp_path: Path) -> None:
         )
         conn.execute(
             """
-            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin, direction)
-            VALUES ('att-no-identity', ?, ?, 0, 'drive', 'user_input')
+            INSERT INTO attachment_refs(native_identity, attachment_id, session_id, message_id, position, upload_origin, direction)
+            VALUES ('666978747572652d746573745f617263686976655f766572696669636174696f6e2d31373630', 'att-no-identity', ?, ?, 0, 'drive', 'user_input')
             """,
             (session_id, message_id),
         )

@@ -122,6 +122,7 @@ def build_small_session_material() -> SessionMaterial:
             AttachmentInput(
                 position=0,
                 attachment_id="att-1",
+                native_identity="6174742d31",
                 display_name="log-日本語.txt",
                 media_type="text/plain",
                 byte_count=0,
