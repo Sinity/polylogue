@@ -7,12 +7,13 @@ import json
 import os
 import shutil
 import sqlite3
+import sys
 from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
-from typing import IO, BinaryIO, cast
+from typing import IO, Any, BinaryIO, cast
 
 import ijson
 import pytest
@@ -4910,3 +4911,112 @@ def test_event_sort_preserves_ties_and_uses_exact_ordinal_lookup(tmp_path: Path)
         )
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("checkpoint", [False, True])
+@pytest.mark.parametrize("scope", ["absent", "missing", "available"])
+def test_gemini_final_rows_share_one_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checkpoint: bool, scope: str
+) -> None:
+    """A second admission/index scan makes the per-row decode count fail."""
+    from polylogue.sources import prepared_jsonl
+
+    header = {
+        "sessionId": "decode-probe",
+        "projectHash": "neutral",
+        "kind": "main",
+        "startTime": "2026-05-02T09:00:00Z",
+    }
+    messages = [
+        {"id": f"decode-probe-{index}", "type": "user", "timestamp": "2026-05-02T09:00:01Z", "content": "Neutral"}
+        for index in range(7)
+    ]
+    source = tmp_path / "chats" / ("checkpoint.jsonl" if checkpoint else "session.json")
+    source.parent.mkdir()
+    source.write_text(
+        "".join(json.dumps(record) + "\n" for record in [header, *messages])
+        if checkpoint
+        else json.dumps({**header, "messages": messages}),
+        encoding="utf-8",
+    )
+    if scope == "available":
+        (tmp_path / "tool-outputs" / "session-decode-probe").mkdir(parents=True)
+    decoded = 0
+    original_loads = json.loads
+
+    def tracked_loads(encoded: str, **kwargs: Any) -> object:
+        nonlocal decoded
+        result = original_loads(encoded, **kwargs)
+        if (
+            sys._getframe(1).f_code.co_filename == prepared_jsonl.__file__
+            and isinstance(result, dict)
+            and str(result.get("id", "")).startswith("decode-probe-")
+        ):
+            decoded += 1
+        return result
+
+    monkeypatch.setattr(prepared_jsonl.json, "loads", tracked_loads)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "unused",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        strict_jsonl_records=True,
+        sidecar_resolver=None if scope == "absent" else FilesystemSidecarResolver(),
+    )
+    try:
+        assert artifact.error is None, artifact.error
+        assert decoded == len(messages)
+        [session] = artifact.iter_sessions()
+        assert [message.provider_message_id for message in session.messages] == [message["id"] for message in messages]
+    finally:
+        artifact.discard()
+
+
+@pytest.mark.parametrize("checkpoint", [False, True])
+def test_gemini_final_row_observation_cancellation_discards_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checkpoint: bool
+) -> None:
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.sources.prepared_message_sink import GeminiToolOutputIndex
+
+    header = {"sessionId": "cancel-probe", "projectHash": "neutral", "kind": "main"}
+    messages = [
+        {"id": f"cancel-{index}", "type": "user", "timestamp": "2026-05-02T09:00:01Z", "content": "Neutral"}
+        for index in range(3)
+    ]
+    source = tmp_path / "chats" / ("checkpoint.jsonl" if checkpoint else "session.json")
+    source.parent.mkdir()
+    source.write_text(
+        "".join(json.dumps(record) + "\n" for record in [header, *messages])
+        if checkpoint
+        else json.dumps({**header, "messages": messages}),
+        encoding="utf-8",
+    )
+    (tmp_path / "tool-outputs" / "session-cancel-probe").mkdir(parents=True)
+    original_observe = GeminiToolOutputIndex.observe
+    observed = 0
+
+    def cancel_observe(self: GeminiToolOutputIndex, message: object) -> None:
+        nonlocal observed
+        original_observe(self, message)
+        observed += 1
+        if observed == 2:
+            raise DaemonOperationCancelled("synthetic final-row cancellation")
+
+    monkeypatch.setattr(GeminiToolOutputIndex, "observe", cancel_observe)
+    directory = tmp_path / "prepared"
+    with pytest.raises(DaemonOperationCancelled):
+        prepare_jsonl_blob(
+            str(source),
+            str(source),
+            Provider.GEMINI_CLI.value,
+            "unused",
+            is_stream=False,
+            shard_directory=str(directory),
+            sidecar_resolver=FilesystemSidecarResolver(),
+        )
+    assert observed == 2
+    assert list(directory.iterdir()) == []

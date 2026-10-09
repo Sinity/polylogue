@@ -36,6 +36,7 @@ from .base import (
     mark_last_occurrence_as_active_leaf,
     parser_admission,
 )
+from .base_support import AdmissionObserver
 from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
 from .hermes_finish_reason import stop_reason_from_finish_reason as _stop_reason_from_finish_reason
 from .hermes_identity import profile_key as _profile_key
@@ -456,50 +457,14 @@ def parse_hermes(
     conversation lands as two archive sessions. Without a path no profile is
     assertable, so identity stays unqualified rather than inventing a key.
     """
-    raw_session_id = _string(payload.get("session_id")) or fallback_id
-    session_id = _hermes_qualified_session_id(raw_session_id, source_path, profile_identity)
-    messages: list[ParsedMessage] = []
-    session_events: list[ParsedSessionEvent] = []
-    system_prompt = _string(payload.get("system_prompt"))
-    if system_prompt:
-        messages.append(
-            ParsedMessage(
-                provider_message_id=f"{session_id}:system",
-                role=Role.SYSTEM,
-                text=system_prompt,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=system_prompt)],
-                position=0,
-                variant_index=0,
-                is_active_path=True,
-                model_name=_string(payload.get("model")),
-            )
-        )
-    for index, item in enumerate(_list(payload.get("messages")), start=1):
-        parsed = _parse_hermes_message(
-            item,
-            index=index,
-            position=len(messages),
-            fallback_model=_string(payload.get("model")),
-        )
-        if parsed is not None:
-            messages.append(parsed)
-            if extras_event := _hermes_message_wire_extras_event(item, parsed):
-                session_events.append(extras_event)
-    messages = _mark_active_leaf(messages)
-    if metadata_event := _hermes_session_metadata_event(payload, message_count=len(messages)):
-        session_events.append(metadata_event)
-    if tool_event := _hermes_tool_availability_event(payload):
-        session_events.append(tool_event)
-    session_events.extend(_block_metadata_evidence_events(messages))
-    return ParsedSession(
-        source_name=Provider.HERMES,
-        provider_session_id=session_id,
-        title=raw_session_id,
-        created_at=_string(payload.get("session_start")),
-        updated_at=_string(payload.get("last_updated")),
-        messages=messages,
-        session_events=session_events,
-        active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
+    return _parse_hermes_snapshot(
+        payload,
+        _list(payload.get("messages")),
+        fallback_id,
+        messages=[],
+        session_events=[],
+        source_path=source_path,
+        profile_identity=profile_identity,
     )
 
 
@@ -514,6 +479,37 @@ def parse_hermes_snapshot_stream(
     profile_identity: str | None = None,
 ) -> ParsedSession:
     """Lower one validated snapshot with disk-backed message and event rows."""
+    session = _parse_hermes_snapshot(
+        envelope,
+        records,
+        fallback_id,
+        messages=messages,
+        session_events=session_events,
+        source_path=source_path,
+        profile_identity=profile_identity,
+    )
+    # The bounded decoder retains the final document's first future type.
+    # Apply its one outer-record proof directly without parsing a second session.
+    admission_stub: JSONDocument = {"session_id": session.provider_session_id, "messages": []}
+    future_type = envelope.get("__admission_future_type")
+    if isinstance(future_type, str):
+        admission_stub["type"] = future_type
+    observer = AdmissionObserver()
+    observer.observe_input(admission_stub)
+    return observer.apply(session, "hermes")
+
+
+def _parse_hermes_snapshot(
+    envelope: JSONDocument,
+    records: Iterable[object],
+    fallback_id: str,
+    *,
+    messages: MutableSequence[ParsedMessage],
+    session_events: MutableSequence[ParsedSessionEvent],
+    source_path: str | Path | None,
+    profile_identity: str | None,
+) -> ParsedSession:
+    """Assemble the snapshot grammar once for resident and paged inputs."""
     raw_session_id = _string(envelope.get("session_id")) or fallback_id
     session_id = _hermes_qualified_session_id(raw_session_id, source_path, profile_identity)
     model = _string(envelope.get("model"))
@@ -549,14 +545,6 @@ def parse_hermes_snapshot_stream(
     for message in messages:
         session_events.extend(_block_metadata_evidence_events([message]))
 
-    # The parser admission proof is for the one outer record. The bounded
-    # decoder records the first future-shaped wire type seen inside it.
-    future_type = envelope.get("__admission_future_type")
-    admission_stub: JSONDocument = {"session_id": raw_session_id, "messages": []}
-    if isinstance(future_type, str):
-        admission_stub["type"] = future_type
-    admitted = parse_hermes(admission_stub, fallback_id)
-    session_events.extend(admitted.session_events)
     return ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=session_id,
@@ -566,9 +554,7 @@ def parse_hermes_snapshot_stream(
         messages=[],
         session_events=[],
         active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
-    ).model_copy(
-        update={"messages": messages, "session_events": session_events, "unit_accounting": admitted.unit_accounting}
-    )
+    ).model_copy(update={"messages": messages, "session_events": session_events})
 
 
 def _hermes_qualified_session_id(

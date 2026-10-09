@@ -8,6 +8,10 @@ separately marked. Hermes ATIF tool availability events retain each declared
 tool definition in full, including its type and strictness setting.
 Resident and prepared Gemini sidecar joins replace only the primary output;
 stderr and independent terminal renderings survive the shared transform.
+Final Gemini checkpoint rows share one JSON decode across parsing, admission
+and sidecar ownership after replacement patches have settled. Hermes snapshot
+session assembly has one reducer for resident and paged inputs; streamed
+admission applies its retained outer-record witness directly.
 Reported total tokens do not imply output tokens, and absent Hermes API-call
 counts remain absent. ATIF tool-call steps retain invocation and usage evidence
 once per step, independent of the number of calls. Skipped malformed ATIF parts

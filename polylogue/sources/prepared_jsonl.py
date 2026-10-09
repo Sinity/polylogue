@@ -2925,34 +2925,43 @@ def prepare_jsonl_blob(
             gemini_admitted = input_admitted
             gemini_session = None
             if gemini_admitted:
-                gemini_records = (
-                    json.loads(row[0])
-                    for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal")
+                index = (
+                    GeminiToolOutputIndex(store.conn)
+                    if gemini_sidecar_scope is not None and gemini_sidecar_scope.available
+                    else None
                 )
+                admission_document = dict(gemini_envelope)
+
+                def gemini_records() -> Iterator[object]:
+                    # Observe only the final rows after checkpoint replacement
+                    # patches, sharing each decode with the message parser.
+                    assert store is not None
+                    future_type: str | None = None
+                    with closing(
+                        store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal")
+                    ) as rows:
+                        for (encoded,) in rows:
+                            check_compute_cancelled()
+                            record = json.loads(encoded)
+                            if future_type is None:
+                                future_type = _unknown_wire_type(record)
+                                if future_type is not None:
+                                    admission_document["messages"] = [{"type": future_type}]
+                            if index is not None:
+                                index.observe(record)
+                            yield record
+
                 gemini_session = local_agent.parse_gemini_cli_records(
                     gemini_envelope,
-                    gemini_records,
+                    gemini_records(),
                     fallback_id,
                     messages=store.new_sink(),
                     session_events=store.new_event_sink(),
                 )
-                # Admission observes the final canonical document, including
-                # only messages surviving replacement patches. Keep its first
-                # actual future discriminator without retaining the transcript.
-                admission_document = dict(gemini_envelope)
-                for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal"):
-                    check_compute_cancelled()
-                    wire_type = _unknown_wire_type(json.loads(row[0]))
-                    if wire_type is not None:
-                        admission_document["messages"] = [{"type": wire_type}]
-                        break
                 admission = AdmissionObserver()
                 admission.observe_input(admission_document)
                 gemini_session = admission.apply(gemini_session, "gemini_cli")
-                if gemini_sidecar_scope is not None and gemini_sidecar_scope.available:
-                    index = GeminiToolOutputIndex(store.conn)
-                    for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal"):
-                        index.observe(json.loads(row[0]))
+                if index is not None and gemini_sidecar_scope is not None:
                     for outcome in index.join(gemini_sidecar_scope):
                         gemini_session.session_events.append(local_agent.gemini_sidecar_event(outcome))
                     for position in range(len(gemini_session.messages)):
@@ -3807,7 +3816,6 @@ def prepare_jsonl_blob(
         return result
     except (
         BaseExceptionGroup,
-        DaemonOperationCancelled,
         DaemonBackpressureError,
         ReferenceSealError,
         NativeConnectionSettlementError,
