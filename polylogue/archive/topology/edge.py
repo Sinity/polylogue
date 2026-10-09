@@ -148,6 +148,14 @@ def topology_status_excluded_sql(column: str = "status") -> str:
     return f"COALESCE(TRIM({column}), '') IN ({_excluded_status_sql_list()})"
 
 
+INVALIDATED_PREFIX_EVIDENCE_KEY = "invalidated_prefix"
+
+
+def invalidated_prefix_sql(column: str = "evidence_json") -> str:
+    """Select recorded prefix losses, independently of later edge resolution."""
+    return f"json_valid({column}) AND json_type({column}, '$.{INVALIDATED_PREFIX_EVIDENCE_KEY}') = 'object'"
+
+
 #: ``session_links.method`` token for an edge whose destination is backed by
 #: Codex's own ``thread_spawn_edges`` record rather than by transcript
 #: inference.
@@ -179,6 +187,8 @@ HOOK_DERIVED_LINK_METHODS = (
 
 
 __all__ = [
+    "INVALIDATED_PREFIX_EVIDENCE_KEY",
+    "invalidated_prefix_sql",
     "COMPOSITION_EXCLUDED_STATUS_VALUES",
     "COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES",
     "HOOK_AUTHORITATIVE_LINK_METHOD",

@@ -62,6 +62,12 @@ parent prefixes and report cycle or dangling-branch-point status rather
 than silently claiming completeness
 (`_composed_transcript_plan` in `polylogue/storage/sqlite/archive_tiers/write.py:3399`).
 
+A recorded inherited-prefix loss also reports `dangling_branch_point`, even
+after its parent identity resolves again. Parent resolution and child append
+cannot certify the stored tail as complete; full child replay settles the
+recorded loss. Synchronous envelopes, asynchronous full and bounded reads, and
+compact lineage accounting use the same edge-evidence predicate.
+
 Hydrated message classification reads textual markers only from declared `TEXT` blocks. Thinking and tool content remain in the complete display text without becoming prose classification evidence. Structured tool block types retain precedence; messages without blocks classify their supplied text. Explicit stored non-message types remain authoritative.
 
 Ordinary block reads preserve the stored language and media type through typed records and domain hydration. Message streams plan inherited prefixes as bounded lineage segments and hydrate blocks and message-owned attachment references in batches on one read snapshot; closing a public stream closes its nested reader before releasing that connection.

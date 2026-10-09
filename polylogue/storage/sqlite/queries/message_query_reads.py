@@ -12,7 +12,7 @@ import aiosqlite
 
 from polylogue.archive.message.roles import MessageRoleFilter, message_role_sql_values
 from polylogue.archive.message.types import validate_message_type_filter
-from polylogue.archive.topology.edge import topology_status_composes_sql
+from polylogue.archive.topology.edge import invalidated_prefix_sql, topology_status_composes_sql
 from polylogue.core.enums import MaterialOrigin, MessageType
 from polylogue.core.identity_law import transcript_order_sql
 from polylogue.logging import get_logger
@@ -71,6 +71,14 @@ async def _prefix_sharing_edge(conn: aiosqlite.Connection, session_id: str) -> t
     if row is None:
         return None
     return (str(row["resolved_dst_session_id"]), str(row["branch_point_message_id"]))
+
+
+async def _has_invalidated_prefix(conn: aiosqlite.Connection, session_id: str) -> bool:
+    async with conn.execute(
+        f"SELECT 1 FROM session_links WHERE src_session_id = ? AND {invalidated_prefix_sql()} LIMIT 1",
+        (session_id,),
+    ) as cursor:
+        return await cursor.fetchone() is not None
 
 
 async def _branch_point_content_address_matches(
@@ -170,8 +178,12 @@ async def _lineage_segments(
         visited.add(parent)
         cursor_session = parent
 
+    if reason is None and await _has_invalidated_prefix(conn, cursor_session):
+        reason = LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
     segments: tuple[_Segment, ...] = (_Segment(cursor_session),)
     for child, parent, branch_point in reversed(chain):
+        if reason is None and await _has_invalidated_prefix(conn, child):
+            reason = LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
         coordinates = await (
             await conn.execute(
                 "SELECT session_id, position, variant_index FROM messages WHERE message_id = ?",
@@ -360,9 +372,12 @@ async def get_messages_with_lineage_completeness(
 
     if not chain:
         # A self-parent cycle also leaves the chain empty.
+        lost = await _has_invalidated_prefix(conn, session_id)
         return await _own_messages(conn, session_id), LineageCompleteness(
-            complete=not cycle,
-            truncation_reason=LINEAGE_TRUNCATION_CYCLE if cycle else None,
+            complete=not cycle and not lost,
+            truncation_reason=(
+                LINEAGE_TRUNCATION_CYCLE if cycle else LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT if lost else None
+            ),
         )
 
     # Compose from the root down: root's full transcript, then splice each
@@ -374,8 +389,9 @@ async def get_messages_with_lineage_completeness(
     position: dict[str, int] = {}
     for index, record in enumerate(composed):
         position.setdefault(record.message_id, index)
-    dangling = False
+    dangling = await _has_invalidated_prefix(conn, cursor_session)
     for child_session_id, branch_point_message_id in reversed(chain):
+        dangling = dangling or await _has_invalidated_prefix(conn, child_session_id)
         own = await _own_messages(conn, child_session_id)
         edge = await _prefix_sharing_edge(conn, child_session_id)
         witness_matches = edge is None or await _branch_point_content_address_matches(

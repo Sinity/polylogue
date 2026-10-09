@@ -415,6 +415,15 @@ Pending generations are restartable; a restart resumes their exact member set in
 
 ## Lineage storage model
 
+A provider-session identity contradiction records the child's original inherited
+branch point and content witness in `session_links.evidence_json.invalidated_prefix`
+before clearing resolution. Ordinary parent resolution and child append retain
+that loss evidence; deferred extraction cannot classify the stored tail as a
+fresh child. Full retained child replay replaces the edge evidence after lowering
+its complete source transcript. Until then, composed reads report incomplete
+lineage, compact accounting remains unknown, and the lineage recompose debt stays
+pending.
+
 The exported synchronous topology adapter discovers both children and outbound links for every fetched node, including ancestors found after the initial target. Its visited queue terminates cycles and includes ancestor siblings and their descendants; the shared topology composition engine retains edge classification and deterministic breadth-first output.
 
 - A prefix-sharing child stores only its divergent tail. The writer resolves the parent, compares composed signatures, records the last inherited message as the branch point, and lowers only the remaining messages (`_prepared_message_context` in `polylogue/storage/sqlite/archive_tiers/write.py:1694-1753`).

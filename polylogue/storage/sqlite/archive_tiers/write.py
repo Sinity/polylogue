@@ -46,10 +46,12 @@ from polylogue.archive.topology.edge import (
     HOOK_CONTRADICTED_LINK_METHOD,
     HOOK_DERIVED_LINK_METHODS,
     HOOK_SUPERSEDED_LINK_METHOD,
+    INVALIDATED_PREFIX_EVIDENCE_KEY,
     DispatchResolutionReason,
     TopologyEdgeStatus,
     TopologyEdgeType,
     branch_type_to_edge_type,
+    invalidated_prefix_sql,
     topology_status_composes_sql,
 )
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
@@ -3056,6 +3058,7 @@ def write_parsed_session_to_archive(
                     source_read=source_read,
                     prior_links=prior_session_rows,
                     child_source_path=context.child_source_path,
+                    preserve_prefix_loss=merge_append,
                 )
                 add_timing("index.session_link", t0)
                 t0 = time.perf_counter()
@@ -3518,14 +3521,15 @@ def _composed_transcript_plan(
     cursor_session_id = session_id
     plan: _ComposedTranscriptPlan
     while True:
+        prefix_lost = _has_invalidated_prefix(conn, cursor_session_id, before_input)
         edge = _prefix_sharing_edge_sync(conn, cursor_session_id, before_input)
         if edge is None:
             own = own_segment(cursor_session_id)
             plan = _ComposedTranscriptPlan(
                 segments=(own,),
                 total_message_count=own.message_count,
-                lineage_complete=True,
-                lineage_truncation_reason=None,
+                lineage_complete=not prefix_lost,
+                lineage_truncation_reason=LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT if prefix_lost else None,
                 lineage_inheritance="none",
                 lineage_branch_point_message_id=None,
             )
@@ -3551,6 +3555,8 @@ def _composed_transcript_plan(
     composed = _SegmentList(conn, plan.segments, before_input)
     complete, reason = plan.lineage_complete, plan.lineage_truncation_reason
     for child_session_id, parent_session_id, branch_point_message_id in reversed(chain):
+        if _has_invalidated_prefix(conn, child_session_id, before_input) and complete:
+            complete, reason = False, LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
         cut = _branch_point_content_address_matches(
             conn, child_session_id, parent_session_id, branch_point_message_id, before_input
         ) and composed.cut_at(branch_point_message_id)
@@ -10517,6 +10523,7 @@ def _write_session_link(
     source_read: SessionSourceRead | None = None,
     prior_links: bool = True,
     child_source_path: str | None = None,
+    preserve_prefix_loss: bool = False,
 ) -> None:
     """Write this child's outbound parent edge, honouring hook authority.
 
@@ -10602,6 +10609,16 @@ def _write_session_link(
     parent_tool_use_block_id = dispatch.block_id
     method = dispatch.method or "parser-parent"
     evidence: dict[str, object] = {"parent_session_provider_id": session.parent_session_provider_id}
+    if preserve_prefix_loss:
+        previous = conn.execute(
+            "SELECT evidence_json FROM session_links WHERE src_session_id = ? "
+            "AND dst_origin = ? AND dst_native_id = ? AND link_type = ?",
+            (session_id, origin, dst_native_id, link_type),
+        ).fetchone()
+        if previous is not None:
+            prior_evidence = json.loads(str(previous[0]))
+            if isinstance(prior_evidence, dict) and INVALIDATED_PREFIX_EVIDENCE_KEY in prior_evidence:
+                evidence[INVALIDATED_PREFIX_EVIDENCE_KEY] = prior_evidence[INVALIDATED_PREFIX_EVIDENCE_KEY]
     if hook_claim is not None and hook_parent is None:
         # Hook evidence spoke and contradicted itself. Retain it on the row
         # rather than degrading to silence, so the refusal is inspectable.
@@ -13962,6 +13979,10 @@ def _reextract_prefix_tail_db(
     if edge is None:
         return set()
     dst_origin, dst_native_id, link_type = edge
+    # This child is a stored tail, not the full replay that deferred extraction
+    # expects. Its recorded loss remains owned by retained child replay.
+    if _has_invalidated_prefix(conn, child_session_id):
+        return set()
     # A Drive ``branchParent.promptId`` is a source-asserted session edge, not
     # evidence that the child replays the parent's message prefix.  The child
     # may have arrived before its parent, so the normal deferred extraction
@@ -16664,7 +16685,16 @@ def _write_session_identity_claims(
         invalidated_children.update(str(row[0]) for row in rows)
         conn.execute(
             f"""UPDATE session_links
-                SET resolved_dst_session_id = NULL,
+                SET evidence_json = CASE
+                        WHEN inheritance = 'prefix-sharing' AND branch_point_message_id IS NOT NULL
+                        THEN json_set(
+                            CASE WHEN json_type(evidence_json) = 'object' THEN evidence_json ELSE '{{}}' END,
+                            '$.{INVALIDATED_PREFIX_EVIDENCE_KEY}',
+                            json_object('parent_session_id', resolved_dst_session_id,
+                                        'branch_point_message_id', branch_point_message_id,
+                                        'branch_point_content_address', hex(branch_point_content_address)))
+                        ELSE evidence_json END,
+                    resolved_dst_session_id = NULL,
                     resolved_at_ms = NULL,
                     branch_point_message_id = NULL,
                     branch_point_content_address = NULL,
@@ -16691,6 +16721,25 @@ def _write_session_identity_claims(
             (origin, *sorted(ambiguous_values)),
         )
     return invalidated_children
+
+
+def _has_invalidated_prefix(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> bool:
+    """A full child replay must settle loss; resolving a parent cannot do so."""
+    if before_input is not None:
+        before_input(
+            "session_links",
+            ("evidence_json",),
+            "SELECT rowid FROM session_links WHERE src_session_id = ?",
+            (session_id,),
+        )
+    with connection_cursor(
+        conn,
+        f"SELECT 1 FROM session_links WHERE src_session_id = ? AND {invalidated_prefix_sql()} LIMIT 1",
+        (session_id,),
+    ) as cursor:
+        return cursor.fetchone() is not None
 
 
 def _message_content_address_for_id(

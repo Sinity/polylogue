@@ -27,7 +27,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.archive.topology.edge import invalidated_prefix_sql
 from polylogue.core.compute import BoundedComputeAdapter, DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import span
@@ -107,6 +109,14 @@ def unrecomposed_prefix_reason(conn: sqlite3.Connection, session_id: str) -> str
     resolved parent carries no prefix at all, and a composing prefix-sharing
     edge whose branch point names no message row dangles.
     """
+    if (
+        conn.execute(
+            f"SELECT 1 FROM session_links WHERE src_session_id = ? AND {invalidated_prefix_sql()} LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        is not None
+    ):
+        return "recorded_prefix_loss"
     rows = conn.execute(
         """SELECT dst_origin, dst_native_id, resolved_dst_session_id, inheritance, branch_point_message_id
            FROM session_links WHERE src_session_id = ? AND status IS NULL""",
@@ -174,6 +184,7 @@ def recompose_session_prefix(
     """
     from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation, raw_observation_frame
 
+    check_compute_cancelled()
     conn = open_readonly_connection(index_path)
     try:
         if unrecomposed_prefix_reason(conn, session_id) is None:
@@ -248,6 +259,7 @@ def make_lineage_prefix_recompose_stage(db_path: Path, *, compute_adapter: Bound
             refused: dict[str, str] = {}
             recomposed = 0
             for session_id in ordered:
+                check_compute_cancelled()
                 reason = recompose_session_prefix(archive_root, index_path, session_id, compute_adapter=compute_adapter)
                 if reason is None:
                     recomposed += 1
