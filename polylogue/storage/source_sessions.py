@@ -6,11 +6,9 @@ import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
 
-from polylogue.core.sqlite_introspection import table_exists as _table_exists
-from polylogue.logging import get_logger
+from polylogue.core.compute_cancel import check_compute_cancelled
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database
-
-logger = get_logger(__name__)
 
 
 def session_ids_for_source_path(
@@ -31,10 +29,8 @@ def session_ids_for_source_paths(
     normalized_paths = tuple(dict.fromkeys(Path(path) for path in paths))
     if not normalized_paths:
         return {}
-    archive_result = _schema_archive_session_ids_for_source_paths(conn, normalized_paths, source_db=source_db)
-    if archive_result is not None:
-        return archive_result
-    return {path: [] for path in normalized_paths}
+    check_compute_cancelled()
+    return _schema_archive_session_ids_for_source_paths(conn, normalized_paths, source_db=source_db)
 
 
 def _schema_archive_session_ids_for_source_paths(
@@ -42,35 +38,29 @@ def _schema_archive_session_ids_for_source_paths(
     paths: Sequence[Path],
     *,
     source_db: Path | None,
-) -> dict[Path, list[str]] | None:
-    try:
-        if not _table_exists(conn, "sessions"):
-            return None
-        resolved_source_db = source_db if source_db is not None else _sibling_source_db(conn)
-        if resolved_source_db is None or not resolved_source_db.exists():
-            return None
-        result: dict[Path, list[str]] = {path: [] for path in paths}
-        paths_by_text = {str(path): path for path in paths}
-        placeholders = ", ".join("?" for _ in paths)
-        source_alias = _ensure_source_tier_attached(conn, resolved_source_db)
-        if not _table_exists(conn, "raw_sessions", schema=source_alias):
-            return None
-        rows = conn.execute(
-            f"""
-            SELECT DISTINCT r.source_path, s.session_id
-            FROM sessions AS s
-            JOIN {source_alias}.raw_sessions AS r ON r.raw_id = s.raw_id
-            WHERE r.source_path IN ({placeholders})
-            ORDER BY r.source_path, s.session_id
-            """,
-            tuple(paths_by_text),
-        ).fetchall()
-    except Exception as exc:
-        # session_ids_for_source_paths() falls through to an all-empty
-        # dict when this returns None, identical to "no sessions reference
-        # these paths" — log so a query failure isn't mistaken for that.
-        logger.warning("source-sessions lookup failed: %s", exc, exc_info=True)
-        return None
+) -> dict[Path, list[str]]:
+    resolved_source_db = source_db if source_db is not None else _sibling_source_db(conn)
+    if resolved_source_db is None or not resolved_source_db.exists():
+        raise ArchiveTierUnavailableError(
+            tier="source",
+            path=str(resolved_source_db) if resolved_source_db is not None else "source.db",
+            reason="Source lookup requires a readable retained tier",
+            guidance="Restore readable Source authority, then retry the lookup.",
+        )
+    result: dict[Path, list[str]] = {path: [] for path in paths}
+    paths_by_text = {str(path): path for path in paths}
+    placeholders = ", ".join("?" for _ in paths)
+    source_alias = _ensure_source_tier_attached(conn, resolved_source_db)
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT r.source_path, s.session_id
+        FROM sessions AS s
+        JOIN {source_alias}.raw_sessions AS r ON r.raw_id = s.raw_id
+        WHERE r.source_path IN ({placeholders})
+        ORDER BY r.source_path, s.session_id
+        """,
+        tuple(paths_by_text),
+    ).fetchall()
     for row in rows:
         path = paths_by_text.get(str(row[0]))
         if path is not None:
@@ -82,10 +72,7 @@ def _ensure_source_tier_attached(conn: sqlite3.Connection, source_db: Path) -> s
     for row in conn.execute("PRAGMA database_list").fetchall():
         if str(row[1]) == "source_tier":
             return "source_tier"
-    if conn.execute("PRAGMA query_only").fetchone()[0]:
-        attach_readonly_database(conn, source_db, alias="source_tier")
-    else:
-        conn.execute("ATTACH DATABASE ? AS source_tier", (str(source_db),))
+    attach_readonly_database(conn, source_db, alias="source_tier")
     return "source_tier"
 
 

@@ -740,3 +740,10 @@ semantics.
 An asserted native anchor without a stored occurrence keeps lineage incomplete.
 A later parent write binds it only when the exact composed occurrence is unique;
 several admitted occurrences refuse the assertion rather than select a row.
+
+Embedding watcher scopes resolve retained Source paths through the active Index
+relation. Interrupted or failed native SQL remains an exception, preserving the
+existing deferred embedding obligation; it cannot certify an empty scope. A
+missing required Source tier raises `ArchiveTierUnavailableError`. The shared
+lookup attaches Source read-only and returns empty only for a successful
+zero-row join (`storage/source_sessions.py`; `operations/embedding_derivation.py`).
