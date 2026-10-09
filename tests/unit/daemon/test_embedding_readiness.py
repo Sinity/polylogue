@@ -529,7 +529,7 @@ def test_readiness_query_failure_remains_unknown_through_daemon_surfaces(
 
     with (
         patch("polylogue.config.load_polylogue_config", return_value=cfg),
-        patch("polylogue.daemon.embedding_readiness.embedding_status_payload", side_effect=_boom),
+        patch("polylogue.operations.embedding_readiness.embedding_status_payload", side_effect=_boom),
         plog.capture() as records,
     ):
         info = embedding_readiness_info(db)

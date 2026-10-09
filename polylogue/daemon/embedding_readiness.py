@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
 
 import polylogue.config as polylogue_config
 from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.logging import WARNING, emit
-from polylogue.storage.embeddings.status_payload import EmbeddingCatchupRunPayload, embedding_status_payload
+from polylogue.operations.embedding_readiness import EmbeddingReadinessUnavailableError, read_embedding_readiness
+from polylogue.storage.embeddings.status_payload import EmbeddingCatchupRunPayload
 
 
 def _defaults(
@@ -69,20 +68,16 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
         )
 
     try:
-        payload = embedding_status_payload(
-            SimpleNamespace(config=SimpleNamespace(db_path=db_file)),
-            include_retrieval_bands=False,
-            include_detail=detail,
-        )
-    except (sqlite3.Error, OSError) as exc:
+        payload = read_embedding_readiness(db_file, detail=detail)
+    except EmbeddingReadinessUnavailableError as exc:
         emit(
             "daemon.embed.readiness_query_failed",
             level=WARNING,
             outcome="degraded",
             reason="readiness_unreadable",
             path=db_file,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
+            error_type=type(exc.__cause__).__name__,
+            error_detail=str(exc.__cause__),
         )
         return _defaults(
             enabled=enabled,

@@ -145,10 +145,6 @@
       "count": 2
     },
     {
-      "file": "polylogue/daemon/embedding_readiness.py",
-      "digest": "97dca3c36b4e51d02642c28cb842629ef5e9a1de"
-    },
-    {
       "file": "polylogue/daemon/events.py",
       "digest": "ff28968347960a98a8bb9a69e0842b5d62241de7"
     },
