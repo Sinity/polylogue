@@ -89,7 +89,7 @@ def test_select_paths_processes_file_when_cursor_has_wrong_inode(tmp_path: Path)
     assert skipped == 0, f"Expected skipped=0, got {skipped}"
 
 
-def test_select_paths_without_cursor_cannot_skip_by_mtime(tmp_path: Path) -> None:
+def test_select_paths_without_cursor_selects_byte_input(tmp_path: Path) -> None:
     """A timestamp alone cannot certify the current byte input."""
     test_file = tmp_path / "test.jsonl"
     test_file.write_text("data")
@@ -99,7 +99,6 @@ def test_select_paths_without_cursor_cannot_skip_by_mtime(tmp_path: Path) -> Non
     paths, skipped = cursor_module._select_paths_for_processing(
         [test_file],
         include_file_mtime=True,
-        known_mtimes={str(test_file): file_mtime},
         known_cursors=None,
     )
 
@@ -107,15 +106,11 @@ def test_select_paths_without_cursor_cannot_skip_by_mtime(tmp_path: Path) -> Non
     assert skipped == 0
 
 
-def test_select_paths_cursor_skips_read_regardless_of_mtime(tmp_path: Path) -> None:
-    """Cursor match takes priority: even if known_mtimes would not skip,
-    if cursor matches, the file IS skipped."""
+def test_select_paths_matching_stat_cursor_skips_byte_input(tmp_path: Path) -> None:
+    """Matching physical identity skips ordinary byte acquisition."""
     test_file = tmp_path / "test.jsonl"
     test_file.write_text("data")
     st = os.stat(test_file)
-    wrong_mtime = cursor_module._get_file_mtime(test_file)
-    assert wrong_mtime is not None
-    wrong_mtime = "2000-01-01T00:00:00"  # different from actual mtime
 
     cursor_data: dict[str, object] = {
         "st_dev": st.st_dev,
@@ -127,11 +122,9 @@ def test_select_paths_cursor_skips_read_regardless_of_mtime(tmp_path: Path) -> N
     paths, skipped = cursor_module._select_paths_for_processing(
         [test_file],
         include_file_mtime=True,
-        known_mtimes={str(test_file): wrong_mtime},
         known_cursors={str(test_file): cursor_data},
     )
 
-    # Cursor matches so file should be skipped, even though mtime doesn't.
     assert paths == [], f"Expected file skipped by cursor (overrides mtime), got {paths}"
     assert skipped == 1, f"Expected skipped=1, got {skipped}"
 
@@ -185,7 +178,6 @@ def test_source_walk_reacquires_replaced_codex_with_preserved_mtime(tmp_path: Pa
         Source(name="codex", path=tmp_path),
         cursor_state={},
         include_mtime=True,
-        known_mtimes={str(path): mtime},
         known_cursors={str(path): known},
         discover_sidecars=False,
     )
@@ -215,7 +207,6 @@ def test_source_walk_reacquires_committed_sqlite_wal(tmp_path: Path) -> None:
             Source(name="codex-state", path=tmp_path),
             cursor_state={},
             include_mtime=True,
-            known_mtimes={str(path): mtime},
             known_cursors={str(path): known},
             discover_sidecars=False,
         )
@@ -241,7 +232,6 @@ def test_zip_same_member_names_and_mtime_still_requires_acquisition(tmp_path: Pa
         [path],
         include_file_mtime=True,
         known_cursors={str(path): known},
-        known_mtimes={f"{path}:session.json": mtime},
     )
     assert paths == [(path, mtime)]
     assert skipped == 0

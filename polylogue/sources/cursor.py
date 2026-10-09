@@ -90,7 +90,6 @@ def _select_paths_for_processing(
     paths: list[Path],
     *,
     include_file_mtime: bool,
-    known_mtimes: dict[str, str] | None = None,
     known_cursors: dict[str, dict[str, object]] | None = None,
     source_name: str | None = None,
 ) -> tuple[list[tuple[Path, str | None]], int]:
@@ -99,7 +98,6 @@ def _select_paths_for_processing(
     Byte files may skip only when their complete captured stat tuple matches.
     ZIP containers and mutable SQLite inputs require acquisition: timestamps
     cannot certify ZIP membership or a database's committed WAL revision.
-    ``known_mtimes`` remains a caller input but never proves local byte currency.
     """
     selected: list[tuple[Path, str | None]] = []
     skipped_mtime = 0

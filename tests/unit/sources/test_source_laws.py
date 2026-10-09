@@ -1099,7 +1099,7 @@ def test_initialize_cursor_state_tracks_latest_path_and_mtime(tmp_path: Path) ->
     assert cursor_state["latest_mtime"] == newer.stat().st_mtime
 
 
-def test_select_paths_for_processing_does_not_use_mtime_as_local_currency(tmp_path: Path) -> None:
+def test_select_paths_for_processing_returns_mtime_only_when_enabled(tmp_path: Path) -> None:
     first = tmp_path / "first.json"
     second = tmp_path / "second.json"
     first.write_text("{}", encoding="utf-8")
@@ -1113,7 +1113,6 @@ def test_select_paths_for_processing_does_not_use_mtime_as_local_currency(tmp_pa
     selected, skipped = _select_paths_for_processing(
         [first, second],
         include_file_mtime=True,
-        known_mtimes={str(first): first_mtime},
     )
     assert skipped == 0
     assert selected == [(first, first_mtime), (second, second_mtime)]
@@ -1121,13 +1120,12 @@ def test_select_paths_for_processing_does_not_use_mtime_as_local_currency(tmp_pa
     selected_without_mtime, skipped_without_mtime = _select_paths_for_processing(
         [first, second],
         include_file_mtime=False,
-        known_mtimes={str(first): first_mtime},
     )
     assert skipped_without_mtime == 0
     assert selected_without_mtime == [(first, None), (second, None)]
 
 
-def test_select_paths_for_processing_requires_every_zip_member_mtime(tmp_path: Path) -> None:
+def test_select_paths_for_processing_reacquires_zip_container(tmp_path: Path) -> None:
     archive = tmp_path / "export.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("first.json", b"{}")
@@ -1138,7 +1136,6 @@ def test_select_paths_for_processing_requires_every_zip_member_mtime(tmp_path: P
     selected, skipped = _select_paths_for_processing(
         [archive],
         include_file_mtime=True,
-        known_mtimes={f"{archive}:first.json": mtime},
     )
 
     assert skipped == 0

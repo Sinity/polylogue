@@ -614,89 +614,23 @@ class TestResetValidationStatus:
         assert rec2.validation_status is None
 
 
-# ─── Mtime skip integration test ──────────────────────────────────────────
+class TestSourceParsingInput:
+    """Resident source parsing consumes its input on each explicit read."""
 
-
-class TestMtimeSkip:
-    """Tests for mtime-based file skipping in iter_source_sessions_with_raw."""
-
-    def test_unchanged_file_skipped(self, tmp_path: Path) -> None:
-        """Files with matching mtime in known_mtimes are skipped."""
-        from polylogue.config import Source
-        from polylogue.sources.cursor import _get_file_mtime
-        from polylogue.sources.source_parsing import iter_source_sessions_with_raw
-
-        # Create a test JSON file
-        test_file = tmp_path / "test.json"
-        test_file.write_text(
-            '{"title": "test", "mapping": {"1": {"id": "1", "message": {"author": {"role": "user"}, "content": {"parts": ["hello"]}, "create_time": 1000000}}}}'
-        )
-
-        source = Source(name="test", path=tmp_path)
-
-        # First pass: capture all sessions (no known_mtimes)
-        results_first = list(iter_source_sessions_with_raw(source, capture_raw=True))
-        assert len(results_first) > 0
-
-        # Get the actual mtime
-        file_mtime = _get_file_mtime(test_file)
-        assert file_mtime is not None
-        known_mtimes = {str(test_file): file_mtime}
-
-        # Second pass with known_mtimes: file should be skipped
-        results_second = list(
-            iter_source_sessions_with_raw(
-                source,
-                capture_raw=True,
-                known_mtimes=known_mtimes,
-            )
-        )
-        assert len(results_second) == 0
-
-    def test_modified_file_not_skipped(self, tmp_path: Path) -> None:
-        """Files with different mtime are NOT skipped."""
+    def test_repeated_source_read_keeps_session(self, tmp_path: Path) -> None:
         from polylogue.config import Source
         from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
+        fixture = Path(__file__).parents[2] / "fixtures/origin-capability/chatgpt-export.json"
         test_file = tmp_path / "test.json"
-        test_file.write_text(
-            '{"title": "test", "mapping": {"1": {"id": "1", "message": {"author": {"role": "user"}, "content": {"parts": ["hello"]}, "create_time": 1000000}}}}'
-        )
-
-        source = Source(name="test", path=tmp_path)
-
-        # Known mtimes with a DIFFERENT mtime than the actual file
-        known_mtimes = {str(test_file): "1999-01-01T00:00:00Z"}
-
-        results = list(
-            iter_source_sessions_with_raw(
-                source,
-                capture_raw=True,
-                known_mtimes=known_mtimes,
-            )
-        )
-        assert len(results) > 0
-
-    def test_no_known_mtimes_processes_all(self, tmp_path: Path) -> None:
-        """Without known_mtimes, all files are processed normally."""
-        from polylogue.config import Source
-        from polylogue.sources.source_parsing import iter_source_sessions_with_raw
-
-        test_file = tmp_path / "test.json"
-        test_file.write_text(
-            '{"title": "test", "mapping": {"1": {"id": "1", "message": {"author": {"role": "user"}, "content": {"parts": ["hello"]}, "create_time": 1000000}}}}'
-        )
-
-        source = Source(name="test", path=tmp_path)
-
-        results = list(
-            iter_source_sessions_with_raw(
-                source,
-                capture_raw=True,
-                known_mtimes=None,
-            )
-        )
-        assert len(results) > 0
+        test_file.write_bytes(fixture.read_bytes())
+        source = Source(name="chatgpt", path=tmp_path)
+        first = list(iter_source_sessions_with_raw(source, capture_raw=True))
+        second = list(iter_source_sessions_with_raw(source, capture_raw=True))
+        assert first
+        assert [session.provider_session_id for _, session in second] == [
+            session.provider_session_id for _, session in first
+        ]
 
 
 # ─── Fresh schema test ─────────────────────────────────────────────────────
