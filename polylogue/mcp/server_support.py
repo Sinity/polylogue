@@ -451,10 +451,10 @@ def _json_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
     result = _serialize_payload(payload, exclude_none=exclude_none)
     original_bytes = len(result.encode("utf-8"))
     context = _response_context_var.get()
+    request = getattr(payload, "_transaction_request", None)
     if (
         context is not None
-        and context.tool == "read"
-        and context.arguments.get("view") == "messages"
+        and getattr(request, "operation", None) == "sessions.read"
         and (
             context.arguments.get("fragment_offset") is not None
             or (
@@ -479,7 +479,7 @@ def _message_fragment(payload: BaseModel, context: _ResponseContext) -> str:
     from polylogue.mcp.payloads import MCPMessageFragmentPayload
 
     request = getattr(payload, "_transaction_request", None)
-    rows = getattr(payload, "messages", ())
+    rows = getattr(payload, "messages", getattr(payload, "items", ()))
     if not isinstance(request, QueryTransactionRequest) or not rows:
         raise ValueError("message fragments require a nonempty snapshot-bound transcript window")
     row = rows[0].model_dump(mode="json")
@@ -488,7 +488,7 @@ def _message_fragment(payload: BaseModel, context: _ResponseContext) -> str:
     if not isinstance(offset, int) or isinstance(offset, bool) or not 0 <= offset < len(encoded):
         raise ValueError("fragment_offset is outside the message JSON bytes")
     framed = replace(request, page_size=1)
-    ref = str(context.arguments["ref"])
+    ref = str(request.arguments["ref"])
 
     def fragment(end: int) -> str:
         next_fragment = end if end < len(encoded) else None
@@ -507,7 +507,7 @@ def _message_fragment(payload: BaseModel, context: _ResponseContext) -> str:
         return _serialize_payload(
             MCPMessageFragmentPayload(
                 message_id=str(row["id"]),
-                session_ref=ref,
+                session_ref=f"session:{ref.removeprefix('session:')}",
                 result_ref=framed.result_ref,
                 row_offset=framed.offset,
                 offset=offset,

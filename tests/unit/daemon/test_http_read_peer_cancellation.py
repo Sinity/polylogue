@@ -14,8 +14,9 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 @pytest.mark.parametrize("route", ["query-units", "messages"])
 def test_peer_eof_interrupts_actual_native_read(tmp_path: Path, route: str) -> None:
-    with ArchiveStore(tmp_path):
-        pass
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
     server_socket, peer = socket.socketpair()
     handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
     handler.connection = server_socket
@@ -53,10 +54,12 @@ def test_peer_eof_interrupts_actual_native_read(tmp_path: Path, route: str) -> N
         with (
             patch("polylogue.daemon.http._web_reader_archive_root", return_value=tmp_path),
             patch("polylogue.operations.daemon_reads._query_units_payload", side_effect=actual_sql),
+            patch("polylogue.daemon.http.execute_http_session_messages", side_effect=actual_sql),
+            patch.object(QueryTransaction, "run_sync", track_context),
         ):
             worker = threading.Thread(target=run)
             worker.start()
-            assert entered.wait(10)
+            assert entered.wait(10), failures
             peer.close()
             worker.join(10)
             assert not worker.is_alive()
@@ -67,3 +70,57 @@ def test_peer_eof_interrupts_actual_native_read(tmp_path: Path, route: str) -> N
     finally:
         peer.close()
         server_socket.close()
+
+
+def test_scheduled_http_read_keeps_peer_cancellation_in_nested_query(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+    from polylogue.core.compute import BoundedComputeAdapter, DaemonOperationCancelled
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    entered = threading.Event()
+    failures = []
+    contexts = []
+    server_socket, peer = socket.socketpair()
+    kernel = BoundedComputeAdapter(max_workers=2, queue_units=4)
+    handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
+    handler.server = SimpleNamespace(execution_kernel=kernel)
+    handler.connection = server_socket
+    handler.path = "/api/sessions"
+
+    async def read(_self: DaemonAPIHandler, _handler: object) -> object:
+        transaction = QueryTransaction(tmp_path, QueryTransactionRequest(operation="http.archive.read", arguments={}))
+        contexts.append(transaction.context)
+
+        def sql(archive: ArchiveStore) -> object:
+            entered.set()
+            return archive._conn.execute(
+                "WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<1000000000) SELECT sum(x) FROM n"
+            ).fetchone()
+
+        return await transaction.run(sql)
+
+    def run() -> None:
+        try:
+            handler._sync_run(None)
+        except BaseException as exc:
+            failures.append(exc)
+
+    try:
+        with patch.object(DaemonAPIHandler, "_run_archive_query", read):
+            worker = threading.Thread(target=run)
+            worker.start()
+            assert entered.wait(10), failures
+            peer.close()
+            worker.join(10)
+            assert not worker.is_alive()
+        assert len(failures) == 1 and isinstance(failures[0], (QueryCancelledError, DaemonOperationCancelled))
+        assert contexts[0].cancelled
+        assert contexts[0].receipt.cleanup_complete
+        assert kernel.snapshot().active_units == 0
+    finally:
+        peer.close()
+        server_socket.close()
+        kernel.shutdown(wait=True)

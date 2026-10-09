@@ -1601,7 +1601,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
 
                 try:
                     window = await hooks.get_polylogue().read_transcript_window(
-                        target,
+                        normalized,
                         limit=hooks.clamp_limit(limit),
                         offset=window_offset,
                         continuation=window_continuation,

@@ -817,9 +817,17 @@ async def execute_archive_read(
                 ctx.mark_cleanup_complete()
             raise
 
+    # Capture the caller's handle before the inner compute submission installs
+    # its own handle; HTTP EOF must cancel the exact query context as well.
+    from polylogue.core.compute import current_cancellation
+
+    parent = current_cancellation()
+    remove_parent = parent.add_listener(ctx.cancel) if parent is not None else None
     worker = asyncio.create_task(_admitted_submission())
 
     def consume_worker_exception(completed: asyncio.Task[T]) -> None:
+        if remove_parent is not None:
+            remove_parent()
         # A disconnected caller may stop waiting before the physical owner
         # settles. Observe its eventual exception without cancelling that owner.
         if not completed.cancelled():

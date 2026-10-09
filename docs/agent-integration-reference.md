@@ -88,7 +88,8 @@ Arguments:
 | `limit` | `integer` | no | Page size for collection-like or recursive reads. |
 | `offset` | `integer` | no | Offset into collection-like reads that use decimal offset pagination. |
 | `around` | `string` | no | Raw message ID (not a message: ref); only with view=messages and without offset or continuation. |
-| `continuation` | `string` | no | Opaque token from the preceding read response; send alone. |
+| `continuation` | `string` | no | Opaque bound token; preserve the returned ref and view. |
+| `fragment_offset` | `integer` | no | Byte offset in an oversized message's ASCII JSON; copy only from its bound continuation descriptor. |
 
 Example — Read a session message page:
 

@@ -85,8 +85,9 @@ async def test_registered_typed_pages_keep_budget_continuation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["read", "session-operations"])
 async def test_registered_read_reassembles_oversized_unicode_message(
-    tmp_path: Path, mcp_server: MCPServerUnderTest
+    tmp_path: Path, mcp_server: MCPServerUnderTest, entry: str
 ) -> None:
     text = 'neutral é U0001f642 \\ "\n' * 4000
 
@@ -108,8 +109,16 @@ async def test_registered_read_reassembles_oversized_unicode_message(
     api = Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
     fn = mcp_server._tool_manager._tools["read"].fn
     args: dict[str, object] = {"ref": f"session:{session_id}", "view": "messages", "limit": 1}
+    if entry == "session-operations":
+        fn = mcp_server._tool_manager._tools["query"].fn
+        args = {
+            "projection": "session-operations",
+            "session_operation": {"operation": "sessions.read", "ref": f"session:{session_id}", "limit": 1},
+        }
     parts = []
     offset = 0
+    expected = None
+    stale_arguments = None
     try:
         with (
             patch("polylogue.mcp.server._get_polylogue", return_value=api),
@@ -118,6 +127,8 @@ async def test_registered_read_reassembles_oversized_unicode_message(
             for _ in range(100):
                 raw = await invoke_surface_async(fn, **args)
                 assert len(raw.encode()) <= 25_000
+                if expected is not None:
+                    assert raw == expected
                 fragment = MCPMessageFragmentPayload.model_validate_json(raw)
                 assert fragment.offset == offset
                 assert fragment.session_ref == f"session:{session_id}"
@@ -129,16 +140,39 @@ async def test_registered_read_reassembles_oversized_unicode_message(
                     descriptor = fragment.continuation
                     assert descriptor is not None
                     assert QueryContinuation.decode(descriptor["arguments"]["continuation"]).request.offset == 1
+                    fn = mcp_server._tool_manager._tools["read"].fn
                     later = json.loads(await invoke_surface_async(fn, **descriptor["arguments"]))
                     assert [row["text"] for row in later["messages"]] == ["later"]
                     break
                 assert fragment.continuation is not None
                 args = fragment.continuation["arguments"]
+                fn = mcp_server._tool_manager._tools["read"].fn
+                stale_arguments = args
                 # Same bound window and fragment offset is an idempotent retry.
                 repeated = await invoke_surface_async(fn, **args)
                 assert json.loads(repeated)["offset"] == offset
+                expected = repeated
             else:
                 pytest.fail("fragment walk did not terminate")
+            assert stale_arguments is not None
+
+            # Rewrite the same canonical session, then reject the old row frame.
+            def change() -> None:
+                with ArchiveStore(tmp_path) as archive:
+                    write_index_session(
+                        archive,
+                        ParsedSession(
+                            source_name=Provider.CODEX,
+                            provider_session_id="fragment",
+                            messages=[
+                                ParsedMessage(provider_message_id="large", role=Role.USER, text="changed", blocks=[])
+                            ],
+                        ),
+                    )
+
+            run_off_event_loop(change)
+            stale = json.loads(await invoke_surface_async(fn, **stale_arguments))
+            assert stale["code"] == "stale_continuation"
     finally:
         await api.close()
     row = json.loads("".join(parts))
