@@ -140,7 +140,9 @@ async def test_filtered_profile_export_inspects_only_selected_partitions(
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     target = cli_workspace["archive_root"] / "exports" / "filtered-profiles"
     result = await archive.export_insight_bundle(
-        InsightExportBundleRequest(output_path=target, insights=("profiles",), **selection)
+        InsightExportBundleRequest(
+            output_path=target, insights=("profiles",), origin=selection.get("origin"), until=selection.get("until")
+        )
     )
     summary = result.manifest.insights[0]
     assert summary.row_count == (0 if selected_stale else 1)
@@ -149,7 +151,11 @@ async def test_filtered_profile_export_inspects_only_selected_partitions(
     assert [row["session_id"] for row in rows] == ([] if selected_stale else ["codex-session:ext-codex-export"])
     coverage = _json_file(target / "coverage.json")
     assert coverage["converged"] is (not selected_stale)
-    assert coverage["insights"][0]["stale_count"] == int(selected_stale)
+    coverage_insights = coverage["insights"]
+    assert isinstance(coverage_insights, list)
+    profile_coverage = coverage_insights[0]
+    assert isinstance(profile_coverage, dict)
+    assert profile_coverage["stale_count"] == int(selected_stale)
 
 
 @pytest.mark.asyncio

@@ -370,6 +370,7 @@ async def test_narrowed_page_observations_preserve_owed_retry(
         assert initial is not None
         assert debt == initial
         assert bool(cursor.list_convergence_debt(retry_due_only=True)) is (revision >= 2)
+    [debt] = cursor.list_convergence_debt()
     assert debt.status == ("failed" if existing_failure else "deferred")
     assert debt.failure_count == 1
 

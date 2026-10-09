@@ -5,6 +5,7 @@ from __future__ import annotations
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
 from tests.infra.archive_store_double import ArchiveStoreDouble
+from tests.infra.identity import archive_block_id, fixture_block_content_identity
 
 
 class CliTranscriptArchive(ArchiveStoreDouble):
@@ -24,10 +25,15 @@ class CliTranscriptArchive(ArchiveStoreDouble):
                 is_active_leaf=position == message_count - 1,
                 blocks=(
                     ArchiveBlockRow(
-                        block_id=f"{self.session_id}:m{position}:b0",
+                        block_id=archive_block_id(
+                            f"{self.session_id}:m{position}",
+                            content_identity=fixture_block_content_identity("text", f"tail message {position}"),
+                        ),
                         message_id=f"{self.session_id}:m{position}",
                         block_type="text",
                         text=f"tail message {position}",
+                        content_identity=fixture_block_content_identity("text", f"tail message {position}"),
+                        content_occurrence=0,
                     ),
                 ),
             )

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
 
+import aiosqlite
 import pytest
 
 from polylogue.api import Polylogue
@@ -89,3 +91,28 @@ async def test_library_refuses_incomplete_lineage_instead_of_complete_child_tail
             read_attachment_library_page(
                 archive, limit=1, offset=0, mime_filter="", state_filter="", session_filter=ids["child"]
             )
+
+
+@pytest.mark.asyncio
+async def test_library_consumes_lazy_pages_and_stops_at_empty_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.queries.attachment_records import get_attachment_library_page
+
+    run_off_event_loop(lambda: seed_attachment_library_lineage_archive(tmp_path))
+    original_fetchmany = aiosqlite.Cursor.fetchmany
+    page_sizes: list[int] = []
+
+    async def lazy_fetchmany(cursor: aiosqlite.Cursor, size: int | None = None) -> Iterable[aiosqlite.Row]:
+        rows = tuple(await original_fetchmany(cursor, size))
+        page_sizes.append(len(rows))
+        if len(page_sizes) > 2:
+            pytest.fail("empty lazy page must end attachment collection")
+        return iter(rows)
+
+    monkeypatch.setattr(aiosqlite.Cursor, "fetchmany", lazy_fetchmany)
+    async with aiosqlite.connect(tmp_path / "index.db") as connection:
+        connection.row_factory = aiosqlite.Row
+        rows = await get_attachment_library_page(connection, limit=10, offset=0)
+    assert page_sizes == [4, 0]
+    assert {row[0].display_name for row in rows} == {"own.txt", "prefix.txt", "post-cut.txt", "foreign.txt"}

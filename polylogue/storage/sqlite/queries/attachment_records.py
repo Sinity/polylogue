@@ -363,7 +363,10 @@ async def get_attachment_library_page(
     if limit <= 0:
         return []
     async with conn.execute(sql, args) as cursor:
-        while rows := await cursor.fetchmany(64):
+        while True:
+            rows = tuple(await cursor.fetchmany(64))
+            if not rows:
+                break
             if await asyncio.to_thread(window.consume, rows):
                 break
     return window.rows

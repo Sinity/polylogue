@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.enums import Provider, Role
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.claude import parse_ai
 from polylogue.storage.blob_store import BlobStore
@@ -193,9 +194,9 @@ def test_colliding_native_attachment_insertion_keeps_the_existing_reference(tmp_
     ]
     inserted, original = sorted(attachments, key=lambda item: _attachment_id("", item))
     session = ParsedSession(
-        source_name="chatgpt-export",
+        source_name=Provider.CHATGPT,
         provider_session_id="stable-collision",
-        messages=[ParsedMessage(provider_message_id="m", role="user", text="files")],
+        messages=[ParsedMessage(provider_message_id="m", role=Role.USER, text="files")],
         attachments=[original],
     )
     conn = _connect(tmp_path / "index.db")
@@ -248,9 +249,9 @@ def test_source_native_identity_is_injective_in_the_actual_writer(tmp_path: Path
     from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
 
     session = ParsedSession(
-        source_name="chatgpt-export",
+        source_name=Provider.CHATGPT,
         provider_session_id="exact-native",
-        messages=[ParsedMessage(provider_message_id="m", role="user", text="files")],
+        messages=[ParsedMessage(provider_message_id="m", role=Role.USER, text="files")],
         attachments=[
             ParsedAttachment(provider_attachment_id=native_id, message_provider_id="m", name="file")
             for native_id in native_ids
@@ -280,9 +281,9 @@ def test_optional_native_enrichment_does_not_rename_the_attachment_reference(tmp
 
     original = ParsedAttachment(provider_attachment_id="opaque-native", message_provider_id="m", name="before")
     session = ParsedSession(
-        source_name="chatgpt-export",
+        source_name=Provider.CHATGPT,
         provider_session_id="native-enrichment",
-        messages=[ParsedMessage(provider_message_id="m", role="user", text="file")],
+        messages=[ParsedMessage(provider_message_id="m", role=Role.USER, text="file")],
         attachments=[original],
     )
     conn = _connect(tmp_path / "index.db")
@@ -306,9 +307,9 @@ def test_missing_native_attachment_identity_is_a_visible_refusal(tmp_path: Path)
     from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
 
     session = ParsedSession(
-        source_name="chatgpt-export",
+        source_name=Provider.CHATGPT,
         provider_session_id="missing-native",
-        messages=[ParsedMessage(provider_message_id="m", role="user", text="file")],
+        messages=[ParsedMessage(provider_message_id="m", role=Role.USER, text="file")],
         attachments=[ParsedAttachment(provider_attachment_id="", message_provider_id="m")],
     )
     conn = _connect(tmp_path / "index.db")
@@ -332,9 +333,9 @@ def test_actual_attachment_publication_and_index_share_exact_native_references(
     from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
 
     session = ParsedSession(
-        source_name="claude-code",
+        source_name=Provider.CLAUDE_CODE,
         provider_session_id="s1",
-        messages=[ParsedMessage(provider_message_id="m", role="user", text="files")],
+        messages=[ParsedMessage(provider_message_id="m", role=Role.USER, text="files")],
         attachments=[
             ParsedAttachment(
                 provider_attachment_id=native_id,
@@ -437,9 +438,9 @@ def test_one_native_reference_cannot_choose_between_competing_objects(tmp_path: 
     from polylogue.storage.sqlite.archive_tiers.write import AttachmentReferenceAmbiguityError
 
     session = ParsedSession(
-        source_name="chatgpt-export",
+        source_name=Provider.CHATGPT,
         provider_session_id="competing-native",
-        messages=[ParsedMessage(provider_message_id="m", role="user", text="files")],
+        messages=[ParsedMessage(provider_message_id="m", role=Role.USER, text="files")],
         attachments=[
             ParsedAttachment(provider_attachment_id="one-native", message_provider_id="m", provider_file_id=file_id)
             for file_id in ("file-a", "file-b")
