@@ -5215,6 +5215,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         provider_session_id="api-v1-1",
         title="API archive session",
         working_directories=["/realm/project/polylogue"],
+        git_repository_url="https://example.invalid/demo/polylogue.git",
         messages=[
             ParsedMessage(
                 provider_message_id="m1",
