@@ -2318,6 +2318,23 @@ def test_native_receiver_complete_envelope_matches_canonical_provider_parsing(
             host, port, "POST", f"{path}/finalize", {**descriptor, "plan_digest": prepared["plan_digest"]}
         )
         assert status == 200, final
+        connection = HTTPConnection(host, port)
+        try:
+            connection.request(
+                "POST",
+                f"{path}/publish",
+                json.dumps({**descriptor, "plan_digest": prepared["plan_digest"], "sha256": final["sha256"]}),
+                headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            receipt = {**json.loads(response.read()), "receiver_request_id": response.getheader("X-Request-ID")}
+            assert response.status == 202, receipt
+            for field in ("receiver_request_id", "content_hash", "submitted_content_hash", "outcome"):
+                assert isinstance(receipt[field], str) and receipt[field]
+            assert receipt["outcome"] == "accepted"
+            assert receipt["content_hash"] == receipt["submitted_content_hash"] == final["sha256"]
+        finally:
+            connection.close()
     retained = (capture_job_store_root(tmp_path) / "artifacts" / f"{final['sha256']}.native").read_bytes()
     for member in members.values():
         assert member in retained

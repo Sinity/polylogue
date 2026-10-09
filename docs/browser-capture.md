@@ -142,7 +142,9 @@ but do not redefine the provider attachment across snapshots when a stable
 native message owner is available. Attachments without that owner retain
 their declared ordinal constraints. Repeated attachment IDs on different owner messages remain separate occurrences.
 
-Every receiver response carries `X-Request-ID`. If the extension or a local
+Every receiver response carries a nonempty `X-Request-ID`. Each HTTP request,
+including another request on the same keepalive connection, owns an identity
+shared by its response and logs. Generated identities are fresh per request. If the extension or a local
 debug probe sends a safe `X-Request-ID` header, the receiver echoes its
 sanitized value; otherwise it generates one. Receiver logs use the same id for
 origin rejection, token rejection, malformed payloads, write failures, accepted

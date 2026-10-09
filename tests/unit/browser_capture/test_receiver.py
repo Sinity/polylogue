@@ -45,6 +45,7 @@ from polylogue.browser_capture.route_contracts import (
     browser_capture_route_contract_for,
 )
 from polylogue.browser_capture.server import (
+    BrowserCaptureHandler,
     make_server,
     mission_control_archive_facts,
 )
@@ -1303,6 +1304,52 @@ def test_receiver_echoes_safe_request_id_header(tmp_path: Path) -> None:
 
     assert response.status == HTTPStatus.OK
     assert response.getheader("X-Request-ID") == "dev-looprequest123"
+
+
+def test_receiver_request_identity_is_stable_and_fresh_on_keepalive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: list[tuple[str, str]] = []
+    original = BrowserCaptureHandler._finish_observed_request
+
+    def finish(handler: BrowserCaptureHandler, method: str, started_at: float) -> None:
+        observed.append((handler._request_id(), handler._request_id()))
+        original(handler, method, started_at)
+
+    monkeypatch.setattr(BrowserCaptureHandler, "_finish_observed_request", finish)
+    returned: list[str] = []
+    original_socket: socket.socket | None = None
+    issued: dict[str, str] = {}
+    with _running_receiver(tmp_path, auth_token="neutral-secret") as (host, port):
+        connection = HTTPConnection(host, port)
+        try:
+            for _ in range(2):
+                connection.request("GET", "/v1/receiver/status-challenge")
+                response = connection.getresponse()
+                issued = json.loads(response.read())
+                assert response.status == HTTPStatus.OK
+                assert connection.sock is not None
+                returned.append(response.getheader("X-Request-ID") or "")
+                if len(returned) == 1:
+                    original_socket = connection.sock
+                else:
+                    assert connection.sock is original_socket
+            connection.request(
+                "POST",
+                "/v1/receiver/status-attest",
+                body=json.dumps({**issued, "proof": "A" * 43}),
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            failure = json.loads(response.read())
+            assert response.status == HTTPStatus.UNAUTHORIZED
+            assert failure["error"] == "receiver_authentication_failed"
+            returned.append(response.getheader("X-Request-ID") or "")
+        finally:
+            connection.close()
+    assert all(returned)
+    assert len(set(returned)) == 3
+    assert observed == [(value, value) for value in returned]
 
 
 @pytest.mark.parametrize(
