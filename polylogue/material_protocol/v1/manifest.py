@@ -110,13 +110,13 @@ class SegmentDescriptor:
     @staticmethod
     def from_dict(payload: dict[str, JSONValue]) -> SegmentDescriptor:
         return SegmentDescriptor(
-            index=_integer(payload["index"]),  # type: ignore[arg-type]
+            index=_integer(payload["index"]),
             filename=_text(payload["filename"]),
             sha256=_text(payload["sha256"]),
-            size_bytes=_integer(payload["size_bytes"]),  # type: ignore[arg-type]
-            record_count=_integer(payload["record_count"]),  # type: ignore[arg-type]
-            first_seq=_integer(payload["first_seq"]),  # type: ignore[arg-type]
-            last_seq=_integer(payload["last_seq"]),  # type: ignore[arg-type]
+            size_bytes=_integer(payload["size_bytes"]),
+            record_count=_integer(payload["record_count"]),
+            first_seq=_integer(payload["first_seq"]),
+            last_seq=_integer(payload["last_seq"]),
         )
 
 
@@ -145,8 +145,8 @@ class ContentDigest:
     def from_dict(payload: dict[str, JSONValue]) -> ContentDigest:
         return ContentDigest(
             polylogue_sha256=_text(payload["polylogue_sha256"]),
-            canonicalizer_version=_integer(payload["canonicalizer_version"]),  # type: ignore[arg-type]
-            size_bytes=_integer(payload["size_bytes"]),  # type: ignore[arg-type]
+            canonicalizer_version=_integer(payload["canonicalizer_version"]),
+            size_bytes=_integer(payload["size_bytes"]),
             media_type=_text(payload.get("media_type", SEGMENT_MEDIA_TYPE)),
             sinex_cas_digest=(
                 _text(payload["sinex_cas_digest"]) if payload.get("sinex_cas_digest") is not None else None
@@ -177,9 +177,9 @@ class AnchorEntry:
     @staticmethod
     def from_dict(payload: dict[str, JSONValue]) -> AnchorEntry:
         return AnchorEntry(
-            segment_index=_integer(payload["segment_index"]),  # type: ignore[arg-type]
-            line_index=_integer(payload["line_index"]),  # type: ignore[arg-type]
-            seq=_integer(payload["seq"]),  # type: ignore[arg-type]
+            segment_index=_integer(payload["segment_index"]),
+            line_index=_integer(payload["line_index"]),
+            seq=_integer(payload["seq"]),
             kind=_text(payload["kind"]),
             sha256=_text(payload["sha256"]),
         )
@@ -258,7 +258,7 @@ class RevisionManifest:
             return RevisionManifest(
                 protocol_version=_text(payload["protocol_version"]),
                 semantics_version=_declared_semantics_version(payload["semantics_version"]),
-                origin_vocabulary_version=_integer(payload["origin_vocabulary_version"]),  # type: ignore[arg-type]
+                origin_vocabulary_version=_integer(payload["origin_vocabulary_version"]),
                 origin_vocabulary_digest=_text(payload["origin_vocabulary_digest"]),
                 session_id=_text(payload["session_id"]),
                 origin=_text(payload["origin"]),
@@ -269,14 +269,14 @@ class RevisionManifest:
                     if payload.get("superseded_revision_id") is not None
                     else None
                 ),
-                content_digest=ContentDigest.from_dict(_object(payload["content_digest"])),  # type: ignore[arg-type]
-                head_segment=SegmentDescriptor.from_dict(_object(payload["head_segment"])),  # type: ignore[arg-type]
-                segments=tuple(SegmentDescriptor.from_dict(_object(item)) for item in segments_payload),  # type: ignore[arg-type]
-                expected_record_counts={_text(k): _integer(v) for k, v in expected_counts_payload.items()},  # type: ignore[arg-type]
-                anchors={_text(k): AnchorEntry.from_dict(_object(v)) for k, v in anchors_payload.items()},  # type: ignore[arg-type]
+                content_digest=ContentDigest.from_dict(_object(payload["content_digest"])),
+                head_segment=SegmentDescriptor.from_dict(_object(payload["head_segment"])),
+                segments=tuple(SegmentDescriptor.from_dict(_object(item)) for item in segments_payload),
+                expected_record_counts={_text(k): _integer(v) for k, v in expected_counts_payload.items()},
+                anchors={_text(k): AnchorEntry.from_dict(_object(v)) for k, v in anchors_payload.items()},
                 sequence_rule=_text(payload["sequence_rule"]),
                 completeness=_text(payload["completeness"]),
-                fidelity_gaps=tuple(FidelityGap.from_dict(_object(item)) for item in fidelity_payload),  # type: ignore[arg-type]
+                fidelity_gaps=tuple(FidelityGap.from_dict(_object(item)) for item in fidelity_payload),
                 revision_created_at=(
                     _text(payload["revision_created_at"]) if payload.get("revision_created_at") is not None else None
                 ),

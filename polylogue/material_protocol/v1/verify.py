@@ -246,12 +246,12 @@ def _check_semantic_closure(
         if record["seq"] <= messages_by_id[owner]["seq"]:  # type: ignore[operator]
             raise SemanticClosureError(f"{kind} precedes its message owner")
         if kind == "block":
-            identity = record.get("content_identity")
-            occurrence = record.get("content_occurrence")
+            block_identity = record.get("content_identity")
+            block_occurrence = record.get("content_occurrence")
             try:
-                if not isinstance(identity, str) or type(occurrence) is not int:
+                if not isinstance(block_identity, str) or type(block_occurrence) is not int:
                     raise ValueError("invalid block content coordinates")
-                expected_id = block_id(owner, content_identity=identity, content_occurrence=occurrence)
+                expected_id = block_id(owner, content_identity=block_identity, content_occurrence=block_occurrence)
                 if record.get("record_id") != expected_id or record.get("block_id") != expected_id:
                     raise ValueError("block identity disagrees with its content coordinates")
             except ValueError as exc:

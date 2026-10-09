@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
+from typing import cast
 
 import pytest
 
@@ -61,7 +63,8 @@ def test_duplicate_direct_material_record_ids_are_refused_before_anchor_overwrit
 )
 def test_manifest_declarations_cannot_disagree_with_verified_bytes(field: str, value: str) -> None:
     encoded = encode_session_revision(build_small_session_material(), revision_created_at="2026-01-01T00:00:00Z")
-    manifest = dataclasses.replace(encoded.manifest, **{field: value})
+    replace = cast(Callable[..., RevisionManifest], dataclasses.replace)
+    manifest = replace(encoded.manifest, **{field: value})
     with pytest.raises(MaterialProtocolError):
         verify_revision(manifest, encoded.segments)
 
