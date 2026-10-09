@@ -232,11 +232,11 @@ def _is_loopback(host: str) -> bool:
     return is_loopback_host(host)
 
 
-def _check_token(headers: dict[str, str], config: BrowserCaptureReceiverConfig) -> bool:
+def _check_token(auth: str | None, config: BrowserCaptureReceiverConfig) -> bool:
     """Validate Authorization: Bearer <token> when auth is configured."""
     if config.auth_token is None:
         return True
-    auth = headers.get("Authorization", "")
+    auth = auth or ""
     return bool(auth.startswith("Bearer ") and hmac.compare_digest(auth[7:], config.auth_token))
 
 
@@ -437,7 +437,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         config = self.receiver_config
         if config.auth_token is None:
             return False
-        if _check_token(dict(self.headers), config):
+        if _check_token(self.headers.get("Authorization"), config):
             return False
         # The daemon normally uses the lazy stdlib logger, whose plain handler
         # does not render structured kwargs.  Keep this rejection forensic
@@ -1479,8 +1479,12 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_pairing_request")
             return
+        secret = self.receiver_config.auth_token
+        if secret is None:
+            self._safe_error(HTTPStatus.CONFLICT, "receiver_auth_disabled")
+            return
         try:
-            token = redeem_pairing_code(request.code)
+            token = redeem_pairing_code(request.code, token=secret)
         except (PairingCodeExpiredError, PairingCodeAlreadyUsedError, PairingCodeInvalidError) as exc:
             logger.warning(
                 "browser_capture.pairing_redeem_rejected", request_id=self._request_id(), reason=type(exc).__name__

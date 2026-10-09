@@ -280,3 +280,46 @@ def test_native_host_scratch_failure_returns_error_envelope(tmp_path: Path, monk
     assert code == 1
     assert reply == {"ok": False, "error": "receiver_observation_storage_failed", "receiver_id": "rx-actual"}
     assert _SECRET.encode() not in raw
+
+
+@pytest.mark.parametrize("phase", ["execute", "step"])
+def test_native_host_lazy_spill_read_failure_is_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    from typing import Any, cast
+
+    from polylogue.schemas.observation_spill import StreamedJSONDocument
+
+    actual_enter = StreamedJSONDocument.__enter__
+
+    class FailedRows:
+        def __iter__(self) -> FailedRows:
+            return self
+
+        def __next__(self) -> object:
+            raise sqlite3.OperationalError("neutral lazy read stepping failed")
+
+        def close(self) -> None:
+            pass
+
+    class FailedConnection:
+        def execute(self, *args: Any, **kwargs: Any) -> Any:
+            if phase == "execute":
+                raise sqlite3.OperationalError("neutral lazy read execute failed")
+            return FailedRows()
+
+    def fail_read(self: StreamedJSONDocument) -> object:
+        from polylogue.schemas.observation_spill import SpilledObject
+
+        document = actual_enter(self)
+        assert isinstance(document, SpilledObject)
+        document._connection = cast(sqlite3.Connection, FailedConnection())
+        return document
+
+    monkeypatch.setattr(StreamedJSONDocument, "__enter__", fail_read)
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=_SECRET)
+    with _serving(server) as endpoint:
+        code, reply, raw = _run_native_host(monkeypatch, endpoint)
+    assert code == 1
+    assert reply == {"ok": False, "error": "receiver_observation_storage_failed", "receiver_id": "rx-actual"}
+    assert _SECRET.encode() not in raw

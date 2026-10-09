@@ -41,7 +41,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.browser_capture.receiver import load_or_mint_receiver_token
 from polylogue.core.json import dumps
 from polylogue.core.json import loads as json_loads
 from polylogue.paths import browser_capture_pairing_state_path
@@ -186,9 +185,9 @@ def redeem_pairing_code(
     code: str,
     *,
     path: Path | None = None,
-    token_path: Path | None = None,
+    token: str,
 ) -> str:
-    """Redeem a one-time pairing code for the receiver's current bearer token.
+    """Redeem a one-time code for the caller's pinned receiver bearer token.
 
     Raises one of the :class:`PairingCodeError` subclasses on any failure
     (no pending code, wrong code, expired, already used, or too many wrong
@@ -220,7 +219,7 @@ def redeem_pairing_code(
         # `used_at_ms`, so a stale record can never be replayed even if a
         # caller passes a custom `path` that skips the lock above.
         _clear_pairing_state(target)
-    return load_or_mint_receiver_token(token_path)
+    return token
 
 
 __all__ = [

@@ -777,3 +777,50 @@ def test_status_native_settlement_failure_is_typed_and_retryable(
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.mark.parametrize("header", ["Authorization", "authorization", "AUTHORIZATION"])
+def test_receiver_bearer_header_is_case_insensitive(tmp_path: Path, header: str) -> None:
+    token = "neutral-case-sensitive-value"
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        for value, expected in ((token, 200), (token.upper(), 401)):
+            with closing(HTTPConnection("127.0.0.1", server.server_port)) as connection:
+                connection.request("GET", "/v1/status", headers={header: f"Bearer {value}"})
+                response = connection.getresponse()
+                assert response.status == expected
+                payload = json.loads(response.read())
+                assert payload.get("auth_required") is True if expected == 200 else payload["error"] == "unauthorized"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize("exception_type", [OSError, ValueError, sqlite3.OperationalError])
+def test_status_output_failure_preserves_consumer_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exception_type: type[Exception]
+) -> None:
+    import click
+
+    original = exception_type("neutral caller output failure")
+
+    def fail_output(*args: object, **kwargs: object) -> None:
+        raise original
+
+    token = resolve_receiver_auth_token("neutral-output-token")
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token)
+    receiver_identity(server.config)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(click, "echo", fail_output)
+    try:
+        result = CliRunner().invoke(status_command, ["--port", str(server.server_port), "--format", "json"])
+        assert result.exit_code == 1
+        assert result.exception is original
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

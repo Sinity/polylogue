@@ -69,8 +69,10 @@ def _observed_receiver_status(
 ) -> Iterator[dict[str, object]]:
     """Own the selected peer and disk-backed status until its consumer finishes."""
     from polylogue.browser_capture.native_host import (
+        ReceiverNetworkReadError,
         ReceiverObservationStorageError,
         ReceiverResponseAuthenticationError,
+        ReceiverResponsePayloadError,
         _receiver_response_document,
     )
     from polylogue.browser_capture.receiver import receiver_status_proof
@@ -84,12 +86,23 @@ def _observed_receiver_status(
     expected_identity = _read_receiver_credential(browser_capture_receiver_identity_path(), secret=False)
     token = None if allow_no_auth else _read_receiver_credential(browser_capture_receiver_token_path(), secret=True)
     connection = http.client.HTTPConnection(host, port, timeout=None)
+
+    def response_for(
+        method: str, path: str, *, body: str | None = None, headers: dict[str, str] | None = None
+    ) -> http.client.HTTPResponse:
+        try:
+            connection.request(method, path, body=body, headers=headers or {})
+            return connection.getresponse()
+        except (OSError, http.client.HTTPException) as exc:
+            raise click.ClickException("receiver_unreachable") from exc
+
     try:
         status_auth: tuple[str, str, str] | None = None
         if not allow_no_auth:
             assert token is not None
-            connection.request("GET", "/v1/receiver/status-challenge", headers={"Connection": "keep-alive"})
-            challenge_response = connection.getresponse()
+            challenge_response = response_for(
+                "GET", "/v1/receiver/status-challenge", headers={"Connection": "keep-alive"}
+            )
             if challenge_response.status != 200:
                 raise click.ClickException(f"receiver_status_refused_{challenge_response.status}")
             try:
@@ -114,19 +127,18 @@ def _observed_receiver_status(
                 "proof": receiver_status_proof(token, expected_identity, challenge),
             }
             status_auth = (token, expected_identity, challenge)
-            connection.request(
+            response = response_for(
                 "POST",
                 "/v1/receiver/status-attest",
                 body=json.dumps(request),
                 headers={"Content-Type": "application/json"},
             )
         else:
-            connection.request("GET", "/v1/status")
-        response = connection.getresponse()
+            response = response_for("GET", "/v1/status")
         if response.status != 200:
             raise click.ClickException(f"receiver_status_refused_{response.status}")
-        try:
-            with _receiver_response_document(response, status_auth=status_auth) as document:
+        with _receiver_response_document(response, status_auth=status_auth) as document:
+            try:
                 if not isinstance(document, dict):
                     raise ValueError("status must be an object")
                 origins = document.get("allowed_origins")
@@ -144,14 +156,16 @@ def _observed_receiver_status(
                     raise click.ClickException("receiver_authentication_policy_mismatch")
                 observed = payload.model_dump(mode="json")
                 observed["allowed_origins"] = origins
-                yield observed
-        except ReceiverResponseAuthenticationError as exc:
-            raise click.ClickException("receiver_authentication_failed") from exc
-        except (ValueError, ValidationError, JSONError) as exc:
-            raise click.ClickException("receiver_status_invalid_payload") from exc
+            except (ValueError, ValidationError, JSONError) as exc:
+                raise click.ClickException("receiver_status_invalid_payload") from exc
+            yield observed
+    except ReceiverResponseAuthenticationError as exc:
+        raise click.ClickException("receiver_authentication_failed") from exc
+    except ReceiverResponsePayloadError as exc:
+        raise click.ClickException("receiver_status_invalid_payload") from exc
     except ReceiverObservationStorageError as exc:
         raise click.ClickException("receiver_observation_storage_failed") from exc
-    except (OSError, http.client.HTTPException) as exc:
+    except ReceiverNetworkReadError as exc:
         raise click.ClickException("receiver_unreachable") from exc
     finally:
         connection.close()
@@ -445,14 +459,6 @@ def capture_health_command(limit: int, output_format: str | None, cursor: str | 
     show_default=True,
     help="Submit once or only stage a verified provider draft.",
 )
-@click.option("--auth-token", "auth_token", default=None, help="Bearer token used by the active receiver.")
-@click.option(
-    "--allow-no-auth",
-    is_flag=True,
-    default=False,
-    envvar=BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV,
-    help="Target a receiver explicitly running without bearer authentication.",
-)
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 def action_command(
     provider: str,
@@ -469,8 +475,6 @@ def action_command(
     action_id: str | None,
     idempotency_key: str | None,
     submit: bool,
-    auth_token: str | None,
-    allow_no_auth: bool,
     output_format: str | None,
 ) -> None:
     """Enqueue one provider-neutral action for a replaceable extension."""
@@ -511,7 +515,6 @@ def action_command(
         )
         receiver_config = BrowserCaptureReceiverConfig(
             spool_path=BrowserCaptureReceiverConfig.default().spool_path,
-            auth_token=resolve_receiver_auth_token(auth_token, allow_no_auth=allow_no_auth),
         )
         action = enqueue_action(request, receiver_id=receiver_identity(receiver_config))
     except (OSError, ValueError, ValidationError, BrowserActionConflictError, BrowserActionQuotaError) as exc:

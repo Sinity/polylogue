@@ -10,8 +10,8 @@ from __future__ import annotations
 import io
 import json
 import sqlite3
-from collections.abc import Callable, ItemsView, Iterable, Iterator, KeysView, Mapping, Sequence, ValuesView
-from contextlib import AbstractContextManager, ExitStack, suppress
+from collections.abc import Callable, Generator, ItemsView, Iterable, Iterator, KeysView, Mapping, Sequence, ValuesView
+from contextlib import AbstractContextManager, ExitStack, closing, suppress
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -26,6 +26,41 @@ from polylogue.storage.sqlite.connection_profile import scratch_connection_conte
 _Default = TypeVar("_Default")
 
 
+class StreamedJSONReadError(sqlite3.DatabaseError):
+    """A lazy JSON view failed while executing or stepping its own SQLite read."""
+
+    def __init__(self, failure: sqlite3.Error) -> None:
+        super().__init__("streamed_json_read_failed")
+        for attribute in ("sqlite_errorcode", "sqlite_errorname"):
+            if hasattr(failure, attribute):
+                setattr(self, attribute, getattr(failure, attribute))
+
+
+def _read_rows(
+    connection: sqlite3.Connection, sql: str, parameters: tuple[object, ...] = ()
+) -> Generator[Any, None, None]:
+    cursor = None
+    try:
+        cursor = connection.execute(sql, parameters)
+        yield from cursor
+    except sqlite3.Error as exc:
+        raise StreamedJSONReadError(exc) from exc
+    finally:
+        if cursor is not None:
+            try:
+                cursor.close()
+            except sqlite3.Error as exc:
+                raise StreamedJSONReadError(exc) from exc
+
+
+def _read_row(connection: sqlite3.Connection, sql: str, parameters: tuple[object, ...] = ()) -> Any:
+    rows = _read_rows(connection, sql, parameters)
+    try:
+        return next(rows, None)
+    finally:
+        rows.close()
+
+
 class SpilledObject(dict[str, JSONValue]):
     def __init__(self, connection: sqlite3.Connection, node_id: int) -> None:
         dict.__init__(self)
@@ -33,24 +68,28 @@ class SpilledObject(dict[str, JSONValue]):
         self._node_id = node_id
 
     def __iter__(self) -> Iterator[str]:
-        cursor = self._connection.execute(
-            "SELECT key_bytes FROM json_object_members WHERE parent_id = ? ORDER BY ordinal",
-            (self._node_id,),
-        )
-        for (key_bytes,) in cursor:
-            yield bytes(key_bytes).decode("utf-8", "surrogatepass")
+        with closing(
+            _read_rows(
+                self._connection,
+                "SELECT key_bytes FROM json_object_members WHERE parent_id = ? ORDER BY ordinal",
+                (self._node_id,),
+            )
+        ) as cursor:
+            for (key_bytes,) in cursor:
+                yield bytes(key_bytes).decode("utf-8", "surrogatepass")
 
     def __len__(self) -> int:
-        row = self._connection.execute(
-            "SELECT COUNT(*) FROM json_object_members WHERE parent_id = ?", (self._node_id,)
-        ).fetchone()
+        row = _read_row(
+            self._connection, "SELECT COUNT(*) FROM json_object_members WHERE parent_id = ?", (self._node_id,)
+        )
         return int(row[0])
 
     def __getitem__(self, key: str) -> JSONValue:
-        row = self._connection.execute(
+        row = _read_row(
+            self._connection,
             "SELECT child_id FROM json_object_members WHERE parent_id = ? AND key_bytes = ?",
             (self._node_id, key.encode("utf-8", "surrogatepass")),
-        ).fetchone()
+        )
         if row is None:
             raise KeyError(key)
         return _load_node(self._connection, int(row[0]))
@@ -68,10 +107,15 @@ class SpilledObject(dict[str, JSONValue]):
             return default
 
     def sorted_keys(self) -> Iterator[str]:
-        for (key,) in self._connection.execute(
-            "SELECT key_bytes FROM json_object_members WHERE parent_id = ? ORDER BY key_bytes", (self._node_id,)
-        ):
-            yield bytes(key).decode("utf-8", "surrogatepass")
+        with closing(
+            _read_rows(
+                self._connection,
+                "SELECT key_bytes FROM json_object_members WHERE parent_id = ? ORDER BY key_bytes",
+                (self._node_id,),
+            )
+        ) as _owned_rows:
+            for (key,) in _owned_rows:
+                yield bytes(key).decode("utf-8", "surrogatepass")
 
     def normalized_sorted_items(self, normalize_key: Callable[[str], str]) -> Iterator[tuple[str, JSONValue]]:
         """Sort normalized keys on disk; refuse collisions without a Python key set."""
@@ -80,8 +124,8 @@ class SpilledObject(dict[str, JSONValue]):
             "CREATE TABLE IF NOT EXISTS json_normalized_keys (parent_id INTEGER, normalized BLOB, child_id INTEGER, PRIMARY KEY(parent_id, normalized)) WITHOUT ROWID"
         )
         connection.execute("DELETE FROM json_normalized_keys WHERE parent_id=?", (self._node_id,))
-        cursor = connection.execute(
-            "SELECT key_bytes, child_id FROM json_object_members WHERE parent_id=?", (self._node_id,)
+        cursor = _read_rows(
+            connection, "SELECT key_bytes, child_id FROM json_object_members WHERE parent_id=?", (self._node_id,)
         )
         try:
             for key, child in cursor:
@@ -96,13 +140,14 @@ class SpilledObject(dict[str, JSONValue]):
                     raise ValueError("normalized_json_key_collision") from error
         finally:
             cursor.close()
-        cursor = connection.execute(
+        cursor = _read_rows(
+            connection,
             "SELECT normalized, child_id FROM json_normalized_keys WHERE parent_id=? ORDER BY normalized",
             (self._node_id,),
         )
         try:
             for key, child in cursor:
-                yield bytes(key).decode("utf-8", "surrogatepass"), _load_node(connection, int(child))
+                yield (bytes(key).decode("utf-8", "surrogatepass"), _load_node(connection, int(child)))
         finally:
             cursor.close()
 
@@ -127,11 +172,7 @@ class SpilledObject(dict[str, JSONValue]):
         return KeysView(SpilledObject(connection, node))
 
     def record_profile_groups(
-        self,
-        samples: Iterable[JSONDocument],
-        *,
-        record_type_key: str | None,
-        coarse_type: Callable[[object], str],
+        self, samples: Iterable[JSONDocument], *, record_type_key: str | None, coarse_type: Callable[[object], str]
     ) -> Iterator[tuple[str, Iterator[tuple[str, tuple[str, ...]]]]]:
         """Spill sampled field unions, preserving the existing profile ordering."""
         from polylogue.archive.raw_payload import record_bucket_key
@@ -150,28 +191,39 @@ class SpilledObject(dict[str, JSONValue]):
                 )
 
         def fields(bucket: bytes) -> Iterator[tuple[str, tuple[str, ...]]]:
-            for (key,) in connection.execute(
-                "SELECT DISTINCT field FROM profile_fields WHERE bucket = ? ORDER BY field LIMIT 24", (bucket,)
-            ):
-                kinds = tuple(
-                    row[0]
-                    for row in connection.execute(
-                        "SELECT kind FROM profile_fields WHERE bucket = ? AND field = ? ORDER BY kind", (bucket, key)
-                    )
+            with closing(
+                _read_rows(
+                    connection,
+                    "SELECT DISTINCT field FROM profile_fields WHERE bucket = ? ORDER BY field LIMIT 24",
+                    (bucket,),
                 )
-                yield bytes(key).decode("utf-8", "surrogatepass"), kinds
+            ) as _owned_rows:
+                for (key,) in _owned_rows:
+                    with closing(
+                        _read_rows(
+                            connection,
+                            "SELECT kind FROM profile_fields WHERE bucket = ? AND field = ? ORDER BY kind",
+                            (bucket, key),
+                        )
+                    ) as _kind_rows:
+                        kinds = tuple(row[0] for row in _kind_rows)
+                    yield (bytes(key).decode("utf-8", "surrogatepass"), kinds)
 
-        for (bucket,) in connection.execute("SELECT DISTINCT bucket FROM profile_fields ORDER BY bucket"):
-            yield bytes(bucket).decode("utf-8", "surrogatepass"), fields(bucket)
+        with closing(
+            _read_rows(connection, "SELECT DISTINCT bucket FROM profile_fields ORDER BY bucket")
+        ) as _owned_rows:
+            for (bucket,) in _owned_rows:
+                yield (bytes(bucket).decode("utf-8", "surrogatepass"), fields(bucket))
 
     def __contains__(self, key: object) -> bool:
         if not isinstance(key, str):
             return False
         return (
-            self._connection.execute(
+            _read_row(
+                self._connection,
                 "SELECT 1 FROM json_object_members WHERE parent_id = ? AND key_bytes = ?",
                 (self._node_id, key.encode("utf-8", "surrogatepass")),
-            ).fetchone()
+            )
             is not None
         )
 
@@ -205,12 +257,18 @@ class _SpilledItemsView(ItemsView[str, JSONValue]):
 
     def __iter__(self) -> Iterator[tuple[str, JSONValue]]:
         mapping = self._spill_mapping
-        cursor = mapping._connection.execute(
-            "SELECT key_bytes, child_id FROM json_object_members WHERE parent_id = ? ORDER BY ordinal",
-            (mapping._node_id,),
-        )
-        for key_bytes, child_id in cursor:
-            yield bytes(key_bytes).decode("utf-8", "surrogatepass"), _load_node(mapping._connection, int(child_id))
+        with closing(
+            _read_rows(
+                mapping._connection,
+                "SELECT key_bytes, child_id FROM json_object_members WHERE parent_id = ? ORDER BY ordinal",
+                (mapping._node_id,),
+            )
+        ) as cursor:
+            for key_bytes, child_id in cursor:
+                yield (
+                    bytes(key_bytes).decode("utf-8", "surrogatepass"),
+                    _load_node(mapping._connection, int(child_id)),
+                )
 
 
 class SpilledArray(list[JSONValue], Sequence[JSONValue]):
@@ -220,24 +278,25 @@ class SpilledArray(list[JSONValue], Sequence[JSONValue]):
         self._node_id = node_id
 
     def __len__(self) -> int:
-        row = self._connection.execute(
-            "SELECT COUNT(*) FROM json_array_items WHERE parent_id = ?", (self._node_id,)
-        ).fetchone()
+        row = _read_row(self._connection, "SELECT COUNT(*) FROM json_array_items WHERE parent_id = ?", (self._node_id,))
         return int(row[0])
 
     def __iter__(self) -> Iterator[JSONValue]:
-        cursor = self._connection.execute(
-            "SELECT child_id FROM json_array_items WHERE parent_id = ? ORDER BY ordinal",
-            (self._node_id,),
-        )
-        for (child_id,) in cursor:
-            yield _load_node(self._connection, int(child_id))
+        with closing(
+            _read_rows(
+                self._connection,
+                "SELECT child_id FROM json_array_items WHERE parent_id = ? ORDER BY ordinal",
+                (self._node_id,),
+            )
+        ) as cursor:
+            for (child_id,) in cursor:
+                yield _load_node(self._connection, int(child_id))
 
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, list)
             and len(self) == len(other)
-            and all(left == right for left, right in zip(self, other, strict=True))
+            and all((left == right for left, right in zip(self, other, strict=True)))
         )
 
     def __ne__(self, other: object) -> bool:
@@ -256,27 +315,31 @@ class SpilledArray(list[JSONValue], Sequence[JSONValue]):
         if isinstance(index, slice):
             start, stop, step = index.indices(len(self))
             if step == 1:
-                cursor = self._connection.execute(
-                    "SELECT child_id FROM json_array_items WHERE parent_id = ? AND ordinal >= ? AND ordinal < ? ORDER BY ordinal",
-                    (self._node_id, start, stop),
-                )
-                return [_load_node(self._connection, int(row[0])) for row in cursor]
+                with closing(
+                    _read_rows(
+                        self._connection,
+                        "SELECT child_id FROM json_array_items WHERE parent_id = ? AND ordinal >= ? AND ordinal < ? ORDER BY ordinal",
+                        (self._node_id, start, stop),
+                    )
+                ) as cursor:
+                    return [_load_node(self._connection, int(row[0])) for row in cursor]
             return list(self)[index]
         index = index.__index__()
         item_index = index if index >= 0 else len(self) + index
         if item_index < 0:
             raise IndexError(index)
-        row = self._connection.execute(
+        row = _read_row(
+            self._connection,
             "SELECT child_id FROM json_array_items WHERE parent_id = ? AND ordinal = ?",
             (self._node_id, item_index),
-        ).fetchone()
+        )
         if row is None:
             raise IndexError(index)
         return _load_node(self._connection, int(row[0]))
 
 
 def _load_node(connection: sqlite3.Connection, node_id: int) -> JSONValue:
-    row = connection.execute("SELECT kind, scalar_json FROM json_nodes WHERE id = ?", (node_id,)).fetchone()
+    row = _read_row(connection, "SELECT kind, scalar_json FROM json_nodes WHERE id = ?", (node_id,))
     if row is None:
         raise ValueError("streamed JSON tree lost a referenced node")
     kind, scalar_json = row

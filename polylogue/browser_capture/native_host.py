@@ -27,7 +27,7 @@ from polylogue.browser_capture.receiver import (
     receiver_status_proof,
 )
 from polylogue.core.json import JSONValue
-from polylogue.schemas.observation_spill import StreamedJSONDocument
+from polylogue.schemas.observation_spill import StreamedJSONDocument, StreamedJSONReadError
 from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
 
 NATIVE_HOST_NAME = "com.polylogue.browser_capture"
@@ -180,6 +180,14 @@ class ReceiverResponseAuthenticationError(ValueError):
     """The received status bytes lack the challenge-bound receiver proof."""
 
 
+class ReceiverResponsePayloadError(ValueError):
+    """The received JSON bytes could not be decoded into a complete document."""
+
+
+class ReceiverNetworkReadError(OSError):
+    """The peer failed while streaming response bytes, before local decoding."""
+
+
 class ReceiverObservationStorageError(RuntimeError):
     """The local response spill could not preserve a complete observation."""
 
@@ -203,7 +211,13 @@ def _receiver_response_document(
         except OSError as exc:
             raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
         try:
-            while chunk := response.read(64 * 1024):
+            while True:
+                try:
+                    chunk = response.read(64 * 1024)
+                except (OSError, http.client.HTTPException) as exc:
+                    raise ReceiverNetworkReadError("receiver_unreachable") from exc
+                if not chunk:
+                    break
                 try:
                     stream.write(chunk)
                 except OSError as exc:
@@ -225,8 +239,13 @@ def _receiver_response_document(
             document = owner.__enter__()
         except (sqlite3.Error, OSError, NativeConnectionSettlementError) as exc:
             raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
+        except (ValueError, JSONError) as exc:
+            raise ReceiverResponsePayloadError("receiver_status_invalid_payload") from exc
         try:
-            yield document
+            try:
+                yield document
+            except StreamedJSONReadError as exc:
+                raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
         finally:
             try:
                 owner.__exit__(*sys.exc_info())
