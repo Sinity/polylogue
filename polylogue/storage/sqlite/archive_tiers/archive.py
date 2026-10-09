@@ -8328,28 +8328,6 @@ class ArchiveStore:
             per_session_limit=per_session_limit,
         )
 
-    def _query_file_counts(
-        self,
-        predicate: QueryPredicate,
-        *,
-        group_by: str | None,
-        sort: Literal["count", "key"] | None,
-        sort_direction: Literal["asc", "desc"],
-        limit: int,
-        offset: int,
-        session_filters: Mapping[str, object] | None,
-    ) -> list[ArchiveQueryUnitAggregateRow]:
-        return _archive_query_reads._query_file_counts(
-            self,
-            predicate,
-            group_by=group_by,
-            sort=sort,
-            sort_direction=sort_direction,
-            limit=limit,
-            offset=offset,
-            session_filters=session_filters,
-        )
-
     def query_blocks(
         self,
         predicate: QueryPredicate,
