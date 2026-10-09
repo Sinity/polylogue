@@ -2788,7 +2788,7 @@ async def _run_daemon_services_under_active_writer_lease(
     cold_build: ColdBuildGeneration | None = None
     try:
         if enable_browser_capture:
-            from polylogue.paths import browser_capture_spool_root
+            from polylogue.paths import browser_capture_receiver_token_path, browser_capture_spool_root
 
             resolved_browser_capture_auth_token = resolve_receiver_auth_token(
                 browser_capture_auth_token, allow_no_auth=browser_capture_allow_no_auth
@@ -2798,6 +2798,9 @@ async def _run_daemon_services_under_active_writer_lease(
                 browser_capture_port,
                 allow_remote=browser_capture_allow_remote,
                 auth_token=resolved_browser_capture_auth_token,
+                auth_token_path=(
+                    browser_capture_receiver_token_path() if resolved_browser_capture_auth_token is not None else None
+                ),
                 extra_origins=browser_capture_extra_origins,
                 archive_root=archive_root_path,
                 api_auth_token=api_auth_token,

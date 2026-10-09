@@ -16,7 +16,7 @@ import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -76,6 +76,7 @@ class BrowserCaptureReceiverConfig:
     allowed_origins: frozenset[str] = frozenset({BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD})
     allow_remote: bool = False
     auth_token: str | None = field(default=None, repr=False)
+    auth_token_path: Path | None = None
     # The receiver pairing token and the daemon machine credential are distinct.
     api_auth_token: str | None = field(default=None, repr=False)
     api_allow_no_auth: bool = False
@@ -86,6 +87,8 @@ class BrowserCaptureReceiverConfig:
 
     def validate(self) -> None:
         """Validate configuration invariants."""
+        if self.auth_token_path is not None and self.auth_token is None:
+            raise ValueError("persisted receiver credential requires authenticated configuration")
         if self.allow_remote and not self.auth_token:
             raise ValueError("--browser-capture-auth-token is required when --insecure-allow-remote is set")
         unauthenticated_web_origins = sorted(
@@ -128,6 +131,41 @@ def _is_trusted_token_file(target: Path) -> bool:
     if info.st_uid != os.getuid():
         return False
     return stat.S_IMODE(info.st_mode) & 0o077 == 0
+
+
+class ReceiverCredentialError(RuntimeError):
+    """A local receiver credential could not be read under its custody contract."""
+
+
+def read_receiver_credential(path: Path, *, secret: bool) -> str:
+    """Read an owned regular descriptor; identities permit safe public read access."""
+    refusal = "receiver_credential_unavailable" if secret else "receiver_identity_unavailable"
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(descriptor)
+        forbidden_permissions = 0o077 if secret else 0o022
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & forbidden_permissions:
+            raise ReceiverCredentialError(refusal)
+        with os.fdopen(descriptor, encoding="utf-8") as stream:
+            descriptor = None
+            value = stream.read().strip()
+        if not value:
+            raise ReceiverCredentialError(refusal)
+        return value
+    except (OSError, UnicodeError) as exc:
+        raise ReceiverCredentialError(refusal) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def receiver_request_config(config: BrowserCaptureReceiverConfig) -> BrowserCaptureReceiverConfig:
+    """Pin the current persisted credential once for this complete HTTP operation."""
+    if config.auth_token_path is None:
+        return config
+    token = read_receiver_credential(config.auth_token_path, secret=True)
+    return replace(config, auth_token=token, auth_token_path=None)
 
 
 def load_or_mint_receiver_token(path: Path | None = None, *, rotate: bool = False) -> str:

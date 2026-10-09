@@ -28,6 +28,7 @@ from polylogue.browser_capture.receiver import (
 )
 from polylogue.core.json import JSONValue
 from polylogue.schemas.observation_spill import StreamedJSONDocument
+from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
 
 NATIVE_HOST_NAME = "com.polylogue.browser_capture"
 
@@ -222,14 +223,14 @@ def _receiver_response_document(
         owner = StreamedJSONDocument(path)
         try:
             document = owner.__enter__()
-        except (sqlite3.Error, OSError) as exc:
+        except (sqlite3.Error, OSError, NativeConnectionSettlementError) as exc:
             raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
         try:
             yield document
         finally:
             try:
                 owner.__exit__(*sys.exc_info())
-            except (sqlite3.Error, OSError) as exc:
+            except (sqlite3.Error, OSError, NativeConnectionSettlementError) as exc:
                 raise ReceiverObservationStorageError("receiver_observation_storage_failed") from exc
     finally:
         response.close()

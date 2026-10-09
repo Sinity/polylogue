@@ -27,6 +27,7 @@ BrowserCaptureAuthPolicy = Literal[
     # possession without revealing the bearer.
     "unauthenticated_receiver_attestation",
     "authenticated_status_attestation",
+    "connection_status_challenge",
 ]
 BrowserCaptureRouteKind = Literal[
     "capabilities",
@@ -67,6 +68,7 @@ BrowserCaptureRouteKind = Literal[
     "pairing_redeem",
     "receiver_attestation",
     "receiver_status_attestation",
+    "receiver_status_challenge",
     "capture_health_report",
     "capture_health_list",
 ]
@@ -441,6 +443,15 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         ),
     ),
     BrowserCaptureRouteContract(
+        "GET",
+        "/v1/receiver/status-challenge",
+        "receiver_status_challenge",
+        "connection_status_challenge",
+        None,
+        "BrowserCaptureReceiverStatusChallengePayload",
+        "Issues a single-use nonce on this kept-alive connection; no status or credential is disclosed.",
+    ),
+    BrowserCaptureRouteContract(
         "POST",
         "/v1/receiver/status-attest",
         "receiver_status_attestation",
@@ -448,7 +459,8 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "BrowserCaptureReceiverStatusAttestationRequest",
         "BrowserCaptureReceiverStatusPayload | BrowserCaptureErrorPayload",
         (
-            "Authenticates the fresh challenge request with a domain-separated bearer-keyed HMAC before "
+            "Consumes this connection’s receiver-issued nonce and authenticates the request with a domain-separated "
+            "bearer-keyed HMAC before "
             "disclosing status. X-Polylogue-Status-Proof authenticates the exact staged response bytes "
             "and challenge. No bearer is transmitted, including through a relay."
         ),

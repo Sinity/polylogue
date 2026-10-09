@@ -688,3 +688,7 @@ and restores them through `polylogue.configureReceiver`; it waits for an
 in-flight configuration mutation before restoration. Its configure response
 carries the admitted configuration revision, so restoration refuses independent
 reset or configure even when endpoint and token values match. Restoration does not resume automatic capture.
+
+Configured receivers pin the current owner-only persisted token for each HTTP operation, so `browser-capture token show --rotate` immediately invalidates the previous bearer without restarting the receiver. Direct library servers retain their explicit in-memory credential authority. An unavailable persisted credential produces `receiver_credential_unavailable` (503), without a frozen-token fallback.
+
+Authenticated status first obtains `/v1/receiver/status-challenge`, a receiver-issued nonce owned by that kept-alive connection. `/v1/receiver/status-attest` consumes it once before checking the signed request. The client prohibits reconnecting before attestation; recorded requests cannot authorize another connection or a restarted receiver. Local native SQL settlement failures produce `receiver_observation_storage_failed` and retain the original cleanup owner.

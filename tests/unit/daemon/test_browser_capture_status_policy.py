@@ -176,7 +176,9 @@ def test_unobserved_receiver_policy_stays_unknown_without_io(monkeypatch: pytest
     assert summary["spool_ready"] is None
 
 
-@pytest.mark.parametrize("spoof", ["unauthenticated_success", "wrong_identity", "tampered_response", "malformed_proof"])
+@pytest.mark.parametrize(
+    "spoof", ["unauthenticated_success", "wrong_identity", "tampered_response", "malformed_proof", "lost_peer"]
+)
 def test_status_rejects_schema_valid_impostor_before_trusting_policy(tmp_path: Path, spoof: str) -> None:
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -190,6 +192,16 @@ def test_status_rejects_schema_valid_impostor_before_trusting_policy(tmp_path: P
     received_tokens: list[str | None] = []
 
     class Impostor(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            body = json.dumps({"receiver_id": identity, "challenge": "c" * 43}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            if spoof != "lost_peer":
+                self.send_header("Connection", "keep-alive")
+                self.close_connection = False
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_POST(self) -> None:
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             challenge = request["challenge"]
@@ -222,9 +234,10 @@ def test_status_rejects_schema_valid_impostor_before_trusting_policy(tmp_path: P
             "unauthenticated_success": "receiver_authentication_failed",
             "tampered_response": "receiver_authentication_failed",
             "malformed_proof": "receiver_authentication_failed",
+            "lost_peer": "receiver_authentication_failed",
         }[spoof]
         assert reason in result.output
-        assert received_tokens == [None]
+        assert received_tokens == ([] if spoof == "lost_peer" else [None])
     finally:
         server.shutdown()
         server.server_close()
@@ -399,18 +412,32 @@ def test_signed_status_relay_never_receives_bearer(tmp_path: Path) -> None:
     observed: list[tuple[str, str | None, bytes]] = []
 
     class Relay(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.upstream = HTTPConnection("127.0.0.1", genuine.server_port)
+            self.upstream.request("GET", self.path, headers={"Connection": "keep-alive"})
+            response = self.upstream.getresponse()
+            data = response.read()
+            self.send_response(response.status)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Connection", "keep-alive")
+            self.close_connection = False
+            self.end_headers()
+            self.wfile.write(data)
+
         def do_POST(self) -> None:
             body = self.rfile.read(int(self.headers["Content-Length"]))
             observed.append((self.path, self.headers.get("Authorization"), body))
-            with closing(HTTPConnection("127.0.0.1", genuine.server_port)) as connection:
-                connection.request("POST", self.path, body=body, headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
+            try:
+                self.upstream.request("POST", self.path, body=body, headers={"Content-Type": "application/json"})
+                response = self.upstream.getresponse()
                 data = response.read()
                 self.send_response(response.status)
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("X-Polylogue-Status-Proof", response.getheader("X-Polylogue-Status-Proof", ""))
                 self.end_headers()
                 self.wfile.write(data)
+            finally:
+                self.upstream.close()
 
         def log_message(self, format: str, *args: object) -> None:
             return None
@@ -618,3 +645,135 @@ def test_published_origin_roster_cannot_be_reinitialized(tmp_path: Path) -> None
     assert list(roster) == original
     assert browser_capture_status_payload()["allowed_origins"] is roster
     configure_browser_capture_status(None)
+
+
+def test_status_challenge_is_consumed_and_cannot_cross_connections(tmp_path: Path) -> None:
+    token = resolve_receiver_auth_token("neutral-once-secret")
+    assert token is not None
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token)
+    identity = receiver_identity(server.config)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with closing(HTTPConnection("127.0.0.1", server.server_port)) as connection:
+            connection.request("GET", "/v1/receiver/status-challenge")
+            challenge = json.loads(connection.getresponse().read())["challenge"]
+            body = json.dumps(
+                {
+                    "receiver_id": identity,
+                    "challenge": challenge,
+                    "proof": receiver_status_proof(token, identity, challenge),
+                }
+            )
+            connection.request(
+                "POST",
+                "/v1/receiver/status-attest",
+                body=body,
+                headers={"Content-Type": "application/json", "Connection": "keep-alive"},
+            )
+            response = connection.getresponse()
+            assert response.status == 200
+            assert b"spool_path" in response.read()
+            connection.request(
+                "POST", "/v1/receiver/status-attest", body=body, headers={"Content-Type": "application/json"}
+            )
+            response = connection.getresponse()
+            assert response.status == 401
+            assert b"spool_path" not in response.read()
+        with closing(HTTPConnection("127.0.0.1", server.server_port)) as replacement:
+            replacement.request("GET", "/v1/receiver/status-challenge")
+            assert json.loads(replacement.getresponse().read())["challenge"] != challenge
+            replacement.request(
+                "POST", "/v1/receiver/status-attest", body=body, headers={"Content-Type": "application/json"}
+            )
+            response = replacement.getresponse()
+            assert response.status == 401
+            assert b"spool_path" not in response.read()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_live_persisted_rotation_updates_bearer_pairing_and_status(tmp_path: Path) -> None:
+    from polylogue.browser_capture.receiver import load_or_mint_receiver_token, receiver_attestation_proof
+
+    token_path = browser_capture_receiver_token_path()
+    old = resolve_receiver_auth_token("neutral-before-rotation")
+    assert old is not None
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=old, auth_token_path=token_path)
+    identity = receiver_identity(server.config)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        new = load_or_mint_receiver_token(rotate=True)
+        assert new != old
+        for token, expected in ((old, 401), (new, 200)):
+            with closing(HTTPConnection("127.0.0.1", server.server_port)) as connection:
+                connection.request("GET", "/v1/status", headers={"Authorization": f"Bearer {token}"})
+                response = connection.getresponse()
+                assert response.status == expected
+                response.read()
+        challenge = "c" * 43
+        with closing(HTTPConnection("127.0.0.1", server.server_port)) as connection:
+            connection.request(
+                "POST",
+                "/v1/receiver/attest",
+                body=json.dumps({"challenge": challenge}),
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            assert response.status == 200
+            assert json.loads(response.read())["proof"] == receiver_attestation_proof(new, identity, challenge)
+        result = CliRunner().invoke(status_command, ["--port", str(server.server_port), "--format", "json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["receiver_id"] == identity
+        token_path.unlink()
+        with closing(HTTPConnection("127.0.0.1", server.server_port)) as connection:
+            connection.request("GET", "/v1/status", headers={"Authorization": f"Bearer {old}"})
+            response = connection.getresponse()
+            assert response.status == 503
+            assert json.loads(response.read())["error"] == "receiver_credential_unavailable"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_status_native_settlement_failure_is_typed_and_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tempfile
+
+    from polylogue.storage.sqlite.connection_profile import retained_native_settlement_owners_on_current_thread
+
+    actual_cleanup = tempfile.TemporaryDirectory.cleanup
+    failed = False
+
+    def fail_schema_cleanup(self: tempfile.TemporaryDirectory[str]) -> None:
+        nonlocal failed
+        if "polylogue-schema-json-" in self.name and not failed:
+            failed = True
+            raise OSError("neutral native scratch cleanup failure")
+        actual_cleanup(self)
+
+    token = resolve_receiver_auth_token("neutral-settlement-token")
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token)
+    receiver_identity(server.config)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(tempfile.TemporaryDirectory, "cleanup", fail_schema_cleanup)
+    try:
+        result = CliRunner().invoke(status_command, ["--port", str(server.server_port)])
+        assert failed
+        assert result.exit_code == 1
+        assert "receiver_observation_storage_failed" in result.stderr
+        owners = retained_native_settlement_owners_on_current_thread()
+        assert owners
+        for owner in owners:
+            owner.close()
+        assert not retained_native_settlement_owners_on_current_thread()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

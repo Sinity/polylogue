@@ -6,9 +6,7 @@ import http.client
 import json
 import mimetypes
 import os
-import secrets
 import shutil
-import stat
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -32,6 +30,7 @@ from polylogue.browser_capture.models import (
     BrowserActionProvider,
     BrowserActionRequest,
     BrowserActionTarget,
+    BrowserCaptureReceiverStatusChallengePayload,
     BrowserCaptureReceiverStatusPayload,
 )
 from polylogue.browser_capture.native_host import install_native_host
@@ -56,26 +55,12 @@ def browser_capture_command() -> None:
 
 
 def _read_receiver_credential(path: Path, *, secret: bool) -> str:
-    """Read one owner-controlled regular file without following a final symlink."""
-    refusal = "receiver_credential_unavailable" if secret else "receiver_identity_unavailable"
-    descriptor: int | None = None
+    from polylogue.browser_capture.receiver import ReceiverCredentialError, read_receiver_credential
+
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        info = os.fstat(descriptor)
-        forbidden_permissions = 0o077 if secret else 0o022
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & forbidden_permissions:
-            raise click.ClickException(refusal)
-        with os.fdopen(descriptor, encoding="utf-8") as stream:
-            descriptor = None
-            value = stream.read().strip()
-        if not value:
-            raise click.ClickException(refusal)
-        return value
-    except (OSError, UnicodeError) as exc:
-        raise click.ClickException(refusal) from exc
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
+        return read_receiver_credential(path, secret=secret)
+    except ReceiverCredentialError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @contextmanager
@@ -103,7 +88,26 @@ def _observed_receiver_status(
         status_auth: tuple[str, str, str] | None = None
         if not allow_no_auth:
             assert token is not None
-            challenge = secrets.token_urlsafe(32)
+            connection.request("GET", "/v1/receiver/status-challenge", headers={"Connection": "keep-alive"})
+            challenge_response = connection.getresponse()
+            if challenge_response.status != 200:
+                raise click.ClickException(f"receiver_status_refused_{challenge_response.status}")
+            try:
+                with _receiver_response_document(challenge_response) as document:
+                    if not isinstance(document, dict):
+                        raise ValueError("status challenge must be an object")
+                    issued = BrowserCaptureReceiverStatusChallengePayload.model_validate(
+                        {"receiver_id": document.get("receiver_id"), "challenge": document.get("challenge")}
+                    )
+                    challenge = issued.challenge
+                    if issued.receiver_id != expected_identity:
+                        raise click.ClickException("receiver_identity_mismatch")
+            except (ValueError, ValidationError, JSONError) as exc:
+                raise click.ClickException("receiver_status_invalid_payload") from exc
+            if connection.sock is None:
+                raise click.ClickException("receiver_authentication_failed")
+            # Never deliver an authenticated request on a replacement connection.
+            connection.auto_open = 0
             request = {
                 "receiver_id": expected_identity,
                 "challenge": challenge,
@@ -213,12 +217,14 @@ def serve_command(host: str, port: int, auth_token: str | None, allow_no_auth: b
     """
     resolved_token = resolve_receiver_auth_token(auth_token, allow_no_auth=allow_no_auth)
     from polylogue.config import resolve_runtime_config
+    from polylogue.paths import browser_capture_receiver_token_path
 
     config = resolve_runtime_config().as_config()
     server = make_server(
         host,
         port,
         auth_token=resolved_token,
+        auth_token_path=browser_capture_receiver_token_path() if resolved_token is not None else None,
         archive_root=config.archive_root,
         api_auth_token=config.api_auth_token,
         api_allow_no_auth=config.api_allow_no_auth,
