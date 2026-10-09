@@ -282,6 +282,19 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
         except KeyError:
             return default
 
+    def value_for_key(self, key: SpilledKey) -> JSONValue:
+        """Read an internally selected member without reconstructing its name."""
+        if key.connection is not self._connection:
+            raise ValueError("JSON key belongs to a different owner")
+        row = _read_row(
+            self._connection,
+            "SELECT child_id FROM json_object_members WHERE parent_id=? AND key_token=?",
+            (self._node_id, key.token),
+        )
+        if row is None:
+            raise KeyError(key.token)
+        return _load_node(self._connection, int(row[0]))
+
     def structure_value(self, key: str) -> JSONValue:
         child = self._member(key)
         if child is None:

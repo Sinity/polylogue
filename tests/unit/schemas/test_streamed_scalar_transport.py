@@ -16,7 +16,7 @@ import pytest
 from ijson import JSONError
 
 from polylogue.core.enums import Provider, ValidationMode
-from polylogue.core.json import JSONValue
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas import observation_spill
 from polylogue.schemas.observation_spill import SpilledArray, SpilledObject, StreamedJSONDocument, _ScalarTokenStore
 from polylogue.schemas.retained_validation import _SampleValidationReducer, validate_retained_document
@@ -469,7 +469,7 @@ def test_record_profile_field_union_retains_selected_giant_names_on_existing_tok
 
     _small_sqlite_cells(monkeypatch)
     key = "b" * 70000
-    records = [{"type": "neutral", key: True}, {"type": "neutral", key: 1}]
+    records: list[JSONDocument] = [{"type": "neutral", key: True}, {"type": "neutral", key: 1}]
     expected = tuple(profile_token_text(token) for token in _record_profile_tokens(records, record_type_key="type"))
     path = tmp_path / "records.json"
     path.write_text(json.dumps(records))
@@ -482,7 +482,10 @@ def test_record_profile_field_union_retains_selected_giant_names_on_existing_tok
     monkeypatch.setattr(observation_spill.SpilledKey, "read", selected_only)
     with StreamedJSONDocument(path) as document:
         assert isinstance(document, list)
-        samples = list(document)
+        samples: list[JSONDocument] = []
+        for item in document:
+            assert isinstance(item, dict)
+            samples.append(item)
         tokens = _record_profile_tokens(samples, record_type_key="type")
         assert (
             tuple(b"".join(profile_token_chunks(token)).decode("utf-8", "surrogatepass") for token in tokens)
@@ -491,3 +494,74 @@ def test_record_profile_field_union_retains_selected_giant_names_on_existing_tok
         assert profile_cluster_id("session_record_stream", tokens) == fingerprint_hash(
             ("session_record_stream", tuple(sorted(expected)))
         )
+
+
+def test_giant_drift_paths_sort_compare_and_survive_both_scratch_owners(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.schemas.packages import SchemaResolution
+    from polylogue.schemas.retained_validation import _stronger_drift
+    from polylogue.schemas.validator import _iter_drift_paths
+
+    _small_sqlite_cells(monkeypatch)
+    first = "é" * 70000
+    later = first + "z"
+    payload = {later: True, "rows": [{first: "x" * 70000}], first: 1}
+    schema = {
+        "type": "object",
+        "properties": {"rows": {"type": "array", "items": {"type": "object", "additionalProperties": True}}},
+        "additionalProperties": True,
+    }
+    expected = ",".join(sorted(_iter_drift_paths(payload, schema, "")))
+    path = tmp_path / "drift.json"
+    path.write_text(json.dumps(payload))
+    original = observation_spill.SpilledKey.read
+    original_scalar = _ScalarTokenStore.read
+
+    def selected_only(token: observation_spill.SpilledKey) -> str:
+        assert token.small_name is not None, "drift key was reconstructed"
+        return original(token)
+
+    def selected_scalar(store: _ScalarTokenStore, kind: str, token: int) -> JSONValue:
+        row = store.connection.execute(
+            "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, token)
+        ).fetchone()
+        assert row is None or row[0] < 70000, "unused drift value was reconstructed"
+        return original_scalar(store, kind, token)
+
+    monkeypatch.setattr(observation_spill.SpilledKey, "read", selected_only)
+    monkeypatch.setattr(_ScalarTokenStore, "read", selected_scalar)
+    resolution = SchemaResolution(
+        provider="hermes",
+        package_version="neutral",
+        element_kind="session_document",
+        exact_structure_id=None,
+        bundle_scope=None,
+        reason="exact_structure",
+    )
+    with StreamedJSONDocument(path) as document:
+        assert isinstance(document, SpilledObject)
+        with scratch_connection_context(prefix="neutral-drift-", filename="paths.sqlite") as connection:
+            connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 32768)
+            reducer = _SampleValidationReducer(
+                schema, Provider.HERMES, resolution, connection, source_path=None, signature_directory=tmp_path
+            )
+            reducer.observe(document)
+            assert reducer.invalid_count == 0 and reducer.drift_count == 3
+            observation = reducer.strongest
+            assert observation is not None
+            assert observation.unseen_key_signature.byte_count > 32768
+            second_path = tmp_path / "second-drift.json"
+            second_key = "\x00" * 70000
+            second_path.write_text(json.dumps({second_key: True}))
+            with StreamedJSONDocument(second_path) as second_document:
+                assert isinstance(second_document, SpilledObject)
+                reducer.observe(second_document)
+            winner = reducer.strongest
+            assert winner is not None and winner is not observation
+            assert connection.execute("SELECT COUNT(*) FROM retained_drift_chunks").fetchone()[0] == 0
+    # The signature carriers own preparation files, not either closing SQL scratch.
+    assert b"".join(observation.unseen_key_signature.iter_utf8_chunks()).decode("utf-8", "surrogatepass") == expected
+    assert b"".join(winner.unseen_key_signature.iter_utf8_chunks()).decode("utf-8", "surrogatepass") == second_key
+    assert _stronger_drift(observation, winner) is winner
+    assert _stronger_drift(winner, observation) is winner
