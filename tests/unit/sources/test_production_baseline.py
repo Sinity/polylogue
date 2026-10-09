@@ -1196,3 +1196,70 @@ def test_genuinely_absent_optional_root_remains_excluded(tmp_path: Path) -> None
     source = WatchSource("codex", tmp_path / "absent")
     baseline = capture_production_source_baseline((source,), operation_id="absent-root")
     assert [(row.disposition, row.reason) for row in baseline.decisions] == [("excluded", "absent_root")]
+
+
+@pytest.mark.parametrize(
+    "native_code,expected_reason",
+    [
+        (sqlite3.SQLITE_BUSY, "revision_io_unavailable:"),
+        (sqlite3.SQLITE_LOCKED, "revision_io_unavailable:"),
+        (sqlite3.SQLITE_NOTADB, "revision_unreadable:"),
+    ],
+)
+def test_sqlite_revision_errors_keep_native_cause_and_baseline_disposition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_code: int, expected_reason: str
+) -> None:
+    from polylogue.sources.live import production_baseline
+    from polylogue.sources.live.batch_support import retryable_read_fault
+
+    root = tmp_path / "codex"
+    root.mkdir()
+    state = root / "state_5.sqlite"
+    with sqlite3.connect(state) as conn:
+        conn.execute("CREATE TABLE threads(id TEXT)")
+        conn.execute("CREATE TABLE thread_spawn_edges(parent TEXT, child TEXT)")
+    native_error = sqlite3.DatabaseError("neutral SQLite revision failure")
+    native_error.sqlite_errorcode = native_code
+
+    def failed_revision(_path: Path, **_kwargs: object) -> tuple[str, int]:
+        raise native_error
+
+    monkeypatch.setattr(production_baseline, "sqlite_member_revision_and_size", failed_revision)
+    with pytest.raises(OSError) as adapted:
+        _revision(state)
+    assert adapted.value.__cause__ is native_error
+    assert retryable_read_fault(adapted.value) is (native_code != sqlite3.SQLITE_NOTADB)
+    baseline = capture_production_source_baseline(
+        (WatchSource("codex-state", root, layout=declared_source_layout("codex-state")),),
+        operation_id="sqlite-revision-fault",
+    )
+    [row] = [decision for decision in baseline.decisions if decision.path == str(state)]
+    assert row.disposition == "fault"
+    assert row.reason.startswith(expected_reason)
+    assert not baseline.accepted
+
+
+def test_malformed_sqlite_classification_stays_a_per_file_baseline_fault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources.live import production_baseline
+
+    root = tmp_path / "codex"
+    root.mkdir()
+    state = root / "state_5.sqlite"
+    state.write_bytes(b"neutral malformed source")
+    native_error = sqlite3.DatabaseError("neutral malformed SQLite schema")
+    native_error.sqlite_errorcode = sqlite3.SQLITE_CORRUPT
+
+    def corrupt_classification(_path: Path, **_kwargs: object) -> None:
+        raise native_error
+
+    monkeypatch.setattr(production_baseline, "classify_pre_acquisition", corrupt_classification)
+    baseline = capture_production_source_baseline(
+        (WatchSource("codex-state", root, layout=declared_source_layout("codex-state")),),
+        operation_id="sqlite-classification-fault",
+    )
+    [row] = [decision for decision in baseline.decisions if decision.path == str(state)]
+    assert row.disposition == "fault"
+    assert row.reason.startswith("revision_unreadable:")
+    assert not baseline.accepted

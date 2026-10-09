@@ -53,7 +53,11 @@ from polylogue.sources.source_acquisition_components import (
     zip_member_admission,
 )
 from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
-from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_member_revision_and_size
+from polylogue.sources.sqlite_snapshot import (
+    is_sqlite_path,
+    sqlite_member_revision_and_size,
+    sqlite_snapshot_failure_as_oserror,
+)
 from polylogue.sources.walk_faults import WalkRefusedError
 from polylogue.storage.archive_identity import MAINTENANCE_STATE_DIRNAME
 from polylogue.storage.blob_store import BlobStore
@@ -642,7 +646,8 @@ def _revision(
     check_compute_cancelled()
     _check_observation_cancelled(cancelled)
     if is_sqlite_path(path):
-        return sqlite_member_revision_and_size(path, source_binding=source_binding)
+        with sqlite_snapshot_failure_as_oserror():
+            return sqlite_member_revision_and_size(path, source_binding=source_binding)
     digest = hashlib.sha256()
     size = 0
     # The bytes hashed are read through the acquisition boundary, as live
@@ -796,13 +801,14 @@ def _prepare_file_decision(
         if expected_observation is not None and _file_observation(observed) != expected_observation:
             raise OSError(errno.ESTALE, "source changed while preparation was queued", str(path))
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
-        admission = classify_pre_acquisition(
-            path,
-            fallback_provider=provider,
-            source_only=False,
-            size_bytes=observed.st_size,
-            checkpoint=checkpoint,
-        )
+        with sqlite_snapshot_failure_as_oserror():
+            admission = classify_pre_acquisition(
+                path,
+                fallback_provider=provider,
+                source_only=False,
+                size_bytes=observed.st_size,
+                checkpoint=checkpoint,
+            )
         if admission.excluded_reason is not None:
             return SourceDecision(
                 source_name, retained_path, "excluded", f"intake_excluded:{admission.excluded_reason}"
@@ -822,7 +828,7 @@ def _prepare_file_decision(
         return SourceDecision(source_name, retained_path, disposition, reason, revision, material_bytes=material_bytes)
     except RetryableSourceReadError as exc:
         return SourceDecision(source_name, retained_path, "fault", f"revision_io_unavailable:{exc.cause}")
-    except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
         fault = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
         return SourceDecision(source_name, retained_path, "fault", f"{fault}:{exc}")
 
@@ -1031,7 +1037,7 @@ def capture_production_source_baseline(
                             SourceDecision(source_name, retained_path, "fault", f"revision_io_unavailable:{exc.cause}")
                         )
                         continue
-                    except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
+                    except (OSError, ValueError, zipfile.BadZipFile) as exc:
                         reason = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
                         decisions.append(SourceDecision(source_name, retained_path, "fault", f"{reason}:{exc}"))
                         continue
