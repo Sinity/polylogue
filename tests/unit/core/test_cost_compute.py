@@ -580,31 +580,30 @@ def test_unmappable_zero_provider_lanes_do_not_become_text_estimates() -> None:
 @pytest.mark.parametrize("partial", [False, True])
 def test_message_fallback_preserves_cache_and_evidence_under_reorder(partial: bool) -> None:
     """A heuristic addition cannot erase cache usage or become provider-only."""
-    from types import SimpleNamespace
-
     from polylogue.archive.semantic.pricing import catalog_cost_for_tokens
-    from polylogue.core.enums import Role
 
-    measured = SimpleNamespace(
+    measured = make_msg(
+        id="measured",
         model_name="gpt-4o",
-        role=Role.ASSISTANT,
-        word_count=20,
+        role="assistant",
+        text="measured",
         input_tokens=10,
         output_tokens=20,
         cache_read_tokens=100,
         cache_write_tokens=None if partial else 0,
     )
-    estimated = SimpleNamespace(
+    estimated = make_msg(
+        id="estimated",
         model_name="gpt-4o",
-        role=Role.ASSISTANT,
-        word_count=15,
+        role="assistant",
+        text=" ".join(["synthetic"] * 15),
         input_tokens=None,
         output_tokens=None,
         cache_read_tokens=None,
         cache_write_tokens=None,
     )
-    forward = compute_session_cost(SimpleNamespace(messages=[measured, estimated]), estimate_if_missing=False)
-    backward = compute_session_cost(SimpleNamespace(messages=[estimated, measured]), estimate_if_missing=False)
+    forward = compute_session_cost(make_conv(messages=[measured, estimated]), estimate_if_missing=False)
+    backward = compute_session_cost(make_conv(messages=[estimated, measured]), estimate_if_missing=False)
     assert forward == backward
     assert forward.total_cache_read_tokens == 100
     (breakdown,) = forward.per_model
@@ -614,6 +613,7 @@ def test_message_fallback_preserves_cache_and_evidence_under_reorder(partial: bo
     assert breakdown.confidence == ("partial" if partial else "estimated")
     assert breakdown.provenance == "mixed"
     expected, _ = catalog_cost_for_tokens("gpt-4o", breakdown.input_tokens, breakdown.output_tokens, 100, 0)
+    assert expected is not None
     assert forward.total_api_cost_usd == pytest.approx(round(expected, 6))
 
 

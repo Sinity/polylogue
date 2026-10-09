@@ -56,7 +56,10 @@ def test_observation_and_completeness_survive_reconciliation(
                 role=Role.ASSISTANT,
                 text="synthetic",
                 model_name="gemini-2.0-flash",
-                **counters,
+                input_tokens=counters["input_tokens"],
+                output_tokens=counters["output_tokens"],
+                cache_read_tokens=counters["cache_read_tokens"],
+                cache_write_tokens=counters["cache_write_tokens"],
             )
         ],
     )
