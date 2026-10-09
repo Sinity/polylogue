@@ -1170,28 +1170,13 @@ def _archive_repeated_stage_failure_info(
         )
         if not has_table:
             return None
-        total_recent = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM (SELECT 1 FROM ingest_attempts ORDER BY started_at_ms DESC LIMIT 20)"
-            ).fetchone()[0]
-            or 0
-        )
-        failed_recent = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM ("
-                "SELECT 1 FROM ingest_attempts "
-                "WHERE status = 'failed' "
-                "ORDER BY started_at_ms DESC LIMIT 20"
-                ")"
-            ).fetchone()[0]
-            or 0
-        )
-        error_row = conn.execute(
-            "SELECT phase, error_message FROM ingest_attempts "
-            "WHERE status = 'failed' AND error_message IS NOT NULL "
-            "ORDER BY started_at_ms DESC LIMIT 1"
-        ).fetchone()
-        return total_recent, failed_recent, error_row
+        recent = conn.execute(
+            "SELECT status, phase, error_message FROM ingest_attempts "
+            "ORDER BY started_at_ms DESC, attempt_id DESC LIMIT 20"
+        ).fetchall()
+        failed = [row for row in recent if row[0] == "failed"]
+        error_row = next(((row[1], row[2]) for row in failed if row[2] is not None), None)
+        return len(recent), len(failed), error_row
     finally:
         conn.close()
 
