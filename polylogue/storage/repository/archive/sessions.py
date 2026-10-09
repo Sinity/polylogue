@@ -273,6 +273,7 @@ class RepositoryArchiveSessionMixin:
             mime_filter=mime_filter,
             session_filter=session_filter,
             state_filter=state_filter,
+            blob_store=self._read_blob_store,
         )
 
     async def _hydrate_sessions(

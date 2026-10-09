@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import aiosqlite
 
 from polylogue.archive.message.roles import MessageRoleFilter
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.runtime import (
     AttachmentRecord,
@@ -303,7 +304,14 @@ class SQLiteQueryStoreArchiveMixin:
             return await attachments_q.get_attachments_batch(conn, session_ids)
 
     async def get_attachment_library_page(
-        self, *, limit: int, offset: int, mime_filter: str = "", session_filter: str = "", state_filter: str = ""
+        self,
+        *,
+        limit: int,
+        offset: int,
+        mime_filter: str = "",
+        session_filter: str = "",
+        state_filter: str = "",
+        blob_store: BlobStore | None = None,
     ) -> list[tuple[AttachmentRecord, str, str | None]]:
         async with self._connection_factory() as conn, _message_snapshot(conn):
             return await attachments_q.get_attachment_library_page(
@@ -313,6 +321,7 @@ class SQLiteQueryStoreArchiveMixin:
                 mime_filter=mime_filter,
                 session_filter=session_filter,
                 state_filter=state_filter,
+                blob_store=blob_store,
             )
 
     async def get_session_events(self, session_id: str) -> list[SessionEventRecord]:

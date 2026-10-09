@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from polylogue.archive.attachment.availability import AttachmentAvailability
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
@@ -290,6 +291,7 @@ class AttachmentRecord(BaseModel):
     blob_hash: bytes | None = None
     acquisition_status: str | None = None
     generation_id: str | None = None
+    availability: AttachmentAvailability | None = None
 
     @field_validator("attachment_id", "session_id")
     @classmethod

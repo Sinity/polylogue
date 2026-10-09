@@ -652,6 +652,15 @@ advances only after window publication, wraps over retryable debt, and resumes
 after restart. Attachment readiness includes pending attribution in its
 `allowed_unfetched` count (`operations/attachment_convergence.py`).
 
+Attachment library states use the same read-side CAS hash verification as
+session attachments. An Index blob hash or acquired status alone does not
+establish physical availability. The shared preview classifier derives
+`missing-blob`, `unsupported-kind`, `too-large` or `available` from that proof.
+Both pinned HTTP and async repository readers stream candidates and apply
+physical state filters before offset and limit, retaining only the requested
+window. The returned records carry the observed availability used for filtering,
+so HTTP rows and page count evidence describe the same matches.
+
 ## Derived session records and FTS discovery
 
 Session profile materialization publishes profile, latency and repository
