@@ -1283,6 +1283,14 @@ class RawObservationDerivation(RawObservationInspection):
         "raw_membership_census",
         "raw_authority_parser_census",
     )
+    # Repeating a receipt's activity timestamp does not advance Source
+    # interpretation. Acquisition coordinates and all semantic fields remain
+    # part of this comparison; only these producer bookkeeping clocks differ.
+    _CENSUS_ACTIVITY_COLUMNS = {
+        "raw_sessions": frozenset({"parsed_at_ms", "validated_at_ms"}),
+        "raw_membership_census": frozenset({"censused_at_ms"}),
+        "raw_session_memberships": frozenset({"decided_at_ms"}),
+    }
 
     def _census_state(self, raw_ids: Sequence[str]) -> tuple[tuple[object, ...], ...]:
         """Committed census state of ``raw_ids``; equal before and after means no progress."""
@@ -1293,8 +1301,14 @@ class RawObservationDerivation(RawObservationInspection):
         state: list[tuple[object, ...]] = []
         with readonly_connection_context(self.archive_root / "source.db") as source:
             for table in self._CENSUS_STATE_TABLES:
+                activity = self._CENSUS_ACTIVITY_COLUMNS.get(table, frozenset())
+                columns = tuple(
+                    str(row[1]) for row in source.execute(f"PRAGMA table_info({table})") if row[1] not in activity
+                )
                 with closing(
-                    source.execute(f"SELECT * FROM {table} WHERE raw_id IN ({marks}) ORDER BY rowid", selected)
+                    source.execute(
+                        f"SELECT {','.join(columns)} FROM {table} WHERE raw_id IN ({marks}) ORDER BY rowid", selected
+                    )
                 ) as rows:
                     state.extend((table, *row) for row in rows)
         return tuple(state)

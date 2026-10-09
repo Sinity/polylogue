@@ -57,6 +57,37 @@ def _chatgpt_payload(names: tuple[str, ...]) -> bytes:
     ).encode()
 
 
+def test_source_census_activity_clocks_do_not_count_as_progress(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    with _fixture_archive(tmp_path) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_AI,
+            payload=b'{"uuid":"clock","chat_messages":[]}',
+            source_path="clock.json",
+            canonical_source_path="clock.json",
+            acquired_at_ms=1,
+        )
+        archive.commit()
+
+    def exercise(compute: BoundedComputeAdapter) -> None:
+        adapter = make_raw_observation_derivation(tmp_path, compute_adapter=compute)
+        before = adapter._census_state((raw_id,))
+        with _fixture_archive(tmp_path) as archive:
+            archive.source_connection.execute(
+                "UPDATE raw_sessions SET parsed_at_ms=2,validated_at_ms=3 WHERE raw_id=?", (raw_id,)
+            )
+            archive.source_connection.commit()
+        assert adapter._census_state((raw_id,)) == before
+        with _fixture_archive(tmp_path) as archive:
+            archive.source_connection.execute(
+                "UPDATE raw_sessions SET validation_status='passed' WHERE raw_id=?", (raw_id,)
+            )
+            archive.source_connection.commit()
+        assert adapter._census_state((raw_id,)) != before
+
+    _run_raw_law(tmp_path, exercise)
+
+
 @contextmanager
 def _fixture_archive(root: Path) -> Iterator[ArchiveStore]:
     with write_lease("synthetic-raw-admission", archive_root=root):

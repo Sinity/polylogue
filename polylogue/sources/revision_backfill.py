@@ -1097,19 +1097,23 @@ def prepare_retained_non_json_artifact(
 
     provider, blob_hash, source_path, _kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
     # Some providers arrive under neutral or mislabeled filenames. A simple
-    # top-level message envelope has an existing ijson-to-SQLite route in
-    # prepare_jsonl_blob; route by that complete shape before the collecting
+    # top-level message or Claude conversation envelope has an existing
+    # streamed-to-SQLite route; route by that complete shape before the collecting
     # non-JSON replay below. The probe validates through EOF and leaves the
     # retained blob untouched.
-    if provider in {Provider.DRIVE, Provider.GEMINI} and not (
+    if provider in {Provider.DRIVE, Provider.GEMINI, Provider.CLAUDE_AI} and not (
         is_jsonl_source_path(source_path) or Path(source_path).suffix.lower() == ".json"
     ):
-        from polylogue.sources.decoder_json import generic_message_object_envelope
+        from polylogue.sources.decoder_json import claude_ai_object_envelope, generic_message_object_envelope
 
         blob_path = evidence_reader.raw_revision_blob_path(raw_id)
         if blob_path is not None:
             with blob_path.open("rb") as handle:
-                generic_envelope = generic_message_object_envelope(handle)
+                generic_envelope = (
+                    claude_ai_object_envelope(handle)
+                    if provider is Provider.CLAUDE_AI
+                    else generic_message_object_envelope(handle)
+                )
             if generic_envelope is not None:
                 return prepare_retained_jsonl_artifact(
                     evidence_reader,
