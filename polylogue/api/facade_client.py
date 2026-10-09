@@ -154,7 +154,7 @@ async def submit_facade_operation(
             payload,
             archive_root=str(root),
             request_id=request_id,
-            input=input,
+            **({"input": input} if input is not None else {}),
         )
     )
     try:

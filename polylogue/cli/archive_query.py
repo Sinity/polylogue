@@ -1057,7 +1057,7 @@ def _submit_mutation_operation(
 
     if daemon_route_disabled():
         raise OperationUnavailableError(f"daemon is unavailable for operation: {operation}")
-    return configured_mutation_operation(config, operation, payload, input=input)
+    return configured_mutation_operation(config, operation, payload, **({"input": input} if input is not None else {}))
 
 
 def _decode_cursor(token: str | None) -> SearchCursor | None:
@@ -1451,7 +1451,9 @@ def submit_cli_mutation(env: AppEnv, operation: str, payload: dict[str, object],
     from polylogue.cli.operation_kernel import OperationKernelError
 
     try:
-        return _submit_mutation_operation(load_effective_config(env), operation, payload, input=input)
+        return _submit_mutation_operation(
+            load_effective_config(env), operation, payload, **({"input": input} if input is not None else {})
+        )
     except OperationKernelError as exc:
         raise mutation_refusal(exc, operation) from exc
 

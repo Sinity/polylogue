@@ -1630,7 +1630,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             payload.update(extra_payload)
         self._send_json(status, payload, extra_headers=extra_headers)
 
-    def _reject_operation(self, status: HTTPStatus, code: str, detail: str | None = None) -> None:
+    def _reject_operation(
+        self, status: HTTPStatus, code: str, detail: str | None = None, *, retryable: bool = False
+    ) -> None:
         """Refuse a machine operation before dispatch, marked so no client calls it indeterminate.
 
         A pre-dispatch refusal on ``/api/operation`` proves nothing ran, so it
@@ -1650,7 +1652,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "protocol": DAEMON_OPERATION_PROTOCOL,
                 "outcome": "rejected",
                 "pre_dispatch": True,
-                "error": {"code": code, "detail": detail, "retryable": False},
+                "error": {"code": code, "detail": detail, "retryable": retryable},
             },
         )
 
@@ -4883,7 +4885,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 spool_root=self.server.archive_root / "operation-inputs",
             )
         except BodyStorageExhaustedError as exc:
-            self._reject_operation(HTTPStatus.INSUFFICIENT_STORAGE, "operation_input_storage_exhausted", str(exc))
+            self._reject_operation(
+                HTTPStatus.INSUFFICIENT_STORAGE, "operation_input_storage_exhausted", str(exc), retryable=True
+            )
             return
         except (ValueError, TypeError, RecursionError, UnicodeDecodeError) as exc:
             self._reject_operation(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc))
@@ -4896,7 +4900,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._reject_operation(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
             return
         self._send_daemon_operation(
-            self._execute_daemon_operation(request, input_body=input_body, request_body_bytes=control_bytes)
+            self._execute_daemon_operation(
+                request,
+                **({"input_body": input_body, "request_body_bytes": control_bytes} if input_body is not None else {}),
+            )
         )
 
     def _execute_daemon_operation(

@@ -368,7 +368,7 @@ def configured_mutation_operation(
             request.operation,
             dict(request.payload),
             archive_root=str(root),
-            input=input,
+            **({"input": input} if input is not None else {}),
         )
     ).execute(OperationRequest(operation, payload))
     if not isinstance(result.value, Mapping):

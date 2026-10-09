@@ -31,19 +31,6 @@ if TYPE_CHECKING:
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 
 
-def _reject_json_constant(value: str) -> object:
-    raise ValueError(f"invalid JSON constant: {value}")
-
-
-def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON field: {key}")
-        result[key] = value
-    return result
-
-
 def _peer_principal(connection: socket.socket, token: str | None) -> MutationPrincipal:
     """Bind authority to a bearer or the kernel-authenticated local user."""
     if token:
@@ -101,7 +88,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError, TimeoutError):
                 return
 
-    def _reject(self, status: int, code: str, detail: str) -> None:
+    def _reject(self, status: int, code: str, detail: str, *, retryable: bool = False) -> None:
         """Refuse before dispatch, marking the refusal so no client can call it indeterminate.
 
         Every path here runs before ``operation_runtime.call``, so the actuator
@@ -116,7 +103,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
             "protocol": DAEMON_OPERATION_PROTOCOL,
             "outcome": "rejected",
             "pre_dispatch": True,
-            "error": {"code": code, "detail": detail, "retryable": False},
+            "error": {"code": code, "detail": detail, "retryable": retryable},
         }
         if self._request_identity is not None:
             operation, request_id = self._request_identity
@@ -189,7 +176,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
                 spool_root=self.server.operation_runtime.archive_root / "operation-inputs",
             )
         except BodyStorageExhaustedError as exc:
-            self._reject(507, "operation_input_storage_exhausted", str(exc))
+            self._reject(507, "operation_input_storage_exhausted", str(exc), retryable=True)
             return
         except (ValueError, TypeError, RecursionError, UnicodeDecodeError, TimeoutError) as exc:
             self._reject(400, "invalid_request", str(exc))

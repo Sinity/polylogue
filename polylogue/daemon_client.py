@@ -175,7 +175,7 @@ class DaemonClient:
                 from polylogue.operations.read_result_transport import staged_json_response
                 from polylogue.operations.request_body_transport import UPLOAD_MEDIA_TYPE
 
-                control_custody = staged_json_response(body)
+                control_custody = staged_json_response(body, ensure_ascii=True)
                 control = control_custody.__enter__()
                 control.seek(0, 2)
                 control_size = control.tell()

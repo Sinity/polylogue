@@ -105,3 +105,112 @@ def test_streamed_controls_preserve_long_legal_refs_and_numeric_metadata(tmp_pat
         assert type(request.payload["metadata"]["cost"]) is float
     finally:
         staged.discard()
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_http_annotation_route_authenticates_before_sealing_exact_input(tmp_path: Path, authenticated: bool) -> None:
+    from email.message import Message
+    from types import SimpleNamespace
+
+    from polylogue.daemon.http import DaemonAPIHandler
+
+    raw = b'{"row_key":"neutral"}\n'
+    body = _framed(raw)
+    replies = []
+
+    class Handler(DaemonAPIHandler):
+        def __init__(self):
+            self.headers = Message()
+            self.headers["Content-Length"] = str(len(body))
+            self.headers["Content-Type"] = UPLOAD_MEDIA_TYPE
+            self.rfile = io.BytesIO(body)
+            self.server = SimpleNamespace(archive_root=tmp_path)
+
+        def _check_auth(self, *, allow_web, refuse):
+            if not authenticated:
+                refuse(401, "unauthorized")
+            return authenticated
+
+        def _check_cross_origin(self, *, refuse):
+            return True
+
+        def _reject_operation(self, status, code, detail=None):
+            replies.append((status, code))
+
+        def _execute_daemon_operation(self, request, *, input_body, request_body_bytes):
+            assert input_body.path.read_bytes() == raw
+            assert request.payload["input"]["sha256"] == input_body.sha256
+            input_body.discard()
+            return {"outcome": "completed"}
+
+        def _send_daemon_operation(self, payload):
+            replies.append(payload)
+
+    handler = Handler()
+    DaemonAPIHandler._handle_daemon_operation.__wrapped__(handler)
+    if authenticated:
+        assert replies == [{"outcome": "completed"}]
+        assert not list(tmp_path.rglob("*.tmp"))
+    else:
+        assert handler.rfile.tell() == 0
+        assert replies == [(401, "unauthorized")]
+        assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.uses_real_clock("production UDS listener and coordinator thread own execution custody")
+def test_client_streams_large_input_to_real_uds_worker_and_retires_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.daemon_operations import running_daemon_operations
+    from tests.infra.live_ingest import write_index_session
+
+    def seed(root):
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="annotation-stream",
+                    messages=[ParsedMessage(provider_message_id="m", role=Role.USER, text="neutral")],
+                ),
+            )
+
+    raw = (
+        json.dumps(
+            {"row_key": "neutral", "value": {"abstain": True}, "evidence_refs": ["codex-session:annotation-stream"]}
+        ).encode()
+        + b" " * (2 * 1024 * 1024)
+        + b"\n"
+    )
+    control = _control(raw)["payload"]
+    control.pop("input")
+    control["target_ref"] = "session:codex-session:annotation-stream"
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        actual = stack.runtime.call
+        paths = []
+
+        def observed(request, principal, **kwargs):
+            if request.operation == "mutation.annotation.import_batch":
+                staged = kwargs["input_body"]
+                paths.append(staged.path)
+                assert staged.size_bytes == len(raw)
+                assert staged.sha256 == hashlib.sha256(raw).hexdigest()
+                assert request.payload["input"] == {"sha256": staged.sha256, "size_bytes": len(raw)}
+            return actual(request, principal, **kwargs)
+
+        monkeypatch.setattr(stack.runtime, "call", observed)
+        result = stack.client.operation_to_completion(
+            "mutation.annotation.import_batch",
+            control,
+            archive_root=str(stack.archive_root),
+            request_id="neutral-streamed-import",
+            input=io.BytesIO(raw),
+        )
+        assert result is not None and result["outcome"] == "completed"
+        assert result["result"]["result"]["valid_count"] == 1
+        assert paths and not any(path.exists() for path in paths)
+        assert not list((stack.archive_root / "operation-inputs").rglob("*.tmp"))
