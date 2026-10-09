@@ -512,7 +512,6 @@ def test_embedding_session_window_reports_max_session_truncation(
     fit from a truncated window, so the operation would falsely report a full
     completion.
     """
-    from contextlib import nullcontext
     from types import SimpleNamespace
 
     from polylogue.operations.embedding_derivation import select_embedding_session_window
@@ -530,7 +529,7 @@ def test_embedding_session_window_reports_max_session_truncation(
 
     monkeypatch.setattr(
         "polylogue.operations.embedding_derivation.open_readonly_connection",
-        lambda *_args, **_kwargs: nullcontext(object()),
+        lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None),
     )
     monkeypatch.setattr("polylogue.storage.embeddings.materialization.select_pending_archive_session_window", select)
 

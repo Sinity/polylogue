@@ -179,6 +179,11 @@ may interrupt from another thread. Independent read frames do not acquire writer
 custody; readers inside an admitted async write operation retain that operation's
 existing grant until actual SQL close and original worker exit.
 
+Per-operation `sqlite3` readers use `contextlib.closing` or an explicit `finally`
+to end the connection lifetime. SQLite's connection context manager commits or
+rolls back but does not close. A reader scope consumes its cursors before close;
+lazy rows and iterators remain inside the connection owner's scope.
+
 Archive reads submit their exact UTF-8 request-byte demand to the shared bounded compute owner; interactive and scan work use its interactive-read and bulk-candidate classes. The read controller retains only the connection-weight budget. Compute workers complete their physical Future only after the existing native-owner census settles on the creator thread. Failed close retains the worker, submitter context, reservation or read lease, and backing artifacts; cancellation of an asyncio wrapper does not release them. The existing custody owner can request another cleanup attempt. Reset retains a shared compute owner while its physical workers survive; publishing a distinct owner requires that original owner to settle first. Archive readers and reference seals bind native children to their actual terminal parent, and healthy parents retire after all SQL and artifact obligations settle. Revision projections close their writer before transfer and close each bounded readonly page before yielding immutable rows (`polylogue/core/sql_settlement.py`, `polylogue/storage/sqlite/connection_profile.py`, `polylogue/pipeline/ids.py`).
 ## Baseline construction and durable trains
 

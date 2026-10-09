@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
 
 from polylogue.storage.sqlite.archive_tiers.schema_identity import (
@@ -20,7 +21,7 @@ def derived_tier_identity(path: Path, tier_name: str) -> tuple[str, str | None]:
     tier = DerivedTier(tier_name)
     expected = derived_schema_identity(tier)
     try:
-        with open_readonly_connection(path, validate_schema=False) as conn:
+        with closing(open_readonly_connection(path, validate_schema=False)) as conn:
             actual = read_schema_identity(conn, tier)
     except sqlite3.Error as exc:
         # An unreadable tier cannot serve this runtime; type it here so callers

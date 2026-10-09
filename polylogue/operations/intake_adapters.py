@@ -1585,7 +1585,7 @@ class RawMaterializationDiscovery:
         from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
         source_db = self._archive_root / "source.db"
-        with open_readonly_connection(source_db, timeout=5.0) as conn:
+        with closing(open_readonly_connection(source_db, timeout=5.0)) as conn:
             row = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM raw_sessions").fetchone()
         return int(row[0]) if row is not None else 0
 
@@ -1600,7 +1600,7 @@ class RawMaterializationDiscovery:
         from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
         source_db = self._archive_root / "source.db"
-        with open_readonly_connection(source_db, timeout=5.0) as conn:
+        with closing(open_readonly_connection(source_db, timeout=5.0)) as conn:
             rows = conn.execute(
                 "SELECT rowid, raw_id FROM raw_sessions WHERE rowid > ? ORDER BY rowid LIMIT ?",
                 (self._frontier, limit),

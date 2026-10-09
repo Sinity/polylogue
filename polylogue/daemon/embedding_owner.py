@@ -27,6 +27,7 @@ import secrets
 import threading
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -371,7 +372,7 @@ def _distinct_message_sessions(index_db_path: Path, message_ids: Sequence[str]) 
 
     sessions: set[str] = set()
     ids = tuple(dict.fromkeys(message_ids))
-    with open_readonly_connection(index_db_path, validate_schema=False) as conn:
+    with closing(open_readonly_connection(index_db_path, validate_schema=False)) as conn:
         # One statement per chunk keeps each under SQLite's host-parameter limit.
         for start in range(0, len(ids), _SESSION_LOOKUP_CHUNK):
             chunk = ids[start : start + _SESSION_LOOKUP_CHUNK]
