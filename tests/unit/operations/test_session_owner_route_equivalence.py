@@ -681,13 +681,14 @@ async def test_root_only_facade_follows_active_index_and_explicit_shadow_stays_s
     import sqlite3
 
     with sqlite3.connect(root / "index.db") as conn:
-        conn.execute("UPDATE sessions SET title='Shadow selection'")
+        conn.execute("UPDATE sessions SET title='Shadow selection', display_label='Shadow selection'")
     (root / ".index-active-pointer").write_text(str(selected), encoding="utf-8")
     async with Polylogue(archive_root=root) as api:
         assert api.backend.db_path == selected
         page = await execute_session_operation(api, SessionList(limit=1))
         transcript = await execute_session_operation(api, SessionRead(ref=seeded[-1], limit=1))
     async with Polylogue(archive_root=root, db_path=root / "index.db") as api:
+        assert api.backend.db_path == root / "index.db"
         explicit = await execute_session_operation(api, SessionList(limit=1))
     assert page.items[0].title != "Shadow selection"
     assert explicit.items[0].title == "Shadow selection"
