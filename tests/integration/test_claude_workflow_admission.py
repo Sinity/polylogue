@@ -60,32 +60,66 @@ async def test_workflow_same_message_calls_and_runless_sidecar_keep_all_evidence
 ) -> None:
     """Configured ingestion must not collapse calls or lose journal-admitted metadata."""
     archive_root = one_shot_workspace_env["archive_root"]
-    claude_root, _run_path, meta_path = _write_fixture(one_shot_workspace_env["data_root"] / ".claude")
-    metadata = json.loads(meta_path.read_text())
-    metadata.pop("runId")
-    meta_path.write_text(json.dumps(metadata))
+    claude_root = one_shot_workspace_env["data_root"] / ".claude" / "projects"
     coordinator_path = claude_root / "-fixture-project" / "coordinator-session.jsonl"
-    records = [json.loads(line) for line in coordinator_path.read_text().splitlines()]
-    first = records[1]
+    session_dir = coordinator_path.parent / "coordinator-session"
+    subagents = session_dir / "subagents"
+    transcript_path = subagents / "agent-one.jsonl"
+    meta_path = subagents / "agent-one.meta.json"
+    _write_jsonl(
+        transcript_path,
+        [
+            {
+                "type": "user",
+                "uuid": "worker-prompt",
+                "sessionId": "worker",
+                "message": {"role": "user", "content": "Generated neutral work pack."},
+            }
+        ],
+    )
+    meta_path.write_text(json.dumps({"attemptId": "one", "transcriptPath": str(transcript_path)}))
+    _write_jsonl(
+        subagents / "workflows" / RUN_ID / "journal.jsonl",
+        [
+            {
+                "runId": RUN_ID,
+                "contentKey": "one",
+                "attemptId": "one",
+                "metaPath": str(meta_path),
+                "result": "complete",
+            }
+        ],
+    )
+    run_path = session_dir / "workflows" / f"{RUN_ID}.json"
+    run_path.parent.mkdir(parents=True)
+    run_path.write_text(json.dumps({"runId": RUN_ID, "finalResult": "complete"}))
     blocks = []
     for ordinal in range(2):
-        block = dict(first["message"]["content"][0])
+        block = {"type": "tool_use", "name": "Workflow", "input": {"runId": RUN_ID}}
         if native_tool_ids:
             block["id"] = f"workflow-parallel-{ordinal}"
             block["input"] = {**block["input"], "phases": [f"phase-{ordinal}"]}
-        else:
-            block.pop("id")
         blocks.append(block)
-    first["message"]["content"] = blocks
-    _write_jsonl(coordinator_path, [records[0], first])
+    _write_jsonl(
+        coordinator_path,
+        [
+            {
+                "type": "assistant",
+                "uuid": "same-message",
+                "sessionId": "coordinator",
+                "message": {"role": "assistant", "content": blocks},
+            }
+        ],
+    )
     monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
     result = await ingest_one_shot_archive(archive_root, [Source(name=Provider.CLAUDE_CODE.value, path=claude_root)])
     assert result.parse_failures == 0
     summary = materialize_claude_workflow_archive(archive_root)
     assert summary.coordinator_invocation_count == 2
-    assert summary.linked_session_count == ATTEMPT_COUNT
-    assert summary.metadata_sidecar_count == ATTEMPT_COUNT
-    assert summary.excluded_session_count == UNRELATED_COUNT
+    assert summary.current_artifact_count == 5
+    assert summary.linked_session_count == 1
+    assert summary.metadata_sidecar_count == 1
+    assert summary.excluded_session_count == 0
     assert claude_workflow_materialization_needed(archive_root) is False
     with sqlite3.connect(archive_root / "index.db") as conn:
         payloads = [
