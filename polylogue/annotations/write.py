@@ -690,7 +690,8 @@ def upsert_annotation_assertion(
     durable_batch = None
     if batch_ref is not None:
         from polylogue.storage.sqlite.archive_tiers.user_annotations import (
-            read_annotation_batch,
+            annotation_batch_declares_assertion,
+            read_annotation_batch_identity,
             read_durable_annotation_schema,
         )
 
@@ -704,7 +705,7 @@ def upsert_annotation_assertion(
         if parsed_batch_ref is not None and parsed_batch_ref.kind != "annotation-batch":
             batch_errors.append("batch_ref must use the 'annotation-batch' ObjectRef kind")
         durable_batch = (
-            read_annotation_batch(conn, parsed_batch_ref.object_id)
+            read_annotation_batch_identity(conn, parsed_batch_ref.object_id)
             if parsed_batch_ref is not None and not batch_errors
             else None
         )
@@ -752,12 +753,16 @@ def upsert_annotation_assertion(
         row_key=row_key,
         batch_ref=normalized_batch_ref,
     )
-    if durable_batch is not None and f"assertion:{assertion_id}" not in durable_batch.assertion_refs:
-        raise AnnotationValidationError(
-            schema_id=registered_schema.qualified_id,
-            target_ref=normalized_target_ref,
-            errors=(f"batch_ref {normalized_batch_ref!r} does not declare assertion:{assertion_id}",),
-        )
+    if durable_batch is not None:
+        assert normalized_batch_ref is not None
+        if not annotation_batch_declares_assertion(
+            conn, ObjectRef.parse(normalized_batch_ref).object_id, f"assertion:{assertion_id}"
+        ):
+            raise AnnotationValidationError(
+                schema_id=registered_schema.qualified_id,
+                target_ref=normalized_target_ref,
+                errors=(f"batch_ref {normalized_batch_ref!r} does not declare assertion:{assertion_id}",),
+            )
     stamped_value: dict[str, object] = {
         _SCHEMA_PROVENANCE_KEY: registered_schema.qualified_id,
         **dict(value),

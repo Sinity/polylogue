@@ -168,6 +168,40 @@ class DurableAnnotationSchema:
     registered_at_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class AnnotationBatchIdentity:
+    """Only the immutable batch operands required by one assertion writer."""
+
+    schema_id: str
+    schema_version: int
+    target_ref: str
+    actor_ref: str
+
+    @property
+    def qualified_schema_id(self) -> str:
+        return f"{self.schema_id}@v{self.schema_version}"
+
+
+def read_annotation_batch_identity(conn: sqlite3.Connection, batch_id: str) -> AnnotationBatchIdentity | None:
+    row = conn.execute(
+        "SELECT schema_id, schema_version, target_ref, actor_ref FROM annotation_batches WHERE batch_id=?",
+        (batch_id,),
+    ).fetchone()
+    return AnnotationBatchIdentity(str(row[0]), int(row[1]), str(row[2]), str(row[3])) if row is not None else None
+
+
+def annotation_batch_declares_assertion(conn: sqlite3.Connection, batch_id: str, assertion_ref: str) -> bool:
+    """Check original durable membership without decoding its complete roster."""
+    return (
+        conn.execute(
+            """SELECT EXISTS(SELECT 1 FROM annotation_batches b, json_each(b.assertion_refs_json) a
+                         WHERE b.batch_id=? AND a.type='text' AND a.value=?)""",
+            (batch_id, assertion_ref),
+        ).fetchone()[0]
+        == 1
+    )
+
+
 def _is_nonnegative_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
