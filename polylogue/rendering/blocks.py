@@ -268,7 +268,7 @@ def _render_text_block_plaintext(block: RenderableBlock) -> str:
 def _render_tool_use_plaintext(block: RenderableBlock) -> str:
     name = block.tool_name or "unknown"
     arguments = _tool_input_text(block)
-    return f"[Tool: {name}]\n{arguments}".rstrip()
+    return f"[Tool: {name}]\n{arguments}" if arguments else f"[Tool: {name}]"
 
 
 def _render_thinking_plaintext(block: RenderableBlock) -> str:

@@ -811,3 +811,9 @@ def test_full_session_formats_preserve_selected_tool_arguments(output_format: st
     session = _make_conv([message])
     rendered = unescape(format_session(session, output_format, None))
     assert json.dumps(arguments, ensure_ascii=False, indent=2) in rendered
+
+
+def test_plaintext_preserves_raw_tool_argument_trailing_whitespace() -> None:
+    raw = "neutral raw argument\n  \t"
+    block = RenderableBlock(type="tool_use", tool_name="neutral", tool_input_raw=raw)
+    assert render_blocks_plaintext([block]) == "[Tool: neutral]\n" + raw
