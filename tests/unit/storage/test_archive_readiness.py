@@ -522,7 +522,11 @@ def test_exact_readiness_keeps_complete_census_with_pending_replay_blocked(tmp_p
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"pending-readiness"}}\n',
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"pending-readiness"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
+                b'"content":[{"type":"input_text","text":"pending readiness"}]}}\n'
+            ),
             source_path="codex/pending-readiness.jsonl",
             canonical_source_path="codex/pending-readiness.jsonl",
             acquired_at_ms=1,

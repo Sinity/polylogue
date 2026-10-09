@@ -1145,11 +1145,22 @@ def test_fresh_capacity_uses_sealed_material_without_a_second_source_read(
     reads = 0
 
     def measured_revision(
-        path: Path, *, cancelled: Any = None, location: Any = None, source_binding: Any = None
+        path: Path,
+        *,
+        cancelled: Any = None,
+        location: Any = None,
+        source_binding: Any = None,
+        expected_observation: Any = None,
     ) -> tuple[str, int]:
         nonlocal reads
         reads += 1
-        digest, _size = real_revision(path, cancelled=cancelled, location=location, source_binding=source_binding)
+        digest, _size = real_revision(
+            path,
+            cancelled=cancelled,
+            location=location,
+            source_binding=source_binding,
+            expected_observation=expected_observation,
+        )
         return digest, 2 * 1024**3
 
     monkeypatch.setattr(production_baseline, "_revision", measured_revision)
