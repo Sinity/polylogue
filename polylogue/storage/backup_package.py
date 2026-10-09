@@ -616,6 +616,9 @@ def _backup_sqlite(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[in
             user_version = int(cursor.fetchone()[0])
         with connection_cursor(conn, "PRAGMA data_version") as cursor:
             selected_version = int(cursor.fetchone()[0])
+        # The image is private while SQLite populates it, then retains the
+        # original tier's metadata after physical destination settlement.
+        dst.touch(mode=0o600, exist_ok=False)
         destination_owner = open_scratch_connection(dst, lifetime_dependencies=(dst,))
         try:
             # Page batches bound cooperative cancellation, not accepted input.
@@ -630,6 +633,7 @@ def _backup_sqlite(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[in
             raise
         else:
             destination_owner.close()
+        shutil.copystat(live_path, dst)
         conn.rollback()
         with connection_cursor(conn, "PRAGMA data_version") as cursor:
             before_fingerprint = int(cursor.fetchone()[0])
@@ -1270,13 +1274,28 @@ def _backup_archive(
             tier_source_fingerprints[f"{tier}.db"] = fingerprint
             backed_up_files.append(str(dst))
 
-        source_assertion = (
-            _copy_source_declared_absent_assertion(
-                root / "source.db", backup_root, fingerprint=tier_source_fingerprints["source.db"]
+        try:
+            source_assertion = (
+                _copy_source_declared_absent_assertion(
+                    root / "source.db", backup_root, fingerprint=tier_source_fingerprints["source.db"]
+                )
+                if "source" in included_tiers
+                else None
             )
-            if "source" in included_tiers
-            else None
-        )
+        except RuntimeError as exc:
+            # Declaration refusals remain failed package results, as when the
+            # verifier authenticated a byte-identical main-file copy.
+            return BackupResult(
+                ok=False,
+                output_path=str(backup_root),
+                backup_profile=profile,
+                db_size_bytes=db_size,
+                elapsed_s=round(time.monotonic() - started, 3),
+                error=str(exc),
+                warnings=warnings,
+                backed_up_files=backed_up_files,
+                omitted_tiers=[f"{tier}.db" for tier in omitted_tiers],
+            )
 
         blob_reference_debt: BlobReferenceDebtReport | None = None
         if "source" in included_tiers:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import stat
 import threading
 from contextlib import closing
 from pathlib import Path
@@ -32,6 +33,7 @@ def test_public_backup_preserves_pinned_cut_with_old_reader_and_later_commit(
     db_setup(workspace_env)
     root = workspace_env["archive_root"]
     source = root / "user.db"
+    source.chmod(0o600)
     with closing(sqlite3.connect(source)) as writer:
         writer.execute("PRAGMA journal_mode=WAL")
         writer.execute("CREATE TABLE backup_events(value TEXT NOT NULL)")
@@ -95,6 +97,7 @@ def test_public_backup_preserves_pinned_cut_with_old_reader_and_later_commit(
     assert manifest["tier_source_fingerprints"]["user.db"]["live_cut_stable"] is (not later_commit)
     assert snapshot["sha256"] == hashlib.sha256(copied.read_bytes()).hexdigest()
     assert snapshot["size_bytes"] == copied.stat().st_size
+    assert stat.S_IMODE(copied.stat().st_mode) == 0o600
     assert (package / "verification-receipt.json").is_file()
     assert not list(package.glob("*.db-wal"))
 
