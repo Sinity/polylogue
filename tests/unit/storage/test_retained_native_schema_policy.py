@@ -12,6 +12,7 @@ import pytest
 from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
 from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
+from polylogue.daemon.derivation import DerivationRegistry, converge
 from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation, raw_observation_frame
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.retained_parser_payloads import _antigravity_trajectory_db_bytes
@@ -21,10 +22,13 @@ from tests.unit.storage.test_raw_observation_derivation import (
     _run,
     _run_raw_law,
     _snapshot,
+    _writer,
 )
 
 
-def _native_schema_policy_law(tmp_path: Path, *, current_non_session: bool, has_messages: bool) -> None:
+def _native_schema_policy_law(
+    tmp_path: Path, *, current_non_session: bool, has_messages: bool, repair_membership: str | None = None
+) -> None:
 
     def exercise(compute_adapter: BoundedComputeAdapter) -> None:
         bootstrap_archive_root(tmp_path)
@@ -80,6 +84,44 @@ def _native_schema_policy_law(tmp_path: Path, *, current_non_session: bool, has_
         settled_source = _snapshot(tmp_path)
         assert _run(tmp_path, compute_adapter=compute_adapter).made_no_publication_attempts
         assert _snapshot(tmp_path) == settled_source
+        if repair_membership is not None:
+            assert not has_messages and current_non_session
+            with sqlite3.connect(tmp_path / "source.db") as conn:
+                if repair_membership == "stale":
+                    conn.execute(
+                        "UPDATE raw_membership_census SET parser_fingerprint='previous-parser' WHERE raw_id=?",
+                        (raw_id,),
+                    )
+                else:
+                    assert repair_membership == "missing"
+                    conn.execute("DELETE FROM raw_membership_census WHERE raw_id=?", (raw_id,))
+                assert conn.execute(
+                    "SELECT parser_fingerprint,status,logical_keys_json FROM raw_authority_parser_census WHERE raw_id=?",
+                    (raw_id,),
+                ).fetchone() == (raw_authority_parser_fingerprint(), "complete", "[]")
+            assert adapter.inspect(frame, (raw_id,)) == {raw_id: "stale"}
+            from tests.infra.retained_jsonl import prepared_source_fixture
+
+            with prepared_source_fixture(tmp_path) as source_read:
+                assert not source_read.raw_parser_census_is_current(raw_id)
+            report = converge(
+                DerivationRegistry((adapter,)), frame, publisher=lambda actor, work: _writer(tmp_path, actor, work)
+            )
+            assert report.pending == report.failed == 0, report
+            assert adapter.inspect(frame, (raw_id,)) == {raw_id: "valid"}
+            with sqlite3.connect(tmp_path / "source.db") as conn:
+                assert conn.execute(
+                    "SELECT parser_fingerprint,status,member_count FROM raw_membership_census WHERE raw_id=?",
+                    (raw_id,),
+                ).fetchone() == (raw_authority_parser_fingerprint(), "non_session", 0)
+                assert conn.execute(
+                    "SELECT validation_status,validation_mode FROM raw_sessions WHERE raw_id=?", (raw_id,)
+                ).fetchone() == (None, None)
+            with sqlite3.connect(tmp_path / "index.db") as conn:
+                assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+            settled_source = _snapshot(tmp_path)
+            assert _run(tmp_path, compute_adapter=compute_adapter).made_no_publication_attempts
+            assert _snapshot(tmp_path) == settled_source
 
     _run_raw_law(tmp_path, exercise)
 
@@ -93,6 +135,16 @@ def test_native_sqlite_captured_schema_policy_reaches_current_index(tmp_path: Pa
 def test_empty_native_sqlite_current_census_carries_schema_policy(tmp_path: Path) -> None:
     """A native parser with no sessions still owes its captured schema policy."""
     _native_schema_policy_law(tmp_path, current_non_session=True, has_messages=False)
+
+
+@pytest.mark.parametrize("membership_state", ["stale", "missing"])
+def test_empty_native_sqlite_refreshes_independent_non_session_membership(
+    tmp_path: Path, membership_state: str
+) -> None:
+    """Native zero-output grammar still owes its independent membership receipt."""
+    _native_schema_policy_law(
+        tmp_path, current_non_session=True, has_messages=False, repair_membership=membership_state
+    )
 
 
 def test_eligible_json_prepared_carrier_missing_verdict_is_refused(
