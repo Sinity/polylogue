@@ -475,9 +475,13 @@ def project_detection_root(value: object, root_rule: DetectorProjection) -> obje
 def _object_scalarish(value: object, depth: int) -> bool:
     """:func:`_consume_scalarish` over a decoded value."""
     if isinstance(value, list):
-        return depth < 2 and len(value) <= 32 and all(_object_scalarish(item, depth + 1) for item in value)
+        children = value.structure_values() if hasattr(value, "structure_values") else value
+        return depth < 2 and len(value) <= 32 and all(_object_scalarish(item, depth + 1) for item in children)
     if isinstance(value, dict):
-        return depth < 2 and len(value) <= 8 and all(_object_scalarish(item, depth + 1) for item in value.values())
+        children = (
+            (child for _key, child in value.structure_items()) if hasattr(value, "structure_items") else value.values()
+        )
+        return depth < 2 and len(value) <= 8 and all(_object_scalarish(item, depth + 1) for item in children)
     return True
 
 
@@ -502,11 +506,18 @@ def _project_object(
         selected_fields_only = (
             scalarish_depth is None and rule.mapping_predicate is None and rule.mapping_key_predicate is None
         )
+        structural_entries = not selected_fields_only and hasattr(value, "structure_items")
         entries = (
-            ((key, value[key]) for key in rule.fields or {} if key in value) if selected_fields_only else value.items()
+            ((key, value[key]) for key in rule.fields or {} if key in value)
+            if selected_fields_only
+            else value.structure_items()
+            if structural_entries
+            else value.items()
         )
         for key, child in entries:
             child_rule = rule.item if rule.mapping_predicate is not None else (rule.fields or {}).get(key)
+            if structural_entries and child_rule is not None:
+                child = value[key]
             item, scalarish = _project_object(child, child_rule, scalarish_depth=child_depth)
             values_scalarish &= scalarish
             if rule.mapping_predicate is not None:
@@ -593,52 +604,39 @@ def iter_decoded_jsonl_records(
     check_stop: Callable[[], None] | None = None,
     on_decode_failure: Callable[[Exception], None] | None = None,
 ) -> Generator[object, None, None]:
-    """Decode each physical JSONL line as exactly one strict JSON value.
+    """Decode complete physical records, retaining exact large values on disk.
 
-    One line is held at a time, up to SQLite's value length (the physical
-    bound on a stored record; a longer line is read past and refused by
-    name), and decoded by the C JSON backend, with directly encoded provider
-    surrogates decoded exactly. A record stream is never parsed as one
-    document. A supplied failure observer permits candidacy from healthy
-    records while retaining decode-loss evidence; without one, the first
-    refused record raises. The caller owns the original handle.
+    Records are exposed only after syntax succeeds. A later failure denies
+    complete provider proof after earlier records were observed. The caller
+    owns the input handle; this generator owns its lazy record tree.
     """
-    import json
+    from contextlib import closing
 
-    from polylogue.core.json import JSONDecodeError as FacadeDecodeError
-    from polylogue.core.json import decode_provider_utf8
-    from polylogue.core.json import loads as json_loads
-    from polylogue.core.json_envelope import OversizedRecord, bounded_lines
+    from polylogue.sources.decoder_json import DecodedRecordSequence, JsonlDecodeError, _retain_jsonl_records, logger
 
-    def refuse(_constant: str) -> object:
-        raise ValueError("non-finite JSON constant")
-
-    def refused(line_number: int, cause: BaseException | None) -> None:
+    def refused(cause: Exception) -> None:
+        line_number = cause.line_number if isinstance(cause, JsonlDecodeError) else 0
         failure = ijson.JSONError(f"malformed JSONL record at line {line_number}")
         failure.__cause__ = cause
         if on_decode_failure is None:
             raise failure
         on_decode_failure(failure)
 
-    with io.BufferedReader(_CheckedInput(handle, check_stop), buffer_size=1024 * 1024) as lines:
-        for line_number, line in enumerate(bounded_lines(lines), start=1):
-            if isinstance(line, OversizedRecord):
-                refused(line_number, None)
-                continue
-            assert isinstance(line, bytes)
-            raw = line.strip(b" \t\r\n")
-            if raw.startswith(codecs.BOM_UTF8):
-                raw = raw[len(codecs.BOM_UTF8) :].lstrip(b" \t\r\n")
-            if not raw:
-                continue
-            try:
-                value = json_loads(raw)
-            except FacadeDecodeError as exc:
-                try:
-                    value = json.loads(decode_provider_utf8(raw), parse_constant=refuse)
-                except (UnicodeDecodeError, ValueError):
-                    refused(line_number, exc)
-                    continue
+    with (
+        closing(DecodedRecordSequence(())) as tape,
+        closing(
+            _retain_jsonl_records(
+                tape,
+                logger,
+                _CheckedInput(handle, check_stop),
+                "recognition.jsonl",
+                fail_on_decode_error=False,
+                repair=False,
+                on_decode_failure=refused,
+            )
+        ) as records,
+    ):
+        for value in records:
             if check_stop is not None:
                 check_stop()
             yield value

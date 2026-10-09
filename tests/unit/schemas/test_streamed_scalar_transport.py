@@ -236,3 +236,64 @@ def test_selected_scalar_transport_preserves_lowering_and_content_hash(
             session_content_hash(session) for session in expected
         ]
         assert actual[0].messages[0].text == expected[0].messages[0].text
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        b"\xed\xa0\x80\\udc00",
+        b"\\ud800\xed\xb0\x80",
+        b"\xed\xa0\x80\xed\xb0\x80",
+        b"\\ud800\\udc00",
+    ],
+)
+def test_mixed_surrogate_spellings_match_provider_decoder_at_every_byte_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: bytes
+) -> None:
+    from polylogue.core.json import decode_provider_utf8
+
+    raw = b'{"value":"' + spelling + b'"}'
+    expected = json.loads(decode_provider_utf8(raw))["value"]
+    path = tmp_path / "mixed.json"
+    path.write_bytes(raw)
+    original = observation_spill._ExactJSONText
+
+    class SplitInput:
+        def __init__(self, source, split):
+            self.source = source
+            self.split = split
+            self.first = True
+
+        def read(self, size):
+            if self.first:
+                self.first = False
+                return self.source.read(self.split)
+            return self.source.read(size)
+
+    for split in range(1, len(raw)):
+        monkeypatch.setattr(
+            observation_spill,
+            "_ExactJSONText",
+            lambda source, encoding, split=split, **kwargs: original(SplitInput(source, split), encoding, **kwargs),
+        )
+        with StreamedJSONDocument(path) as document:
+            assert document["value"] == expected
+
+
+def test_shared_record_tree_rolls_back_failed_attempt_and_keeps_scalar_ordinals(tmp_path: Path) -> None:
+    path = tmp_path / "record.json"
+    owner = StreamedJSONDocument(None)
+    with owner as records:
+        path.write_text('{"same":"first"}')
+        owner.append_document(path)
+        node_count = owner.connection.execute("SELECT COUNT(*) FROM json_nodes").fetchone()[0]
+        chunk_count = owner.connection.execute("SELECT COUNT(*) FROM json_scalar_chunks").fetchone()[0]
+        path.write_text('{"same":"incomplete')
+        with pytest.raises(JSONError):
+            owner.append_document(path)
+        assert len(records) == 1
+        assert owner.connection.execute("SELECT COUNT(*) FROM json_nodes").fetchone()[0] == node_count
+        assert owner.connection.execute("SELECT COUNT(*) FROM json_scalar_chunks").fetchone()[0] == chunk_count
+        path.write_text('{"same":"last","same":"replacement"}')
+        owner.append_document(path)
+        assert [record["same"] for record in records] == ["first", "replacement"]

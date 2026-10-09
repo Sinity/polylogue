@@ -30,6 +30,10 @@ _STRING_PREFIX_BYTES = 12 * ENVELOPE_TEXT_PREFIX_CHARS
 
 _READ_BYTES = 1024 * 1024
 
+# Strategy-only buffering window shared by physical-record consumers. A
+# longer record continues through disk transport without an input refusal.
+JSONL_MEMORY_BUFFER_BYTES = 64 * 1024
+
 _ESCAPE_TOKEN = re.compile(rb'\\(?:u([0-9a-fA-F]{4})|["\\/bfnrt])')
 
 #: Tokens of a skipped string suffix worth examining: complete valid escapes
@@ -44,6 +48,7 @@ _INVALID_ESCAPE = b"\\q"
 #: A run of bytes that can belong to a JSON number token outside strings.
 _NUMBER_RUN = re.compile(rb"[-+0-9.eE]+")
 _EXACT_NUMBER_RUN = re.compile(rb"-Infinity|Infinity|NaN|[-0-9][-+0-9.eE]*")
+_INVALID_STRUCTURE_BYTE = re.compile(rb"[^\x09\x0a\x0d\x20-\x7e]")
 
 #: Passed in place of an over-long integer token so the tokenizer rejects it
 #: as malformed instead of converting it.
@@ -316,6 +321,10 @@ class _PrefixStringReader:
         """
         segment = self._structure_carry + segment
         self._structure_carry = b""
+        # The Python event lexer accepts Unicode whitespace; JSON permits
+        # only space, tab, CR and LF outside strings. Any non-ASCII byte here
+        # is likewise invalid JSON syntax, including split UTF-8 whitespace.
+        segment = _INVALID_STRUCTURE_BYTE.sub(b"!", segment)
         if chunk_end and (partial := _NON_FINITE_PARTIAL.search(segment)) is not None:
             self._structure_carry = segment[partial.start() :]
             segment = segment[: partial.start()]

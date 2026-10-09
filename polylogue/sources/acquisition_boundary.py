@@ -44,7 +44,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError as FacadeJSONDecodeError
 from polylogue.core.json import decode_provider_utf8
 from polylogue.core.json import loads as json_loads
-from polylogue.core.json_envelope import sqlite_value_limit
+from polylogue.core.json_envelope import JSONL_MEMORY_BUFFER_BYTES
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 
 from .dispatch import (
@@ -114,10 +114,10 @@ class BoundRecordValidator:
             active = not path_declaration_refuses_session(self._bound, Path(name))
         self.active = active
         self._document = _DocumentValidator(self._bound, records=False) if active and not self._is_jsonl else None
-        #: The current JSONL line, held whole up to SQLite's value length;
-        #: a longer line is push-parsed instead of being held.
+        #: Small records use the C decoder. Longer records continue through
+        #: bounded event transport; this threshold changes memory strategy.
         self._pending = bytearray()
-        self._line_limit = sqlite_value_limit() if active and self._is_jsonl else 0
+        self._line_limit = JSONL_MEMORY_BUFFER_BYTES if active and self._is_jsonl else 0
         self._line: _DocumentValidator | None = None
         self._finished = False
         #: A refusal is sticky: a consumer that swallows it and reads on (an
@@ -180,7 +180,8 @@ class BoundRecordValidator:
         if self._line is None:
             self._line = _DocumentValidator(self._bound, records=True)
             held, self._pending = bytes(self._pending), bytearray()
-            self._line.feed(held)
+            if held:
+                self._line.feed(held)
         self._line.feed(data)
 
     def _end_line(self) -> None:

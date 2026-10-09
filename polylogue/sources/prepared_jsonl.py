@@ -67,7 +67,7 @@ from polylogue.sources.decoder_json import (
     spill_member_arrays,
     spill_otlp_spans,
 )
-from polylogue.sources.decoders import _iter_json_stream
+from polylogue.sources.decoders import owned_json_records
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
     BundleCandidateDrift,
@@ -293,18 +293,25 @@ def source_snapshot(source: Path, directory: Path) -> Iterator[tuple[Path, str, 
             shutil.rmtree(holder)
 
 
-def _iter_prefix_lines(handle: BinaryIO, prefix_size: int) -> Iterator[bytes]:
-    """Expose only the proven complete JSONL prefix to the record decoder."""
-    if prefix_size < 0:
-        raise ValueError("JSONL prefix size must be non-negative")
-    remaining = prefix_size
-    while remaining:
+class _PreparedPrefixInput:
+    """Borrow a proven complete JSONL prefix without holding whole lines."""
+
+    def __init__(self, handle: BinaryIO, prefix_size: int) -> None:
+        if prefix_size < 0:
+            raise ValueError("JSONL prefix size must be non-negative")
+        self.handle = handle
+        self.remaining = prefix_size
+
+    def read(self, size: int = -1) -> bytes:
+        if not self.remaining or size == 0:
+            return b""
         check_compute_cancelled()
-        line = handle.readline(remaining)
-        if not line:
+        requested = min(self.remaining, size if size >= 0 else 64 * 1024)
+        chunk = self.handle.read(requested)
+        if not chunk:
             raise OSError("sealed source ended before its prepared JSONL prefix")
-        remaining -= len(line)
-        yield line
+        self.remaining -= len(chunk)
+        return chunk
 
 
 def _hermes_atif_envelope(handle: BinaryIO) -> tuple[dict[str, JSONValue], bool] | None:
@@ -2737,16 +2744,16 @@ def prepare_jsonl_blob(
 
             with source.open("rb") as handle:
                 record_input = (
-                    _iter_prefix_lines(handle, parse_prefix_size) if parse_prefix_size is not None else handle
+                    _PreparedPrefixInput(handle, parse_prefix_size) if parse_prefix_size is not None else handle
                 )
-                checkpoint_records = _iter_json_stream(
+                with owned_json_records(
                     record_input, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
-                )
-                gemini_envelope = local_agent.fold_gemini_cli_checkpoint_records(
-                    observe_checkpoint_records(checkpoint_records),
-                    append_message=append_checkpoint_message,
-                    replace_messages=replace_checkpoint_messages,
-                )
+                ) as checkpoint_records:
+                    gemini_envelope = local_agent.fold_gemini_cli_checkpoint_records(
+                        observe_checkpoint_records(checkpoint_records),
+                        append_message=append_checkpoint_message,
+                        replace_messages=replace_checkpoint_messages,
+                    )
             if gemini_envelope is None:
                 store.conn.execute("DROP TABLE gemini_raw_message")
                 if checkpoint_header_admitted:
@@ -2797,10 +2804,13 @@ def prepare_jsonl_blob(
                 store.conn.execute("DROP TABLE grok_member_valid")
         if input_admitted and not is_stream and provider in BUNDLE_PROVIDERS and is_jsonl_source_path(source_path):
             bundle_record_stream = True
-            with source.open("rb") as handle:
-                for record in _iter_json_stream(
+            with (
+                source.open("rb") as handle,
+                owned_json_records(
                     handle, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
-                ):
+                ) as records,
+            ):
+                for record in records:
                     check_compute_cancelled()
                     bundle_count += 1
                     bundle_browser_captures = bundle_browser_captures and browser_capture.looks_like(record)
@@ -2885,15 +2895,17 @@ def prepare_jsonl_blob(
 
             def observe_drive_records() -> Iterator[JSONValue]:
                 nonlocal drive_future_type
-                with source.open("rb") as handle:
+                with source.open("rb") as handle, ExitStack() as record_owners:
                     record_input = (
-                        _iter_prefix_lines(handle, parse_prefix_size) if parse_prefix_size is not None else handle
+                        _PreparedPrefixInput(handle, parse_prefix_size) if parse_prefix_size is not None else handle
                     )
                     records = (
                         (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "item"))
                         if drive_root_array
-                        else _iter_json_stream(
-                            record_input, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
+                        else record_owners.enter_context(
+                            owned_json_records(
+                                record_input, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
+                            )
                         )
                     )
                     for record in records:
@@ -3278,16 +3290,18 @@ def prepare_jsonl_blob(
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
 
             def drive_chunks() -> Iterator[object]:
-                with source.open("rb") as handle:
+                with source.open("rb") as handle, ExitStack() as record_owners:
                     if drive_record_stream:
                         record_input = (
-                            _iter_prefix_lines(handle, parse_prefix_size) if parse_prefix_size is not None else handle
+                            _PreparedPrefixInput(handle, parse_prefix_size) if parse_prefix_size is not None else handle
                         )
                         records = (
                             (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "item"))
                             if drive_root_array
-                            else _iter_json_stream(
-                                record_input, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
+                            else record_owners.enter_context(
+                                owned_json_records(
+                                    record_input, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
+                                )
                             )
                         )
                         for item in records:
@@ -3609,19 +3623,20 @@ def prepare_jsonl_blob(
                 if stream_prefix is not None:
                     yield from iter_container_member_files(handle, stream_prefix, member_path)
                     return
-                for index, record in enumerate(
-                    _iter_json_stream(handle, Path(source_path).name, fail_on_decode_error=strict_jsonl_records)
-                ):
-                    check_compute_cancelled()
-                    # Reuse the canonical member parser over one original
-                    # decoded record, rather than retaining the input cohort.
-                    if not isinstance(record, dict):
-                        yield None
-                        continue
-                    with member_path.open("w", encoding="utf-8") as member:
-                        json.dump(record, member, ensure_ascii=True)
-                    del record
-                    yield index
+                with owned_json_records(
+                    handle, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
+                ) as records:
+                    for index, record in enumerate(records):
+                        check_compute_cancelled()
+                        # Reuse the canonical member parser over one original
+                        # decoded record, rather than retaining the input cohort.
+                        if not isinstance(record, dict):
+                            yield None
+                            continue
+                        with member_path.open("w", encoding="utf-8") as member:
+                            json.dump(record, member, ensure_ascii=True)
+                        del record
+                        yield index
 
             with source.open("rb") as handle:
                 for bundle_index in original_bundle_members(handle) if bundle_admitted else ():
@@ -3701,13 +3716,15 @@ def prepare_jsonl_blob(
             with ExitStack() as decoded_inputs:
                 handle = decoded_inputs.enter_context(source.open("rb"))
                 record_input = (
-                    _iter_prefix_lines(handle, parse_prefix_size) if parse_prefix_size is not None else handle
+                    _PreparedPrefixInput(handle, parse_prefix_size) if parse_prefix_size is not None else handle
                 )
                 records = (
-                    _iter_json_stream(
-                        record_input,
-                        Path(source_path).name,
-                        fail_on_decode_error=strict_jsonl_records or provider is Provider.UNKNOWN,
+                    decoded_inputs.enter_context(
+                        owned_json_records(
+                            record_input,
+                            Path(source_path).name,
+                            fail_on_decode_error=strict_jsonl_records or provider is Provider.UNKNOWN,
+                        )
                     )
                     if input_admitted
                     else iter(())
@@ -3727,7 +3744,11 @@ def prepare_jsonl_blob(
                         sidecar_resolver=sidecar_resolver,
                     )
                 else:
-                    cohort = decoded_inputs.enter_context(closing(DecodedRecordSequence(records)))
+                    cohort = (
+                        records
+                        if isinstance(records, DecodedRecordSequence)
+                        else decoded_inputs.enter_context(closing(DecodedRecordSequence(records)))
+                    )
                     sessions = iter_parsed_payload(
                         provider,
                         cohort,

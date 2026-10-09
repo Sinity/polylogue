@@ -145,6 +145,8 @@ def normalize_json_decimal(value: object) -> object:
     record. ``ijson`` is the only decoder in the pipeline that produces
     ``Decimal``; msgspec and stdlib ``json`` never do.
     """
+    if isinstance(value, _ValidatedJSONContainer):
+        return value
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
     if isinstance(value, list):
@@ -186,6 +188,8 @@ def json_document_or_none(value: object) -> JSONDocument | None:
     """
     if not isinstance(value, dict):
         return None
+    if isinstance(value, _ValidatedJSONContainer):
+        return value
     lowered = _lower_json_value(value)
     return cast(JSONDocument, lowered) if lowered is not _NOT_JSON else None
 
@@ -206,7 +210,11 @@ def _lower_json_value(value: object) -> object:
     pending = value
     lowered: object
     while True:
-        if pending is None or isinstance(pending, (str, bool, int, float)):
+        if (
+            isinstance(pending, _ValidatedJSONContainer)
+            or pending is None
+            or isinstance(pending, (str, bool, int, float))
+        ):
             lowered = pending
         elif isinstance(pending, Decimal):
             lowered = int(pending) if pending == pending.to_integral_value() else float(pending)

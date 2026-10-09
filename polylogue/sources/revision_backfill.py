@@ -77,7 +77,7 @@ from polylogue.pipeline.ids import SessionRevisionProjection, session_revision_p
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.assembly import SidecarData
-from polylogue.sources.decoders import _iter_json_stream
+from polylogue.sources.decoders import owned_json_records
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
     admit_parsed_sessions_for_publication,
@@ -103,7 +103,7 @@ from polylogue.sources.prepared_jsonl import (
     PreparedDecodeError,
     PreparedJsonl,
     PreparedSessionSequence,
-    _iter_prefix_lines,
+    _PreparedPrefixInput,
     classify_decode_failure,
     prepare_jsonl_blob,
     terminal_decode_evidence,
@@ -437,7 +437,8 @@ def retained_parse_exception(detail: str, decode_failure: DecodeFailure | None) 
     return RuntimeError(detail)
 
 
-def _retained_jsonl_records(payload: bytes, source_name: str, source_path: str) -> list[JSONValue]:
+@contextmanager
+def _retained_jsonl_records(payload: bytes, source_name: str, source_path: str) -> Iterator[Iterable[JSONValue]]:
     """Decode retained bytes as live intake decodes the same capture.
 
     Every complete JSONL record must decode (``fail_on_decode_error``); only
@@ -448,16 +449,21 @@ def _retained_jsonl_records(payload: bytes, source_name: str, source_path: str) 
         prefix_size = jsonl_parse_prefix_size(jsonl_complete_prefix(payload), len(payload))
         if prefix_size is not None:
             payload = payload[:prefix_size]
-    return list(_iter_json_stream(BytesIO(payload), source_name, fail_on_decode_error=True))
+    with BytesIO(payload) as handle, owned_json_records(handle, source_name, fail_on_decode_error=True) as records:
+        yield records
 
 
-def _retained_jsonl_stream(payload: BinaryIO, source_name: str, source_path: str) -> Iterable[JSONValue]:
+@contextmanager
+def _retained_jsonl_stream(payload: BinaryIO, source_name: str, source_path: str) -> Iterator[Iterable[JSONValue]]:
     """Stream retained records under :func:`_retained_jsonl_records`' rule."""
     if not is_jsonl_source_path(source_path):
-        return _iter_json_stream(payload, source_name, fail_on_decode_error=True)
+        with owned_json_records(payload, source_name, fail_on_decode_error=True) as records:
+            yield records
+        return
     prefix_size = jsonl_parse_prefix_size_of_handle(payload)
-    record_input = _iter_prefix_lines(payload, prefix_size) if prefix_size is not None else payload
-    return _iter_json_stream(record_input, source_name, fail_on_decode_error=True)
+    record_input = _PreparedPrefixInput(payload, prefix_size) if prefix_size is not None else payload
+    with owned_json_records(record_input, source_name, fail_on_decode_error=True) as records:
+        yield records
 
 
 @dataclass(slots=True)
@@ -3543,8 +3549,17 @@ def _parse_one_raw(
     if classification.proved_non_session:
         return []
     if is_stream_record_provider(source_path, str(provider)):
-        records = _retained_jsonl_records(payload, source_name, source_path)
-        return parse_stream_payload(
+        with _retained_jsonl_records(payload, source_name, source_path) as records:
+            return parse_stream_payload(
+                provider,
+                records,
+                fallback_id,
+                source_path=source_path,
+                profile_identity=profile_identity,
+                sidecar_resolver=sidecar_resolver,
+            )
+    with _retained_jsonl_records(payload, source_name, source_path) as records:
+        return parse_payload(
             provider,
             records,
             fallback_id,
@@ -3552,15 +3567,6 @@ def _parse_one_raw(
             profile_identity=profile_identity,
             sidecar_resolver=sidecar_resolver,
         )
-    records = _retained_jsonl_records(payload, source_name, source_path)
-    return parse_payload(
-        provider,
-        records,
-        fallback_id,
-        source_path=source_path,
-        profile_identity=profile_identity,
-        sidecar_resolver=sidecar_resolver,
-    )
 
 
 def _iter_sqlite_path(
@@ -3712,15 +3718,15 @@ def _parse_stream_raw(
 
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or fallback_session_id(source_path, source_path)
-    stream = _retained_jsonl_stream(payload, source_name, source_path)
-    return parse_stream_payload(
-        provider,
-        stream,
-        fallback_id,
-        source_path=source_path,
-        profile_identity=profile_identity,
-        sidecar_resolver=sidecar_resolver,
-    )
+    with _retained_jsonl_stream(payload, source_name, source_path) as stream:
+        return parse_stream_payload(
+            provider,
+            stream,
+            fallback_id,
+            source_path=source_path,
+            profile_identity=profile_identity,
+            sidecar_resolver=sidecar_resolver,
+        )
 
 
 __all__ = [

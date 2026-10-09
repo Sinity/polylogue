@@ -8,9 +8,12 @@ complete values without keeping the decoded document in Python memory.
 
 from __future__ import annotations
 
+import codecs
 import io
 import json
+import re
 import sqlite3
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, ItemsView, Iterable, Iterator, KeysView, Mapping, Sequence, ValuesView
 from contextlib import AbstractContextManager, ExitStack, closing, suppress
 from dataclasses import dataclass
@@ -382,8 +385,9 @@ class _ScalarToken:
 class _ScalarTokenStore:
     """Exact scalar chunks owned by the existing private JSON tree."""
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: sqlite3.Connection, *, allow_nonfinite: bool = True) -> None:
         self.connection = connection
+        self.allow_nonfinite = allow_nonfinite
         self.pending = bytearray()
         self.chunk = 0
         self.decoded_bytes = 0
@@ -420,6 +424,8 @@ class _ScalarTokenStore:
         self._store("string", ordinal, decoded)
 
     def number(self, ordinal: int, content: bytes, final: bool) -> None:
+        if not self.allow_nonfinite and any(byte in content for byte in (b"N", b"I")):
+            raise ValueError("non-finite JSON constant")
         self.number_integer &= not any(byte in content for byte in (b".", b"e", b"E", b"N", b"I"))
         for start in range(0, len(content), 4096):
             self._store("number", ordinal, content[start : start + 4096])
@@ -547,6 +553,54 @@ class _Frame:
     ordinal: int = 0
 
 
+_DIRECT_SURROGATE_PAIR = re.compile("([\ud800-\udbff])([\udc00-\udfff])")
+
+
+class _ExactJSONText(io.RawIOBase):
+    """Transcode bytes without turning direct surrogate units into escapes.
+
+    The exact scalar sink must distinguish direct and escaped units: changing
+    a direct high unit to an escape can pair it with an originally escaped
+    low unit. Only adjacent directly encoded provider units pair here.
+    """
+
+    def __init__(self, handle: Any, encoding: str, *, strip_bom: bool = True) -> None:
+        self.handle = handle
+        self.decoder = codecs.getincrementaldecoder(encoding)(errors="surrogatepass")
+        self.provider_utf8 = encoding in {"utf-8", "utf-8-sig"}
+        self.strip_bom = strip_bom
+        self.pending = bytearray()
+        self.held_high = ""
+        self.ended = False
+        self.started = False
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: object) -> int:
+        view = memoryview(buffer)  # type: ignore[arg-type]
+        while not self.pending and not self.ended:
+            check_compute_cancelled()
+            chunk = self.handle.read(1024 * 1024)
+            self.ended = not chunk
+            text = self.held_high + self.decoder.decode(chunk, final=self.ended)
+            self.held_high = ""
+            if self.provider_utf8:
+                if not self.ended and text and 0xD800 <= ord(text[-1]) <= 0xDBFF:
+                    text, self.held_high = text[:-1], text[-1]
+                text = _DIRECT_SURROGATE_PAIR.sub(
+                    lambda pair: chr(0x10000 + ((ord(pair[1]) - 0xD800) << 10) + ord(pair[2]) - 0xDC00), text
+                )
+            if self.strip_bom and not self.started:
+                text = text.lstrip("\ufeff")
+                self.started = bool(text)
+            self.pending.extend(text.encode("utf-8", "surrogatepass"))
+        count = min(len(view), len(self.pending))
+        view[:count] = self.pending[:count]
+        del self.pending[:count]
+        return count
+
+
 class StreamedJSONDocument(AbstractContextManager[JSONValue]):
     """Decode JSON to private disk and expose a lazy view.
 
@@ -554,7 +608,7 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
     exposed as an item in one synthetic lazy array.
     """
 
-    def __init__(self, path: Path, *, jsonl: bool = False) -> None:
+    def __init__(self, path: Path | None, *, jsonl: bool = False) -> None:
         self._path = path
         self._jsonl = jsonl
         self._owned = ExitStack()
@@ -573,7 +627,7 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
             scratch_connection_context(prefix="polylogue-schema-json-", filename="document.sqlite")
         )
         try:
-            connection.execute("PRAGMA journal_mode=OFF")
+            connection.execute("PRAGMA journal_mode=DELETE" if self._path is None else "PRAGMA journal_mode=OFF")
             connection.execute("PRAGMA synchronous=OFF")
             connection.execute("PRAGMA temp_store=FILE")
             connection.execute("PRAGMA cache_size=-4096")
@@ -612,7 +666,12 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
             )
             connection.execute("PRAGMA foreign_keys=ON")
             self._connection = connection
-            self._root_id = self._decode(connection)
+            self._root_id = (
+                self._decode(connection, self._path)
+                if self._path is not None
+                else cast(int, connection.execute("INSERT INTO json_nodes(kind) VALUES ('array')").lastrowid)
+            )
+            connection.commit()
             return _load_node(connection, self._root_id)
         except BaseException as error:
             self.__exit__(type(error), error, error.__traceback__)
@@ -629,9 +688,65 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
         connection = self.connection
         return cast(JSONDocument, _load_node(connection, _store_schema_node(connection, value)))
 
-    def _decode(self, connection: sqlite3.Connection) -> int:
+    def append_document(self, path: Path, *, allow_nonfinite: bool = True, strip_bom: bool = True) -> int:
+        """Append one complete record to an empty-path owner's lazy tape.
+
+        A failed attempt leaves no nodes or tokens. The caller may replay
+        the same physical line with its decoder's next text policy.
+        """
+        if self._path is not None or self._jsonl or self._root_id is None:
+            raise RuntimeError("record append requires a live empty-path tape")
+        connection = self.connection
+        connection.execute("SAVEPOINT json_record")
+        try:
+            node = self._decode(connection, path, allow_nonfinite=allow_nonfinite, strip_bom=strip_bom)
+            ordinal = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM json_array_items WHERE parent_id=?", (self._root_id,)
+                ).fetchone()[0]
+            )
+            connection.execute("UPDATE json_nodes SET parent_id=? WHERE id=?", (self._root_id, node))
+            connection.execute("INSERT INTO json_array_items VALUES (?,?,?)", (self._root_id, ordinal, node))
+        except BaseException as primary:
+            failures: list[BaseException] = [primary]
+            for statement in ("ROLLBACK TO json_record", "RELEASE json_record"):
+                try:
+                    connection.execute(statement)
+                except BaseException as cleanup:
+                    failures.append(cleanup)
+            if len(failures) > 1:
+                raise BaseExceptionGroup("JSON record decode and attempt rollback failed", failures) from None
+            raise
+        connection.execute("RELEASE json_record")
+        return node
+
+    def append_value(self, value: JSONValue) -> None:
+        """Retain a value already decoded at an explicitly eager boundary."""
+        if self._path is not None or self._jsonl or self._root_id is None:
+            raise RuntimeError("value append requires a live empty-path tape")
+        connection = self.connection
+        node = _store_schema_node(connection, value)
+        ordinal = int(
+            connection.execute("SELECT COUNT(*) FROM json_array_items WHERE parent_id=?", (self._root_id,)).fetchone()[
+                0
+            ]
+        )
+        connection.execute("UPDATE json_nodes SET parent_id=? WHERE id=?", (self._root_id, node))
+        connection.execute("INSERT INTO json_array_items VALUES (?,?,?)", (self._root_id, ordinal, node))
+
+    def _decode(
+        self, connection: sqlite3.Connection, path: Path, *, allow_nonfinite: bool = True, strip_bom: bool = True
+    ) -> int:
         stack: list[_Frame] = []
-        tokens = _ScalarTokenStore(connection)
+        tokens = _ScalarTokenStore(connection, allow_nonfinite=allow_nonfinite)
+        token_offsets = {
+            kind: int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(token),0) FROM json_scalar_tokens WHERE kind=?", (kind,)
+                ).fetchone()[0]
+            )
+            for kind in ("string", "number")
+        }
         root_id: int | None = None
         if self._jsonl:
             root_id = cast(int, connection.execute("INSERT INTO json_nodes(kind) VALUES ('array')").lastrowid)
@@ -701,14 +816,20 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
         from ijson.backends import python as exact_backend
 
         from polylogue.core.json_envelope import LexemeAlignedReader, _PrefixStringReader
-        from polylogue.sources.detection_projection import _DetectionText
 
-        with self._path.open("rb") as stream:
+        with path.open("rb") as stream:
             encoding = json.detect_encoding(stream.read(4))
             stream.seek(0)
-            with io.BufferedReader(_DetectionText(stream, encoding)) as reader:
+            with io.BufferedReader(_ExactJSONText(stream, encoding, strip_bom=strip_bom)) as reader:
                 scalar_reader = _PrefixStringReader(
-                    reader, scalar_values=True, string_sink=tokens.string, number_sink=tokens.number
+                    reader,
+                    scalar_values=True,
+                    string_sink=lambda ordinal, chunk, final: tokens.string(
+                        ordinal + token_offsets["string"], chunk, final
+                    ),
+                    number_sink=lambda ordinal, chunk, final: tokens.number(
+                        ordinal + token_offsets["number"], chunk, final
+                    ),
                 )
 
                 def parsed_events() -> Iterator[tuple[str, object]]:
@@ -739,8 +860,8 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
                 events = parsed_events()
 
                 def exact_events() -> Iterator[tuple[str, object]]:
-                    string_ordinal = 0
-                    number_ordinal = 0
+                    string_ordinal = token_offsets["string"]
+                    number_ordinal = token_offsets["number"]
                     for event, value in events:
                         if event in {"map_key", "string"}:
                             string_ordinal += 1
@@ -774,7 +895,6 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
             raise ValueError("streamed JSON ended inside a container")
         if root_id is None:
             raise ValueError("streamed JSON document has no root value")
-        connection.commit()
         return root_id
 
     @staticmethod

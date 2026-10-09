@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from io import BytesIO
 from itertools import chain
@@ -25,7 +26,7 @@ from .acquisition_boundary import (
 from .assembly import get_assembly_spec
 from .cursor import _ParseContext
 from .decoder_json import JsonValue
-from .decoders import _iter_json_stream
+from .decoders import owned_json_records
 from .dispatch import GROUP_PROVIDERS, detect_provider, is_jsonl_source_path, parse_payload
 from .parsers.base import ParsedSession, RawSessionData
 
@@ -210,31 +211,32 @@ class _SessionEmitter:
             if raw_bytes is not None:
                 handle = BytesIO(raw_bytes)
 
-        payloads = (
-            precomputed_payloads if precomputed_payloads is not None else list(_iter_json_stream(handle, stream_name))
-        )
-        if not payloads:
-            return
+        with ExitStack() as lifetime:
+            payloads = precomputed_payloads
+            if payloads is None:
+                payloads = list(lifetime.enter_context(owned_json_records(handle, stream_name)))
+            if not payloads:
+                return
 
-        raw_data = precomputed_raw or (self._make_raw(raw_bytes) if raw_bytes else None)
-        resolved = self._resolve_payload(payloads)
-        if session_artifact is not None:
-            resolved = _ResolvedPayload(
-                provider=resolved.provider,
-                artifact=session_artifact,
+            raw_data = precomputed_raw or (self._make_raw(raw_bytes) if raw_bytes else None)
+            resolved = self._resolve_payload(payloads)
+            if session_artifact is not None:
+                resolved = _ResolvedPayload(
+                    provider=resolved.provider,
+                    artifact=session_artifact,
+                    schema_resolution=resolved.schema_resolution,
+                )
+            if not resolved.artifact.parse_as_session:
+                return
+            for conv in parse_payload(
+                resolved.provider,
+                payloads,
+                self._ctx.fallback_id,
                 schema_resolution=resolved.schema_resolution,
-            )
-        if not resolved.artifact.parse_as_session:
-            return
-        for conv in parse_payload(
-            resolved.provider,
-            payloads,
-            self._ctx.fallback_id,
-            schema_resolution=resolved.schema_resolution,
-            source_path=self._ctx.source_path_str,
-            profile_identity=self._profile_identity,
-        ):
-            yield (raw_data, self._maybe_enrich(conv))
+                source_path=self._ctx.source_path_str,
+                profile_identity=self._profile_identity,
+            ):
+                yield (raw_data, self._maybe_enrich(conv))
 
     def _emit_individual(
         self,
@@ -251,12 +253,13 @@ class _SessionEmitter:
         # (for should_group + capture_raw + non-JSONL files)
         whole_file_raw = self._make_raw(pre_read_bytes) if pre_read_bytes is not None else None
 
-        yield from self._emit_individual_payloads(
-            _iter_json_stream(handle, stream_name, unpack_lists=unpack),
-            stream_name=stream_name,
-            whole_file_raw=whole_file_raw,
-            session_artifact=session_artifact,
-        )
+        with owned_json_records(handle, stream_name, unpack_lists=unpack) as payloads:
+            yield from self._emit_individual_payloads(
+                payloads,
+                stream_name=stream_name,
+                whole_file_raw=whole_file_raw,
+                session_artifact=session_artifact,
+            )
 
     def _emit_individual_payloads(
         self,
@@ -317,10 +320,10 @@ class _SessionEmitter:
 
     def _sniff_jsonl_payloads(
         self,
-        handle: IO[bytes],
+        payloads: Iterable[JsonValue],
         stream_name: str,
     ) -> _SniffResult:
-        payload_iter = iter(_iter_json_stream(handle, stream_name))
+        payload_iter = iter(payloads)
         buffered_payloads: list[JsonValue] = []
         for payload in payload_iter:
             buffered_payloads.append(payload)
@@ -363,14 +366,6 @@ class _SessionEmitter:
             stream_start=self._capture_stream_start(handle),
         )
 
-    def _non_seekable_jsonl_sniff(
-        self,
-        handle: IO[bytes],
-        stream_name: str,
-    ) -> tuple[bytes, _SniffResult]:
-        sniff_bytes = handle.read()
-        return sniff_bytes, self._sniff_jsonl_payloads(BytesIO(sniff_bytes), stream_name)
-
     def _grouped_jsonl_source(
         self,
         handle: IO[bytes],
@@ -406,12 +401,21 @@ class _SessionEmitter:
             and self._ctx.capture_raw
             and precomputed_raw is None
         ):
-            sniff_bytes, sniffed = self._non_seekable_jsonl_sniff(handle, stream_name)
+            sniff_bytes = handle.read()
+            state = self._prepare_jsonl_state(BytesIO(sniff_bytes), pre_read_bytes=sniff_bytes)
+
+        with owned_json_records(state.sniff_handle, stream_name) as records:
+            sniffed = self._sniff_jsonl_payloads(records, stream_name)
             if sniffed.is_grouped:
+                grouped_handle, grouped_bytes = self._grouped_jsonl_source(
+                    handle,
+                    state,
+                    precomputed_raw=precomputed_raw,
+                )
                 yield from self._emit_grouped(
-                    BytesIO(sniff_bytes),
+                    grouped_handle,
                     stream_name,
-                    sniff_bytes,
+                    grouped_bytes,
                     precomputed_raw=precomputed_raw,
                     precomputed_payloads=sniffed.grouped_payloads,
                 )
@@ -420,27 +424,6 @@ class _SessionEmitter:
                 sniffed.payloads,
                 stream_name=stream_name,
             )
-            return
-
-        sniffed = self._sniff_jsonl_payloads(state.sniff_handle, stream_name)
-        if sniffed.is_grouped:
-            grouped_handle, grouped_bytes = self._grouped_jsonl_source(
-                handle,
-                state,
-                precomputed_raw=precomputed_raw,
-            )
-            yield from self._emit_grouped(
-                grouped_handle,
-                stream_name,
-                grouped_bytes,
-                precomputed_raw=precomputed_raw,
-                precomputed_payloads=sniffed.grouped_payloads,
-            )
-            return
-        yield from self._emit_individual_payloads(
-            sniffed.payloads,
-            stream_name=stream_name,
-        )
 
     def _capture_stream_start(self, handle: IO[bytes]) -> int | None:
         seekable = getattr(handle, "seekable", None)
