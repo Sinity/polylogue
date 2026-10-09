@@ -761,3 +761,24 @@ def test_batch_scoped_assertion_replay_is_insert_once_before_and_after_judgment(
             with pytest.raises(AnnotationValidationError, match="immutable input drift"):
                 drift_call(3_100 + offset)
             assert read_assertion_envelope(conn, assertion_id) == judged
+
+
+@pytest.mark.parametrize(
+    "field", ["target_ref", "source_result_ref", "actor_ref", "model_ref", "prompt_ref", "assertion_refs"]
+)
+def test_streamed_batch_refuses_positional_provenance_before_user_publication(field: str) -> None:
+    from polylogue.annotations.import_spill import AnnotationImportSpill
+    from polylogue.storage.sqlite.archive_tiers.user_annotations import persist_spilled_annotation_batch
+
+    header, _ = _single_row_batch(batch_id="streamed-admission")
+    with sqlite3.connect(":memory:") as scratch, sqlite3.connect(":memory:") as destination:
+        spill = AnnotationImportSpill(scratch, header)
+        if field == "assertion_refs":
+            spill.append_row(1, "row", "{}", "block:transient:0", None, False)
+        else:
+            spill.header[field] = "block:transient:0"
+        spill.seal()
+        with pytest.raises(AnnotationBatchError):
+            persist_spilled_annotation_batch(destination, spill)
+        # Refusal precedes any durable SQL or staging table creation.
+        assert destination.execute("SELECT name FROM sqlite_master").fetchall() == []

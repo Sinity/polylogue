@@ -1573,6 +1573,7 @@ def _archive_list_assertion_candidate_reviews(
             kinds=ASSERTION_CANDIDATE_JUDGMENT_KINDS if kinds is None else kinds,
             target_ref=target_ref,
             statuses=statuses,
+            include_expired=True,
         )
         rows = list_assertion_candidate_reviews(
             conn,

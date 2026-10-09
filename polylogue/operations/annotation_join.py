@@ -12,6 +12,7 @@ from polylogue.annotations.join_contracts import AnnotationStructuralJoinRequest
 from polylogue.archive.hydration import archive_summary_to_domain
 from polylogue.archive.query.execution_control import QueryExecutionContext
 from polylogue.core.async_bridge import complete_without_suspension
+from polylogue.core.refs import ObjectRef
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.operations.ref_resolution import resolve_ref_against_archive
 from polylogue.surfaces.outcome import decide_outcome
@@ -31,6 +32,13 @@ class _PinnedAnnotationReader:
 
     async def resolve_ref(self, ref: str) -> PublicRefResolutionPayload:
         self.archive.check_operation_read()
+        parsed = ObjectRef.parse(ref)
+        if parsed.kind == "session" and not self.archive.resolve_exact_session_ids((parsed.object_id,)):
+            from polylogue.surfaces.payloads import PublicRefResolutionPayload
+
+            return PublicRefResolutionPayload(
+                ref=ref, kind="session", resolved=False, caveats=("exact session target not found",)
+            )
         return resolve_ref_against_archive(self.archive, ref)
 
     async def get_session_summary(self, session_id: str) -> object | None:

@@ -23,7 +23,7 @@ from polylogue.annotations.schema import (
 from polylogue.annotations.write import assertion_id_for_schema_annotation, upsert_annotation_assertion
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.json import JSONDocument, require_json_document
-from polylogue.core.refs import EvidenceRef, parse_public_ref
+from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.mutation_transaction import (
     ConfirmationStrength,
@@ -378,7 +378,16 @@ async def import_annotation_batch(
     schema, effective_registry = _resolve_import_schema(user_db_path, request, registry)
 
     async def default_resolver(ref: str) -> bool:
-        return (await poly.resolve_ref(ref)).resolved
+        try:
+            resolution = await poly.resolve_ref(ref)
+        except ValueError:
+            return False
+        if not resolution.resolved:
+            return False
+        parsed = parse_public_ref(ref)
+        if isinstance(parsed, ObjectRef) and parsed.kind == "session":
+            return parsed.format() in resolution.object_refs
+        return True
 
     resolver = resolve_ref or default_resolver
     if not await resolver(request.target_ref):

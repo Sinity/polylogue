@@ -9,6 +9,7 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, cast
 
 from polylogue.annotations.batch import AnnotationBatch, AnnotationBatchError
@@ -84,12 +85,36 @@ def annotation_batch_provenance_digest(conn: sqlite3.Connection, batch_id: str) 
     return digest.hexdigest()
 
 
+def _require_durable_batch_ref(ref: str) -> None:
+    """Admit stored batch coordinates without rewriting their provenance."""
+    if ref.startswith(("phase:", "work_event:")):
+        return
+    try:
+        canonical = normalize_durable_object_ref_text(ref)
+        if canonical != ref:
+            raise ValueError("annotation batch ref is not canonical")
+    except ValueError as exc:
+        raise AnnotationBatchError("annotation batch refs require canonical durable object coordinates") from exc
+
+
+def _require_durable_batch_header(header: JSONDocument) -> None:
+    for field in ("target_ref", "source_result_ref", "actor_ref", "model_ref", "prompt_ref"):
+        value = header[field]
+        if not isinstance(value, str):
+            raise AnnotationBatchError(f"annotation batch {field} must be a string")
+        _require_durable_batch_ref(value)
+
+
 def persist_spilled_annotation_batch(conn: sqlite3.Connection, batch: AnnotationImportSpill) -> None:
     """Publish sealed exact batch evidence in its existing atomic User write."""
     from contextlib import closing
 
     from polylogue.storage.sqlite.literal_cells import write_literal_text
 
+    _require_durable_batch_header(batch.header)
+    with closing(batch.assertion_refs()) as refs:
+        for ref in refs:
+            _require_durable_batch_ref(ref)
     expected = batch.provenance_digest()
     existing = annotation_batch_provenance_digest(conn, str(batch.header["batch_id"]))
     if existing is not None:
@@ -141,7 +166,7 @@ def persist_spilled_annotation_batch(conn: sqlite3.Connection, batch: Annotation
             rowid,
             schema="temp",
             byte_length=length,
-            chunks=lambda column=column: batch.column_chunks(column),
+            chunks=partial(batch.column_chunks, column),
         )
     conn.execute(
         """INSERT INTO annotation_batches (
@@ -192,7 +217,7 @@ def read_annotation_batch_identity(conn: sqlite3.Connection, batch_id: str) -> A
 
 def annotation_batch_declares_assertion(conn: sqlite3.Connection, batch_id: str, assertion_ref: str) -> bool:
     """Check original durable membership without decoding its complete roster."""
-    return (
+    return bool(
         conn.execute(
             """SELECT EXISTS(SELECT 1 FROM annotation_batches b, json_each(b.assertion_refs_json) a
                          WHERE b.batch_id=? AND a.type='text' AND a.value=?)""",
@@ -543,6 +568,9 @@ def persist_annotation_batch(conn: sqlite3.Connection, batch: AnnotationBatch) -
 
     candidate_provenance = batch.canonical_provenance_bytes()
     provenance = batch.provenance_document()
+    _require_durable_batch_header(provenance)
+    for ref in batch.assertion_refs:
+        _require_durable_batch_ref(ref)
     provenance_metadata = require_json_document(
         provenance["metadata"],
         context="annotation batch provenance metadata",

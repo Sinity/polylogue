@@ -102,6 +102,17 @@ class AnnotationImportSpill:
                 check_compute_cancelled()
                 yield row
 
+    def assertion_refs(self) -> Generator[str, None, None]:
+        """Read only the sealed roster's scalar refs for durable admission."""
+        if not self.sealed:
+            raise RuntimeError("annotation import is not sealed")
+        with closing(
+            self.connection.execute("SELECT assertion_ref FROM annotation_import_rows ORDER BY line")
+        ) as cursor:
+            for row in cursor:
+                check_compute_cancelled()
+                yield str(row[0])
+
     def column_chunks(self, column: str) -> Generator[bytes, None, None]:
         if not self.sealed:
             raise RuntimeError("annotation import is not sealed")

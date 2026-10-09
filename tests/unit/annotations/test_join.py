@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -24,11 +25,16 @@ from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, Bran
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_annotations import persist_annotation_schema
-from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate, upsert_assertion
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    AssertionJudgedInputConflictError,
+    judge_assertion_candidate,
+    upsert_assertion,
+)
 from tests.infra.annotation_join import join_fixture_annotations
 from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
-from tests.infra.user_tier import connect_user_db
+from tests.infra.user_tier import connect_measured_user_tier, connect_user_db
 
 
 def _delegation_value(*, mode: str = "imperative") -> dict[str, object]:
@@ -200,7 +206,7 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
     unresolved_ref, unresolved_evidence = run_off_event_loop(lambda: _seed_unresolved_delegation(archive_root))
     registry = AnnotationSchemaRegistry()
     registry.register(DELEGATION_DISCOURSE_SCHEMA)
-    with connect_user_db(archive_root / "user.db") as conn:
+    with closing(connect_measured_user_tier(archive_root / "user.db")) as conn:
         _accept(
             conn,
             registry=registry,
@@ -282,6 +288,19 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
             now_ms=6_000,
         )
         conn.commit()
+        with pytest.raises(AssertionJudgedInputConflictError):
+            upsert_annotation_assertion(
+                conn,
+                schema=DELEGATION_DISCOURSE_SCHEMA,
+                registry=registry,
+                target_ref=target_ref,
+                value=_delegation_value(mode="collaborative"),
+                row_key="label-a",
+                evidence_refs=(unresolved_evidence,),
+                author_ref="agent:labeler-a",
+                confidence=0.9,
+                now_ms=7_000,
+            )
 
     request = AnnotationStructuralJoinRequest(
         schema_id="delegation.discourse",
@@ -329,6 +348,11 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
     assert {row.judgment_decision for row in accepted.rows} == {"accept"}
     assert all(row.judgment_ref is not None for row in accepted.rows)
     assert {row.value["directive_mode"] for row in result.rows} == {"imperative", "collaborative"}
+    for joined in (result, accepted):
+        original = next(row for row in joined.rows if row.labeler_ref == "agent:labeler-a")
+        assert original.value["directive_mode"] == "imperative"
+        expected_evidence = (evidence_ref, original.source_assertion_ref) if joined is result else (evidence_ref,)
+        assert original.evidence_refs == expected_evidence
     [group] = result.groups
     assert group.label_count == 3
     assert group.distinct_target_count == 2
@@ -676,3 +700,138 @@ async def test_registry_drift_reports_truncated_diagnostics_honestly(
     assert len(result.diagnostics) == 100
     assert result.diagnostics_truncated is True
     assert result.joined_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("survivor_count", [1, 2])
+async def test_product_join_requires_exact_stored_session_target(
+    workspace_env: dict[str, Path], survivor_count: int
+) -> None:
+    archive_root = workspace_env["archive_root"]
+
+    def seed() -> None:
+        with ArchiveStore(archive_root) as archive:
+            for index in range(survivor_count):
+                write_index_session(
+                    archive,
+                    ParsedSession(
+                        source_name=Provider.CODEX,
+                        provider_session_id=f"absent-child-{index}",
+                        title="Surviving prefix",
+                        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="neutral evidence")],
+                    ),
+                )
+
+    run_off_event_loop(seed)
+    schema = AnnotationSchema(
+        schema_id="test.exact-session",
+        version=1,
+        title="Exact session",
+        fields=(AnnotationField(name="score", value_type="integer"),),
+        target_ref_kinds=("session",),
+        evidence_policy="optional",
+        status="active",
+    )
+    registry = AnnotationSchemaRegistry()
+    registry.register(schema)
+    with connect_user_db(archive_root / "user.db") as conn:
+        persist_annotation_schema(conn, schema, registered_at_ms=1)
+        upsert_annotation_assertion(
+            conn,
+            schema=schema,
+            registry=registry,
+            target_ref="session:codex-session:absent",
+            value={"score": 1},
+            row_key="retained-label",
+            author_ref="user:local",
+            author_kind="user",
+            now_ms=1,
+        )
+        conn.commit()
+    async with Polylogue(archive_root=archive_root) as poly:
+        result = await poly.join_typed_annotations(
+            schema_id=schema.schema_id,
+            schema_version=1,
+            statuses=(AssertionStatus.ACTIVE,),
+        )
+    assert result.selected_annotation_count == result.missing_target_count == 1
+    assert result.joined_count == 0
+    assert result.rows == ()
+    assert [diagnostic.code for diagnostic in result.diagnostics] == ["missing_target"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.frozen_clock_modules("polylogue.annotations.join", "polylogue.storage.sqlite.archive_tiers.user_write")
+@pytest.mark.parametrize("live_count", [0, 2])
+async def test_product_join_expiry_counts_and_pages_use_same_selection(
+    workspace_env: dict[str, Path], frozen_clock: FrozenClock, live_count: int
+) -> None:
+    archive_root = workspace_env["archive_root"]
+
+    def seed() -> str:
+        with ArchiveStore(archive_root) as archive:
+            return write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="expiry-target",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="neutral evidence")],
+                ),
+            )
+
+    session_id = run_off_event_loop(seed)
+    schema = AnnotationSchema(
+        schema_id="test.expiry-join",
+        version=1,
+        title="Expiry label",
+        fields=(AnnotationField(name="score", value_type="integer"),),
+        target_ref_kinds=("session",),
+        evidence_policy="optional",
+        status="active",
+    )
+    as_of_ms = int(frozen_clock.now().timestamp() * 1_000)
+    with connect_user_db(archive_root / "user.db") as conn:
+        persist_annotation_schema(conn, schema, registered_at_ms=1)
+        for index in range(live_count + 1):
+            upsert_assertion(
+                conn,
+                assertion_id=f"expiry-{index}",
+                target_ref=f"session:{session_id}",
+                kind=AssertionKind.ANNOTATION,
+                value={"_schema": schema.qualified_id, "score": index},
+                staleness={"expires_at_ms": as_of_ms - 1} if index == 0 else None,
+                now_ms=index + 1,
+            )
+        # Expired older-schema rows must neither inflate drift nor claim
+        # diagnostics that the corresponding row selection cannot produce.
+        upsert_assertion(
+            conn,
+            assertion_id="expired-drift",
+            target_ref=f"session:{session_id}",
+            kind=AssertionKind.ANNOTATION,
+            value={"_schema": "test.expiry-join@v2", "score": 1},
+            staleness={"expires_at_ms": as_of_ms - 1},
+            now_ms=4,
+        )
+        conn.commit()
+    async with Polylogue(archive_root=archive_root) as poly:
+        offset = 0
+        refs: list[str] = []
+        while True:
+            result = await poly.join_typed_annotations(
+                schema_id=schema.schema_id,
+                schema_version=1,
+                statuses=(AssertionStatus.ACTIVE,),
+                limit=1,
+                offset=offset,
+            )
+            assert result.matched_annotation_count == live_count
+            assert result.schema_drift_count == 0
+            assert not result.diagnostics_truncated
+            refs.extend(row.assertion_ref for row in result.rows)
+            if result.next_offset is None:
+                assert not result.selection_truncated
+                break
+            assert result.next_offset > offset
+            offset = result.next_offset
+    assert len(refs) == len(set(refs)) == live_count

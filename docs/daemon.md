@@ -1208,6 +1208,22 @@ a generation republished during that interval produces a typed retryable refusal
 Pages retain `matched_annotation_count`, `next_offset` and
 `selection_truncated`; the page budget bounds delivery rather than total scope.
 
+Stored session targets resolve by exact canonical identity. An absent session
+remains a missing target even when a surviving session shares its ID prefix.
+Expired labels and schema-drift labels use one selection time for row and count
+queries, so continuation offsets advance over the same eligible population.
+
+An automated candidate's inputs become immutable after an operator judgment.
+An identical same-ID replay preserves the original candidate, judgment history
+and timestamps; changed inputs raise `AssertionJudgedInputConflictError` before
+writing. Submit a changed label with a new row key or batch identity for review.
+Unjudged, unbatched annotation candidates remain editable in place.
+
+Both ordinary and streamed batch writes validate durable object coordinates
+in their provenance header and assertion roster. Positional block/action refs
+refuse before publication. Streamed admission reads only each staged roster
+ref and retains the complete provenance cells on disk.
+
 ### Working-directory completion
 
 The declared `completion` read accepts `source="cwd_prefix"`. It filters distinct paths from the original pinned Index's `session_working_dirs` before applying the requested candidate window, ordered by session count and then path. Windows separators are rendered as `/`, matching the canonical cwd query field. Literal `%` and `_` in a prefix remain path characters. The operation shares the resident read cancellation and snapshot lifetime.

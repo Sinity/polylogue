@@ -59,6 +59,18 @@ ASSERTION_EVIDENCE_DIGEST_KEY: Final = "evidence_digest"
 ASSERTION_SUPERSEDED_EVIDENCE_DIGEST_KEY: Final = "superseded_evidence_digest"
 
 
+class AssertionJudgedInputConflictError(ValueError):
+    """Refuse replacing the original inputs named by an operator judgment."""
+
+    def __init__(self, *, assertion_id: str, changed_fields: Sequence[str]) -> None:
+        self.assertion_ref = f"assertion:{assertion_id}"
+        self.changed_fields = tuple(changed_fields)
+        super().__init__(
+            f"judged assertion {self.assertion_ref} has immutable input drift: {list(self.changed_fields)}; "
+            "submit changed inputs under a new assertion identity for review"
+        )
+
+
 class AssertionEvidenceConflictError(ValueError):
     """Refuse an approval whose candidate's evidence moved under its id.
 
@@ -1323,7 +1335,7 @@ def prepare_assertion_row(
     evidence_refs_json = _dumps_optional(normalized_evidence_refs)
     supersedes_json = _dumps_optional(list(supersedes or ()))
 
-    return (
+    row = (
         assertion_id,
         normalized_scope_ref,
         normalized_target_ref,
@@ -1345,6 +1357,21 @@ def prepare_assertion_row(
         created_at_ms,
         timestamp,
     )
+    if require_promotion and existing_status in _ASSERTION_TERMINAL_JUDGED_STATUSES:
+        with connection_cursor(
+            conn, f"SELECT {_ASSERTION_COLUMNS} FROM assertions WHERE assertion_id = ?", (assertion_id,)
+        ) as cursor:
+            stored = cursor.fetchone()
+        if stored is not None and stored[8] != ASSERTION_DEFAULT_AUTHOR_KIND:
+            # The judgment and promoted row refer to this original candidate.
+            # Lifecycle/context policy are operator-owned; replays preserve them.
+            columns = _ASSERTION_COLUMNS.replace(" ", "").split(",")
+            immutable = (*range(1, 10), 11, 12, 13, 15)
+            changed = [columns[index] for index in immutable if row[index] != stored[index]]
+            if changed:
+                raise AssertionJudgedInputConflictError(assertion_id=assertion_id, changed_fields=changed)
+            return tuple(stored)
+    return row
 
 
 _ASSERTION_UPSERT_SQL = """
@@ -1419,8 +1446,10 @@ def upsert_assertion(
     assertion_id already carries a terminal judgment outcome (accepted,
     rejected, deferred, superseded, or deleted -- set only by
     ``judge_assertion_candidate`` via ``mark_assertion_status``, never by this
-    function), that outcome is preserved instead: a later automated write to
-    the same id must not resurrect a judged-rejected row back to candidate.
+    function), its original inputs are immutable. Changed same-ID writes raise
+    AssertionJudgedInputConflictError; identical retries preserve the complete
+    stored row, including the judgment state and timestamps. A changed claim
+    requires a new assertion identity and review.
 
     ``require_promotion=False`` is the sole, explicit escape hatch (the design
     note's "allowlist argument, not author_kind sniffing"): a handful of
@@ -1456,6 +1485,14 @@ def upsert_assertion(
             now_ms=now_ms,
             require_promotion=require_promotion,
         )
+        if (
+            require_promotion
+            and row[8] != ASSERTION_DEFAULT_AUTHOR_KIND
+            and _normalize_assertion_status(str(row[10])) in _ASSERTION_TERMINAL_JUDGED_STATUSES
+        ):
+            envelope = read_assertion_envelope(conn, assertion_id)
+            assert envelope is not None
+            return envelope
         with connection_cursor(conn, _ASSERTION_UPSERT_SQL.format(values=", ".join(("?",) * 19)), (None, *row)):
             pass
         envelope = read_assertion_envelope(conn, assertion_id)
@@ -2786,6 +2823,54 @@ ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
 )
 
 
+def _assertion_claim_selection(
+    *,
+    kinds: Sequence[str | AssertionKind],
+    statuses: Sequence[str | AssertionStatus] | None,
+    target_ref: str | None,
+    annotation_schema_prefix: str | None,
+    annotation_schema_qualified_id: str | None,
+    annotation_schema_excluded_qualified_id: str | None,
+    annotation_target_kind: str | None,
+    include_expired: bool,
+    as_of_ms: int | None,
+) -> tuple[list[str], list[object]]:
+    """Own the common row/count predicates for one assertion selection."""
+    normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
+    if not normalized_kinds or (statuses is not None and not statuses):
+        return ["0"], []
+    where = [f"kind IN ({', '.join('?' for _ in normalized_kinds)})"]
+    params: list[object] = list(normalized_kinds)
+    if statuses is not None:
+        normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
+        where.append(f"COALESCE(status, ?) IN ({', '.join('?' for _ in normalized_statuses)})")
+        params.extend((ASSERTION_DEFAULT_STATUS.value, *normalized_statuses))
+    if target_ref is not None:
+        where.append("target_ref = ?")
+        params.append(target_ref)
+    if annotation_schema_prefix is not None:
+        where.append("substr(json_extract(value_json, '$._schema'), 1, length(?)) = ?")
+        params.extend((annotation_schema_prefix, annotation_schema_prefix))
+    if annotation_schema_qualified_id is not None:
+        where.append("json_extract(value_json, '$._schema') = ?")
+        params.append(annotation_schema_qualified_id)
+    if annotation_schema_excluded_qualified_id is not None:
+        where.append("json_extract(value_json, '$._schema') != ?")
+        params.append(annotation_schema_excluded_qualified_id)
+    if annotation_target_kind is not None:
+        target_prefix = f"{annotation_target_kind}:"
+        where.append("substr(target_ref, 1, length(?)) = ?")
+        params.extend((target_prefix, target_prefix))
+    if not include_expired:
+        where.append(
+            "(staleness_json IS NULL"
+            " OR json_extract(staleness_json, '$.expires_at_ms') IS NULL"
+            " OR json_extract(staleness_json, '$.expires_at_ms') > ?)"
+        )
+        params.append(as_of_ms if as_of_ms is not None else _now_ms())
+    return where, params
+
+
 def list_assertion_claims(
     conn: sqlite3.Connection,
     *,
@@ -2840,20 +2925,17 @@ def list_assertion_claims(
     if target_refs is not None and not target_refs:
         return []
 
-    where: list[str] = []
-    params: list[object] = []
-
-    normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
-    if normalized_kinds:
-        placeholders = ", ".join("?" for _ in normalized_kinds)
-        where.append(f"kind IN ({placeholders})")
-        params.extend(normalized_kinds)
-    else:
-        return []
-
-    if target_ref is not None:
-        where.append("target_ref = ?")
-        params.append(target_ref)
+    where, params = _assertion_claim_selection(
+        kinds=kinds,
+        statuses=statuses,
+        target_ref=target_ref,
+        annotation_schema_prefix=annotation_schema_prefix,
+        annotation_schema_qualified_id=annotation_schema_qualified_id,
+        annotation_schema_excluded_qualified_id=annotation_schema_excluded_qualified_id,
+        annotation_target_kind=annotation_target_kind,
+        include_expired=include_expired,
+        as_of_ms=as_of_ms,
+    )
     if session_id is not None:
         from polylogue.core.errors import DatabaseError
         from polylogue.storage.sqlite.archive_tiers.write import _composed_transcript_plan
@@ -2881,36 +2963,6 @@ def list_assertion_claims(
     if scope_ref is not None:
         where.append("scope_ref = ?")
         params.append(scope_ref)
-    if statuses is not None:
-        if not statuses:
-            return []
-        normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
-        placeholders = ", ".join("?" for _ in normalized_statuses)
-        where.append(f"COALESCE(status, ?) IN ({placeholders})")
-        params.append(ASSERTION_DEFAULT_STATUS.value)
-        params.extend(normalized_statuses)
-    if annotation_schema_prefix is not None:
-        where.append("substr(json_extract(value_json, '$._schema'), 1, length(?)) = ?")
-        params.extend((annotation_schema_prefix, annotation_schema_prefix))
-    if annotation_schema_qualified_id is not None:
-        where.append("json_extract(value_json, '$._schema') = ?")
-        params.append(annotation_schema_qualified_id)
-    if annotation_schema_excluded_qualified_id is not None:
-        where.append("json_extract(value_json, '$._schema') != ?")
-        params.append(annotation_schema_excluded_qualified_id)
-    if annotation_target_kind is not None:
-        target_prefix = f"{annotation_target_kind}:"
-        where.append("substr(target_ref, 1, length(?)) = ?")
-        params.extend((target_prefix, target_prefix))
-    if not include_expired:
-        effective_as_of_ms = as_of_ms if as_of_ms is not None else _now_ms()
-        where.append(
-            "(staleness_json IS NULL"
-            " OR json_extract(staleness_json, '$.expires_at_ms') IS NULL"
-            " OR json_extract(staleness_json, '$.expires_at_ms') > ?)"
-        )
-        params.append(effective_as_of_ms)
-
     table = f"{schema}.assertions" if schema is not None else "assertions"
     sql = f"SELECT {_ASSERTION_COLUMNS} FROM {table}"
     if where:
@@ -2943,6 +2995,8 @@ def count_assertion_claims(
     annotation_schema_qualified_id: str | None = None,
     annotation_schema_excluded_qualified_id: str | None = None,
     annotation_target_kind: str | None = None,
+    include_expired: bool = False,
+    as_of_ms: int | None = None,
 ) -> int:
     """Count a typed assertion selection without materializing claim rows."""
 
@@ -2955,31 +3009,17 @@ def count_assertion_claims(
         or (statuses is not None and not statuses)
     ):
         return 0
-    normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
-    kind_placeholders = ", ".join("?" for _ in normalized_kinds)
-    where = [f"kind IN ({kind_placeholders})"]
-    params: list[object] = list(normalized_kinds)
-    if statuses is not None:
-        normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
-        status_placeholders = ", ".join("?" for _ in normalized_statuses)
-        where.append(f"COALESCE(status, ?) IN ({status_placeholders})")
-        params.extend((ASSERTION_DEFAULT_STATUS.value, *normalized_statuses))
-    if target_ref is not None:
-        where.append("target_ref = ?")
-        params.append(target_ref)
-    if annotation_schema_prefix is not None:
-        where.append("substr(json_extract(value_json, '$._schema'), 1, length(?)) = ?")
-        params.extend((annotation_schema_prefix, annotation_schema_prefix))
-    if annotation_schema_qualified_id is not None:
-        where.append("json_extract(value_json, '$._schema') = ?")
-        params.append(annotation_schema_qualified_id)
-    if annotation_schema_excluded_qualified_id is not None:
-        where.append("json_extract(value_json, '$._schema') != ?")
-        params.append(annotation_schema_excluded_qualified_id)
-    if annotation_target_kind is not None:
-        target_prefix = f"{annotation_target_kind}:"
-        where.append("substr(target_ref, 1, length(?)) = ?")
-        params.extend((target_prefix, target_prefix))
+    where, params = _assertion_claim_selection(
+        kinds=kinds,
+        statuses=statuses,
+        target_ref=target_ref,
+        annotation_schema_prefix=annotation_schema_prefix,
+        annotation_schema_qualified_id=annotation_schema_qualified_id,
+        annotation_schema_excluded_qualified_id=annotation_schema_excluded_qualified_id,
+        annotation_target_kind=annotation_target_kind,
+        include_expired=include_expired,
+        as_of_ms=as_of_ms,
+    )
     row = conn.execute(f"SELECT count(*) FROM {table} WHERE {' AND '.join(where)}", tuple(params)).fetchone()
     return int(row[0]) if row is not None else 0
 
@@ -3074,6 +3114,7 @@ __all__ = [
     "ASSERTION_EVIDENCE_DIGEST_KEY",
     "ASSERTION_SUPERSEDED_EVIDENCE_DIGEST_KEY",
     "AssertionEvidenceConflictError",
+    "AssertionJudgedInputConflictError",
     "JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE",
     "JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_TARGET",
     "ArchiveAnnotationEnvelope",

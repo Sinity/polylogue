@@ -469,7 +469,6 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
 
     parent_session_id, instruction_block_id, instruction_message_id = run_off_event_loop(_seed_archive_2)
     target_ref = f"delegation:{instruction_block_id}"
-    evidence_ref = f"block:{instruction_block_id}"
     evidence_span = EvidenceRef(
         session_id=parent_session_id,
         message_id=instruction_message_id,
@@ -510,7 +509,7 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
         source_result_ref="result-set:delegation-review",
         actor_ref="agent:labeler",
         model_ref="agent:model",
-        prompt_ref=evidence_ref,
+        prompt_ref="agent:delegation-labeling-prompt",
     )
 
     with running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root)):

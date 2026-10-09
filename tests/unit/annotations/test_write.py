@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import sqlite3
 from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,8 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
+    ArchiveAssertionEnvelope,
+    AssertionJudgedInputConflictError,
     assertion_id_for_annotation,
     judge_assertion_candidate,
     read_assertion_envelope,
@@ -40,7 +43,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_assertion,
 )
 from tests.infra.storage_records import SessionBuilder
-from tests.infra.user_tier import connect_user_db
+from tests.infra.user_tier import connect_measured_user_tier, connect_user_db
 
 
 def _value_dict(value: object) -> dict[str, object]:
@@ -77,7 +80,7 @@ def _registry_for(schema: AnnotationSchema) -> AnnotationSchemaRegistry:
 def user_conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = connect_user_db(user_db)
+    conn = connect_measured_user_tier(user_db)
     yield conn
     conn.close()
 
@@ -508,3 +511,86 @@ def test_upsert_annotation_freeform_note_still_works_independently_of_schema_pat
         envelope = upsert_annotation(conn, "session", "codex-session:demo", "a plain operator note")
         conn.commit()
     assert envelope.body == "a plain operator note"
+
+
+@pytest.mark.parametrize("decision", ["accept", "reject", "defer", "supersede"])
+def test_judged_annotation_refuses_changed_inputs_and_preserves_reopened_history(
+    user_conn: sqlite3.Connection, decision: str
+) -> None:
+    schema = _delegation_tone_schema()
+    registry = _registry_for(schema)
+
+    def write(
+        *,
+        value: dict[str, object] | None = None,
+        evidence_refs: list[str] | None = None,
+        body_text: str = "original label",
+        confidence: float = 0.25,
+        now_ms: int = 1_000,
+    ) -> ArchiveAssertionEnvelope:
+        return upsert_annotation_assertion(
+            user_conn,
+            schema=schema,
+            registry=registry,
+            target_ref="session:codex-session:judged",
+            value=value if value is not None else {"score": 2, "status": "approved"},
+            row_key="judged-row",
+            evidence_refs=evidence_refs if evidence_refs is not None else ["session:codex-session:original-evidence"],
+            author_ref="agent:labeler",
+            body_text=body_text,
+            confidence=confidence,
+            now_ms=now_ms,
+        )
+
+    candidate = write()
+    user_conn.commit()
+    judgment = judge_assertion_candidate(
+        user_conn,
+        candidate_ref=f"assertion:{candidate.assertion_id}",
+        decision=decision,
+        reason="original judgment",
+        actor_ref="user:local",
+        now_ms=2_000,
+    )
+    user_conn.commit()
+    epoch_before_retry = user_conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton=1").fetchone()[0]
+    retry = write(now_ms=3_000)
+    user_conn.commit()
+    assert retry == judgment.candidate
+    assert (
+        user_conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton=1").fetchone()[0]
+        == epoch_before_retry
+    )
+    for changed in (
+        lambda: write(value={"score": 5, "status": "rejected"}, now_ms=4_000),
+        lambda: write(evidence_refs=["session:codex-session:replacement-evidence"], now_ms=4_000),
+        lambda: write(body_text="replacement label", now_ms=4_000),
+        lambda: write(confidence=0.75, now_ms=4_000),
+    ):
+        with pytest.raises(AssertionJudgedInputConflictError) as refusal:
+            changed()
+        assert refusal.value.assertion_ref == f"assertion:{candidate.assertion_id}"
+        assert refusal.value.changed_fields
+        assert not user_conn.in_transaction
+    # The actual shared assertion boundary also refuses bypassing the typed
+    # writer or claiming a different author kind under the judged identity.
+    with pytest.raises(AssertionJudgedInputConflictError):
+        upsert_assertion(
+            user_conn,
+            assertion_id=candidate.assertion_id,
+            target_ref=candidate.target_ref,
+            kind=candidate.kind,
+            value=candidate.value,
+            author_ref=candidate.author_ref,
+            author_kind="user",
+            evidence_refs=candidate.evidence_refs,
+        )
+    path = Path(user_conn.execute("PRAGMA database_list").fetchone()[2])
+    with closing(connect_user_db(path)) as reopened:
+        assert read_assertion_envelope(reopened, candidate.assertion_id) == judgment.candidate
+        assert read_assertion_envelope(reopened, judgment.judgment.assertion_id) == judgment.judgment
+        if judgment.resulting_assertion is not None:
+            promoted = read_assertion_envelope(reopened, judgment.resulting_assertion.assertion_id)
+            assert promoted == judgment.resulting_assertion
+            assert promoted is not None and promoted.value == candidate.value
+            assert f"assertion:{candidate.assertion_id}" in promoted.evidence_refs
