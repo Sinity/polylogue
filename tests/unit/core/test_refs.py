@@ -9,6 +9,7 @@ from polylogue.core.refs import (
     ObjectRef,
     WorkerProfileRef,
     delegation_edge_object_id,
+    normalize_durable_public_ref_text,
     normalize_object_ref_text,
     normalize_public_ref_text,
     parse_delegation_edge_object_id,
@@ -174,6 +175,44 @@ def test_public_ref_parser_prefers_object_refs_and_accepts_recovery_evidence_ref
     assert evidence_ref.to_object_ref().format() == "block:m2:0"
     assert normalize_object_ref_text("repo:polylogue") == "repo:polylogue"
     assert normalize_public_ref_text("codex-session:demo::m2") == "codex-session:demo::m2"
+
+
+def test_stable_block_refs_keep_the_complete_id_including_occurrence_suffix() -> None:
+    block_id = f"origin:session:n:message:b:{'0' * 64}:3"
+    object_ref = ObjectRef.parse(f"block:{block_id}")
+    evidence_ref = EvidenceRef.parse(f"origin:session::origin:session:n:message::block:{block_id}")
+
+    assert object_ref.object_id == block_id
+    assert object_ref.qualifiers == ()
+    assert object_ref.format() == f"block:{block_id}"
+    assert evidence_ref.block_id == block_id
+    assert evidence_ref.block_index is None
+    assert evidence_ref.format() == f"origin:session::origin:session:n:message::block:{block_id}"
+    assert evidence_ref.to_object_ref() == object_ref
+
+
+def test_positional_evidence_ref_remains_input_shape_without_becoming_stable() -> None:
+    ref = EvidenceRef.parse("origin:session::message-1::2")
+
+    assert ref.block_index == 2
+    assert ref.block_id is None
+    assert ref.format() == "origin:session::message-1::2"
+
+
+@pytest.mark.parametrize("raw", ["block:message-1:2", "message-1::message-1::2"])
+def test_durable_ref_normalizer_refuses_positional_block_selectors(raw: str) -> None:
+    with pytest.raises(ValueError, match="positional block"):
+        normalize_durable_public_ref_text(raw)
+
+
+def test_durable_ref_normalizer_accepts_stable_block_ids() -> None:
+    stable = f"origin:session:n:message:b:{'0' * 64}:2"
+
+    assert normalize_durable_public_ref_text(f"block:{stable}") == f"block:{stable}"
+    assert (
+        normalize_durable_public_ref_text(f"origin:session::origin:session:n:message::block:{stable}")
+        == f"origin:session::origin:session:n:message::block:{stable}"
+    )
 
 
 def test_object_ref_normalizer_rejects_unscoped_raw_strings() -> None:

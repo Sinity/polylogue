@@ -1850,11 +1850,14 @@ def _block_reference_row(
     if before_input is not None:
         before_input("messages", ("session_id",), "SELECT rowid FROM messages WHERE rowid=?", (selected[0],))
         before_input(
-            "blocks", ("message_id", "position", "block_id"), "SELECT rowid FROM blocks WHERE rowid=?", (selected[1],)
+            "blocks",
+            ("message_id", "content_identity", "content_occurrence", "block_id"),
+            "SELECT rowid FROM blocks WHERE rowid=?",
+            (selected[1],),
         )
     with connection_cursor(
         conn,
-        "SELECT m.session_id,b.message_id,b.position,b.block_id "
+        "SELECT m.session_id,b.message_id,b.position,b.block_id,b.content_identity,b.content_occurrence "
         "FROM messages AS m JOIN blocks AS b ON b.message_id=m.message_id WHERE m.rowid=? AND b.rowid=?",
         (selected[0], selected[1]),
     ) as cursor:
@@ -1885,7 +1888,7 @@ def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | Blo
             return None
         if ref.message_id is None:
             return _ResolvedReference("session", scope_session_id, scope_session_id)
-        if ref.block_index is None:
+        if ref.block_index is None and ref.block_id is None:
             with closing(
                 _index_reference_rows(
                     conn,
@@ -1905,13 +1908,26 @@ def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | Blo
                 scope_session_id=scope_session_id,
                 target_message_id=ref.message_id,
             )
-        row = _block_reference_row(conn, "m.message_id=? AND b.position=?", (ref.message_id, ref.block_index))
-
-        if row is None or _locate_composed_message(conn, scope_session_id, ref.message_id) is None:
+        if ref.block_id is not None:
+            row = _block_reference_row(conn, "b.block_id=?", (ref.block_id,))
+            if row is None or _locate_composed_message(conn, scope_session_id, ref.message_id) is None:
+                return None
+            if str(row[1]) != ref.message_id:
+                return None
+            return _ResolvedReference(
+                "block-id",
+                str(row[0]),
+                str(row[3]),
+                f"{row[4]}:{row[5]}",
+                scope_session_id=scope_session_id,
+                target_message_id=str(row[1]),
+            )
+        if ref.block_index is not None:
+            # Positional evidence is accepted by the parser as an input
+            # selector only. Durable rows written before stable block identity
+            # must stay unresolved; the current occupant is not its identity.
             return None
-        return _ResolvedReference(
-            "block-position", str(row[0]), str(row[1]), str(row[2]), scope_session_id, str(row[1])
-        )
+        return None
 
     if ref.kind == "delegation":
         root = parse_delegation_ancestry_object_id(ref.object_id) or parse_delegation_subtree_object_id(ref.object_id)
@@ -2002,22 +2018,23 @@ def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | Blo
         )
     if ref.kind in {"block", "action"}:
         if ref.qualifiers:
-            row = _block_reference_row(
-                conn,
-                "b.block_id=? OR (m.message_id=? AND b.position=?)",
-                (ref.object_id, ref.object_id, ref.qualifiers[-1]),
-                first_only=True,
-            )
-        else:
-            row = _block_reference_row(conn, "b.block_id=?", (ref.object_id,))
+            # Qualifiers are the retired positional selector grammar. Keep
+            # parsing them for review and explicit conversion at creation;
+            # never resolve them against a rebuilt Index occupant.
+            return None
+        row = _block_reference_row(conn, "b.block_id=?", (ref.object_id,))
 
         if row is None:
             return None
         if str(row[3]) == ref.object_id:
-            return _ResolvedReference("block-id", str(row[0]), str(row[3]), target_message_id=str(row[1]))
-        return _ResolvedReference(
-            "block-position", str(row[0]), str(row[1]), str(row[2]), target_message_id=str(row[1])
-        )
+            return _ResolvedReference(
+                "block-id",
+                str(row[0]),
+                str(row[3]),
+                f"{row[4]}:{row[5]}",
+                target_message_id=str(row[1]),
+            )
+        return None
     return None
 
 

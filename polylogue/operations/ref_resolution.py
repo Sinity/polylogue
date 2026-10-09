@@ -616,7 +616,17 @@ def _resolve_block_object_ref(
         title=payload.title,
         summary=(payload.text or payload.tool_command or payload.tool_name or "")[:240],
         object_refs=(f"session:{payload.session_id}", f"message:{payload.message_id}", f"block:{payload.block_id}"),
-        evidence_refs=() if evidence_ref is None else (evidence_ref.format(),),
+        evidence_refs=(
+            ()
+            if evidence_ref is None
+            else (
+                EvidenceRef(
+                    session_id=evidence_ref.session_id,
+                    message_id=str(row["message_id"]),
+                    block_id=str(row["block_id"]),
+                ).format(),
+            )
+        ),
         actions=(_resolution_action("read message", _find_ref_command(payload.session_id, tail="--view messages")),),
     )
 

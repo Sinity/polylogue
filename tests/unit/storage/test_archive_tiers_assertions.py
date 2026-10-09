@@ -1139,7 +1139,7 @@ def test_assertion_targets_various_ref_shapes(tmp_path: Path) -> None:
         refs = [
             "session:abc-123",
             "message:abc-123:7",
-            "block:abc-123:7:2",
+            f"block:abc-123:b:{'0' * 64}:2",
             "github-issue:Sinity/polylogue#1883",
             # polylogue-lph4: delegation attempts are a registered ObjectRef
             # target -- candidate annotations/judgments can scope to a
@@ -1161,6 +1161,30 @@ def test_assertion_targets_various_ref_shapes(tmp_path: Path) -> None:
             stored = read_assertion_envelope(conn, f"ref-{idx}")
             assert stored is not None
             assert stored.target_ref == ref
+    finally:
+        conn.close()
+
+
+def test_assertion_write_rejects_positional_block_target(tmp_path: Path) -> None:
+    conn = connect_measured_user_tier(tmp_path / "user.db")
+    try:
+        with pytest.raises(ValueError, match="resolved to a stable block_id"):
+            upsert_assertion(
+                conn,
+                assertion_id="positional-block",
+                target_ref="block:message-1:2",
+                kind=AssertionKind.HANDOFF,
+                now_ms=1_700_000_000_000,
+            )
+        with pytest.raises(ValueError, match="positional block evidence"):
+            upsert_assertion(
+                conn,
+                assertion_id="positional-block-evidence",
+                target_ref="session:session-1",
+                evidence_refs=("session-1::message-1::2",),
+                kind=AssertionKind.HANDOFF,
+                now_ms=1_700_000_000_000,
+            )
     finally:
         conn.close()
 

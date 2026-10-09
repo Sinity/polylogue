@@ -28,7 +28,11 @@ from polylogue.core.assertions import (
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONValue
-from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
+from polylogue.core.refs import (
+    ObjectRef,
+    normalize_durable_object_ref_text,
+    normalize_durable_public_ref_text,
+)
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.storage.io_phase_metrics import connection_cursor, live_connection_cursors
 from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE
@@ -424,7 +428,7 @@ def _target_ref(target_type: str | None, target_id: str | None) -> str | None:
     NOT NULL ``target_ref`` column.
     """
     if target_type and target_id:
-        return normalize_object_ref_text(f"{target_type}:{target_id}")
+        return normalize_durable_object_ref_text(f"{target_type}:{target_id}")
     return None
 
 
@@ -863,10 +867,10 @@ def correction_effect_matches(
         assertion is not None
         and assertion.status != AssertionStatus.DELETED
         and assertion.kind == AssertionKind.CORRECTION
-        and assertion.target_ref == normalize_object_ref_text(f"{target_type}:{target_id}")
+        and assertion.target_ref == normalize_durable_object_ref_text(f"{target_type}:{target_id}")
         and assertion.key == correction_type
         and assertion.value == payload
-        and assertion.author_ref == normalize_object_ref_text(_normalize_assertion_author_ref(author_ref))
+        and assertion.author_ref == normalize_durable_object_ref_text(_normalize_assertion_author_ref(author_ref))
         and assertion.author_kind == _normalize_assertion_author_kind(author_kind)
     )
 
@@ -1286,17 +1290,17 @@ def prepare_assertion_row(
         _normalize_assertion_status(existing[1]) if existing is not None and existing[1] is not None else None
     )
 
-    normalized_target_ref = normalize_object_ref_text(target_ref)
-    normalized_scope_ref = normalize_object_ref_text(scope_ref) if scope_ref is not None else None
+    normalized_target_ref = normalize_durable_object_ref_text(target_ref)
+    normalized_scope_ref = normalize_durable_object_ref_text(scope_ref) if scope_ref is not None else None
     normalized_author_ref = (
-        normalize_object_ref_text(_normalize_assertion_author_ref(author_ref))
+        normalize_durable_object_ref_text(_normalize_assertion_author_ref(author_ref))
         if author_ref is not None
         else ASSERTION_DEFAULT_AUTHOR_REF
     )
     resolved_kind = _normalize_assertion_kind(kind)
     resolved_value = _normalize_assertion_value(value)
     resolved_staleness = _normalize_assertion_staleness(staleness)
-    normalized_evidence_refs = [normalize_public_ref_text(ref) for ref in evidence_refs or ()]
+    normalized_evidence_refs = [normalize_durable_public_ref_text(ref) for ref in evidence_refs or ()]
     resolved_status = _normalize_assertion_status(status)
     resolved_visibility = _normalize_assertion_visibility(visibility)
     resolved_author_kind = _normalize_assertion_author_kind(author_kind)
