@@ -490,14 +490,19 @@ def test_retained_source_can_replay_into_an_operation_owned_standalone_index(tmp
         assert snapshot.archive._conn.execute("SELECT count(*) FROM blocks").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("source_change", [None, "parent-replace", "parent-delete", "child-replace", "child-delete"])
+@pytest.mark.parametrize("child_first", [False, True])
+@pytest.mark.parametrize(
+    "source_change", [None, "parent-replace", "parent-delete", "child-replace", "child-delete", "cancel"]
+)
 def test_child_scoped_parent_block_annotation_has_source_composition_proof(
-    tmp_path: Path, source_change: str | None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_change: str | None, child_first: bool
 ) -> None:
     import json
+    from dataclasses import replace
 
     from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
     from polylogue.core.enums import Provider
+    from polylogue.operations import source_composition_read, source_target_read
     from polylogue.operations.mutation_actuators import AnnotationSaveActuator, AnnotationSaveArgs
     from polylogue.operations.operation_context import open_operation_read
     from polylogue.operations.source_composition_read import SourceCompositionRead
@@ -535,7 +540,9 @@ def test_child_scoped_parent_block_annotation_has_source_composition_proof(
     with write_lease("test.source-composed-block", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
         with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-            for generation, (label, records) in enumerate(payloads.items(), start=1):
+            labels = ("child", "parent") if child_first else ("parent", "child")
+            for generation, label in enumerate(labels, start=1):
+                records = payloads[label]
                 native_session = "zparent" if label == "parent" else "achild"
                 raw_ids[label] = archive.write_raw_payload(
                     provider=Provider.CLAUDE_CODE,
@@ -573,40 +580,63 @@ def test_child_scoped_parent_block_annotation_has_source_composition_proof(
         assert target == ("block", block_id, "claude-code-session:achild", message_id)
         with write_lease("test.source-composed-apply", archive_root=tmp_path):
             with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-                args = AnnotationSaveArgs(
-                    archive,
-                    "child-scope-note",
-                    "block",
-                    block_id,
-                    "Inherited source answer",
-                    "claude-code-session:achild",
-                    source_guard=_source_guard(snapshot, archive, target),
-                )
-                proof = snapshot.source_block_reads[("claude-code-session:achild", block_id)]
-                assert isinstance(proof, SourceCompositionRead)
-                retained_paths.append(Path(proof.witnesses.execute("PRAGMA database_list").fetchone()[2]).parent)
-                actuator = AnnotationSaveActuator()
-                plan = actuator.prepare(args)
-                with closing(sqlite3.connect(tmp_path / "source.db")) as source:
-                    assert tuple(source.execute("SELECT * FROM raw_sessions ORDER BY raw_id")) == before_source
-                if source_change is not None:
-                    label, change = source_change.split("-")
-                    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
-                        if change == "replace":
-                            source.execute(
-                                "UPDATE raw_sessions SET blob_hash=? WHERE raw_id=?", (bytes(32), raw_ids[label])
-                            )
-                        else:
-                            source.execute("DELETE FROM raw_sessions WHERE raw_id=?", (raw_ids[label],))
-                        source.commit()
-                    with pytest.raises(SourceTargetChangedError):
-                        actuator.apply(plan, args)
-                    assert archive.get_annotation("child-scope-note") is None
+                if source_change == "cancel":
+                    prepared_paths: list[Path] = []
+                    prepare = source_target_read._prepare_source_target_artifact
+
+                    def capture(retained: RetainedSessionRead, raw_id: str, *, directory: Path) -> PreparedJsonl:
+                        artifact = prepare(retained, raw_id, directory=directory)
+                        prepared_paths.append(directory.parent)
+                        return artifact
+
+                    class CancelledError(Exception):
+                        pass
+
+                    def checkpoint() -> None:
+                        if prepared_paths:
+                            raise CancelledError
+
+                    monkeypatch.setattr(source_composition_read, "_prepare_source_target_artifact", capture)
+                    snapshot = replace(snapshot, checkpoint=checkpoint)
+                    with pytest.raises(CancelledError):
+                        _source_guard(snapshot, archive, target)
+                    assert not snapshot.source_block_reads
+                    retained_paths.extend(prepared_paths)
                 else:
-                    assert actuator.apply(plan, args).affected_count == 1
-                    archive.commit()
-                    note = archive.get_annotation("child-scope-note")
-                    assert note is not None and note["target_id"] == block_id
+                    args = AnnotationSaveArgs(
+                        archive,
+                        "child-scope-note",
+                        "block",
+                        block_id,
+                        "Inherited source answer",
+                        "claude-code-session:achild",
+                        source_guard=_source_guard(snapshot, archive, target),
+                    )
+                    proof = snapshot.source_block_reads[("claude-code-session:achild", block_id)]
+                    assert isinstance(proof, SourceCompositionRead)
+                    retained_paths.append(Path(proof.witnesses.execute("PRAGMA database_list").fetchone()[2]).parent)
+                    actuator = AnnotationSaveActuator()
+                    plan = actuator.prepare(args)
+                    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+                        assert tuple(source.execute("SELECT * FROM raw_sessions ORDER BY raw_id")) == before_source
+                    if source_change is not None:
+                        label, change = source_change.split("-")
+                        with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+                            if change == "replace":
+                                source.execute(
+                                    "UPDATE raw_sessions SET blob_hash=? WHERE raw_id=?", (bytes(32), raw_ids[label])
+                                )
+                            else:
+                                source.execute("DELETE FROM raw_sessions WHERE raw_id=?", (raw_ids[label],))
+                            source.commit()
+                        with pytest.raises(SourceTargetChangedError):
+                            actuator.apply(plan, args)
+                        assert archive.get_annotation("child-scope-note") is None
+                    else:
+                        assert actuator.apply(plan, args).affected_count == 1
+                        archive.commit()
+                        note = archive.get_annotation("child-scope-note")
+                        assert note is not None and note["target_id"] == block_id
     assert retained_paths and all(not path.exists() for path in retained_paths)
     with closing(sqlite3.connect(tmp_path / "user.db")) as user:
         after_user = tuple(user.execute("SELECT * FROM assertions"))

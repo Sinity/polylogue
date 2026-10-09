@@ -32,11 +32,14 @@ def _json_blob(value: object) -> dict[str, str]:
     return {"sql_blob": value.hex()}
 
 
-def _scope_fingerprint(archive: ArchiveStore, scope: str, pending: sqlite3.Connection | None = None) -> str:
+def _scope_fingerprint(
+    snapshot: PinnedOperationRead, archive: ArchiveStore, scope: str, pending: sqlite3.Connection | None = None
+) -> str:
     digest = hashlib.sha256()
     source = archive.source_connection
     with _supplier_rows(archive, scope) as rows:
         for marker in rows:
+            _checkpoint(snapshot)
             raw_id = str(marker[2])
             with connection_cursor(
                 source, "SELECT acquisition_generation,acquired_at_ms,* FROM raw_sessions WHERE raw_id=?", (raw_id,)
@@ -108,7 +111,7 @@ class SourceCompositionRead:
         with connection_cursor(self.witnesses, "SELECT scope_id,fingerprint FROM scopes") as scopes:
             for scope, fingerprint in scopes:
                 _checkpoint(snapshot)
-                if _scope_fingerprint(archive, str(scope)) != fingerprint:
+                if _scope_fingerprint(snapshot, archive, str(scope)) != fingerprint:
                     raise SourceTargetChangedError("composing Source suppliers changed before durable apply")
         with connection_cursor(
             self.witnesses, "SELECT raw_id,provider_session_json,dependencies FROM suppliers"
@@ -160,7 +163,7 @@ def bind_source_composed_block(snapshot: PinnedOperationRead, *, session_id: str
             "PRIMARY KEY(raw_id,provider_session_json));"
         )
         for scope_id in scopes:
-            fingerprint = _scope_fingerprint(snapshot.archive, scope_id, witnesses)
+            fingerprint = _scope_fingerprint(snapshot, snapshot.archive, scope_id, witnesses)
             with connection_cursor(witnesses, "INSERT INTO scopes VALUES (?,?)", (scope_id, fingerprint)):
                 pass
         witnesses.commit()

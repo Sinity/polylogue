@@ -11,12 +11,13 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
+from polylogue.core.message_native_identity import source_native_id_json
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers import write
 from tests.infra.index_writer import fixture_index_connection, write_fixture_index_session
 
 
-def _previous_probe(conn: sqlite3.Connection, session_id: str, native_id: object) -> bool:
+def _previous_probe(conn: sqlite3.Connection, session_id: str, native_id: object, *, carrier: object) -> bool:
     return (
         isinstance(native_id, str)
         and bool(native_id)
@@ -77,9 +78,12 @@ def test_append_seek_preserves_production_rows_and_duplicate_outcomes(
                         "SELECT native_id FROM messages WHERE session_id=? ORDER BY position", (session_id,)
                     )
                 ]
-                assert natives == ["padded", *native_ids[1:], None, None]
+                assert natives == [*native_ids, None, "   "]
                 for native in (None, "", 0, " padded ", "padded", *native_ids[1:], "absent"):
-                    assert probe(conn, session_id, native) == _previous_probe(conn, session_id, native)
+                    carrier = source_native_id_json(native) if isinstance(native, str) else None
+                    assert probe(conn, session_id, native, carrier=carrier) == _previous_probe(
+                        conn, session_id, native, carrier=carrier
+                    )
                 for row in conn.execute(
                     "SELECT session_id,native_id,message_id FROM messages WHERE native_id IS NOT NULL"
                 ):
@@ -124,12 +128,30 @@ def test_native_probe_work_does_not_follow_session_length(tmp_path: Path) -> Non
                 messages=[_message(f"native-{index}", f"body {index}") for index in range(size)],
             )
             session_id = write_fixture_index_session(conn, session)
-            current_steps.append(_steps(partial(write._stored_native_id_exists, conn, session_id, "absent"), conn))
-            previous_steps.append(_steps(partial(_previous_probe, conn, session_id, "absent"), conn))
+            current_steps.append(
+                _steps(
+                    partial(
+                        write._stored_native_id_exists,
+                        conn,
+                        session_id,
+                        "absent",
+                        carrier=source_native_id_json("absent"),
+                    ),
+                    conn,
+                )
+            )
+            previous_steps.append(
+                _steps(
+                    partial(_previous_probe, conn, session_id, "absent", carrier=source_native_id_json("absent")), conn
+                )
+            )
             statements: list[str] = []
             conn.set_trace_callback(statements.append)
             try:
-                assert write._stored_native_id_exists(conn, session_id, "absent") is False
+                assert (
+                    write._stored_native_id_exists(conn, session_id, "absent", carrier=source_native_id_json("absent"))
+                    is False
+                )
             finally:
                 conn.set_trace_callback(None)
             plan = conn.execute("EXPLAIN QUERY PLAN " + statements[-1]).fetchall()

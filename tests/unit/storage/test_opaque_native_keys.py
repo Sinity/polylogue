@@ -51,7 +51,9 @@ def test_native_keys_keep_exact_source_names_through_index_and_publication(tmp_p
     with disk_message_owner_resolution(operand) as owners:
         assert set(owners.unique_provider_keys) == set(_NAMES)
         assert not owners.ambiguous_provider_ids
-    session = ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="native-law", messages=operand)
+    session = ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="native-law", messages=[]).model_copy(
+        update={"messages": operand}
+    )
     conn = _connect(tmp_path / "index.db")
     sid = write_fixture_index_session(conn, session)
     rows = conn.execute(

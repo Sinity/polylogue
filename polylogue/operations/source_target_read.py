@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from contextlib import AbstractContextManager, closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,8 +15,6 @@ from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.write import ConnectionSessionSourceRead
 
 if TYPE_CHECKING:
-    import sqlite3
-
     from polylogue.archive.revision_authority import RawRevisionKind
     from polylogue.core.enums import Provider
     from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
@@ -354,3 +353,41 @@ def revalidate_source_block(
         != supplier.dependencies
     ):
         raise SourceTargetChangedError("retained block supplier bytes or parser evidence changed before durable apply")
+
+
+def _resolve_block_in_connection(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    target_id: str,
+    message_id: str | None,
+) -> tuple[str, str] | None:
+    from polylogue.core.refs import ObjectRef
+    from polylogue.storage.sqlite.archive_tiers.write import locate_composed_message
+
+    selector = ObjectRef.parse(f"block:{target_id}")
+    if not selector.qualifiers:
+        sql = "SELECT block_id, message_id, session_id FROM blocks WHERE block_id=?"
+        params: tuple[object, ...] = (selector.object_id,)
+        if message_id is not None:
+            sql += " AND message_id=?"
+            params += (message_id,)
+    else:
+        selected_message = selector.object_id
+        block_part = selector.qualifiers[0]
+        try:
+            block_index = int(block_part)
+        except ValueError:
+            raise ValueError("block target_id must be 'message_id:block_index' or a stable block_id") from None
+        if block_index < 0 or str(block_index) != block_part:
+            raise ValueError("block target_id must use a canonical non-negative block_index")
+        if message_id is not None and message_id != selected_message:
+            raise ValueError("block message_id must match the message_id in target_id")
+        sql = "SELECT block_id, message_id, session_id FROM blocks WHERE message_id=? AND position=?"
+        params = (selected_message, block_index)
+    row = conn.execute(sql, params).fetchone()
+    if row is None:
+        return None
+    if str(row[2]) != session_id and locate_composed_message(conn, session_id, str(row[1])) is None:
+        return None
+    return str(row[0]), str(row[1])

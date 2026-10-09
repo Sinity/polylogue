@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, TypedDict, TypeVar
 from polylogue.api.archive import open_readonly_connection
 from polylogue.core.compute import compute_adapter, current_cancellation
 from polylogue.core.evidence import Empty, Evidence, Measured, Unavailable, resolve
-from polylogue.core.refs import ObjectRef
 from polylogue.core.user_state_targets import (
     TARGET_ATTACHMENT,
     TARGET_BLOCK,
@@ -36,6 +35,7 @@ from polylogue.core.user_state_targets import (
     validate_target_kind,
 )
 from polylogue.operations.attachment_target_read import _resolve_attachment_in_connections, _source_declares_attachment
+from polylogue.operations.source_target_read import _resolve_block_in_connection
 
 if TYPE_CHECKING:
     from polylogue.operations.operation_context import PinnedOperationRead
@@ -159,43 +159,6 @@ def _resolve_block_sync(
             target_id=target_id,
             message_id=message_id,
         )
-
-
-def _resolve_block_in_connection(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    target_id: str,
-    message_id: str | None,
-) -> tuple[str, str] | None:
-    selector = ObjectRef.parse(f"block:{target_id}")
-    if not selector.qualifiers:
-        sql = "SELECT block_id, message_id FROM blocks WHERE block_id=?"
-        params: tuple[object, ...] = (selector.object_id,)
-        if message_id is not None:
-            sql += " AND message_id=?"
-            params += (message_id,)
-    else:
-        selected_message = selector.object_id
-        block_part = selector.qualifiers[0]
-        try:
-            block_index = int(block_part)
-        except ValueError:
-            raise ValueError("block target_id must be 'message_id:block_index' or a stable block_id") from None
-        if block_index < 0 or str(block_index) != block_part:
-            raise ValueError("block target_id must use a canonical non-negative block_index")
-        if message_id is not None and message_id != selected_message:
-            raise ValueError("block message_id must match the message_id in target_id")
-        sql = "SELECT block_id, message_id FROM blocks WHERE message_id=? AND position=?"
-        params = (selected_message, block_index)
-    row = conn.execute(sql, params).fetchone()
-    if row is None:
-        return None
-    from polylogue.storage.sqlite.archive_tiers.write import locate_composed_message
-
-    if locate_composed_message(conn, session_id, str(row[1])) is None:
-        return None
-    return str(row[0]), str(row[1])
 
 
 async def _resolve_block(
