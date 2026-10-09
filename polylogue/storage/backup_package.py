@@ -45,6 +45,7 @@ from polylogue.storage.backup_attestation import (
 from polylogue.storage.backup_blob_closure import (
     SOURCE_DECLARED_ABSENT_FILE,
     package_blob_closure,
+    read_source_declared_absent_assertion,
     source_blob_reservations,
 )
 from polylogue.storage.blob_integrity import (
@@ -366,6 +367,17 @@ def _sqlite_source_fingerprint(path: Path, *, snapshot_path: Path, user_version:
 
     metadata = path.stat()
     physical = physical_file_sha256(path, expected_device=metadata.st_dev, expected_inode=metadata.st_ino)
+    wal_path = path.with_name(f"{path.name}-wal")
+    try:
+        wal_metadata = wal_path.stat()
+    except FileNotFoundError:
+        wal_metadata = None
+    wal = None
+    if wal_metadata is not None and wal_metadata.st_size:
+        wal_digest = physical_file_sha256(
+            wal_path, expected_device=wal_metadata.st_dev, expected_inode=wal_metadata.st_ino
+        )
+        wal = {"size_bytes": wal_digest.size_bytes, "sha256": wal_digest.sha256}
     return {
         "path": str(path),
         "device": metadata.st_dev,
@@ -373,6 +385,7 @@ def _sqlite_source_fingerprint(path: Path, *, snapshot_path: Path, user_version:
         "size_bytes": physical.size_bytes,
         "sha256": physical.sha256,
         "user_version": user_version,
+        "wal": wal,
         "snapshot": {
             "size_bytes": snapshot_path.stat().st_size,
             "sha256": _sha256_file(snapshot_path),
@@ -601,6 +614,8 @@ def _backup_sqlite(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[in
             cursor.fetchall()
         with connection_cursor(conn, "PRAGMA user_version") as cursor:
             user_version = int(cursor.fetchone()[0])
+        with connection_cursor(conn, "PRAGMA data_version") as cursor:
+            selected_version = int(cursor.fetchone()[0])
         destination_owner = open_scratch_connection(dst, lifetime_dependencies=(dst,))
         try:
             # Page batches bound cooperative cancellation, not accepted input.
@@ -615,7 +630,15 @@ def _backup_sqlite(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[in
             raise
         else:
             destination_owner.close()
+        conn.rollback()
+        with connection_cursor(conn, "PRAGMA data_version") as cursor:
+            before_fingerprint = int(cursor.fetchone()[0])
         fingerprint = _sqlite_source_fingerprint(live_path, snapshot_path=dst, user_version=user_version)
+        with connection_cursor(conn, "PRAGMA data_version") as cursor:
+            after_fingerprint = int(cursor.fetchone()[0])
+        # A changing live tier is still a valid recovery image. It cannot
+        # authorize a later migration against physical bytes newer than its cut.
+        fingerprint["live_cut_stable"] = selected_version == before_fingerprint == after_fingerprint
     except BaseException as primary:
         _close_failed_native_construction(source_owner, primary)
         raise
@@ -640,7 +663,9 @@ def _source_blob_liveness_projection(
     return projection, source_blob_reservations(source_db)
 
 
-def _copy_source_declared_absent_assertion(source_db: Path, backup_root: Path) -> Path | None:
+def _copy_source_declared_absent_assertion(
+    source_db: Path, backup_root: Path, *, fingerprint: dict[str, object]
+) -> Path | None:
     """Copy the optional durable source assertion into a backup package."""
 
     source_path = source_db.with_name(SOURCE_DECLARED_ABSENT_FILE)
@@ -649,8 +674,15 @@ def _copy_source_declared_absent_assertion(source_db: Path, backup_root: Path) -
     _require_regular_backup_artifact(
         source_path, backup_root=source_db.parent, label="source declared-absent assertion"
     )
+    if fingerprint.get("live_cut_stable") is not True or fingerprint.get("wal") is not None:
+        raise RuntimeError("source declared-absent assertion does not bind the selected WAL snapshot")
+    assertion, _ = read_source_declared_absent_assertion(source_path, source_db_sha256=str(fingerprint["sha256"]))
+    snapshot = fingerprint.get("snapshot")
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("sha256"), str):
+        raise RuntimeError("source declared-absent assertion lacks the pinned image fingerprint")
+    assertion["source_db_sha256"] = snapshot["sha256"]
     destination = backup_root / SOURCE_DECLARED_ABSENT_FILE
-    shutil.copy2(source_path, destination)
+    atomic_replace(destination, json.dumps(assertion, indent=2, sort_keys=True).encode())
     return destination
 
 
@@ -1239,7 +1271,9 @@ def _backup_archive(
             backed_up_files.append(str(dst))
 
         source_assertion = (
-            _copy_source_declared_absent_assertion(root / "source.db", backup_root)
+            _copy_source_declared_absent_assertion(
+                root / "source.db", backup_root, fingerprint=tier_source_fingerprints["source.db"]
+            )
             if "source" in included_tiers
             else None
         )
@@ -1388,6 +1422,13 @@ def _backup_verification_scratch_parent(path: Path) -> Path | None:
 
 def _copy_backup_artifact_to_scratch(source: Path, scratch_root: Path) -> Path:
     _require_real_backup_directory(source, label="backup output")
+    # copytree breaks hard links. Admit the original inventory before that
+    # transformation, without another full content-hashing pass.
+    for artifact in source.rglob("*"):
+        if stat.S_ISDIR(artifact.lstat().st_mode):
+            _require_real_backup_directory(artifact, label="backup artifact directory")
+        else:
+            _require_regular_backup_artifact(artifact, backup_root=source, label="backup artifact")
     restore_root = scratch_root / "restore"
     shutil.copytree(source, restore_root, symlinks=True)
     return restore_root

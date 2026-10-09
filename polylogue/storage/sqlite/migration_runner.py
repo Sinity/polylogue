@@ -946,9 +946,23 @@ def _validate_live_source_fingerprint(conn: sqlite3.Connection, artifact: dict[s
     fingerprint = artifact.get("source_fingerprint")
     if not isinstance(fingerprint, dict):
         raise MigrationError("migration backup receipt is missing the live source fingerprint")
+    if fingerprint.get("live_cut_stable") is not True:
+        raise MigrationError("migration backup receipt live tier changed during its pinned snapshot")
     live_path = _connection_main_path(conn)
     wal_path = live_path.with_name(f"{live_path.name}-wal")
-    if wal_path.exists() and wal_path.stat().st_size:
+    try:
+        wal_metadata = wal_path.stat()
+    except FileNotFoundError:
+        wal_metadata = None
+    recorded_wal = fingerprint.get("wal")
+    if wal_metadata is not None and wal_metadata.st_size:
+        wal_physical = physical_file_sha256(
+            wal_path, expected_device=wal_metadata.st_dev, expected_inode=wal_metadata.st_ino
+        )
+        observed_wal = {"size_bytes": wal_physical.size_bytes, "sha256": wal_physical.sha256}
+    else:
+        observed_wal = None
+    if observed_wal != recorded_wal:
         raise MigrationError("migration backup receipt live tier changed before the migration lock")
     recorded_path_value = fingerprint.get("path")
     recorded_path = Path(str(recorded_path_value)) if recorded_path_value else None
@@ -1392,7 +1406,7 @@ def migrate_archive_tier(
     if precheck_requires_backup:
         # Baseline validation before acquiring the write lock. The paired
         # post-lock call below re-validates with the same connection;
-        # _validate_live_source_fingerprint rejects a nonempty WAL, so a
+        # _validate_live_source_fingerprint compares the recorded main and WAL, so a
         # write that lands on the live tier between this call and BEGIN
         # IMMEDIATE is caught as "changed before the migration lock" instead
         # of migrating over data the verified backup never covered.

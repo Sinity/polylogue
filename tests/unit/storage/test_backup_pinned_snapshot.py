@@ -16,15 +16,18 @@ from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import compute_cancel
 from polylogue.operations.archive_backup import backup_archive
 from polylogue.storage import backup_package as backup
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
     NativeConnectionSettlementError,
     retained_native_sql_owners_on_current_thread,
 )
+from polylogue.storage.sqlite.migration_runner import MigrationError, validate_migration_backup_manifest
 from tests.infra.storage_records import db_setup
 
 
+@pytest.mark.parametrize("later_commit", [False, True])
 def test_public_backup_preserves_pinned_cut_with_old_reader_and_later_commit(
-    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, later_commit: bool
 ) -> None:
     db_setup(workspace_env)
     root = workspace_env["archive_root"]
@@ -55,8 +58,9 @@ def test_public_backup_preserves_pinned_cut_with_old_reader_and_later_commit(
                             ("old",),
                             ("at-cut",),
                         ]
-                        writer.execute("INSERT INTO backup_events VALUES ('after-cut')")
-                        writer.commit()
+                        if later_commit:
+                            writer.execute("INSERT INTO backup_events VALUES ('after-cut')")
+                            writer.commit()
                         original_backup(target, **options)
 
                     monkeypatch.setattr(connection, "backup", backup_after_later_commit)
@@ -67,17 +71,28 @@ def test_public_backup_preserves_pinned_cut_with_old_reader_and_later_commit(
             assert result.ok and result.verified, result.error
             assert reached
             assert old_reader.execute("SELECT value FROM backup_events").fetchall() == [("old",)]
-            assert writer.execute("SELECT value FROM backup_events ORDER BY rowid").fetchall() == [
-                ("old",),
-                ("at-cut",),
-                ("after-cut",),
-            ]
+            expected = [("old",), ("at-cut",)] + ([("after-cut",)] if later_commit else [])
+            assert writer.execute("SELECT value FROM backup_events ORDER BY rowid").fetchall() == expected
+            manifest_path = Path(str(result.output_path)) / "manifest.json"
+            if later_commit:
+                with pytest.raises(MigrationError):
+                    validate_migration_backup_manifest(manifest_path, ArchiveTier.USER, connection=writer)
+            else:
+                validate_migration_backup_manifest(manifest_path, ArchiveTier.USER, connection=writer)
+                writer.execute("BEGIN IMMEDIATE")
+                validate_migration_backup_manifest(manifest_path, ArchiveTier.USER, connection=writer)
+                writer.rollback()
+                writer.execute("INSERT INTO backup_events VALUES ('after-backup')")
+                writer.commit()
+                with pytest.raises(MigrationError):
+                    validate_migration_backup_manifest(manifest_path, ArchiveTier.USER, connection=writer)
     package = Path(str(result.output_path))
     copied = package / "user.db"
     with closing(sqlite3.connect(copied)) as restored:
         assert restored.execute("SELECT value FROM backup_events ORDER BY rowid").fetchall() == [("old",), ("at-cut",)]
     manifest = json.loads((package / "manifest.json").read_text())
     snapshot = manifest["tier_source_fingerprints"]["user.db"]["snapshot"]
+    assert manifest["tier_source_fingerprints"]["user.db"]["live_cut_stable"] is (not later_commit)
     assert snapshot["sha256"] == hashlib.sha256(copied.read_bytes()).hexdigest()
     assert snapshot["size_bytes"] == copied.stat().st_size
     assert (package / "verification-receipt.json").is_file()

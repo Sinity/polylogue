@@ -73,6 +73,14 @@ def source_blob_reservations(source_db: Path, *, immutable: bool = True) -> set[
 
 def load_source_declared_absent(source_db: Path, assertion_path: Path) -> set[str]:
     """Load and authenticate the operator declaration against ``source.db``."""
+    _, hashes = read_source_declared_absent_assertion(assertion_path, source_db_sha256=_sha256_file(source_db))
+    return hashes
+
+
+def read_source_declared_absent_assertion(
+    assertion_path: Path, *, source_db_sha256: str
+) -> tuple[dict[str, object], set[str]]:
+    """Authenticate one declaration against the owner-observed physical image."""
 
     try:
         metadata = assertion_path.lstat()
@@ -90,7 +98,7 @@ def load_source_declared_absent(source_db: Path, assertion_path: Path) -> set[st
         raise RuntimeError("source declared-absent assertion has an unknown format")
     if assertion.get("freeze_authority") != SOURCE_DECLARED_ABSENT_AUTHORITY:
         raise RuntimeError("source declared-absent assertion lacks polylogue-2x6xu freeze authority")
-    if assertion.get("source_db_sha256") != _sha256_file(source_db):
+    if assertion.get("source_db_sha256") != source_db_sha256:
         raise RuntimeError("source declared-absent assertion is bound to different source.db bytes")
     raw_hashes = assertion.get("declared_absent_blob_hashes")
     if not isinstance(raw_hashes, list) or not raw_hashes:
@@ -105,7 +113,7 @@ def load_source_declared_absent(source_db: Path, assertion_path: Path) -> set[st
     hashes = {str(blob_hash) for blob_hash in raw_hashes}
     if len(hashes) != len(raw_hashes):
         raise RuntimeError("source declared-absent assertion contains duplicate blob hashes")
-    return hashes
+    return assertion, hashes
 
 
 @dataclass(frozen=True, slots=True)

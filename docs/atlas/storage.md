@@ -115,10 +115,15 @@ SQLite's backup API from an explicitly pinned read transaction, including its
 committed WAL frames without draining unrelated readers. Later commits are
 excluded from that tier's cut. Backup page batches provide cancellation points;
 physical connection settlement precedes publication. The recorded source
-fingerprint retains the original physical main-file identity and hash for
-migration admission, separately from its `snapshot` image fingerprint used by
-package verification. A WAL-inclusive backup is valid recovery evidence; it
-does not bypass migration's existing nonempty-WAL or changed-live-file refusal.
+fingerprint retains the original physical main-file identity and hash plus
+nonempty WAL bytes, separately from its `snapshot` image fingerprint used by
+package verification. Data-version reobservation after releasing the pinned
+read records whether those live bytes still describe the selected cut. Only a
+stable cut can authorize migration, whose pre-lock and post-lock checks compare
+both physical carriers. A concurrent commit leaves valid recovery evidence but
+does not authorize migration. A declared-absent assertion is authenticated
+against its original stable main image without WAL, then rebound to the copied
+image; an unbound WAL cut cannot inherit that declaration.
 
 The backup manifest retains the original live-store blob debt before acquisition
 recovery. Restore reports unrestored references from the authenticated package's
