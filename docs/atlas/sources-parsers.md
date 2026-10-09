@@ -117,7 +117,10 @@ optimization (`storage/derived/raw.py`;
 
 On its first Source binding, `RawObservationDerivation` keeps the complete
 selected unit and its census/publication boundary, then detaches only the
-eligible Codex and Claude Code JSONL session inputs. It copies those primary
+eligible Codex and Claude Code JSONL session inputs. Exact-source restoration
+of missing retained bytes runs before that capture. Declared zero-byte session
+streams receive the same typed decode refusal as ordinary retained preparation;
+explicit raw-only histories keep their non-session disposition. It copies those primary
 CAS bytes while the original Source witness is current, then closes that
 witness before parser work and retained-schema validation. Other selected
 providers remain on the ordinary fresh-bound preparation path. Claude Code
@@ -129,7 +132,9 @@ plus the exact eligible parser operands and Claude sidecar-scope witness,
 before current enrichment and publication are prepared. If that bind becomes
 stale during enrichment, a new Source witness repeats the comparison and
 reuses detached parser artifacts only when the eligible raws and their parser
-operands still match exactly; changed inputs are reparsed. The neutral
+operands still match exactly; changed inputs are reparsed. Each retry refreshes
+the cached carrier's current schema verdict before rebinding it. Historical
+captured validation receipts keep their original evidence. The neutral
 retained enrichment also resolves any remaining persisted-output tool-result
 envelopes from matching `PostToolUse` rows in `raw_hook_events`. Those rows are
 selected by Claude origin, parent-or-session native ID, and tool-use ID through

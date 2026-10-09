@@ -1653,6 +1653,11 @@ class RawObservationDerivation(RawObservationInspection):
             carry.seal = seal
         replacement: RawObservationReplacement | None = None
         try:
+            replacement = self._prepare_blob_restoration(key, selection=selection, seal=seal)
+            if replacement is not None:
+                replacement = replace(replacement, reference_seal=seal)
+                seal.validate_observers_current()
+                return replacement
             if first_source_binding:
                 seal = self._prepare_neutral_jsonl_then_rebind(
                     key,
@@ -1700,6 +1705,29 @@ class RawObservationDerivation(RawObservationInspection):
             if preserve_neutral:
                 carry.seal = None
             raise
+
+    def _prepare_blob_restoration(
+        self,
+        key: str,
+        *,
+        selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+        seal: PreparedIndexMutation,
+    ) -> RawObservationReplacement | None:
+        """Admit exact retained-byte restoration before any detached capture."""
+        from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+
+        with seal.original_read_snapshot(), seal.source_producer():
+            read = PreparedSessionSourceRead(seal, blob_store=BlobStore(self.archive_root / "blob"))
+            selected = (key,) if selection is None else tuple(selection(read))
+            raw_ids, _logical_keys = read.expand_raw_membership_selection(selected)
+            descriptors = {raw_id: read.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+            with self._preparation_archive() as archive:
+                restorations = self._stage_absent_blob_restorations(archive, raw_ids, descriptors)
+        if restorations is None:
+            return None
+        return RawObservationReplacement(
+            key, self._selection_diagnostic(raw_ids), None, raw_ids, blob_restorations=restorations
+        )
 
     def _prepare_neutral_jsonl_then_rebind(
         self,
@@ -1911,10 +1939,12 @@ class RawObservationDerivation(RawObservationInspection):
         neutral_by_raw: dict[str, PreparedJsonl] = {}
         captured_sidecar_resolver = CapturedSidecarResolver(captured_sidecar_scopes)
 
+        refreshed_neutral: dict[str, PreparedJsonl] = {}
+
         def prepare_neutral(raw_id: str) -> PreparedJsonl:
+            if raw_id in refreshed_neutral:
+                return refreshed_neutral[raw_id]
             cached = carry.neutral_artifacts.get(neutral_keys[raw_id])
-            if cached is not None:
-                return cached
             captured = captures[raw_id]
             descriptor = captured.descriptor
             profile = captured.profile_identity
@@ -1923,38 +1953,50 @@ class RawObservationDerivation(RawObservationInspection):
             staged_blob = captured.staged_blob
             provider, blob_hash, source_path, kind, _raw_size = descriptor
             neutral_directory = staged_blob.parent
-            with staged_blob.open("rb") as staged_input:
-                parse_prefix_size = jsonl_parse_prefix_size_of_handle(staged_input)
-            fallback_id = fallback_session_id(source_path, raw_id)
-            if kind.value == "append":
-                from polylogue.sources.revision_backfill import _append_session_native_id
+            from polylogue.sources.revision_backfill import retained_empty_session_stream_refusal
 
-                fallback_id = (
-                    _append_session_native_id(
-                        append_logical_key,
-                        provider=provider,
-                        captured_native_id=native_id,
-                    )
-                    or fallback_id
-                )
-            neutral = prepare_jsonl_blob(
-                str(staged_blob),
-                source_path,
-                provider.value,
-                fallback_id,
-                is_stream=is_stream_record_provider(source_path, provider),
-                profile_identity=profile,
-                shard_directory=str(scratch),
-                attempt_directory=neutral_directory,
-                source_sha256=blob_hash,
-                strict_jsonl_records=True,
-                parse_prefix_size=parse_prefix_size,
-                sidecar_resolver=captured_sidecar_resolver,
-                progress_identity=_neutral_identity_digest(("neutral-parser-work-v1", neutral_keys[raw_id])),
-                captured_zip_coordinate=captured.zip_coordinate,
+            refusal = retained_empty_session_stream_refusal(
+                provider, source_path=source_path, blob_hash=blob_hash, payload_bytes=_raw_size
             )
-            # Transfer ownership before validation or checkpoint work can fail.
-            carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
+            if refusal is not None:
+                carry.neutral_artifacts[neutral_keys[raw_id]] = refusal
+                return refusal
+            if cached is None:
+                with staged_blob.open("rb") as staged_input:
+                    parse_prefix_size = jsonl_parse_prefix_size_of_handle(staged_input)
+                fallback_id = fallback_session_id(source_path, raw_id)
+                if kind.value == "append":
+                    from polylogue.sources.revision_backfill import _append_session_native_id
+
+                    fallback_id = (
+                        _append_session_native_id(
+                            append_logical_key,
+                            provider=provider,
+                            captured_native_id=native_id,
+                        )
+                        or fallback_id
+                    )
+                neutral = prepare_jsonl_blob(
+                    str(staged_blob),
+                    source_path,
+                    provider.value,
+                    fallback_id,
+                    is_stream=is_stream_record_provider(source_path, provider),
+                    profile_identity=profile,
+                    shard_directory=str(scratch),
+                    attempt_directory=neutral_directory,
+                    source_sha256=blob_hash,
+                    strict_jsonl_records=True,
+                    parse_prefix_size=parse_prefix_size,
+                    sidecar_resolver=captured_sidecar_resolver,
+                    progress_identity=_neutral_identity_digest(("neutral-parser-work-v1", neutral_keys[raw_id])),
+                    captured_zip_coordinate=captured.zip_coordinate,
+                )
+                # Transfer ownership before validation or checkpoint work can fail.
+                carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
+            else:
+                # Parser bytes survive rebinding; current schema evidence does not.
+                neutral = cached
             if neutral.error is None and neutral.resolved_provider is not None:
                 from polylogue.sources.revision_backfill import _retained_validation_input
 
@@ -1974,6 +2016,7 @@ class RawObservationDerivation(RawObservationInspection):
                     )
                 neutral = dataclasses.replace(neutral, validation_verdict=verdict)
                 carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
+            refreshed_neutral[raw_id] = neutral
             return neutral
 
         cohort_identity = _neutral_cohort_identity(eligible_raw_ids, operands)
@@ -2288,11 +2331,6 @@ class RawObservationDerivation(RawObservationInspection):
                     already_valid=True,
                 )
             binding = self._selection_diagnostic(raw_ids)
-            # Classification and preparation both read retained bytes, so an
-            # absent blob is restored before either runs.
-            restorations = self._stage_absent_blob_restorations(archive, raw_ids, descriptors)
-            if restorations is not None:
-                return RawObservationReplacement(key, binding, None, raw_ids, blob_restorations=restorations)
             process_prepared = bool(descriptors)
             if process_prepared:
                 from polylogue.sources.prepared_merge import (

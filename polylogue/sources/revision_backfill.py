@@ -886,14 +886,11 @@ def prepare_retained_jsonl_artifact(
                         f"{type(exc).__name__}: {exc}",
                         decode_failure=decode_failure,
                     )
-            if _size == 0 and _is_declared_provider_session_stream(provider, source_path):
-                return PreparedJsonl(
-                    blob_hash,
-                    None,
-                    None,
-                    "zero-byte provider session stream contains no decodable session record",
-                    decode_failure=DecodeFailure.JSONL_RECORD,
-                )
+            refusal = retained_empty_session_stream_refusal(
+                provider, source_path=source_path, blob_hash=blob_hash, payload_bytes=_size
+            )
+            if refusal is not None:
+                return refusal
         artifact = prepare_jsonl_blob(
             str(blob_path),
             source_path,
@@ -1038,6 +1035,26 @@ def _is_declared_provider_session_stream(provider: Provider, source_path: str) -
     # provider JSONL paths that are not explicitly excluded by OriginSpec are
     # session decode inputs, including neutral and exported path spellings.
     return not (provider is Provider.CLAUDE_CODE and Path(source_path).name.lower() == "history.jsonl")
+
+
+def retained_empty_session_stream_refusal(
+    provider: Provider, *, source_path: str, blob_hash: str, payload_bytes: int
+) -> PreparedJsonl | None:
+    """Keep ordinary and detached retained session-stream admission equal."""
+    if (
+        payload_bytes != 0
+        or not is_jsonl_source_path(source_path)
+        or path_declaration_refuses_session(provider, source_path)
+        or not _is_declared_provider_session_stream(provider, source_path)
+    ):
+        return None
+    return PreparedJsonl(
+        blob_hash,
+        None,
+        None,
+        "zero-byte provider session stream contains no decodable session record",
+        decode_failure=DecodeFailure.JSONL_RECORD,
+    )
 
 
 def prepare_retained_non_json_artifact(

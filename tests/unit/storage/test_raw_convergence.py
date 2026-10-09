@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable
 from contextlib import closing
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -990,7 +990,8 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     assert report.done == 1
     expected_parser_calls = 2 if replace_sidecar else 1
     assert parse_calls == expected_parser_calls
-    assert validation_raw_ids == [target] * expected_parser_calls, validation_raw_ids
+    assert len(validation_raw_ids) >= 2
+    assert set(validation_raw_ids) == {target}, validation_raw_ids
     assert enrichment_calls == 2
     assert sum(event_type == "claude_tool_result_sidecar" for event_type, _ in neutral_sidecar_events) == (
         expected_parser_calls
@@ -1755,3 +1756,109 @@ def test_deferred_cas_evidence_is_superseded_after_resolution_and_non_cas_failur
     status = raw_failure_info_for_root(tmp_path)
     assert status["terminal_rejections"] == 0
     assert status["unexplained_failures"] == 2
+
+
+@pytest.mark.parametrize("provider", [Provider.CODEX, Provider.CLAUDE_CODE])
+def test_neutral_jsonl_restores_exact_source_before_capture(tmp_path: Path, provider: Provider) -> None:
+    from polylogue.storage.blob_store import BlobStore
+
+    bootstrap_archive_root(tmp_path)
+    payload = (
+        _codex_conversation_bytes("restored-neutral")
+        if provider is Provider.CODEX
+        else b'{"type":"user","sessionId":"restored-neutral","uuid":"m","message":{"role":"user","content":"hi"}}\n'
+    )
+    source = tmp_path / "session.jsonl"
+    source.write_bytes(payload)
+    raw_id = _admit(tmp_path, (), provider=provider, path=str(source), payload=payload)
+    blob_path = BlobStore(tmp_path / "blob").blob_path(hashlib.sha256(payload).hexdigest())
+    blob_path.unlink()
+    report = _derive(tmp_path, validation_mode=ValidationMode.OFF)
+    assert report.failed == 0, report.outcomes
+    assert blob_path.read_bytes() == payload
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("provider", [Provider.CODEX, Provider.CLAUDE_CODE])
+def test_neutral_empty_session_stream_has_terminal_decode_evidence(tmp_path: Path, provider: Provider) -> None:
+    bootstrap_archive_root(tmp_path)
+    _admit(tmp_path, (), provider=provider, path="session.jsonl", payload=b"")
+    _derive(tmp_path, validation_mode=ValidationMode.OFF)
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 1
+    assert lifecycle.unexplained == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT parse_error IS NOT NULL FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT status, logical_keys_json FROM raw_authority_parser_census").fetchall() == [
+            ("complete", "[]")
+        ]
+        assert conn.execute("SELECT COUNT(*) FROM raw_session_memberships").fetchone() == (0,)
+
+
+def test_neutral_retry_refreshes_validation_without_reparsing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.schemas import validate_retained_document as original_validate
+    from polylogue.schemas.runtime_registry import SchemaRegistry
+    from polylogue.sources import prepared_jsonl
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    bootstrap_archive_root(tmp_path)
+    target = _admit(tmp_path, (), provider=Provider.CODEX, path="session.jsonl", payload=_codex_conversation_bytes())
+    writer = SchemaRegistry(storage_root=tmp_path / "schemas")
+    reader = SchemaRegistry(storage_root=tmp_path / "schemas")
+    original_init = RawObservationDerivation.__init__
+    original_prepare = prepared_jsonl.prepare_jsonl_blob
+    original_compute = RawObservationDerivation._compute_prepared
+    parses = 0
+    validations = 0
+    retried = False
+    versions: list[str] = []
+
+    def initialize(self: RawObservationDerivation, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        self._schema_registry = reader
+
+    def prepare(*args: Any, **kwargs: Any) -> Any:
+        nonlocal parses
+        parses += 1
+        return original_prepare(*args, **kwargs)
+
+    def validate(*args: Any, **kwargs: Any) -> Any:
+        nonlocal validations
+        validations += 1
+        verdict = original_validate(*args, **kwargs)
+        assert verdict.schema_resolution is not None
+        versions.append(verdict.schema_resolution.package_version)
+        return verdict
+
+    def compute(self: RawObservationDerivation, *args: Any, **kwargs: Any) -> Any:
+        nonlocal retried
+        if not retried:
+            retried = True
+            writer.write_schema_version("codex", "v999", {"type": "object"}, element_kind="event_record")
+            raise ReferenceSealStaleError("synthetic Source change after neutral validation")
+        return original_compute(self, *args, **kwargs)
+
+    monkeypatch.setattr(RawObservationDerivation, "__init__", initialize)
+    monkeypatch.setattr(prepared_jsonl, "prepare_jsonl_blob", prepare)
+    monkeypatch.setattr("polylogue.schemas.validate_retained_document", validate)
+    monkeypatch.setattr(RawObservationDerivation, "_compute_prepared", compute)
+    report = run_on_convergence_owner(
+        tmp_path, "test.raw.neutral-retry-schema", lambda owner: _converge_raw(tmp_path, owner, target)
+    )
+    assert report.failed == 0, report.outcomes
+    assert report.done == 1
+    assert parses == 1
+    assert validations == 2
+    assert versions[0] != "v999"
+    assert versions[1] == "v999"
+
+
+def test_empty_claude_history_keeps_raw_only_admission(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    _admit(tmp_path, (), provider=Provider.CLAUDE_CODE, path="history.jsonl", payload=b"")
+    report = _derive(tmp_path, validation_mode=ValidationMode.OFF)
+    assert report.failed == 0, report.outcomes
+    assert read_raw_failure_lifecycle(tmp_path / "source.db").terminal == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT parse_error FROM raw_sessions").fetchone() == (None,)
