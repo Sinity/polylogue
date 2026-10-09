@@ -14,13 +14,38 @@ from polylogue.storage.sqlite.connection_profile import assert_tier_schema_suppo
 from tests.infra.populated_managed_index import logical_rows, make_populated_stale_index
 
 
+@pytest.mark.parametrize(("multi_session", "include_history"), [(False, False), (True, False), (False, True)])
 def test_actual_startup_replays_populated_source_after_original_disappears(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, multi_session: bool, include_history: bool
 ) -> None:
     root = tmp_path / "archive"
-    source = tmp_path / "external" / "session.jsonl"
-    old, raw_id, session_ids = make_populated_stale_index(root, source)
-    assert raw_id and len(session_ids) == 1
+    source = tmp_path / "external" / ("bundle.json" if multi_session else "session.jsonl")
+    old, raw_id, session_ids = make_populated_stale_index(
+        root, source, multi_session=multi_session, include_history=include_history
+    )
+    assert raw_id and len(session_ids) == (2 if multi_session else 1)
+    if include_history:
+        from polylogue.storage.blob_store import BlobStore
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_parser_census_is_current
+        from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+        from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+        with closing(open_readonly_connection(root / "source.db")) as conn:
+            history_id = str(
+                conn.execute("SELECT raw_id FROM raw_sessions WHERE validation_mode IS NULL").fetchone()[0]
+            )
+            history_binding = tuple(
+                conn.execute(
+                    "SELECT logical_source_key,revision_kind,revision_authority,source_revision,"
+                    "predecessor_raw_id,baseline_raw_id FROM raw_sessions WHERE raw_id=?",
+                    (history_id,),
+                ).fetchone()
+            )
+        with PreparedIndexMutation(old, archive_root=root) as seal:
+            with seal.original_read_snapshot(), seal.source_producer():
+                read = PreparedSessionSourceRead(seal, blob_store=BlobStore(root / "blob"))
+                assert prepared_parser_census_is_current(seal, history_id)
+                assert not read.raw_parser_confirmed_non_session(history_id)
     before = {tier: logical_rows(root / f"{tier}.db") for tier in ("user", "audit", "embeddings")}
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
 
@@ -39,6 +64,24 @@ def test_actual_startup_replays_populated_source_after_original_disappears(
         assert active != old
         assert old.exists() and not source.exists()
         assert {tier: logical_rows(root / f"{tier}.db") for tier in before} == before
+        if include_history:
+            from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
+
+            with closing(open_readonly_connection(root / "source.db")) as conn:
+                assert conn.execute(
+                    "SELECT c.status,c.parser_fingerprint,r.validation_mode FROM raw_membership_census c "
+                    "JOIN raw_sessions r USING(raw_id) WHERE r.validation_mode IS NULL"
+                ).fetchall() == [("non_session", raw_authority_parser_fingerprint(), None)]
+                assert (
+                    tuple(
+                        conn.execute(
+                            "SELECT logical_source_key,revision_kind,revision_authority,source_revision,"
+                            "predecessor_raw_id,baseline_raw_id FROM raw_sessions WHERE raw_id=?",
+                            (history_id,),
+                        ).fetchone()
+                    )
+                    == history_binding
+                )
         raise PreflightReachedError
 
     monkeypatch.setattr(daemon_cli, "_check_schema_version_fast", preflight)

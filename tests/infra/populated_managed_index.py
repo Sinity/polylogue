@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -13,7 +14,9 @@ from tests.infra.empty_managed_index import make_empty_managed_index, mutate_fix
 from tests.infra.retained_replay import publish_retained_payload
 
 
-def make_populated_stale_index(root: Path, source: Path) -> tuple[Path, str, tuple[str, ...]]:
+def make_populated_stale_index(
+    root: Path, source: Path, *, multi_session: bool = False, include_history: bool = False
+) -> tuple[Path, str, tuple[str, ...]]:
     old = make_empty_managed_index(root, stale=False)
     source.parent.mkdir()
     source.write_bytes(
@@ -22,9 +25,38 @@ def make_populated_stale_index(root: Path, source: Path) -> tuple[Path, str, tup
         b'{"type":"response_item","payload":{"type":"message","id":"neutral-message",'
         b'"role":"user","content":[{"type":"input_text","text":"neutral retained prose"}]}}\n'
     )
+    if multi_session:
+        source.write_bytes(
+            json.dumps(
+                [
+                    {
+                        "id": name,
+                        "current_node": "m",
+                        "mapping": {
+                            "m": {
+                                "id": "m",
+                                "parent": None,
+                                "children": [],
+                                "message": {
+                                    "id": "m",
+                                    "author": {"role": "user"},
+                                    "create_time": 1,
+                                    "content": {"content_type": "text", "parts": ["neutral retained prose"]},
+                                },
+                            }
+                        },
+                    }
+                    for name in ("neutral-first", "neutral-second")
+                ]
+            ).encode()
+        )
     raw_id, session_ids = asyncio.run(
         publish_retained_payload(
-            root, provider=Provider.CODEX, payload=source.read_bytes(), source_path=str(source), acquired_at_ms=0
+            root,
+            provider=Provider.CHATGPT if multi_session else Provider.CODEX,
+            payload=source.read_bytes(),
+            source_path=str(source),
+            acquired_at_ms=0,
         )
     )
     source.unlink()
@@ -73,8 +105,43 @@ def make_populated_stale_index(root: Path, source: Path) -> tuple[Path, str, tup
             embedded_at_ms=0,
             vector_derivation_hash=b"\0" * 32,
         )
+    if include_history:
+        history_id = admit_retained_history(root, source.parent / ".claude" / "history.jsonl")
+        # A previous preparation refreshed the authority census without
+        # advancing this independent non-session membership receipt.
+        mutate_fixture_database(
+            root / "source.db",
+            "UPDATE raw_membership_census SET parser_fingerprint='prior-parser' WHERE raw_id=?",
+            (history_id,),
+        )
     mutate_fixture_database(old, "UPDATE schema_identity SET identity='prior-runtime' WHERE tier='index'")
     return old, raw_id, session_ids
+
+
+def admit_retained_history(root: Path, source: Path) -> str:
+    """Retain declared raw-only history through ordinary file acquisition."""
+    from types import SimpleNamespace
+
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
+    from tests.infra.raw_owner_routes import run_ingest_files
+
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"")
+    processor = LiveBatchProcessor(
+        SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db")),
+        (WatchSource("claude-code-history", source.parent),),
+        cursor=CursorStore(root / "ops.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+    )
+    metrics = run_ingest_files(processor, [source], emit_event=False)
+    assert metrics.excluded_file_count == 1 and metrics.failed_file_count == 0
+    with closing(sqlite3.connect(root / "source.db")) as conn:
+        row = conn.execute("SELECT raw_id FROM raw_sessions WHERE source_path=?", (str(source),)).fetchone()
+        assert row is not None
+    source.unlink()
+    return str(row[0])
 
 
 def logical_rows(path: Path) -> tuple[str, ...]:

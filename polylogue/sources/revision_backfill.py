@@ -3863,12 +3863,29 @@ def prepare_revision_source_census(
         if schema_validation_required:
             provider, _blob_hash, source_path, _revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
             schema_validation_required = not path_declaration_refuses_session(provider, source_path)
+        staged = False
+        if not schema_validation_required and not evidence_reader.raw_parser_confirmed_non_session(raw_id):
+            # The current parser authority already proves this typed raw-only
+            # input. Its independent membership receipt may still name the
+            # previous parser; finish that prerequisite before replay.
+            byte_proven = evidence_reader.raw_revision_authority(raw_id) == RawRevisionAuthority.BYTE_PROVEN.value
+            record_prepared_membership_census_receipt(
+                seal,
+                raw_id,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                status="non_session",
+                member_count=0,
+                censused_at_ms=0,
+                detail="current parser authority confirms typed non-session input",
+                revision_authority=RawRevisionAuthority.BYTE_PROVEN if byte_proven else None,
+            )
+            staged = True
         if artifact is None:
             if schema_validation_required:
                 raise RetainedPreparationRetryableError(
                     f"current retained parser receipt lacks captured validation evidence for raw {raw_id}"
                 )
-            return False
+            return staged
         if artifact.codex_state_kind is not None:
             # Append fragments have no stable artifact-observation coordinate.
             # Their parser receipt is byte-governed; never mint an artifact at -1.
@@ -3899,7 +3916,6 @@ def prepare_revision_source_census(
             return True
 
         verdict = artifact.validation_verdict
-        staged = False
         if verdict is None:
             if schema_validation_required:
                 raise RetainedPreparationRetryableError(
