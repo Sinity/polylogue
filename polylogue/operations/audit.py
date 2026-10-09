@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import secrets
 import sqlite3
@@ -12,8 +11,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, fields, is_dataclass, replace
-from enum import Enum
+from dataclasses import dataclass, fields, replace
 from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
@@ -539,39 +537,6 @@ def _stored_authorization_digest(raw: object) -> _StoredAuthorizationDigest:
     if not isinstance(digest, str) or len(digest) != 64:
         raise ValueError("replayed bound authorization lacks a token digest")
     return _StoredAuthorizationDigest(digest)
-
-
-def _json_primitive(value: object) -> object:
-    """Project typed receipt values into finite, replayable JSON primitives."""
-
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise TypeError("continuity receipt contains a non-finite float")
-        return value
-    if isinstance(value, Enum):
-        return _json_primitive(value.value)
-    if isinstance(value, Mapping):
-        normalized: dict[str, object] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError("continuity receipt object keys must be strings")
-            normalized[key] = _json_primitive(item)
-        return normalized
-    if isinstance(value, (list, tuple)):
-        return [_json_primitive(item) for item in value]
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        return _json_primitive(model_dump(mode="json"))
-    if is_dataclass(value) and not isinstance(value, type):
-        # Dataclass receipt values can carry private derived caches (for
-        # example AnnotationBatch's canonical byte payload). Persist only the
-        # constructor fields that define the replayable public value.
-        return _json_primitive({field.name: getattr(value, field.name) for field in fields(value) if field.init})
-    if isinstance(value, Path):
-        return str(value)
-    raise TypeError(f"continuity receipt cannot encode {type(value).__qualname__}")
 
 
 def _receipt_payload(receipt: MutationReceipt) -> dict[str, object]:
