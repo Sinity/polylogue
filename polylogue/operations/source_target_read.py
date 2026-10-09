@@ -26,9 +26,9 @@ class SourceTargetChangedError(ValueError):
 @dataclass(frozen=True, slots=True)
 class _BlockSupplier:
     raw_id: str
-    marker: tuple[object, ...]
+    marker: tuple[object, ...] | None
     raw: tuple[object, ...]
-    membership: tuple[object, ...]
+    membership: tuple[object, ...] | None
     parser_sidecars: str
 
 
@@ -41,10 +41,12 @@ def _supplier_rows(archive: ArchiveStore, session_id: str):
     # Enumerate Source memberships rather than sessions.raw_id: a union can
     # retain a block supplied by an earlier, separately accepted acquisition.
     return archive.source_connection.execute(
-        "SELECT a.sequence,a.identity,a.raw_id,a.payload_sha256 "
-        "FROM raw_session_memberships m JOIN accepted_marker_inputs a ON a.raw_id=m.raw_id "
-        "WHERE m.logical_source_key=? ORDER BY a.sequence DESC",
-        (session_id,),
+        "SELECT a.sequence,a.identity,r.raw_id,a.payload_sha256 "
+        "FROM raw_sessions r LEFT JOIN accepted_marker_inputs a ON a.raw_id=r.raw_id "
+        "WHERE r.logical_source_key=? OR EXISTS (SELECT 1 FROM raw_session_memberships m "
+        "WHERE m.raw_id=r.raw_id AND m.logical_source_key=?) "
+        "ORDER BY r.acquisition_generation DESC,r.raw_id,a.sequence DESC",
+        (session_id, session_id),
     )
 
 
@@ -79,25 +81,26 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
     columns = tuple(column.name for column in BLOCKS_SPEC.insert_columns)
     for marker_row in _supplier_rows(archive, session_id):
         _checkpoint(snapshot)
-        marker = tuple(marker_row)
-        sequence, identity, raw_id, payload_digest = marker
-        accepted = AcceptedMarkerInput(
-            "",
-            int(sequence),
-            AcceptedMarkerInputReference(str(raw_id), str(identity), str(payload_digest)),
-        )
-        payload = verified_marker_payload_from_blob(source, accepted)
-        try:
-            if session_id not in payload.iter_items("sessions.item.session_id"):
-                continue
-        finally:
-            payload.close()
+        sequence, identity, raw_id, payload_digest = marker_row
+        marker = tuple(marker_row) if sequence is not None else None
+        if marker is not None:
+            accepted = AcceptedMarkerInput(
+                "",
+                int(sequence),
+                AcceptedMarkerInputReference(str(raw_id), str(identity), str(payload_digest)),
+            )
+            payload = verified_marker_payload_from_blob(source, accepted)
+            try:
+                if session_id not in payload.iter_items("sessions.item.session_id"):
+                    continue
+            finally:
+                payload.close()
         raw_row = source.execute("SELECT * FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone()
         membership_row = source.execute(
             "SELECT * FROM raw_session_memberships WHERE raw_id=? AND logical_source_key=?",
             (raw_id, session_id),
         ).fetchone()
-        if raw_row is None or membership_row is None:
+        if raw_row is None:
             continue
         provider, blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(str(raw_id))
         if not BlobStore(archive.archive_root / "blob").verify(blob_hash):
@@ -137,7 +140,7 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
                             str(raw_id),
                             marker,
                             tuple(raw_row),
-                            tuple(membership_row),
+                            tuple(membership_row) if membership_row is not None else None,
                             sidecars,
                         )
                         return
@@ -161,22 +164,24 @@ def revalidate_source_block(
     if not isinstance(supplier, _BlockSupplier):
         raise SourceTargetUnavailableError("block target was not bound to pinned Source")
     source = archive.source_connection
-    marker = source.execute(
-        "SELECT sequence,identity,raw_id,payload_sha256 FROM accepted_marker_inputs WHERE sequence=?",
-        (supplier.marker[0],),
-    ).fetchone()
+    marker = (
+        source.execute(
+            "SELECT sequence,identity,raw_id,payload_sha256 FROM accepted_marker_inputs WHERE sequence=?",
+            (supplier.marker[0],),
+        ).fetchone()
+        if supplier.marker is not None
+        else None
+    )
     raw = source.execute("SELECT * FROM raw_sessions WHERE raw_id=?", (supplier.raw_id,)).fetchone()
     membership = source.execute(
         "SELECT * FROM raw_session_memberships WHERE raw_id=? AND logical_source_key=?",
         (supplier.raw_id, session_id),
     ).fetchone()
     if (
-        marker is None
-        or tuple(marker) != supplier.marker
+        (tuple(marker) if marker is not None else None) != supplier.marker
         or raw is None
         or tuple(raw) != supplier.raw
-        or membership is None
-        or tuple(membership) != supplier.membership
+        or (tuple(membership) if membership is not None else None) != supplier.membership
     ):
         raise SourceTargetChangedError("retained block supplier changed before durable apply")
     from polylogue.sources.revision_backfill import _retained_parser_sidecar_digest
