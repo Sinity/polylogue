@@ -11,7 +11,9 @@ from polylogue.sources.dispatch import iter_parsed_stream, parse_payload
 from polylogue.sources.parsers.base import AdmissionUnit
 from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.index_writer import fixture_index_connection, write_fixture_index_session
+from tests.infra.live_ingest import write_index_session
 
 
 @pytest.mark.parametrize("reply_role", ["assistant", "user", "tool"])
@@ -128,9 +130,10 @@ def test_claude_nested_result_media_survives_parse_accounting_and_stored_tree(
         outcome.unit is AdmissionUnit.PART and outcome.key == "future_media"
         for outcome in parsed.unit_accounting.outcomes
     )
-    with fixture_index_connection(tmp_path / "index.db") as conn:
-        session_id = write_fixture_index_session(conn, parsed)
-    with sqlite3.connect(tmp_path / "index.db") as conn:
+    with ArchiveStore(tmp_path / "archive") as archive:
+        session_id = write_index_session(archive, parsed)
+        archive.commit()
+    with sqlite3.connect(tmp_path / "archive" / "index.db") as conn:
         rows = conn.execute(
             "SELECT block_type,text,semantic_extra_json FROM blocks WHERE session_id=? ORDER BY position", (session_id,)
         ).fetchall()
@@ -141,7 +144,8 @@ def test_claude_nested_result_media_survives_parse_accounting_and_stored_tree(
 
 
 def test_streamed_claude_code_media_uses_attachment_sink(tmp_path: Path) -> None:
-    with SqliteMessageStore(tmp_path / "prepared.sqlite") as store:
+    store = SqliteMessageStore(tmp_path / "prepared.sqlite")
+    try:
         parsed = list(
             iter_parsed_stream(
                 Provider.CLAUDE_CODE,
@@ -181,3 +185,5 @@ def test_streamed_claude_code_media_uses_attachment_sink(tmp_path: Path) -> None
         assert parsed.messages[0].blocks[1].type is BlockType.DOCUMENT
         assert parsed.unit_accounting is not None
         parsed.unit_accounting.assert_conserved()
+    finally:
+        store.close()

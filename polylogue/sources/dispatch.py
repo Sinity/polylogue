@@ -2330,7 +2330,11 @@ def iter_parsed_payload(
     )
     try:
         for spec in specs:
-            if (message_sink_factory is not None or event_sink_factory is not None) and (
+            if (
+                message_sink_factory is not None
+                or event_sink_factory is not None
+                or attachment_sink_factory is not None
+            ) and (
                 spec.mode == "claude_code_multiway"
                 or spec.mode == "grouped_records"
                 and spec.provider in STREAM_RECORD_PROVIDERS

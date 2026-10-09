@@ -312,7 +312,7 @@ def _thinking_configuration(item: Mapping[str, object]) -> dict[str, object] | N
 
 
 def reclassify_tool_result_envelope(role: Role, content_blocks: list[ParsedContentBlock]) -> Role:
-    """Reclassify a ``role: user`` envelope whose content is all ``tool_result`` to ``Role.TOOL``.
+    """Reclassify a ``role: user`` envelope whose content is tool results and their nested media to ``Role.TOOL``.
 
     The Anthropic API protocol requires ``tool_result`` blocks to be carried by
     ``role: user`` messages — the assistant emits ``tool_use`` blocks and the
@@ -669,6 +669,10 @@ def _claude_content_blocks(content: object, *, admission: AdmissionLedger | None
             constructs.append(artifact)
 
         if not segment_blocks and isinstance(provider_type, str) and provider_type:
+            if admission is not None:
+                block_ordinal = admission.next_ordinal(AdmissionUnit.BLOCK)
+                admission.expect(AdmissionUnit.BLOCK, 1)
+                admission.materialized(AdmissionUnit.BLOCK, block_ordinal, "text")
             segment_blocks = [
                 ParsedContentBlock(
                     type=BlockType.TEXT,
