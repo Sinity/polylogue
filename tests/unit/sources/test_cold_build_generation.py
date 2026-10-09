@@ -849,6 +849,59 @@ def test_the_readiness_pass_restores_the_reader_shape_before_promotion(
         assert hits[0] >= 1
 
 
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+def test_late_readiness_failure_preserves_restored_layout_for_next_canonical_preparation(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException]
+) -> None:
+    """A retry may prepare against restored indexes; its writer must retain them."""
+    from polylogue.storage.fts import fts_lifecycle
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _ingest(tmp_path, root, "one.jsonl", "owned-first")
+    original = fts_lifecycle.rebuild_fts_index_sync
+
+    def fail_after_read_models(_conn: sqlite3.Connection) -> None:
+        raise failure("interrupted before terminal FTS publication")
+
+    with monkeypatch.context() as control:
+        control.setattr(fts_lifecycle, "rebuild_fts_index_sync", fail_after_read_models)
+        with pytest.raises(failure):
+            cold_build.prepare_promotion_candidate()
+    assert not cold_build._promotion_candidate_ready
+    assert _active_session_count(tmp_path) == 0
+    assert "idx_messages_role" in _candidate_index_names(cold_build)
+    # This is actual acquisition, Source preparation and sealed Index replay,
+    # after the failed pass changed the candidate's reader-index incarnation.
+    _ingest(tmp_path, root, "two.jsonl", "owned-second")
+    assert "idx_messages_role" in _candidate_index_names(cold_build)
+    assert fts_lifecycle.rebuild_fts_index_sync is original
+    cold_build.promote()
+    assert _active_session_count(tmp_path) == 2
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
+        assert (
+            reader._conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'owned'").fetchone()[0]
+            == 2
+        )
+
+
+def test_secondary_layout_preservation_requires_owned_writer_and_excludes_deferral(
+    tmp_path: Path, cold_build: ColdBuildGeneration
+) -> None:
+    with pytest.raises(ValueError, match="owned inactive writable"):
+        ArchiveStore(tmp_path, preserve_secondary_index_layout=True)
+    with pytest.raises(ValueError, match="owned inactive writable"):
+        ArchiveStore(tmp_path, read_only=True, preserve_secondary_index_layout=True)
+    with pytest.raises(ValueError, match="deferred and preserved"):
+        ArchiveStore.open_owned_inactive_generation(
+            cold_build.generation_root,
+            generation_id=cold_build.generation_id,
+            owner_id=cold_build.generation.owner_id,
+            defer_secondary_indexes=True,
+            preserve_secondary_index_layout=True,
+        )
+
+
 def test_a_never_promoted_generation_is_discarded_and_leaves_readers_alone(
     tmp_path: Path, cold_build: ColdBuildGeneration
 ) -> None:

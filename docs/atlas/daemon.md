@@ -13,6 +13,12 @@ inactive candidates and replays retained bytes without re-acquiring originals.
 Normal services start only after successful preflight. A current successor is
 not rebuilt again. Source parse acknowledgements remain with the regular retained
 replay stage; promotion and restart preserve pending states and current failures.
+Retained startup candidates establish reader-index deferral at creation, before
+canonical preparation seals their SQLite incarnation. Owned inactive replay
+defers per-session FTS, action-pair and delegation-fact maintenance. Readiness
+restores reader indexes, rebuilds the stored action pairs and delegation facts
+through their canonical materializers, then repopulates FTS before promotion.
+Session summaries and lineage still settle during the ordinary writer route.
 The verified-empty bootstrap transition remains separate,
 and its successful promotion skips populated reconstruction in that startup.
 

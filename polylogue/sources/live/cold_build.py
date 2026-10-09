@@ -609,6 +609,13 @@ class ColdBuildGeneration:
             snapshot = rebuild_source_evidence_snapshot(archive_root)
         phase("generation_create")
         generation = store.create(owner_id=owner_id or _cold_build_owner_id(), source_snapshot=snapshot)
+        with ArchiveStore.open_owned_inactive_generation(
+            Path(generation.index_path).parent,
+            generation_id=generation.generation_id,
+            owner_id=generation.owner_id,
+            defer_secondary_indexes=True,
+        ):
+            pass
         baseline_path = Path(generation.index_path).parent / "source-baseline.json"
         with baseline_path.open("x", encoding="utf-8") as stream:
             json.dump(
@@ -940,7 +947,8 @@ class ColdBuildGeneration:
                 self.generation_root,
                 generation_id=self.generation_id,
                 owner_id=self.generation.owner_id,
-                defer_secondary_indexes=True,
+                defer_secondary_indexes=False,
+                preserve_secondary_index_layout=True,
             )
         except BaseException:
             # The holder is acquired before the candidate open so that every

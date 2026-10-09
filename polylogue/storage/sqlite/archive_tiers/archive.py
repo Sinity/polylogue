@@ -857,6 +857,7 @@ class ArchiveStore:
         validate_index_layout: bool = True,
         owned_read_generation: IndexGeneration | None = None,
         defer_secondary_indexes: bool = False,
+        preserve_secondary_index_layout: bool = False,
         active_cold_build: bool = False,
         durable_writer: bool = False,
     ) -> None:
@@ -877,6 +878,10 @@ class ArchiveStore:
             raise ValueError("an opened index descriptor is valid only for read-only archive access")
         if defer_secondary_indexes and (read_only or owned_inactive_generation is None):
             raise ValueError("secondary-index deferral requires an owned inactive writable generation")
+        if preserve_secondary_index_layout and (read_only or owned_inactive_generation is None):
+            raise ValueError("preserving secondary-index layout requires an owned inactive writable generation")
+        if defer_secondary_indexes and preserve_secondary_index_layout:
+            raise ValueError("secondary indexes cannot be deferred and preserved in the same open")
         if durable_writer and (read_only or owned_inactive_generation is None):
             raise ValueError("durable_writer requires an owned inactive writable generation")
         if active_cold_build and (read_only or owned_inactive_generation is not None or source_tier_acquisition):
@@ -1058,8 +1063,16 @@ class ArchiveStore:
                 # Creating the deferred reader indexes here and dropping them
                 # two statements later is free on an empty generation and
                 # ruinous on a partially built one.
-                skip_runtime_index_ensure=defer_secondary_indexes,
+                skip_runtime_index_ensure=defer_secondary_indexes or preserve_secondary_index_layout,
             )
+            if preserve_secondary_index_layout:
+                from polylogue.storage.sqlite.schema import assert_readable_archive_layout
+
+                assert_readable_archive_layout(
+                    self._conn,
+                    generation_id=generation_id,
+                    owned_inactive_generation=authoritative_generation,
+                )
             if not read_only and not source_tier_acquisition:
                 # Read once, before this store writes anything: it is the
                 # proof that licenses fresh-build writes, and every later
@@ -1768,6 +1781,7 @@ class ArchiveStore:
         generation_id: str,
         owner_id: str,
         defer_secondary_indexes: bool = False,
+        preserve_secondary_index_layout: bool = False,
     ) -> ArchiveStore:
         """Open a typed inactive generation without weakening normal identity checks."""
         return cls(
@@ -1776,6 +1790,7 @@ class ArchiveStore:
             read_only=False,
             owned_inactive_generation=(generation_id, owner_id),
             defer_secondary_indexes=defer_secondary_indexes,
+            preserve_secondary_index_layout=preserve_secondary_index_layout,
         )
 
     @classmethod
@@ -1786,6 +1801,7 @@ class ArchiveStore:
         generation_id: str,
         owner_id: str,
         defer_secondary_indexes: bool = True,
+        preserve_secondary_index_layout: bool = False,
     ) -> ArchiveStore:
         """Open an owned inactive generation that the live writer also acquires into.
 
@@ -1809,6 +1825,7 @@ class ArchiveStore:
             read_only=False,
             owned_inactive_generation=(generation_id, owner_id),
             defer_secondary_indexes=defer_secondary_indexes,
+            preserve_secondary_index_layout=preserve_secondary_index_layout,
             durable_writer=True,
         )
 
@@ -1828,7 +1845,8 @@ class ArchiveStore:
 
         One ``CREATE INDEX`` pass for the whole build instead of index
         maintenance on every inserted row, one FTS repopulate instead
-        of per-session trigger work, then the constraint check the build ran
+        of per-session trigger work, one canonical action/delegation rebuild,
+        then the constraint check the build ran
         without. Everything here is idempotent, so an interrupted readiness
         pass is simply re-run on the same never-promoted generation.
         """
@@ -1838,11 +1856,18 @@ class ArchiveStore:
         from polylogue.storage.fts.fts_lifecycle import (
             rebuild_fts_index_sync,
         )
+        from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
+        from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
         from polylogue.storage.sqlite.runtime_indexes import restore_deferred_secondary_indexes_sync
 
         restore_deferred_secondary_indexes_sync(self._conn)
         self._deferred_secondary_indexes = ()
         self._conn.commit()
+        # These are stored read models. Bulk writes defer their maintenance;
+        # delegation facts consume the canonical action associations.
+        with self._conn:
+            rebuild_all_action_pairs_sync(self._conn)
+            rebuild_all_delegation_facts_sync(self._conn)
         rebuild_fts_index_sync(self._conn)
         self._conn.commit()
         violations = self._conn.execute("PRAGMA foreign_key_check").fetchmany(8)

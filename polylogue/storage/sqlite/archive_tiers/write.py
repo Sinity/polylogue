@@ -15215,7 +15215,8 @@ def _materialize_inherited_prefix(
     # as a replay of the child computes it.
     _reconcile_tool_use_outcomes(conn, child)
     _rehash_session_messages(conn, child)
-    refresh_action_pairs(conn, child)
+    if not bulk_build:
+        refresh_action_pairs(conn, child)
     refresh_session_summary(conn, child)
     _reconcile_session_model_usage_rows(conn, child)
     _aggregate_message_tokens_into_model_usage(conn, child)

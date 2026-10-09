@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
 from contextlib import closing
 from pathlib import Path
 
@@ -12,6 +14,123 @@ from polylogue.daemon import cli as daemon_cli
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported, open_readonly_connection
 from tests.infra.populated_managed_index import logical_rows, make_populated_stale_index
+
+
+def test_startup_defers_bulk_read_models_then_publishes_canonical_equivalents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Actual cohort replay skips per-session work; readiness closes the gap."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.empty_managed_index import make_empty_managed_index, mutate_fixture_database
+    from tests.infra.retained_replay import publish_retained_payload
+
+    root = tmp_path / "archive"
+    old = make_empty_managed_index(root, stale=False)
+    parent = [
+        {"type": "session_meta", "payload": {"id": "neutral-parent", "timestamp": "2026-06-02T00:00:00Z"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "id": "fc",
+                "call_id": "call",
+                "name": "exec_command",
+                "arguments": '{"cmd":"printf neutral"}',
+            },
+        },
+        {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "call", "output": "neutral"}},
+    ]
+    child = [
+        {
+            "type": "session_meta",
+            "payload": {
+                "id": "neutral-child",
+                "timestamp": "2026-06-02T00:00:01Z",
+                "forked_from_id": "neutral-parent",
+                "source": {"subagent": {"thread_spawn": True}},
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "child-message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "neutral child"}],
+            },
+        },
+    ]
+    for name, records in (("parent", parent), ("child", child)):
+        asyncio.run(
+            publish_retained_payload(
+                root,
+                provider=Provider.CODEX,
+                payload=("\n".join(json.dumps(record) for record in records) + "\n").encode(),
+                source_path=str(tmp_path / f"{name}.jsonl"),
+                acquired_at_ms=0,
+            )
+        )
+
+    def read_models(conn: sqlite3.Connection) -> dict[str, tuple[tuple[object, ...], ...]]:
+        from polylogue.storage.derived.session.summary import SESSION_SUMMARY_MEASURES
+
+        models = {
+            table: tuple(sorted(tuple(row) for row in conn.execute(f"SELECT * FROM {table}")))
+            for table in ("action_pairs", "delegation_facts")
+        }
+        columns = ",".join(measure.column for measure in SESSION_SUMMARY_MEASURES)
+        models["session_summary"] = tuple(
+            tuple(row) for row in conn.execute(f"SELECT session_id,{columns} FROM sessions ORDER BY session_id")
+        )
+        return models
+
+    with closing(open_readonly_connection(old)) as conn:
+        expected = read_models(conn)
+        assert expected["action_pairs"] and expected["delegation_facts"] and expected["session_summary"]
+    mutate_fixture_database(old, "UPDATE schema_identity SET identity='prior-runtime' WHERE tier='index'")
+    original_readiness = ArchiveStore.run_generation_readiness_pass
+    readiness_calls = []
+
+    def readiness(self: ArchiveStore) -> None:
+        readiness_calls.append(self.index_db_path)
+        assert self.owns_inactive_generation
+        assert self._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+        assert self._conn.execute("SELECT COUNT(*) FROM delegation_facts").fetchone()[0] == 0
+        assert self._conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0] == 0
+        assert self._conn.execute("SELECT 1 FROM sqlite_master WHERE name='idx_messages_role'").fetchone() is None
+        original_readiness(self)
+        assert read_models(self._conn) == expected
+        assert self._conn.execute("SELECT COUNT(*) FROM delegation_refresh_scope").fetchone()[0] == 0
+        assert self._conn.execute("SELECT COUNT(*) FROM derived_refresh_guard").fetchone()[0] == 0
+
+    class PreflightReachedError(Exception):
+        pass
+
+    def preflight() -> None:
+        active = ArchiveLocation.resolve(root).active_index_path.resolve(strict=True)
+        assert active != old and old.exists() and len(readiness_calls) == 1
+        with closing(open_readonly_connection(active)) as conn:
+            assert_tier_schema_supported(conn, active)
+            assert read_models(conn) == expected
+            assert (
+                conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'neutral'").fetchone()[0] > 0
+            )
+        raise PreflightReachedError
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    monkeypatch.setattr(ArchiveStore, "run_generation_readiness_pass", readiness)
+    monkeypatch.setattr(daemon_cli, "_check_schema_version_fast", preflight)
+    with pytest.raises(PreflightReachedError):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+            )
+        )
 
 
 @pytest.mark.parametrize(

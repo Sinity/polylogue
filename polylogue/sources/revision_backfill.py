@@ -2170,6 +2170,9 @@ def apply_prepared_revision_replay(
     logical_keys: set[str] = set()
     spill = _PreparedReplayInputs(prepared_inputs)
     with _prepared_replay_archive(archive_root, reference_seal, active_index_path) as archive:
+        # Only this validated, never-published destination has a mandatory
+        # readiness pass that rebuilds deferred materializations before readers.
+        bulk_build = archive.owns_inactive_generation
         publication_read = ConnectionBlobPublicationRead(archive._ensure_source_conn())
         with archive.index_mutation_scope(prepared_seal=reference_seal):
             # Source census has its own original prepared unit. Its counts
@@ -2299,7 +2302,7 @@ def apply_prepared_revision_replay(
                             stage_timings_s=stage_timings,
                             manage_transaction=False,
                             bulk_fts=bulk_fts,
-                            bulk_build=False,
+                            bulk_build=bulk_build,
                             fresh_build=False,
                             fresh_build_batch=None,
                             prepared_aggregate_rows=prepared_write.rows,
@@ -2406,6 +2409,7 @@ def apply_prepared_revision_replay(
                     preacquired_attachment_blobs=attachments,
                     stage_timings_s=stage_timings,
                     bulk_fts=bulk_fts,
+                    bulk_build=bulk_build,
                     prepared_write=membership_prepared_write,
                     write_result=record_write_result,
                 )
@@ -2457,6 +2461,8 @@ def apply_prepared_revision_replay(
                     stage_timings_s=stage_timings,
                     stage_timing_prefix="replay.work_event",
                     manage_transaction=False,
+                    bulk_fts=bulk_fts,
+                    bulk_build=bulk_build,
                     preacquired_attachment_blobs={},
                     finalize_raw_parse=False,
                     prepared_required=True,
@@ -4864,6 +4870,9 @@ def _prepared_replay_archive(
         Path(generation.index_path).parent,
         generation_id=generation.generation_id,
         owner_id=generation.owner_id,
+        # Preparation sealed the current layout, whether deferred or restored
+        # by an interrupted readiness pass. Reopening must perform no index DDL.
+        preserve_secondary_index_layout=True,
     ) as archive:
         yield archive
         destination.validate()
