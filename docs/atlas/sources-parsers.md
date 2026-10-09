@@ -2,6 +2,13 @@
 
 ## Area boundary
 
+Codex event-message mirrors consume one matching response occurrence only
+when exact text and role also carry a shared native identity, timestamp instant,
+or unambiguous turn ID. Contradictory time or turn evidence prevents matching;
+uncorrelated repetitions remain messages. Native reasoning IDs survive lowering,
+and admitted code-only messages retain their CODE blocks. Claude Code session
+time extrema compare instants while messages keep their declared offsets.
+
 Post-ingest hook-paste enrichment reads admitted Source hook evidence and
 publishes Index paste markers through `open_isolated_write_connection` with
 its configured archive root. The factory enforces that root’s writer lease

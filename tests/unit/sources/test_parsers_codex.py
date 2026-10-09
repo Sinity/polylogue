@@ -1041,7 +1041,7 @@ class TestMessageParsing:
         assert result.messages[0].role is Role.USER
         assert result.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
 
-    def test_event_user_message_dedupes_matching_response_message(self) -> None:
+    def test_undated_event_user_message_preserves_unproved_response_mirror(self) -> None:
         payload = [
             {
                 "type": "event_msg",
@@ -1059,8 +1059,8 @@ class TestMessageParsing:
 
         result = parse(payload, "fallback")
 
-        assert len(result.messages) == 1
-        assert result.messages[0].text == "same prompt"
+        assert len(result.messages) == 2
+        assert [message.text for message in result.messages] == ["same prompt", "same prompt"]
         assert result.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
 
     def test_custom_tool_call_and_output_materialize_as_action_pair(self) -> None:
@@ -3865,14 +3865,8 @@ def test_stream_parse_reads_its_records_once_then_replays_once(monkeypatch: pyte
     assert replays == (1 if tier == "spill-first" else 0)
 
 
-def test_lookahead_signature_keys_are_fixed_size_digests() -> None:
-    """A message signature is keyed by 32 bytes, whatever its text length.
-
-    Keying the scratch B-tree by the pickled text put multi-kilobyte keys on
-    overflow pages, so every membership probe of a whale read them back.
-    Anti-vacuity: key by ``_sql_key(signature)`` and the stored key grows
-    with the text.
-    """
+def test_lookahead_echo_keys_are_fixed_size_digests() -> None:
+    """Scratch lookup keys stay fixed-size and each mirror consumes one occurrence."""
     import sqlite3
 
     from polylogue.sources.parsers import codex as codex_module
@@ -3880,15 +3874,16 @@ def test_lookahead_signature_keys_are_fixed_size_digests() -> None:
     with sqlite3.connect("") as connection:
         index = codex_module._CodexLookaheadIndex(connection)
         long_text = "w" * 200_000
-        index.add_signature(("user", long_text))
-        index.add_signature(("assistant", "short"))
-        lengths = {row[0] for row in connection.execute("SELECT length(value) FROM codex_signatures")}
+        evidence = (None, "2026-01-01T00:00:00+00:00", None)
+        index.add_message_echo(1, ("user", long_text), evidence)
+        index.add_message_echo(2, ("assistant", "short"), evidence)
+        lengths = {row[0] for row in connection.execute("SELECT length(signature) FROM codex_message_echoes")}
         assert lengths == {32}
-        assert ("user", long_text) in index
-        assert ("assistant", "short") in index
-        assert ("assistant", long_text) not in index
-        assert ("user", long_text + "x") not in index
-        assert "not a signature" not in index
+        assert not index.consume_message_echo(("assistant", long_text), evidence)
+        assert not index.consume_message_echo(("user", long_text + "x"), evidence)
+        assert index.consume_message_echo(("user", long_text), evidence)
+        assert not index.consume_message_echo(("user", long_text), evidence)
+        assert index.consume_message_echo(("assistant", "short"), evidence)
         index.close()
 
 

@@ -14,10 +14,10 @@ import sqlite3
 import sys
 import tempfile
 import unicodedata
-from collections.abc import Callable, Container, Iterable, Iterator, Mapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence, Sequence
 from contextlib import closing
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import IO, cast
 
 from pydantic import ValidationError
@@ -160,7 +160,12 @@ class _CodexLookaheadIndex:
         self._spool: PickleSpool[object] | None = None
         connection.executescript(
             """
-            CREATE TABLE IF NOT EXISTS codex_signatures (value BLOB PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS codex_message_echoes (
+                record_index INTEGER PRIMARY KEY, signature BLOB NOT NULL,
+                native_id TEXT, instant TEXT, turn_id TEXT, consumed INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS codex_message_echo_signature
+                ON codex_message_echoes(signature, consumed);
             CREATE TABLE IF NOT EXISTS codex_calls (
                 record_index INTEGER PRIMARY KEY, tool_id BLOB, occurrence INTEGER,
                 envelope BLOB NOT NULL
@@ -276,27 +281,34 @@ class _CodexLookaheadIndex:
         assert row is not None
         return int(row[0]) - 1
 
-    def add_signature(self, signature: tuple[str, str]) -> None:
+    def add_message_echo(
+        self, record_index: int, signature: tuple[str, str], evidence: tuple[str | None, str | None, str | None]
+    ) -> None:
         self.connection.execute(
-            "INSERT OR IGNORE INTO codex_signatures(value) VALUES (?)",
-            (_signature_key(signature),),
+            "INSERT INTO codex_message_echoes(record_index, signature, native_id, instant, turn_id) VALUES (?, ?, ?, ?, ?)",
+            (record_index, _signature_key(signature), *evidence),
         )
 
-    def __contains__(self, signature: object) -> bool:
-        if not (
-            isinstance(signature, tuple)
-            and len(signature) == 2
-            and isinstance(signature[0], str)
-            and isinstance(signature[1], str)
-        ):
+    def consume_message_echo(
+        self, signature: tuple[str, str], evidence: tuple[str | None, str | None, str | None]
+    ) -> bool:
+        # Text equality alone cannot establish that two records are mirrors.
+        # Consume one occurrence with positive correlation and no contradictory
+        # time/turn evidence, so a later identical prompt remains a real turn.
+        native_id, instant, turn_id = evidence
+        row = self.connection.execute(
+            """SELECT record_index FROM codex_message_echoes
+               WHERE signature = ? AND consumed = 0
+                 AND (native_id = ? OR instant = ? OR turn_id = ?)
+                 AND (instant IS NULL OR ? IS NULL OR instant = ?)
+                 AND (turn_id IS NULL OR ? IS NULL OR turn_id = ?)
+               ORDER BY record_index LIMIT 1""",
+            (_signature_key(signature), native_id, instant, turn_id, instant, instant, turn_id, turn_id),
+        ).fetchone()
+        if row is None:
             return False
-        return (
-            self.connection.execute(
-                "SELECT 1 FROM codex_signatures WHERE value = ?",
-                (_signature_key(signature),),
-            ).fetchone()
-            is not None
-        )
+        self.connection.execute("UPDATE codex_message_echoes SET consumed = 1 WHERE record_index = ?", (row[0],))
+        return True
 
     def get(self, record_index: int) -> _CodexExecEnvelope | None:
         row = self.connection.execute(
@@ -3337,7 +3349,11 @@ class _CodexLookaheadObserver:
                 raw_role = _effective_role(message_record)
                 if raw_role and raw_role != "unknown":
                     text = extract_codex_text(_effective_content(message_record))
-                    index_store.add_signature(_message_signature(Role.normalize(raw_role), text))
+                    index_store.add_message_echo(
+                        record_index,
+                        (Role.normalize(raw_role).value, text),
+                        _codex_message_echo_evidence(message_record, _message_timestamp(record, message_record)),
+                    )
         inner = _response_inner_record(item)
         if inner is None:
             return
@@ -3993,7 +4009,7 @@ def _codex_reasoning_message(
     combined_text = "\n\n".join(t for t in (summary_text, content_text) if t) or None
     timestamp = _iso_or_none(_record_timestamp(record) or timestamp_fallback)
     return ParsedMessage(
-        provider_message_id="",
+        provider_message_id=_record_id(payload) or "",
         role=Role.ASSISTANT,
         text=combined_text,
         timestamp=timestamp,
@@ -4202,9 +4218,15 @@ def _codex_inline_image_blocks(content: object) -> tuple[ParsedContentBlock, ...
     return tuple(blocks)
 
 
-def _message_signature(role: Role | str, text: str | None) -> tuple[str, str]:
-    role_value = role.value if isinstance(role, Role) else str(role)
-    return (role_value, " ".join((text or "").split()))
+def _codex_message_echo_evidence(
+    record: dict[str, object], timestamp: str | int | float | None
+) -> tuple[str | None, str | None, str | None]:
+    native_id = _string_field(record, "client_id", "id")
+    pair = parse_timestamp_pair(timestamp)
+    instant = pair[0].astimezone(timezone.utc).isoformat() if pair is not None else None
+    turn_evidence = _codex_turn_evidence(record)
+    turn_id = None if "turn_id_conflict" in turn_evidence else _string_value(turn_evidence.get("turn_id"))
+    return native_id, instant, turn_id
 
 
 def _codex_event_message(
@@ -4212,7 +4234,7 @@ def _codex_event_message(
     *,
     index: int,
     position: int,
-    response_signatures: Container[tuple[str, str]],
+    echo_index: _CodexLookaheadIndex,
     timestamp_fallback: str | int | float | None = None,
 ) -> ParsedMessage | None:
     record_type = _record_type(record)
@@ -4222,7 +4244,10 @@ def _codex_event_message(
     if not isinstance(text, str) or not text.strip():
         return None
     role = Role.USER if record_type == "user_message" else Role.ASSISTANT
-    if _message_signature(role, text) in response_signatures:
+    if echo_index.consume_message_echo(
+        (role.value, text),
+        _codex_message_echo_evidence(record, _record_timestamp(record) or timestamp_fallback),
+    ):
         return None
     message_type = classify_text_message_type(text) or MessageType.MESSAGE
     return ParsedMessage(
@@ -4529,7 +4554,6 @@ def _parse_records(
                 )
 
     code_mode_envelopes = _lookahead if _lookahead is not None else _codex_lookahead(records, _index)
-    response_signatures = code_mode_envelopes
     messages: MutableSequence[ParsedMessage] = message_sink if message_sink is not None else []
     session_events: MutableSequence[ParsedSessionEvent] = event_sink if event_sink is not None else []
 
@@ -4926,7 +4950,7 @@ def _parse_records(
                     inner,
                     index=idx,
                     position=message_position,
-                    response_signatures=response_signatures,
+                    echo_index=code_mode_envelopes,
                     timestamp_fallback=timestamp_fallback,
                 )
                 if event_message is not None:
@@ -5103,14 +5127,9 @@ def _parse_records(
                         admission.next_ordinal(AdmissionUnit.BLOCK),
                         inline_block.type.value,
                     )
-            has_structured = any(
-                cb.type
-                in (BlockType.TOOL_USE, BlockType.TOOL_RESULT, BlockType.THINKING, BlockType.IMAGE, BlockType.DOCUMENT)
-                for cb in content_blocks
-            )
             if not raw_role or raw_role == "unknown":
                 continue
-            if not text and not has_structured:
+            if not text and not content_blocks:
                 continue
             role = Role.normalize(raw_role)
 
