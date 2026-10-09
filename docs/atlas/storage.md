@@ -24,6 +24,21 @@ arrays. Ingest, hashing, prepared serialization and index writes replay the
 ordered item rows without collecting them. The table is part of the rebuildable
 index schema and cascades with its event.
 
+Session-event native message anchors retain their exact Source spelling in
+`source_message_provider_id_json`, using the shared lossless native-name carrier.
+The companion SQLite text column carries the SQLite-safe native value, never a
+replacement character. Typed event reads and delegation resolution decode the
+same carrier. Event interval bounds and the boundary-message position are
+declared semantic hash inputs; NULL and zero remain distinct in complete and
+revision projections. Array event position continues to state order.
+
+File-edit evidence binds to the exact tool-use block occurrence admitted by
+the shared invocation association. Reusing a tool ID cannot transfer an earlier
+result's edit to a later call. An edit with no unique call owner refuses, and
+prepared indexing closes its scratch readers before transferring result pages.
+These Index schema and lowering changes move the derived identity and require
+reconvergence. They add no durable-tier migration.
+
 Provider-asserted branch points resolve against the parent's composed transcript,
 including prefix rows physically owned by ancestors. Resolution keeps the
 canonical owning message ID and respects the composed branch cut. Several rows

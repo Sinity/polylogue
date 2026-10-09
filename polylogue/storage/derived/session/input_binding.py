@@ -157,6 +157,7 @@ SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS: tuple[str, ...] = (
 SESSION_EVENT_PROJECTION_COLUMNS: tuple[str, ...] = (
     "source_message_id",
     "source_message_provider_id",
+    "source_message_provider_id_json",
     "position",
     "event_type",
     "payload_json",
@@ -208,6 +209,7 @@ SESSION_ATTACHMENT_EXCLUDED_COLUMNS: Mapping[str, str] = {
 
 SESSION_ATTACHMENT_REF_EXCLUDED_COLUMNS: Mapping[str, str] = {
     "ref_id": "generated from message_id and position, both already bound",
+    "native_identity": "exact Source reference identity; hydrated profile values are projected separately",
     "attachment_id": "join key whose attachments row is projected above",
     "session_id": "the partition key: the projection selects on it and orders by it",
     "position": "ordering coordinate the projection already orders by",
@@ -267,6 +269,7 @@ SESSION_INPUT_EXCLUDED_COLUMNS: Mapping[str, str] = {
     "message_id": "generated from native_id, or from content_identity and content_occurrence, all projected",
     "session_id": "the partition key: the projection selects on it and groups by it",
     "native_id": "identity input to message_id, not a value the profile reads",
+    "source_native_id_json": "lossless carrier of the hashed provider_message_id, covered by content_hash",
     "identity_source": "records which identity path fired, not what the message says",
     "parent_message_id": "lineage coordinate resolved from hashed parser fields",
     "is_active_leaf": "lineage marker derived from the same hashed payload as is_active_path",

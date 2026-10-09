@@ -119,6 +119,17 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
             "session_refs",
         }
     ),
+    "ParsedSessionEvent": frozenset(
+        {
+            "event_type",
+            "timestamp",
+            "payload",
+            "source_message_provider_id",
+            "boundary_start_position",
+            "boundary_end_position",
+            "boundary_message_position",
+        }
+    ),
 }
 
 #: Session-event families whose payload names a tool-result sidecar. Both
@@ -288,6 +299,9 @@ _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
         "models_used": "provider usage summary is derived from message model fields",
         "ingest_flags": "parser quality annotations are independent session tags",
     },
+    "ParsedSessionEvent": {
+        "owner_coordinate": "parser-only ownership evidence resolved to the hashed source_message_owner_key",
+    },
 }
 
 # Message ownership has a stricter identity boundary than the complete
@@ -322,17 +336,24 @@ _NFC_TEXT_FIELDS: dict[str, frozenset[str]] = {
     "ParsedContentBlock": frozenset({"text"}),
     "ParsedMessage": frozenset({"text", "user_context_text"}),
     "ParsedSession": frozenset({"title", "instructions_text"}),
+    "ParsedSessionEvent": frozenset(),
 }
 
 
 def validate_semantic_hash_partition() -> None:
     """Fail if parsed model fields are missing from the identity decision."""
-    from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.sources.parsers.base_models import (
+        ParsedContentBlock,
+        ParsedMessage,
+        ParsedSession,
+        ParsedSessionEvent,
+    )
 
     models = (
         ("ParsedContentBlock", ParsedContentBlock),
         ("ParsedMessage", ParsedMessage),
         ("ParsedSession", ParsedSession),
+        ("ParsedSessionEvent", ParsedSessionEvent),
     )
     for name, model in models:
         fields = frozenset(cast(Mapping[str, object], model.model_fields))
@@ -2229,6 +2250,9 @@ def _event_hash_payload(
         "timestamp": event.timestamp,
         "source_message_provider_id": event.source_message_provider_id,
         "payload": _event_payload_hash(event.event_type, event.payload),
+        "boundary_start_position": event.boundary_start_position,
+        "boundary_end_position": event.boundary_end_position,
+        "boundary_message_position": event.boundary_message_position,
     }
     if event.owner_coordinate is not None:
         if resolution is None:
@@ -2301,6 +2325,9 @@ def _event_content_payload(
         "timestamp": timestamp,
         "source_message_provider_id": event.source_message_provider_id,
         "payload": payload_hash,
+        "boundary_start_position": event.boundary_start_position,
+        "boundary_end_position": event.boundary_end_position,
+        "boundary_message_position": event.boundary_message_position,
     }
 
     if source_owner_key is not None:

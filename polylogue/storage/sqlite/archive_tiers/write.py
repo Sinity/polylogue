@@ -4838,9 +4838,9 @@ def _build_file_edit_rows(
     originalFile fields live on the wire), but ``file_edits`` is keyed by the
     TOOL_USE block that made the call -- resolved here via the shared
     ``tool_id``, exactly as the ``actions`` view pairs tool_use<->tool_result.
-    A TOOL_RESULT carrying ``file_edit`` with no matching TOOL_USE in this
-    same write (should not happen for a well-formed transcript) is dropped
-    rather than guessing a key.
+    The shared invocation association resolves each result occurrence, so
+    reused tool IDs cannot redirect an edit to a later call. An edit without
+    a unique TOOL_USE in this write refuses instead of guessing a key.
     """
     return list(
         _iter_file_edit_rows(
@@ -4863,10 +4863,13 @@ def _iter_file_edit_rows(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> Generator[tuple[object, ...], None, None]:
+    from polylogue.sources.tool_outcomes import iter_tool_result_owners
+
     source = messages.messages if isinstance(messages, _MessageTail) else messages
     disk_index = _DiskSourceMessageIds(source.path.parent) if isinstance(source, SqliteMessageSink) else None
-    tool_use_block_id_by_tool_id: dict[str, str] | _DiskSourceMessageIds = disk_index if disk_index is not None else {}
+    tool_use_block_ids: dict[str, str] | _DiskSourceMessageIds = disk_index if disk_index is not None else {}
     try:
+        has_edits = False
         for fallback_position, message in enumerate(messages):
             message_id = _message_id(
                 session_id,
@@ -4877,17 +4880,27 @@ def _iter_file_edit_rows(
                 duplicate_native_ids=duplicate_native_ids,
             )
             blocks = _message_blocks(message)
-            for block, identity in zip(blocks, block_content_identities(blocks), strict=True):
+            for block_ordinal, (block, identity) in enumerate(
+                zip(blocks, block_content_identities(blocks), strict=True)
+            ):
+                has_edits |= block.file_edit is not None and bool(block.tool_id)
                 if _block_type(block) is BlockType.TOOL_USE and block.tool_id:
-                    tool_use_block_id_by_tool_id[block.tool_id] = archive_block_id(
+                    tool_use_block_ids[f"use:{fallback_position}:{block_ordinal}"] = archive_block_id(
                         message_id,
                         content_identity=identity.content_identity,
                         content_occurrence=identity.content_occurrence,
                     )
+        if not has_edits:
+            return
+        with closing(iter_tool_result_owners(messages)) as associations:
+            for result_message, result_block, use_message, use_block in associations:
+                tool_use_block_ids[f"result:{result_message}:{result_block}"] = tool_use_block_ids[
+                    f"use:{use_message}:{use_block}"
+                ]
         if disk_index is not None:
             disk_index.finish()
 
-        def pending_edits() -> Iterator[tuple[str, ParsedMessage, ParsedContentBlock]]:
+        def pending_edits() -> Iterator[tuple[str, str, ParsedMessage, ParsedContentBlock]]:
             for fallback_position, message in enumerate(messages):
                 message_id = _message_id(
                     session_id,
@@ -4897,20 +4910,21 @@ def _iter_file_edit_rows(
                     message_id_remap=message_id_remap,
                     duplicate_native_ids=duplicate_native_ids,
                 )
-                for block in _message_blocks(message):
+                for block_ordinal, block in enumerate(_message_blocks(message)):
                     if block.file_edit is not None and block.tool_id:
-                        yield message_id, message, block
+                        side = "use" if _block_type(block) is BlockType.TOOL_USE else "result"
+                        yield f"{side}:{fallback_position}:{block_ordinal}", message_id, message, block
 
         pending = pending_edits()
         while batch := list(islice(pending, 512)):
             rows: list[tuple[object, ...]] = []
             with disk_index.reader() if disk_index is not None else nullcontext():
-                for message_id, message, block in batch:
+                for owner_key, message_id, message, block in batch:
                     file_edit = block.file_edit
                     assert file_edit is not None and block.tool_id is not None
-                    tool_use_block_id = tool_use_block_id_by_tool_id.get(block.tool_id)
+                    tool_use_block_id = tool_use_block_ids.get(owner_key)
                     if tool_use_block_id is None:
-                        continue
+                        raise MessageOwnerAmbiguityError("file edit has no unique tool-use occurrence")
                     rows.append(
                         (
                             tool_use_block_id,
@@ -11882,6 +11896,7 @@ _SessionEventInsertRow = tuple[
     int | None,
     int | None,
     str | None,
+    str | None,
 ]
 
 
@@ -11987,8 +12002,9 @@ def _write_session_events(
                 conn.executemany(
                     "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
                     "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
-                    "boundary_start_position, boundary_end_position, boundary_message_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "boundary_start_position, boundary_end_position, boundary_message_id, "
+                    "source_message_provider_id_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     session_event_rows,
                 )
                 session_event_rows.clear()
@@ -12012,8 +12028,9 @@ def _write_session_events(
             conn.execute(
                 "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
                 "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
-                "boundary_start_position, boundary_end_position, boundary_message_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "boundary_start_position, boundary_end_position, boundary_message_id, "
+                "source_message_provider_id_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 row,
             )
             for payload_key, array in arrays.items():
@@ -12106,7 +12123,7 @@ def _write_session_events(
                 row: _SessionEventInsertRow = (
                     session_id,
                     source_message_id,
-                    _sqlite_text(source_message_provider_id),
+                    sqlite_message_native_id(source_message_provider_id),
                     position,
                     _sqlite_text(event.event_type),
                     _json_dumps(ordinary_payload),
@@ -12116,6 +12133,7 @@ def _write_session_events(
                     else None,
                     event.boundary_end_position + position_offset if event.boundary_end_position is not None else None,
                     boundary_message_id,
+                    source_native_id_json(source_message_provider_id),
                 )
                 if streamed_arrays:
                     _flush_rows()
@@ -16588,14 +16606,15 @@ def _resolve_parent_dispatch_block(
     if not _origin_carries_dispatch_identity(origin):
         return _DispatchResolution(None, "origin-no-dispatch-identity")
     rows = conn.execute(
-        """SELECT source_message_provider_id, payload_json
+        """SELECT source_message_provider_id, source_message_provider_id_json, payload_json
            FROM session_events
            WHERE session_id = ? AND event_type = 'claude_delegation_progress'""",
         (parent_session_id,),
     ).fetchall()
     tool_ids: set[str] = set()
     contradicted = False
-    for source_id, payload_json in rows:
+    for stored_source_id, source_id_carrier, payload_json in rows:
+        source_id = native_id_from_storage(stored_source_id, source_id_carrier)
         try:
             payload = json.loads(str(payload_json))
         except (TypeError, ValueError):

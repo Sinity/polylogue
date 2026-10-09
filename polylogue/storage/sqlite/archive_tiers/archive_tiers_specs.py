@@ -1262,6 +1262,7 @@ SESSION_EVENTS_SPEC = _make_table_spec(
             """source_message_id          TEXT REFERENCES messages(message_id) ON DELETE SET NULL""",
         ),
         _raw_column("source_message_provider_id", """source_message_provider_id TEXT"""),
+        _raw_column("source_message_provider_id_json", """source_message_provider_id_json TEXT"""),
         _raw_column("position", """position                   INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column("event_type", """event_type                 TEXT NOT NULL CHECK(length(trim(event_type)) > 0)"""),
         # polylogue-kc8eq: no ``summary`` column. It was a write-time render of
