@@ -333,7 +333,7 @@ async def _cost_outlook_payload(hooks: ServerCallbacks, *, plan_name: str, metho
     return hooks.json_payload(outlook, exclude_none=True)
 
 
-def _framed_root_payload(source: Any, *, root: dict[str, object]) -> MCPRootPayload:
+def _framed_root_payload(source: Any, *, root: dict[str, object]) -> MCPRootPayload[dict[str, object]]:
     payload = MCPRootPayload(root=root)
     payload._transaction_request = source._transaction_request
     return payload
@@ -1674,12 +1674,12 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
             from polylogue.archive.query.transaction import QueryContinuationInvalidError, QueryContinuationStaleError
 
             try:
-                payload = await hooks.get_polylogue().resolve_ref(
+                resolved_payload = await hooks.get_polylogue().resolve_ref(
                     normalized, limit=hooks.clamp_limit(limit), offset=offset or 0, continuation=continuation
                 )
             except (QueryContinuationInvalidError, QueryContinuationStaleError) as exc:
                 return hooks.error_json(str(exc), code=exc.code, tool="read")
-            return hooks.json_payload(payload)
+            return hooks.json_payload(resolved_payload)
 
         return await hooks.async_safe_call(
             "read",

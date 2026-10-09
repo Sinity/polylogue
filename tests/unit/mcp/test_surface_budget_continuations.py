@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 
 from polylogue import Polylogue
+from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.query.transaction import QueryContinuation, QueryContinuationStaleError
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.enums import Provider
 from polylogue.mcp.payloads import MCPMessageFragmentPayload
+from polylogue.operations.session_contracts import SessionRead
+from polylogue.operations.transcript_window import TranscriptWindow
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import run_off_event_loop
@@ -50,7 +55,7 @@ async def test_registered_typed_pages_keep_budget_continuation(
     args: dict[str, object] = {"projection": projection, "limit": 20}
     if projection == "session-operations":
         args = {"projection": projection, "session_operation": {"operation": "sessions.timeline", "limit": 20}}
-    ids = []
+    ids: list[str] = []
     try:
         with (
             patch("polylogue.mcp.server._get_polylogue", return_value=api),
@@ -67,7 +72,10 @@ async def test_registered_typed_pages_keep_budget_continuation(
                     assert page["coverage"]["complete"] is False
                     assert page["coverage"]["gaps"] == []
                     args = descriptor["arguments"]
-                    token = args.get("continuation") or args["session_operation"]["continuation"]
+                    token = cast(
+                        str,
+                        args.get("continuation") or cast(dict[str, object], args["session_operation"])["continuation"],
+                    )
                     assert QueryContinuation.decode(token).request.offset == len(ids)
                 elif descriptor:
                     args = {"projection": projection, "continuation": descriptor}
@@ -122,8 +130,16 @@ async def test_registered_read_reassembles_oversized_unicode_message(
 
     from polylogue.operations.transcript_window import message_transcript_window
 
-    async def bounded_window(*args: object, **kwargs: object) -> object:
-        window = await message_transcript_window(*args, **kwargs)
+    async def bounded_window(
+        api: Polylogue,
+        request: SessionRead,
+        *,
+        content_projection: ContentProjectionSpec | None = None,
+        around: str | None = None,
+    ) -> TranscriptWindow[Message]:
+        window: TranscriptWindow[Message] = await message_transcript_window(
+            api, request, content_projection=content_projection, around=around
+        )
         return replace(window, lineage_complete=complete, lineage_truncation_reason=None if complete else "cycle")
 
     parts = []
@@ -155,13 +171,16 @@ async def test_registered_read_reassembles_oversized_unicode_message(
                     assert offset == fragment.total_bytes
                     descriptor = fragment.continuation
                     assert descriptor is not None
-                    assert QueryContinuation.decode(descriptor["arguments"]["continuation"]).request.offset == 1
+                    continuation_arguments = cast(dict[str, object], descriptor["arguments"])
+                    assert (
+                        QueryContinuation.decode(cast(str, continuation_arguments["continuation"])).request.offset == 1
+                    )
                     fn = mcp_server._tool_manager._tools["read"].fn
-                    later = json.loads(await invoke_surface_async(fn, **descriptor["arguments"]))
+                    later = json.loads(await invoke_surface_async(fn, **continuation_arguments))
                     assert [row["text"] for row in later["messages"]] == ["later"]
                     break
                 assert fragment.continuation is not None
-                args = fragment.continuation["arguments"]
+                args = cast(dict[str, object], fragment.continuation["arguments"])
                 fn = mcp_server._tool_manager._tools["read"].fn
                 stale_arguments = args
                 # Same bound window and fragment offset is an idempotent retry.

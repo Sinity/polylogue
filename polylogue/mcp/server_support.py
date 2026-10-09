@@ -40,6 +40,8 @@ from polylogue.surfaces.payloads import serialize_surface_payload
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
     from polylogue.config import Config
+    from polylogue.operations.session_contracts import SessionPage
+    from polylogue.surfaces.payloads import SessionMessagesResponsePayload
 
 logger = get_logger(__name__)
 _runtime_services: RuntimeServices | None = None
@@ -418,7 +420,7 @@ def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: b
             arguments: dict[str, object] = {"continuation": token}
             projection = context.arguments.get("projection")
             if projection == "session-operations":
-                operation = {"operation": request.operation, "continuation": token}
+                operation: dict[str, object] = {"operation": request.operation, "continuation": token}
                 if "ref" in request.arguments:
                     operation["ref"] = request.arguments["ref"]
                 arguments = {"projection": projection, "session_operation": operation}
@@ -502,7 +504,8 @@ def _message_fragment(payload: BaseModel, context: _ResponseContext) -> str:
     gaps = getattr(coverage, "gaps", ())
     complete = getattr(payload, "lineage_complete", not gaps)
     truncation_reason = getattr(payload, "lineage_truncation_reason", gaps[0] if gaps else None)
-    outcome = payload.outcome
+    fragment_page = cast("SessionMessagesResponsePayload | SessionPage[BaseModel]", payload)
+    outcome = fragment_page.outcome
     if not isinstance(outcome, OutcomeEnvelope):
         outcome = OutcomeEnvelope(
             state=outcome, reason=gaps[0] if gaps else None, detail={"gaps": list(gaps)} if gaps else {}
@@ -511,8 +514,8 @@ def _message_fragment(payload: BaseModel, context: _ResponseContext) -> str:
     def fragment(end: int) -> str:
         next_fragment = end if end < len(encoded) else None
         next_row = request.offset + 1
-        continuation = None
-        if next_fragment is not None or next_row < payload.total:
+        continuation: dict[str, object] | None = None
+        if next_fragment is not None or next_row < cast(int, fragment_page.total):
             resumed = framed if next_fragment is not None else framed.next(offset=next_row)
             arguments: dict[str, object] = {
                 "ref": ref,
@@ -530,7 +533,7 @@ def _message_fragment(payload: BaseModel, context: _ResponseContext) -> str:
                 row_offset=framed.offset,
                 offset=offset,
                 total_bytes=len(encoded),
-                total_rows=payload.total,
+                total_rows=cast(int, fragment_page.total),
                 lineage_complete=complete,
                 lineage_truncation_reason=truncation_reason,
                 outcome=outcome,
