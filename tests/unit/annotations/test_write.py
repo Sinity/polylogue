@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import closing
 from pathlib import Path
 
@@ -561,12 +561,13 @@ def test_judged_annotation_refuses_changed_inputs_and_preserves_reopened_history
         user_conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton=1").fetchone()[0]
         == epoch_before_retry
     )
-    for changed in (
+    changes: tuple[Callable[[], ArchiveAssertionEnvelope], ...] = (
         lambda: write(value={"score": 5, "status": "rejected"}, now_ms=4_000),
         lambda: write(evidence_refs=["session:codex-session:replacement-evidence"], now_ms=4_000),
         lambda: write(body_text="replacement label", now_ms=4_000),
         lambda: write(confidence=0.75, now_ms=4_000),
-    ):
+    )
+    for changed in changes:
         with pytest.raises(AssertionJudgedInputConflictError) as refusal:
             changed()
         assert refusal.value.assertion_ref == f"assertion:{candidate.assertion_id}"
@@ -592,5 +593,6 @@ def test_judged_annotation_refuses_changed_inputs_and_preserves_reopened_history
         if judgment.resulting_assertion is not None:
             promoted = read_assertion_envelope(reopened, judgment.resulting_assertion.assertion_id)
             assert promoted == judgment.resulting_assertion
-            assert promoted is not None and promoted.value == candidate.value
+            assert promoted is not None
+            assert promoted.value == candidate.value
             assert f"assertion:{candidate.assertion_id}" in promoted.evidence_refs

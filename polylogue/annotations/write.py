@@ -696,7 +696,6 @@ def upsert_annotation_assertion(
     durable_batch = None
     if batch_ref is not None:
         from polylogue.storage.sqlite.archive_tiers.user_annotations import (
-            annotation_batch_declares_assertion,
             read_annotation_batch_identity,
             read_durable_annotation_schema,
         )
@@ -760,6 +759,8 @@ def upsert_annotation_assertion(
         batch_ref=normalized_batch_ref,
     )
     if durable_batch is not None:
+        from polylogue.storage.sqlite.archive_tiers.user_annotations import annotation_batch_declares_assertion
+
         assert normalized_batch_ref is not None
         if not annotation_batch_declares_assertion(
             conn, ObjectRef.parse(normalized_batch_ref).object_id, f"assertion:{assertion_id}"
