@@ -274,7 +274,7 @@ async def test_timeline_uses_falsey_summary_fallback(tmp_path: Path) -> None:
             )
 
     run_off_event_loop(_seed_0)
-    page = await session_timeline(root, SessionTimeline(expression="fallback"))
+    page = await session_timeline(root, SessionTimeline(expression="fallback"), index_path=root / "index.db")
     assert len(page.items) == 1
     assert page.items[0].text == "fallback"
 

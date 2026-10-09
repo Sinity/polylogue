@@ -533,8 +533,7 @@ async def test_every_typed_indexed_page_keeps_the_explicit_index(tmp_path: Path)
             assert first.items and first.continuation
             second = await execute_session_operation(api, type(request)(continuation=first.continuation))
             assert second.offset == 1
-            assert second.total == first.total
-        assert first.total == len(seeded)
+            assert second.total == first.total == len(seeded)
     assert not (root / "index.db").exists()
 
 
@@ -561,11 +560,13 @@ async def test_latest_expression_bounds_both_typed_selection_and_window(tmp_path
 
 @pytest.mark.asyncio
 async def test_typed_continuation_refuses_an_equal_counter_other_archive(tmp_path: Path) -> None:
+    from functools import partial
+
     from polylogue.archive.query.transaction import QueryContinuationStaleError
 
     roots = (tmp_path / "first", tmp_path / "second")
     for index, root in enumerate(roots):
-        run_off_event_loop(lambda root=root, index=index: _seed(root, native_suffix=str(index)))
+        run_off_event_loop(partial(_seed, root, native_suffix=str(index)))
     async with Polylogue(archive_root=roots[0]) as api:
         first = await execute_session_operation(api, SessionList(limit=1))
     assert first.continuation
@@ -616,12 +617,22 @@ async def test_missing_date_actions_sort_last_on_both_read_routes(tmp_path: Path
     with open_operation_read(root) as pinned:
         generic = execute_read_operation(
             "cli.query",
-            {"params": {"query": expression, "limit": 1}},
+            {
+                "params": {
+                    "query": "needle",
+                    "retrieval_lane": "actions",
+                    "sort": "date",
+                    "reverse": reverse,
+                    "limit": 1,
+                }
+            },
             archive=pinned.archive,
             serving_identity="direct",
         )
     assert [item.session.id for item in owner.items] == [dated]
-    assert [hit["session"]["id"] for hit in generic["hits"]] == [dated]
+    generic_hits = generic["hits"]
+    assert isinstance(generic_hits, list)
+    assert [hit["session"]["id"] for hit in generic_hits] == [dated]
     assert dated != missing
 
 
@@ -655,3 +666,29 @@ def test_machine_session_cli_returns_the_declared_terminal_exit(
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(payload).encode())))
     assert main() == exit_code
     assert json.loads(capsys.readouterr().out)["outcome"] == expected_outcome
+
+
+@pytest.mark.asyncio
+async def test_root_only_facade_follows_active_index_and_explicit_shadow_stays_selected(tmp_path: Path) -> None:
+    import shutil
+
+    root = tmp_path / "archive"
+    seeded = run_off_event_loop(lambda: _seed(root))
+    selected = root / ".index-generations" / "selected" / "index.db"
+    selected.parent.mkdir(parents=True)
+    shutil.copyfile(root / "index.db", selected)
+    # Keep a valid conventional shadow with distinct retained content.
+    import sqlite3
+
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute("UPDATE sessions SET title='Shadow selection'")
+    (root / ".index-active-pointer").write_text(str(selected), encoding="utf-8")
+    async with Polylogue(archive_root=root) as api:
+        assert api.backend.db_path == selected
+        page = await execute_session_operation(api, SessionList(limit=1))
+        transcript = await execute_session_operation(api, SessionRead(ref=seeded[-1], limit=1))
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as api:
+        explicit = await execute_session_operation(api, SessionList(limit=1))
+    assert page.items[0].title != "Shadow selection"
+    assert explicit.items[0].title == "Shadow selection"
+    assert transcript.items

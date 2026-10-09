@@ -105,14 +105,13 @@ class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsigh
         resolved_archive = explicit_archive or (explicit_db.parent if explicit_db is not None else None)
         if resolved_archive is None:
             raise ValueError("explicit API construction requires archive_root or db_path")
-        resolved_db = explicit_db or resolved_archive / "index.db"
         self._config = Config(
             archive_root=resolved_archive,
             render_root=resolved_archive / "render",
             sources=[],
-            db_path=resolved_db,
+            db_path=explicit_db,
         )
-        self._services = build_runtime_services(config=self._config, db_path=resolved_db)
+        self._services = build_runtime_services(config=self._config, db_path=self._config.db_path)
 
     @classmethod
     def open(

@@ -1355,7 +1355,7 @@ class ArchiveStore:
 
                 write_profile = COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE
             pragma_statements = write_connection_pragma_statements(write_profile)
-        from polylogue.storage.sqlite.connection_profile import _generation_token
+        from polylogue.storage.sqlite.connection_profile import StaleContinuationError, _generation_token
 
         if not read_only:
             self.index_generation = _generation_token(self.index_db_path)

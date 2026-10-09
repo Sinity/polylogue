@@ -246,10 +246,12 @@ def test_narrowed_continuation_resumes_at_its_bound_offset_and_selection(tmp_pat
         ).save()
 
     async def pages() -> tuple[list[str], list[str]]:
-        everything = await session_query(root, SessionList(limit=4))
-        first = await session_query(root, SessionList(limit=2))
+        everything = await session_query(root, SessionList(limit=4), index_path=root / "index.db")
+        first = await session_query(root, SessionList(limit=2), index_path=root / "index.db")
         assert first.continuation
-        resumed = await session_query(root, SessionList(continuation=first.continuation, limit=1))
+        resumed = await session_query(
+            root, SessionList(continuation=first.continuation, limit=1), index_path=root / "index.db"
+        )
         assert resumed.offset == 2
         return [str(item.id) for item in everything.items], [str(item.id) for item in resumed.items]
 

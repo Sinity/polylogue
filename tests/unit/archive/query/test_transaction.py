@@ -4,7 +4,7 @@ import base64
 import json
 import sqlite3
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -319,10 +319,12 @@ def test_archive_reader_refuses_leaf_replaced_during_open(tmp_path: Path, monkey
 
     with ArchiveStore(tmp_path) as archive:
         archive.close()
-    open_connection = store_module.open_readonly_connection
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-    def replacing_open(*args: object, **kwargs: object) -> sqlite3.Connection:
-        conn = open_connection(*args, **kwargs)
+    open_connection = open_readonly_connection
+
+    def replacing_open(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
+        conn = open_connection(path, **kwargs)
         replacement = tmp_path / "replacement.db"
         shutil.copyfile(tmp_path / "index.db", replacement)
         replacement.replace(tmp_path / "index.db")
