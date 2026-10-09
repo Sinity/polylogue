@@ -28,7 +28,7 @@ from tests.infra.live_ingest import ingest_session
 
 async def _stored_block_id(backend: SQLiteBackend, message_id: str) -> str:
     async with backend.connection() as conn:
-        rows = await conn.execute_fetchall("SELECT block_id FROM blocks WHERE message_id = ?", (message_id,))
+        rows = tuple(await conn.execute_fetchall("SELECT block_id FROM blocks WHERE message_id = ?", (message_id,)))
     assert len(rows) == 1
     return str(rows[0]["block_id"])
 
