@@ -745,6 +745,7 @@ def test_cancelled_duplicate_validation_discards_the_shared_carrier_once(
     def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
         from polylogue import schemas
         from polylogue.core.compute import DaemonOperationCancelled
+        from polylogue.core.compute_cancel import check_compute_cancelled
         from polylogue.sources import revision_backfill
         from polylogue.sources.prepared_jsonl import PreparedJsonl
         from polylogue.storage.derived import raw as raw_derivation
@@ -768,7 +769,7 @@ def test_cancelled_duplicate_validation_discards_the_shared_carrier_once(
         original_prepare = revision_backfill.prepare_retained_jsonl_artifact
         original_validate = schemas.validate_retained_document
         original_discard = PreparedJsonl.discard
-        original_check = raw_derivation.check_compute_cancelled
+        original_check = check_compute_cancelled
 
         def check() -> None:
             if cancel_at == "worker_return" and prepared:

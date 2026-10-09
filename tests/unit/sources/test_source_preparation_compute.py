@@ -3,18 +3,47 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from contextlib import contextmanager
 from pathlib import Path
+from typing import BinaryIO, NoReturn, TypedDict, TypeVar, Unpack
 
 import pytest
 
-from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.compute import AdmissionClass, BoundedComputeAdapter, CancellationHandle, SubmittedOperation
+from polylogue.core.enums import Provider
+from polylogue.core.sql_settlement import (
+    NativeSQLSettlementEvidence,
+    SQLCustodyOwner,
+    SQLSettlementRetry,
+    settle_native_sql,
+)
+from polylogue.sources.acquisition_boundary import bound_source_observation, open_bound_path
 from polylogue.sources.live import production_baseline as module
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_layout import export_drop_layout
+from polylogue.sources.source_staging import SourceInputBinding
 from polylogue.storage.blob_store import BlobStore
+
+T = TypeVar("T")
+
+
+class _PreparationOptions(TypedDict, total=False):
+    cancelled: Callable[[], bool] | None
+    source_binding: SourceInputBinding | None
+    expected_observation: tuple[int, int, int, int, int] | None
+
+
+class _SubmissionOptions(TypedDict, total=False):
+    admission_class: AdmissionClass
+    units: int
+    estimated_bytes: int
+    exclusive_bytes: bool
+    cancellation: CancellationHandle | None
+
 
 pytestmark = pytest.mark.uses_real_clock("compute preparation uses physical worker synchronization")
 
@@ -39,14 +68,16 @@ def test_preparation_workers_preserve_seal_when_completion_reorders(
     completed: list[str] = []
     second_finished = threading.Event()
 
-    def seal(*args):
+    def seal(
+        operation_id: str, source_signature: str, decisions: tuple[module.SourceDecision, ...]
+    ) -> module.ProductionSourceBaseline:
         assert threading.get_ident() == creator
-        return real_seal(*args)
+        return real_seal(operation_id, source_signature, decisions)
 
-    def progress(*_args, **_kwargs):
+    def progress(_phase: str, **_counts: int) -> None:
         assert threading.get_ident() == creator
 
-    def forbid_publication(*_args, **_kwargs):
+    def forbid_publication(*_args: object, **_kwargs: object) -> NoReturn:
         raise AssertionError("ordinary preparation cannot publish blobs")
 
     monkeypatch.setattr(module, "_seal", seal)
@@ -55,7 +86,9 @@ def test_preparation_workers_preserve_seal_when_completion_reorders(
         monkeypatch.setattr(module, "compute_adapter", lambda: adapters[0])
         single = module.capture_production_source_baseline(sources, operation_id="neutral", progress=progress)
 
-        def prepared(observation, **kwargs):
+        def prepared(
+            observation: tuple[str, Path, str, str], **kwargs: Unpack[_PreparationOptions]
+        ) -> module.SourceDecision:
             assert threading.get_ident() != creator
             name = observation[1].name
             if name == "a.jsonl":
@@ -88,11 +121,11 @@ def test_parallel_revision_refuses_mutation_at_equal_mtime(
     path = root / "one.json"
     path.write_bytes(b"{}")
     before = path.stat()
-    real_open = module.open_bound_path
+    real_open = open_bound_path
     adapter = BoundedComputeAdapter(max_workers=2)
 
     @contextmanager
-    def opened(current, location):
+    def opened(current: Path | str, location: Provider | str | None) -> Iterator[BinaryIO]:
         with real_open(current, location) as stream:
             if replace_inode:
                 replacement = root / "replacement"
@@ -131,7 +164,13 @@ def test_source_cancellation_drains_reading_worker_before_return(
     cancelled = threading.Event()
     outcome: Future[object] = Future()
 
-    def prepared(_observation, *, cancelled, **_kwargs):
+    def prepared(
+        _observation: tuple[str, Path, str, str],
+        *,
+        cancelled: Callable[[], bool] | None,
+        source_binding: SourceInputBinding | None = None,
+        expected_observation: tuple[int, int, int, int, int] | None = None,
+    ) -> None:
         entered.set()
         try:
             assert stopped.wait(5)
@@ -139,7 +178,7 @@ def test_source_cancellation_drains_reading_worker_before_return(
         finally:
             stopped.set()
 
-    def checkpoint():
+    def checkpoint() -> bool:
         # The creator wait must notice cancellation before the worker is free.
         if cancelled.is_set():
             stopped.set()
@@ -149,7 +188,7 @@ def test_source_cancellation_drains_reading_worker_before_return(
     monkeypatch.setattr(module, "compute_adapter", lambda: adapter)
     monkeypatch.setattr(module, "_prepare_file_decision", prepared)
 
-    def observe():
+    def observe() -> None:
         try:
             outcome.set_result(
                 module.capture_production_source_baseline(
@@ -191,13 +230,13 @@ def test_source_cancellation_removes_queued_preparation_without_touching_other_w
     outcome: Future[object] = Future()
     real_submit = adapter.submit
 
-    def unrelated():
+    def unrelated() -> str:
         busy.set()
         assert release.wait(5)
         return "unrelated"
 
-    def submit(*args, **kwargs):
-        result = real_submit(*args, **kwargs)
+    def submit(function: Callable[[], T], **kwargs: Unpack[_SubmissionOptions]) -> SubmittedOperation[T]:
+        result = real_submit(function, **kwargs)
         if kwargs.get("admission_class") == "bulk-candidate":
             queued.set()
         return result
@@ -208,7 +247,7 @@ def test_source_cancellation_removes_queued_preparation_without_touching_other_w
     monkeypatch.setattr(module, "compute_adapter", lambda: adapter)
     monkeypatch.setattr(module, "_prepare_file_decision", lambda *_args, **_kwargs: worker_invoked.set())
 
-    def observe():
+    def observe() -> None:
         try:
             outcome.set_result(
                 module.capture_production_source_baseline(
@@ -262,19 +301,31 @@ def test_source_preparation_retains_native_cleanup_and_scratch_until_creator_ret
     close_threads: list[int] = []
     worker_threads: list[int] = []
     real_prepare = module._prepare_file_decision
-    real_settle = compute_module.settle_native_sql
+    real_settle = settle_native_sql
 
-    def settling(**kwargs):
-        on_pending = kwargs["on_pending"]
-
-        def pending(evidence):
+    def settling(
+        *,
+        retry: SQLSettlementRetry,
+        on_pending: Callable[[NativeSQLSettlementEvidence], None],
+        on_settled: Callable[[], None],
+        preserved_native_owners: tuple[SQLCustodyOwner, ...] = (),
+        initial_observed_generation: int | None = None,
+    ) -> BaseException | None:
+        def pending(evidence: NativeSQLSettlementEvidence) -> None:
             on_pending(evidence)
             retained.set()
 
-        kwargs["on_pending"] = pending
-        return real_settle(**kwargs)
+        return real_settle(
+            retry=retry,
+            on_pending=pending,
+            on_settled=on_settled,
+            preserved_native_owners=preserved_native_owners,
+            initial_observed_generation=initial_observed_generation,
+        )
 
-    def prepared(observation, **kwargs):
+    def prepared(
+        observation: tuple[str, Path, str, str], **kwargs: Unpack[_PreparationOptions]
+    ) -> module.SourceDecision:
         result = real_prepare(observation, **kwargs)
         scratch = TemporaryDirectory(dir=tmp_path, prefix="owned-source-")
         scratch_paths.append(Path(scratch.name))
@@ -283,7 +334,7 @@ def test_source_preparation_retains_native_cleanup_and_scratch_until_creator_ret
             connection = connect_measured(":memory:")
             actual_close = type(connection).close
 
-            def close(current):
+            def close(current: sqlite3.Connection) -> None:
                 if current is connection:
                     close_threads.append(threading.get_ident())
                     if not allow_close.is_set():
@@ -298,13 +349,13 @@ def test_source_preparation_retains_native_cleanup_and_scratch_until_creator_ret
     monkeypatch.setattr(module, "compute_adapter", lambda: adapter)
     monkeypatch.setattr(module, "_prepare_file_decision", prepared)
 
-    def checkpoint():
+    def checkpoint() -> bool:
         if cancelled.is_set():
             cancellation_seen.set()
             return True
         return False
 
-    def observe():
+    def observe() -> None:
         try:
             outcome.set_result(
                 module.capture_production_source_baseline(
@@ -364,7 +415,7 @@ def test_preparation_charge_refuses_growth_before_worker_reads(
     real_submit = adapter.submit
     declared_bytes: list[int] = []
 
-    def submit(*args, **kwargs):
+    def submit(function: Callable[[], T], **kwargs: Unpack[_SubmissionOptions]) -> SubmittedOperation[T]:
         declared_bytes.append(kwargs["estimated_bytes"])
         if replace_inode:
             replacement = root / "replacement"
@@ -374,9 +425,9 @@ def test_preparation_charge_refuses_growth_before_worker_reads(
         else:
             path.write_bytes(b"{}" + b" " * 200)
             os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
-        return real_submit(*args, **kwargs)
+        return real_submit(function, **kwargs)
 
-    def refuse_read(*_args, **_kwargs):
+    def refuse_read(*_args: object, **_kwargs: object) -> NoReturn:
         raise AssertionError("queued currency mismatch must be refused before payload inspection")
 
     monkeypatch.setattr(module, "compute_adapter", lambda: adapter)
@@ -409,15 +460,15 @@ def test_failed_first_input_cancels_another_workers_hash_before_drain_returns(
     resume = threading.Event()
     closed = threading.Event()
     real_prepare = module._prepare_file_decision
-    real_open = module.open_bound_path
-    real_observation = module.bound_source_observation
+    real_open = open_bound_path
+    real_observation = bound_source_observation
     read_counts: list[int] = []
 
     class PausedRead:
-        def __init__(self, stream):
+        def __init__(self, stream: BinaryIO) -> None:
             self.stream = stream
 
-        def read(self, size):
+        def read(self, size: int) -> bytes:
             data = self.stream.read(size)
             read_counts.append(len(data))
             handle = current_cancellation()
@@ -428,14 +479,16 @@ def test_failed_first_input_cancels_another_workers_hash_before_drain_returns(
             return data
 
     @contextmanager
-    def opened(path, location):
+    def opened(path: Path | str, location: Provider | str | None) -> Iterator[PausedRead]:
         with real_open(path, location) as stream:
             try:
                 yield PausedRead(stream)
             finally:
                 closed.set()
 
-    def prepared(observation, **kwargs):
+    def prepared(
+        observation: tuple[str, Path, str, str], **kwargs: Unpack[_PreparationOptions]
+    ) -> module.SourceDecision:
         if observation[1].name == "a.json":
             assert reading.wait(5)
             raise RuntimeError("synthetic first-input failure")
@@ -468,7 +521,7 @@ def test_cancellation_after_final_progress_refuses_source_sealing(
     cancelled = threading.Event()
     monkeypatch.setattr(module, "compute_adapter", lambda: adapter)
 
-    def progress(_phase, **counts):
+    def progress(_phase: str, **counts: int) -> None:
         if counts.get("revisions"):
             cancelled.set()
 
@@ -494,12 +547,12 @@ def test_preparation_refuses_a_new_fifo_before_payload_inspection(
     path.write_bytes(b"{}")
     adapter = BoundedComputeAdapter(max_workers=2)
 
-    def owner():
+    def owner() -> BoundedComputeAdapter:
         path.unlink()
         os.mkfifo(path)
         return adapter
 
-    def refuse_read(*_args, **_kwargs):
+    def refuse_read(*_args: object, **_kwargs: object) -> NoReturn:
         raise AssertionError("changed nonregular input must not enter a blocking parser open")
 
     monkeypatch.setattr(module, "compute_adapter", owner)
