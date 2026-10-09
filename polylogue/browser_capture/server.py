@@ -259,7 +259,12 @@ class BrowserCaptureHTTPServer(ThreadingHTTPServer):
         try:
             registry_for_receiver(self.config.spool_path, receiver_identity(self.config)).maintenance_step()
         except (sqlite3.Error, OSError, CaptureJobError) as exc:
-            emit("browser_capture.capture_job_registry_unavailable", level=WARNING, error=repr(exc))
+            emit(
+                "browser_capture.capture_job_registry_unavailable",
+                level=WARNING,
+                error_type=type(exc).__name__,
+                error_detail=repr(exc),
+            )
 
     def server_close(self) -> None:
         try:
@@ -1152,7 +1157,12 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self._send_json(status, {"error": {"code": exc.code, "details": exc.details}})
 
     def _capture_job_storage_error(self, exc: sqlite3.Error | OSError) -> None:
-        logger.warning("browser_capture.capture_job_registry_unavailable", error=repr(exc))
+        emit(
+            "browser_capture.capture_job_registry_unavailable",
+            level=WARNING,
+            error_type=type(exc).__name__,
+            error_detail=repr(exc),
+        )
         exhausted = isinstance(exc, OSError) and is_storage_exhausted(exc)
         exhausted = exhausted or (
             isinstance(exc, sqlite3.Error) and getattr(exc, "sqlite_errorcode", 0) & 0xFF == sqlite3.SQLITE_FULL

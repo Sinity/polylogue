@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import io
 import json
 import os
 import socket
@@ -41,6 +42,7 @@ from polylogue.browser_capture.receiver import (
 from polylogue.browser_capture.route_contracts import browser_capture_route_contract_for
 from polylogue.browser_capture.server import make_server
 from polylogue.core.enums import Provider
+from polylogue.logging import add_sink, make_stream_sink, remove_sink
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base_models import ParsedSession
 
@@ -3490,7 +3492,8 @@ def test_receiver_maintenance_failure_is_visible_and_next_turn_retries(
         server.service_actions()
         assert attempts == 2
         assert [event for event, _ in events] == ["browser_capture.capture_job_registry_unavailable"]
-        assert "error" in events[0][1]
+        assert events[0][1]["error_type"] == "OperationalError"
+        assert events[0][1]["error_detail"] == "OperationalError('database is locked')"
         directory = capture_job_store_root(tmp_path) / "artifacts"
         directory.mkdir(exist_ok=True)
         for index in range(65):
@@ -3500,6 +3503,43 @@ def test_receiver_maintenance_failure_is_visible_and_next_turn_retries(
     finally:
         server.server_close()
     assert str(capture_job_database_path(tmp_path)) not in capture_jobs_module._ARTIFACT_SWEEPS
+
+
+@pytest.mark.parametrize("route", ["maintenance", "http"])
+def test_registry_failure_logging_preserves_typed_cause_without_rejected_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    """The real field validator must retain the producer's neutral failure."""
+    stream = io.StringIO()
+    sink = add_sink(make_stream_sink(stream, fmt="json"))
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise sqlite3.OperationalError("neutral registry unavailable")
+
+    try:
+        if route == "maintenance":
+            monkeypatch.setattr(CaptureJobRegistry, "maintenance_step", fail)
+            server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=TOKEN)
+            try:
+                server.service_actions()
+            finally:
+                server.server_close()
+        else:
+            monkeypatch.setattr(CaptureJobRegistry, "discover", fail)
+            with receiver(tmp_path) as (host, port):
+                status, body = request(
+                    host, port, "POST", "/v1/capture-jobs/discover", {"provider": "chatgpt", "scope": ACCOUNT_SCOPE}
+                )
+            assert status == 500
+            assert body == {"error": {"code": "registry_unavailable", "details": {}}}
+    finally:
+        remove_sink(sink)
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    failures = [record for record in records if record["event"] == "browser_capture.capture_job_registry_unavailable"]
+    assert len(failures) == 1
+    assert failures[0]["error_type"] == "OperationalError"
+    assert failures[0]["error_detail"] == "OperationalError('neutral registry unavailable')"
+    assert not any(record["event"] == "log.field_rejected" for record in records)
 
 
 def test_artifact_frontier_retries_the_same_pending_page_after_real_sqlite_busy(
