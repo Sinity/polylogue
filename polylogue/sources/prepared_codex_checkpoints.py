@@ -12,7 +12,7 @@ import hashlib
 import json
 import tempfile
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -27,6 +27,7 @@ from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.schemas.retained_validation import PrefixValidationState, RetainedValidationVerdict
+from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.sources.dispatch import admit_parsed_sessions_for_publication
 from polylogue.sources.parsers import codex
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -212,6 +213,7 @@ def _read_head_and_prove(
     *,
     validation_mode: ValidationMode,
     validation_directory: Path,
+    schema_registry: SchemaRegistry | None,
 ) -> tuple[BinaryIO, list[int], list[str], str, int, dict[str, RetainedValidationVerdict]]:
     if len(raw_ids) < 4 or len(set(raw_ids)) != len(raw_ids):
         raise ValueError("checkpoint cohort needs three probes and an interior revision")
@@ -264,12 +266,22 @@ def _read_head_and_prove(
     next_prefix = 0
     header_id: str | None = None
     line_number = 0
-    with PrefixValidationState(
-        provider=Provider.CODEX,
-        source_path=first[2],
-        mode=validation_mode,
-        scratch_directory=validation_directory,
-    ) as validation:
+    registry = schema_registry or SchemaRegistry()
+    snapshot = (
+        registry.current_provider_snapshot(Provider.CODEX)
+        if validation_mode is not ValidationMode.OFF
+        else nullcontext()
+    )
+    with (
+        snapshot,
+        PrefixValidationState(
+            provider=Provider.CODEX,
+            source_path=first[2],
+            mode=validation_mode,
+            scratch_directory=validation_directory,
+            registry=registry,
+        ) as validation,
+    ):
         for line_number, line in enumerate(head_blob, start=1):
             check_compute_cancelled()
             line_end += len(line)
@@ -357,6 +369,7 @@ def prepare_codex_prefix_checkpoints(
     publication_source_read: BlobPublicationSourceRead | None,
     prepare_sessions: Callable[[str, Iterable[ParsedSession]], Iterable[ParsedSession]],
     artifact_options: Callable[[str, int], CodexCheckpointArtifactOptions],
+    schema_registry: SchemaRegistry | None = None,
 ) -> CodexPrefixPreparation:
     """Prove the whole cohort, then lazily seal one exact interior at a time.
 
@@ -375,6 +388,7 @@ def prepare_codex_prefix_checkpoints(
             head_blob,
             validation_mode=validation_mode,
             validation_directory=artifact_directory,
+            schema_registry=schema_registry,
         )
         parser_head = head_artifact.parser_stage_artifact or head_artifact
         if parser_head.blob_hash != hashes[-1]:

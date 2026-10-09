@@ -545,12 +545,26 @@ def test_duplicate_raws_share_preparation_but_keep_distinct_census(
 
         original_prepare = revision_backfill.prepare_retained_jsonl_artifact
 
+        from polylogue.schemas.runtime_registry import SchemaRegistry
         from polylogue.sources.prepared_jsonl import PreparedJsonl
         from polylogue.sources.revision_backfill import RetainedSessionRead
 
-        def counted_prepare(reader: RetainedSessionRead, raw_id: str, *, directory: Path) -> PreparedJsonl:
+        def counted_prepare(
+            reader: RetainedSessionRead,
+            raw_id: str,
+            *,
+            directory: Path,
+            validation_mode: ValidationMode,
+            schema_registry: SchemaRegistry,
+        ) -> PreparedJsonl:
             worker_calls.append(raw_id)
-            return original_prepare(reader, raw_id, directory=directory)
+            return original_prepare(
+                reader,
+                raw_id,
+                directory=directory,
+                validation_mode=validation_mode,
+                schema_registry=schema_registry,
+            )
 
         monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", counted_prepare)
 

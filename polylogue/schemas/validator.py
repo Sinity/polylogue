@@ -753,22 +753,30 @@ def validate_retained_document(
     its original evidence remain owned.  Importing lazily keeps the ordinary
     in-memory validation surface independent of the retained storage adapter.
     """
+    from contextlib import AbstractContextManager, nullcontext
+
     from polylogue.schemas.retained_validation import validate_retained_document as validate
 
-    return validate(
-        provider,
-        path,
-        mode=mode,
-        raw_id=raw_id,
-        revision_sha256=revision_sha256,
-        evidence_id=evidence_id,
-        source_path=source_path,
-        jsonl=jsonl,
-        captured_zip_coordinate=captured_zip_coordinate,
-        schema_resolution=schema_resolution,
-        schema_resolution_is_explicit=schema_resolution_is_explicit,
-        registry=registry,
-    )
+    active_registry = registry
+    snapshot: AbstractContextManager[None] = nullcontext()
+    if ValidationMode.from_string(mode) is not ValidationMode.OFF:
+        active_registry = registry or SchemaRegistry()
+        snapshot = active_registry.current_provider_snapshot(provider)
+    with snapshot:
+        return validate(
+            provider,
+            path,
+            mode=mode,
+            raw_id=raw_id,
+            revision_sha256=revision_sha256,
+            evidence_id=evidence_id,
+            source_path=source_path,
+            jsonl=jsonl,
+            captured_zip_coordinate=captured_zip_coordinate,
+            schema_resolution=schema_resolution,
+            schema_resolution_is_explicit=schema_resolution_is_explicit,
+            registry=active_registry,
+        )
 
 
 __all__ = [

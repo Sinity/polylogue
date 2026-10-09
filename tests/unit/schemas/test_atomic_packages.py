@@ -444,3 +444,77 @@ def test_an_element_file_no_manifest_declares_is_sanitized_too(tmp_path: Path) -
     assert orphan.exists(), "the sweep must sanitize the orphan, not delete it"
     persisted = json.loads(gzip.decompress(orphan.read_bytes()).decode("utf-8"))
     assert "x-polylogue-values" not in persisted["properties"]["branch"]
+
+
+def test_current_snapshot_reuses_decodes_and_refreshes_exact_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    writer = SchemaRegistry(storage_root=tmp_path)
+    publish(writer)
+    reader = SchemaRegistry(storage_root=tmp_path)
+    decodes = 0
+    original = SchemaRegistry._snapshot_json
+
+    def decode(self: SchemaRegistry, provider_dir: Path, relative: str) -> JSONDocument | None:
+        nonlocal decodes
+        decodes += 1
+        return original(self, provider_dir, relative)
+
+    monkeypatch.setattr(SchemaRegistry, "_snapshot_json", decode)
+    with reader.current_provider_snapshot("synthetic-publication"):
+        first = schema(reader)
+    first_decodes = decodes
+    with reader.current_provider_snapshot("synthetic-publication"):
+        assert schema(reader) is first
+    assert decodes == first_decodes
+    publish(writer, generation=2)
+    with reader.current_provider_snapshot("synthetic-publication"):
+        assert schema(reader)["x-polylogue-test-generation"] == 2
+    assert decodes > first_decodes
+    publish(writer, version="v2", generation=3, family="family-b")
+    with reader.current_provider_snapshot("synthetic-publication"):
+        assert schema(reader)["x-polylogue-test-generation"] == 3
+    reader.clear_cache()
+    with reader.current_provider_snapshot("synthetic-publication"):
+        assert schema(reader)["x-polylogue-test-generation"] == 3
+
+
+def test_current_snapshot_cancellation_keeps_previous_snapshot_and_releases_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    writer = SchemaRegistry(storage_root=tmp_path)
+    publish(writer)
+    reader = SchemaRegistry(storage_root=tmp_path)
+    with reader.current_provider_snapshot("synthetic-publication"):
+        assert schema(reader)["x-polylogue-test-generation"] == 1
+    publish(writer, generation=2)
+    with monkeypatch.context() as patch:
+
+        def cancel() -> None:
+            raise RuntimeError("cancelled snapshot")
+
+        patch.setattr("polylogue.schemas.runtime_registry.check_compute_cancelled", cancel)
+        with pytest.raises(RuntimeError, match="cancelled snapshot"):
+            with reader.current_provider_snapshot("synthetic-publication"):
+                pytest.fail("cancelled scope entered")
+    assert schema(reader)["x-polylogue-test-generation"] == 1
+    with reader.current_provider_snapshot("synthetic-publication"):
+        assert schema(reader)["x-polylogue-test-generation"] == 2
+
+
+def test_current_snapshot_observes_local_override_appearance_and_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundled_root = tmp_path / "bundled"
+    local_root = tmp_path / "local"
+    monkeypatch.setattr("polylogue.schemas.runtime_registry.SCHEMA_DIR", bundled_root)
+    publish(SchemaRegistry(storage_root=bundled_root), generation=1)
+    reader = SchemaRegistry(storage_root=local_root)
+    with reader.current_provider_snapshot("synthetic-publication"):
+        assert schema(reader)["x-polylogue-test-generation"] == 1
+    publish(SchemaRegistry(storage_root=local_root), generation=2)
+    with reader.current_provider_snapshot("synthetic-publication"):
+        assert schema(reader)["x-polylogue-test-generation"] == 2
+    (local_root / "synthetic-publication").rename(tmp_path / "removed-override")
+    with reader.current_provider_snapshot("synthetic-publication"):
+        assert schema(reader)["x-polylogue-test-generation"] == 1

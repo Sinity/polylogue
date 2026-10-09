@@ -192,6 +192,7 @@ def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries(tmp
         head_blob,
         validation_mode=ValidationMode.ADVISORY,
         validation_directory=tmp_path,
+        schema_registry=None,
     )
     try:
         assert counts == [1, 2, 3, 4]
@@ -213,6 +214,7 @@ def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries(tmp
                 replaced_blob,
                 validation_mode=ValidationMode.ADVISORY,
                 validation_directory=tmp_path,
+                schema_registry=None,
             )
     finally:
         replaced_blob.close()
@@ -228,6 +230,7 @@ def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries(tmp
                 incomplete_blob,
                 validation_mode=ValidationMode.ADVISORY,
                 validation_directory=tmp_path,
+                schema_registry=None,
             )
     finally:
         incomplete_blob.close()

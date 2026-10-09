@@ -766,6 +766,7 @@ def prepare_retained_jsonl_artifact(
     directory: Path,
     allow_generic_object_alias: bool = False,
     validation_mode: ValidationMode = ValidationMode.ADVISORY,
+    schema_registry: SchemaRegistry | None = None,
 ) -> PreparedJsonl:
     """Seal JSON sessions using this creator's actual selected Source inputs.
 
@@ -945,6 +946,7 @@ def prepare_retained_jsonl_artifact(
         validation_mode=validation_mode,
         captured_zip_coordinate=captured_zip_coordinate,
         jsonl=is_jsonl_source_path(source_path),
+        schema_registry=schema_registry,
     )
 
 
@@ -989,6 +991,7 @@ def _attach_retained_validation_verdict(
     validation_mode: ValidationMode,
     captured_zip_coordinate: CapturedZipMemberCoordinate | None,
     jsonl: bool,
+    schema_registry: SchemaRegistry | None,
 ) -> PreparedJsonl:
     """Bind schema evidence to the exact retained bytes the parser consumed."""
     if (
@@ -1012,6 +1015,7 @@ def _attach_retained_validation_verdict(
                     source_path=source_path,
                     jsonl=jsonl,
                     captured_zip_coordinate=captured_zip_coordinate,
+                    registry=schema_registry,
                 )
             return dataclasses.replace(artifact, validation_verdict=verdict)
         except BaseException as primary:
@@ -1041,6 +1045,7 @@ def prepare_retained_non_json_artifact(
     *,
     directory: Path,
     validation_mode: ValidationMode = ValidationMode.ADVISORY,
+    schema_registry: SchemaRegistry | None = None,
 ) -> PreparedJsonl:
     """Seal non-JSON sessions through the same original retained read owner."""
     from polylogue.core.compute import DaemonBackpressureError
@@ -1082,13 +1087,18 @@ def prepare_retained_non_json_artifact(
                     directory=directory,
                     allow_generic_object_alias=True,
                     validation_mode=validation_mode,
+                    schema_registry=schema_registry,
                 )
     if path_declaration_refuses_session(provider, source_path):
         # A raw-only member (an export's binary asset) is evidence whatever its
         # suffix: the sealed preparation records its path classification
         # without decoding the bytes, exactly as for a JSON-suffixed member.
         return prepare_retained_jsonl_artifact(
-            evidence_reader, raw_id, directory=directory, validation_mode=validation_mode
+            evidence_reader,
+            raw_id,
+            directory=directory,
+            validation_mode=validation_mode,
+            schema_registry=schema_registry,
         )
     publisher = ArchiveBlobPublisher(
         evidence_reader.archive_root / "source.db",
@@ -1220,6 +1230,7 @@ def prepare_retained_non_json_artifact(
                         source_path=source_path,
                         jsonl=False,
                         captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
+                        registry=schema_registry,
                     )
                 finally:
                     marker_path.unlink(missing_ok=True)
@@ -1300,6 +1311,7 @@ def prepare_retained_non_json_artifact(
             validation_mode=validation_mode,
             captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
             jsonl=False,
+            schema_registry=schema_registry,
         )
         sealed = True
         return artifact
@@ -5176,6 +5188,7 @@ class RetainedArtifactPreparer(Protocol):
         *,
         directory: Path,
         validation_mode: ValidationMode,
+        schema_registry: SchemaRegistry,
     ) -> PreparedJsonl: ...
 
 
@@ -5229,6 +5242,7 @@ class SourceRawOutcomeProducer(SourceArtifactProducer, SourceRawStateProducer, P
 
 
 if TYPE_CHECKING:
+    from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
     from polylogue.storage.sqlite.reference_seal import KnownTierMutationPermit, PreparedIndexMutation

@@ -41,6 +41,14 @@ inputs use `prepare_retained_jsonl_artifact` and
 The storage writer lowers their prepared sessions through
 `write_parsed_session_to_archive`.
 
+Canonical replay owns one schema registry for its preparation lifetime. Each
+retained validation boundary rereads the complete current local and packaged
+provider snapshots under the registry lock. Exact byte changes or changed search
+roots invalidate decoded declarations; unchanged snapshots reuse them. Current
+and historical package selection stay on one coherent snapshot, and cancellation
+is checked before and after the snapshot reads. Explicit cache clearing remains
+available to ordinary registry callers.
+
 Retained schema validation owns reducer tables once per spill connection and
 reuses each selected-schema validator across its complete record scan. Lazy
 normalized objects and arrays consume the original ordered cursors, checking

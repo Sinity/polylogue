@@ -1125,3 +1125,39 @@ def test_retained_new_field_signature_is_sorted_and_repeated_records_do_not_dupl
         assert verdict.drift_observation.classification == "new_field"
         signatures.append(verdict.drift_observation.unseen_key_signature)
     assert signatures == ["alpha,beta", "alpha,beta"]
+
+
+def test_reused_registry_retained_current_historical_and_reload_match_fresh(tmp_path: Path) -> None:
+    reader = _registry(tmp_path, {"type": "string"}, {"type": "integer"})
+    writer = SchemaRegistry(storage_root=tmp_path / "schemas")
+    path = tmp_path / "raw.jsonl"
+    _write_jsonl(path, [{"type": "record", "kind": 17}])
+
+    def verdict(registry: SchemaRegistry, *, explicit: bool = False) -> RetainedValidationVerdict:
+        return validate_retained_document(
+            "claude-code",
+            path,
+            mode=ValidationMode.STRICT,
+            raw_id="raw-currency",
+            revision_sha256="c" * 64,
+            evidence_id="raw-currency",
+            jsonl=True,
+            schema_resolution=_resolution("v2"),
+            schema_resolution_is_explicit=explicit,
+            registry=registry,
+        )
+
+    historical = verdict(reader)
+    assert historical.schema_resolution is not None
+    assert historical.schema_resolution.package_version == "v1"
+    writer.write_schema_version("claude-code", "v2", _schema({"type": "integer"}), element_kind="session_record_stream")
+    current = verdict(reader)
+    assert current == verdict(SchemaRegistry(storage_root=tmp_path / "schemas"))
+    assert current.schema_resolution is not None
+    assert current.schema_resolution.package_version == "v2"
+    writer.write_schema_version("claude-code", "v2", _schema({"type": "string"}), element_kind="session_record_stream")
+    writer.write_schema_version("claude-code", "v1", _schema({"type": "boolean"}), element_kind="session_record_stream")
+    _write_jsonl(path, [{"type": "record", "kind": None}])
+    rejected = verdict(reader, explicit=True)
+    assert rejected == verdict(SchemaRegistry(storage_root=tmp_path / "schemas"), explicit=True)
+    assert rejected.status is ValidationStatus.FAILED

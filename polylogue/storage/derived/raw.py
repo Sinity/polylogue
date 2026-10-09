@@ -1120,6 +1120,9 @@ class RawObservationDerivation(RawObservationInspection):
         self._index_db_path = index_db_path
         self._owned_generation = owned_generation
         self._validation_mode = validation_mode
+        from polylogue.schemas.runtime_registry import SchemaRegistry
+
+        self._schema_registry = SchemaRegistry()
         #: Replacements whose publication committed a prerequisite phase,
         #: consumed by :meth:`publication_advanced` on the same key.
         self._phase_committed: dict[int, str] = {}
@@ -1968,6 +1971,7 @@ class RawObservationDerivation(RawObservationInspection):
                         source_path=source_path,
                         jsonl=True,
                         captured_zip_coordinate=captured.zip_coordinate,
+                        registry=self._schema_registry,
                     )
                 neutral = dataclasses.replace(neutral, validation_verdict=verdict)
                 carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
@@ -2076,6 +2080,7 @@ class RawObservationDerivation(RawObservationInspection):
                 publication_source_read=None,
                 prepare_sessions=lambda _raw_id, sessions: sessions,
                 artifact_options=checkpoint_options,
+                schema_registry=self._schema_registry,
             ) as checkpoint:
                 if checkpoint.disposition is CodexCheckpointDisposition.READY:
                     for checkpoint_raw_id, checkpoint_artifact in checkpoint.iter_artifacts():
@@ -2480,6 +2485,7 @@ class RawObservationDerivation(RawObservationInspection):
                                         raw_id,
                                         directory=Path(tempfile.mkdtemp(prefix="codex-endpoint-", dir=scratch)),
                                         validation_mode=self._validation_mode,
+                                        schema_registry=self._schema_registry,
                                     )
                                     provider_parse_seconds += time.perf_counter() - parse_started
                                 prepared_artifacts[artifact_key] = artifact
@@ -2604,6 +2610,7 @@ class RawObservationDerivation(RawObservationInspection):
                                         publication_source_read=None,
                                         prepare_sessions=checkpoint_sessions,
                                         artifact_options=checkpoint_options,
+                                        schema_registry=self._schema_registry,
                                     )
                                 with checkpoint:
                                     if checkpoint.disposition is not CodexCheckpointDisposition.READY:
@@ -2702,6 +2709,7 @@ class RawObservationDerivation(RawObservationInspection):
                                             raw_id,
                                             directory=Path(tempfile.mkdtemp(prefix="artifact-", dir=scratch)),
                                             validation_mode=self._validation_mode,
+                                            schema_registry=self._schema_registry,
                                         )
                                         provider_parse_seconds += time.perf_counter() - parse_started
                                     check_compute_cancelled()

@@ -9,7 +9,8 @@ import json
 import shutil
 import tempfile
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import cast
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.raw_payload.decode import JSONRecord
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.provider_identity import canonical_schema_provider as _canonical_schema_provider
@@ -316,7 +318,37 @@ class SchemaRegistry:
         self._schema_cache: dict[SchemaCacheKey, PublicSchemaDocument | None] = {}
         self._workload_profile_cache: dict[WorkloadProfileCacheKey, PublicSchemaDocument | None] = {}
         self._snapshots: dict[Path, dict[str, bytes]] = {}
+        self._current_snapshot_roots: dict[str, tuple[Path, ...]] = {}
         self._cache_lock = threading.RLock()
+
+    @contextmanager
+    def current_provider_snapshot(self, provider: str | Provider) -> Iterator[None]:
+        """Reuse decoded declarations only after reading the exact current bytes.
+
+        Keep resolution on that coherent snapshot through the caller's complete
+        validation. Local overrides can appear, disappear, or be replaced while
+        a preparation owner lives; directory metadata cannot certify their bytes.
+        """
+        provider_token = _provider_token(str(provider))
+        with self._cache_lock:
+            roots = tuple(self._provider_search_roots(provider_token))
+            current: dict[Path, dict[str, bytes]] = {}
+            for root in roots:
+                check_compute_cancelled()
+                current[root] = read_provider_snapshot(root)
+            check_compute_cancelled()
+            previous_roots = self._current_snapshot_roots.get(provider_token)
+            if (
+                (previous_roots is not None and previous_roots != roots)
+                or (previous_roots is None and provider_token in self._catalog_cache)
+                or any(
+                    root in self._snapshots and self._snapshots[root] != snapshot for root, snapshot in current.items()
+                )
+            ):
+                self.clear_cache()
+            self._snapshots.update(current)
+            self._current_snapshot_roots[provider_token] = roots
+            yield
 
     def _snapshot(self, provider_dir: Path) -> dict[str, bytes]:
         with self._cache_lock:
@@ -338,6 +370,7 @@ class SchemaRegistry:
         """Clear internal caches. Call after modifying schema packages."""
         with self._cache_lock:
             self._snapshots.clear()
+            self._current_snapshot_roots.clear()
             self._catalog_cache.clear()
             self._schema_cache.clear()
             self._workload_profile_cache.clear()

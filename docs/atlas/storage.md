@@ -556,6 +556,9 @@ Event projection and stored catalog costs retain precision; the origin/model rol
 
 ## Retained schema coverage
 
+Replay preparation owns the schema registry and its exact current-snapshot
+refresh boundary, as described in [the source atlas](sources-parsers.md).
+
 Artifact inspection measures large JSON documents through the same semantic
 observations as decoded registry resolution. Its private SQLite spill keeps
 input keys and nested schema state on disk; structural hashes stream all
