@@ -195,6 +195,8 @@ ORDER BY m.session_id, m.position, m.message_id
 _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE = """
 SELECT
     block_id,
+    content_identity,
+    content_occurrence,
     message_id,
     session_id,
     position AS block_index,
@@ -218,6 +220,8 @@ ORDER BY session_id, message_id, position
 _SESSION_INSIGHT_MARKER_BLOCK_SQL_TEMPLATE = """
 SELECT
     block_id,
+    content_identity,
+    content_occurrence,
     message_id,
     session_id,
     position AS block_index,
@@ -316,6 +320,8 @@ ORDER BY tail_position ASC
 _SESSION_INSIGHT_TAIL_BLOCK_SQL_TEMPLATE = """
 SELECT
     block_id,
+    content_identity,
+    content_occurrence,
     message_id,
     session_id,
     position AS block_index,
