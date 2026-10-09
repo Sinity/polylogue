@@ -225,6 +225,15 @@ persists batch provenance, and writes through the assertion chokepoint inside
 operator-promoted archive-local schemas without adding them to the process-wide
 registry.
 
+Annotation imports accept a binary UTF-8 JSONL stream. The client spools and
+measures its exact bytes, then sends a finite operation control envelope and
+the byte body through `/api/operation`. The daemon authenticates before
+staging, checks the received digest and byte length, and gives its worker
+exclusive scratch custody until completion or cancellation. No client path is
+opened by the daemon, and batch size has no outcome cap. The CLI opens its
+input file locally; MCP `write(operation="import_annotation_batch")` accepts
+`input_path`, which the MCP process opens before streaming to the daemon.
+
 ---
 
 **See also:** [Schema](schema.md) · [Library API](library-api.md) · [CLI Reference](cli-reference.md) · [Configuration](configuration.md)

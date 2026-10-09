@@ -47,6 +47,7 @@ from polylogue.core.errors import (
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+from polylogue.core.staged_body import BodyStorageExhaustedError
 from polylogue.daemon import workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
@@ -4851,8 +4852,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_daemon_operation(self) -> None:
         """Authenticate transport, then invoke the same canonical machine runtime."""
         from polylogue.operations.daemon_protocol import (
-            MAX_DECLARED_OPERATION_BODY_BYTES,
-            DaemonOperationRequest,
             daemon_operation_spec,
         )
 
@@ -4871,29 +4870,38 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._reject_operation(HTTPStatus.BAD_REQUEST, "invalid_content_length")
             return
         length = int(lengths[0])
-        if length <= 0 or length > MAX_DECLARED_OPERATION_BODY_BYTES:
-            self._reject_operation(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
+        if length <= 0:
+            self._reject_operation(HTTPStatus.BAD_REQUEST, "invalid_content_length")
             return
-        if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
-            self._reject_operation(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type")
-            return
-        self.connection.settimeout(5.0)
         try:
-            body = self.rfile.read(length)
-            if len(body) != length:
-                raise ValueError("partial body")
-            request = DaemonOperationRequest.from_dict(json.loads(body))
-        except (ValueError, TypeError, TimeoutError, OSError):
-            self._reject_operation(HTTPStatus.BAD_REQUEST, "invalid_request")
+            from polylogue.operations.request_body_transport import read_operation_body
+
+            request, input_body, control_bytes = read_operation_body(
+                self.rfile,
+                length,
+                self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower(),
+                spool_root=self.server.archive_root / "operation-inputs",
+            )
+        except BodyStorageExhaustedError as exc:
+            self._reject_operation(HTTPStatus.INSUFFICIENT_STORAGE, "operation_input_storage_exhausted", str(exc))
+            return
+        except (ValueError, TypeError, RecursionError, UnicodeDecodeError) as exc:
+            self._reject_operation(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc))
             return
         spec = daemon_operation_spec(request.operation)
         assert spec is not None
-        if length > spec.max_body_bytes:
+        if control_bytes > spec.max_body_bytes:
+            if input_body is not None:
+                input_body.discard()
             self._reject_operation(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
             return
-        self._send_daemon_operation(self._execute_daemon_operation(request))
+        self._send_daemon_operation(
+            self._execute_daemon_operation(request, input_body=input_body, request_body_bytes=control_bytes)
+        )
 
-    def _execute_daemon_operation(self, request: DaemonOperationRequest) -> dict[str, object]:
+    def _execute_daemon_operation(
+        self, request: DaemonOperationRequest, *, input_body=None, request_body_bytes=None
+    ) -> dict[str, object]:
         from polylogue.operations.daemon_protocol import DAEMON_PRINCIPAL_CAPABILITIES
         from polylogue.operations.mutation_transaction import MutationPrincipal
 
@@ -4920,7 +4928,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.daemon.operation_disconnect import observe_peer_disconnect
 
         with observe_peer_disconnect(self.connection) as disconnected:
-            return runtime.call(request, principal, client_disconnect=disconnected)
+            return runtime.call(
+                request,
+                principal,
+                client_disconnect=disconnected,
+                input_body=input_body,
+                request_body_bytes=request_body_bytes,
+            )
 
     def _send_daemon_operation(self, payload: dict[str, object]) -> None:
         status = (

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import io
 import json
 import shutil
 import sqlite3
@@ -6814,25 +6815,29 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(
                 status="active",
             )
         )
-        request = AnnotationBatchImportRequest(
-            jsonl="\n".join(
-                (
-                    json.dumps(
-                        {
-                            "row_key": "row-1",
-                            "value": {"label": "yes"},
-                            "evidence_refs": [str(session_id)],
-                        }
-                    ),
-                    json.dumps(
-                        {
-                            "row_key": "invalid-row",
-                            "value": {"label": "maybe"},
-                            "evidence_refs": ["missing-evidence"],
-                        }
-                    ),
+        request_input = io.BytesIO(
+            (
+                "\n".join(
+                    (
+                        json.dumps(
+                            {
+                                "row_key": "row-1",
+                                "value": {"label": "yes"},
+                                "evidence_refs": [str(session_id)],
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "row_key": "invalid-row",
+                                "value": {"label": "maybe"},
+                                "evidence_refs": ["missing-evidence"],
+                            }
+                        ),
+                    )
                 )
-            ),
+            ).encode("utf-8")
+        )
+        request = AnnotationBatchImportRequest(
             batch_id="facade-import",
             schema_id="test.facade-import",
             schema_version=1,
@@ -6844,7 +6849,7 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(
             created_at_ms=1_000,
         )
 
-        result = await archive.import_annotation_batch(request, registry=registry)
+        result = await archive.import_annotation_batch(request, input=request_input, registry=registry)
 
         assert result.status == "partial"
         assert result.qualified_schema_id == "test.facade-import@v1"
@@ -6895,26 +6900,30 @@ async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Pa
 
         (parent_session_id,) = run_off_event_loop(_off_loop_59)
         delegation_ref = f"delegation:{parent_session_id}:n:dispatch:0"
+        request_input = io.BytesIO(
+            (
+                json.dumps(
+                    {
+                        "row_key": "production-schema-row",
+                        "value": {
+                            "directive_mode": "imperative",
+                            "prohibitions": "none",
+                            "autonomy": "bounded",
+                            "output_contract": "structured",
+                            "scope_control": "bounded",
+                            "verification_demand": "focused_tests",
+                            "checkpoint_escalation": "checkpoint",
+                            "relational_frame": "directive",
+                            "rationale_visibility": "explicit",
+                            "applicable": True,
+                            "confidence": 0.9,
+                        },
+                        "evidence_refs": [delegation_ref],
+                    }
+                )
+            ).encode("utf-8")
+        )
         request = AnnotationBatchImportRequest(
-            jsonl=json.dumps(
-                {
-                    "row_key": "production-schema-row",
-                    "value": {
-                        "directive_mode": "imperative",
-                        "prohibitions": "none",
-                        "autonomy": "bounded",
-                        "output_contract": "structured",
-                        "scope_control": "bounded",
-                        "verification_demand": "focused_tests",
-                        "checkpoint_escalation": "checkpoint",
-                        "relational_frame": "directive",
-                        "rationale_visibility": "explicit",
-                        "applicable": True,
-                        "confidence": 0.9,
-                    },
-                    "evidence_refs": [delegation_ref],
-                }
-            ),
             batch_id="facade-default-registry",
             schema_id="delegation.discourse",
             schema_version=1,
@@ -6926,7 +6935,7 @@ async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Pa
             created_at_ms=2_000,
         )
 
-        result = await archive.import_annotation_batch(request)
+        result = await archive.import_annotation_batch(request, input=request_input)
 
         assert result.status == "ok"
         assert result.qualified_schema_id == "delegation.discourse@v1"

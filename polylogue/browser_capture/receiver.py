@@ -26,9 +26,7 @@ from polylogue.browser_capture.capture_stream import (
     AttachmentFact,
     CaptureEnvelopeError,
     CaptureSummary,
-    StagedCapture,
     read_capture_state_fields,
-    stage_capture_body,
     summarize_capture_file,
     summarize_capture_stream,
 )
@@ -47,6 +45,7 @@ from polylogue.core.hashing import hash_file, hash_text_short
 from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_state import raw_state_authority
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.core.staged_body import StagedBody, stage_body
 from polylogue.core.timestamps import to_epoch_ms
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root as default_archive_root
@@ -874,7 +873,7 @@ def write_capture_envelope_bytes(
     the byte sequence that was acquired.
     """
     root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
-    staged = stage_capture_body(io.BytesIO(raw).read, len(raw), spool_root=root)
+    staged = stage_body(io.BytesIO(raw).read, len(raw), spool_root=root)
     try:
         try:
             summary = summarize_capture_file(staged.path)
@@ -905,7 +904,7 @@ def _accepted_identities(
 
 
 def admit_staged_capture(
-    staged: StagedCapture,
+    staged: StagedBody,
     summary: CaptureSummary,
     *,
     spool_path: Path | None = None,

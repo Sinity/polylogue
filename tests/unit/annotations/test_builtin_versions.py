@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sqlite3
 from dataclasses import replace
@@ -202,8 +203,12 @@ async def test_actual_facade_daemon_import_records_current_versions_for_all_five
                 target = (
                     f"message:{session_id}:n:m1" if schema.schema_id == "seed.goal-event" else f"session:{session_id}"
                 )
+                request_input = io.BytesIO(
+                    (
+                        json.dumps({"row_key": "current", "value": {"abstain": True}, "evidence_refs": [session_id]})
+                    ).encode("utf-8")
+                )
                 request = AnnotationBatchImportRequest(
-                    jsonl=json.dumps({"row_key": "current", "value": {"abstain": True}, "evidence_refs": [session_id]}),
                     batch_id=f"current-{schema.schema_id}",
                     schema_id=schema.schema_id,
                     schema_version=schema.version,
@@ -214,11 +219,15 @@ async def test_actual_facade_daemon_import_records_current_versions_for_all_five
                     prompt_ref="block:current-prompt:0",
                     created_at_ms=789,
                 )
-                result = await api.import_annotation_batch(request)
+                result = await api.import_annotation_batch(request, input=request_input)
                 assert result.qualified_schema_id == f"{schema.schema_id}@v2" and result.valid_count == 1
             for kind in ("phase", "work_event"):
+                retired_input = io.BytesIO(
+                    (
+                        json.dumps({"row_key": "retired", "value": {"abstain": True}, "evidence_refs": [session_id]})
+                    ).encode("utf-8")
+                )
                 retired = AnnotationBatchImportRequest(
-                    jsonl=json.dumps({"row_key": "retired", "value": {"abstain": True}, "evidence_refs": [session_id]}),
                     batch_id=f"retired-{kind}",
                     schema_id="seed.activity",
                     schema_version=2,
@@ -230,7 +239,7 @@ async def test_actual_facade_daemon_import_records_current_versions_for_all_five
                     created_at_ms=790,
                 )
                 with pytest.raises(DaemonOperationRejectedError):
-                    await api.import_annotation_batch(retired)
+                    await api.import_annotation_batch(retired, input=retired_input)
     with ArchiveStore.open_existing(root) as reopened:
         assert reopened.get_annotation_batch("retired-phase") is None
         assert reopened.get_annotation_batch("retired-work_event") is None

@@ -33,16 +33,10 @@ from polylogue.browser_capture.capture_job_events import (
     read_capture_job_events,
     read_capture_job_retention,
 )
-from polylogue.browser_capture.capture_stream import (
-    CaptureSummary,
-    SpoolStorageExhaustedError,
-    StagedCapture,
-    stage_capture_chunks,
-    stage_retained_capture,
-    summarize_capture_file,
-)
+from polylogue.browser_capture.capture_stream import CaptureSummary, stage_retained_capture, summarize_capture_file
 from polylogue.browser_capture.receiver import backfill_checkpoint_root
 from polylogue.core.digest import CAPTURE, CanonicalizationError, KeyCollisionError, canonical_bytes
+from polylogue.core.staged_body import BodyStorageExhaustedError, StagedBody, stage_body_chunks
 from polylogue.paths import browser_capture_spool_root
 
 # All registry readers retain the intent cell separately under their snapshot.
@@ -507,7 +501,7 @@ class CaptureJobRegistry:
             raise CaptureJobError(400, "invalid_checkpoint_digest")
         return capture_job_store_root(self._spool_root()) / "artifacts" / (digest[7:] + ".checkpoint")
 
-    def _publish_checkpoint_artifact(self, staged: StagedCapture, digest: str) -> str:
+    def _publish_checkpoint_artifact(self, staged: StagedBody, digest: str) -> str:
         if "sha256:" + staged.sha256 != digest:
             raise CaptureJobError(400, "checkpoint_digest_mismatch")
         target = self._checkpoint_artifact_path(digest)
@@ -1134,10 +1128,10 @@ class CaptureJobRegistry:
                 "timelines": project_capture_job_timelines(events),
             }
 
-    def _stage_json_chunks(self, chunks: Iterator[bytes], *, durable: bool) -> StagedCapture:
+    def _stage_json_chunks(self, chunks: Iterator[bytes], *, durable: bool) -> StagedBody:
         try:
-            return stage_capture_chunks(chunks, spool_root=self._spool_root(), durable=durable)
-        except SpoolStorageExhaustedError as error:
+            return stage_body_chunks(chunks, spool_root=self._spool_root(), durable=durable)
+        except BodyStorageExhaustedError as error:
             raise CaptureJobError(507, "spool_storage_exhausted") from error
 
     def _require_result_owner(self) -> ExitStack:
@@ -1923,7 +1917,7 @@ class CaptureJobRegistry:
             raise CaptureJobError(400, "invalid_native_digest") from exc
         return capture_job_store_root(self._spool_root()) / "artifacts" / (sha256 + ".native")
 
-    def _publish_native_artifact(self, staged: StagedCapture) -> None:
+    def _publish_native_artifact(self, staged: StagedBody) -> None:
         target = self._native_artifact_path(staged.sha256)
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -2060,7 +2054,7 @@ class CaptureJobRegistry:
                 "duplicate": False,
             }
 
-    def native_member(self, job_id: str, body: dict[str, object], staged: StagedCapture) -> dict[str, object]:
+    def native_member(self, job_id: str, body: dict[str, object], staged: StagedBody) -> dict[str, object]:
         member, metadata = body.get("member_name"), body.get("metadata")
         if member not in {"conversation", "responses", "response_nodes"} or not isinstance(metadata, dict):
             raise CaptureJobError(400, "invalid_native_member")
@@ -2394,9 +2388,7 @@ class CaptureJobRegistry:
                 "after": rows[-1]["ordinal"] if more else None,
             }
 
-    def native_asset(
-        self, job_id: str, body: dict[str, object], staged: StagedCapture | None = None
-    ) -> dict[str, object]:
+    def native_asset(self, job_id: str, body: dict[str, object], staged: StagedBody | None = None) -> dict[str, object]:
         ordinal, outcome = body.get("ordinal"), body.get("outcome")
         if type(ordinal) is not int or ordinal < 0 or not isinstance(outcome, dict):
             raise CaptureJobError(400, "invalid_native_asset_receipt")
@@ -2628,7 +2620,7 @@ class CaptureJobRegistry:
                 staged.discard()
 
     def native_publish(
-        self, job_id: str, body: dict[str, object], admit: Callable[[StagedCapture, CaptureSummary], dict[str, object]]
+        self, job_id: str, body: dict[str, object], admit: Callable[[StagedBody, CaptureSummary], dict[str, object]]
     ) -> dict[str, object]:
         """Record exact final admission under the same acquisition lease fence."""
         with (
@@ -2666,7 +2658,7 @@ class CaptureJobRegistry:
             finally:
                 staged.discard()
 
-    def checkpoint(self, job_id: str, body: dict[str, object], staged: StagedCapture) -> dict[str, object]:
+    def checkpoint(self, job_id: str, body: dict[str, object], staged: StagedBody) -> dict[str, object]:
         checkpoint = body.get("checkpoint")
         if (
             not isinstance(checkpoint, dict)

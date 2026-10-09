@@ -621,7 +621,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="mutate-import-annotation-batch",
         kind=OperationKind.IMPORT,
         description=(
-            "Import a bounded JSONL annotation batch with durable schema, provenance, validation outcomes, and "
+            "Import a streamed JSONL annotation batch with durable schema, provenance, validation outcomes, and "
             "candidate assertions. Live reference validation stays in the import operation; its atomic user-tier "
             "write is routed through OperationExecutor/AnnotationBatchImportActuator with role_only confirmation."
         ),

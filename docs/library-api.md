@@ -282,7 +282,7 @@ from polylogue import Polylogue
 from polylogue.annotations.importer import AnnotationBatchImportRequest
 
 
-async def operations(archive: Polylogue, jsonl_payload: str) -> None:
+async def operations(archive: Polylogue, annotation_input: BinaryIO) -> None:
     # query: terminal query page with explicit result semantics
     units = await archive.query_units("messages where text:needle", limit=20)
 
@@ -315,7 +315,6 @@ async def operations(archive: Polylogue, jsonl_payload: str) -> None:
     # write: durable typed annotation batches under a declared schema version
     result = await archive.import_annotation_batch(
         AnnotationBatchImportRequest(
-            jsonl=jsonl_payload,
             batch_id="batch-one",
             schema_id="review",
             schema_version=1,
@@ -324,7 +323,8 @@ async def operations(archive: Polylogue, jsonl_payload: str) -> None:
             actor_ref="agent:reviewer",
             model_ref="model:local",
             prompt_ref="prompt:review-v1",
-        )
+        ),
+        input=annotation_input,
     )
 
     # judge: adjudicate queued assertion candidates
@@ -410,7 +410,7 @@ asyncio.run(main())
 | `list_tool_usage_insights(query)` | Per-provider tool usage with explicit coverage gaps |
 | `list_archive_debt_insights(query)` | List governed archive-debt insights |
 | `export_insight_bundle(request)` | Write a versioned archive-insight export bundle from one read snapshot |
-| `import_annotation_batch(request, registry)` | Import a durable typed annotation batch under a declared schema version |
+| `import_annotation_batch(request, input, registry)` | Import a durable typed annotation batch under a declared schema version |
 | `regenerate_private_fable_packet(seed=..., requested_size=...)` | Compile a private descriptive delegation packet on one Index/User snapshot, or return named `not_supported` evidence gaps |
 
 

@@ -49,6 +49,7 @@ from polylogue.browser_capture.server import (
     make_server,
     mission_control_archive_facts,
 )
+from polylogue.core import staged_body
 from polylogue.daemon.commands import main as daemon_cli
 from polylogue.paths import browser_capture_receiver_identity_path
 
@@ -1398,14 +1399,13 @@ def test_receiver_streams_captures_past_the_control_bound_byte_identically(
     of the capture makes the largest recorded read the body size instead of
     the chunk.
     """
-    import polylogue.browser_capture.capture_stream as capture_stream
     import polylogue.browser_capture.server as server
 
     chunk = 64
     monkeypatch.setattr(server, "MAX_CONTROL_BODY_BYTES", 256)
-    monkeypatch.setattr(capture_stream, "CAPTURE_READ_CHUNK_BYTES", chunk)
+    monkeypatch.setattr(staged_body, "BODY_READ_CHUNK_BYTES", chunk)
     reads: list[int] = []
-    original_stage = capture_stream.stage_capture_body
+    original_stage = staged_body.stage_body
 
     def recording_stage(read: Callable[[int], bytes], length: int, *, spool_root: Path) -> object:
         def recording_read(size: int) -> bytes:
@@ -1414,7 +1414,7 @@ def test_receiver_streams_captures_past_the_control_bound_byte_identically(
 
         return original_stage(recording_read, length, spool_root=spool_root)
 
-    monkeypatch.setattr(server, "stage_capture_body", recording_stage)
+    monkeypatch.setattr(server, "stage_body", recording_stage)
     payload = _payload()
     session = cast(dict[str, object], payload["session"])
     session["turns"] = [
@@ -1603,25 +1603,23 @@ def test_capture_space_is_reserved_before_the_body_is_read(
     """
     import os
 
-    import polylogue.browser_capture.capture_stream as capture_stream
-
     def failing_fallocate(fd: int, offset: int, length: int) -> None:
         raise OSError(fallocate_errno, os.strerror(fallocate_errno))
 
     monkeypatch.setattr(os, "posix_fallocate", failing_fallocate, raising=False)
-    monkeypatch.setattr(capture_stream, "_available_bytes", lambda _directory: 1)
+    monkeypatch.setattr(staged_body, "_available_bytes", lambda _directory: 1)
     reads: list[int] = []
 
     def read(size: int) -> bytes:
         reads.append(size)
         return b"x" * size
 
-    with pytest.raises(capture_stream.SpoolStorageExhaustedError) as refused:
-        capture_stream.stage_capture_body(read, 4096, spool_root=tmp_path)
+    with pytest.raises(staged_body.BodyStorageExhaustedError) as refused:
+        staged_body.stage_body(read, 4096, spool_root=tmp_path)
 
     assert refused.value.requested_bytes == 4096
     assert reads == []
-    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
+    assert list((tmp_path / staged_body.STAGING_DIRNAME).iterdir()) == []
 
 
 def test_receiver_answers_an_unreservable_capture_with_retryable_pressure(
@@ -1675,14 +1673,13 @@ def test_receiver_answers_an_unrepresentable_body_length_with_the_physical_refus
     Anti-vacuity: ``posix_fallocate`` raises ``OverflowError`` for it, which
     escapes the staging route's ``OSError`` handling and drops the response.
     """
-    import polylogue.browser_capture.capture_stream as capture_stream
 
     with _running_receiver(tmp_path) as (host, port):
         status, body = _post_capture_raw(host, port, content_length=str(2**63), body=b"{}")
 
     assert status == HTTPStatus.INSUFFICIENT_STORAGE
     assert body["error"] == "spool_storage_exhausted"
-    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
+    assert list((tmp_path / staged_body.STAGING_DIRNAME).iterdir()) == []
 
 
 @pytest.mark.parametrize("content_length", ["+2", "0_2"])
@@ -1705,14 +1702,13 @@ def test_receiver_releases_the_reservation_after_producer_cancellation(tmp_path:
     Anti-vacuity: a partial stage surviving EOF would retain reserved space
     after the producer has settled. A slow open producer is not cancellation.
     """
-    import polylogue.browser_capture.capture_stream as capture_stream
 
     with _running_receiver(tmp_path) as (host, port):
         status, body = _post_capture_raw(host, port, content_length="4096", body=b'{"polylogue', end_body=True)
 
     assert status == HTTPStatus.BAD_REQUEST
     assert body["error"] == "incomplete_body"
-    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
+    assert list((tmp_path / staged_body.STAGING_DIRNAME).iterdir()) == []
 
 
 def test_receiver_startup_reaps_abandoned_staging_but_not_live_uploads(tmp_path: Path) -> None:
@@ -1723,13 +1719,11 @@ def test_receiver_startup_reaps_abandoned_staging_but_not_live_uploads(tmp_path:
     """
     import io
 
-    import polylogue.browser_capture.capture_stream as capture_stream
-
-    staging = tmp_path / capture_stream.STAGING_DIRNAME
+    staging = tmp_path / staged_body.STAGING_DIRNAME
     staging.mkdir(parents=True)
     abandoned = staging / ".capture-abandoned.tmp"
     abandoned.write_bytes(b"half an upload")
-    live = capture_stream.stage_capture_body(io.BytesIO(b"{}").read, 2, spool_root=tmp_path)
+    live = staged_body.stage_body(io.BytesIO(b"{}").read, 2, spool_root=tmp_path)
     try:
         server = make_server("127.0.0.1", 0, spool_path=tmp_path)
         server.server_close()

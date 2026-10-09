@@ -16,6 +16,7 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.core.staged_body import stage_body_chunks
 from polylogue.daemon.uds import MachineOperationHandler
 from polylogue.daemon_client import DaemonClient, DaemonOperationRejectedError
 from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
@@ -2050,17 +2051,27 @@ def test_annotation_import_that_outlives_its_deadline_never_commits(
     monkeypatch.setattr(ref_resolution, "resolve_ref_against_archive", held_resolution)
 
     with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        input_body = stage_body_chunks(
+            iter(
+                [
+                    (
+                        json.dumps(
+                            {
+                                "row_key": "r1",
+                                "value": {"activity": "debugging", "confidence": 0.9},
+                                "evidence_refs": [session_id],
+                            }
+                        )
+                        + "\n"
+                    ).encode("utf-8")
+                ]
+            ),
+            spool_root=stack.archive_root / "operation-inputs",
+        )
         request = DaemonOperationRequest(
             "mutation.annotation.import_batch",
             {
-                "jsonl": json.dumps(
-                    {
-                        "row_key": "r1",
-                        "value": {"activity": "debugging", "confidence": 0.9},
-                        "evidence_refs": [session_id],
-                    }
-                )
-                + "\n",
+                "input": {"sha256": input_body.sha256, "size_bytes": input_body.size_bytes},
                 "batch_id": "late-batch",
                 "schema_id": "seed.activity",
                 "schema_version": 2,
@@ -2076,7 +2087,7 @@ def test_annotation_import_that_outlives_its_deadline_never_commits(
             deadline_ms=1_000,
         )
         try:
-            envelope = stack.runtime.call(request, _all_capabilities_principal())
+            envelope = stack.runtime.call(request, _all_capabilities_principal(), input_body=input_body)
         finally:
             answered.set()
         assert entered.is_set(), "validation never reached ref resolution; the test is vacuous"
@@ -2774,11 +2785,14 @@ def test_annotation_import_commits_summary_and_pages_all_amplified_errors(
         for index in range(20)
     )
     with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        input_body = stage_body_chunks(
+            iter([(jsonl).encode("utf-8")]), spool_root=stack.archive_root / "operation-inputs"
+        )
         envelope = stack.runtime.call(
             DaemonOperationRequest(
                 "mutation.annotation.import_batch",
                 {
-                    "jsonl": jsonl,
+                    "input": {"sha256": input_body.sha256, "size_bytes": input_body.size_bytes},
                     "batch_id": "amplified-errors",
                     "schema_id": "seed.activity",
                     "schema_version": 2,
@@ -2794,6 +2808,7 @@ def test_annotation_import_commits_summary_and_pages_all_amplified_errors(
                 deadline_ms=60_000,
             ),
             _all_capabilities_principal(),
+            input_body=input_body,
         )
         assert envelope["outcome"] == "completed"
         operation_result = cast(dict[str, Any], envelope["result"])

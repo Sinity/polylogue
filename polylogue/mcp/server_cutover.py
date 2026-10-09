@@ -2610,7 +2610,7 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
             )
 
             required = (
-                "jsonl",
+                "input_path",
                 "batch_id",
                 "schema_id",
                 "schema_version",
@@ -2636,7 +2636,6 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
             metadata = _field(fields, "metadata")
             try:
                 request = AnnotationBatchImportRequest(
-                    jsonl=str(values["jsonl"]),
                     batch_id=str(values["batch_id"]),
                     schema_id=str(values["schema_id"]),
                     schema_version=schema_version_value,
@@ -2649,8 +2648,11 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                 )
                 # The facade checks archive writer ownership before the
                 # importer initializes or opens the durable user tier.
-                import_result = await poly.import_annotation_batch(request)
-            except (AnnotationBatchImportError, ValueError) as exc:
+                from pathlib import Path
+
+                with Path(str(values["input_path"])).open("rb") as source:
+                    import_result = await poly.import_annotation_batch(request, input=source)
+            except (AnnotationBatchImportError, ValueError, OSError) as exc:
                 return hooks.error_json(str(exc), code="invalid_annotation_batch")
             return hooks.json_payload(import_result)
 

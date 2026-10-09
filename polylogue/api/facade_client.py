@@ -123,7 +123,9 @@ async def submit_facade_product(
     return receipt, plan
 
 
-async def submit_facade_operation(config: Config, operation: str, payload: dict[str, object]) -> dict[str, Any]:
+async def submit_facade_operation(
+    config: Config, operation: str, payload: dict[str, object], *, input=None
+) -> dict[str, Any]:
     """Submit a declared daemon write and return its validated product result."""
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
@@ -152,6 +154,7 @@ async def submit_facade_operation(config: Config, operation: str, payload: dict[
             payload,
             archive_root=str(root),
             request_id=request_id,
+            input=input,
         )
     )
     try:

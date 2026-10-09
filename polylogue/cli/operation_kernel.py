@@ -332,7 +332,9 @@ def configured_read_operation(
     )
 
 
-def configured_mutation_operation(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+def configured_mutation_operation(
+    config: Any, operation: str, payload: dict[str, object], *, input=None
+) -> dict[str, object]:
     """Execute a declared mutation through the resident daemon only.
 
     A missing socket becomes the typed ``daemon_required`` result; transport
@@ -366,6 +368,7 @@ def configured_mutation_operation(config: Any, operation: str, payload: dict[str
             request.operation,
             dict(request.payload),
             archive_root=str(root),
+            input=input,
         )
     ).execute(OperationRequest(operation, payload))
     if not isinstance(result.value, Mapping):

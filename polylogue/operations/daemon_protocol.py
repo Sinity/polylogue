@@ -21,7 +21,6 @@ from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import SchemaValidator, core_schema
 
 from polylogue.analysis.resume_contracts import ResumeCandidate
-from polylogue.core.annotation_limits import MAX_ANNOTATION_IMPORT_BYTES
 from polylogue.core.enums import OperationStatus
 from polylogue.operations.machine_receipts import IngestTerminalReceipt
 from polylogue.operations.read_contracts import (
@@ -1158,8 +1157,15 @@ class UserSettingSetRequest(_OperationPayload):
         return self
 
 
+class AnnotationInputDescriptor(_OperationPayload):
+    """Exact acquired input bytes, independent of server scratch coordinates."""
+
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int = Field(ge=0)
+
+
 class AnnotationBatchImportOperationRequest(_OperationPayload):
-    """One bounded JSONL annotation batch import, framed for the wire.
+    """Annotation batch controls and exact acquired-input identity, framed for the wire.
 
     Mirrors ``polylogue.annotations.importer.AnnotationBatchImportRequest``
     field-for-field. Declared separately rather than reused directly: this
@@ -1175,7 +1181,7 @@ class AnnotationBatchImportOperationRequest(_OperationPayload):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True, protected_namespaces=())
 
-    jsonl: str = Field(min_length=1, max_length=MAX_ANNOTATION_IMPORT_BYTES)
+    input: AnnotationInputDescriptor
     batch_id: str = Field(min_length=1, max_length=256)
     schema_id: str = Field(min_length=1, max_length=256)
     schema_version: int = Field(ge=1)
@@ -3149,8 +3155,9 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.WRITE,
         DaemonFallback.NEVER,
         capability="archive.import_annotation_batch",
-        deadline_s=120.0,
-        max_body_bytes=MAX_ANNOTATION_IMPORT_BYTES * 6 + 64 * 1024,
+        deadline_s=None,
+        max_body_bytes=64 * 1024,
+        durable_request=True,
         request_contract="mutation.annotation.import_batch.request/v1",
         result_contract="mutation.result/v1",
         request_type="AnnotationBatchImportOperationRequest",

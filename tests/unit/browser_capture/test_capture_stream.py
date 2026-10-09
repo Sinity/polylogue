@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.browser_capture import capture_decode, capture_stream
+from polylogue.core import staged_body
 from polylogue.core.json import dumps_bytes
 
 
@@ -30,7 +31,7 @@ def test_retained_capture_staging_borrows_inode_and_preserves_original_custody(t
         assert staged.path.stat().st_ino == artifact.stat().st_ino
         assert staged.path.read_bytes() == raw
         # The stage owns a physical lock after the borrowing context closes.
-        assert capture_stream.reap_stale_staging(tmp_path) == 0
+        assert staged_body.reap_stale_staging(tmp_path) == 0
     finally:
         staged.discard()
     assert artifact.read_bytes() == raw
@@ -53,7 +54,7 @@ def test_retained_capture_staging_refuses_changed_descriptor_without_retiring_or
             spool_root=tmp_path,
         )
     assert artifact.read_bytes() == raw
-    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
+    assert list((tmp_path / staged_body.STAGING_DIRNAME).iterdir()) == []
 
 
 def test_numbers_parse_as_the_stdlib_decoder_reads_them() -> None:
@@ -361,7 +362,7 @@ def test_a_body_past_the_largest_file_is_the_typed_physical_refusal(
         reads.append(size)
         return b"x" * size
 
-    with pytest.raises(capture_stream.SpoolStorageExhaustedError):
-        capture_stream.stage_capture_body(read, 2**62, spool_root=tmp_path)
+    with pytest.raises(staged_body.BodyStorageExhaustedError):
+        staged_body.stage_body(read, 2**62, spool_root=tmp_path)
     assert reads == []
-    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
+    assert list((tmp_path / staged_body.STAGING_DIRNAME).iterdir()) == []

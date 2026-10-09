@@ -17,18 +17,7 @@ from polylogue.cli.operation_kernel import OperationRequest
 from polylogue.cli.read_dispatch import dispatch_read
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
-from polylogue.core.annotation_limits import MAX_ANNOTATION_IMPORT_BYTES
 from polylogue.core.enums import AssertionStatus
-
-#: The ``jsonl`` bound on ``mutation.annotation.import_batch``'s request
-#: contract. Read from the leaf owner in ``polylogue.core``, which holds no
-#: substrate imports, so this is not the direct substrate-driving import the
-#: mutation-authority layering rule (docs/plans/layering.yaml) disallows for
-#: this package (polylogue-gjwto / polylogue-r29bv AC3). It was previously
-#: duplicated as a literal here for exactly that reason; one owner now serves
-#: both. This bound is not the enforcement -- it only keeps a CLI process from
-#: buffering more than the operation would ever accept before sending it.
-_MAX_ANNOTATION_JSONL_READ_BYTES = MAX_ANNOTATION_IMPORT_BYTES
 
 
 @click.group("annotations")
@@ -75,35 +64,31 @@ def import_annotations_command(
     """
 
     try:
-        with path.open("rb") as source:
-            raw_jsonl = source.read(_MAX_ANNOTATION_JSONL_READ_BYTES + 1)
-        if len(raw_jsonl) > _MAX_ANNOTATION_JSONL_READ_BYTES:
-            raise ValueError(f"annotation JSONL exceeds {_MAX_ANNOTATION_JSONL_READ_BYTES} byte limit")
         metadata = json.loads(metadata_json)
         if not isinstance(metadata, dict):
             raise ValueError("--metadata-json must decode to a JSON object")
-        jsonl_text = raw_jsonl.decode("utf-8")
     except (OSError, UnicodeError, ValueError) as exc:
         fail("annotations import", str(exc))
 
     from polylogue.cli.archive_query import submit_cli_mutation
 
-    written = submit_cli_mutation(
-        env,
-        "mutation.annotation.import_batch",
-        {
-            "jsonl": jsonl_text,
-            "batch_id": batch_id,
-            "schema_id": schema_id,
-            "schema_version": schema_version,
-            "target_ref": target_ref,
-            "source_result_ref": source_result_ref,
-            "actor_ref": actor_ref,
-            "model_ref": model_ref,
-            "prompt_ref": prompt_ref,
-            "metadata": metadata,
-        },
-    )
+    with path.open("rb") as source:
+        written = submit_cli_mutation(
+            env,
+            "mutation.annotation.import_batch",
+            {
+                "batch_id": batch_id,
+                "schema_id": schema_id,
+                "schema_version": schema_version,
+                "target_ref": target_ref,
+                "source_result_ref": source_result_ref,
+                "actor_ref": actor_ref,
+                "model_ref": model_ref,
+                "prompt_ref": prompt_ref,
+                "metadata": metadata,
+            },
+            input=source,
+        )
     result = written.get("result")
     if not isinstance(result, dict):
         raise click.ClickException("daemon accepted the annotation batch but returned no result")

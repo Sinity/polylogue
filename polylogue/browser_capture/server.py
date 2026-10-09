@@ -37,18 +37,7 @@ from polylogue.browser_capture.actions import (
     update_action,
 )
 from polylogue.browser_capture.capture_jobs import CaptureJobError, CaptureJobRegistry, registry_for_receiver
-from polylogue.browser_capture.capture_stream import (
-    CaptureBodyIncompleteError,
-    CaptureEnvelopeError,
-    CaptureSummary,
-    SpoolStorageExhaustedError,
-    StagedCapture,
-    is_storage_exhausted,
-    reap_stale_staging,
-    stage_capture_body,
-    stage_capture_chunks,
-    summarize_capture_file,
-)
+from polylogue.browser_capture.capture_stream import CaptureEnvelopeError, CaptureSummary, summarize_capture_file
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_API_SCHEMA,
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
@@ -93,6 +82,15 @@ from polylogue.browser_capture.receiver import (
     receiver_status_proof,
 )
 from polylogue.core.loopback import is_loopback_host
+from polylogue.core.staged_body import (
+    BodyIncompleteError,
+    BodyStorageExhaustedError,
+    StagedBody,
+    is_storage_exhausted,
+    reap_stale_staging,
+    stage_body,
+    stage_body_chunks,
+)
 from polylogue.logging import INFO, WARNING, emit, get_logger
 from polylogue.paths import archive_root as default_archive_root
 from polylogue.schemas.observation_spill import StreamedJSONDocument
@@ -347,10 +345,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     yield piece.encode("utf-8")
 
         try:
-            staged = stage_capture_chunks(
+            staged = stage_body_chunks(
                 iter(encoded_chunks()), spool_root=self.receiver_config.spool_path, durable=False
             )
-        except SpoolStorageExhaustedError:
+        except BodyStorageExhaustedError:
             self._send_json_staging_refusal(HTTPStatus.INSUFFICIENT_STORAGE, _JSON_SPOOL_REFUSAL)
             return
         except OSError as exc:
@@ -802,7 +800,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return None
         return parsed
 
-    def _stage_capture_body(self, *, progress: Callable[[], None] | None = None) -> StagedCapture | None:
+    def _stage_body(self, *, progress: Callable[[], None] | None = None) -> StagedBody | None:
         """Stream the capture body into the spool's staging area.
 
         No size refusal: the body is copied chunk by chunk while hashed, so
@@ -824,8 +822,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return chunk
 
         try:
-            return stage_capture_body(read_chunk, length, spool_root=self.receiver_config.spool_path)
-        except CaptureBodyIncompleteError:
+            return stage_body(read_chunk, length, spool_root=self.receiver_config.spool_path)
+        except BodyIncompleteError:
             emit(
                 "browser_capture.incomplete_body",
                 level=WARNING,
@@ -834,7 +832,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             )
             self._safe_error(HTTPStatus.BAD_REQUEST, "incomplete_body")
             return None
-        except SpoolStorageExhaustedError as exc:
+        except BodyStorageExhaustedError as exc:
             emit(
                 "browser_capture.spool_storage_exhausted",
                 level=WARNING,
@@ -932,7 +930,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if path != "/v1/browser-captures":
             self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
             return
-        staged = self._stage_capture_body()
+        staged = self._stage_body()
         if staged is None:
             return
         try:
@@ -942,7 +940,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
     def _admit_capture(
         self,
-        staged: StagedCapture,
+        staged: StagedBody,
         *,
         native_authority: bool = False,
         prepared_summary: CaptureSummary | None = None,
@@ -1174,7 +1172,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         )
 
     def _capture_job_post(self, path: str) -> None:
-        staged = self._stage_capture_body()
+        staged = self._stage_body()
         if staged is None:
             return
         try:
@@ -1266,7 +1264,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
     def _publish_native_capture(
         self, registry: CaptureJobRegistry, job_id: str, body: dict[str, object]
     ) -> dict[str, object]:
-        def admit(staged: StagedCapture, summary: CaptureSummary) -> dict[str, object]:
+        def admit(staged: StagedBody, summary: CaptureSummary) -> dict[str, object]:
             payload = self._admit_capture(staged, native_authority=True, prepared_summary=summary, respond=False)
             if payload is None:
                 raise CaptureJobError(500, "native_admission_missing_receipt")
@@ -1290,7 +1288,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         # Admission precedes disk reservation and every body read. The
         # context remains owned until staging and publication settle.
         with registry.result_scope(), registry.artifact_progress(job_id, descriptor, native=True) as progress:
-            staged = self._stage_capture_body(progress=progress)
+            staged = self._stage_body(progress=progress)
             if staged is None:
                 return
             try:
@@ -1314,7 +1312,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/checkpoint")
         registry = registry_for_receiver(self.receiver_config.spool_path, receiver_identity(self.receiver_config))
         with registry.result_scope(), registry.artifact_progress(job_id, payload) as progress:
-            staged = self._stage_capture_body(progress=progress)
+            staged = self._stage_body(progress=progress)
             if staged is None:
                 return
             try:

@@ -12,7 +12,7 @@ from contextlib import aclosing, closing, contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal, TypeVar, cast
 
 from polylogue.analysis.archive import (
     SessionProfileInsight,
@@ -2238,6 +2238,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         self,
         request: AnnotationBatchImportRequest,
         *,
+        input: BinaryIO,
         registry: AnnotationSchemaRegistry | None = None,
     ) -> AnnotationBatchImportResult:
         """Import annotation candidates and return the committed batch summary.
@@ -2262,7 +2263,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 raise
         else:
             payload["schema_definition_json"] = schema.canonical_definition_json()
-        state = await submit_facade_operation(self.config, "mutation.annotation.import_batch", payload)
+        state = await submit_facade_operation(self.config, "mutation.annotation.import_batch", payload, input=input)
         return AnnotationBatchImportResult.model_validate(state["result"])
 
     async def get_session(
