@@ -12,6 +12,7 @@ from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.excision_execution import begin_excision_control
+from tests.infra.identity import fixture_block_content_identity
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -146,9 +147,12 @@ def seed_excision_session(
             ).fetchone()[0]
             if with_block:
                 index_conn.execute(
-                    "INSERT INTO blocks (message_id, session_id, position, block_type, text) "
-                    "VALUES (?, ?, 0, 'text', 'hello secret')",
-                    (message_id, session_id),
+                    "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', 'hello secret', ?, 0)",
+                    (
+                        message_id,
+                        session_id,
+                        fixture_block_content_identity("text", "hello secret"),
+                    ),
                 )
         index_conn.commit()
     finally:
