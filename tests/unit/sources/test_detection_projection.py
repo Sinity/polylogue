@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 
+from polylogue.core.json import JSONDocument, json_document_or_none
 from polylogue.sources import detection_projection
 from polylogue.sources.detection_projection import (
     DetectorProjection,
@@ -60,10 +61,10 @@ def test_projection_read_view_validates_json_once(
     """Dispatch predicates and dynamic resolution share conversion, including refusal."""
     from polylogue.sources.dispatch import _payload_record
 
-    original = detection_projection.json_document_or_none
+    original = json_document_or_none
     calls: list[object] = []
 
-    def observe(value: object) -> detection_projection.JSONDocument | None:
+    def observe(value: object) -> JSONDocument | None:
         calls.append(value)
         return original(value)
 
@@ -77,5 +78,6 @@ def test_projection_read_view_validates_json_once(
         assert first is None
     else:
         assert first is projected
+        assert first is not None
         assert len(first) == (2 if preserve_size else 1)
         assert first["selected"] == (2.5 if isinstance(scalar, Decimal) else scalar)
