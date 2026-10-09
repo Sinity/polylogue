@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 from polylogue.core.identity_law import block_id as make_block_id
+from polylogue.sources.revision_backfill import ConnectionRetainedEnrichmentRead
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+from polylogue.storage.sqlite.archive_tiers.write import ConnectionSessionSourceRead
 
 if TYPE_CHECKING:
+    from polylogue.archive.revision_authority import RawRevisionKind
+    from polylogue.core.enums import Provider
+    from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
     from polylogue.operations.operation_context import PinnedOperationRead
+    from polylogue.sources.sidecar_evidence import SidecarResolver
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -21,6 +28,75 @@ class SourceTargetUnavailableError(ValueError):
 
 class SourceTargetChangedError(ValueError):
     """The supplying Source revision moved before the durable reference write."""
+
+
+class _PinnedRetainedRead(ConnectionSessionSourceRead, ConnectionRetainedEnrichmentRead):
+    """Borrow the pin's existing Raw, sidecar and enrichment readers."""
+
+    def __init__(self, archive: ArchiveStore) -> None:
+        ConnectionSessionSourceRead.__init__(self, archive.source_connection)
+        ConnectionRetainedEnrichmentRead.__init__(
+            self,
+            archive._conn,
+            archive.source_connection,
+            archive.archive_root / "blob",
+        )
+        self._archive = archive
+
+    @property
+    def archive_root(self) -> Path:
+        return self._archive.archive_root
+
+    def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+        return self._archive.raw_revision_descriptor(raw_id)
+
+    def raw_revision_blob_path(self, raw_id: str) -> Path | None:
+        _, blob_hash, _, _, _ = self.raw_revision_descriptor(raw_id)
+        return self._archive.blob_path_for_hash(blob_hash)
+
+    def raw_profile_identity(self, raw_id: str) -> str | None:
+        return self._archive.raw_profile_identity(raw_id)
+
+    def raw_captured_zip_coordinate(self, raw_id: str) -> CapturedZipMemberCoordinate | None:
+        return self._archive.raw_captured_zip_coordinate(raw_id)
+
+    def raw_revision_file_mtime(self, raw_id: str) -> str | None:
+        return self._archive.raw_revision_file_mtime(raw_id)
+
+    def raw_native_id(self, raw_id: str) -> str | None:
+        return self._archive.raw_native_id(raw_id)
+
+    def raw_append_logical_key(self, raw_id: str) -> str | None:
+        from polylogue.storage.sqlite.archive_tiers.source_write import read_raw_append_logical_key
+
+        return read_raw_append_logical_key(self._connection, raw_id)
+
+    def open_raw_revision_material(
+        self,
+        raw_id: str,
+    ) -> AbstractContextManager[tuple[Provider, BinaryIO, str, RawRevisionKind]]:
+        return self._archive.open_raw_revision_material(raw_id)
+
+    def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
+        return self._archive.raw_revision_material(raw_id)
+
+    def open_raw_container_material(self, raw_id: str) -> AbstractContextManager[BinaryIO | None]:
+        return self._archive.open_raw_container_material(raw_id)
+
+    def retained_children_rows(self, low: str, high: str):
+        from polylogue.sources.live.sidecar_resolution import _RETAINED_CHILDREN_SQL
+
+        return self._statement(_RETAINED_CHILDREN_SQL, (low, high))
+
+    def retained_sibling_rows(self, root_path: str, low: str, high: str):
+        from polylogue.sources.live.sidecar_resolution import _RETAINED_SIBLINGS_SQL
+
+        return self._statement(_RETAINED_SIBLINGS_SQL, (root_path, low, high))
+
+    def retained_sidecar_resolver(self) -> SidecarResolver:
+        from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+
+        return RetainedSidecarResolver(self.archive_root, blob_root=self.blob_store.root, source_read=self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +153,7 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
     from polylogue.storage.sqlite.archive_tiers.write import prepared_session_rows_from_shard
 
     archive = snapshot.archive
+    retained = _PinnedRetainedRead(archive)
     source = archive.source_connection
     columns = tuple(column.name for column in BLOCKS_SPEC.insert_columns)
     for marker_row in _supplier_rows(archive, session_id):
@@ -113,7 +190,7 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
                 else prepare_retained_non_json_artifact
             )
             artifact = prepare(
-                archive,
+                retained,
                 str(raw_id),
                 directory=Path(directory),
                 prepare_blob_publications=False,
