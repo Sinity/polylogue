@@ -151,6 +151,39 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
         return tape
 
     @classmethod
+    def from_raw_document(cls, path: Path) -> DecodedRecordSequence:
+        """Own a completed raw JSON root with the facade's exact attempt order."""
+        tape = cls(())
+        failure: Exception | None = None
+        try:
+            with path.open("rb") as source:
+                detected_encoding = json.detect_encoding(source.read(4))
+            attempts = (
+                ("utf-8-sig", True, False),
+                (detected_encoding, False, False),
+                ("utf-8-sig", True, True),
+            )
+            for encoding, provider_utf8, allow_nonfinite in attempts:
+                try:
+                    tape._append_document(
+                        path,
+                        allow_nonfinite=allow_nonfinite,
+                        strip_bom=False,
+                        provider_utf8=provider_utf8,
+                        text_encoding=encoding,
+                    )
+                except (ijson.JSONError, UnicodeError, ValueError) as error:
+                    if failure is None:
+                        failure = error
+                else:
+                    return tape
+            assert failure is not None
+            raise JSONDecodeError(str(failure)) from failure
+        except BaseException:
+            tape.close()
+            raise
+
+    @classmethod
     def from_archive_jsonl(
         cls, handle: JsonlReadable, *, textual: bool = False, dict_only: bool = False
     ) -> tuple[DecodedRecordSequence, int, str | None]:

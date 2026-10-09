@@ -132,3 +132,114 @@ def test_envelope_owner_closes_large_record_after_taxonomy(tmp_path: Path, monke
         tape = envelope.payload
     with pytest.raises(RuntimeError):
         tape[0]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"a":1,"a":2}',
+        b'\xef\xbb\xbf{"a":1}',
+        b'\xef\xbb\xbf\xef\xbb\xbf{"a":1}',
+        b'{"a":NaN}',
+        b'{"a":Infinity}',
+        b'{"a":1e400}',
+        b'{"a":"\xed\xa0\x80\xed\xb0\x80"}',
+        b'{"a":"\xed\xa0\x80\\udc00"}',
+        b'{"a":"\\ud800\xed\xb0\x80"}',
+        '{"a":"\ud800"}'.encode("utf-16", "surrogatepass"),
+        '{"a":"\ud800\udc00"}'.encode("utf-32", "surrogatepass"),
+        '{"a":"\ud800\\udc00"}'.encode("utf-16", "surrogatepass"),
+        '{"a":NaN}'.encode("utf-16"),
+        '{"a":"é"}'.encode("utf-16-le"),
+        '{"a":"é"}'.encode("utf-32-be"),
+        b'{"a":1} {"a":2}',
+        b'\v{"a":1}',
+        b'{"a":"bad\xff"}',
+    ],
+)
+def test_owned_raw_document_matches_facade_attempt_values(raw: bytes, tmp_path: Path) -> None:
+    from polylogue.archive.raw_payload.decode import _load_raw_json
+    from polylogue.core.json import JSONDecodeError
+
+    path = tmp_path / "document.data"
+    path.write_bytes(raw)
+    try:
+        expected = _load_raw_json(raw)
+    except (JSONDecodeError, ValueError, UnicodeError):
+        with pytest.raises(JSONDecodeError):
+            DecodedRecordSequence.from_raw_document(path)
+    else:
+        with contextlib.closing(DecodedRecordSequence.from_raw_document(path)) as tape:
+            encoder = json.JSONEncoder()
+            assert "".join(encoder.iterencode(tape[0])) == "".join(encoder.iterencode(expected))
+
+
+def test_ambiguous_path_jsonl_fallback_never_reads_whole_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "ambiguous.data"
+    path.write_bytes(b'{"a":1}\n{"a":2}\n')
+
+    def forbid_whole_file(self: Path) -> bytes:
+        raise AssertionError("encoded JSONL was read as one byte value")
+
+    monkeypatch.setattr(Path, "read_bytes", forbid_whole_file)
+    with build_raw_payload_envelope(path, source_path=str(path), fallback_provider="hermes") as envelope:
+        assert envelope.wire_format == "jsonl" and envelope.payload == [{"a": 1}, {"a": 2}]
+
+
+@pytest.mark.parametrize(
+    "failure", [OSError("neutral read failure"), sqlite3.OperationalError("neutral scratch failure")]
+)
+def test_raw_document_storage_errors_never_trigger_dialect_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    path = tmp_path / "document.json"
+    path.write_bytes(b'{"a":1}')
+    attempts = []
+
+    def failed(self: DecodedRecordSequence, path: Path, **kwargs: object) -> None:
+        attempts.append(kwargs)
+        raise failure
+
+    monkeypatch.setattr(DecodedRecordSequence, "_append_document", failed)
+    with pytest.raises(type(failure)):
+        DecodedRecordSequence.from_raw_document(path)
+    assert len(attempts) == 1
+
+
+def test_owned_raw_document_returns_actual_readonly_tree(tmp_path: Path) -> None:
+    path = tmp_path / "document.data"
+    path.write_bytes(b'{"a":[1,2]}')
+    with build_raw_payload_envelope(path, source_path=str(path), fallback_provider="hermes") as envelope:
+        assert envelope.wire_format == "json"
+        assert isinstance(envelope.payload, dict)
+        for method, args in [
+            ("clear", ()),
+            ("pop", ("a",)),
+            ("popitem", ()),
+            ("setdefault", ("b", 2)),
+            ("update", ({"b": 2},)),
+            ("__setitem__", ("b", 2)),
+            ("__delitem__", ("a",)),
+            ("__ior__", ({"b": 2},)),
+        ]:
+            with pytest.raises(TypeError):
+                getattr(envelope.payload, method)(*args)
+        array = envelope.payload["a"]
+        assert isinstance(array, list) and array == [1, 2]
+        for method, args in [
+            ("append", (3,)),
+            ("clear", ()),
+            ("extend", ([],)),
+            ("insert", (0, 3)),
+            ("pop", ()),
+            ("remove", (1,)),
+            ("reverse", ()),
+            ("sort", ()),
+            ("__setitem__", (0, 3)),
+            ("__delitem__", (0,)),
+            ("__iadd__", ([],)),
+            ("__imul__", (2,)),
+        ]:
+            with pytest.raises(TypeError):
+                getattr(array, method)(*args)
+        assert array.copy() == [1, 2]

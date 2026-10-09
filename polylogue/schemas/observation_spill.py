@@ -9,6 +9,7 @@ complete values without keeping the decoded document in Python memory.
 from __future__ import annotations
 
 import codecs
+import hashlib
 import io
 import json
 import re
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from types import TracebackType
-from typing import Any, SupportsIndex, TypeVar, cast, overload
+from typing import Any, Never, SupportsIndex, TypeVar, cast, overload
 
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.json import JSONDocument, JSONValue, _ValidatedJSONContainer
@@ -66,38 +67,140 @@ def _read_row(connection: sqlite3.Connection, sql: str, parameters: tuple[object
         rows.close()
 
 
+@dataclass(frozen=True)
+class SpilledKey:
+    """An exact completed key token, borrowed from the existing JSON owner."""
+
+    connection: sqlite3.Connection
+    token: int
+
+    def iter_utf8_chunks(self) -> Iterator[bytes]:
+        with closing(
+            _read_rows(
+                self.connection,
+                "SELECT data FROM json_scalar_chunks WHERE kind='string' AND token=? ORDER BY ordinal",
+                (self.token,),
+            )
+        ) as rows:
+            for (chunk,) in rows:
+                check_compute_cancelled()
+                yield bytes(chunk)
+
+    def read(self) -> str:
+        return "".join(chunk.decode("utf-8", "surrogatepass") for chunk in self.iter_utf8_chunks())
+
+    @property
+    def small_name(self) -> str | None:
+        row = _read_row(
+            self.connection, "SELECT short_chars,small_bytes FROM json_key_meta WHERE token=?", (self.token,)
+        )
+        if row is None:
+            raise ValueError("JSON key token is incomplete")
+        return bytes(row[1]).decode("utf-8", "surrogatepass") if row[0] <= 128 else None
+
+    @property
+    def digest(self) -> bytes:
+        row = _read_row(self.connection, "SELECT digest FROM json_key_meta WHERE token=?", (self.token,))
+        if row is None:
+            raise ValueError("JSON key token is incomplete")
+        return bytes(row[0])
+
+    def compare(self, other: SpilledKey) -> int:
+        return _compare_key_chunks(self.iter_utf8_chunks(), other.iter_utf8_chunks())
+
+    def matches(self, value: str) -> bool:
+        def chunks() -> Iterator[bytes]:
+            for offset in range(0, len(value), 1024):
+                yield value[offset : offset + 1024].encode("utf-8", "surrogatepass")
+
+        return _compare_key_chunks(self.iter_utf8_chunks(), chunks()) == 0
+
+
+def _compare_key_chunks(left_chunks: Iterator[bytes], right_chunks: Iterator[bytes]) -> int:
+    """Settle exact key identity/order even when chunk boundaries differ."""
+    left = right = b""
+    with closing(left_chunks), closing(right_chunks):
+        while True:
+            if not left:
+                left = next(left_chunks, b"")
+            if not right:
+                right = next(right_chunks, b"")
+            if not left or not right:
+                return bool(left) - bool(right)
+            shared = min(len(left), len(right))
+            a, b = left[:shared], right[:shared]
+            if a != b:
+                return -1 if a < b else 1
+            left, right = left[shared:], right[shared:]
+
+
+def _literal_key(connection: sqlite3.Connection, key: str) -> SpilledKey:
+    ordinal = int(
+        connection.execute("SELECT COALESCE(MAX(token),0)+1 FROM json_scalar_tokens WHERE kind='string'").fetchone()[0]
+    )
+    store = _ScalarTokenStore(connection)
+    for offset in range(0, len(key), 1024):
+        store._store("string", ordinal, key[offset : offset + 1024].encode("utf-8", "surrogatepass"))
+    store._finish("string", ordinal)
+    return SpilledKey(connection, ordinal)
+
+
 class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
     def __init__(self, connection: sqlite3.Connection, node_id: int) -> None:
         dict.__init__(self)
         self._connection = connection
         self._node_id = node_id
 
-    def __iter__(self) -> Iterator[str]:
+    def key_entries(self, *, sorted_keys: bool = False) -> Iterator[tuple[SpilledKey, int]]:
+        order = "CAST(key_token AS TEXT) COLLATE json_key_order" if sorted_keys else "ordinal"
         with closing(
             _read_rows(
                 self._connection,
-                "SELECT key_bytes FROM json_object_members WHERE parent_id = ? ORDER BY ordinal",
+                f"SELECT key_token,child_id FROM json_object_members WHERE parent_id=? ORDER BY {order}",
                 (self._node_id,),
             )
-        ) as cursor:
-            for (key_bytes,) in cursor:
-                yield bytes(key_bytes).decode("utf-8", "surrogatepass")
+        ) as rows:
+            for token, child in rows:
+                check_compute_cancelled()
+                yield SpilledKey(self._connection, int(token)), int(child)
+
+    def __iter__(self) -> Iterator[str]:
+        with closing(self.key_entries()) as entries:
+            for key, _child in entries:
+                yield key.read()
 
     def __len__(self) -> int:
         row = _read_row(
-            self._connection, "SELECT COUNT(*) FROM json_object_members WHERE parent_id = ?", (self._node_id,)
+            self._connection, "SELECT COUNT(*) FROM json_object_members WHERE parent_id=?", (self._node_id,)
         )
         return int(row[0])
 
+    def _member(self, key: str) -> int | None:
+        digest = hashlib.sha256()
+        for offset in range(0, len(key), 1024):
+            digest.update(key[offset : offset + 1024].encode("utf-8", "surrogatepass"))
+        with closing(
+            _read_rows(
+                self._connection,
+                "SELECT 1,m.key_token,m.child_id,k.small_bytes FROM json_object_members m "
+                "JOIN json_key_meta k ON k.token=m.key_token WHERE m.parent_id=? AND m.key_digest=?",
+                (self._node_id, digest.digest()),
+            )
+        ) as rows:
+            for _exists, token, child, small_bytes in rows:
+                if small_bytes is not None:
+                    equal = len(key) <= 128 and bytes(small_bytes) == key.encode("utf-8", "surrogatepass")
+                else:
+                    equal = SpilledKey(self._connection, int(token)).matches(key)
+                if equal:
+                    return int(child)
+        return None
+
     def __getitem__(self, key: str) -> JSONValue:
-        row = _read_row(
-            self._connection,
-            "SELECT child_id FROM json_object_members WHERE parent_id = ? AND key_bytes = ?",
-            (self._node_id, key.encode("utf-8", "surrogatepass")),
-        )
-        if row is None:
+        child = self._member(key)
+        if child is None:
             raise KeyError(key)
-        return _load_node(self._connection, int(row[0]))
+        return _load_node(self._connection, child)
 
     @overload
     def get(self, key: str, default: None = None) -> JSONValue: ...
@@ -112,36 +215,20 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
             return default
 
     def structure_value(self, key: str) -> JSONValue:
-        row = _read_row(
-            self._connection,
-            "SELECT child_id FROM json_object_members WHERE parent_id=? AND key_bytes=?",
-            (self._node_id, key.encode("utf-8", "surrogatepass")),
-        )
-        if row is None:
+        child = self._member(key)
+        if child is None:
             raise KeyError(key)
-        return _load_structure_node(self._connection, int(row[0]))
+        return _load_structure_node(self._connection, child)
 
     def structure_items(self) -> Iterator[tuple[str, JSONValue]]:
-        with closing(
-            _read_rows(
-                self._connection,
-                "SELECT key_bytes,child_id FROM json_object_members WHERE parent_id=? ORDER BY ordinal",
-                (self._node_id,),
-            )
-        ) as rows:
-            for key, child_id in rows:
-                yield bytes(key).decode("utf-8", "surrogatepass"), _load_structure_node(self._connection, int(child_id))
+        with closing(self.key_entries()) as entries:
+            for key, child in entries:
+                yield key.read(), _load_structure_node(self._connection, child)
 
     def sorted_keys(self) -> Iterator[str]:
-        with closing(
-            _read_rows(
-                self._connection,
-                "SELECT key_bytes FROM json_object_members WHERE parent_id = ? ORDER BY key_bytes",
-                (self._node_id,),
-            )
-        ) as _owned_rows:
-            for (key,) in _owned_rows:
-                yield bytes(key).decode("utf-8", "surrogatepass")
+        with closing(self.key_entries(sorted_keys=True)) as entries:
+            for key, _child in entries:
+                yield key.read()
 
     def normalized_sorted_items(self, normalize_key: Callable[[str], str]) -> Iterator[tuple[str, JSONValue]]:
         """Sort normalized keys on disk; refuse collisions without a Python key set."""
@@ -151,12 +238,12 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
         )
         connection.execute("DELETE FROM json_normalized_keys WHERE parent_id=?", (self._node_id,))
         cursor = _read_rows(
-            connection, "SELECT key_bytes, child_id FROM json_object_members WHERE parent_id=?", (self._node_id,)
+            connection, "SELECT key_token, child_id FROM json_object_members WHERE parent_id=?", (self._node_id,)
         )
         try:
             for key, child in cursor:
                 check_compute_cancelled()
-                normalized = normalize_key(bytes(key).decode("utf-8", "surrogatepass"))
+                normalized = normalize_key(SpilledKey(connection, int(key)).read())
                 try:
                     connection.execute(
                         "INSERT INTO json_normalized_keys VALUES (?, ?, ?)",
@@ -182,19 +269,22 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
         connection = self._connection
         node = cast(int, connection.execute("INSERT INTO json_nodes(kind) VALUES ('object')").lastrowid)
         connection.execute(
-            "INSERT INTO json_object_members SELECT ?, key_bytes, ordinal, child_id FROM json_object_members WHERE parent_id = ?",
+            "INSERT INTO json_object_members SELECT ?, key_token, key_digest, ordinal, child_id FROM json_object_members WHERE parent_id = ?",
             (node, self._node_id),
         )
         ordinal = len(self)
         null = cast(
             int, connection.execute("INSERT INTO json_nodes(kind, scalar_json) VALUES ('scalar', 'null')").lastrowid
         )
+        mapping = SpilledObject(connection, node)
         for key in extra:
-            connection.execute(
-                "INSERT OR IGNORE INTO json_object_members VALUES (?, ?, ?, ?)",
-                (node, key.encode("utf-8", "surrogatepass"), ordinal, null),
-            )
-            ordinal += 1
+            if key not in mapping:
+                token = _literal_key(connection, key)
+                connection.execute(
+                    "INSERT INTO json_object_members VALUES (?,?,?,?,?)",
+                    (node, token.token, token.digest, ordinal, null),
+                )
+                ordinal += 1
         return KeysView(SpilledObject(connection, node))
 
     def record_profile_groups(
@@ -243,16 +333,7 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
                 yield (bytes(bucket).decode("utf-8", "surrogatepass"), fields(bucket))
 
     def __contains__(self, key: object) -> bool:
-        if not isinstance(key, str):
-            return False
-        return (
-            _read_row(
-                self._connection,
-                "SELECT 1 FROM json_object_members WHERE parent_id = ? AND key_bytes = ?",
-                (self._node_id, key.encode("utf-8", "surrogatepass")),
-            )
-            is not None
-        )
+        return isinstance(key, str) and self._member(key) is not None
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -263,6 +344,15 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
 
     def __ne__(self, other: object) -> bool:
         return not self == other
+
+    def _immutable(self, *args: object, **kwargs: object) -> Never:
+        raise TypeError("streamed JSON container is read-only")
+
+    clear = pop = popitem = setdefault = update = _immutable
+    __setitem__ = __delitem__ = __ior__ = _immutable
+
+    def copy(self) -> dict[str, JSONValue]:
+        return dict(self.items())
 
     # The returned views implement the Mapping protocol against the SQLite
     # tree; ``dict_keys``' static type cannot describe a dict subclass whose
@@ -287,13 +377,13 @@ class _SpilledItemsView(ItemsView[str, JSONValue]):
         with closing(
             _read_rows(
                 mapping._connection,
-                "SELECT key_bytes, child_id FROM json_object_members WHERE parent_id = ? ORDER BY ordinal",
+                "SELECT key_token, child_id FROM json_object_members WHERE parent_id = ? ORDER BY ordinal",
                 (mapping._node_id,),
             )
         ) as cursor:
-            for key_bytes, child_id in cursor:
+            for key_token, child_id in cursor:
                 yield (
-                    bytes(key_bytes).decode("utf-8", "surrogatepass"),
+                    SpilledKey(mapping._connection, int(key_token)).read(),
                     _load_node(mapping._connection, int(child_id)),
                 )
 
@@ -339,6 +429,15 @@ class SpilledArray(list[JSONValue], Sequence[JSONValue], _ValidatedJSONContainer
 
     def __ne__(self, other: object) -> bool:
         return not self == other
+
+    def _immutable(self, *args: object, **kwargs: object) -> Never:
+        raise TypeError("streamed JSON container is read-only")
+
+    append = clear = extend = insert = pop = remove = reverse = sort = _immutable
+    __setitem__ = __delitem__ = __iadd__ = __imul__ = _immutable
+
+    def copy(self) -> list[JSONValue]:
+        return list(self)
 
     def __contains__(self, value: object) -> bool:
         return any(item == value for item in self)
@@ -413,6 +512,9 @@ class _ScalarTokenStore:
         self.chunk = 0
         self.decoded_bytes = 0
         self.number_integer = True
+        self.short_chars = 0
+        self.small_bytes = bytearray()
+        self.key_digest = hashlib.sha256()
         self.failure: ValueError | UnicodeError | None = None
         self.failure_token: tuple[str, int] | None = None
 
@@ -461,6 +563,13 @@ class _ScalarTokenStore:
         self.connection.execute(
             "INSERT INTO json_scalar_chunks VALUES (?, ?, ?, ?)", (kind, ordinal, self.chunk, content)
         )
+        if kind == "string":
+            self.short_chars = min(129, self.short_chars + len(content.decode("utf-8", "surrogatepass")))
+            if self.short_chars <= 128:
+                self.small_bytes.extend(content)
+            else:
+                self.small_bytes.clear()
+            self.key_digest.update(content)
         self.chunk += 1
         self.decoded_bytes += len(content)
         advance_work_progress(bytes=len(content))
@@ -471,9 +580,22 @@ class _ScalarTokenStore:
                 "INSERT INTO json_scalar_tokens VALUES (?, ?, ?, ?)",
                 (kind, ordinal, self.decoded_bytes, "integer" if kind == "number" and self.number_integer else kind),
             )
+            if kind == "string":
+                self.connection.execute(
+                    "INSERT INTO json_key_meta VALUES (?,?,?,?)",
+                    (
+                        ordinal,
+                        self.short_chars,
+                        self.key_digest.digest(),
+                        bytes(self.small_bytes) if self.short_chars <= 128 else None,
+                    ),
+                )
         self.chunk = 0
         self.decoded_bytes = 0
         self.number_integer = True
+        self.short_chars = 0
+        self.small_bytes = bytearray()
+        self.key_digest = hashlib.sha256()
 
     def read(self, kind: str, ordinal: int) -> JSONValue:
         rows = _read_rows(
@@ -555,8 +677,14 @@ def _store_schema_node(connection: sqlite3.Connection, child: object) -> int:
     if kind == "object":
         for ordinal, (key, item) in enumerate(cast(dict[str, object], child).items()):
             connection.execute(
-                "INSERT INTO json_object_members VALUES (?, ?, ?, ?)",
-                (node, key.encode("utf-8", "surrogatepass"), ordinal, _store_schema_node(connection, item)),
+                "INSERT INTO json_object_members VALUES (?, ?, ?, ?, ?)",
+                (
+                    node,
+                    (token := _literal_key(connection, key)).token,
+                    token.digest,
+                    ordinal,
+                    _store_schema_node(connection, item),
+                ),
             )
     elif kind == "array":
         for ordinal, item in enumerate(cast(list[object], child)):
@@ -574,7 +702,7 @@ _MISSING = object()
 class _Frame:
     node_id: int
     kind: str
-    key: str | None = None
+    key: SpilledKey | None = None
     ordinal: int = 0
 
 
@@ -673,12 +801,14 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
                     kind TEXT NOT NULL, token INTEGER NOT NULL, ordinal INTEGER NOT NULL, data BLOB NOT NULL,
                     PRIMARY KEY(kind,token,ordinal)
                 ) WITHOUT ROWID;
+                CREATE TABLE json_key_meta(token INTEGER PRIMARY KEY, short_chars INTEGER NOT NULL, digest BLOB NOT NULL, small_bytes BLOB);
                 CREATE TABLE json_object_members (
                     parent_id INTEGER NOT NULL REFERENCES json_nodes(id) ON DELETE CASCADE,
-                    key_bytes BLOB NOT NULL,
+                    key_token INTEGER NOT NULL,
+                    key_digest BLOB NOT NULL,
                     ordinal INTEGER NOT NULL,
                     child_id INTEGER NOT NULL REFERENCES json_nodes(id) ON DELETE CASCADE,
-                    PRIMARY KEY (parent_id, key_bytes),
+                    PRIMARY KEY (parent_id, key_token),
                     UNIQUE (parent_id, ordinal)
                 );
                 CREATE TABLE json_array_items (
@@ -688,6 +818,11 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
                     PRIMARY KEY (parent_id, ordinal)
                 );
                 """
+            )
+            connection.execute("CREATE INDEX json_member_digest ON json_object_members(parent_id,key_digest)")
+            connection.create_collation(
+                "json_key_order",
+                lambda left, right: SpilledKey(connection, int(left)).compare(SpilledKey(connection, int(right))),
             )
             connection.execute("PRAGMA foreign_keys=ON")
             self._connection = connection
@@ -831,25 +966,28 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
                 key = parent.key
                 if key is None:
                     raise ValueError("streamed JSON object value has no key")
-                key_bytes = key.encode("utf-8", "surrogatepass")
-                existing = connection.execute(
-                    "SELECT ordinal, child_id FROM json_object_members WHERE parent_id = ? AND key_bytes = ?",
-                    (parent.node_id, key_bytes),
-                ).fetchone()
+                existing = None
+                for candidate in connection.execute(
+                    "SELECT key_token,ordinal,child_id FROM json_object_members WHERE parent_id=? AND key_digest=?",
+                    (parent.node_id, key.digest),
+                ):
+                    if key.compare(SpilledKey(connection, int(candidate[0]))) == 0:
+                        existing = candidate
+                        break
                 if existing is None:
                     ordinal = parent.ordinal
                     parent.ordinal = ordinal + 1
                     connection.execute(
-                        "INSERT INTO json_object_members(parent_id,key_bytes,ordinal,child_id) VALUES (?,?,?,?)",
-                        (parent.node_id, key_bytes, ordinal, node_id),
+                        "INSERT INTO json_object_members VALUES (?,?,?,?,?)",
+                        (parent.node_id, key.token, key.digest, ordinal, node_id),
                     )
                 else:
-                    old_node_id = int(existing[1])
+                    old_node_id = int(existing[2])
                     connection.execute(
-                        "UPDATE json_object_members SET child_id = ? WHERE parent_id = ? AND key_bytes = ?",
-                        (node_id, parent.node_id, key_bytes),
+                        "UPDATE json_object_members SET child_id=? WHERE parent_id=? AND key_token=?",
+                        (node_id, parent.node_id, existing[0]),
                     )
-                    connection.execute("DELETE FROM json_nodes WHERE id = ?", (old_node_id,))
+                    connection.execute("DELETE FROM json_nodes WHERE id=?", (old_node_id,))
                 parent.key = None
             else:
                 ordinal = parent.ordinal
@@ -915,7 +1053,7 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
                         if event in {"map_key", "string"}:
                             string_ordinal += 1
                             value = (
-                                tokens.read("string", string_ordinal)
+                                SpilledKey(connection, string_ordinal)
                                 if event == "map_key"
                                 else _ScalarToken("string", string_ordinal)
                             )
@@ -966,8 +1104,9 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
             if event == "map_key":
                 if not stack or stack[-1].kind != "object":
                     raise ValueError("streamed JSON key is outside an object")
-                require_storable_string(cast(str, value), kind="object key")
-                stack[-1].key = cast(str, value)
+                if not isinstance(value, SpilledKey):
+                    raise ValueError("streamed JSON key has no exact token")
+                stack[-1].key = value
             elif event == "start_map":
                 node_id = add_node("object", None)
                 if root_id is None:

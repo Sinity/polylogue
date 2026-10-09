@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, BinaryIO, Literal, TypeAlias, cast
 
@@ -81,11 +81,13 @@ class RawPayloadEnvelope:
     artifact: ArtifactClassification
     malformed_jsonl_lines: int = 0
     malformed_jsonl_detail: str | None = None
+    _owner: DecodedRecordSequence | None = field(default=None, repr=False, compare=False)
 
     def close(self) -> None:
         """Release decoded records after every borrowed sample has been consumed."""
-        if isinstance(self.payload, DecodedRecordSequence):
-            self.payload.close()
+        owner = self._owner if self._owner is not None else self.payload
+        if isinstance(owner, DecodedRecordSequence):
+            owner.close()
 
     def __enter__(self) -> RawPayloadEnvelope:
         return self
@@ -356,12 +358,12 @@ def _decode_raw_payload(
     *,
     jsonl_dict_only: bool = False,
     prefer_jsonl: bool = False,
-) -> tuple[JSONValue, WireFormat, int, str | None]:
+) -> tuple[JSONValue, WireFormat, int, str | None, DecodedRecordSequence | None]:
     """Decode JSON payload bytes, with JSONL fallback support.
 
     When *raw_content* is a :class:`~pathlib.Path`, JSONL files are
     streamed line-by-line from disk (never fully loaded into memory).
-    For JSON files the path is read in one shot via the active JSON backend's decode.
+    Complete JSON documents and JSONL fallbacks borrow the same explicit tape owner.
     """
     if isinstance(raw_content, Path):
         if prefer_jsonl:
@@ -370,24 +372,28 @@ def _decode_raw_payload(
                     raw_content,
                     jsonl_dict_only=jsonl_dict_only,
                 )
-                return payload, "jsonl", malformed_lines, malformed_detail
+                return payload, "jsonl", malformed_lines, malformed_detail, payload
             except (UnicodeDecodeError, ValueError):
                 pass
-        raw_bytes = raw_content.read_bytes()
         try:
-            return _load_raw_json(raw_bytes), "json", 0, None
-        except (JSONDecodeError, ValueError) as exc:
+            owner = DecodedRecordSequence.from_raw_document(raw_content)
+        except JSONDecodeError as document_error:
             try:
                 payload, malformed_lines, malformed_detail = _decode_jsonl_payload(
-                    raw_bytes,
+                    raw_content,
                     jsonl_dict_only=jsonl_dict_only,
                 )
             except (UnicodeDecodeError, ValueError):
-                raise exc from None
-            return payload, "jsonl", malformed_lines, malformed_detail
+                raise document_error from None
+            return payload, "jsonl", malformed_lines, malformed_detail, payload
+        try:
+            return owner[0], "json", 0, None, owner
+        except BaseException:
+            owner.close()
+            raise
 
     if is_json_value(raw_content):
-        return raw_content, "json", 0, None
+        return raw_content, "json", 0, None, None
 
     raw = raw_content if isinstance(raw_content, (bytes, str)) else str(raw_content)
     if prefer_jsonl:
@@ -396,11 +402,11 @@ def _decode_raw_payload(
                 raw,
                 jsonl_dict_only=jsonl_dict_only,
             )
-            return payload, "jsonl", malformed_lines, malformed_detail
+            return payload, "jsonl", malformed_lines, malformed_detail, payload
         except (UnicodeDecodeError, ValueError):
             pass
     try:
-        return _load_raw_json(raw), "json", 0, None
+        return _load_raw_json(raw), "json", 0, None, None
     except (JSONDecodeError, ValueError) as exc:
         try:
             payload, malformed_lines, malformed_detail = _decode_jsonl_payload(
@@ -409,7 +415,7 @@ def _decode_raw_payload(
             )
         except (UnicodeDecodeError, ValueError):
             raise exc from None
-        return payload, "jsonl", malformed_lines, malformed_detail
+        return payload, "jsonl", malformed_lines, malformed_detail, payload
 
 
 def _infer_payload_provider(
@@ -533,7 +539,7 @@ def build_raw_payload_envelope(
         )
         if binary_marker is not None:
             return _binary_artifact_envelope(binary_marker, provider=provider_for_binary)
-    payload, wire_format, malformed_jsonl_lines, malformed_jsonl_detail = _decode_raw_payload(
+    payload, wire_format, malformed_jsonl_lines, malformed_jsonl_detail, owner = _decode_raw_payload(
         raw_content,
         jsonl_dict_only=jsonl_dict_only,
         prefer_jsonl=prefer_jsonl,
@@ -557,10 +563,11 @@ def build_raw_payload_envelope(
             artifact=artifact,
             malformed_jsonl_lines=malformed_jsonl_lines,
             malformed_jsonl_detail=malformed_jsonl_detail,
+            _owner=owner,
         )
     except BaseException:
-        if isinstance(payload, DecodedRecordSequence):
-            payload.close()
+        if owner is not None:
+            owner.close()
         raise
 
 

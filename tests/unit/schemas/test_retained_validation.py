@@ -496,7 +496,7 @@ def test_spilled_object_membership_checks_only_the_key_index(tmp_path: Path) -> 
 
         membership_sql = statements[before:]
         assert len(membership_sql) == 3
-        assert all("SELECT 1 FROM json_object_members" in sql for sql in membership_sql)
+        assert all("SELECT 1," in sql and "FROM json_object_members" in sql for sql in membership_sql)
         assert all("json_nodes" not in sql for sql in membership_sql)
 
 

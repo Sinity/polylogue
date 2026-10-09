@@ -322,3 +322,49 @@ def test_shared_record_tree_rolls_back_failed_attempt_and_keeps_scalar_ordinals(
         retained = list(records)
         assert all(isinstance(record, dict) for record in retained)
         assert [record.get("same") for record in retained if isinstance(record, dict)] == ["first", "replacement"]
+
+
+def test_key_tokens_preserve_exact_identity_order_without_whole_key_cells(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Digest acceleration cannot replace duplicate equality or original-key ordering."""
+    from polylogue.schemas.observation_spill import SpilledKey
+
+    _small_sqlite_cells(monkeypatch)
+    path = tmp_path / "giant-keys.json"
+    key_chars = 128 * 1024
+    with path.open("wb") as output:
+        output.write(b'{"selected":7,"')
+        for _ in range(key_chars // 1024):
+            output.write(b"k" * 1024)
+        output.write(b'":1,"')
+        for _ in range(key_chars // 1024):
+            output.write(b"\\u006b" * 1024)
+        output.write(b'":2,"')
+        for _ in range(key_chars // 1024):
+            output.write(b"k" * 1024)
+        output.write(b'z":3,"a":4}')
+    original_read = SpilledKey.read
+
+    def selected_names_only(self: SpilledKey) -> str:
+        row = self.connection.execute("SELECT short_chars FROM json_key_meta WHERE token=?", (self.token,)).fetchone()
+        assert row is not None and row[0] <= 128, "giant key was materialized"
+        return original_read(self)
+
+    monkeypatch.setattr(SpilledKey, "read", selected_names_only)
+    with StreamedJSONDocument(path) as document:
+        assert isinstance(document, SpilledObject)
+        assert len(document) == 4 and document["selected"] == 7 and "missing" not in document
+        entries = list(document.key_entries())
+        assert entries[0][0].small_name == "selected"
+        assert entries[1][0].small_name is None and entries[2][0].small_name is None
+        # Last duplicate wins without moving its first insertion position.
+        from polylogue.schemas.observation_spill import _load_node
+
+        assert _load_node(document._connection, entries[1][1]) == 2
+        assert entries[1][0].compare(entries[2][0]) < 0
+        sorted_entries = list(document.key_entries(sorted_keys=True))
+        assert sorted_entries[0][0].small_name == "a"
+        assert sorted_entries[-1][0].small_name == "selected"
+        assert sorted_entries[1][0].token == entries[1][0].token
+        assert sum(map(len, entries[1][0].iter_utf8_chunks())) == key_chars
