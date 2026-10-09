@@ -376,6 +376,11 @@ def test_owned_inactive_generation_binds_the_prepared_session_rows(tmp_path: Pat
 
         assert sum(receipt.replayed_logical_sources for receipt in receipts) == 1
         assert (root / "source.db").read_bytes() == source_before
+        # Inactive replay defers reader models until the production candidate
+        # readiness pass; inspecting FTS before that pass is premature.
+        with write_lease("test.owned-shard.readiness", archive_root=root):
+            cold_build.prepare_promotion_candidate()
+        assert (root / "source.db").read_bytes() == source_before
         with sqlite3.connect(generation.index_path) as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
             assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
