@@ -22,8 +22,15 @@ from polylogue.sources.parsers.base import (
 from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.identity import archive_block_id, archive_message_id
+from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import ingest_session
+
+
+async def _stored_block_id(backend: SQLiteBackend, message_id: str) -> str:
+    async with backend.connection() as conn:
+        rows = await conn.execute_fetchall("SELECT block_id FROM blocks WHERE message_id = ?", (message_id,))
+    assert len(rows) == 1
+    return str(rows[0]["block_id"])
 
 
 async def test_stop_reason_round_trips_through_writer_and_repository(tmp_path: Path) -> None:
@@ -286,6 +293,7 @@ async def test_file_edits_round_trip_keyed_by_tool_use_block(tmp_path: Path) -> 
             backend=backend,
         )
         file_edits = await repo.get_file_edits(session_id)
+        expected_block_id = await _stored_block_id(backend, archive_message_id(session_id, "m1"))
     finally:
         await repo.close()
 
@@ -301,7 +309,7 @@ async def test_file_edits_round_trip_keyed_by_tool_use_block(tmp_path: Path) -> 
     assert edit.structured_patch == [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["+x"]}]
     # Keyed by the TOOL_USE block (message m1, position 0) even though the
     # evidence was attached to the TOOL_RESULT block reported in message m2.
-    assert edit.tool_use_block_id == archive_block_id(archive_message_id(session_id, "m1"), position=0)
+    assert edit.tool_use_block_id == expected_block_id
     assert edit.message_id == archive_message_id(session_id, "m2")
 
 
@@ -450,6 +458,7 @@ async def test_web_content_constructs_round_trip_search_result(tmp_path: Path) -
         )
         constructs = await repo.get_web_content_constructs(session_id)
         search_results = await repo.get_web_content_constructs(session_id, construct_type="search_result")
+        expected_block_id = await _stored_block_id(backend, archive_message_id(session_id, "m1"))
     finally:
         await repo.close()
 
@@ -459,7 +468,7 @@ async def test_web_content_constructs_round_trip_search_result(tmp_path: Path) -
     assert query_construct.session_id == session_id
     assert query_construct.query == "polylogue archive"
     assert query_construct.message_id == archive_message_id(session_id, "m1")
-    assert query_construct.block_id == archive_block_id(query_construct.message_id, position=0)
+    assert query_construct.block_id == expected_block_id
 
     result_construct = by_type["search_result"]
     assert result_construct.title == "Polylogue"
@@ -556,12 +565,13 @@ async def test_session_links_parent_tool_use_block_id_resolves_via_tool_id(tmp_p
 
         async with backend.connection() as conn:
             links = await list_session_links_for_session(conn, "claude-code-session:child-1")
+        expected_block_id = await _stored_block_id(backend, archive_message_id(parent_id, "m1"))
     finally:
         await repo.close()
 
     assert len(links) == 1
     link = links[0]
-    assert link["parent_tool_use_block_id"] == archive_block_id(archive_message_id(parent_id, "m1"), position=0)
+    assert link["parent_tool_use_block_id"] == expected_block_id
     assert link["method"] == "parent-tool-use-id"
 
 
@@ -620,13 +630,12 @@ async def test_provider_shaped_claude_dispatch_resolves_through_writer(tmp_path:
                     (child_id,),
                 )
             )
+        expected_block_id = await _stored_block_id(backend, archive_message_id(parent_id, "parent-assistant"))
     finally:
         await repo.close()
 
     assert link["resolved_dst_session_id"] == parent_id
-    assert link["parent_tool_use_block_id"] == archive_block_id(
-        archive_message_id(parent_id, "parent-assistant"), position=0
-    )
+    assert link["parent_tool_use_block_id"] == expected_block_id
     assert link["method"] == "parent-tool-use-id"
 
 
@@ -756,23 +765,21 @@ async def test_session_identity_alias_resolves_parent_dispatch_evidence(tmp_path
                     (child_id,),
                 )
             )
+        expected_block_id = await _stored_block_id(backend, archive_message_id(parent_id, "parent-message"))
+        decoy_block_id = await _stored_block_id(backend, archive_message_id(decoy_id, "decoy-message"))
     finally:
         await repo.close()
 
     assert len(links) == 1
     link = links[0]
     assert link["resolved_dst_session_id"] == parent_id
-    assert link["parent_tool_use_block_id"] == archive_block_id(
-        archive_message_id(parent_id, "parent-message"), position=0
-    )
+    assert link["parent_tool_use_block_id"] == expected_block_id
     [retired_link] = retired_links
     assert retired_link["resolved_dst_session_id"] is None
     assert retired_link["parent_tool_use_block_id"] is None
     assert retired_link["parent_session_id"] is None
     assert retired_link["root_session_id"] == child_id
-    assert link["parent_tool_use_block_id"] != archive_block_id(
-        archive_message_id(decoy_id, "decoy-message"), position=0
-    )
+    assert link["parent_tool_use_block_id"] != decoy_block_id
 
 
 async def test_session_identity_alias_resolves_child_written_before_parent(tmp_path: Path) -> None:
@@ -834,15 +841,14 @@ async def test_session_identity_alias_resolves_child_written_before_parent(tmp_p
                     (child_id,),
                 )
             )
+        expected_block_id = await _stored_block_id(backend, archive_message_id(parent_id, "parent-message"))
     finally:
         await repo.close()
 
     assert len(links) == 1
     link = links[0]
     assert link["resolved_dst_session_id"] == parent_id
-    assert link["parent_tool_use_block_id"] == archive_block_id(
-        archive_message_id(parent_id, "parent-message"), position=0
-    )
+    assert link["parent_tool_use_block_id"] == expected_block_id
 
 
 async def test_session_identity_alias_conflict_invalidates_resolved_child(tmp_path: Path) -> None:
@@ -1002,10 +1008,11 @@ async def test_parent_replacement_preserves_child_dispatch_block_id(tmp_path: Pa
                    WHERE parent_session_id = ?""",
                 (parent_id,),
             )
+        expected_block_id = await _stored_block_id(backend, archive_message_id(parent_id, "parent-assistant"))
     finally:
         await repo.close()
 
-    dispatch_block_id = archive_block_id(archive_message_id(parent_id, "parent-assistant"), position=0)
+    dispatch_block_id = expected_block_id
     assert before["parent_tool_use_block_id"] == dispatch_block_id
     assert after["resolved_dst_session_id"] == parent_id
     assert after["parent_tool_use_block_id"] == dispatch_block_id
@@ -1070,13 +1077,12 @@ async def test_dispatch_child_aliases_resolve_to_one_canonical_child(tmp_path: P
                    FROM session_links WHERE src_session_id = ?""",
                 (child_id,),
             )
+        expected_block_id = await _stored_block_id(backend, archive_message_id(parent_id, "parent-assistant"))
     finally:
         await repo.close()
 
     assert link["resolved_dst_session_id"] == parent_id
-    assert link["parent_tool_use_block_id"] == archive_block_id(
-        archive_message_id(parent_id, "parent-assistant"), position=0
-    )
+    assert link["parent_tool_use_block_id"] == expected_block_id
     assert link["method"] == "parent-tool-use-id"
 
 
