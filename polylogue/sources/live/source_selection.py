@@ -46,33 +46,36 @@ def deepest_source_for_path(path: Path, sources: Iterable[SourceT]) -> SourceT |
     """
 
     declared = Path(os.path.abspath(path.expanduser()))
-    try:
-        resolved: Path | None = declared.resolve()
-    except OSError:
-        resolved = None
-    lexical: list[tuple[bool, int, SourceT, Path]] = []
+    rooted = [(source, Path(os.path.abspath(source.root.expanduser()))) for source in sources]
+    lexical = [(False, len(root.parts), source, declared) for source, root in rooted if declared.is_relative_to(root)]
     explicit: list[tuple[bool, int, SourceT, Path]] = []
     physical: list[tuple[bool, int, SourceT, Path]] = []
-    for source in sources:
-        declared_root = Path(os.path.abspath(source.root.expanduser()))
-        exact_paths = getattr(source, "exact_paths", None)
-        if exact_paths is not None and resolved is not None and resolved in exact_paths:
-            explicit.append((True, len(declared_root.parts), source, resolved))
-            continue
-        if declared.is_relative_to(declared_root):
-            lexical.append((False, len(declared_root.parts), source, declared))
-            continue
+    # Physical-root aliases cannot outrank a declared namespace. Resolve only
+    # when an explicit file can override it, or no lexical owner exists.
+    if not lexical or any(getattr(source, "exact_paths", None) for source, _root in rooted):
+        try:
+            resolved: Path | None = declared.resolve()
+        except OSError:
+            resolved = None
         if resolved is not None:
-            try:
-                source_root = declared_root.resolve()
-                if resolved.is_relative_to(source_root):
-                    physical.append((False, len(source_root.parts), source, resolved))
-            except (OSError, ValueError):
-                continue
+            for source, declared_root in rooted:
+                exact_paths = getattr(source, "exact_paths", None)
+                if exact_paths is not None and resolved in exact_paths:
+                    explicit.append((True, len(declared_root.parts), source, resolved))
+                    # An exact match replaces this source's lexical entry.
+                    lexical = [match for match in lexical if match[2] is not source]
+            if not lexical:
+                for source, declared_root in rooted:
+                    if any(match[2] is source for match in explicit) or declared.is_relative_to(declared_root):
+                        continue
+                    try:
+                        source_root = declared_root.resolve()
+                        if resolved.is_relative_to(source_root):
+                            physical.append((False, len(source_root.parts), source, resolved))
+                    except (OSError, ValueError):
+                        continue
     # A declared namespace owns its subtree even when that subtree is an
-    # accepted directory alias. Physical root aliases select only when no
-    # declared directory contains the offered path; explicit files retain
-    # their stronger physical-file declaration in either case.
+    # accepted directory alias. Explicit files retain their stronger claim.
     matches = explicit + (lexical if lexical else physical)
     if not matches:
         return None

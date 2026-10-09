@@ -176,101 +176,108 @@ def iter_retained_source_records(
             # export asset, Antigravity protobuf, brain Markdown or tool-result
             # sidecar is dropped while enumeration reports itself complete
             # (polylogue-ojxpn).
-            admission = zip_member_admission(archive, logical_path, entries, provider)
+            with zip_member_admission(
+                archive, logical_path, entries, provider, container_blob_hash=blob_hash
+            ) as admission:
 
-            def record_rejected(entry: zipfile.ZipInfo, reason: str, code: str) -> None:
-                nonlocal dispositions
-                if dispositions is None:
-                    dispositions = PickleSpool()
-                rejected.record(reason)
-                dispositions.append((ordinal, entry.filename, "refused", reason, code))
+                def record_rejected(entry: zipfile.ZipInfo, reason: str, code: str) -> None:
+                    nonlocal dispositions
+                    if dispositions is None:
+                        dispositions = PickleSpool()
+                    rejected.record(reason)
+                    dispositions.append((ordinal, entry.filename, "refused", reason, code))
 
-            def record_unselected(entry: zipfile.ZipInfo, reason: str) -> None:
-                nonlocal dispositions
-                if dispositions is None:
-                    dispositions = PickleSpool()
-                unselected.record(f"{entry.filename}: {reason}")
-                dispositions.append((ordinal, entry.filename, "unselected", reason, None))
+                def record_unselected(entry: zipfile.ZipInfo, reason: str) -> None:
+                    nonlocal dispositions
+                    if dispositions is None:
+                        dispositions = PickleSpool()
+                    unselected.record(f"{entry.filename}: {reason}")
+                    dispositions.append((ordinal, entry.filename, "unselected", reason, None))
 
-            validator = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=logical_path)
-            for ordinal, entry in enumerate(entries):
-                selected = tuple(
-                    validator.filter_entries(
-                        (entry,),
-                        allowed_path=admission.allowed_path,
-                        on_unselected=record_unselected,
+                validator = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=logical_path)
+                for ordinal, entry in enumerate(entries):
+                    selected = tuple(
+                        validator.filter_entries(
+                            (entry,),
+                            allowed_path=admission.allowed_path,
+                            on_unselected=record_unselected,
+                        )
                     )
-                )
-                if not selected:
-                    continue
-                if entry.file_size == 0:
-                    # Verify the selected empty member rather than trusting
-                    # central metadata as proof that its read completed.
-                    with open_zip_entry(archive, entry) as empty:
-                        if empty.read(1):
-                            raise zipfile.BadZipFile("empty member differs from its central-directory size")
-                    record_unselected(entry, "member is empty")
-                    continue
-                # Under a residual UNKNOWN the container hint cannot name the family
-                # that owns this member, so its ``raw-only`` declaration would not
-                # fire and arbitrary binary bytes would take the JSON split route.
-                context = ZipEntryReadContext(
-                    source,
-                    logical_path,
-                    entry,
-                    file_mtime,
-                    admission.entry_provider_hint(archive, entry),
-                    blob_store,
-                    observation_callback=observation_callback,
-                    status_callback=status_callback,
-                    bound_provider=location_binding,
-                    captured_input_identity=captured_identity,
-                    container_blob_hash=blob_hash,
-                    decoder_fingerprint=enumeration_fingerprint,
-                    entry_ordinal=ordinal,
-                )
-                try:
-                    # A member's splits leave only once the whole member validated;
-                    # a foreign member raises before any is yielded.
-                    produced = False
-                    for data in iter_zip_entry_raw_data(archive, context):
-                        split = (
-                            data.captured_zip_coordinate.split_index
-                            if data.captured_zip_coordinate is not None
-                            else data.source_index or 0
-                        )
-                        if data.captured_zip_coordinate is None:
-                            raise RetainedZipMembershipUnprovedError("ZIP decoder lost its accepted member receipt")
-                        mode = data.addressing_mode
-                        if mode not in {MemberAddressingMode.WHOLE_MEMBER, MemberAddressingMode.ELEMENT_OF_CONTAINER}:
-                            raise ValueError("retained ZIP record has no exact addressing mode")
-                        if data.blob_hash is None:
-                            raise ValueError("retained ZIP decoder did not retain its raw bytes")
-                        produced = True
-                        yield SourceInputRecord(
-                            zip_member_record_coordinate(
-                                entry_ordinal=ordinal, split_index=split, addressing_mode=mode
-                            ),
-                            data.model_copy(
-                                update={
-                                    "source_index": zip_member_source_index(entry_ordinal=ordinal, split_index=split)
-                                }
-                            ),
-                            captured_zip_member_raw_id(data.captured_zip_coordinate, data.blob_hash),
-                            ordinal,
-                            split,
-                            member_count=len(entries),
-                        )
-                    if not produced:
-                        record_unselected(entry, "decoded member contains no retained records")
-                except ForeignOriginContentError as exc:
-                    # The declared source binds; a foreign member is a typed
-                    # refusal in the member denominator, never a retained raw.
-                    record_rejected(entry, f"{exc.code}: {exc}", exc.code)
-                except ContentIdentityRefusal as exc:
-                    # The member cannot be stored: a recorded refusal, not an
-                    # aborted acquisition of the whole ZIP.
-                    record_rejected(entry, f"content_identity_refused: {exc}", "content_identity_refused")
+                    if not selected:
+                        continue
+                    if entry.file_size == 0:
+                        # Verify the selected empty member rather than trusting
+                        # central metadata as proof that its read completed.
+                        with open_zip_entry(archive, entry) as empty:
+                            if empty.read(1):
+                                raise zipfile.BadZipFile("empty member differs from its central-directory size")
+                        record_unselected(entry, "member is empty")
+                        continue
+                    # Under a residual UNKNOWN the container hint cannot name the family
+                    # that owns this member, so its ``raw-only`` declaration would not
+                    # fire and arbitrary binary bytes would take the JSON split route.
+                    context = ZipEntryReadContext(
+                        source,
+                        logical_path,
+                        entry,
+                        file_mtime,
+                        admission.entry_provider_hint(entry, entry_ordinal=ordinal),
+                        blob_store,
+                        observation_callback=observation_callback,
+                        status_callback=status_callback,
+                        bound_provider=location_binding,
+                        captured_input_identity=captured_identity,
+                        container_blob_hash=blob_hash,
+                        decoder_fingerprint=enumeration_fingerprint,
+                        entry_ordinal=ordinal,
+                    )
+                    try:
+                        # A member's splits leave only once the whole member validated;
+                        # a foreign member raises before any is yielded.
+                        produced = False
+                        for data in iter_zip_entry_raw_data(archive, context):
+                            split = (
+                                data.captured_zip_coordinate.split_index
+                                if data.captured_zip_coordinate is not None
+                                else data.source_index or 0
+                            )
+                            if data.captured_zip_coordinate is None:
+                                raise RetainedZipMembershipUnprovedError("ZIP decoder lost its accepted member receipt")
+                            mode = data.addressing_mode
+                            if mode not in {
+                                MemberAddressingMode.WHOLE_MEMBER,
+                                MemberAddressingMode.ELEMENT_OF_CONTAINER,
+                            }:
+                                raise ValueError("retained ZIP record has no exact addressing mode")
+                            if data.blob_hash is None:
+                                raise ValueError("retained ZIP decoder did not retain its raw bytes")
+                            produced = True
+                            yield SourceInputRecord(
+                                zip_member_record_coordinate(
+                                    entry_ordinal=ordinal, split_index=split, addressing_mode=mode
+                                ),
+                                data.model_copy(
+                                    update={
+                                        "source_index": zip_member_source_index(
+                                            entry_ordinal=ordinal, split_index=split
+                                        )
+                                    }
+                                ),
+                                captured_zip_member_raw_id(data.captured_zip_coordinate, data.blob_hash),
+                                ordinal,
+                                split,
+                                member_count=len(entries),
+                            )
+                        if not produced:
+                            record_unselected(entry, "decoded member contains no retained records")
+                    except ForeignOriginContentError as exc:
+                        # The declared source binds; a foreign member is a typed
+                        # refusal in the member denominator, never a retained raw.
+                        record_rejected(entry, f"{exc.code}: {exc}", exc.code)
+                    except ContentIdentityRefusal as exc:
+                        # The member cannot be stored: a recorded refusal, not an
+                        # aborted acquisition of the whole ZIP.
+                        record_rejected(entry, f"content_identity_refused: {exc}", "content_identity_refused")
         for ordinal, member_name, disposition, diagnostic, refusal_code in () if dispositions is None else dispositions:
             if on_member_disposition is None:
                 continue

@@ -126,7 +126,15 @@ into scan and acquire error counts. Failed paths withhold their stat cursors;
 successfully committed files retain their cursors. Persistence failures are
 counted by the writer once, before source completion withholds their cursors.
 Local byte inputs skip only on a matching complete captured stat tuple; a
-matching timestamp cannot override changed identity or size. ZIP containers
+matching timestamp cannot override changed identity or size. Unbound ZIP
+admission records each complete syntax/provider and CRC inspection once in an
+acquisition-scoped indexed scratch spool. Its identity binds the captured
+container SHA, declared source coordinate, enumeration closure and central
+ordinal; member hints reuse that result, including negative detections.
+Duplicate names remain distinct, and admission scope exit closes the spool.
+Lexical source ownership avoids physical root resolution when no explicit-file
+claim can override it. Physical fallback and explicit claims resolve fresh
+aliases on each selection. ZIP containers
 and mutable SQLite inputs always reach acquisition. ZIP membership comes
 from the captured container, and committed WAL content participates in the
 SQLite logical revision even when the main file's stat tuple is unchanged.
