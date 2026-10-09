@@ -24,6 +24,8 @@ Two entry points:
 
 from __future__ import annotations
 
+import json
+
 from polylogue.core.enums import Origin
 from polylogue.core.hashing import hash_bytes
 from polylogue.core.identity_law import block_id, message_local_id, split_message_local_id
@@ -200,6 +202,13 @@ def _check_semantic_closure(
         if coordinate in message_coordinates:
             raise SemanticClosureError("duplicate message ordinal")
         message_coordinates.add(coordinate)
+        source_name_json = message.get("source_native_id_json")
+        if source_name_json is not None:
+            try:
+                if not isinstance(source_name_json, str) or not isinstance(json.loads(source_name_json), str):
+                    raise ValueError("Source occurrence name is not JSON text")
+            except (ValueError, TypeError) as exc:
+                raise SemanticClosureError("invalid Source occurrence name") from exc
         native_id = message.get("native_id")
         try:
             if native_id is not None and not isinstance(native_id, str):

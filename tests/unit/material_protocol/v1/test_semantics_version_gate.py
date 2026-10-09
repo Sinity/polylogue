@@ -101,7 +101,7 @@ def test_attachment_record_fields_are_pinned_to_the_declared_semantics_version(
     attachments = [record for record in records if record["kind"] == "attachment"]
     assert attachments, "fixture encodes no attachment record to pin"
 
-    assert SEMANTICS_VERSION == 6
+    assert SEMANTICS_VERSION == 7
     assert set(attachments[0]) == {
         "kind",
         "record_id",
@@ -137,7 +137,7 @@ def test_message_usage_distinguishes_unknown_from_measured_zero(encoded: Encoded
     assertions fail with ``0 is not None``, because the encoder then fabricates
     a measured zero for a message the fixture never gave counters to.
     """
-    assert SEMANTICS_VERSION == 6
+    assert SEMANTICS_VERSION == 7
 
     messages = {
         record["record_id"]: record

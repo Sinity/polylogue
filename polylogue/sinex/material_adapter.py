@@ -573,6 +573,7 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
         messages.append(
             MessageInput(
                 native_id=native_message_id,
+                source_native_id=message.provider_message_id,
                 position=position,
                 role=message.role,
                 text=message.text,

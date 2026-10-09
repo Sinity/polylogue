@@ -75,6 +75,8 @@ class MessageInput:
     position: int
     role: Role
     text: str | None = None
+    #: Original Source occurrence name, independent of unique native identity.
+    source_native_id: str | None = None
     #: The content-derived identity a message without a provider id is stored
     #: under (``pipeline.ids.message_content_identity``), with its occurrence
     #: ordinal. Required whenever ``native_id`` is None -- the record id

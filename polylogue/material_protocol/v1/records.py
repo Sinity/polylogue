@@ -8,6 +8,8 @@ once it has settled the full ordered record list for a revision (see
 
 from __future__ import annotations
 
+import json
+
 from polylogue.core.digest import nfc
 from polylogue.core.identity_law import block_id, message_local_id
 from polylogue.core.json import JSONValue
@@ -128,6 +130,9 @@ def message_record(session_id: str, message: MessageInput) -> dict[str, JSONValu
         "session_id": session_id,
         "message_id": message_id,
         "native_id": message.native_id,
+        "source_native_id_json": (
+            json.dumps(message.source_native_id, ensure_ascii=True) if message.source_native_id is not None else None
+        ),
         "position": message.position,
         "variant_index": message.variant_index,
         "role": message.role.value,

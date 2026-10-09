@@ -26,7 +26,9 @@ PROTOCOL_VERSION = "polylogue.material-protocol/v1"
 #: and the change moved every message-record digest for identical material.
 #: v6: opaque values and keys stay exact; only declared prose folds in NFC.
 #: Blocks carry semantic identities and occurrence coordinates.
-SEMANTICS_VERSION = 6
+# v7: message records retain original Source occurrence names independently
+# of canonical unique native identity, with exact ASCII JSON spelling.
+SEMANTICS_VERSION = 7
 
 #: Version of the canonicalization algorithm (NFC + sorted-key JSON framing).
 CANONICALIZER_VERSION = 2

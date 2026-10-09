@@ -4205,6 +4205,11 @@ def _iter_message_rows(
         values: dict[str, object] = {
             "session_id": session_id,
             "native_id": _stored_message_native_id(message, duplicate_native_ids),
+            "source_native_id_json": (
+                json.dumps(message.provider_message_id.strip(), ensure_ascii=True)
+                if message.provider_message_id.strip()
+                else None
+            ),
             "position": position,
             "role": _enum_value(message.role),
             "message_type": _enum_value(message.message_type),
@@ -10453,23 +10458,23 @@ def _bind_asserted_branch_point(
     # Normalization can move a parent's prefix into its ancestors. The provider
     # still names that original message, including when the child never replays
     # the prefix. Resolve only inside the parent's actual composed segments.
-    normalized = _sqlite_text(native_id.strip())
+    source_name = json.dumps(native_id.strip(), ensure_ascii=True)
     bound: str | None = None
     plan = _composed_transcript_plan(conn, parent_session_id)
     for segment in plan.segments:
-        candidate = archive_message_id(segment.session_id, normalized)
-        row = conn.execute("SELECT position, variant_index FROM messages WHERE message_id = ?", (candidate,)).fetchone()
-        if row is None or (
-            segment.upto_position is not None
-            and segment.upto_variant_index is not None
-            and (int(row[0]), int(row[1])) > (segment.upto_position, segment.upto_variant_index)
-        ):
-            continue
-        if bound is not None and bound != candidate:
-            raise AssertedBranchPointAmbiguousError(
-                f"branch point {native_id!r} names several rows in parent {parent_session_id!r}"
-            )
-        bound = candidate
+        sql = "SELECT message_id FROM messages WHERE session_id = ? AND source_native_id_json = ?"
+        parameters: tuple[object, ...] = (segment.session_id, source_name)
+        if segment.upto_position is not None and segment.upto_variant_index is not None:
+            sql += " AND (position, variant_index) <= (?, ?)"
+            parameters += (segment.upto_position, segment.upto_variant_index)
+        # Two admitted occurrences settle ambiguity; unrelated suffix rows do
+        # not participate. Content IDs never masquerade as native evidence.
+        for (candidate,) in conn.execute(sql + " LIMIT 2", parameters):
+            if bound is not None and bound != candidate:
+                raise AssertedBranchPointAmbiguousError(
+                    f"branch point {native_id!r} names several rows in parent {parent_session_id!r}"
+                )
+            bound = str(candidate)
     return bound
 
 

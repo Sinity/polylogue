@@ -347,6 +347,9 @@ MESSAGES_SPEC = _make_table_spec(
             record_name="session_id",
         ),
         _raw_column("native_id", "native_id TEXT", record_name="provider_message_id"),
+        # Source-native occurrence evidence is independent of unique identity.
+        # JSON spelling retains exact names, including lone surrogate escapes.
+        _raw_column("source_native_id_json", "source_native_id_json TEXT"),
         # polylogue-eqsri: the identity a message gets when the provider gave
         # it none. A digest of the message's own declared semantic fields
         # (``pipeline.ids.message_content_identity``), so an insertion or

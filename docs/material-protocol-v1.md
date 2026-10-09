@@ -268,3 +268,9 @@ implementation lands.
   `polylogue-303r.4`.
 - Durable user-state outbox — `polylogue-303r.5`.
 - Lifecycle/retention/deletion — `polylogue-303r.6`.
+
+Message records retain `source_native_id_json` as optional ASCII JSON text of
+the original Source occurrence name (semantics version 7). This evidence is
+independent of `native_id`, which remains null when duplicate names require
+content-derived identity. Decoding restores the exact Source name, including
+lone surrogate escapes. It does not promote content IDs into native evidence.

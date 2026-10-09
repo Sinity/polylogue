@@ -8,6 +8,7 @@ is ``verify.py``'s job and should run before decode on any untrusted input.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from polylogue.core.json import JSONValue
@@ -30,6 +31,7 @@ class DecodedMessage:
     model_name: str | None
     parent_message_id: str | None
     usage: dict[str, JSONValue]
+    source_native_id: str | None = None
     blocks: list[dict[str, JSONValue]] = field(default_factory=list)
     attachments: list[dict[str, JSONValue]] = field(default_factory=list)
     session_events: list[dict[str, JSONValue]] = field(default_factory=list)
@@ -117,6 +119,11 @@ def _decode_session_revision(manifest: RevisionManifest, segment_bytes: dict[int
             messages_by_id[message_id] = DecodedMessage(
                 message_id=message_id,
                 native_id=str(native_id) if native_id is not None else None,
+                source_native_id=(
+                    json.loads(str(record["source_native_id_json"]))
+                    if record.get("source_native_id_json") is not None
+                    else None
+                ),
                 position=int(record["position"]),  # type: ignore[arg-type]
                 variant_index=int(record["variant_index"]),  # type: ignore[arg-type]
                 role=str(record["role"]),

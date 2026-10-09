@@ -722,6 +722,12 @@ ON messages(session_id, position, variant_index);
 CREATE INDEX IF NOT EXISTS idx_messages_session_sortkey
 ON messages(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id);
 
+-- Names can identify several Source occurrences even when unique native
+-- identity was intentionally suppressed. Lineage resolves inside composed cuts.
+CREATE INDEX IF NOT EXISTS idx_messages_source_native
+ON messages(session_id, source_native_id_json, position, variant_index)
+WHERE source_native_id_json IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_messages_parent
 ON messages(parent_message_id)
 WHERE parent_message_id IS NOT NULL;
